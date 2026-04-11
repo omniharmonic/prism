@@ -43,6 +43,9 @@ export const syncApi = {
   trigger: (noteId: string) =>
     invoke<SyncResult[]>("sync_trigger", { noteId }),
 
+  pull: (noteId: string) =>
+    invoke<SyncResult>("sync_pull", { noteId }),
+
   status: (noteId: string) =>
     invoke<SyncStatus[]>("sync_status", { noteId }),
 

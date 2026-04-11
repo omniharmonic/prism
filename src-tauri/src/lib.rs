@@ -10,7 +10,7 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages};
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
 
@@ -103,6 +103,7 @@ pub fn run() {
             google::google_check_auth,
             // Sync
             sync_cmds::sync_trigger,
+            sync_cmds::sync_pull,
             sync_cmds::sync_status,
             sync_cmds::sync_add_config,
             sync_cmds::sync_remove_config,
@@ -121,6 +122,8 @@ pub fn run() {
             // Wikilink resolution
             wikilinks::resolve_wikilinks,
             wikilinks::resolve_all_wikilinks,
+            // Notion
+            notion_pages::notion_list_pages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

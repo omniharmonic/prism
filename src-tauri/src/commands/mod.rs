@@ -8,3 +8,4 @@ pub mod agent;
 pub mod config;
 pub mod editor;
 pub mod wikilinks;
+pub mod notion_pages;

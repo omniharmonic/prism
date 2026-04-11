@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
 import { useUpdateNote, useTags } from "../../app/hooks/useParachute";
@@ -224,9 +225,17 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
 
   const [syncError, setSyncError] = useState<string | null>(null);
 
+  const [showNotionSetup, setShowNotionSetup] = useState(false);
+
   const handleAddSync = async (adapter: string) => {
     setSyncError(null);
     try {
+      if (adapter === "notion") {
+        // Show inline Notion setup instead of window.prompt (blocked in WKWebView)
+        setShowNotionSetup(true);
+        setShowAdd(false);
+        return;
+      }
       await syncApi.addConfig(noteId, adapter);
       queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
       queryClient.invalidateQueries({ queryKey: ["vault"] });
@@ -235,6 +244,8 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
       setSyncError(`Failed to add ${adapter}: ${e}`);
     }
   };
+
+  // handleNotionSetupSubmit removed — replaced by NotionPagePicker
 
   const handleSync = async () => {
     setSyncError(null);
@@ -294,20 +305,46 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
         </div>
       ))}
 
-      {/* Sync now button */}
+      {/* Sync buttons */}
       {syncConfigs.length > 0 && (
-        <button
-          onClick={handleSync}
-          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs transition-colors hover:bg-[var(--glass-hover)]"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          <RefreshCw size={12} />
-          Sync Now
-        </button>
+        <div className="flex gap-1.5">
+          <button
+            onClick={handleSync}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs transition-colors hover:bg-[var(--glass-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            <RefreshCw size={11} />
+            Push
+          </button>
+          <button
+            onClick={async () => {
+              setSyncError(null);
+              try {
+                const result = await syncApi.pull(noteId);
+                if (result.status === "error") {
+                  setSyncError((result as { message?: string }).message || "Pull failed");
+                } else {
+                  // Invalidate queries to refresh the note content
+                  queryClient.invalidateQueries({ queryKey: ["vault"] });
+                  // Alert user to reopen the tab to see changes
+                  // (TipTap holds its own state and doesn't auto-refresh)
+                  alert("Pulled from Google Docs. Close and reopen the tab to see updated content.");
+                }
+              } catch (e) {
+                setSyncError(`Pull failed: ${e}`);
+              }
+            }}
+            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs transition-colors hover:bg-[var(--glass-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            <RefreshCw size={11} style={{ transform: "scaleX(-1)" }} />
+            Pull
+          </button>
+        </div>
       )}
 
       {/* Add sync destination */}
-      <div className="relative">
+      <div>
         <button
           onClick={() => setShowAdd(!showAdd)}
           className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-sm transition-colors hover:bg-[var(--glass-hover)]"
@@ -317,12 +354,12 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
           Add sync destination
         </button>
         {showAdd && (
-          <div className="absolute top-full left-0 right-0 mt-1 py-1 glass-elevated rounded-md overflow-hidden z-10">
+          <div className="mt-1 py-1 glass-elevated rounded-md overflow-hidden">
             {SYNC_ADAPTERS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => handleAddSync(id)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[var(--glass-hover)] transition-colors"
                 style={{ color: "var(--text-primary)" }}
               >
                 <Icon size={12} style={{ color: "var(--text-secondary)" }} />
@@ -332,6 +369,21 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
           </div>
         )}
       </div>
+
+      {/* Notion setup — page picker */}
+      {showNotionSetup && (
+        <NotionPagePicker
+          noteId={noteId}
+          metadata={metadata}
+          onDone={() => {
+            setShowNotionSetup(false);
+            queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
+            queryClient.invalidateQueries({ queryKey: ["vault"] });
+          }}
+          onCancel={() => setShowNotionSetup(false)}
+          onError={(msg) => setSyncError(msg)}
+        />
+      )}
     </div>
   );
 }
@@ -349,6 +401,112 @@ function SyncStateIcon({ state }: { state: string }) {
     default:
       return <Cloud size={12} style={{ color: "var(--text-muted)" }} />;
   }
+}
+
+function NotionPagePicker({ noteId, metadata, onDone, onCancel, onError }: {
+  noteId: string;
+  metadata: Record<string, unknown> | null;
+  onDone: () => void;
+  onCancel: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [pages, setPages] = useState<Array<{ id: string; title: string; url: string; icon: string | null }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searched, setSearched] = useState(false);
+
+  const doSearch = useCallback((query: string) => {
+    setLoading(true);
+    invoke<Array<{ id: string; title: string; url: string; icon: string | null }>>(
+      "notion_list_pages", { query: query || null }
+    )
+      .then((results) => { setPages(results); setSearched(true); })
+      .catch((e) => onError(`Failed to search Notion: ${e}`))
+      .finally(() => setLoading(false));
+  }, [onError]);
+
+  // Load initial results
+  useEffect(() => { doSearch(""); }, [doSearch]);
+
+  const handleSelect = async (pageId: string) => {
+    try {
+      const currentSync = ((metadata as Record<string, unknown>)?.sync as Array<Record<string, unknown>>) || [];
+      await invoke("vault_update_note", {
+        id: noteId,
+        metadata: {
+          ...((metadata || {}) as Record<string, unknown>),
+          sync: [
+            ...currentSync.filter((s) => s.adapter !== "notion"),
+            { adapter: "notion", remote_id: pageId, last_synced: "", direction: "push", conflict_strategy: "ask", auto_sync: false }
+          ]
+        }
+      });
+      onDone();
+    } catch (e) {
+      onError(`Failed to configure: ${e}`);
+    }
+  };
+
+  return (
+    <div className="glass p-3 rounded-lg space-y-2">
+      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+        Choose a Notion page to sync to
+      </div>
+
+      {/* Search box */}
+      <div className="flex gap-1">
+        <input
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") doSearch(searchQuery); }}
+          placeholder="Search Notion pages..."
+          className="flex-1 h-7 rounded-md px-2 text-xs outline-none"
+          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+          autoFocus
+        />
+        <button
+          onClick={() => doSearch(searchQuery)}
+          className="px-2 h-7 rounded-md text-xs"
+          style={{ background: "var(--color-accent)", color: "white" }}
+        >
+          Search
+        </button>
+      </div>
+
+      {/* Results */}
+      {loading ? (
+        <div className="text-xs py-2" style={{ color: "var(--text-muted)" }}>Searching...</div>
+      ) : pages.length === 0 && searched ? (
+        <div className="text-xs py-2" style={{ color: "var(--text-muted)" }}>
+          No pages found. Try a different search term.
+        </div>
+      ) : (
+        <div className="max-h-48 overflow-auto space-y-0.5">
+          {pages.map((page) => (
+            <button
+              key={page.id}
+              onClick={() => handleSelect(page.id)}
+              className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors truncate"
+              style={{ color: "var(--text-primary)" }}
+            >
+              {page.icon && <span className="mr-1">{page.icon}</span>}
+              {page.title}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          onClick={onCancel}
+          className="px-2 py-1 rounded text-xs hover:bg-[var(--glass-hover)]"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function formatDate(iso: string) {

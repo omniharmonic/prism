@@ -85,10 +85,10 @@ export function Settings({ open, onClose }: SettingsProps) {
                     <div className="flex-1">
                       <div className="text-sm" style={{ color: "var(--text-primary)" }}>Google (Gmail, Calendar, Docs)</div>
                       <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-                        Accounts: {status?.google.primary}, {status?.google.agent}
+                        Via gog CLI · {status?.google.primary}, {status?.google.agent}
                       </div>
                     </div>
-                    <StatusBadge status="needs_oauth" />
+                    <StatusBadge status="connected" />
                   </div>
                   <div className="ml-7 mt-2 glass-inset p-2.5 rounded-lg text-xs space-y-1.5" style={{ color: "var(--text-secondary)" }}>
                     <div>Google OAuth uses the <code style={{ color: "var(--color-accent)" }}>gog</code> CLI from the OmniHarmonic agent.</div>

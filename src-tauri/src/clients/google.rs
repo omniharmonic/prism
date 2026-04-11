@@ -135,6 +135,36 @@ impl GoogleClient {
     ) -> Result<serde_json::Value, PrismError> {
         self.run_gog(&["calendar", "events", "create", "--summary", summary, "--start", start, "--end", end], account)
     }
+
+    // ─── Google Docs ─────────────────────────────────────────
+
+    /// Create a new Google Doc and return its ID
+    pub fn docs_create(&self, account: &str, title: &str) -> Result<String, PrismError> {
+        let data = self.run_gog(&["docs", "create", title], account)?;
+        // gog returns { "file": { "id": "...", ... } }
+        data.get("file").and_then(|f| f.get("id"))
+            .or_else(|| data.get("documentId"))
+            .or_else(|| data.get("id"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| PrismError::Google(format!("No doc ID in response: {}", data)))
+    }
+
+    /// Write content to a Google Doc (replaces all content)
+    pub fn docs_write(&self, account: &str, doc_id: &str, content: &str) -> Result<(), PrismError> {
+        self.run_gog_text(&["docs", "write", doc_id, content, "--replace"], account)?;
+        Ok(())
+    }
+
+    /// Read a Google Doc as plain text
+    pub fn docs_read(&self, account: &str, doc_id: &str) -> Result<String, PrismError> {
+        self.run_gog_text(&["docs", "cat", doc_id], account)
+    }
+
+    /// Get Google Doc metadata (for modification time check)
+    pub fn docs_info(&self, account: &str, doc_id: &str) -> Result<serde_json::Value, PrismError> {
+        self.run_gog(&["docs", "info", doc_id], account)
+    }
 }
 
 /// Build a raw RFC 2822 email message for sending via Gmail API

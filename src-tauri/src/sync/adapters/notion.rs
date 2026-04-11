@@ -25,6 +25,14 @@ impl SyncAdapter for NotionAdapter {
     async fn push(&self, note: &Note, config: &SyncConfig) -> Result<SyncResult, PrismError> {
         let page_id = &config.remote_id;
 
+        // Convert HTML → markdown first (TipTap stores HTML)
+        let markdown_content = if note.content.contains('<') {
+            let md = htmd::convert(&note.content).unwrap_or_default();
+            if md.is_empty() { note.content.clone() } else { md }
+        } else {
+            note.content.clone()
+        };
+
         // Step 1: Delete existing blocks
         let blocks = self.get_page_blocks(page_id).await?;
         for block in blocks {
@@ -34,11 +42,11 @@ impl SyncAdapter for NotionAdapter {
         }
 
         // Step 2: Convert markdown to Notion blocks and append
-        let notion_blocks = markdown_to_notion_blocks(&note.content);
+        let notion_blocks = markdown_to_notion_blocks(&markdown_content);
         self.append_blocks(page_id, &notion_blocks).await?;
 
         Ok(SyncResult::Pushed {
-            content: note.content.clone(),
+            content: markdown_content,
         })
     }
 
