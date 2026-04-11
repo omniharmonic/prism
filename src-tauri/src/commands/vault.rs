@@ -93,8 +93,21 @@ pub async fn vault_list_notes(
     offset: Option<u32>,
 ) -> Result<Vec<Note>, PrismError> {
     let params = ListNotesParams { tag, path, limit, offset };
-    let notes = client.list_notes(&params).await?;
-    Ok(notes.into_iter().map(enrich_note).collect())
+    let notes = match client.list_notes(&params).await {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!("vault_list_notes failed: {}", e);
+            return Err(e);
+        }
+    };
+    log::info!("vault_list_notes: got {} notes", notes.len());
+    // Strip content from list response to reduce payload size.
+    // Full content is fetched on-demand via vault_get_note.
+    // 1,118 notes with content = 17.5MB; without = ~1MB.
+    Ok(notes.into_iter().map(|mut n| {
+        n.content = String::new();
+        enrich_note(n)
+    }).collect())
 }
 
 #[tauri::command]
@@ -179,4 +192,14 @@ pub async fn vault_get_stats(
     client: State<'_, ParachuteClient>,
 ) -> Result<VaultStats, PrismError> {
     client.get_stats().await
+}
+
+#[tauri::command]
+pub async fn vault_get_links(
+    client: State<'_, ParachuteClient>,
+    note_id: Option<String>,
+    relationship: Option<String>,
+) -> Result<Vec<crate::models::link::Link>, PrismError> {
+    let params = crate::models::link::GetLinksParams { note_id, relationship };
+    client.get_links(&params).await
 }

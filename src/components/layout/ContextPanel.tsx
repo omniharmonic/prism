@@ -3,6 +3,8 @@ import { useNote } from "../../app/hooks/useParachute";
 import { Tabs } from "../ui/Tabs";
 import { MetadataPanel } from "./MetadataPanel";
 import { PanelChat } from "../agent/PanelChat";
+import { LinksPanel } from "./LinksPanel";
+import { HistoryPanel } from "./HistoryPanel";
 
 const PANEL_TABS = [
   { id: "metadata", label: "Meta" },
@@ -14,7 +16,10 @@ const PANEL_TABS = [
 export function ContextPanel() {
   const { contextPanelTab, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const { data: note } = useNote(activeTab?.noteId ?? null);
+  // Don't fetch virtual notes (matrix:...) from Parachute
+  const noteId = activeTab?.noteId;
+  const isVirtual = noteId && noteId.includes(":") && !noteId.match(/^\d/);
+  const { data: note } = useNote(isVirtual ? null : (noteId ?? null));
 
   return (
     <div
@@ -39,10 +44,14 @@ export function ContextPanel() {
           <Placeholder text="Select a note to view details" />
         ) : contextPanelTab === "agent" ? (
           <PanelChat />
+        ) : contextPanelTab === "links" && note ? (
+          <LinksPanel noteId={note.id} />
         ) : contextPanelTab === "links" ? (
-          <Placeholder text="Links view coming soon" />
+          <Placeholder text="Select a note to view links" />
+        ) : contextPanelTab === "history" && note ? (
+          <HistoryPanel note={note} />
         ) : contextPanelTab === "history" ? (
-          <Placeholder text="Version history coming soon" />
+          <Placeholder text="Select a note to view history" />
         ) : null}
       </div>
     </div>

@@ -6,3 +6,4 @@ pub mod google;
 pub mod sync_cmds;
 pub mod agent;
 pub mod config;
+pub mod editor;

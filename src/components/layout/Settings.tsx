@@ -79,12 +79,28 @@ export function Settings({ open, onClose }: SettingsProps) {
                 />
 
                 {/* Google */}
-                <ConnectionRow
-                  icon={<Mail size={16} />}
-                  name="Google (Gmail, Calendar, Docs)"
-                  status="needs_oauth"
-                  detail={`Accounts: ${status?.google.primary}, ${status?.google.agent}`}
-                />
+                <div className="py-2">
+                  <div className="flex items-center gap-3">
+                    <Mail size={16} style={{ color: "var(--text-secondary)" }} />
+                    <div className="flex-1">
+                      <div className="text-sm" style={{ color: "var(--text-primary)" }}>Google (Gmail, Calendar, Docs)</div>
+                      <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                        Accounts: {status?.google.primary}, {status?.google.agent}
+                      </div>
+                    </div>
+                    <StatusBadge status="needs_oauth" />
+                  </div>
+                  <div className="ml-7 mt-2 glass-inset p-2.5 rounded-lg text-xs space-y-1.5" style={{ color: "var(--text-secondary)" }}>
+                    <div>Google OAuth uses the <code style={{ color: "var(--color-accent)" }}>gog</code> CLI from the OmniHarmonic agent.</div>
+                    <div>To connect, run in Terminal:</div>
+                    <code className="block px-2 py-1 rounded text-xs" style={{ background: "var(--glass)", fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>
+                      cd ~/iCloud\ Drive\ \(Archive\)/Documents/cursor\ projects/omniharmonic_agent && gog auth login
+                    </code>
+                    <div style={{ color: "var(--text-muted)" }}>
+                      This authenticates both accounts. Prism will use the tokens automatically.
+                    </div>
+                  </div>
+                </div>
 
                 {/* Notion */}
                 <ConnectionRow

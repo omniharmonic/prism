@@ -35,9 +35,9 @@ impl ParachuteClient {
         if let Some(ref path) = params.path {
             query_parts.push(format!("path={}", path));
         }
-        if let Some(limit) = params.limit {
-            query_parts.push(format!("limit={}", limit));
-        }
+        // Default to 2000 to get all notes (Parachute defaults to 100)
+        let limit = params.limit.unwrap_or(2000);
+        query_parts.push(format!("limit={}", limit));
         if let Some(offset) = params.offset {
             query_parts.push(format!("offset={}", offset));
         }
@@ -49,7 +49,11 @@ impl ParachuteClient {
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("list_notes failed: {}", resp.status())));
         }
-        Ok(resp.json().await?)
+        // Use text() + serde_json for large responses (vault can be 17MB+)
+        let text = resp.text().await?;
+        let notes: Vec<Note> = serde_json::from_str(&text)
+            .map_err(|e| PrismError::Parachute(format!("JSON parse error: {} (response size: {} bytes)", e, text.len())))?;
+        Ok(notes)
     }
 
     pub async fn get_note(&self, id: &str) -> Result<Note, PrismError> {

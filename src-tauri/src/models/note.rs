@@ -1,9 +1,19 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize a possibly-null string as an empty string
+fn deserialize_null_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
     pub id: String,
+    #[serde(default, deserialize_with = "deserialize_null_string")]
     pub content: String,
     pub path: Option<String>,
     pub metadata: Option<serde_json::Value>,

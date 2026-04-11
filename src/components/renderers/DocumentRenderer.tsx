@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -84,6 +85,47 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }, [initialHtml]); // Re-create editor when initialHtml changes
 
   editorRef.current = editor;
+
+  // Listen for agent-triggered content updates
+  useEffect(() => {
+    const unlisten = listen<{ noteId: string; content: string; mode: string }>(
+      "editor:set-content",
+      async (event) => {
+        if (event.payload.noteId !== note.id || !editor) return;
+        const { content, mode } = event.payload;
+
+        if (mode === "append") {
+          editor.commands.focus("end");
+          editor.commands.insertContent(content);
+        } else if (mode === "insert_at_cursor") {
+          editor.commands.insertContent(content);
+        } else {
+          // "replace" — set entire content
+          const html = await convertApi.markdownToHtml(content);
+          editor.commands.setContent(html);
+        }
+        // Trigger auto-save
+        contentRef.current = editor.getHTML();
+        scheduleSave();
+      },
+    );
+
+    const unlistenReplace = listen<{ noteId: string; replacement: string }>(
+      "editor:replace-selection",
+      (event) => {
+        if (event.payload.noteId !== note.id || !editor) return;
+        // Replace current selection (or insert at cursor if nothing selected)
+        editor.commands.insertContent(event.payload.replacement);
+        contentRef.current = editor.getHTML();
+        scheduleSave();
+      },
+    );
+
+    return () => {
+      unlisten.then((fn) => fn());
+      unlistenReplace.then((fn) => fn());
+    };
+  }, [note.id, editor, scheduleSave]);
 
   // Handle Cmd+S for immediate save
   useEffect(() => {

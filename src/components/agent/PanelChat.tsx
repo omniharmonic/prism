@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Loader2, Sparkles } from "lucide-react";
+import { Send, Loader2, Sparkles, FileInput } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 
@@ -104,7 +105,7 @@ export function PanelChat() {
         {messages.map((msg, i) => (
           <div
             key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
           >
             <div
               className="max-w-[90%] px-3 py-2 rounded-xl text-sm"
@@ -116,6 +117,22 @@ export function PanelChat() {
             >
               <div className="whitespace-pre-wrap">{msg.content}</div>
             </div>
+            {/* Apply to document button for assistant messages */}
+            {msg.role === "assistant" && effectiveNoteId && (
+              <button
+                onClick={() => {
+                  invoke("editor_set_content", {
+                    noteId: effectiveNoteId,
+                    content: msg.content,
+                    mode: "append",
+                  });
+                }}
+                className="flex items-center gap-1 mt-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                style={{ color: "var(--text-muted)" }}
+              >
+                <FileInput size={10} /> Apply to document
+              </button>
+            )}
           </div>
         ))}
 

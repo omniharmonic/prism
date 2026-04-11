@@ -2,33 +2,46 @@ use reqwest::Client;
 use crate::error::PrismError;
 
 /// Google API client handling Gmail, Calendar, Docs, Slides, Sheets.
-/// Uses OAuth2 access tokens stored in the macOS Keychain.
+/// Gets fresh OAuth2 access tokens via the `gog` CLI tool (already authenticated
+/// by the OmniHarmonic agent). This avoids managing tokens directly.
 pub struct GoogleClient {
     client: Client,
-    /// Access tokens keyed by account email
-    tokens: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl GoogleClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            tokens: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    /// Set an access token for an account (called after OAuth2 flow or token refresh)
-    pub fn set_token(&self, account: &str, token: &str) {
-        self.tokens.lock().unwrap().insert(account.to_string(), token.to_string());
-    }
-
+    /// Get a fresh access token for an account via `gog token <account>`.
+    /// The gog CLI handles token refresh automatically.
     fn get_token(&self, account: &str) -> Result<String, PrismError> {
-        self.tokens
-            .lock()
-            .unwrap()
-            .get(account)
-            .cloned()
-            .ok_or_else(|| PrismError::Auth(format!("No token for account: {}", account)))
+        let output = std::process::Command::new("gog")
+            .args(["token", account])
+            .output()
+            .map_err(|e| PrismError::Auth(format!(
+                "Failed to run 'gog token {}': {}. Is gog installed?", account, e
+            )))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PrismError::Auth(format!(
+                "gog token failed for {}: {}. Run 'gog auth login' to re-authenticate.",
+                account, stderr.trim()
+            )));
+        }
+
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err(PrismError::Auth(format!(
+                "Empty token from gog for {}. Run 'gog auth login' to re-authenticate.",
+                account
+            )));
+        }
+
+        Ok(token)
     }
 
     // ─── Gmail ───────────────────────────────────────────────

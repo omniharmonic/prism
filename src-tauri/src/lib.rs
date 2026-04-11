@@ -10,12 +10,14 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor};
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::init();
+
     // Load configuration from omniharmonic agent's .env
     let app_config = AppConfig::load().unwrap_or_else(|e| {
         log::warn!("Failed to load config: {}. Using defaults.", e);
@@ -74,6 +76,7 @@ pub fn run() {
             vault::vault_add_tags,
             vault::vault_remove_tags,
             vault::vault_get_stats,
+            vault::vault_get_links,
             // Markdown conversion
             convert::markdown_to_html,
             convert::html_to_markdown,
@@ -111,6 +114,9 @@ pub fn run() {
             // Config
             config::get_config_status,
             config::set_anthropic_key,
+            // Editor events
+            editor::editor_set_content,
+            editor::editor_replace_selection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
