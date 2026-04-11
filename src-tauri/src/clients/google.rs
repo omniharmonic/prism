@@ -1,193 +1,139 @@
-use reqwest::Client;
 use crate::error::PrismError;
 
-/// Google API client handling Gmail, Calendar, Docs, Slides, Sheets.
-/// Gets fresh OAuth2 access tokens via the `gog` CLI tool (already authenticated
-/// by the OmniHarmonic agent). This avoids managing tokens directly.
+/// Google API client that delegates ALL operations to the `gog` CLI.
+/// This avoids managing OAuth tokens directly — gog handles auth via its keyring.
+/// Same pattern as the omniharmonic agent.
 pub struct GoogleClient {
-    client: Client,
+    gog_bin: String,
 }
 
 impl GoogleClient {
     pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-        }
+        let gog_bin = std::process::Command::new("which")
+            .arg("gog")
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "gog".to_string());
+
+        Self { gog_bin }
     }
 
-    /// Get a fresh access token for an account via `gog token <account>`.
-    /// The gog CLI handles token refresh automatically.
-    fn get_token(&self, account: &str) -> Result<String, PrismError> {
-        let output = std::process::Command::new("gog")
-            .args(["token", account])
+    /// Run a gog command and return JSON output
+    fn run_gog(&self, args: &[&str], account: &str) -> Result<serde_json::Value, PrismError> {
+        let mut cmd_args: Vec<&str> = args.to_vec();
+        cmd_args.push("--account");
+        cmd_args.push(account);
+        cmd_args.push("--json");
+
+        let output = std::process::Command::new(&self.gog_bin)
+            .args(&cmd_args)
             .output()
-            .map_err(|e| PrismError::Auth(format!(
-                "Failed to run 'gog token {}': {}. Is gog installed?", account, e
-            )))?;
+            .map_err(|e| PrismError::Google(format!("Failed to run gog: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PrismError::Auth(format!(
-                "gog token failed for {}: {}. Run 'gog auth login' to re-authenticate.",
-                account, stderr.trim()
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(PrismError::Google(format!(
+                "gog {} failed: {} {}",
+                args.join(" "),
+                stderr.trim(),
+                stdout.trim(),
             )));
         }
 
-        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if token.is_empty() {
-            return Err(PrismError::Auth(format!(
-                "Empty token from gog for {}. Run 'gog auth login' to re-authenticate.",
-                account
-            )));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        serde_json::from_str(stdout.trim())
+            .map_err(|e| PrismError::Google(format!("Failed to parse gog output: {}", e)))
+    }
+
+    /// Run a gog command and return raw text output
+    fn run_gog_text(&self, args: &[&str], account: &str) -> Result<String, PrismError> {
+        let mut cmd_args: Vec<&str> = args.to_vec();
+        cmd_args.push("--account");
+        cmd_args.push(account);
+
+        let output = std::process::Command::new(&self.gog_bin)
+            .args(&cmd_args)
+            .output()
+            .map_err(|e| PrismError::Google(format!("Failed to run gog: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PrismError::Google(format!("gog failed: {}", stderr.trim())));
         }
 
-        Ok(token)
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Check if gog is authenticated for an account
+    pub fn check_auth(&self, account: &str) -> bool {
+        self.run_gog_text(&["gmail", "messages", "search", "in:inbox", "--max", "1"], account).is_ok()
     }
 
     // ─── Gmail ───────────────────────────────────────────────
 
-    /// List Gmail threads with optional search query
-    pub async fn gmail_list_threads(
+    pub fn gmail_list_threads(
         &self,
         account: &str,
         query: Option<&str>,
         max_results: u32,
-        page_token: Option<&str>,
     ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let mut url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults={}",
-            max_results,
-        );
+        let max_str = max_results.to_string();
+        let mut args = vec!["gmail", "messages", "search"];
         if let Some(q) = query {
-            url.push_str(&format!("&q={}", urlencoding::encode(q)));
+            args.push(q);
+        } else {
+            args.push("in:inbox");
         }
-        if let Some(pt) = page_token {
-            url.push_str(&format!("&pageToken={}", pt));
-        }
-
-        let resp = self.client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("gmail list_threads: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
+        args.push("--max");
+        args.push(&max_str);
+        self.run_gog(&args, account)
     }
 
-    /// Get a full Gmail thread with all messages
-    pub async fn gmail_get_thread(
+    pub fn gmail_get_thread(
         &self,
         account: &str,
         thread_id: &str,
     ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}?format=full",
-            thread_id,
-        );
-
-        let resp = self.client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("gmail get_thread: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
+        self.run_gog(&["gmail", "messages", "get", thread_id], account)
     }
 
-    /// Send an email via Gmail API
-    pub async fn gmail_send(
+    pub fn gmail_send(
         &self,
         account: &str,
-        raw_message: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
     ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
-
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(raw_message.as_bytes());
-
-        let payload = serde_json::json!({ "raw": encoded });
-
-        let resp = self.client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&payload)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("gmail send: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
+        self.run_gog(&["gmail", "messages", "send", "--to", to, "--subject", subject, "--body", body], account)
     }
 
-    /// Archive a thread (remove INBOX label)
-    pub async fn gmail_archive(
+    // ─── Calendar ────────────────────────────────────────────
+
+    pub fn calendar_list_events(
         &self,
         account: &str,
-        thread_id: &str,
-    ) -> Result<(), PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/modify",
-            thread_id,
-        );
-
-        let payload = serde_json::json!({
-            "removeLabelIds": ["INBOX"],
-        });
-
-        let resp = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&payload)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("gmail archive: {}", resp.status())));
-        }
-        Ok(())
+        max_results: u32,
+    ) -> Result<serde_json::Value, PrismError> {
+        let max_str = max_results.to_string();
+        self.run_gog(&["calendar", "list", "--max", &max_str], account)
     }
 
-    /// Modify labels on a thread
-    pub async fn gmail_label(
+    pub fn calendar_create_event(
         &self,
         account: &str,
-        thread_id: &str,
-        add_labels: &[String],
-        remove_labels: &[String],
-    ) -> Result<(), PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/modify",
-            thread_id,
-        );
-
-        let payload = serde_json::json!({
-            "addLabelIds": add_labels,
-            "removeLabelIds": remove_labels,
-        });
-
-        let resp = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&payload)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("gmail label: {}", resp.status())));
-        }
-        Ok(())
+        summary: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<serde_json::Value, PrismError> {
+        self.run_gog(&["calendar", "events", "create", "--summary", summary, "--start", start, "--end", end], account)
     }
 }
 
@@ -207,125 +153,12 @@ pub fn build_raw_email(
         "MIME-Version: 1.0".to_string(),
         "Content-Type: text/plain; charset=utf-8".to_string(),
     ];
-
     if !cc.is_empty() {
         headers.push(format!("Cc: {}", cc.join(", ")));
     }
-
     if let Some(reply_to) = in_reply_to {
         headers.push(format!("In-Reply-To: {}", reply_to));
         headers.push(format!("References: {}", reply_to));
     }
-
     format!("{}\r\n\r\n{}", headers.join("\r\n"), body)
-}
-
-use base64::Engine;
-
-// ─── Calendar ────────────────────────────────────────────
-
-impl GoogleClient {
-    pub async fn calendar_list_events(
-        &self,
-        account: &str,
-        time_min: &str,
-        time_max: &str,
-        calendar_id: &str,
-    ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?timeMin={}&timeMax={}&singleEvents=true&orderBy=startTime&maxResults=50",
-            urlencoding::encode(calendar_id),
-            urlencoding::encode(time_min),
-            urlencoding::encode(time_max),
-        );
-
-        let resp = self.client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("calendar list: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
-    }
-
-    pub async fn calendar_create_event(
-        &self,
-        account: &str,
-        calendar_id: &str,
-        event: &serde_json::Value,
-    ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?conferenceDataVersion=1",
-            urlencoding::encode(calendar_id),
-        );
-
-        let resp = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(event)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("calendar create: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
-    }
-
-    pub async fn calendar_update_event(
-        &self,
-        account: &str,
-        calendar_id: &str,
-        event_id: &str,
-        event: &serde_json::Value,
-    ) -> Result<serde_json::Value, PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
-            urlencoding::encode(calendar_id),
-            event_id,
-        );
-
-        let resp = self.client
-            .patch(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(event)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("calendar update: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
-    }
-
-    pub async fn calendar_delete_event(
-        &self,
-        account: &str,
-        calendar_id: &str,
-        event_id: &str,
-    ) -> Result<(), PrismError> {
-        let token = self.get_token(account)?;
-        let url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
-            urlencoding::encode(calendar_id),
-            event_id,
-        );
-
-        let resp = self.client
-            .delete(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!("calendar delete: {}", resp.status())));
-        }
-        Ok(())
-    }
 }

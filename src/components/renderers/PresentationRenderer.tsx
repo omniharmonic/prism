@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { Plus, Grid, Edit3, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import {
   DndContext,
@@ -32,13 +32,13 @@ function serializeSlides(slides: string[]): string {
 }
 
 export default function PresentationRenderer({ note }: RendererProps) {
-  const initialSlides = useMemo(() => parseSlides(note.content), [note.id]);
+  const initialSlides = useMemo(() => parseSlides(note.content || "# Title Slide"), [note.id]);
   const [slides, setSlides] = useState<string[]>(initialSlides);
   const [view, setView] = useState<"grid" | "edit">("grid");
   const [activeSlide, setActiveSlide] = useState(0);
-  const contentRef = { current: serializeSlides(slides) };
+  const contentRef = useRef(serializeSlides(initialSlides));
 
-  const getContent = useCallback(() => serializeSlides(slides), [slides]);
+  const getContent = useCallback(() => contentRef.current, []);
   const { scheduleSave } = useAutoSave(note.id, getContent);
 
   const updateSlides = useCallback((newSlides: string[]) => {

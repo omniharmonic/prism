@@ -1,12 +1,18 @@
 use tauri::State;
 use crate::clients::parachute::ParachuteClient;
+use crate::commands::config::AppConfig;
 use crate::error::PrismError;
 use crate::models::sync_config::*;
+use crate::models::note::UpdateNoteParams;
+use crate::sync::adapters::SyncAdapter;
+use crate::sync::adapters::notion::NotionAdapter;
+use crate::sync::engine::sync_note;
 
 /// Trigger sync for all configured destinations on a note
 #[tauri::command]
 pub async fn sync_trigger(
     parachute: State<'_, ParachuteClient>,
+    config: State<'_, AppConfig>,
     note_id: String,
 ) -> Result<Vec<SyncResult>, PrismError> {
     let note = parachute.get_note(&note_id).await?;
@@ -24,18 +30,77 @@ pub async fn sync_trigger(
     }
 
     let mut results = Vec::new();
-    for config in &sync_configs {
-        // In production, instantiate the correct adapter based on config.adapter
-        // For now, return a placeholder result
-        results.push(SyncResult::Error {
-            message: format!(
-                "Sync adapter '{}' not yet configured. Set up OAuth/API keys in Settings.",
-                config.adapter,
-            ),
-        });
+    for sync_config in &sync_configs {
+        let result = match sync_config.adapter.as_str() {
+            "notion" => {
+                if config.notion_api_key.is_empty() {
+                    SyncResult::Error {
+                        message: "Notion API key not configured. Check omniharmonic .env".into(),
+                    }
+                } else {
+                    let adapter = NotionAdapter::new(config.notion_api_key.clone());
+                    // If no remote_id yet, create the remote resource first
+                    if sync_config.remote_id.is_empty() {
+                        match adapter.create_remote(&note).await {
+                            Ok(remote_id) => {
+                                // Update the sync config with the new remote_id
+                                let mut updated_config = sync_config.clone();
+                                updated_config.remote_id = remote_id;
+                                updated_config.last_synced = chrono::Utc::now().to_rfc3339();
+                                update_sync_config(&parachute, &note_id, &note, &updated_config).await?;
+                                SyncResult::Pushed { content: note.content.clone() }
+                            }
+                            Err(e) => SyncResult::Error { message: format!("Create failed: {}", e) },
+                        }
+                    } else {
+                        match sync_note(&note, sync_config, &adapter, &parachute).await {
+                            Ok(r) => r,
+                            Err(e) => SyncResult::Error { message: e.to_string() },
+                        }
+                    }
+                }
+            }
+            "google-docs" => {
+                // Google Docs uses gog CLI for tokens — adapter's get_token needs fixing
+                SyncResult::Error {
+                    message: "Google Docs sync requires OAuth setup. Run 'gog auth login' first.".into(),
+                }
+            }
+            other => SyncResult::Error {
+                message: format!("Sync adapter '{}' not yet implemented.", other),
+            },
+        };
+        results.push(result);
     }
 
     Ok(results)
+}
+
+/// Update a sync config in the note's metadata
+async fn update_sync_config(
+    parachute: &ParachuteClient,
+    note_id: &str,
+    note: &crate::models::note::Note,
+    updated_config: &SyncConfig,
+) -> Result<(), PrismError> {
+    let mut meta = note.metadata.clone().unwrap_or(serde_json::json!({}));
+    if let Some(obj) = meta.as_object_mut() {
+        let mut configs: Vec<SyncConfig> = obj
+            .get("sync")
+            .and_then(|s| serde_json::from_value(s.clone()).ok())
+            .unwrap_or_default();
+
+        // Replace the matching config
+        if let Some(existing) = configs.iter_mut().find(|c| c.adapter == updated_config.adapter) {
+            *existing = updated_config.clone();
+        }
+
+        obj.insert("sync".to_string(), serde_json::to_value(&configs)?);
+        parachute.update_note(note_id, &UpdateNoteParams {
+            content: None, path: None, metadata: Some(meta),
+        }).await?;
+    }
+    Ok(())
 }
 
 /// Get sync status for all destinations on a note

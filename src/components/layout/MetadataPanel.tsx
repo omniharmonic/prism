@@ -222,16 +222,32 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
 
   const syncConfigs = ((metadata as Record<string, unknown>)?.sync as Array<Record<string, unknown>>) || [];
 
+  const [syncError, setSyncError] = useState<string | null>(null);
+
   const handleAddSync = async (adapter: string) => {
-    await syncApi.addConfig(noteId, adapter);
-    queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
-    queryClient.invalidateQueries({ queryKey: ["vault"] });
-    setShowAdd(false);
+    setSyncError(null);
+    try {
+      await syncApi.addConfig(noteId, adapter);
+      queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
+      queryClient.invalidateQueries({ queryKey: ["vault"] });
+      setShowAdd(false);
+    } catch (e) {
+      setSyncError(`Failed to add ${adapter}: ${e}`);
+    }
   };
 
   const handleSync = async () => {
-    await syncApi.trigger(noteId);
-    queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
+    setSyncError(null);
+    try {
+      const results = await syncApi.trigger(noteId);
+      const errors = results.filter((r: { status: string }) => r.status === "error");
+      if (errors.length > 0) {
+        setSyncError(errors.map((e: { message?: string }) => e.message).join("; "));
+      }
+      queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
+    } catch (e) {
+      setSyncError(`Sync failed: ${e}`);
+    }
   };
 
   const handleRemove = async (adapter: string, remoteId: string) => {
@@ -242,6 +258,12 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
 
   return (
     <div className="space-y-2">
+      {/* Error display */}
+      {syncError && (
+        <div className="text-xs p-2 rounded-md" style={{ background: "rgba(235,87,87,0.1)", color: "var(--color-danger)" }}>
+          {syncError}
+        </div>
+      )}
       {/* Existing sync configs */}
       {(statuses || []).map((s: SyncStatus) => (
         <div

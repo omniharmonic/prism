@@ -10,13 +10,13 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks};
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    let _ = env_logger::try_init();
 
     // Load configuration from omniharmonic agent's .env
     let app_config = AppConfig::load().unwrap_or_else(|e| {
@@ -100,6 +100,7 @@ pub fn run() {
             google::calendar_create_event,
             google::calendar_update_event,
             google::calendar_delete_event,
+            google::google_check_auth,
             // Sync
             sync_cmds::sync_trigger,
             sync_cmds::sync_status,
@@ -117,6 +118,9 @@ pub fn run() {
             // Editor events
             editor::editor_set_content,
             editor::editor_replace_selection,
+            // Wikilink resolution
+            wikilinks::resolve_wikilinks,
+            wikilinks::resolve_all_wikilinks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

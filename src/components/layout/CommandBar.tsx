@@ -1,13 +1,14 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, Sparkles, ArrowRight,
+  CheckSquare, Sparkles, ArrowRight, Settings, RefreshCw, Wand2,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useDebounce } from "use-debounce";
 import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Command {
   id: string;
@@ -43,17 +44,23 @@ export function CommandBar() {
     icon,
     action: async () => {
       const defaults = CONTENT_DEFAULTS[type];
+      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+      const title = `Untitled ${label} ${ts}`;
       const note = await createNote.mutateAsync({
-        content: defaults.content,
+        content: defaults.content || " ",
         metadata: defaults.metadata,
-        path: `Untitled ${label}`,
+        path: title,
       });
-      openTab(note.id, `Untitled ${label}`, type);
+      openTab(note.id, title, type);
       closeCommandBar();
     },
   }), [createNote, openTab, closeCommandBar]);
 
+  const { toggleContextPanel, setContextPanelTab, openTabs, activeTabId } = useUIStore();
+  const activeTab = openTabs.find((t) => t.id === activeTabId);
+
   const commands: Command[] = useMemo(() => [
+    // Create commands
     createCommand("document", "Document", <FileText size={15} />),
     createCommand("presentation", "Presentation", <MonitorPlay size={15} />),
     createCommand("code", "Code File", <Code size={15} />),
@@ -61,7 +68,88 @@ export function CommandBar() {
     createCommand("spreadsheet", "Spreadsheet", <Table2 size={15} />),
     createCommand("website", "Website", <Globe size={15} />),
     createCommand("task", "Task", <CheckSquare size={15} />),
-  ], [createCommand]);
+    // Utility commands
+    {
+      id: "settings", label: "Settings", category: "navigate" as const,
+      icon: <Settings size={15} />,
+      action: () => { closeCommandBar(); /* Settings button in TabBar handles this */ },
+    },
+    {
+      id: "agent-panel", label: "Open Agent Panel", category: "navigate" as const,
+      icon: <Sparkles size={15} />,
+      action: () => { setContextPanelTab("agent"); toggleContextPanel(); closeCommandBar(); },
+    },
+    // Sync commands (only show when a note is open)
+    ...(activeTab ? [
+      {
+        id: "sync-notion", label: "Sync to Notion", category: "sync" as const,
+        icon: <RefreshCw size={15} />,
+        action: async () => {
+          await invoke("sync_add_config", { noteId: activeTab.noteId, adapter: "notion" });
+          await invoke("sync_trigger", { noteId: activeTab.noteId });
+          closeCommandBar();
+        },
+      },
+    ] : []),
+    // Transform commands (only show when a note is open)
+    ...(activeTab ? [
+      {
+        id: "transform-presentation", label: "Turn into Presentation", category: "transform" as const,
+        icon: <Wand2 size={15} />,
+        action: async () => {
+          const content = await invoke<string>("agent_transform", {
+            noteId: activeTab.noteId, targetType: "presentation",
+          });
+          const note = await createNote.mutateAsync({
+            content,
+            metadata: { type: "presentation", aspectRatio: "16:9", theme: "dark" },
+            path: `${activeTab.title} (slides)`,
+          });
+          openTab(note.id, `${activeTab.title} (slides)`, "presentation");
+          closeCommandBar();
+        },
+      },
+      {
+        id: "transform-email", label: "Turn into Email Draft", category: "transform" as const,
+        icon: <Wand2 size={15} />,
+        action: async () => {
+          const content = await invoke<string>("agent_transform", {
+            noteId: activeTab.noteId, targetType: "email",
+          });
+          const note = await createNote.mutateAsync({
+            content,
+            metadata: { type: "email", status: "draft", from: "", to: [], subject: "" },
+            path: `${activeTab.title} (email)`,
+          });
+          openTab(note.id, `${activeTab.title} (email)`, "email");
+          closeCommandBar();
+        },
+      },
+      {
+        id: "resolve-wikilinks", label: "Resolve Wikilinks in This Note", category: "sync" as const,
+        icon: <RefreshCw size={15} />,
+        action: async () => {
+          const result = await invoke<{ resolved: number; total: number }>("resolve_wikilinks", {
+            noteId: activeTab.noteId,
+          });
+          alert(`Resolved ${result.resolved} of ${result.total} wikilinks`);
+          closeCommandBar();
+        },
+      },
+    ] : []),
+    // Global utility
+    {
+      id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
+      icon: <RefreshCw size={15} />,
+      action: async () => {
+        const result = await invoke<{ total_wikilinks: number; resolved: number; unresolved: number }>(
+          "resolve_all_wikilinks",
+        );
+        alert(`Processed ${result.total_wikilinks} wikilinks: ${result.resolved} resolved, ${result.unresolved} unresolved`);
+        closeCommandBar();
+      },
+    },
+  ], [createCommand, activeTab, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {

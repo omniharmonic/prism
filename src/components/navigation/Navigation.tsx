@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Search, Inbox as InboxIcon, Calendar, Plus } from "lucide-react";
+import { Search, Inbox as InboxIcon, Calendar, Plus, Link, Wrench } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
@@ -44,6 +45,25 @@ export function Navigation() {
           {/* Calendar — today's events */}
           <NavSection label="Calendar" icon={<Calendar size={14} />}>
             <CalendarMini />
+          </NavSection>
+
+          {/* Tools */}
+          <NavSection label="Tools" icon={<Wrench size={14} />}>
+            <button
+              onClick={async () => {
+                try {
+                  const result = await invoke<{ total_wikilinks: number; resolved: number; unresolved: number }>("resolve_all_wikilinks");
+                  alert(`Wikilinks: ${result.resolved} resolved, ${result.unresolved} unresolved (${result.total_wikilinks} total)`);
+                } catch (e) {
+                  alert(`Error: ${e}`);
+                }
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-[var(--glass-hover)] transition-colors"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <Link size={13} />
+              Resolve All Wikilinks
+            </button>
           </NavSection>
 
           {/* Projects / vault notes */}

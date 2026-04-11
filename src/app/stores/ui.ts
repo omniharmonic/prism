@@ -18,6 +18,11 @@ interface UIStore {
   // Command bar
   commandBarOpen: boolean;
 
+  // Inline prompt
+  inlinePromptOpen: boolean;
+  inlinePromptPosition: { x: number; y: number } | null;
+  inlinePromptSelection: string;
+
   // Actions
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -32,6 +37,9 @@ interface UIStore {
 
   openCommandBar: () => void;
   closeCommandBar: () => void;
+
+  openInlinePrompt: (position: { x: number; y: number }, selection: string) => void;
+  closeInlinePrompt: () => void;
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -43,6 +51,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
   openTabs: [],
   activeTabId: null,
   commandBarOpen: false,
+  inlinePromptOpen: false,
+  inlinePromptPosition: null,
+  inlinePromptSelection: "",
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(400, width)) }),
@@ -99,4 +110,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
   openCommandBar: () => set({ commandBarOpen: true }),
   closeCommandBar: () => set({ commandBarOpen: false }),
+
+  openInlinePrompt: (position, selection) => set({
+    inlinePromptOpen: true,
+    inlinePromptPosition: position,
+    inlinePromptSelection: selection,
+  }),
+  closeInlinePrompt: () => set({
+    inlinePromptOpen: false,
+    inlinePromptPosition: null,
+    inlinePromptSelection: "",
+  }),
 }));

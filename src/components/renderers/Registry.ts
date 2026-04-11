@@ -11,6 +11,8 @@ const CodeRenderer = lazy(() => import("./CodeRenderer"));
 const PresentationRenderer = lazy(() => import("./PresentationRenderer"));
 const TaskBoardRenderer = lazy(() => import("./TaskBoardRenderer"));
 const ProjectRenderer = lazy(() => import("./ProjectRenderer"));
+const SpreadsheetRenderer = lazy(() => import("./SpreadsheetRenderer"));
+const WebsiteRenderer = lazy(() => import("./WebsiteRenderer"));
 const PlaceholderRenderer = lazy(() => import("./PlaceholderRenderer"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
@@ -25,6 +27,8 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   task: TaskBoardRenderer,
   "task-board": TaskBoardRenderer,
   project: ProjectRenderer,
+  spreadsheet: SpreadsheetRenderer,
+  website: WebsiteRenderer,
 };
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {

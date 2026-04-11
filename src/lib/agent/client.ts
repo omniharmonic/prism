@@ -30,6 +30,12 @@ export const configApi = {
       google: { primary: string; agent: string };
     }>("get_config_status"),
 
+  checkGoogleAuth: () =>
+    invoke<{
+      primary: { account: string; authenticated: boolean };
+      agent: { account: string; authenticated: boolean };
+    }>("google_check_auth"),
+
   setAnthropicKey: (key: string) =>
     invoke<void>("set_anthropic_key", { key }),
 };
