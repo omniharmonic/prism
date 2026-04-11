@@ -13,7 +13,8 @@ export type ContentType =
   | "spreadsheet"
   | "website"
   | "canvas"
-  | "briefing";
+  | "briefing"
+  | "dashboard";
 
 // Parachute Note — the canonical data model
 export interface Note {
@@ -144,6 +145,22 @@ export interface WebsiteMeta extends PrismMetadata {
   liveUrl?: string;
 }
 
+export interface DashboardWidget {
+  id: string;
+  type: "task-list" | "note-list" | "stat-card" | "calendar";
+  title?: string;
+  filter?: Record<string, unknown>;
+  span?: number; // grid column span (1 or 2)
+}
+
+export interface DashboardMeta extends PrismMetadata {
+  type: "dashboard";
+  layout?: {
+    columns?: number;
+    widgets: DashboardWidget[];
+  };
+}
+
 // API parameter types
 export interface NoteFilters {
   tag?: string;
@@ -196,4 +213,5 @@ export const CONTENT_DEFAULTS: Record<ContentType, { content: string; metadata: 
   website: { content: "<!DOCTYPE html>\n<html>\n<head>\n  <title>Untitled</title>\n</head>\n<body>\n  \n</body>\n</html>", metadata: { type: "website" } },
   canvas: { content: "", metadata: { type: "canvas" } },
   briefing: { content: "", metadata: { type: "briefing" } },
+  dashboard: { content: "", metadata: { type: "dashboard", layout: { columns: 2, widgets: [] } } },
 };

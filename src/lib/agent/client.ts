@@ -38,4 +38,20 @@ export const configApi = {
 
   setAnthropicKey: (key: string) =>
     invoke<void>("set_anthropic_key", { key }),
+
+  // Integration test commands
+  testParachute: (url: string) =>
+    invoke<{ status: string }>("test_parachute", { url }),
+
+  testMatrix: (homeserver: string, accessToken: string) =>
+    invoke<{ ok: boolean; rooms: number }>("test_matrix", { homeserver, accessToken }),
+
+  testNotion: (apiKey: string) =>
+    invoke<{ ok: boolean }>("test_notion", { apiKey }),
+
+  checkClaudeCli: () =>
+    invoke<{ installed: boolean; path?: string }>("check_claude_cli"),
+
+  checkGoogleCli: () =>
+    invoke<{ installed: boolean; path?: string }>("check_google_cli"),
 };

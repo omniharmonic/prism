@@ -5,6 +5,7 @@ const KNOWN_TYPES = new Set<string>([
   "document", "note", "presentation", "code", "email",
   "message-thread", "task-board", "task", "event",
   "project", "spreadsheet", "website", "canvas", "briefing",
+  "dashboard",
 ]);
 
 // Tag → ContentType mapping, ordered by priority (first match wins)
@@ -14,7 +15,7 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
   ["task", "task"],
   ["slides", "presentation"],
   ["briefing", "briefing"],
-  ["dashboard", "project"],
+  ["dashboard", "dashboard"],
   ["project", "project"],
   ["project-page", "website"],
 
@@ -133,6 +134,7 @@ export const CONTENT_TYPE_ICONS: Record<ContentType, string> = {
   website: "Globe",
   canvas: "Frame",
   briefing: "Newspaper",
+  dashboard: "LayoutDashboard",
 };
 
 // Display names
@@ -151,4 +153,5 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   website: "Website",
   canvas: "Canvas",
   briefing: "Briefing",
+  dashboard: "Dashboard",
 };

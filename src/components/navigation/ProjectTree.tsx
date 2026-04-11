@@ -12,6 +12,7 @@ import {
   Folder,
   MonitorPlay,
   StickyNote,
+  LayoutDashboard,
 } from "lucide-react";
 import { useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -36,6 +37,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   website: Globe,
   canvas: FileText,
   briefing: FileText,
+  dashboard: LayoutDashboard,
 };
 
 // Build a tree from flat notes list

@@ -21,17 +21,7 @@ pub fn run() {
     // Load configuration from omniharmonic agent's .env
     let app_config = AppConfig::load().unwrap_or_else(|e| {
         log::warn!("Failed to load config: {}. Using defaults.", e);
-        AppConfig {
-            matrix_homeserver: "http://localhost:8008".into(),
-            matrix_user: "@prism:localhost".into(),
-            matrix_access_token: String::new(),
-            matrix_device_id: "PRISM".into(),
-            notion_api_key: String::new(),
-            google_account_primary: "benjamin@opencivics.co".into(),
-            google_account_agent: "omniharmonicagent@gmail.com".into(),
-            anthropic_api_key: String::new(),
-            omniharmonic_root: dirs::home_dir().unwrap_or_default(),
-        }
+        AppConfig::default()
     });
 
     let parachute = ParachuteClient::new(1940, None);
@@ -113,9 +103,14 @@ pub fn run() {
             agent::agent_chat,
             agent::agent_transform,
             agent::agent_generate,
-            // Config
+            // Config + integration testing
             config::get_config_status,
             config::set_anthropic_key,
+            config::test_parachute,
+            config::test_matrix,
+            config::test_notion,
+            config::check_claude_cli,
+            config::check_google_cli,
             // Editor events
             editor::editor_set_content,
             editor::editor_replace_selection,

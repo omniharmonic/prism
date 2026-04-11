@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
 import { useUpdateNote, useTags } from "../../app/hooks/useParachute";
+import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { syncApi, type SyncStatus } from "../../lib/sync/client";
@@ -124,6 +125,7 @@ function TagEditor({
 }) {
   const [input, setInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const openTab = useUIStore((s) => s.openTab);
 
   const suggestions = input.length > 0
     ? allTags.filter((t) => t.toLowerCase().includes(input.toLowerCase()) && !tags.includes(t)).slice(0, 5)
@@ -137,6 +139,10 @@ function TagEditor({
 
   const removeTag = async (tag: string) => {
     await vaultApi.removeTags(noteId, [tag]);
+  };
+
+  const handleTagClick = (tag: string) => {
+    openTab(`tag:${tag}`, `Tag: ${tag}`, "document");
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -155,7 +161,12 @@ function TagEditor({
             className="inline-flex items-center gap-1 glass px-2 py-0.5 rounded text-xs"
             style={{ color: "var(--text-secondary)" }}
           >
-            {tag}
+            <button
+              onClick={() => handleTagClick(tag)}
+              className="hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+            >
+              {tag}
+            </button>
             <button
               onClick={() => removeTag(tag)}
               className="hover:text-[var(--color-danger)] transition-colors"

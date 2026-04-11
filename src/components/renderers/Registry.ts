@@ -13,6 +13,7 @@ const TaskBoardRenderer = lazy(() => import("./TaskBoardRenderer"));
 const ProjectRenderer = lazy(() => import("./ProjectRenderer"));
 const SpreadsheetRenderer = lazy(() => import("./SpreadsheetRenderer"));
 const WebsiteRenderer = lazy(() => import("./WebsiteRenderer"));
+const DashboardRenderer = lazy(() => import("./DashboardRenderer"));
 const PlaceholderRenderer = lazy(() => import("./PlaceholderRenderer"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
@@ -29,6 +30,7 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   project: ProjectRenderer,
   spreadsheet: SpreadsheetRenderer,
   website: WebsiteRenderer,
+  dashboard: DashboardRenderer,
 };
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {

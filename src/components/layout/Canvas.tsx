@@ -3,6 +3,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { getRenderer } from "../renderers/Registry";
+import { TagView } from "../navigation/TagView";
 import { TabBar } from "./TabBar";
 import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
@@ -10,6 +11,9 @@ import type { Note } from "../../lib/types";
 export function Canvas() {
   const { openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
+
+  // Tag views are a special virtual tab type
+  const isTagView = activeTab?.noteId.startsWith("tag:");
 
   // Virtual notes (e.g., matrix:room_id) don't come from Parachute
   const isVirtual = activeTab?.noteId.includes(":") && !activeTab.noteId.match(/^\d/);
@@ -64,6 +68,8 @@ export function Canvas() {
       <div className="flex-1 overflow-auto">
         {!activeTab ? (
           <EmptyState />
+        ) : isTagView ? (
+          <TagView tag={activeTab.noteId.replace("tag:", "")} />
         ) : !isVirtual && isLoading ? (
           <LoadingSkeleton />
         ) : effectiveNote && Renderer ? (
