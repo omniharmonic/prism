@@ -1,10 +1,10 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   X, List, Columns3, LayoutGrid, Hash, BarChart3, Clock, PieChart, FileText, Zap,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "../../ui/Button";
-import { useTags, useVaultPaths } from "../../../app/hooks/useParachute";
+import { useTags, useVaultPaths, useNotes } from "../../../app/hooks/useParachute";
 import {
   WIDGET_TYPES, getWidgetType,
   type DashboardWidgetConfig, type WidgetTypeId, type WidgetColumn,
@@ -94,8 +94,24 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
   const isNew = !initial;
   const { data: allTags } = useTags();
   const { data: allPaths } = useVaultPaths();
+  const { data: allNotes } = useNotes();
   const tagOptions = (allTags || []).map((t) => t.tag).sort();
   const pathOptions = allPaths || [];
+  // Extract unique project names from metadata.project across all notes
+  const projectOptions = useMemo(() => {
+    const projects = new Set<string>();
+    for (const n of allNotes || []) {
+      const meta = n.metadata as Record<string, unknown> | null;
+      const p = meta?.project;
+      if (p && typeof p === "string") {
+        let cleaned = p.replace(/\[\[|\]\]/g, "");
+        if (cleaned.startsWith("vault/projects/")) cleaned = cleaned.slice(15);
+        if (cleaned.startsWith("vault/")) cleaned = cleaned.slice(6);
+        if (cleaned && cleaned !== "{{ slug }}") projects.add(cleaned);
+      }
+    }
+    return Array.from(projects).sort();
+  }, [allNotes]);
 
   // State
   const [widgetType, setWidgetType] = useState<WidgetTypeId>(initial?.type ?? "list");
@@ -103,6 +119,9 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
   const [span, setSpan] = useState(initial?.span ?? 1);
   const [selectedTags, setSelectedTags] = useState<string[]>(initial?.source?.tags ?? []);
   const [pathPrefix, setPathPrefix] = useState(initial?.source?.pathPrefix ?? "");
+  const [projectFilter, setProjectFilter] = useState(
+    (initial?.source?.metadataFilters as Record<string, unknown>)?.project as string ?? ""
+  );
   const [datePreset, setDatePreset] = useState(initial?.source?.dateRange?.preset ?? "");
   const [sortField, setSortField] = useState(initial?.sort?.field ?? "updatedAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initial?.sort?.direction ?? "desc");
@@ -162,6 +181,7 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
     const source: DataSource = {};
     if (selectedTags.length) source.tags = selectedTags;
     if (pathPrefix) source.pathPrefix = pathPrefix;
+    if (projectFilter) source.metadataFilters = { project: projectFilter };
     if (datePreset) source.dateRange = { field: dateField || "createdAt", preset: datePreset };
 
     let aggregateCondition: Record<string, unknown> | undefined;
@@ -260,26 +280,34 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
                       </span>
                     ))}
                   </div>
-                  <select onChange={(e) => { if (e.target.value && !selectedTags.includes(e.target.value)) setSelectedTags([...selectedTags, e.target.value]); e.target.value = ""; }}
-                    className="w-full h-8 rounded-lg px-3 text-sm outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-                    defaultValue="">
-                    <option value="" style={{ background: "var(--bg-elevated)" }}>+ Add tag filter...</option>
-                    {tagOptions.filter((t) => !selectedTags.includes(t)).slice(0, 50).map((t) => (
-                      <option key={t} value={t} style={{ background: "var(--bg-elevated)" }}>{t}</option>
-                    ))}
-                  </select>
+                  <Autocomplete
+                    placeholder="Type to search tags..."
+                    options={tagOptions.filter((t) => !selectedTags.includes(t))}
+                    onSelect={(tag) => { if (!selectedTags.includes(tag)) setSelectedTags([...selectedTags, tag]); }}
+                  />
                 </Section>
 
                 <Section label="Filter by Path">
-                  <select value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)}
-                    className="w-full h-8 rounded-lg px-3 text-sm outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-                    <option value="" style={{ background: "var(--bg-elevated)" }}>All paths</option>
-                    {pathOptions.map((p) => (
-                      <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>{p}</option>
-                    ))}
-                  </select>
+                  <Autocomplete
+                    placeholder="Type to search paths..."
+                    options={pathOptions}
+                    value={pathPrefix}
+                    onSelect={(path) => setPathPrefix(path)}
+                    onChange={(val) => setPathPrefix(val)}
+                  />
+                </Section>
+
+                <Section label="Filter by Project">
+                  <Autocomplete
+                    placeholder="Type project name..."
+                    options={projectOptions}
+                    value={projectFilter}
+                    onSelect={(proj) => setProjectFilter(proj)}
+                    onChange={(val) => setProjectFilter(val)}
+                  />
+                  <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                    Matches notes where metadata.project contains this value
+                  </div>
                 </Section>
 
                 <Section label="Time Range">
@@ -484,6 +512,61 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Type-ahead autocomplete input */
+function Autocomplete({ placeholder, options, value, onSelect, onChange }: {
+  placeholder: string;
+  options: string[];
+  value?: string;
+  onSelect: (value: string) => void;
+  onChange?: (value: string) => void;
+}) {
+  const [input, setInput] = useState(value ?? "");
+  const [focused, setFocused] = useState(false);
+
+  // Sync external value changes
+  useEffect(() => { if (value !== undefined) setInput(value); }, [value]);
+
+  const filtered = input.length > 0
+    ? options.filter((o) => o.toLowerCase().includes(input.toLowerCase())).slice(0, 12)
+    : options.slice(0, 12);
+
+  return (
+    <div className="relative">
+      <input
+        value={input}
+        onChange={(e) => { setInput(e.target.value); onChange?.(e.target.value); }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && filtered.length > 0) {
+            e.preventDefault();
+            onSelect(filtered[0]);
+            setInput(filtered[0]);
+            setFocused(false);
+          }
+        }}
+        placeholder={placeholder}
+        className="w-full h-8 rounded-lg px-3 text-sm outline-none"
+        style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+      />
+      {focused && filtered.length > 0 && (
+        <div className="absolute top-full left-0 right-0 mt-1 py-1 glass-elevated rounded-lg overflow-hidden z-20 max-h-48 overflow-y-auto">
+          {filtered.map((opt) => (
+            <button
+              key={opt}
+              onMouseDown={() => { onSelect(opt); setInput(opt); setFocused(false); }}
+              className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)] transition-colors"
+              style={{ color: "var(--text-primary)" }}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

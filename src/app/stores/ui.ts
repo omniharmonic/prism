@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { ContentType, TabState } from "../../lib/types";
 
+export interface PendingEdit {
+  noteId: string;
+  content: string;
+  mode: "append" | "replace";
+}
+
 interface UIStore {
   // Sidebar
   sidebarOpen: boolean;
@@ -23,6 +29,9 @@ interface UIStore {
   inlinePromptPosition: { x: number; y: number } | null;
   inlinePromptSelection: string;
 
+  // Pending editor edit (agent → editor communication)
+  pendingEdit: PendingEdit | null;
+
   // Actions
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -40,6 +49,9 @@ interface UIStore {
 
   openInlinePrompt: (position: { x: number; y: number }, selection: string) => void;
   closeInlinePrompt: () => void;
+
+  setPendingEdit: (edit: PendingEdit) => void;
+  clearPendingEdit: () => void;
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -54,6 +66,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   inlinePromptOpen: false,
   inlinePromptPosition: null,
   inlinePromptSelection: "",
+  pendingEdit: null,
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(400, width)) }),
@@ -121,4 +134,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     inlinePromptPosition: null,
     inlinePromptSelection: "",
   }),
+
+  setPendingEdit: (edit) => set({ pendingEdit: edit }),
+  clearPendingEdit: () => set({ pendingEdit: null }),
 }));

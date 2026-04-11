@@ -27,10 +27,30 @@ export type AggregateType = "count" | "count-where" | "percentage-where";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Safely read a metadata value by field name. */
+/** Safely read a metadata value by field name. Strips wikilink formatting. */
 export function getMetadataValue(note: Note, field: string): unknown {
   if (!note.metadata) return undefined;
-  return (note.metadata as Record<string, unknown>)[field];
+  const raw = (note.metadata as Record<string, unknown>)[field];
+  // Strip [[wikilink]] formatting for comparison
+  if (typeof raw === "string" && raw.includes("[[")) {
+    const cleaned = raw.replace(/\[\[|\]\]/g, "");
+    // Also strip vault/projects/ prefix for easier matching
+    if (cleaned.startsWith("vault/projects/")) return cleaned.slice(15);
+    if (cleaned.startsWith("vault/")) return cleaned.slice(6);
+    return cleaned;
+  }
+  return raw;
+}
+
+/** Case-insensitive string comparison that also handles partial matches. */
+function looseEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a === "string" && typeof b === "string") {
+    return a.toLowerCase() === b.toLowerCase()
+      || a.toLowerCase().includes(b.toLowerCase())
+      || b.toLowerCase().includes(a.toLowerCase());
+  }
+  return String(a) === String(b);
 }
 
 /** Resolve special sentinel values (e.g. "today"). */
@@ -64,10 +84,10 @@ export function evaluateCondition(
         const target = resolveValue(rawTarget);
         switch (op) {
           case "$eq":
-            if (noteVal !== target) return false;
+            if (!looseEqual(noteVal, target)) return false;
             break;
           case "$ne":
-            if (noteVal === target) return false;
+            if (looseEqual(noteVal, target)) return false;
             break;
           case "$lt":
             if (typeof noteVal !== "number" || typeof target !== "number")
@@ -88,8 +108,8 @@ export function evaluateCondition(
         }
       }
     } else {
-      // Shorthand: literal equality
-      if (noteVal !== resolveValue(matcher)) return false;
+      // Shorthand: loose equality (handles wikilinks, case differences)
+      if (!looseEqual(noteVal, resolveValue(matcher))) return false;
     }
   }
   return true;

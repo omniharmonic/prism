@@ -108,9 +108,42 @@ export default function DocumentRenderer({ note }: RendererProps) {
 
   editorRef.current = editor;
 
-  // Agent write-back is handled via the PanelChat "Apply to document" button
-  // which calls invoke("editor_set_content") — the Rust side emits a Tauri event.
-  // For now, the PanelChat appends directly via invoke() and we refresh via query invalidation.
+  // Agent write-back: watch for pending edits from PanelChat via Zustand store
+  const pendingEdit = useUIStore((s) => s.pendingEdit);
+  const clearPendingEdit = useUIStore((s) => s.clearPendingEdit);
+
+  useEffect(() => {
+    if (!pendingEdit || pendingEdit.noteId !== note.id || !editorRef.current) return;
+
+    const applyEdit = async () => {
+      const ed = editorRef.current;
+      if (!ed) return;
+
+      let html: string;
+      // Convert markdown content to HTML for TipTap
+      if (pendingEdit.content.trim().startsWith("<")) {
+        html = pendingEdit.content;
+      } else {
+        html = await convertApi.markdownToHtml(pendingEdit.content);
+      }
+
+      if (pendingEdit.mode === "replace") {
+        ed.commands.setContent(html);
+      } else {
+        // Append: move cursor to end, insert a separator, then the new content
+        ed.commands.focus("end");
+        ed.commands.insertContent("<hr>");
+        ed.commands.insertContent(html);
+      }
+
+      // Update contentRef and trigger save
+      contentRef.current = ed.getHTML();
+      scheduleSave();
+      clearPendingEdit();
+    };
+
+    applyEdit();
+  }, [pendingEdit, note.id, clearPendingEdit, scheduleSave]);
 
   // Inline prompt state
   const { inlinePromptOpen, inlinePromptPosition, inlinePromptSelection, openInlinePrompt, closeInlinePrompt } = useUIStore();

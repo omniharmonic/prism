@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Loader2, Sparkles, FileInput } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { Send, Loader2, Sparkles, FileInput, Replace } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 
@@ -17,7 +16,7 @@ export function PanelChat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { openTabs, activeTabId } = useUIStore();
+  const { openTabs, activeTabId, setPendingEdit } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteId = activeTab?.noteId;
   // Don't pass virtual note IDs (matrix:...) to the agent
@@ -117,21 +116,36 @@ export function PanelChat() {
             >
               <div className="whitespace-pre-wrap">{msg.content}</div>
             </div>
-            {/* Apply to document button for assistant messages */}
+            {/* Apply to document buttons for assistant messages */}
             {msg.role === "assistant" && effectiveNoteId && (
-              <button
-                onClick={() => {
-                  invoke("editor_set_content", {
-                    noteId: effectiveNoteId,
-                    content: msg.content,
-                    mode: "append",
-                  });
-                }}
-                className="flex items-center gap-1 mt-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
-                style={{ color: "var(--text-muted)" }}
-              >
-                <FileInput size={10} /> Apply to document
-              </button>
+              <div className="flex items-center gap-2 mt-1">
+                <button
+                  onClick={() => {
+                    setPendingEdit({
+                      noteId: effectiveNoteId,
+                      content: msg.content,
+                      mode: "append",
+                    });
+                  }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <FileInput size={10} /> Append to document
+                </button>
+                <button
+                  onClick={() => {
+                    setPendingEdit({
+                      noteId: effectiveNoteId,
+                      content: msg.content,
+                      mode: "replace",
+                    });
+                  }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <Replace size={10} /> Replace document
+                </button>
+              </div>
             )}
           </div>
         ))}
