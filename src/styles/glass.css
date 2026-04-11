@@ -1,48 +1,113 @@
 /*
- * Glass utility classes for Prism's frosted-glass aesthetic.
+ * Prism Glass Utility System
+ * Frosted-glass panels with depth through blur, luminance, and layered shadows.
+ * Adapts automatically to dark/light mode via CSS custom properties.
  */
 
+/* ─── Base Glass ─── */
 .glass {
   background: var(--glass);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
 }
 
-.glass-hover:hover {
-  background: var(--glass-hover);
-}
-
-.glass-active:active {
-  background: var(--glass-active);
-}
-
+/* ─── Interactive Glass (buttons, cards) ─── */
 .glass-interactive {
   background: var(--glass);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  transition: background var(--transition-base);
+  box-shadow: var(--glass-shadow);
+  cursor: pointer;
 }
 .glass-interactive:hover {
   background: var(--glass-hover);
+  border-color: var(--glass-border-strong);
 }
 .glass-interactive:active {
   background: var(--glass-active);
 }
 
-.glass-elevated {
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(32px);
-  -webkit-backdrop-filter: blur(32px);
-  border: 1px solid var(--glass-border-strong);
-  border-radius: var(--radius-md);
+.glass-hover:hover {
+  background: var(--glass-hover);
+}
+.glass-active:active {
+  background: var(--glass-active);
 }
 
+/* ─── Elevated Glass (modals, dropdowns, overlays) ─── */
+.glass-elevated {
+  background: var(--glass-hover);
+  backdrop-filter: blur(40px) saturate(1.6);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-elevated);
+}
+
+/* ─── Inset Glass (inner wells, code blocks, inputs) ─── */
 .glass-inset {
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
+}
+html.dark .glass-inset {
+  background: rgba(0, 0, 0, 0.25);
+}
+html.light .glass-inset {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* ─── Subtle luminance edge — top highlight on glass panels ─── */
+.glass::before,
+.glass-elevated::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  pointer-events: none;
+}
+html.dark .glass::before,
+html.dark .glass-elevated::before {
+  background: linear-gradient(90deg, transparent 10%, rgba(255,255,255,0.08) 50%, transparent 90%);
+}
+html.light .glass::before,
+html.light .glass-elevated::before {
+  background: linear-gradient(90deg, transparent 10%, rgba(255,255,255,0.6) 50%, transparent 90%);
+}
+
+/* ─── Scrollbar styling ─── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.20);
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* ─── Selection ─── */
+::selection {
+  background: var(--color-accent-dim);
+  color: var(--text-primary);
 }

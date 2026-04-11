@@ -2,18 +2,18 @@
 @plugin "@tailwindcss/typography";
 
 /*
- * Prism Glass Design System — Design Tokens
- * Dark-first, glass-morphism aesthetic.
- * Depth through transparency and blur, not borders and shadows.
+ * Prism Glass Design System
+ * A frosted-glass aesthetic with depth through transparency, blur, and luminance.
+ * Supports dark and light modes via CSS custom properties + html.dark/html.light classes.
  */
 
 @theme {
-  /* Fonts */
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
-  --font-serif: 'Newsreader', Georgia, serif;
+  /* Fonts — user-configurable via Settings */
+  --font-sans: 'Inter', 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
 
-  /* Accent */
+  /* Accent — a calm periwinkle that works on both dark and light */
   --color-accent: #7C9FE8;
   --color-accent-hover: #93B0ED;
   --color-accent-dim: rgba(124, 159, 232, 0.15);
@@ -26,50 +26,119 @@
   /* Glass blur */
   --backdrop-blur-glass: 24px;
 
-  /* Radius */
+  /* Radius — slightly larger for a softer, more refined feel */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
 }
 
-:root {
-  /* Backgrounds */
-  --bg-base: #0a0a0b;
-  --bg-surface: #111113;
-  --bg-elevated: #1a1a1d;
+/* ═══════════════════════════════════════════
+   DARK MODE (default)
+   ═══════════════════════════════════════════ */
+:root,
+html.dark {
+  --bg-base: #09090b;
+  --bg-surface: #111114;
+  --bg-elevated: #1a1a1e;
 
-  /* Glass surfaces */
-  --glass: rgba(255, 255, 255, 0.06);
-  --glass-hover: rgba(255, 255, 255, 0.10);
-  --glass-active: rgba(255, 255, 255, 0.14);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-border-strong: rgba(255, 255, 255, 0.14);
+  --glass: rgba(255, 255, 255, 0.05);
+  --glass-hover: rgba(255, 255, 255, 0.09);
+  --glass-active: rgba(255, 255, 255, 0.13);
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --glass-border-strong: rgba(255, 255, 255, 0.13);
   --glass-blur: 24px;
 
-  /* Text */
+  /* A subtle inner glow on elevated glass surfaces */
+  --glass-shadow: 0 0 0 0.5px rgba(255,255,255,0.06),
+                  0 2px 8px rgba(0,0,0,0.3),
+                  0 1px 2px rgba(0,0,0,0.2);
+  --glass-shadow-elevated: 0 0 0 0.5px rgba(255,255,255,0.08),
+                           0 8px 32px rgba(0,0,0,0.5),
+                           0 2px 8px rgba(0,0,0,0.3);
+
   --text-primary: rgba(255, 255, 255, 0.92);
   --text-secondary: rgba(255, 255, 255, 0.55);
   --text-muted: rgba(255, 255, 255, 0.30);
   --text-accent: #7C9FE8;
 
-  /* Layout */
+  color-scheme: dark;
+}
+
+/* ═══════════════════════════════════════════
+   LIGHT MODE
+   ═══════════════════════════════════════════ */
+html.light {
+  --bg-base: #f4f4f6;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f0f0f3;
+
+  --glass: rgba(255, 255, 255, 0.65);
+  --glass-hover: rgba(255, 255, 255, 0.80);
+  --glass-active: rgba(255, 255, 255, 0.90);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border-strong: rgba(0, 0, 0, 0.10);
+  --glass-blur: 20px;
+
+  --glass-shadow: 0 0 0 0.5px rgba(0,0,0,0.04),
+                  0 1px 4px rgba(0,0,0,0.06),
+                  0 1px 2px rgba(0,0,0,0.04);
+  --glass-shadow-elevated: 0 0 0 0.5px rgba(0,0,0,0.06),
+                           0 8px 24px rgba(0,0,0,0.10),
+                           0 2px 6px rgba(0,0,0,0.06);
+
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(0, 0, 0, 0.52);
+  --text-muted: rgba(0, 0, 0, 0.28);
+  --text-accent: #4A7DD7;
+
+  --color-accent: #4A7DD7;
+  --color-accent-hover: #5A8DE0;
+  --color-accent-dim: rgba(74, 125, 215, 0.12);
+
+  color-scheme: light;
+}
+
+/* ═══════════════════════════════════════════
+   GLOBAL TRANSITION — smooth theme toggle
+   ═══════════════════════════════════════════ */
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 0.3s;
+  transition-timing-function: ease;
+}
+
+/* Opt out for elements that need instant response */
+input, textarea, select, button, [data-no-transition] {
+  transition-duration: 0s;
+}
+input:focus, textarea:focus, select:focus, button:hover {
+  transition-duration: 0.15s;
+}
+
+/* ═══════════════════════════════════════════
+   LAYOUT
+   ═══════════════════════════════════════════ */
+:root {
   --sidebar-width: 260px;
   --sidebar-min-width: 200px;
   --sidebar-max-width: 400px;
   --context-panel-width: 320px;
   --context-panel-min-width: 260px;
   --context-panel-max-width: 480px;
-  --status-bar-height: 32px;
-  --tab-bar-height: 40px;
-  --toolbar-height: 44px;
+  --status-bar-height: 30px;
+  --tab-bar-height: 38px;
+  --toolbar-height: 42px;
 
-  /* Transitions */
   --transition-fast: 100ms ease-out;
   --transition-base: 150ms ease-out;
   --transition-slow: 250ms ease-out;
+}
 
-  /* Platform badge colors */
+/* Platform badge colors */
+:root {
   --platform-whatsapp: #25D366;
   --platform-telegram: #2AABEE;
   --platform-discord: #5865F2;
@@ -79,14 +148,16 @@
   --platform-twitter: #1DA1F2;
   --platform-imessage: #34C759;
   --platform-email: #7C9FE8;
+}
 
-  /* Type scale */
-  --text-xs: 0.6875rem;    /* 11px */
-  --text-sm: 0.8125rem;    /* 13px */
-  --text-base: 0.875rem;   /* 14px */
-  --text-md: 0.9375rem;    /* 15px */
-  --text-lg: 1rem;         /* 16px */
-  --text-xl: 1.125rem;     /* 18px */
-  --text-2xl: 1.375rem;    /* 22px */
-  --text-3xl: 1.75rem;     /* 28px */
+/* Type scale */
+:root {
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+  --text-2xl: 1.375rem;
+  --text-3xl: 1.75rem;
 }

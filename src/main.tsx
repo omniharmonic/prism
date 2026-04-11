@@ -22,6 +22,11 @@ window.addEventListener("unhandledrejection", (e) => {
     </div>`;
 });
 
+// Initialize settings (theme, fonts) before rendering
+import("./app/stores/settings").then(({ initializeSettings }) => {
+  initializeSettings();
+});
+
 // Lazy import App so if it crashes we catch it
 import("./App").then(({ default: App }) => {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

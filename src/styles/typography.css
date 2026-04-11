@@ -1,6 +1,7 @@
 /*
- * Typography for Prism.
- * Sans (Inter) for UI, Serif (Newsreader) for document body, Mono for code.
+ * Prism Typography
+ * Three-tier type system: Sans (UI), Serif (prose), Mono (code).
+ * All fonts are user-configurable via Settings.
  */
 
 body {
@@ -9,16 +10,19 @@ body {
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
 }
 
-/* Prose editing area uses serif */
+/* ─── Prose Editor (documents, articles, notes) ─── */
 .prose-editor {
   font-family: var(--font-serif);
   font-size: var(--text-lg);
-  line-height: 1.7;
+  line-height: 1.75;
   color: var(--text-primary);
   max-width: 720px;
   margin: 0 auto;
+  letter-spacing: 0;
 }
 
 .prose-editor h1,
@@ -28,31 +32,57 @@ body {
   font-family: var(--font-sans);
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
-.prose-editor h1 { font-size: var(--text-3xl); margin: 2rem 0 1rem; }
-.prose-editor h2 { font-size: var(--text-2xl); margin: 1.75rem 0 0.75rem; }
-.prose-editor h3 { font-size: var(--text-xl); margin: 1.5rem 0 0.5rem; }
+.prose-editor h1 {
+  font-size: var(--text-3xl);
+  margin: 2.5rem 0 1rem;
+  font-weight: 700;
+}
+.prose-editor h2 {
+  font-size: var(--text-2xl);
+  margin: 2rem 0 0.75rem;
+}
+.prose-editor h3 {
+  font-size: var(--text-xl);
+  margin: 1.5rem 0 0.5rem;
+}
+
+.prose-editor p {
+  margin: 0.75em 0;
+}
 
 .prose-editor code,
 .prose-editor pre {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: 0.875em;
 }
 
 .prose-editor pre {
-  background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
   padding: 1rem;
   overflow-x: auto;
 }
+html.dark .prose-editor pre {
+  background: rgba(0, 0, 0, 0.35);
+}
+html.light .prose-editor pre {
+  background: rgba(0, 0, 0, 0.03);
+}
 
 .prose-editor code:not(pre code) {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.15em 0.35em;
+  padding: 0.15em 0.4em;
   border-radius: 4px;
-  font-size: 0.9em;
+  font-size: 0.88em;
+}
+html.dark .prose-editor code:not(pre code) {
+  background: rgba(255, 255, 255, 0.08);
+}
+html.light .prose-editor code:not(pre code) {
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .prose-editor blockquote {
@@ -60,12 +90,17 @@ body {
   padding-left: 1rem;
   color: var(--text-secondary);
   font-style: italic;
+  margin: 1em 0;
 }
 
 .prose-editor a {
   color: var(--text-accent);
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.prose-editor a:hover {
+  text-decoration-thickness: 2px;
 }
 
 .prose-editor img {
@@ -73,18 +108,44 @@ body {
   max-width: 100%;
 }
 
-/* Monospace for code renderer */
+.prose-editor hr {
+  border: none;
+  height: 1px;
+  background: var(--glass-border);
+  margin: 2rem 0;
+}
+
+.prose-editor ul, .prose-editor ol {
+  padding-left: 1.5em;
+}
+
+.prose-editor li {
+  margin: 0.3em 0;
+}
+
+/* ─── Code Editor ─── */
 .mono-editor {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-/* Label / caption style */
+/* ─── Labels & Captions ─── */
 .text-label {
   font-size: var(--text-xs);
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
+}
+
+/* ─── Keyboard shortcut indicators ─── */
+kbd {
+  font-family: var(--font-sans);
+  font-size: 0.7em;
+  font-weight: 500;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
 }
