@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
+import { useNotes } from "../../app/hooks/useParachute";
+import { inferContentType } from "../../lib/schemas/content-types";
 import { InlinePrompt } from "../agent/InlinePrompt";
+import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
@@ -21,29 +24,44 @@ import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
 
-const lowlight = createLowlight(common);
-
-const extensions = [
-  StarterKit.configure({
-    codeBlock: false,
-  }),
-  Placeholder.configure({
-    placeholder: "Start writing, or press / for commands...",
-  }),
-  Image,
-  Table.configure({ resizable: true }),
-  TableRow,
-  TableCell,
-  TableHeader,
-  TaskList,
-  TaskItem.configure({ nested: true }),
-  Highlight.configure({ multicolor: true }),
-  Link.configure({ openOnClick: false, autolink: true }),
-  CodeBlockLowlight.configure({ lowlight }),
-  Typography,
-];
+const lowlightInstance = createLowlight(common);
 
 export default function DocumentRenderer({ note }: RendererProps) {
+  const openTab = useUIStore((s) => s.openTab);
+  const { data: allNotes } = useNotes();
+
+  // Wikilink navigation: resolve target name → note ID → open tab
+  const handleWikilinkNavigate = useCallback((target: string) => {
+    if (!allNotes) return;
+    const matched = allNotes.find((n) => {
+      const path = n.path || "";
+      const name = path.split("/").pop() || "";
+      const stripped = path.startsWith("vault/") ? path.slice(6) : path;
+      return name.toLowerCase() === target.toLowerCase()
+        || path === target
+        || stripped === target
+        || stripped.split("/").pop()?.toLowerCase() === target.toLowerCase();
+    });
+    if (matched) {
+      const type = inferContentType(matched);
+      openTab(matched.id, matched.path?.split("/").pop() || matched.id, type);
+    }
+  }, [allNotes, openTab]);
+
+  const extensions = useMemo(() => [
+    StarterKit.configure({ codeBlock: false }),
+    Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
+    Image,
+    Table.configure({ resizable: true }),
+    TableRow, TableCell, TableHeader,
+    TaskList,
+    TaskItem.configure({ nested: true }),
+    Highlight.configure({ multicolor: true }),
+    Link.configure({ openOnClick: false, autolink: true }),
+    CodeBlockLowlight.configure({ lowlight: lowlightInstance }),
+    Typography,
+    WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
+  ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);

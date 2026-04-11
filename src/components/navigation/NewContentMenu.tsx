@@ -6,6 +6,7 @@ import {
   Table2,
   Globe,
   CheckSquare,
+  LayoutDashboard,
 } from "lucide-react";
 import { useCreateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -19,6 +20,7 @@ const CONTENT_TYPE_OPTIONS = [
   { type: "spreadsheet" as ContentType, label: "Spreadsheet", icon: Table2 },
   { type: "website" as ContentType, label: "Website", icon: Globe },
   { type: "task" as ContentType, label: "Task", icon: CheckSquare },
+  { type: "dashboard" as ContentType, label: "Dashboard", icon: LayoutDashboard },
 ];
 
 interface NewContentMenuProps {
