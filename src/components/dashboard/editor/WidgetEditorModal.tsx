@@ -97,30 +97,19 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
   const { data: allNotes } = useNotes();
   const tagOptions = (allTags || []).map((t) => t.tag).sort();
   const pathOptions = allPaths || [];
-  // Extract unique project names from metadata.project across all notes
-  const projectOptions = useMemo(() => {
-    const projects = new Set<string>();
-    for (const n of allNotes || []) {
-      const meta = n.metadata as Record<string, unknown> | null;
-      const p = meta?.project;
-      if (p && typeof p === "string") {
-        let cleaned = p.replace(/\[\[|\]\]/g, "");
-        if (cleaned.startsWith("vault/projects/")) cleaned = cleaned.slice(15);
-        if (cleaned.startsWith("vault/")) cleaned = cleaned.slice(6);
-        if (cleaned && cleaned !== "{{ slug }}") projects.add(cleaned);
-      }
-    }
-    return Array.from(projects).sort();
-  }, [allNotes]);
-
   // State
   const [widgetType, setWidgetType] = useState<WidgetTypeId>(initial?.type ?? "list");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [span, setSpan] = useState(initial?.span ?? 1);
   const [selectedTags, setSelectedTags] = useState<string[]>(initial?.source?.tags ?? []);
   const [pathPrefix, setPathPrefix] = useState(initial?.source?.pathPrefix ?? "");
-  const [projectFilter, setProjectFilter] = useState(
-    (initial?.source?.metadataFilters as Record<string, unknown>)?.project as string ?? ""
+  const [metadataFilterEntries, setMetadataFilterEntries] = useState<Array<{ field: string; value: string }>>(
+    initial?.source?.metadataFilters
+      ? Object.entries(initial.source.metadataFilters as Record<string, unknown>).map(([field, value]) => ({
+          field,
+          value: String(value),
+        }))
+      : []
   );
   const [datePreset, setDatePreset] = useState(initial?.source?.dateRange?.preset ?? "");
   const [sortField, setSortField] = useState(initial?.sort?.field ?? "updatedAt");
@@ -139,6 +128,36 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
   const [dateField, setDateField] = useState(initial?.dateField ?? "createdAt");
   const [columnCount, setColumnCount] = useState(initial?.columnCount ?? 3);
   const [showTemplates, setShowTemplates] = useState(isNew);
+
+  // Discover metadata fields dynamically from notes matching selected tags
+  const discoveredFields = useMemo(() => {
+    if (!allNotes || selectedTags.length === 0) return [];
+    const fieldValues: Record<string, Set<string>> = {};
+    const skipFields = new Set(["type", "prism_type", "vault_type", "sync", "layout", "title", "created"]);
+
+    for (const n of allNotes) {
+      if (!n.tags || !selectedTags.every((t) => n.tags!.includes(t))) continue;
+      const meta = n.metadata as Record<string, unknown> | null;
+      if (!meta) continue;
+      for (const [key, val] of Object.entries(meta)) {
+        if (skipFields.has(key)) continue;
+        if (!fieldValues[key]) fieldValues[key] = new Set();
+        if (val && typeof val === "string" && val.length < 80 && val !== "{{ date }}" && val !== "{{ slug }}") {
+          let cleaned = val.replace(/\[\[|\]\]/g, "");
+          if (cleaned.startsWith("vault/projects/")) cleaned = cleaned.slice(15);
+          if (cleaned.startsWith("vault/")) cleaned = cleaned.slice(6);
+          if (cleaned) fieldValues[key].add(cleaned);
+        }
+      }
+    }
+    return Object.entries(fieldValues)
+      .map(([name, values]) => ({ name, values: Array.from(values).sort() }))
+      .sort((a, b) => b.values.length - a.values.length);
+  }, [allNotes, selectedTags]);
+
+  const getFieldValues = useCallback((fieldName: string): string[] => {
+    return discoveredFields.find((f) => f.name === fieldName)?.values || [];
+  }, [discoveredFields]);
 
   // When type changes, set smart defaults
   const handleTypeChange = useCallback((type: WidgetTypeId) => {
@@ -181,7 +200,12 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
     const source: DataSource = {};
     if (selectedTags.length) source.tags = selectedTags;
     if (pathPrefix) source.pathPrefix = pathPrefix;
-    if (projectFilter) source.metadataFilters = { project: projectFilter };
+    // Build metadataFilters from the dynamic filter entries
+    const mf: Record<string, unknown> = {};
+    for (const entry of metadataFilterEntries) {
+      if (entry.field && entry.value) mf[entry.field] = entry.value;
+    }
+    if (Object.keys(mf).length) source.metadataFilters = mf;
     if (datePreset) source.dateRange = { field: dateField || "createdAt", preset: datePreset };
 
     let aggregateCondition: Record<string, unknown> | undefined;
@@ -297,18 +321,54 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
                   />
                 </Section>
 
-                <Section label="Filter by Project">
-                  <Autocomplete
-                    placeholder="Type project name..."
-                    options={projectOptions}
-                    value={projectFilter}
-                    onSelect={(proj) => setProjectFilter(proj)}
-                    onChange={(val) => setProjectFilter(val)}
-                  />
-                  <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                    Matches notes where metadata.project contains this value
-                  </div>
-                </Section>
+                {/* Dynamic metadata filters based on selected tags */}
+                {selectedTags.length > 0 && discoveredFields.length > 0 && (
+                  <Section label="Filter by Metadata">
+                    <div className="space-y-2">
+                      {metadataFilterEntries.map((entry, i) => (
+                        <div key={i} className="flex gap-2 items-start">
+                          <select
+                            value={entry.field}
+                            onChange={(e) => {
+                              const next = [...metadataFilterEntries];
+                              next[i] = { field: e.target.value, value: "" };
+                              setMetadataFilterEntries(next);
+                            }}
+                            className="h-8 rounded-lg px-2 text-xs outline-none"
+                            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", minWidth: 110 }}>
+                            <option value="" style={{ background: "var(--bg-elevated)" }}>Field...</option>
+                            {discoveredFields.map((f) => (
+                              <option key={f.name} value={f.name} style={{ background: "var(--bg-elevated)" }}>{f.name}</option>
+                            ))}
+                          </select>
+                          <div className="flex-1">
+                            <Autocomplete
+                              placeholder={`Filter ${entry.field || "value"}...`}
+                              options={getFieldValues(entry.field)}
+                              value={entry.value}
+                              onSelect={(val) => {
+                                const next = [...metadataFilterEntries];
+                                next[i] = { ...entry, value: val };
+                                setMetadataFilterEntries(next);
+                              }}
+                              onChange={(val) => {
+                                const next = [...metadataFilterEntries];
+                                next[i] = { ...entry, value: val };
+                                setMetadataFilterEntries(next);
+                              }}
+                            />
+                          </div>
+                          <button onClick={() => setMetadataFilterEntries(metadataFilterEntries.filter((_, j) => j !== i))}
+                            className="p-1.5 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-muted)" }}><X size={12} /></button>
+                        </div>
+                      ))}
+                      <button onClick={() => setMetadataFilterEntries([...metadataFilterEntries, { field: "", value: "" }])}
+                        className="text-xs px-2 py-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)" }}>
+                        + Add filter
+                      </button>
+                    </div>
+                  </Section>
+                )}
 
                 <Section label="Time Range">
                   <div className="flex flex-wrap gap-1.5">
