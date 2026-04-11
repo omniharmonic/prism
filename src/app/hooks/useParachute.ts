@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { vaultApi, systemApi } from "../../lib/parachute/client";
 import { queryKeys } from "../../lib/parachute/queries";
 import type { NoteFilters, UpdateNoteParams } from "../../lib/types";
@@ -30,6 +31,13 @@ export function useTags() {
   return useQuery({
     queryKey: queryKeys.vault.tags(),
     queryFn: vaultApi.getTags,
+  });
+}
+
+export function useVaultPaths() {
+  return useQuery({
+    queryKey: ["vault", "paths"],
+    queryFn: () => invoke<string[]>("vault_get_paths"),
   });
 }
 

@@ -4,7 +4,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "../../ui/Button";
-import { useTags } from "../../../app/hooks/useParachute";
+import { useTags, useVaultPaths } from "../../../app/hooks/useParachute";
 import {
   WIDGET_TYPES, getWidgetType,
   type DashboardWidgetConfig, type WidgetTypeId, type WidgetColumn,
@@ -93,7 +93,9 @@ const TEMPLATES: { label: string; description: string; config: Partial<Dashboard
 export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModalProps) {
   const isNew = !initial;
   const { data: allTags } = useTags();
+  const { data: allPaths } = useVaultPaths();
   const tagOptions = (allTags || []).map((t) => t.tag).sort();
+  const pathOptions = allPaths || [];
 
   // State
   const [widgetType, setWidgetType] = useState<WidgetTypeId>(initial?.type ?? "list");
@@ -270,9 +272,14 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
                 </Section>
 
                 <Section label="Filter by Path">
-                  <input value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)} placeholder="e.g. projects/opencivics"
+                  <select value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)}
                     className="w-full h-8 rounded-lg px-3 text-sm outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} />
+                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
+                    <option value="" style={{ background: "var(--bg-elevated)" }}>All paths</option>
+                    {pathOptions.map((p) => (
+                      <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>{p}</option>
+                    ))}
+                  </select>
                 </Section>
 
                 <Section label="Time Range">

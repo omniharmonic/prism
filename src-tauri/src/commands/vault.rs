@@ -195,6 +195,27 @@ pub async fn vault_get_stats(
     client.get_stats().await
 }
 
+/// Get unique directory paths from the vault for path filter dropdowns
+#[tauri::command]
+pub async fn vault_get_paths(
+    client: State<'_, ParachuteClient>,
+) -> Result<Vec<String>, PrismError> {
+    let notes = client.list_notes(&ListNotesParams::default()).await?;
+    let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for note in &notes {
+        if let Some(path) = &note.path {
+            // Normalize: strip vault/ prefix
+            let p = if path.starts_with("vault/") { &path[6..] } else { path.as_str() };
+            // Add each directory level
+            let parts: Vec<&str> = p.split('/').collect();
+            for i in 1..parts.len() {
+                paths.insert(parts[..i].join("/"));
+            }
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
 #[tauri::command]
 pub async fn vault_get_links(
     client: State<'_, ParachuteClient>,

@@ -66,6 +66,7 @@ pub fn run() {
             vault::vault_add_tags,
             vault::vault_remove_tags,
             vault::vault_get_stats,
+            vault::vault_get_paths,
             vault::vault_get_links,
             // Markdown conversion
             convert::markdown_to_html,

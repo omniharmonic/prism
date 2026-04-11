@@ -66,6 +66,8 @@ pub struct UpdateNoteParams {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TagCount {
+    /// Parachute API returns "name", we rename to "tag" for the frontend
+    #[serde(alias = "name")]
     pub tag: String,
     pub count: u32,
 }
