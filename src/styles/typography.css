@@ -1,0 +1,90 @@
+/*
+ * Typography for Prism.
+ * Sans (Inter) for UI, Serif (Newsreader) for document body, Mono for code.
+ */
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prose editing area uses serif */
+.prose-editor {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  line-height: 1.7;
+  color: var(--text-primary);
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.prose-editor h1,
+.prose-editor h2,
+.prose-editor h3,
+.prose-editor h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prose-editor h1 { font-size: var(--text-3xl); margin: 2rem 0 1rem; }
+.prose-editor h2 { font-size: var(--text-2xl); margin: 1.75rem 0 0.75rem; }
+.prose-editor h3 { font-size: var(--text-xl); margin: 1.5rem 0 0.5rem; }
+
+.prose-editor code,
+.prose-editor pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.prose-editor pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.prose-editor code:not(pre code) {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.prose-editor blockquote {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 1rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.prose-editor a {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-editor img {
+  border-radius: var(--radius-md);
+  max-width: 100%;
+}
+
+/* Monospace for code renderer */
+.mono-editor {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* Label / caption style */
+.text-label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}

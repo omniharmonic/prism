@@ -1,0 +1,48 @@
+/*
+ * Glass utility classes for Prism's frosted-glass aesthetic.
+ */
+
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.glass-hover:hover {
+  background: var(--glass-hover);
+}
+
+.glass-active:active {
+  background: var(--glass-active);
+}
+
+.glass-interactive {
+  background: var(--glass);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  transition: background var(--transition-base);
+}
+.glass-interactive:hover {
+  background: var(--glass-hover);
+}
+.glass-interactive:active {
+  background: var(--glass-active);
+}
+
+.glass-elevated {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.glass-inset {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+}

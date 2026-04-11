@@ -1,0 +1,92 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/*
+ * Prism Glass Design System — Design Tokens
+ * Dark-first, glass-morphism aesthetic.
+ * Depth through transparency and blur, not borders and shadows.
+ */
+
+@theme {
+  /* Fonts */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --font-serif: 'Newsreader', Georgia, serif;
+
+  /* Accent */
+  --color-accent: #7C9FE8;
+  --color-accent-hover: #93B0ED;
+  --color-accent-dim: rgba(124, 159, 232, 0.15);
+
+  /* Status */
+  --color-success: #6FCF97;
+  --color-warning: #F2C94C;
+  --color-danger: #EB5757;
+
+  /* Glass blur */
+  --backdrop-blur-glass: 24px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+:root {
+  /* Backgrounds */
+  --bg-base: #0a0a0b;
+  --bg-surface: #111113;
+  --bg-elevated: #1a1a1d;
+
+  /* Glass surfaces */
+  --glass: rgba(255, 255, 255, 0.06);
+  --glass-hover: rgba(255, 255, 255, 0.10);
+  --glass-active: rgba(255, 255, 255, 0.14);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-strong: rgba(255, 255, 255, 0.14);
+  --glass-blur: 24px;
+
+  /* Text */
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-muted: rgba(255, 255, 255, 0.30);
+  --text-accent: #7C9FE8;
+
+  /* Layout */
+  --sidebar-width: 260px;
+  --sidebar-min-width: 200px;
+  --sidebar-max-width: 400px;
+  --context-panel-width: 320px;
+  --context-panel-min-width: 260px;
+  --context-panel-max-width: 480px;
+  --status-bar-height: 32px;
+  --tab-bar-height: 40px;
+  --toolbar-height: 44px;
+
+  /* Transitions */
+  --transition-fast: 100ms ease-out;
+  --transition-base: 150ms ease-out;
+  --transition-slow: 250ms ease-out;
+
+  /* Platform badge colors */
+  --platform-whatsapp: #25D366;
+  --platform-telegram: #2AABEE;
+  --platform-discord: #5865F2;
+  --platform-linkedin: #0A66C2;
+  --platform-instagram: #E4405F;
+  --platform-messenger: #006AFF;
+  --platform-twitter: #1DA1F2;
+  --platform-imessage: #34C759;
+  --platform-email: #7C9FE8;
+
+  /* Type scale */
+  --text-xs: 0.6875rem;    /* 11px */
+  --text-sm: 0.8125rem;    /* 13px */
+  --text-base: 0.875rem;   /* 14px */
+  --text-md: 0.9375rem;    /* 15px */
+  --text-lg: 1rem;         /* 16px */
+  --text-xl: 1.125rem;     /* 18px */
+  --text-2xl: 1.375rem;    /* 22px */
+  --text-3xl: 1.75rem;     /* 28px */
+}
