@@ -2,7 +2,7 @@
   "mcpServers": {
     "parachute-vault": {
       "command": "bun",
-      "args": ["/Users/benjaminlife/iCloud Drive (Archive)/Documents/cursor projects/parachute-vault/src/server.ts"],
+      "args": ["../parachute-vault/src/server.ts"],
       "env": {}
     }
   }
