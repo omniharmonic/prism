@@ -6,6 +6,7 @@ interface DashboardWidgetWrapperProps {
   count?: number;
   editMode?: boolean;
   onRemove?: () => void;
+  editActions?: ReactNode;
   children: ReactNode;
 }
 
@@ -14,6 +15,7 @@ export function DashboardWidgetWrapper({
   count,
   editMode,
   onRemove,
+  editActions,
   children,
 }: DashboardWidgetWrapperProps) {
   return (
@@ -40,15 +42,20 @@ export function DashboardWidgetWrapper({
               {count}
             </span>
           )}
-          {editMode && onRemove && (
-            <button
-              onClick={onRemove}
-              className="ml-auto p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-              style={{ color: "var(--text-muted)" }}
-              title="Remove widget"
-            >
-              <X size={14} />
-            </button>
+          {editMode && (
+            <div className="ml-auto flex items-center gap-1">
+              {editActions}
+              {onRemove && (
+                <button
+                  onClick={onRemove}
+                  className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                  style={{ color: "var(--text-muted)" }}
+                  title="Remove widget"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

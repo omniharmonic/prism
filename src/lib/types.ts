@@ -145,12 +145,14 @@ export interface WebsiteMeta extends PrismMetadata {
   liveUrl?: string;
 }
 
+/** @deprecated Use DashboardWidgetConfig from lib/dashboard/widget-registry instead */
 export interface DashboardWidget {
   id: string;
-  type: "task-list" | "note-list" | "stat-card" | "calendar";
+  type: "task-list" | "note-list" | "stat-card" | "calendar" | string;
   title?: string;
   filter?: Record<string, unknown>;
-  span?: number; // grid column span (1 or 2)
+  span?: number; // grid column span (1-4)
+  [key: string]: unknown; // forward-compat with new widget config fields
 }
 
 export interface DashboardMeta extends PrismMetadata {

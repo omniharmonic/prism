@@ -1,53 +1,90 @@
 import { useState, useCallback } from "react";
-import { Settings, Plus, X } from "lucide-react";
+import { Settings, Plus, Pencil } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
-import type { DashboardWidget } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { DashboardWidgetWrapper } from "../dashboard/DashboardWidget";
+import { WidgetEditorModal } from "../dashboard/editor/WidgetEditorModal";
+import type { DashboardWidgetConfig } from "../../lib/dashboard/widget-registry";
+
+// New widget components
+import { ListWidget } from "../dashboard/widgets/ListWidget";
+import { BoardWidget } from "../dashboard/widgets/BoardWidget";
+import { GalleryWidget } from "../dashboard/widgets/GalleryWidget";
+import { StatWidget } from "../dashboard/widgets/StatWidget";
+import { ProgressWidget } from "../dashboard/widgets/ProgressWidget";
+import { TimelineWidget } from "../dashboard/widgets/TimelineWidget";
+import { ChartWidget } from "../dashboard/widgets/ChartWidget";
+import { EmbedWidget } from "../dashboard/widgets/EmbedWidget";
+import { QuickActionsWidget } from "../dashboard/widgets/QuickActionsWidget";
+
+// Legacy widget components (kept for backward compat with old widget type names)
 import { TaskListWidget } from "../dashboard/widgets/TaskListWidget";
 import { NoteListWidget } from "../dashboard/widgets/NoteListWidget";
 import { StatCardWidget } from "../dashboard/widgets/StatCardWidget";
 import { CalendarWidget } from "../dashboard/widgets/CalendarWidget";
 
-const WIDGET_TYPES: { type: DashboardWidget["type"]; label: string; description: string }[] = [
-  { type: "stat-card", label: "Vault Stats", description: "Note count, tag count, link count" },
-  { type: "task-list", label: "Task List", description: "Tasks filtered by status or project" },
-  { type: "note-list", label: "Note List", description: "Notes filtered by tag or path" },
-  { type: "calendar", label: "Today's Events", description: "Calendar events for today" },
-];
+// ── Render dispatch ─────────────────────────────────────────────────
 
-function renderWidget(widget: DashboardWidget) {
-  switch (widget.type) {
+function renderWidget(widget: DashboardWidgetConfig) {
+  switch (widget.type as string) {
+    case "list":
+      return <ListWidget config={widget} />;
+    case "board":
+      return <BoardWidget config={widget} />;
+    case "gallery":
+      return <GalleryWidget config={widget} />;
+    case "stat":
+      return <StatWidget config={widget} />;
+    case "progress":
+      return <ProgressWidget config={widget} />;
+    case "timeline":
+      return <TimelineWidget config={widget} />;
+    case "chart":
+      return <ChartWidget config={widget} />;
+    case "embed":
+      return <EmbedWidget config={widget} />;
+    case "quick-actions":
+      return <QuickActionsWidget config={widget} />;
+
+    // Legacy types (from old DashboardWidget union)
     case "task-list":
-      return <TaskListWidget filter={widget.filter} />;
+      return <TaskListWidget filter={widget.source?.metadataFilters} />;
     case "note-list":
-      return <NoteListWidget filter={widget.filter} />;
+      return <NoteListWidget filter={widget.source?.metadataFilters} />;
     case "stat-card":
       return <StatCardWidget />;
     case "calendar":
       return <CalendarWidget />;
+
     default:
       return (
-        <div className="text-sm" style={{ color: "var(--text-muted)" }}>
-          Unknown widget type
+        <div className="text-sm py-2" style={{ color: "var(--text-muted)" }}>
+          Unknown widget type: {widget.type}
         </div>
       );
   }
 }
 
+// ── Main component ──────────────────────────���───────────────────────
+
 export default function DashboardRenderer({ note, onMetadataChange }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
-  const layout = meta?.layout as { columns?: number; widgets: DashboardWidget[] } | undefined;
-  const widgets = layout?.widgets ?? [];
+  const layout = meta?.layout as
+    | { columns?: number; widgets: DashboardWidgetConfig[] }
+    | undefined;
+  const widgets: DashboardWidgetConfig[] = layout?.widgets ?? [];
   const columns = layout?.columns ?? 2;
 
   const [editMode, setEditMode] = useState(false);
-  const [showPicker, setShowPicker] = useState(false);
+  const [editorWidget, setEditorWidget] = useState<DashboardWidgetConfig | null | undefined>(
+    undefined,
+  ); // undefined = closed, null = new widget, DashboardWidgetConfig = editing
 
-  const dashboardTitle = note.path?.split("/").pop() || (meta?.title as string) || "Dashboard";
+  const dashboardTitle =
+    note.path?.split("/").pop() || (meta?.title as string) || "Dashboard";
 
   const updateWidgets = useCallback(
-    (newWidgets: DashboardWidget[]) => {
+    (newWidgets: DashboardWidgetConfig[]) => {
       onMetadataChange({
         ...((meta || {}) as Record<string, unknown>),
         layout: { columns, widgets: newWidgets },
@@ -56,26 +93,42 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
     [meta, columns, onMetadataChange],
   );
 
-  const handleAddWidget = (type: DashboardWidget["type"]) => {
-    const id = `w-${Date.now()}`;
-    const label = WIDGET_TYPES.find((w) => w.type === type)?.label ?? type;
-    const newWidget: DashboardWidget = { id, type, title: label };
-    updateWidgets([...widgets, newWidget]);
-    setShowPicker(false);
-  };
+  const handleSaveWidget = useCallback(
+    (config: DashboardWidgetConfig) => {
+      const existing = widgets.findIndex((w) => w.id === config.id);
+      if (existing >= 0) {
+        const next = [...widgets];
+        next[existing] = config;
+        updateWidgets(next);
+      } else {
+        updateWidgets([...widgets, config]);
+      }
+      setEditorWidget(undefined);
+    },
+    [widgets, updateWidgets],
+  );
 
-  const handleRemoveWidget = (widgetId: string) => {
-    updateWidgets(widgets.filter((w) => w.id !== widgetId));
-  };
+  const handleRemoveWidget = useCallback(
+    (widgetId: string) => {
+      updateWidgets(widgets.filter((w) => w.id !== widgetId));
+    },
+    [widgets, updateWidgets],
+  );
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2 flex-shrink-0"
-        style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
+        style={{
+          borderBottom: "1px solid var(--glass-border)",
+          background: "var(--bg-surface)",
+        }}
       >
-        <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+        <span
+          className="text-sm font-medium"
+          style={{ color: "var(--text-primary)" }}
+        >
           {dashboardTitle}
         </span>
         <Button
@@ -84,7 +137,6 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
           icon={<Settings size={14} />}
           onClick={() => {
             setEditMode(!editMode);
-            setShowPicker(false);
           }}
         >
           {editMode ? "Done" : "Edit Dashboard"}
@@ -95,19 +147,33 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
       <div className="flex-1 overflow-auto p-4">
         <div
           className="grid gap-4"
-          style={{
-            gridTemplateColumns: `repeat(${columns}, 1fr)`,
-          }}
+          style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}
         >
           {widgets.map((widget) => (
             <div
               key={widget.id}
-              style={{ gridColumn: widget.span ? `span ${widget.span}` : undefined }}
+              style={{
+                gridColumn: widget.span
+                  ? `span ${Math.min(widget.span, columns)}`
+                  : undefined,
+              }}
             >
               <DashboardWidgetWrapper
                 title={widget.title}
                 editMode={editMode}
                 onRemove={() => handleRemoveWidget(widget.id)}
+                editActions={
+                  editMode ? (
+                    <button
+                      onClick={() => setEditorWidget(widget)}
+                      className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                      style={{ color: "var(--text-muted)" }}
+                      title="Edit widget"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  ) : undefined
+                }
               >
                 {renderWidget(widget)}
               </DashboardWidgetWrapper>
@@ -118,7 +184,10 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
         {/* Empty state */}
         {widgets.length === 0 && !editMode && (
           <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            <p
+              className="text-sm"
+              style={{ color: "var(--text-muted)" }}
+            >
               This dashboard is empty
             </p>
             <Button
@@ -127,7 +196,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
               icon={<Plus size={14} />}
               onClick={() => {
                 setEditMode(true);
-                setShowPicker(true);
+                setEditorWidget(null);
               }}
             >
               Add Widget
@@ -138,69 +207,29 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
         {/* Add widget button in edit mode */}
         {editMode && (
           <div className="mt-4">
-            {!showPicker ? (
-              <button
-                onClick={() => setShowPicker(true)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-6 rounded-lg transition-colors hover:bg-[var(--glass-hover)]"
-                style={{
-                  border: "2px dashed var(--glass-border)",
-                  color: "var(--text-muted)",
-                }}
-              >
-                <Plus size={16} />
-                <span className="text-sm">Add Widget</span>
-              </button>
-            ) : (
-              <WidgetPicker onSelect={handleAddWidget} onClose={() => setShowPicker(false)} />
-            )}
+            <button
+              onClick={() => setEditorWidget(null)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-6 rounded-lg transition-colors hover:bg-[var(--glass-hover)]"
+              style={{
+                border: "2px dashed var(--glass-border)",
+                color: "var(--text-muted)",
+              }}
+            >
+              <Plus size={16} />
+              <span className="text-sm">Add Widget</span>
+            </button>
           </div>
         )}
       </div>
-    </div>
-  );
-}
 
-function WidgetPicker({
-  onSelect,
-  onClose,
-}: {
-  onSelect: (type: DashboardWidget["type"]) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="glass-elevated rounded-xl p-4 space-y-3"
-      style={{ border: "1px solid var(--glass-border)" }}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-          Add Widget
-        </span>
-        <button
-          onClick={onClose}
-          className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-          style={{ color: "var(--text-muted)" }}
-        >
-          <X size={14} />
-        </button>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        {WIDGET_TYPES.map(({ type, label, description }) => (
-          <button
-            key={type}
-            onClick={() => onSelect(type)}
-            className="text-left p-3 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ border: "1px solid var(--glass-border)" }}
-          >
-            <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-              {label}
-            </div>
-            <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-              {description}
-            </div>
-          </button>
-        ))}
-      </div>
+      {/* Widget editor modal */}
+      {editorWidget !== undefined && (
+        <WidgetEditorModal
+          initial={editorWidget}
+          onSave={handleSaveWidget}
+          onClose={() => setEditorWidget(undefined)}
+        />
+      )}
     </div>
   );
 }
