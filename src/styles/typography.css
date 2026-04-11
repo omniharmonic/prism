@@ -139,6 +139,29 @@ html.light .prose-editor code:not(pre code) {
   color: var(--text-muted);
 }
 
+/* ─── Wikilinks ─── */
+.wikilink {
+  color: var(--color-accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  border-radius: 2px;
+  padding: 0 1px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.wikilink:hover {
+  text-decoration-style: solid;
+  text-decoration-thickness: 2px;
+}
+html.dark .wikilink:hover {
+  background: rgba(124, 159, 232, 0.12);
+}
+html.light .wikilink:hover {
+  background: rgba(74, 125, 215, 0.08);
+}
+
 /* ─── Keyboard shortcut indicators ─── */
 kbd {
   font-family: var(--font-sans);

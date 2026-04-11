@@ -3,8 +3,10 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNotes } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
+import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { WikilinkAutocomplete, getWikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
@@ -61,6 +63,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
     CodeBlockLowlight.configure({ lowlight: lowlightInstance }),
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
+    WikilinkAutocomplete,
   ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
@@ -154,10 +157,12 @@ export default function DocumentRenderer({ note }: RendererProps) {
       {editor && <EditorToolbar editor={editor} />}
 
       {/* Editor */}
-      <div className="flex-1 overflow-auto px-6 py-8">
+      <div className="flex-1 overflow-auto px-6 py-8 relative">
         <div className="max-w-3xl mx-auto">
           <EditorContent editor={editor} />
         </div>
+        {/* Wikilink autocomplete dropdown */}
+        {editor && <WikilinkDropdown editor={editor} notes={allNotes || []} />}
       </div>
 
       {/* Save status */}
@@ -188,6 +193,80 @@ export default function DocumentRenderer({ note }: RendererProps) {
           onReject={closeInlinePrompt}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Wikilink autocomplete dropdown — appears when typing [[ in the editor.
+ * Shows matching notes from the vault, click to insert [[target]] at cursor.
+ */
+function WikilinkDropdown({ editor, notes }: { editor: ReturnType<typeof useEditor>; notes: Note[] }) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  if (!editor) return null;
+
+  const autocompleteState = getWikilinkAutocompleteState(editor.state);
+  if (!autocompleteState?.active || !autocompleteState.query) return null;
+
+  const query = autocompleteState.query.toLowerCase();
+  const matches = notes
+    .filter((n) => {
+      const name = (n.path || "").split("/").pop() || "";
+      return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
+    })
+    .slice(0, 8);
+
+  if (matches.length === 0) return null;
+
+  // Get cursor position for dropdown placement
+  const coords = editor.view.coordsAtPos(autocompleteState.to);
+
+  const handleSelect = (note: Note) => {
+    const name = (note.path || "").split("/").pop() || note.id;
+    // Replace the [[ + query with [[target]]
+    editor
+      .chain()
+      .focus()
+      .deleteRange({ from: autocompleteState.from, to: autocompleteState.to })
+      .insertContent(`[[${note.path || name}]]`)
+      .run();
+  };
+
+  return (
+    <div
+      className="fixed z-50 glass-elevated rounded-lg py-1 overflow-hidden"
+      style={{
+        left: Math.min(coords.left, window.innerWidth - 300),
+        top: coords.bottom + 4,
+        width: 280,
+        maxHeight: 240,
+        overflowY: "auto",
+      }}
+    >
+      {matches.map((note, i) => {
+        const name = (note.path || "").split("/").pop() || note.id;
+        const type = inferContentType(note);
+        return (
+          <button
+            key={note.id}
+            onClick={() => handleSelect(note)}
+            onMouseEnter={() => setSelectedIndex(i)}
+            className="w-full flex items-start gap-2 px-3 py-1.5 text-left text-xs transition-colors"
+            style={{
+              background: i === selectedIndex ? "var(--glass-hover)" : "transparent",
+              color: "var(--text-primary)",
+            }}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="truncate font-medium">{name}</div>
+              <div className="truncate" style={{ color: "var(--text-muted)", fontSize: "10px" }}>
+                {note.path} · {type}
+              </div>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

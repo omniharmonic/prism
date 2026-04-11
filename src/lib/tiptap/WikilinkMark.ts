@@ -3,11 +3,14 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 
 /**
- * TipTap extension that renders [[wikilinks]] as styled clickable spans
- * in the document editor. When clicked, navigates to the linked note.
+ * TipTap extension that renders [[wikilinks]] as styled clickable spans.
+ * Supports three formats:
+ *   [[simple name]]           → target = "simple name"
+ *   [[path/to/note]]          → target = "path/to/note"
+ *   [[path/to/note|Display]]  → target = "path/to/note", displays "Display"
  *
- * This is a decoration-based approach (not a schema change) so it works
- * with existing markdown content without modifying the document structure.
+ * When clicked, calls onNavigate(target) which resolves the target
+ * to a Parachute note and opens it in a tab.
  */
 
 export interface WikilinkOptions {
@@ -28,29 +31,21 @@ export const WikilinkDecoration = (options: WikilinkOptions) => {
           if (!node.isText || !node.text) return;
 
           const text = node.text;
-          let match;
           WIKILINK_REGEX.lastIndex = 0;
+          let match;
 
           while ((match = WIKILINK_REGEX.exec(text)) !== null) {
             const start = pos + match.index;
             const end = start + match[0].length;
-            const target = match[1].includes("|")
-              ? match[1].split("|")[0].trim()
-              : match[1].trim();
+            const inner = match[1];
+            const target = inner.includes("|")
+              ? inner.split("|")[0].trim()
+              : inner.trim();
 
             decorations.push(
               Decoration.inline(start, end, {
                 class: "wikilink",
                 "data-wikilink-target": target,
-                style: `
-                  color: var(--color-accent);
-                  cursor: pointer;
-                  text-decoration: underline;
-                  text-decoration-style: dotted;
-                  text-underline-offset: 3px;
-                  border-radius: 2px;
-                  transition: background 0.15s;
-                `,
               }),
             );
           }
@@ -59,25 +54,34 @@ export const WikilinkDecoration = (options: WikilinkOptions) => {
         return DecorationSet.create(doc, decorations);
       },
 
-      handleClick(_view, _pos, event) {
-        const target = event.target as HTMLElement;
-        if (target.classList.contains("wikilink")) {
-          const wikilinkTarget = target.getAttribute("data-wikilink-target");
-          if (wikilinkTarget) {
-            event.preventDefault();
-            options.onNavigate(wikilinkTarget);
-            return true;
+      // Handle clicks on wikilink decorations
+      handleDOMEvents: {
+        click(_view, event) {
+          const target = event.target as HTMLElement;
+          // Walk up the DOM tree to find the wikilink span
+          let el: HTMLElement | null = target;
+          for (let i = 0; i < 5 && el; i++) {
+            if (el.classList?.contains("wikilink")) {
+              const wikilinkTarget = el.getAttribute("data-wikilink-target");
+              if (wikilinkTarget) {
+                event.preventDefault();
+                event.stopPropagation();
+                options.onNavigate(wikilinkTarget);
+                return true;
+              }
+            }
+            el = el.parentElement;
           }
-        }
-        return false;
+          return false;
+        },
       },
     },
   });
 };
 
 /**
- * TipTap Extension wrapper for the wikilink decoration plugin.
- * Usage: add WikilinkExtension.configure({ onNavigate: (target) => ... }) to extensions array.
+ * TipTap Extension wrapper.
+ * Usage: WikilinkExtension.configure({ onNavigate: (target) => ... })
  */
 export const WikilinkExtension = Mark.create<WikilinkOptions>({
   name: "wikilink",
