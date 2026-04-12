@@ -71,11 +71,18 @@ pub async fn gmail_label(
 pub async fn calendar_list_events(
     client: State<'_, GoogleClient>,
     config: State<'_, AppConfig>,
-    _from: Option<String>,
-    _to: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
     _calendar_id: Option<String>,
 ) -> Result<serde_json::Value, PrismError> {
-    let data = client.calendar_list_events(&config.google_account_primary, 20)?;
+    let data = if let (Some(ref from), Some(ref to)) = (&from, &to) {
+        // Date range query — extract just the date part if ISO datetime was passed
+        let from_date = if from.contains('T') { &from[..10] } else { from.as_str() };
+        let to_date = if to.contains('T') { &to[..10] } else { to.as_str() };
+        client.calendar_list_events_range(&config.google_account_primary, from_date, to_date, 100)?
+    } else {
+        client.calendar_list_events(&config.google_account_primary, 50)?
+    };
     // gog returns { "events": [...] } — extract the events array
     Ok(data.get("events").cloned().unwrap_or(serde_json::json!([])))
 }
