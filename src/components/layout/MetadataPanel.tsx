@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle } from "lucide-react";
+import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
-import { useUpdateNote, useTags } from "../../app/hooks/useParachute";
+import { useUpdateNote, useTags, useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
@@ -16,20 +16,103 @@ interface MetadataPanelProps {
 
 const CONTENT_TYPES = Object.entries(CONTENT_TYPE_LABELS) as [ContentType, string][];
 
+// Fields that are managed by the system, not user-editable in tag sections
+const SYSTEM_FIELDS = new Set(["type", "sync", "prism_type"]);
+
+// Heuristic: is this field name date-like?
+function isDateField(name: string): boolean {
+  const lower = name.toLowerCase();
+  return /date|due|deadline|created|updated|start|end|scheduled|completed/.test(lower);
+}
+
+// Heuristic: is this value an array?
+function isArrayValue(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+// Heuristic: is this a boolean?
+function isBooleanValue(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
+interface DiscoveredField {
+  name: string;
+  uniqueValues: Set<string>;
+  isDate: boolean;
+  isArray: boolean;
+  isBoolean: boolean;
+}
+
+/**
+ * Scan all notes with the same tag to discover what metadata fields exist
+ * and what values they have (for building dropdowns, etc.)
+ */
+function useDiscoveredFields(tag: string, allNotesForTag: Note[]): DiscoveredField[] {
+  return useMemo(() => {
+    const fieldMap = new Map<string, DiscoveredField>();
+
+    for (const note of allNotesForTag) {
+      const meta = note.metadata as Record<string, unknown> | null;
+      if (!meta) continue;
+
+      for (const [key, value] of Object.entries(meta)) {
+        if (SYSTEM_FIELDS.has(key)) continue;
+
+        if (!fieldMap.has(key)) {
+          fieldMap.set(key, {
+            name: key,
+            uniqueValues: new Set(),
+            isDate: isDateField(key),
+            isArray: false,
+            isBoolean: false,
+          });
+        }
+
+        const field = fieldMap.get(key)!;
+
+        if (isBooleanValue(value)) {
+          field.isBoolean = true;
+        } else if (isArrayValue(value)) {
+          field.isArray = true;
+          for (const item of value) {
+            if (typeof item === "string") field.uniqueValues.add(item);
+          }
+        } else if (typeof value === "string" && value.length > 0) {
+          field.uniqueValues.add(value);
+        }
+      }
+    }
+
+    return Array.from(fieldMap.values());
+  }, [tag, allNotesForTag]);
+}
+
 export function MetadataPanel({ note }: MetadataPanelProps) {
   const updateNote = useUpdateNote();
   const { data: allTags } = useTags();
   const currentType = ((note.metadata as Record<string, unknown>)?.type as ContentType) || "document";
+  const noteTags = note.tags || [];
 
   // Word count
   const wordCount = note.content.trim().split(/\s+/).filter(Boolean).length;
   const readingTime = Math.max(1, Math.ceil(wordCount / 200));
+
+  // Advanced (raw JSON) collapsed by default
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleTypeChange = useCallback((newType: string) => {
     const currentMeta = (note.metadata || {}) as Record<string, unknown>;
     updateNote.mutate({
       id: note.id,
       metadata: { ...currentMeta, type: newType },
+    });
+  }, [note, updateNote]);
+
+  const handleMetadataFieldChange = useCallback((fieldName: string, value: unknown) => {
+    const currentMeta = (note.metadata || {}) as Record<string, unknown>;
+    updateNote.mutate({
+      id: note.id,
+      metadata: { ...currentMeta, [fieldName]: value },
     });
   }, [note, updateNote]);
 
@@ -58,14 +141,24 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
       {/* Path */}
       <Field label="Path">
         <div className="text-sm truncate" style={{ color: "var(--text-secondary)" }}>
-          {note.path || "—"}
+          {note.path || "\u2014"}
         </div>
       </Field>
 
       {/* Tags */}
       <Field label="Tags">
-        <TagEditor noteId={note.id} tags={note.tags || []} allTags={allTags?.map((t) => t.tag) || []} />
+        <TagEditor noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />
       </Field>
+
+      {/* Tag schema fields */}
+      {noteTags.map((tag) => (
+        <TagSchemaSection
+          key={tag}
+          tag={tag}
+          note={note}
+          onFieldChange={handleMetadataFieldChange}
+        />
+      ))}
 
       {/* Timestamps */}
       <Field label="Created">
@@ -75,7 +168,7 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
       </Field>
       <Field label="Updated">
         <div className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {note.updatedAt ? formatDate(note.updatedAt) : "—"}
+          {note.updatedAt ? formatDate(note.updatedAt) : "\u2014"}
         </div>
       </Field>
 
@@ -92,18 +185,265 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
         <SyncSection noteId={note.id} metadata={note.metadata} />
       </Field>
 
-      {/* Raw metadata */}
-      <Field label="Raw Metadata">
-        <pre
-          className="glass-inset p-2 text-xs overflow-auto rounded max-h-40"
-          style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}
+      {/* Advanced: Raw metadata (collapsible) */}
+      <div>
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="flex items-center gap-1 text-label mb-1 hover:text-[var(--text-primary)] transition-colors"
         >
-          {JSON.stringify(note.metadata, null, 2)}
-        </pre>
-      </Field>
+          {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          Advanced
+        </button>
+        {showAdvanced && (
+          <pre
+            className="glass-inset p-2 text-xs overflow-auto rounded max-h-40"
+            style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}
+          >
+            {JSON.stringify(note.metadata, null, 2)}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
+
+// ─── Tag Schema Section ──────────────────────────────────────
+// For each tag on the note, show discovered fields as proper form controls
+
+function TagSchemaSection({
+  tag,
+  note,
+  onFieldChange,
+}: {
+  tag: string;
+  note: Note;
+  onFieldChange: (field: string, value: unknown) => void;
+}) {
+  // Fetch all notes with this tag to discover field schemas
+  const { data: notesWithTag } = useNotes({ tag });
+  const discoveredFields = useDiscoveredFields(tag, notesWithTag || []);
+
+  // Don't show section if no discoverable fields (beyond system fields)
+  if (discoveredFields.length === 0) return null;
+
+  const meta = (note.metadata || {}) as Record<string, unknown>;
+
+  return (
+    <div
+      className="glass-inset rounded-md p-2.5 space-y-2.5"
+      style={{ border: "1px solid var(--glass-border)" }}
+    >
+      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+        {tag}
+      </div>
+      {discoveredFields.map((field) => (
+        <SchemaField
+          key={field.name}
+          field={field}
+          value={meta[field.name]}
+          onChange={(val) => onFieldChange(field.name, val)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ─── Schema Field Renderer ───────────────────────────────────
+
+function SchemaField({
+  field,
+  value,
+  onChange,
+}: {
+  field: DiscoveredField;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const label = field.name.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // Boolean toggle
+  if (field.isBoolean) {
+    return (
+      <div className="flex items-center justify-between">
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>{label}</span>
+        <button
+          onClick={() => onChange(!value)}
+          className="w-8 h-4 rounded-full relative transition-colors"
+          style={{
+            background: value ? "var(--color-accent)" : "var(--glass-border)",
+          }}
+        >
+          <span
+            className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
+            style={{ left: value ? 16 : 2 }}
+          />
+        </button>
+      </div>
+    );
+  }
+
+  // Date input
+  if (field.isDate) {
+    const dateVal = typeof value === "string" ? value.slice(0, 10) : "";
+    return (
+      <div>
+        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+        <input
+          type="date"
+          value={dateVal}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full h-7 rounded-md px-2 text-xs outline-none"
+          style={{
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            color: "var(--text-primary)",
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Array field (chip list)
+  if (field.isArray) {
+    const items = isArrayValue(value) ? (value as string[]) : [];
+    return (
+      <div>
+        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+        <ChipList
+          items={items}
+          suggestions={Array.from(field.uniqueValues)}
+          onChange={onChange}
+        />
+      </div>
+    );
+  }
+
+  // Dropdown for fields with a small set of unique values (< 10)
+  if (field.uniqueValues.size > 0 && field.uniqueValues.size < 10) {
+    const strValue = typeof value === "string" ? value : "";
+    return (
+      <div>
+        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+        <select
+          value={strValue}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full h-7 rounded-md px-2 text-xs outline-none cursor-pointer"
+          style={{
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            color: "var(--text-primary)",
+          }}
+        >
+          <option value="" style={{ background: "var(--bg-elevated)" }}>--</option>
+          {Array.from(field.uniqueValues).sort().map((v) => (
+            <option key={v} value={v} style={{ background: "var(--bg-elevated)" }}>{v}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  // Default: text input
+  const strValue = value != null ? String(value) : "";
+  return (
+    <div>
+      <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+      <input
+        value={strValue}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full h-7 rounded-md px-2 text-xs outline-none"
+        style={{
+          background: "var(--glass)",
+          border: "1px solid var(--glass-border)",
+          color: "var(--text-primary)",
+        }}
+        onBlur={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
+// ─── Chip List for Array Fields ──────────────────────────────
+
+function ChipList({
+  items,
+  suggestions,
+  onChange,
+}: {
+  items: string[];
+  suggestions: string[];
+  onChange: (value: string[]) => void;
+}) {
+  const [input, setInput] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const filtered = input.length > 0
+    ? suggestions.filter((s) => s.toLowerCase().includes(input.toLowerCase()) && !items.includes(s)).slice(0, 5)
+    : [];
+
+  const addItem = (item: string) => {
+    if (item && !items.includes(item)) {
+      onChange([...items, item]);
+    }
+    setInput("");
+    setShowSuggestions(false);
+  };
+
+  const removeItem = (item: string) => {
+    onChange(items.filter((i) => i !== item));
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-1">
+        {items.map((item) => (
+          <span
+            key={item}
+            className="inline-flex items-center gap-1 glass px-1.5 py-0.5 rounded text-xs"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {item}
+            <button onClick={() => removeItem(item)} className="hover:text-[var(--color-danger)] transition-colors">
+              <X size={9} />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="relative">
+        <input
+          value={input}
+          onChange={(e) => { setInput(e.target.value); setShowSuggestions(true); }}
+          onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) { e.preventDefault(); addItem(input.trim()); } }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+          placeholder="Add..."
+          className="w-full h-6 rounded-md px-2 text-xs outline-none"
+          style={{
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            color: "var(--text-primary)",
+          }}
+        />
+        {showSuggestions && filtered.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-0.5 py-0.5 glass-elevated z-10 rounded-md overflow-hidden">
+            {filtered.map((s) => (
+              <button
+                key={s}
+                onMouseDown={() => addItem(s)}
+                className="w-full text-left px-2 py-1 text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared Components (preserved from original) ─────────────
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -256,8 +596,6 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
     }
   };
 
-  // handleNotionSetupSubmit removed — replaced by NotionPagePicker
-
   const handleSync = async () => {
     setSyncError(null);
     try {
@@ -335,10 +673,7 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
                 if (result.status === "error") {
                   setSyncError((result as { message?: string }).message || "Pull failed");
                 } else {
-                  // Invalidate queries to refresh the note content
                   queryClient.invalidateQueries({ queryKey: ["vault"] });
-                  // Alert user to reopen the tab to see changes
-                  // (TipTap holds its own state and doesn't auto-refresh)
                   alert("Pulled from Google Docs. Close and reopen the tab to see updated content.");
                 }
               } catch (e) {
@@ -381,7 +716,7 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
         )}
       </div>
 
-      {/* Notion setup — page picker */}
+      {/* Notion setup -- page picker */}
       {showNotionSetup && (
         <NotionPagePicker
           noteId={noteId}

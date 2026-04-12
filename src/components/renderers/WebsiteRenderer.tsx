@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Eye, Code, Columns } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
@@ -7,7 +7,6 @@ export default function WebsiteRenderer({ note }: RendererProps) {
   const [view, setView] = useState<"split" | "code" | "preview">("split");
   const [content, setContent] = useState(note.content || "");
   const contentRef = useRef(note.content || "");
-  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const getContent = useCallback(() => contentRef.current, []);
   const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
@@ -17,14 +16,6 @@ export default function WebsiteRenderer({ note }: RendererProps) {
     contentRef.current = e.target.value;
     scheduleSave();
   };
-
-  // Update preview when content changes
-  useEffect(() => {
-    if (iframeRef.current) {
-      const doc = iframeRef.current.contentDocument;
-      if (doc) { doc.open(); doc.write(content); doc.close(); }
-    }
-  }, [content]);
 
   return (
     <div className="flex flex-col h-full">
@@ -77,10 +68,11 @@ export default function WebsiteRenderer({ note }: RendererProps) {
         {(view === "split" || view === "preview") && (
           <div className={view === "split" ? "w-1/2" : "w-full"} style={{ background: "white" }}>
             <iframe
-              ref={iframeRef}
+              srcDoc={content}
               title="Preview"
-              sandbox="allow-scripts"
+              sandbox="allow-scripts allow-same-origin"
               className="w-full h-full border-none"
+              style={{ background: "white" }}
             />
           </div>
         )}

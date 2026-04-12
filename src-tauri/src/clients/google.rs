@@ -20,7 +20,23 @@ impl GoogleClient {
                     None
                 }
             })
-            .unwrap_or_else(|| "gog".to_string());
+            .unwrap_or_else(|| {
+                // In production builds, PATH is minimal and `which` fails.
+                // Check common installation paths as fallbacks.
+                let home = dirs::home_dir().unwrap_or_default();
+                let candidates = [
+                    "/opt/homebrew/bin/gog".to_string(),
+                    "/usr/local/bin/gog".to_string(),
+                    format!("{}/go/bin/gog", home.display()),
+                    format!("{}/.local/bin/gog", home.display()),
+                ];
+                for path in &candidates {
+                    if std::path::Path::new(path).exists() {
+                        return path.clone();
+                    }
+                }
+                "gog".to_string()
+            });
 
         Self { gog_bin }
     }

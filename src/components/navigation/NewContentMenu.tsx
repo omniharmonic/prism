@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   FileText,
   Presentation,
@@ -11,6 +12,7 @@ import {
 import { useCreateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
+import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
 
 const CONTENT_TYPE_OPTIONS = [
   { type: "document" as ContentType, label: "Document", icon: FileText },
@@ -30,8 +32,15 @@ interface NewContentMenuProps {
 export function NewContentMenu({ onClose }: NewContentMenuProps) {
   const createNote = useCreateNote();
   const openTab = useUIStore((s) => s.openTab);
+  const [showTaskDialog, setShowTaskDialog] = useState(false);
 
   const handleCreate = async (type: ContentType) => {
+    // Task gets a dedicated dialog instead of creating a minimal note
+    if (type === "task") {
+      setShowTaskDialog(true);
+      return;
+    }
+
     try {
       const defaults = CONTENT_DEFAULTS[type];
       const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
@@ -50,6 +59,10 @@ export function NewContentMenu({ onClose }: NewContentMenuProps) {
       alert(`Failed to create ${type}: ${e}`);
     }
   };
+
+  if (showTaskDialog) {
+    return <TaskCreateDialog onClose={onClose} />;
+  }
 
   return (
     <div
