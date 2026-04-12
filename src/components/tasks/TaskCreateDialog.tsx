@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { X } from "lucide-react";
 import { useCreateNote, useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -11,10 +11,16 @@ interface TaskCreateDialogProps {
   onClose: () => void;
 }
 
+/** Strip [[wikilink]] brackets and extract final segment */
+function cleanProjectName(raw: string): string {
+  return raw.replace(/^\[\[|\]\]$/g, "").split("/").pop()?.replace(/[{}<>]/g, "").trim() || "";
+}
+
 export function TaskCreateDialog({ onClose }: TaskCreateDialogProps) {
   const createNote = useCreateNote();
   const openTab = useUIStore((s) => s.openTab);
-  const { data: allNotes } = useNotes({ tag: "project" });
+  // Fetch all notes to discover projects from multiple sources
+  const { data: allNotes } = useNotes({ limit: 2000 });
 
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>("todo");
@@ -27,10 +33,30 @@ export function TaskCreateDialog({ onClose }: TaskCreateDialogProps) {
   const [description, setDescription] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Derive project names from notes tagged "project"
-  const projectNames = (allNotes || [])
-    .map((n) => n.path || (n.metadata as Record<string, unknown>)?.title as string || "")
-    .filter(Boolean);
+  // Discover projects from: metadata.project values, vault/projects/* paths, and "project" tagged notes
+  const projectNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const n of allNotes || []) {
+      const meta = (n.metadata || {}) as Record<string, unknown>;
+      // Source 1: metadata.project field
+      if (typeof meta.project === "string" && meta.project) {
+        const cleaned = cleanProjectName(meta.project);
+        if (cleaned.length > 2) names.add(meta.project.replace(/^\[\[|\]\]$/g, ""));
+      }
+      // Source 2: vault/projects/* path structure
+      const path = n.path || "";
+      if (path.startsWith("vault/projects/")) {
+        const seg = path.split("/")[2];
+        if (seg) names.add(seg.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()));
+      }
+      // Source 3: notes tagged "project"
+      if (n.tags?.includes("project") && !path.startsWith("_templates")) {
+        const label = path.split("/").pop() || "";
+        if (label) names.add(label);
+      }
+    }
+    return Array.from(names).sort();
+  }, [allNotes]);
 
   const filteredProjects = projectQuery.length > 0
     ? projectNames.filter((p) => p.toLowerCase().includes(projectQuery.toLowerCase()))

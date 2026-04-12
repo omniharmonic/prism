@@ -92,38 +92,54 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
   const { data: allTags } = useTags();
   const currentType = ((note.metadata as Record<string, unknown>)?.type as ContentType) || "document";
   const noteTags = note.tags || [];
+  const meta = (note.metadata || {}) as Record<string, unknown>;
 
   // Word count
   const wordCount = note.content.trim().split(/\s+/).filter(Boolean).length;
   const readingTime = Math.max(1, Math.ceil(wordCount / 200));
 
-  // Advanced (raw JSON) collapsed by default
+  // Collapsible state
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [expandedTags, setExpandedTags] = useState<Set<string>>(new Set());
+
+  const toggleTag = useCallback((tag: string) => {
+    setExpandedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }, []);
 
   const handleTypeChange = useCallback((newType: string) => {
-    const currentMeta = (note.metadata || {}) as Record<string, unknown>;
     updateNote.mutate({
       id: note.id,
-      metadata: { ...currentMeta, type: newType },
+      metadata: { ...meta, type: newType },
     });
-  }, [note, updateNote]);
+  }, [note, meta, updateNote]);
 
   const handleMetadataFieldChange = useCallback((fieldName: string, value: unknown) => {
-    const currentMeta = (note.metadata || {}) as Record<string, unknown>;
     updateNote.mutate({
       id: note.id,
-      metadata: { ...currentMeta, [fieldName]: value },
+      metadata: { ...meta, [fieldName]: value },
     });
-  }, [note, updateNote]);
+  }, [note, meta, updateNote]);
+
+  // Separate this note's own metadata fields into "properties" (non-system, non-empty)
+  const noteProperties = useMemo(() => {
+    return Object.entries(meta)
+      .filter(([key, val]) => !SYSTEM_FIELDS.has(key) && val != null && val !== "")
+      .map(([key]) => key);
+  }, [meta]);
 
   return (
-    <div className="space-y-4">
-      {/* Type selector */}
-      <Field label="Type">
+    <div className="space-y-3">
+      {/* ── Core Info ─────────────────────────── */}
+      <div className="flex items-center gap-2">
         <select
           value={currentType}
           onChange={(e) => handleTypeChange(e.target.value)}
-          className="w-full h-7 rounded-md px-2 text-sm outline-none cursor-pointer"
+          className="flex-1 h-7 rounded-md px-2 text-sm outline-none cursor-pointer"
           style={{
             background: "var(--glass)",
             border: "1px solid var(--glass-border)",
@@ -136,163 +152,207 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
             </option>
           ))}
         </select>
-      </Field>
+      </div>
 
-      {/* Path */}
-      <Field label="Path">
-        <div className="text-sm truncate" style={{ color: "var(--text-secondary)" }}>
-          {note.path || "\u2014"}
-        </div>
-      </Field>
+      <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
+        {note.path || "\u2014"}
+      </div>
 
       {/* Tags */}
-      <Field label="Tags">
-        <TagEditor noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />
-      </Field>
+      <TagEditor noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />
 
-      {/* Tag schema fields */}
-      {noteTags.map((tag) => (
-        <TagSchemaSection
-          key={tag}
-          tag={tag}
-          note={note}
-          onFieldChange={handleMetadataFieldChange}
-        />
-      ))}
-
-      {/* Timestamps */}
-      <Field label="Created">
-        <div className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {formatDate(note.createdAt)}
+      {/* ── Properties (this note's metadata) ── */}
+      {noteProperties.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>Properties</div>
+          {noteProperties.map((key) => (
+            <PropertyRow
+              key={key}
+              fieldName={key}
+              value={meta[key]}
+              allNotesForTag={null}
+              onChange={(val) => handleMetadataFieldChange(key, val)}
+            />
+          ))}
         </div>
-      </Field>
-      <Field label="Updated">
-        <div className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {note.updatedAt ? formatDate(note.updatedAt) : "\u2014"}
+      )}
+
+      {/* ── Tag Schemas (collapsible) ────────── */}
+      {noteTags.length > 0 && (
+        <div className="space-y-1">
+          {noteTags.map((tag) => (
+            <CollapsibleTagSection
+              key={tag}
+              tag={tag}
+              note={note}
+              isExpanded={expandedTags.has(tag)}
+              onToggle={() => toggleTag(tag)}
+              existingFields={noteProperties}
+              onFieldChange={handleMetadataFieldChange}
+            />
+          ))}
         </div>
-      </Field>
+      )}
 
-      {/* Stats */}
-      <Field label="Stats">
-        <div className="flex gap-4 text-sm" style={{ color: "var(--text-secondary)" }}>
-          <span>{wordCount.toLocaleString()} words</span>
-          <span>{readingTime} min read</span>
-        </div>
-      </Field>
-
-      {/* Sync destinations */}
-      <Field label="Sync">
-        <SyncSection noteId={note.id} metadata={note.metadata} />
-      </Field>
-
-      {/* Advanced: Raw metadata (collapsible) */}
-      <div>
-        <button
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex items-center gap-1 text-label mb-1 hover:text-[var(--text-primary)] transition-colors"
-        >
-          {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          Advanced
-        </button>
-        {showAdvanced && (
-          <pre
-            className="glass-inset p-2 text-xs overflow-auto rounded max-h-40"
-            style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}
-          >
-            {JSON.stringify(note.metadata, null, 2)}
-          </pre>
-        )}
+      {/* ── Info row ─────────────────────────── */}
+      <div className="flex gap-3 text-xs" style={{ color: "var(--text-muted)" }}>
+        <span>{wordCount.toLocaleString()} words</span>
+        <span>{readingTime} min</span>
       </div>
+      <div className="text-xs space-y-0.5" style={{ color: "var(--text-muted)" }}>
+        <div>Created {formatDate(note.createdAt)}</div>
+        {note.updatedAt && <div>Updated {formatDate(note.updatedAt)}</div>}
+      </div>
+
+      {/* Sync */}
+      <SyncSection noteId={note.id} metadata={note.metadata} />
+
+      {/* Advanced JSON (collapsible) */}
+      <button
+        onClick={() => setShowAdvanced(!showAdvanced)}
+        className="flex items-center gap-1 text-xs hover:text-[var(--text-primary)] transition-colors"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {showAdvanced ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        Raw JSON
+      </button>
+      {showAdvanced && (
+        <pre
+          className="glass-inset p-2 text-xs overflow-auto rounded max-h-40"
+          style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}
+        >
+          {JSON.stringify(note.metadata, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }
 
-// ─── Tag Schema Section ──────────────────────────────────────
-// For each tag on the note, show discovered fields as proper form controls
+// ─── Collapsible Tag Section ─────────────────────────────────
+// Shows discovered fields for a tag, collapsed by default.
+// Skips fields already shown in the Properties section above.
 
-function TagSchemaSection({
+function CollapsibleTagSection({
   tag,
   note,
+  isExpanded,
+  onToggle,
+  existingFields,
   onFieldChange,
 }: {
   tag: string;
   note: Note;
+  isExpanded: boolean;
+  onToggle: () => void;
+  existingFields: string[];
   onFieldChange: (field: string, value: unknown) => void;
 }) {
-  // Fetch all notes with this tag to discover field schemas
   const { data: notesWithTag } = useNotes({ tag });
   const discoveredFields = useDiscoveredFields(tag, notesWithTag || []);
 
-  // Don't show section if no discoverable fields (beyond system fields)
-  if (discoveredFields.length === 0) return null;
+  // Filter out fields already shown in Properties section
+  const existingSet = new Set(existingFields);
+  const newFields = discoveredFields.filter((f) => !existingSet.has(f.name));
+
+  // Don't render if no additional fields to show
+  if (newFields.length === 0 && discoveredFields.length === 0) return null;
 
   const meta = (note.metadata || {}) as Record<string, unknown>;
 
   return (
-    <div
-      className="glass-inset rounded-md p-2.5 space-y-2.5"
-      style={{ border: "1px solid var(--glass-border)" }}
-    >
-      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
-        {tag}
-      </div>
-      {discoveredFields.map((field) => (
-        <SchemaField
-          key={field.name}
-          field={field}
-          value={meta[field.name]}
-          onChange={(val) => onFieldChange(field.name, val)}
-        />
-      ))}
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-1.5 py-1 text-xs transition-colors hover:text-[var(--text-primary)]"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        <span className="font-medium">{tag}</span>
+        {newFields.length > 0 && (
+          <span
+            className="ml-auto px-1.5 py-0.5 rounded-full text-[10px]"
+            style={{ background: "var(--glass)", color: "var(--text-muted)" }}
+          >
+            {newFields.length} field{newFields.length !== 1 ? "s" : ""}
+          </span>
+        )}
+      </button>
+      {isExpanded && newFields.length > 0 && (
+        <div className="pl-4 pb-2 space-y-1.5">
+          {newFields.map((field) => (
+            <PropertyRow
+              key={field.name}
+              fieldName={field.name}
+              value={meta[field.name]}
+              allNotesForTag={notesWithTag || null}
+              onChange={(val) => onFieldChange(field.name, val)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Schema Field Renderer ───────────────────────────────────
+// ─── Property Row ────────────────────────────────────────────
+// Inline key-value row: label on left, smart input on right.
+// Used for both the Properties section and expanded tag sections.
 
-function SchemaField({
-  field,
+function PropertyRow({
+  fieldName,
   value,
+  allNotesForTag,
   onChange,
 }: {
-  field: DiscoveredField;
+  fieldName: string;
   value: unknown;
+  allNotesForTag: Note[] | null;
   onChange: (value: unknown) => void;
 }) {
-  const label = field.name.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const label = fieldName.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // Discover unique values if we have sibling notes
+  const uniqueValues = useMemo(() => {
+    if (!allNotesForTag) return new Set<string>();
+    const vals = new Set<string>();
+    for (const n of allNotesForTag) {
+      const meta = (n.metadata || {}) as Record<string, unknown>;
+      const v = meta[fieldName];
+      if (typeof v === "string" && v) vals.add(v);
+    }
+    return vals;
+  }, [allNotesForTag, fieldName]);
 
   // Boolean toggle
-  if (field.isBoolean) {
+  if (isBooleanValue(value)) {
     return (
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between py-0.5">
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>{label}</span>
         <button
           onClick={() => onChange(!value)}
-          className="w-8 h-4 rounded-full relative transition-colors"
-          style={{
-            background: value ? "var(--color-accent)" : "var(--glass-border)",
-          }}
+          className="w-7 h-3.5 rounded-full relative transition-colors"
+          style={{ background: value ? "var(--color-accent)" : "var(--glass-border)" }}
         >
           <span
-            className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all"
-            style={{ left: value ? 16 : 2 }}
+            className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white transition-all"
+            style={{ left: value ? 14 : 2 }}
           />
         </button>
       </div>
     );
   }
 
-  // Date input
-  if (field.isDate) {
+  // Date field
+  if (isDateField(fieldName)) {
     const dateVal = typeof value === "string" ? value.slice(0, 10) : "";
     return (
-      <div>
-        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+      <div className="flex items-center gap-2 py-0.5">
+        <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
         <input
           type="date"
           value={dateVal}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full h-7 rounded-md px-2 text-xs outline-none"
+          className="flex-1 h-6 rounded px-1.5 text-xs outline-none min-w-0"
           style={{
             background: "var(--glass)",
             border: "1px solid var(--glass-border)",
@@ -303,39 +363,38 @@ function SchemaField({
     );
   }
 
-  // Array field (chip list)
-  if (field.isArray) {
-    const items = isArrayValue(value) ? (value as string[]) : [];
+  // Array (chip list)
+  if (isArrayValue(value)) {
     return (
-      <div>
-        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+      <div className="py-0.5">
+        <span className="text-xs block mb-1" style={{ color: "var(--text-muted)" }}>{label}</span>
         <ChipList
-          items={items}
-          suggestions={Array.from(field.uniqueValues)}
+          items={value as string[]}
+          suggestions={Array.from(uniqueValues)}
           onChange={onChange}
         />
       </div>
     );
   }
 
-  // Dropdown for fields with a small set of unique values (< 10)
-  if (field.uniqueValues.size > 0 && field.uniqueValues.size < 10) {
+  // Dropdown for small enum sets
+  if (uniqueValues.size > 1 && uniqueValues.size < 10) {
     const strValue = typeof value === "string" ? value : "";
     return (
-      <div>
-        <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+      <div className="flex items-center gap-2 py-0.5">
+        <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
         <select
           value={strValue}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full h-7 rounded-md px-2 text-xs outline-none cursor-pointer"
+          className="flex-1 h-6 rounded px-1.5 text-xs outline-none cursor-pointer min-w-0"
           style={{
             background: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
           }}
         >
-          <option value="" style={{ background: "var(--bg-elevated)" }}>--</option>
-          {Array.from(field.uniqueValues).sort().map((v) => (
+          <option value="" style={{ background: "var(--bg-elevated)" }}>—</option>
+          {Array.from(uniqueValues).sort().map((v) => (
             <option key={v} value={v} style={{ background: "var(--bg-elevated)" }}>{v}</option>
           ))}
         </select>
@@ -343,25 +402,27 @@ function SchemaField({
     );
   }
 
-  // Default: text input
+  // Default: inline text input
   const strValue = value != null ? String(value) : "";
   return (
-    <div>
-      <label className="block text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</label>
+    <div className="flex items-center gap-2 py-0.5">
+      <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
       <input
         value={strValue}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full h-7 rounded-md px-2 text-xs outline-none"
+        onBlur={(e) => onChange(e.target.value)}
+        className="flex-1 h-6 rounded px-1.5 text-xs outline-none min-w-0"
         style={{
           background: "var(--glass)",
           border: "1px solid var(--glass-border)",
           color: "var(--text-primary)",
         }}
-        onBlur={(e) => onChange(e.target.value)}
       />
     </div>
   );
 }
+
+// SchemaField replaced by PropertyRow above
 
 // ─── Chip List for Array Fields ──────────────────────────────
 
@@ -443,16 +504,7 @@ function ChipList({
   );
 }
 
-// ─── Shared Components (preserved from original) ─────────────
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-label mb-1">{label}</div>
-      {children}
-    </div>
-  );
-}
+// ─── Shared Components ──────────────────────────────────────
 
 function TagEditor({
   noteId,
