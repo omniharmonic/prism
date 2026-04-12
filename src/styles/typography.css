@@ -190,3 +190,7 @@ kbd {
   border: 1px solid var(--glass-border);
   background: var(--glass);
 }
+
+/* ─── Excalidraw style isolation ─── */
+/* Excalidraw's own CSS (imported via @excalidraw/excalidraw/index.css)
+   handles everything. No overrides needed here. */
