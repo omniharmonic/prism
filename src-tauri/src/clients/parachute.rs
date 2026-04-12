@@ -150,17 +150,17 @@ impl ParachuteClient {
     }
 
     pub async fn get_links(&self, params: &GetLinksParams) -> Result<Vec<Link>, PrismError> {
-        let mut url = format!("{}/links", self.base_url);
-        let mut query_parts = Vec::new();
-        if let Some(ref note_id) = params.note_id {
-            query_parts.push(format!("noteId={}", note_id));
-        }
-        if let Some(ref rel) = params.relationship {
-            query_parts.push(format!("relationship={}", rel));
-        }
-        if !query_parts.is_empty() {
-            url = format!("{}?{}", url, query_parts.join("&"));
-        }
+        // Parachute API: GET /api/notes/{id}/links
+        let url = if let Some(ref note_id) = params.note_id {
+            let mut u = format!("{}/notes/{}/links", self.base_url, note_id);
+            if let Some(ref rel) = params.relationship {
+                u = format!("{}?relationship={}", u, rel);
+            }
+            u
+        } else {
+            // No note_id — fall back to /api/links (may not be supported)
+            format!("{}/links", self.base_url)
+        };
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_links failed: {}", resp.status())));
@@ -169,21 +169,34 @@ impl ParachuteClient {
     }
 
     pub async fn create_link(&self, params: &CreateLinkParams) -> Result<Link, PrismError> {
+        // Parachute API requires snake_case field names
+        let body = crate::models::link::CreateLinkBody {
+            source_id: params.source_id.clone(),
+            target_id: params.target_id.clone(),
+            relationship: params.relationship.clone(),
+            metadata: params.metadata.clone(),
+        };
         let resp = self.client
             .post(format!("{}/links", self.base_url))
-            .json(params)
+            .json(&body)
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(PrismError::Parachute(format!("create_link failed: {}", resp.status())));
+            let err = resp.text().await.unwrap_or_default();
+            return Err(PrismError::Parachute(format!("create_link failed: {}", err)));
         }
         Ok(resp.json().await?)
     }
 
     pub async fn delete_link(&self, params: &DeleteLinkParams) -> Result<(), PrismError> {
+        let body = crate::models::link::DeleteLinkBody {
+            source_id: params.source_id.clone(),
+            target_id: params.target_id.clone(),
+            relationship: params.relationship.clone(),
+        };
         let resp = self.client
             .delete(format!("{}/links", self.base_url))
-            .json(params)
+            .json(&body)
             .send()
             .await?;
         if !resp.status().is_success() {

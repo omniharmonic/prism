@@ -17,6 +17,7 @@ pub struct GetLinksParams {
     pub relationship: Option<String>,
 }
 
+/// Params received from Tauri IPC (camelCase from JS)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateLinkParams {
@@ -26,9 +27,28 @@ pub struct CreateLinkParams {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Params received from Tauri IPC (camelCase from JS)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteLinkParams {
+    pub source_id: String,
+    pub target_id: String,
+    pub relationship: String,
+}
+
+/// Body sent to Parachute API (snake_case required)
+#[derive(Serialize)]
+pub struct CreateLinkBody {
+    pub source_id: String,
+    pub target_id: String,
+    pub relationship: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Body sent to Parachute API for deletion (snake_case required)
+#[derive(Serialize)]
+pub struct DeleteLinkBody {
     pub source_id: String,
     pub target_id: String,
     pub relationship: String,

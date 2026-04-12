@@ -217,11 +217,57 @@ pub async fn vault_get_paths(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 pub async fn vault_get_links(
     client: State<'_, ParachuteClient>,
-    note_id: Option<String>,
+    noteId: Option<String>,
     relationship: Option<String>,
 ) -> Result<Vec<crate::models::link::Link>, PrismError> {
-    let params = crate::models::link::GetLinksParams { note_id, relationship };
+    let params = crate::models::link::GetLinksParams { note_id: noteId, relationship };
     client.get_links(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_create_link(
+    client: State<'_, ParachuteClient>,
+    sourceId: String,
+    targetId: String,
+    relationship: String,
+    metadata: Option<serde_json::Value>,
+) -> Result<crate::models::link::Link, PrismError> {
+    let params = crate::models::link::CreateLinkParams {
+        source_id: sourceId,
+        target_id: targetId,
+        relationship,
+        metadata,
+    };
+    client.create_link(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_delete_link(
+    client: State<'_, ParachuteClient>,
+    sourceId: String,
+    targetId: String,
+    relationship: String,
+) -> Result<(), PrismError> {
+    let params = crate::models::link::DeleteLinkParams {
+        source_id: sourceId,
+        target_id: targetId,
+        relationship,
+    };
+    client.delete_link(&params).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn vault_get_graph(
+    client: State<'_, ParachuteClient>,
+    depth: Option<u32>,
+    centerId: Option<String>,
+) -> Result<crate::models::link::Graph, PrismError> {
+    let params = crate::models::link::GetGraphParams { depth, center_id: centerId };
+    client.get_graph(&params).await
 }

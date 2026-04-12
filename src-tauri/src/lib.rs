@@ -68,6 +68,9 @@ pub fn run() {
             vault::vault_get_stats,
             vault::vault_get_paths,
             vault::vault_get_links,
+            vault::vault_create_link,
+            vault::vault_delete_link,
+            vault::vault_get_graph,
             // Markdown conversion
             convert::markdown_to_html,
             convert::html_to_markdown,

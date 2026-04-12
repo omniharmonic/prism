@@ -39,6 +39,24 @@ export const vaultApi = {
 
   getStats: () =>
     invoke<VaultStats>("vault_get_stats"),
+
+  getLinks: (noteId?: string, relationship?: string) =>
+    invoke<Array<{ sourceId: string; targetId: string; relationship: string; metadata?: unknown; createdAt: string }>>(
+      "vault_get_links", { noteId, relationship }
+    ),
+
+  createLink: (sourceId: string, targetId: string, relationship: string, metadata?: unknown) =>
+    invoke<{ sourceId: string; targetId: string; relationship: string; createdAt: string }>(
+      "vault_create_link", { sourceId, targetId, relationship, metadata }
+    ),
+
+  deleteLink: (sourceId: string, targetId: string, relationship: string) =>
+    invoke<void>("vault_delete_link", { sourceId, targetId, relationship }),
+
+  getGraph: (depth?: number, centerId?: string) =>
+    invoke<{ nodes: Array<{ id: string; path?: string; tags?: string[] }>; edges: Array<{ source: string; target: string; relationship: string }> }>(
+      "vault_get_graph", { depth, centerId }
+    ),
 };
 
 export const systemApi = {
