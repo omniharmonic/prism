@@ -1,10 +1,9 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, MessageSquare, Filter } from "lucide-react";
+import { Search, MessageSquare, Filter, ChevronDown, ChevronRight } from "lucide-react";
 import { matrixApi } from "../../lib/matrix/client";
 import { useUIStore } from "../../app/stores/ui";
 import { getPlatformConfig } from "../../lib/matrix/bridge-map";
-import { PlatformBadge } from "./PlatformBadge";
 import { Spinner } from "../ui/Spinner";
 import type { MatrixRoom } from "../../lib/matrix/types";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -39,38 +38,28 @@ export default function MessagesDashboard(_props: RendererProps) {
     retry: 1,
   });
 
-  // Group and filter rooms
-  const { filteredRooms, platformGroups, platformCounts } = useMemo(() => {
-    if (!rooms) return { filteredRooms: [], platformGroups: new Map<string, MatrixRoom[]>(), platformCounts: new Map<string, number>() };
+  const { platformGroups, platformCounts } = useMemo(() => {
+    if (!rooms) return { platformGroups: new Map<string, MatrixRoom[]>(), platformCounts: new Map<string, number>() };
 
-    // Count per platform (unfiltered)
     const platformCounts = new Map<string, number>();
     for (const room of rooms) {
       const p = room.platform || "matrix";
       platformCounts.set(p, (platformCounts.get(p) || 0) + 1);
     }
 
-    // Apply filters
     const q = searchQuery.toLowerCase();
     const filtered = rooms.filter((room) => {
       if (platformFilter !== "all" && (room.platform || "matrix") !== platformFilter) return false;
-      if (q && !room.name.toLowerCase().includes(q)) {
-        // Also search last message body
-        if (!room.last_message?.body.toLowerCase().includes(q)) return false;
-      }
+      if (q && !room.name.toLowerCase().includes(q) && !room.last_message?.body.toLowerCase().includes(q)) return false;
       return true;
     });
 
-    // Sort: unread first, then by timestamp
     filtered.sort((a, b) => {
       if (a.unread_count > 0 && b.unread_count === 0) return -1;
       if (a.unread_count === 0 && b.unread_count > 0) return 1;
-      const aTime = a.last_message?.timestamp || 0;
-      const bTime = b.last_message?.timestamp || 0;
-      return bTime - aTime;
+      return (b.last_message?.timestamp || 0) - (a.last_message?.timestamp || 0);
     });
 
-    // Group by platform
     const groups = new Map<string, MatrixRoom[]>();
     for (const room of filtered) {
       const p = room.platform || "matrix";
@@ -78,24 +67,17 @@ export default function MessagesDashboard(_props: RendererProps) {
       groups.get(p)!.push(room);
     }
 
-    return { filteredRooms: filtered, platformGroups: groups, platformCounts };
+    return { platformGroups: groups, platformCounts };
   }, [rooms, searchQuery, platformFilter]);
 
   const handleOpenThread = (room: MatrixRoom) => {
     openTab(`matrix:${room.room_id}`, room.name, "message-thread");
   };
 
-  // Collect unique platforms for the filter dropdown
-  const platforms = useMemo(() => {
-    return Array.from(platformCounts.keys()).sort();
-  }, [platformCounts]);
+  const platforms = useMemo(() => Array.from(platformCounts.keys()).sort(), [platformCounts]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Spinner size={24} />
-      </div>
-    );
+    return <div className="flex items-center justify-center h-full"><Spinner size={24} /></div>;
   }
 
   if (isError) {
@@ -103,9 +85,7 @@ export default function MessagesDashboard(_props: RendererProps) {
       <div className="flex items-center justify-center h-full">
         <div className="text-center space-y-2">
           <MessageSquare size={32} style={{ color: "var(--text-muted)" }} className="mx-auto" />
-          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-            Could not connect to messaging service.
-          </p>
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>Could not connect to messaging service.</p>
         </div>
       </div>
     );
@@ -116,39 +96,26 @@ export default function MessagesDashboard(_props: RendererProps) {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div
-        className="flex items-center gap-4 px-6 py-4"
-        style={{ borderBottom: "1px solid var(--glass-border)" }}
-      >
+      <div className="flex items-center gap-4 px-6 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <div className="flex-1">
-          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
-            Messages
-          </h1>
+          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Messages</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
             {rooms?.length || 0} conversations
-            {totalUnread > 0 && (
-              <span style={{ color: "var(--color-accent)" }}> &middot; {totalUnread} unread</span>
-            )}
+            {totalUnread > 0 && <span style={{ color: "var(--color-accent)" }}> · {totalUnread} unread</span>}
           </p>
         </div>
-      </div>
 
-      {/* Filters */}
-      <div
-        className="flex items-center gap-3 px-6 py-3"
-        style={{ borderBottom: "1px solid var(--glass-border)" }}
-      >
         {/* Search */}
         <div
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg flex-1 max-w-xs"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-xs"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
         >
           <Search size={13} style={{ color: "var(--text-muted)" }} />
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search conversations..."
-            className="bg-transparent text-xs outline-none flex-1"
+            placeholder="Search..."
+            className="bg-transparent text-xs outline-none w-40"
             style={{ color: "var(--text-primary)" }}
           />
         </div>
@@ -162,41 +129,31 @@ export default function MessagesDashboard(_props: RendererProps) {
             className="h-7 rounded-md px-2 text-xs outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           >
-            <option value="all" style={{ background: "var(--bg-elevated)" }}>
-              All platforms
-            </option>
+            <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>
             {platforms.map((p) => {
               const config = getPlatformConfig(p);
-              return (
-                <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>
-                  {config.label} ({platformCounts.get(p) || 0})
-                </option>
-              );
+              return <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>{config.label} ({platformCounts.get(p) || 0})</option>;
             })}
           </select>
         </div>
       </div>
 
-      {/* Conversation list */}
+      {/* Conversation list with collapsible platform sections */}
       <div className="flex-1 overflow-auto">
-        {filteredRooms.length === 0 ? (
+        {platformGroups.size === 0 ? (
           <div className="text-center py-12">
             <MessageSquare size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              {searchQuery || platformFilter !== "all"
-                ? "No conversations match your filters."
-                : "No conversations yet."}
+              {searchQuery || platformFilter !== "all" ? "No conversations match your filters." : "No conversations yet."}
             </p>
           </div>
-        ) : platformFilter === "all" ? (
-          // Grouped by platform
+        ) : (
           Array.from(platformGroups.entries()).map(([platform, platformRooms]) => {
             const config = getPlatformConfig(platform);
             const unreadCount = platformRooms.reduce((sum, r) => sum + r.unread_count, 0);
             return (
-              <PlatformGroupSection
+              <CollapsiblePlatformSection
                 key={platform}
-                platform={platform}
                 label={config.label}
                 color={config.color}
                 rooms={platformRooms}
@@ -205,116 +162,72 @@ export default function MessagesDashboard(_props: RendererProps) {
               />
             );
           })
-        ) : (
-          // Flat list when filtering by platform
-          filteredRooms.map((room) => (
-            <ConversationRow
-              key={room.room_id}
-              room={room}
-              showPlatform={false}
-              onClick={() => handleOpenThread(room)}
-            />
-          ))
         )}
       </div>
     </div>
   );
 }
 
-function PlatformGroupSection({
+function CollapsiblePlatformSection({
   label,
   color,
   rooms,
   unreadCount,
   onOpenThread,
 }: {
-  platform: string;
   label: string;
   color: string;
   rooms: MatrixRoom[];
   unreadCount: number;
   onOpenThread: (room: MatrixRoom) => void;
 }) {
+  const [open, setOpen] = useState(true);
+
   return (
     <div>
-      {/* Group header */}
-      <div
-        className="flex items-center gap-2 px-6 py-2 sticky top-0"
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-5 py-2 sticky top-0 hover:bg-[var(--glass-hover)] transition-colors"
         style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--glass-border)" }}
       >
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
         <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>
           {label}
         </span>
-        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-          {rooms.length}
-        </span>
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>{rooms.length}</span>
         {unreadCount > 0 && (
-          <span
-            className="text-[10px] px-1.5 rounded-full ml-auto"
-            style={{ background: "var(--color-accent)", color: "white" }}
-          >
-            {unreadCount} unread
+          <span className="text-[10px] px-1.5 rounded-full ml-auto" style={{ background: "var(--color-accent)", color: "white" }}>
+            {unreadCount}
           </span>
         )}
-      </div>
+      </button>
 
-      {/* Rooms */}
-      {rooms.map((room) => (
-        <ConversationRow
-          key={room.room_id}
-          room={room}
-          showPlatform={false}
-          onClick={() => onOpenThread(room)}
-        />
+      {open && rooms.map((room) => (
+        <ConversationRow key={room.room_id} room={room} onClick={() => onOpenThread(room)} />
       ))}
     </div>
   );
 }
 
-function ConversationRow({
-  room,
-  showPlatform,
-  onClick,
-}: {
-  room: MatrixRoom;
-  showPlatform: boolean;
-  onClick: () => void;
-}) {
+function ConversationRow({ room, onClick }: { room: MatrixRoom; onClick: () => void }) {
   const timeStr = room.last_message ? formatRelativeTime(room.last_message.timestamp) : "";
 
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-start gap-3 px-6 py-3 hover:bg-[var(--glass-hover)] transition-colors text-left"
+      className="w-full flex items-start gap-3 px-6 py-2.5 hover:bg-[var(--glass-hover)] transition-colors text-left"
       style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}
     >
-      {/* Avatar placeholder */}
-      <div
-        className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
-        style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
-      >
-        <MessageSquare size={14} style={{ color: "var(--text-muted)" }} />
+      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+        <MessageSquare size={13} style={{ color: "var(--text-muted)" }} />
       </div>
-
-      {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span
-            className="text-sm truncate"
-            style={{
-              color: "var(--text-primary)",
-              fontWeight: room.unread_count > 0 ? 600 : 400,
-            }}
-          >
+          <span className="text-sm truncate" style={{ color: "var(--text-primary)", fontWeight: room.unread_count > 0 ? 600 : 400 }}>
             {room.name}
           </span>
-          {showPlatform && <PlatformBadge platform={room.platform || "matrix"} />}
-          {timeStr && (
-            <span className="ml-auto text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-              {timeStr}
-            </span>
-          )}
+          {timeStr && <span className="ml-auto text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>{timeStr}</span>}
         </div>
         {room.last_message && (
           <div className="text-xs truncate mt-0.5" style={{ color: "var(--text-muted)" }}>
@@ -323,13 +236,8 @@ function ConversationRow({
           </div>
         )}
       </div>
-
-      {/* Unread badge */}
       {room.unread_count > 0 && (
-        <span
-          className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 mt-1"
-          style={{ background: "var(--color-accent)", color: "white", minWidth: 20, textAlign: "center" }}
-        >
+        <span className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 mt-1" style={{ background: "var(--color-accent)", color: "white", minWidth: 20, textAlign: "center" }}>
           {room.unread_count}
         </span>
       )}
