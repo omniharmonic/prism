@@ -10,9 +10,11 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds};
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
+use services::ServiceManager;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +48,9 @@ pub fn run() {
 
     let agent_sessions = AgentSessions::new();
 
+    // Start background sync services (uses tauri::async_runtime which is always available)
+    let service_manager = ServiceManager::start(&app_config);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(parachute)
@@ -54,6 +59,7 @@ pub fn run() {
         .manage(claude_client)
         .manage(agent_sessions)
         .manage(app_config)
+        .manage(service_manager)
         .invoke_handler(tauri::generate_handler![
             // Vault CRUD
             vault::vault_list_notes,
@@ -125,6 +131,8 @@ pub fn run() {
             wikilinks::resolve_all_wikilinks,
             // Notion
             notion_pages::notion_list_pages,
+            // Background services
+            service_cmds::get_service_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -7,6 +7,14 @@ pub struct GoogleClient {
     gog_bin: String,
 }
 
+impl Clone for GoogleClient {
+    fn clone(&self) -> Self {
+        Self {
+            gog_bin: self.gog_bin.clone(),
+        }
+    }
+}
+
 impl GoogleClient {
     pub fn new() -> Self {
         let gog_bin = std::process::Command::new("which")

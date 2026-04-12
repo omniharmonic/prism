@@ -67,6 +67,19 @@ export const systemApi = {
     invoke<ServiceStatus>("check_services"),
 };
 
+export interface BackgroundServiceStatus {
+  name: string;
+  running: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  items_processed: number;
+}
+
+export const serviceApi = {
+  getStatus: () =>
+    invoke<BackgroundServiceStatus[]>("get_service_status"),
+};
+
 export const convertApi = {
   markdownToHtml: (markdown: string) =>
     invoke<string>("markdown_to_html", { markdown }),

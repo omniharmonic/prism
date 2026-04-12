@@ -10,3 +10,4 @@ pub mod editor;
 pub mod wikilinks;
 pub mod notion_pages;
 pub mod message_index;
+pub mod service_cmds;
