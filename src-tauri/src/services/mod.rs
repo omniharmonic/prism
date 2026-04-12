@@ -2,6 +2,7 @@ pub mod message_sync;
 pub mod calendar_sync;
 pub mod email_sync;
 pub mod person_linker;
+pub mod agent_dispatch;
 
 use std::sync::Arc;
 use tokio::sync::watch;

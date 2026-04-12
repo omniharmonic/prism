@@ -80,6 +80,30 @@ export const serviceApi = {
     invoke<BackgroundServiceStatus[]>("get_service_status"),
 };
 
+export interface AgentDispatch {
+  id: string;
+  skill: string;
+  prompt: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  completed_at: string | null;
+  duration_secs: number | null;
+  output: string | null;
+  error: string | null;
+  note_id: string | null;
+}
+
+export const agentApi = {
+  dispatch: (skill: string, prompt: string, context?: string) =>
+    invoke<{ id: string }>("agent_dispatch", { skill, prompt, context }),
+
+  getDispatches: () =>
+    invoke<AgentDispatch[]>("agent_get_dispatches"),
+
+  cancelDispatch: (id: string) =>
+    invoke<void>("agent_cancel_dispatch", { id }),
+};
+
 export const convertApi = {
   markdownToHtml: (markdown: string) =>
     invoke<string>("markdown_to_html", { markdown }),

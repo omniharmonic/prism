@@ -1,5 +1,6 @@
 use tauri::State;
 use crate::services::ServiceManager;
+use crate::services::agent_dispatch::DispatchManager;
 use crate::clients::google::GoogleClient;
 use crate::clients::parachute::ParachuteClient;
 use crate::commands::config::AppConfig;
@@ -69,4 +70,41 @@ pub async fn calendar_sync_range(
         "from": from,
         "to": to,
     }))
+}
+
+/// Dispatch a background agent task.
+#[tauri::command]
+pub async fn agent_dispatch(
+    dispatch_mgr: State<'_, DispatchManager>,
+    parachute: State<'_, ParachuteClient>,
+    skill: String,
+    prompt: String,
+    context: Option<String>,
+) -> Result<serde_json::Value, PrismError> {
+    // We need a dummy ClaudeClient reference — but dispatch_manager spawns its own process
+    let id = dispatch_mgr.dispatch(
+        // ClaudeClient not needed — dispatch spawns its own process
+        skill.as_str(),
+        prompt.as_str(),
+        context.as_deref(),
+    ).await?;
+
+    Ok(serde_json::json!({ "id": id }))
+}
+
+/// List all dispatches (active and completed).
+#[tauri::command]
+pub async fn agent_get_dispatches(
+    dispatch_mgr: State<'_, DispatchManager>,
+) -> Result<Vec<crate::services::agent_dispatch::Dispatch>, PrismError> {
+    Ok(dispatch_mgr.list().await)
+}
+
+/// Cancel a running dispatch.
+#[tauri::command]
+pub async fn agent_cancel_dispatch(
+    dispatch_mgr: State<'_, DispatchManager>,
+    id: String,
+) -> Result<(), PrismError> {
+    dispatch_mgr.cancel(&id).await
 }
