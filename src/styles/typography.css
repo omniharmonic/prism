@@ -140,18 +140,30 @@ html.light .prose-editor code:not(pre code) {
 }
 
 /* ─── Wikilinks ─── */
+/* Hide the raw [[...]] text, show clean display name via ::after */
 .wikilink {
-  color: var(--color-accent);
+  font-size: 0;
+  line-height: 0;
+  color: transparent;
   cursor: pointer;
+  border-radius: 4px;
+  padding: 0 3px;
+  transition: background 0.15s ease;
+  position: relative;
+}
+.wikilink::after {
+  content: attr(data-wikilink-display);
+  font-size: var(--text-base, 1rem);
+  line-height: 1.75;
+  color: var(--color-accent);
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
-  border-radius: 2px;
-  padding: 0 1px;
-  transition: background 0.15s ease, color 0.15s ease;
+  font-weight: 500;
+  cursor: pointer;
 }
-.wikilink:hover {
+.wikilink:hover::after {
   text-decoration-style: solid;
   text-decoration-thickness: 2px;
 }
@@ -161,30 +173,10 @@ html.dark .wikilink:hover {
 html.light .wikilink:hover {
   background: rgba(74, 125, 215, 0.08);
 }
-
-/* ─── @mentions (inline styled spans) ─── */
-.ProseMirror span.wikilink {
-  color: var(--color-accent);
-  cursor: pointer;
-  font-weight: 500;
-  border-radius: 4px;
-  padding: 0 3px;
-  transition: background 0.15s ease;
-}
-html.dark .ProseMirror span.wikilink {
-  background: rgba(124, 159, 232, 0.12);
-}
-html.light .ProseMirror span.wikilink {
-  background: rgba(74, 125, 215, 0.08);
-}
-.ProseMirror span.wikilink:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-html.dark .ProseMirror span.wikilink:hover {
+html.dark .wikilink:hover::after {
   background: rgba(124, 159, 232, 0.20);
 }
-html.light .ProseMirror span.wikilink:hover {
+html.light .wikilink:hover::after {
   background: rgba(74, 125, 215, 0.15);
 }
 

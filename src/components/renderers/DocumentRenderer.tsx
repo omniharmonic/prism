@@ -6,7 +6,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
-import { WikilinkAutocomplete, getWikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
@@ -31,6 +31,7 @@ const lowlightInstance = createLowlight(common);
 export default function DocumentRenderer({ note }: RendererProps) {
   const openTab = useUIStore((s) => s.openTab);
   const { data: allNotes } = useNotes();
+  const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
 
   // Wikilink navigation: resolve target name → note ID → open tab
   const handleWikilinkNavigate = useCallback((target: string) => {
@@ -63,7 +64,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
     CodeBlockLowlight.configure({ lowlight: lowlightInstance }),
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
-    WikilinkAutocomplete,
+    WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
   ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
@@ -194,8 +195,10 @@ export default function DocumentRenderer({ note }: RendererProps) {
         <div className="max-w-3xl mx-auto">
           <EditorContent editor={editor} />
         </div>
-        {/* Wikilink autocomplete dropdown */}
-        {editor && <WikilinkDropdown editor={editor} notes={allNotes || []} />}
+        {/* Wikilink / @mention autocomplete dropdown */}
+        {editor && autocompleteState?.active && (
+          <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+        )}
       </div>
 
       {/* Save status */}
@@ -234,45 +237,38 @@ export default function DocumentRenderer({ note }: RendererProps) {
  * Wikilink autocomplete dropdown — appears when typing [[ in the editor.
  * Shows matching notes from the vault, click to insert [[target]] at cursor.
  */
-function WikilinkDropdown({ editor, notes }: { editor: ReturnType<typeof useEditor>; notes: Note[] }) {
+function WikilinkDropdown({ editor, notes, autocomplete }: {
+  editor: ReturnType<typeof useEditor>;
+  notes: Note[];
+  autocomplete: WikilinkAutocompleteState;
+}) {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  // Force re-render on every editor transaction so we pick up autocomplete state changes
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!editor) return;
-    const handler = () => setTick((t) => t + 1);
-    editor.on("transaction", handler);
-    return () => { editor.off("transaction", handler); };
-  }, [editor]);
 
   if (!editor) return null;
 
-  const autocompleteState = getWikilinkAutocompleteState(editor.state);
-  if (!autocompleteState?.active) return null;
-
-  const query = (autocompleteState.query || "").toLowerCase();
+  const query = (autocomplete.query || "").toLowerCase();
   const matches = query.length > 0
     ? notes.filter((n) => {
         const name = (n.path || "").split("/").pop() || "";
         return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
       }).slice(0, 8)
-    : notes.slice(0, 8); // Show recent notes when query is empty (just typed [[)
+    : notes.slice(0, 8);
 
   if (matches.length === 0) return null;
 
   // Get cursor position for dropdown placement
-  const coords = editor.view.coordsAtPos(autocompleteState.to);
+  const coords = editor.view.coordsAtPos(autocomplete.to);
 
   const handleSelect = (note: Note) => {
     const name = (note.path || "").split("/").pop() || note.id;
-    const trigger = autocompleteState.trigger;
+    const trigger = autocomplete.trigger;
 
     editor.chain().focus()
-      .deleteRange({ from: autocompleteState.from, to: autocompleteState.to })
+      .deleteRange({ from: autocomplete.from, to: autocomplete.to })
       .insertContent(
         trigger === "@"
           ? `<span class="wikilink" data-wikilink-target="${note.path || name}">@${name}</span>&nbsp;`
-          : `[[${note.path || name}]]`
+          : `[[${note.path || name}|${name}]]`
       )
       .run();
   };
