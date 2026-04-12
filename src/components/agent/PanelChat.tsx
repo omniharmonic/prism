@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Loader2, Sparkles, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
+import { vaultApi } from "../../lib/parachute/client";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -18,6 +20,7 @@ export function PanelChat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const { openTabs, activeTabId, setPendingEdit, setGhostText } = useUIStore();
+  const queryClient = useQueryClient();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteId = activeTab?.noteId;
   // Don't pass virtual note IDs (matrix:...) to the agent
@@ -45,13 +48,25 @@ export function PanelChat() {
       };
       setMessages((prev) => [...prev, assistantMsg]);
 
-      // In edit mode, auto-insert response as ghost text in the document
-      if (editMode && effectiveNoteId) {
-        setGhostText({
-          noteId: effectiveNoteId,
-          content: response.message,
-          position: "end",
-        });
+      // Check if the agent modified the note via MCP (re-fetch and compare)
+      if (effectiveNoteId) {
+        try {
+          const freshNote = await vaultApi.getNote(effectiveNoteId);
+          // Invalidate the query cache so the editor picks up changes
+          queryClient.invalidateQueries({ queryKey: ["vault", "note", effectiveNoteId] });
+          queryClient.invalidateQueries({ queryKey: ["vault"] });
+
+          // If the content changed, show it as ghost text for review
+          if (freshNote.content && editMode) {
+            setGhostText({
+              noteId: effectiveNoteId,
+              content: freshNote.content,
+              position: "end",
+            });
+          }
+        } catch {
+          // Note fetch failed — agent may not have edited it, that's fine
+        }
       }
     } catch (e) {
       const errorMsg: ChatMessage = {

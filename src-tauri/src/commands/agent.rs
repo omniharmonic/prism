@@ -36,10 +36,11 @@ You have access to the Parachute Vault via MCP tools. The tool names are prefixe
 - `mcp__parachute-vault__traverse-links` — traverse the knowledge graph\n\
 - `mcp__parachute-vault__tag-note` — add tags to a note\n\
 - `mcp__parachute-vault__semantic-search` — semantic/vector search\n\n\
-When the user asks you to edit the current document, write the updated content in your response. \
-The user will click 'Apply to document' or 'Replace document' buttons to update the note. \
-Do NOT try to call MCP tools to update the document — the Prism UI handles persistence.\n\
-For searching or reading OTHER notes, you can use the MCP tools listed above.\n\n\
+When the user asks you to edit a document, USE the MCP tool `mcp__parachute-vault__update-note` \
+to make the changes directly. Pass the note ID and the updated content. After editing, briefly \
+describe what you changed. You can also use `mcp__parachute-vault__tag-note` to add tags, \
+`mcp__parachute-vault__create-note` to create new notes, and other MCP tools as needed.\n\
+The Prism UI will detect your changes and show them to the user for review.\n\n\
 The vault contains Benjamin's projects, meetings, contacts, tasks, research, and writing. \
 Tag schemas define structured fields for each note type (task, meeting, person, project, etc.).\n\n";
 
@@ -99,10 +100,9 @@ pub async fn agent_chat(
              - Tags: {}\n\n\
              Content:\n{}\n\n\
              ---\n\n\
-             To edit this document, write the new or modified content in your response. \
-             The user will click 'Append to document' or 'Replace document' to apply your edits. \
-             Do NOT try to use MCP tools to update this note — Prism handles saving automatically.\n\
-             If the user asks about OTHER documents or topics, you can search the vault.\n\n\
+             To edit this document, use `mcp__parachute-vault__update-note` with the note ID above \
+             and the updated content. After editing, briefly describe what you changed.\n\
+             You can also search the vault, create new notes, add tags, and traverse links.\n\n\
              User: {}",
             PRISM_CONTEXT,
             id,

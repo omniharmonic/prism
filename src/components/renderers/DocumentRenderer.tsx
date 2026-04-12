@@ -90,6 +90,23 @@ export default function DocumentRenderer({ note }: RendererProps) {
     return () => { cancelled = true; };
   }, [note.id]); // Only re-convert when opening a different note
 
+  // Detect external changes (e.g., agent edited via MCP)
+  const lastKnownContent = useRef(note.content);
+  useEffect(() => {
+    // Skip if content hasn't changed or if this is the initial load
+    if (note.content === lastKnownContent.current) return;
+    if (!editorRef.current) return;
+
+    // External source (agent MCP) changed the note — show as ghost text for review
+    const { setGhostText } = useUIStore.getState();
+    setGhostText({
+      noteId: note.id,
+      content: note.content,
+      position: "end",
+    });
+    lastKnownContent.current = note.content;
+  }, [note.content, note.id]);
+
   const getContent = useCallback(() => contentRef.current, []);
   const { isSaving, lastSaved, scheduleSave, saveNow } = useAutoSave(note.id, getContent);
 
@@ -279,12 +296,11 @@ function GhostTextOverlay({
 
   const handleAccept = async () => {
     if (!editor) return;
-    editor.commands.focus("end");
-    editor.commands.insertContent("<hr>");
-    editor.commands.insertContent(previewHtml);
+    // Replace the entire document with the agent's version
+    editor.commands.setContent(previewHtml);
     contentRef.current = editor.getHTML();
     scheduleSave();
-    rejectGhostText(); // Clear the ghost (don't use acceptGhostText which sets pendingEdit)
+    rejectGhostText();
   };
 
   return (
@@ -298,7 +314,7 @@ function GhostTextOverlay({
         style={{ background: "rgba(var(--accent-rgb, 99,102,241), 0.1)", borderBottom: "1px solid var(--glass-border)" }}
       >
         <span className="text-xs font-medium" style={{ color: "var(--color-accent)" }}>
-          Claude's suggestion — review before accepting
+          Agent edited this document — review changes
         </span>
         <div className="flex items-center gap-1.5">
           <button
