@@ -78,8 +78,8 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
   }, [notes, searchQuery, platformFilter]);
 
   const handleOpenThread = (note: Note) => {
-    const name = (note.path || "").split("/").pop() || note.id;
-    openTab(note.id, name, "document");
+    const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || note.id;
+    openTab(note.id, name, "message-thread");
   };
 
   const platforms = useMemo(() => Array.from(platformCounts.keys()).sort(), [platformCounts]);

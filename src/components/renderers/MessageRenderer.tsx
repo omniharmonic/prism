@@ -8,7 +8,7 @@ import { PlatformBadge } from "../comms/PlatformBadge";
 
 export default function MessageRenderer({ note }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
-  const roomId = (meta?.matrix_room_id as string) || note.id.replace("matrix:", "");
+  const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || note.id.replace("matrix:", "");
   const platform = (meta?.platform as string) || "matrix";
   const queryClient = useQueryClient();
 
