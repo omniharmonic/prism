@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight } from "lucide-react";
 import { agentApi, type AgentDispatch } from "../../lib/parachute/client";
@@ -39,6 +39,16 @@ export default function AgentActivity(_props: RendererProps) {
   const active = dispatches?.filter((d) => d.status === "running") || [];
   const completed = dispatches?.filter((d) => d.status === "completed") || [];
   const failed = dispatches?.filter((d) => d.status === "failed" || d.status === "cancelled") || [];
+
+  // When a dispatch completes, invalidate vault cache so new notes appear in the sidebar
+  const prevActiveCount = useRef(active.length);
+  useEffect(() => {
+    if (prevActiveCount.current > 0 && active.length < prevActiveCount.current) {
+      // A dispatch just finished — refresh vault data
+      queryClient.invalidateQueries({ queryKey: ["vault"] });
+    }
+    prevActiveCount.current = active.length;
+  }, [active.length, queryClient]);
 
   const handleDispatch = async (skill: string, prompt: string) => {
     await agentApi.dispatch(skill, prompt);
