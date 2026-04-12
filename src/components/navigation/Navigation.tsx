@@ -1,15 +1,14 @@
 import { useState } from "react";
-import { Search, Inbox as InboxIcon, Calendar, Plus, MessageSquare, PenSquare } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare } from "lucide-react";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
 import { NewContentMenu } from "./NewContentMenu";
-import { Inbox } from "./Inbox";
-import { CalendarMini } from "./CalendarMini";
 import { useDebounce } from "use-debounce";
 import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { ComposeMessage } from "../comms/ComposeMessage";
+import type { ContentType } from "../../lib/types";
 
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -19,8 +18,12 @@ export function Navigation() {
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const openTab = useUIStore((s) => s.openTab);
 
-  const handleOpenMessagesDashboard = () => {
-    openTab("messages-dashboard", "Messages", "messages-dashboard" as import("../../lib/types").ContentType);
+  const handleOpenMessages = () => {
+    openTab("messages-dashboard", "Messages", "messages-dashboard" as ContentType);
+  };
+
+  const handleOpenCalendar = () => {
+    openTab("calendar-dashboard", "Calendar", "calendar-dashboard" as ContentType);
   };
 
   return (
@@ -46,38 +49,33 @@ export function Navigation() {
         <SearchPanel query={debouncedQuery} onClose={() => setSearchQuery("")} />
       ) : (
         <div className="flex-1 overflow-auto">
-          {/* Unified Inbox */}
-          <NavSection
-            label="Inbox"
-            icon={<InboxIcon size={14} />}
-            action={
+          {/* Quick-access tabs */}
+          <div className="px-2 py-1.5 space-y-0.5">
+            <button
+              onClick={handleOpenMessages}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <MessageSquare size={14} />
+              <span className="flex-1 text-left">Messages</span>
               <button
                 onClick={(e) => { e.stopPropagation(); setShowCompose(true); }}
-                className="p-0.5 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                className="p-0.5 rounded hover:bg-[var(--glass-active)] transition-colors"
                 style={{ color: "var(--text-muted)" }}
                 title="Compose message"
               >
                 <PenSquare size={11} />
               </button>
-            }
-          >
-            <Inbox />
-          </NavSection>
-
-          {/* Messages Dashboard */}
-          <button
-            onClick={handleOpenMessagesDashboard}
-            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            <MessageSquare size={13} />
-            <span>Messages</span>
-          </button>
-
-          {/* Calendar — today's events */}
-          <NavSection label="Calendar" icon={<Calendar size={14} />}>
-            <CalendarMini />
-          </NavSection>
+            </button>
+            <button
+              onClick={handleOpenCalendar}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <Calendar size={14} />
+              <span>Calendar</span>
+            </button>
+          </div>
 
           {/* Projects / vault notes */}
           <NavSection label={sidebarLabel} defaultOpen>
@@ -107,33 +105,25 @@ export function Navigation() {
 
 function NavSection({
   label,
-  icon,
   defaultOpen = false,
-  action,
   children,
 }: {
   label: string;
-  icon?: React.ReactNode;
   defaultOpen?: boolean;
-  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div>
-      <div className="flex items-center">
-        <button
-          onClick={() => setOpen(!open)}
-          className="flex-1 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium uppercase tracking-wider hover:bg-[var(--glass-hover)] transition-colors"
-          style={{ color: "var(--text-muted)" }}
-        >
-          <span className="text-[10px]">{open ? "▾" : "▸"}</span>
-          {icon}
-          {label}
-        </button>
-        {action && <div className="pr-2">{action}</div>}
-      </div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium uppercase tracking-wider hover:bg-[var(--glass-hover)] transition-colors"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+        {label}
+      </button>
       {open && children}
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Loader2, Sparkles, FileInput, Replace, PenLine } from "lucide-react";
+import { Send, Loader2, Sparkles, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 
@@ -13,6 +13,7 @@ export function PanelChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -43,6 +44,15 @@ export function PanelChat() {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
+
+      // In edit mode, auto-insert response as ghost text in the document
+      if (editMode && effectiveNoteId) {
+        setGhostText({
+          noteId: effectiveNoteId,
+          content: response.message,
+          position: "end",
+        });
+      }
     } catch (e) {
       const errorMsg: ChatMessage = {
         role: "assistant",
@@ -69,12 +79,27 @@ export function PanelChat() {
       <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <Sparkles size={14} style={{ color: "var(--color-accent)" }} />
         <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-          Claude via Claude Code
+          Claude
         </span>
         {effectiveNoteId && (
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            · viewing {activeTab?.title}
-          </span>
+          <>
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+              · {activeTab?.title}
+            </span>
+            <button
+              onClick={() => setEditMode(!editMode)}
+              className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors"
+              style={{
+                background: editMode ? "var(--color-accent)" : "transparent",
+                color: editMode ? "white" : "var(--text-muted)",
+                border: editMode ? "none" : "1px solid var(--glass-border)",
+              }}
+              title={editMode ? "Edit mode: responses auto-insert into document" : "Chat mode: responses stay in chat"}
+            >
+              {editMode ? <ToggleRight size={11} /> : <ToggleLeft size={11} />}
+              Edit
+            </button>
+          </>
         )}
       </div>
 

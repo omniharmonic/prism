@@ -15,10 +15,11 @@ export function Canvas() {
   // Tag views are a special virtual tab type
   const isTagView = activeTab?.noteId.startsWith("tag:");
 
-  // Virtual notes (e.g., matrix:room_id, messages-dashboard) don't come from Parachute
+  // Virtual notes (e.g., matrix:room_id, messages-dashboard, calendar-dashboard) don't come from Parachute
+  const VIRTUAL_TAB_IDS = new Set(["messages-dashboard", "calendar-dashboard"]);
   const isVirtual = activeTab ? (
     (activeTab.noteId.includes(":") && !activeTab.noteId.match(/^\d/)) ||
-    activeTab.noteId === "messages-dashboard"
+    VIRTUAL_TAB_IDS.has(activeTab.noteId)
   ) : false;
   const parachuteNoteId = isVirtual ? null : (activeTab?.noteId ?? null);
 

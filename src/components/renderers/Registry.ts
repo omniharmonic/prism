@@ -17,6 +17,7 @@ const DashboardRenderer = lazy(() => import("./DashboardRenderer"));
 const CanvasRenderer = lazy(() => import("./CanvasRenderer"));
 const PlaceholderRenderer = lazy(() => import("./PlaceholderRenderer"));
 const MessagesDashboardRenderer = lazy(() => import("../comms/MessagesDashboard"));
+const CalendarDashboardRenderer = lazy(() => import("../comms/CalendarDashboard"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
   document: DocumentRenderer,
@@ -35,7 +36,10 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   dashboard: DashboardRenderer,
   canvas: CanvasRenderer,
   "messages-dashboard": MessagesDashboardRenderer,
-};
+} as Record<string, React.LazyExoticComponent<ComponentType<RendererProps>>>;
+
+// Virtual dashboard renderers (not in ContentType union)
+(RENDERER_MAP as any)["calendar-dashboard"] = CalendarDashboardRenderer;
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {
   return RENDERER_MAP[type] || PlaceholderRenderer;
