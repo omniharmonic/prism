@@ -98,24 +98,11 @@ impl DispatchManager {
         let prompt_owned = full_prompt.clone();
         let skill_owned = skill.to_string();
 
-        // Use the ClaudeClient's run method via a spawned task
-        // We can't hold references across await, so we clone what we need
-        let result_dispatches = dispatches.clone();
-        let result_id = dispatch_id.clone();
-
-        // Create a oneshot channel to get the result
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<String, PrismError>>();
-
-        // We need to call claude.run(), but ClaudeClient isn't Send-safe for background tasks
-        // Instead, spawn the CLI process directly using the same pattern
         let claude_bin = which_claude();
-        let prism_root = std::env::current_dir().unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join("iCloud Drive (Archive)/Documents/cursor projects/prism")
-        });
+        let prism_root = find_prism_root();
+        log::info!("Dispatch {}: spawning claude at {:?} in {:?}", dispatch_id, claude_bin, prism_root);
 
-        let mut env: HashMap<String, String> = std::env::vars()
+        let clean_env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k != "CLAUDECODE")
             .collect();
 
@@ -127,15 +114,13 @@ impl DispatchManager {
                 &prompt_owned,
             ])
             .current_dir(&prism_root)
-            .envs(&env)
+            .envs(&clean_env)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
 
         match child {
-            Ok(mut child) => {
-                // Store process handle for cancellation
-                let child_id = child.id();
+            Ok(child) => {
 
                 // Spawn a task to wait for completion
                 let process_dispatches = dispatches.clone();
@@ -168,9 +153,14 @@ impl DispatchManager {
                                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
                                 if output.status.success() {
+                                    log::info!("Dispatch {} stdout ({} chars): {}", process_id, stdout.len(), &stdout[..stdout.len().min(500)]);
+                                    if !stderr.is_empty() {
+                                        log::debug!("Dispatch {} stderr: {}", process_id, &stderr[..stderr.len().min(300)]);
+                                    }
                                     dispatch.status = DispatchStatus::Completed;
                                     dispatch.output = Some(stdout);
                                 } else {
+                                    log::warn!("Dispatch {} failed. stderr: {} stdout: {}", process_id, &stderr[..stderr.len().min(300)], &stdout[..stdout.len().min(300)]);
                                     dispatch.status = DispatchStatus::Failed;
                                     dispatch.error = Some(if stderr.is_empty() { stdout } else { stderr });
                                 }
@@ -285,6 +275,28 @@ impl DispatchManager {
 
         Ok(note.id)
     }
+}
+
+/// Find the Prism project root (where .mcp.json lives).
+/// In dev: current_dir works. In release .app bundle: fall back to known paths.
+fn find_prism_root() -> std::path::PathBuf {
+    // Try current dir first (works in dev)
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.join(".mcp.json").exists() {
+        return cwd;
+    }
+
+    // Known path (production)
+    let known = dirs::home_dir()
+        .unwrap_or_default()
+        .join("iCloud Drive (Archive)/Documents/cursor projects/prism");
+    if known.join(".mcp.json").exists() {
+        return known;
+    }
+
+    // Last resort: search common locations
+    log::warn!("Could not find Prism project root with .mcp.json, using fallback");
+    known
 }
 
 fn which_claude() -> String {
