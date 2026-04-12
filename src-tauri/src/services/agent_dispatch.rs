@@ -33,15 +33,14 @@ pub enum DispatchStatus {
 /// Each dispatch spawns a Claude Code CLI process with MCP access.
 pub struct DispatchManager {
     dispatches: Arc<Mutex<HashMap<String, Dispatch>>>,
-    /// Handles to running processes for cancellation
-    processes: Arc<Mutex<HashMap<String, tokio::process::Child>>>,
+    parachute: Arc<ParachuteClient>,
 }
 
 impl DispatchManager {
     pub fn new() -> Self {
         Self {
             dispatches: Arc::new(Mutex::new(HashMap::new())),
-            processes: Arc::new(Mutex::new(HashMap::new())),
+            parachute: Arc::new(ParachuteClient::new(1940, None)),
         }
     }
 
@@ -125,6 +124,8 @@ impl DispatchManager {
                 // Spawn a task to wait for completion
                 let process_dispatches = dispatches.clone();
                 let process_id = dispatch_id.clone();
+                let persist_parachute = self.parachute.clone();
+                let persist_skill = skill.to_string();
 
                 tauri::async_runtime::spawn(async move {
                     let start = std::time::Instant::now();
@@ -179,6 +180,17 @@ impl DispatchManager {
                             "Dispatch {} ({}) completed: {:?} in {}s",
                             process_id, dispatch.skill, dispatch.status, elapsed
                         );
+
+                        // Auto-persist completed dispatches to Parachute
+                        if dispatch.status == DispatchStatus::Completed {
+                            let dispatch_clone = dispatch.clone();
+                            let parachute = persist_parachute.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = persist_to_vault(&parachute, &dispatch_clone).await {
+                                    log::warn!("Failed to persist dispatch {}: {}", dispatch_clone.id, e);
+                                }
+                            });
+                        }
                     }
                 });
             }
@@ -275,6 +287,52 @@ impl DispatchManager {
 
         Ok(note.id)
     }
+}
+
+/// Persist a dispatch result to Parachute as a note.
+async fn persist_to_vault(
+    parachute: &ParachuteClient,
+    dispatch: &Dispatch,
+) -> Result<(), PrismError> {
+    let date = &dispatch.started_at[..10];
+    let slug = dispatch.skill.replace(' ', "-").to_lowercase();
+    let short_id = &dispatch.id[..8];
+    let path = format!("vault/agent/dispatches/{}/{}-{}", date, slug, short_id);
+
+    let mut content = format!("# Agent: {}\n\n", dispatch.skill);
+    content.push_str(&format!("**Status:** {:?}\n", dispatch.status));
+    content.push_str(&format!("**Started:** {}\n", dispatch.started_at));
+    if let Some(ref completed) = dispatch.completed_at {
+        content.push_str(&format!("**Completed:** {}\n", completed));
+    }
+    if let Some(secs) = dispatch.duration_secs {
+        content.push_str(&format!("**Duration:** {}s\n", secs));
+    }
+    if let Some(ref output) = dispatch.output {
+        content.push_str(&format!("\n---\n\n{}\n", output));
+    }
+    if let Some(ref error) = dispatch.error {
+        content.push_str(&format!("\n## Error\n\n{}\n", error));
+    }
+
+    let metadata = serde_json::json!({
+        "type": "agent-dispatch",
+        "skill": dispatch.skill,
+        "status": format!("{:?}", dispatch.status).to_lowercase(),
+        "startedAt": dispatch.started_at,
+        "completedAt": dispatch.completed_at,
+        "durationSecs": dispatch.duration_secs,
+    });
+
+    parachute.create_note(&CreateNoteParams {
+        content,
+        path: Some(path),
+        metadata: Some(metadata),
+        tags: Some(vec!["agent-dispatch".into(), "agent-output".into()]),
+    }).await?;
+
+    log::info!("Persisted dispatch {} to vault", dispatch.id);
+    Ok(())
 }
 
 /// Find the Prism project root (where .mcp.json lives).
