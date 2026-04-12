@@ -35,6 +35,7 @@ export function Settings({ open, onClose }: SettingsProps) {
     monoFontFamily, setMonoFontFamily,
     vaults, addVault, removeVault, setActiveVault, activeVaultUrl,
     defaultSyncDirection, setDefaultSyncDirection,
+    sidebarLabel, setSidebarLabel,
   } = useSettingsStore();
 
   const [newVaultName, setNewVaultName] = useState("");
@@ -109,6 +110,16 @@ export function Settings({ open, onClose }: SettingsProps) {
                     <input type="range" min={11} max={18} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-24" />
                     <span className="text-xs w-8" style={{ color: "var(--text-secondary)" }}>{fontSize}px</span>
                   </div>
+                </Row>
+
+                <Row label="Directory Label">
+                  <input
+                    value={sidebarLabel}
+                    onChange={(e) => setSidebarLabel(e.target.value)}
+                    className="h-7 rounded-md px-2 text-xs outline-none w-32"
+                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                    placeholder="Projects"
+                  />
                 </Row>
               </Section>
 

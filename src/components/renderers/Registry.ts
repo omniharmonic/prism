@@ -16,6 +16,7 @@ const WebsiteRenderer = lazy(() => import("./WebsiteRenderer"));
 const DashboardRenderer = lazy(() => import("./DashboardRenderer"));
 const CanvasRenderer = lazy(() => import("./CanvasRenderer"));
 const PlaceholderRenderer = lazy(() => import("./PlaceholderRenderer"));
+const MessagesDashboardRenderer = lazy(() => import("../comms/MessagesDashboard"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
   document: DocumentRenderer,
@@ -33,6 +34,7 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   website: WebsiteRenderer,
   dashboard: DashboardRenderer,
   canvas: CanvasRenderer,
+  "messages-dashboard": MessagesDashboardRenderer,
 };
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {

@@ -9,6 +9,7 @@ import { useNotes, useTags } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { vaultApi } from "../../lib/parachute/client";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Note } from "../../lib/types";
 
 type ExcalidrawAPI = {
@@ -117,6 +118,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const linkArrowIds = useRef<Set<string>>(new Set());
   const openTab = useUIStore((s) => s.openTab);
+  const queryClient = useQueryClient();
 
   const getContent = useCallback(() => contentRef.current, []);
   const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
@@ -196,7 +198,9 @@ export default function CanvasRenderer({ note }: RendererProps) {
       }
 
       // Create the Parachute link
-      vaultApi.createLink(sourceId, targetId, relationship).catch((err) => {
+      vaultApi.createLink(sourceId, targetId, relationship).then(() => {
+        queryClient.invalidateQueries({ queryKey: ["vault", "links"] });
+      }).catch((err) => {
         console.error("Failed to create link:", err);
       });
       syncedArrows.current.set(el.id, { sourceId, targetId, relationship });

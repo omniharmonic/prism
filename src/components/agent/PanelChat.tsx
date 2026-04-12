@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Loader2, Sparkles, FileInput, Replace } from "lucide-react";
+import { Send, Loader2, Sparkles, FileInput, Replace, PenLine } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 
@@ -16,7 +16,7 @@ export function PanelChat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const { openTabs, activeTabId, setPendingEdit } = useUIStore();
+  const { openTabs, activeTabId, setPendingEdit, setGhostText } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteId = activeTab?.noteId;
   // Don't pass virtual note IDs (matrix:...) to the agent
@@ -118,7 +118,20 @@ export function PanelChat() {
             </div>
             {/* Apply to document buttons for assistant messages */}
             {msg.role === "assistant" && effectiveNoteId && (
-              <div className="flex items-center gap-2 mt-1">
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                <button
+                  onClick={() => {
+                    setGhostText({
+                      noteId: effectiveNoteId,
+                      content: msg.content,
+                      position: "end",
+                    });
+                  }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors"
+                  style={{ background: "var(--color-accent)", color: "white" }}
+                >
+                  <PenLine size={10} /> Insert into document
+                </button>
                 <button
                   onClick={() => {
                     setPendingEdit({
@@ -130,7 +143,7 @@ export function PanelChat() {
                   className="flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  <FileInput size={10} /> Append to document
+                  <FileInput size={10} /> Append
                 </button>
                 <button
                   onClick={() => {
@@ -143,7 +156,7 @@ export function PanelChat() {
                   className="flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  <Replace size={10} /> Replace document
+                  <Replace size={10} /> Replace
                 </button>
               </div>
             )}

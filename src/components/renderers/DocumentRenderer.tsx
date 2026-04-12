@@ -212,6 +212,9 @@ export default function DocumentRenderer({ note }: RendererProps) {
         )}
       </div>
 
+      {/* Ghost text: agent-generated content awaiting accept/reject */}
+      <GhostTextOverlay noteId={note.id} editor={editor} scheduleSave={scheduleSave} contentRef={contentRef} />
+
       {/* Inline agent prompt (⌘J) */}
       {inlinePromptOpen && inlinePromptPosition && (
         <InlinePrompt
@@ -229,6 +232,97 @@ export default function DocumentRenderer({ note }: RendererProps) {
           onReject={closeInlinePrompt}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Ghost text overlay: shows agent-generated content in a preview panel
+ * at the bottom of the editor with Accept/Reject controls.
+ */
+function GhostTextOverlay({
+  noteId,
+  editor,
+  scheduleSave,
+  contentRef,
+}: {
+  noteId: string;
+  editor: ReturnType<typeof useEditor>;
+  scheduleSave: () => void;
+  contentRef: React.MutableRefObject<string>;
+}) {
+  const ghostText = useUIStore((s) => s.ghostText);
+  const rejectGhostText = useUIStore((s) => s.rejectGhostText);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+
+  // Convert ghost text content to HTML for preview
+  useEffect(() => {
+    if (!ghostText || ghostText.noteId !== noteId) {
+      setPreviewHtml(null);
+      return;
+    }
+    let cancelled = false;
+    async function convert() {
+      const content = ghostText!.content;
+      if (content.trim().startsWith("<")) {
+        if (!cancelled) setPreviewHtml(content);
+      } else {
+        const html = await convertApi.markdownToHtml(content);
+        if (!cancelled) setPreviewHtml(html);
+      }
+    }
+    convert();
+    return () => { cancelled = true; };
+  }, [ghostText, noteId]);
+
+  if (!ghostText || ghostText.noteId !== noteId || !previewHtml) return null;
+
+  const handleAccept = async () => {
+    if (!editor) return;
+    editor.commands.focus("end");
+    editor.commands.insertContent("<hr>");
+    editor.commands.insertContent(previewHtml);
+    contentRef.current = editor.getHTML();
+    scheduleSave();
+    rejectGhostText(); // Clear the ghost (don't use acceptGhostText which sets pendingEdit)
+  };
+
+  return (
+    <div
+      className="mx-6 mb-2 rounded-lg overflow-hidden"
+      style={{ border: "2px dashed var(--color-accent)", background: "var(--glass)" }}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-3 py-1.5"
+        style={{ background: "rgba(var(--accent-rgb, 99,102,241), 0.1)", borderBottom: "1px solid var(--glass-border)" }}
+      >
+        <span className="text-xs font-medium" style={{ color: "var(--color-accent)" }}>
+          Claude's suggestion — review before accepting
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleAccept}
+            className="px-3 py-1 rounded text-xs font-medium"
+            style={{ background: "var(--color-accent)", color: "white" }}
+          >
+            Accept
+          </button>
+          <button
+            onClick={rejectGhostText}
+            className="px-3 py-1 rounded text-xs"
+            style={{ color: "var(--text-secondary)", background: "var(--glass)" }}
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+      {/* Preview content */}
+      <div
+        className="px-4 py-3 prose-editor max-h-64 overflow-auto"
+        style={{ opacity: 0.7, color: "var(--text-secondary)" }}
+        dangerouslySetInnerHTML={{ __html: previewHtml }}
+      />
     </div>
   );
 }

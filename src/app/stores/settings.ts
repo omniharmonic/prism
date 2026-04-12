@@ -21,6 +21,9 @@ interface SettingsStore {
   vaults: VaultConfig[];
   activeVaultUrl: string;
 
+  // Sidebar
+  sidebarLabel: string;
+
   // Sync defaults
   defaultSyncDirection: "push" | "pull" | "bidirectional";
   autoSyncOnSave: boolean;
@@ -34,6 +37,7 @@ interface SettingsStore {
   addVault: (name: string, url: string) => void;
   removeVault: (url: string) => void;
   setActiveVault: (url: string) => void;
+  setSidebarLabel: (label: string) => void;
   setDefaultSyncDirection: (dir: "push" | "pull" | "bidirectional") => void;
   setAutoSyncOnSave: (enabled: boolean) => void;
 }
@@ -52,6 +56,8 @@ export const useSettingsStore = create<SettingsStore>()(
         { name: "Default", url: "http://localhost:1940", isActive: true },
       ],
       activeVaultUrl: "http://localhost:1940",
+
+      sidebarLabel: "Projects",
 
       defaultSyncDirection: "bidirectional",
       autoSyncOnSave: false,
@@ -93,6 +99,7 @@ export const useSettingsStore = create<SettingsStore>()(
           vaults: s.vaults.map((v) => ({ ...v, isActive: v.url === url })),
         }));
       },
+      setSidebarLabel: (label) => set({ sidebarLabel: label }),
       setDefaultSyncDirection: (dir) => set({ defaultSyncDirection: dir }),
       setAutoSyncOnSave: (enabled) => set({ autoSyncOnSave: enabled }),
     }),

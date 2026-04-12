@@ -32,6 +32,9 @@ interface UIStore {
   // Pending editor edit (agent → editor communication)
   pendingEdit: PendingEdit | null;
 
+  // Ghost text: agent-generated content waiting for accept/reject
+  ghostText: { noteId: string; content: string; position: "cursor" | "end" } | null;
+
   // Actions
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -53,6 +56,10 @@ interface UIStore {
 
   setPendingEdit: (edit: PendingEdit) => void;
   clearPendingEdit: () => void;
+
+  setGhostText: (ghost: { noteId: string; content: string; position: "cursor" | "end" }) => void;
+  acceptGhostText: () => void;
+  rejectGhostText: () => void;
 }
 
 export const useUIStore = create<UIStore>((set, get) => ({
@@ -68,6 +75,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   inlinePromptPosition: null,
   inlinePromptSelection: "",
   pendingEdit: null,
+  ghostText: null,
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(400, width)) }),
@@ -148,4 +156,17 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
   setPendingEdit: (edit) => set({ pendingEdit: edit }),
   clearPendingEdit: () => set({ pendingEdit: null }),
+
+  setGhostText: (ghost) => set({ ghostText: ghost }),
+  acceptGhostText: () => {
+    const { ghostText } = get();
+    if (ghostText) {
+      // Convert ghost text to a pending edit that the editor will apply
+      set({
+        pendingEdit: { noteId: ghostText.noteId, content: ghostText.content, mode: ghostText.position === "cursor" ? "replace" : "append" },
+        ghostText: null,
+      });
+    }
+  },
+  rejectGhostText: () => set({ ghostText: null }),
 }));

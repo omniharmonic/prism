@@ -10,7 +10,7 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index};
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
 
@@ -107,6 +107,8 @@ pub fn run() {
             agent::agent_chat,
             agent::agent_transform,
             agent::agent_generate,
+            // Message indexing
+            message_index::index_messages,
             // Config + integration testing
             config::get_config_status,
             config::set_anthropic_key,

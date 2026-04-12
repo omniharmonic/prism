@@ -53,6 +53,9 @@ export const vaultApi = {
   deleteLink: (sourceId: string, targetId: string, relationship: string) =>
     invoke<void>("vault_delete_link", { sourceId, targetId, relationship }),
 
+  indexMessages: () =>
+    invoke<{ indexed: number; errors: number; total: number }>("index_messages"),
+
   getGraph: (depth?: number, centerId?: string) =>
     invoke<{ nodes: Array<{ id: string; path?: string; tags?: string[] }>; edges: Array<{ source: string; target: string; relationship: string }> }>(
       "vault_get_graph", { depth, centerId }

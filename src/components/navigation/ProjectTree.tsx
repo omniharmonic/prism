@@ -44,6 +44,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   canvas: FileText,
   briefing: FileText,
   dashboard: LayoutDashboard,
+  "messages-dashboard": MessageSquare,
 };
 
 // Build a tree from flat notes list
