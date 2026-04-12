@@ -236,19 +236,27 @@ export default function DocumentRenderer({ note }: RendererProps) {
  */
 function WikilinkDropdown({ editor, notes }: { editor: ReturnType<typeof useEditor>; notes: Note[] }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Force re-render on every editor transaction so we pick up autocomplete state changes
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const handler = () => setTick((t) => t + 1);
+    editor.on("transaction", handler);
+    return () => { editor.off("transaction", handler); };
+  }, [editor]);
 
   if (!editor) return null;
 
   const autocompleteState = getWikilinkAutocompleteState(editor.state);
-  if (!autocompleteState?.active || !autocompleteState.query) return null;
+  if (!autocompleteState?.active) return null;
 
-  const query = autocompleteState.query.toLowerCase();
-  const matches = notes
-    .filter((n) => {
-      const name = (n.path || "").split("/").pop() || "";
-      return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
-    })
-    .slice(0, 8);
+  const query = (autocompleteState.query || "").toLowerCase();
+  const matches = query.length > 0
+    ? notes.filter((n) => {
+        const name = (n.path || "").split("/").pop() || "";
+        return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
+      }).slice(0, 8)
+    : notes.slice(0, 8); // Show recent notes when query is empty (just typed [[)
 
   if (matches.length === 0) return null;
 
@@ -257,12 +265,15 @@ function WikilinkDropdown({ editor, notes }: { editor: ReturnType<typeof useEdit
 
   const handleSelect = (note: Note) => {
     const name = (note.path || "").split("/").pop() || note.id;
-    // Replace the [[ + query with [[target]]
-    editor
-      .chain()
-      .focus()
+    const trigger = autocompleteState.trigger;
+
+    editor.chain().focus()
       .deleteRange({ from: autocompleteState.from, to: autocompleteState.to })
-      .insertContent(`[[${note.path || name}]]`)
+      .insertContent(
+        trigger === "@"
+          ? `<span class="wikilink" data-wikilink-target="${note.path || name}">@${name}</span>&nbsp;`
+          : `[[${note.path || name}]]`
+      )
       .run();
   };
 

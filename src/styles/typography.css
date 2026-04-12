@@ -162,6 +162,32 @@ html.light .wikilink:hover {
   background: rgba(74, 125, 215, 0.08);
 }
 
+/* ─── @mentions (inline styled spans) ─── */
+.ProseMirror span.wikilink {
+  color: var(--color-accent);
+  cursor: pointer;
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 0 3px;
+  transition: background 0.15s ease;
+}
+html.dark .ProseMirror span.wikilink {
+  background: rgba(124, 159, 232, 0.12);
+}
+html.light .ProseMirror span.wikilink {
+  background: rgba(74, 125, 215, 0.08);
+}
+.ProseMirror span.wikilink:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+html.dark .ProseMirror span.wikilink:hover {
+  background: rgba(124, 159, 232, 0.20);
+}
+html.light .ProseMirror span.wikilink:hover {
+  background: rgba(74, 125, 215, 0.15);
+}
+
 /* ─── Keyboard shortcut indicators ─── */
 kbd {
   font-family: var(--font-sans);
