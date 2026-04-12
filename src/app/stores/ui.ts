@@ -41,6 +41,7 @@ interface UIStore {
 
   openTab: (noteId: string, title: string, type: ContentType) => void;
   closeTab: (tabId: string) => void;
+  closeTabs: (noteId: string) => void;
   setActiveTab: (tabId: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
 
@@ -109,6 +110,16 @@ export const useUIStore = create<UIStore>((set, get) => ({
       }
     }
 
+    set({ openTabs: filtered, activeTabId: nextActive });
+  },
+
+  closeTabs: (noteId) => {
+    const { openTabs, activeTabId } = get();
+    const filtered = openTabs.filter((t) => t.noteId !== noteId);
+    let nextActive = activeTabId;
+    if (activeTabId && !filtered.find((t) => t.id === activeTabId)) {
+      nextActive = filtered.length > 0 ? filtered[filtered.length - 1].id : null;
+    }
     set({ openTabs: filtered, activeTabId: nextActive });
   },
 
