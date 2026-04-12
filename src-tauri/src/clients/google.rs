@@ -150,6 +150,19 @@ impl GoogleClient {
         self.run_gog(&["calendar", "list", "--max", &max_str], account)
     }
 
+    /// List calendar events within a specific date range.
+    /// `from` and `to` are ISO date strings (e.g., "2026-04-07").
+    pub fn calendar_list_events_range(
+        &self,
+        account: &str,
+        from: &str,
+        to: &str,
+        max_results: u32,
+    ) -> Result<serde_json::Value, PrismError> {
+        let max_str = max_results.to_string();
+        self.run_gog(&["calendar", "list", "--from", from, "--to", to, "--max", &max_str], account)
+    }
+
     pub fn calendar_create_event(
         &self,
         account: &str,

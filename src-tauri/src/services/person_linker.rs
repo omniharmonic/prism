@@ -15,7 +15,7 @@ pub async fn find_person(
     if let Some(name) = name {
         let clean = clean_display_name(name);
         if !clean.is_empty() {
-            let results = parachute.search(&clean, &["person".into()], 5).await?;
+            let results = parachute.search(&clean, &["person".into()], 10).await?;
             if let Some(note) = results.into_iter().find(|n| {
                 person_name_matches(n, &clean)
             }) {
@@ -26,7 +26,7 @@ pub async fn find_person(
 
     // Strategy 2: Search by email in person metadata
     if let Some(email) = email {
-        let results = parachute.search(email, &["person".into()], 5).await?;
+        let results = parachute.search(email, &["person".into()], 10).await?;
         if let Some(note) = results.into_iter().find(|n| {
             note_metadata_contains(n, "email", email)
                 || note_metadata_contains(n, "channels.email", email)
@@ -37,7 +37,7 @@ pub async fn find_person(
 
     // Strategy 3: Search by Matrix user ID in metadata
     if let Some(mid) = matrix_id {
-        let results = parachute.search(mid, &["person".into()], 5).await?;
+        let results = parachute.search(mid, &["person".into()], 10).await?;
         if let Some(note) = results.into_iter().find(|n| {
             note_metadata_contains(n, "matrix", mid)
                 || note_metadata_contains(n, "matrixRoomIds", mid)
@@ -57,14 +57,25 @@ pub async fn find_or_create_person(
     matrix_id: Option<&str>,
     platform: Option<&str>,
 ) -> Result<String, PrismError> {
+    let clean = clean_display_name(name);
+    if clean.is_empty() || clean.len() < 2 {
+        return Err(PrismError::Other("Name too short to create person note".into()));
+    }
+
     // Try to find existing
     if let Some(note) = find_person(parachute, Some(name), email, matrix_id).await? {
         return Ok(note.id);
     }
 
-    // Create new person note
-    let clean = clean_display_name(name);
+    // Double-check by path before creating to prevent Parachute 500 on duplicate path
     let path = format!("vault/people/{}", sanitize_path(&clean));
+    let path_check = parachute.search(&clean, &["person".into()], 20).await.unwrap_or_default();
+    if let Some(note) = path_check.into_iter().find(|n| {
+        n.path.as_deref().map(|p| normalize_name(p.split('/').last().unwrap_or("")))
+            == Some(normalize_name(&clean))
+    }) {
+        return Ok(note.id);
+    }
 
     let mut channels = serde_json::Map::new();
     if let Some(email) = email {
@@ -85,15 +96,27 @@ pub async fn find_or_create_person(
         "channels": channels,
     });
 
-    let note = parachute.create_note(&CreateNoteParams {
+    match parachute.create_note(&CreateNoteParams {
         content: format!("# {}\n\nAuto-created by Prism sync.", clean),
         path: Some(path),
         metadata: Some(metadata),
         tags: Some(vec!["person".into()]),
-    }).await?;
-
-    log::info!("Created person note for '{}': {}", clean, note.id);
-    Ok(note.id)
+    }).await {
+        Ok(note) => {
+            log::info!("Created person note for '{}': {}", clean, note.id);
+            Ok(note.id)
+        }
+        Err(e) => {
+            // If creation fails (e.g., 500 from path conflict), try to find by broader search
+            log::debug!("Person create failed for '{}': {} — trying broader search", clean, e);
+            let fallback = parachute.search(&clean, &[], 10).await.unwrap_or_default();
+            if let Some(note) = fallback.into_iter().find(|n| person_name_matches(n, &clean)) {
+                Ok(note.id)
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Link a note to a person note with a relationship type.
@@ -147,21 +170,24 @@ fn clean_display_name(name: &str) -> String {
 
 /// Check if a person note's name matches the target (case-insensitive, fuzzy).
 fn person_name_matches(note: &Note, target: &str) -> bool {
-    let target_lower = target.to_lowercase();
+    let target_lower = normalize_name(target);
+    if target_lower.is_empty() {
+        return false;
+    }
 
     // Check metadata.name
     if let Some(meta) = &note.metadata {
         if let Some(name) = meta.get("name").and_then(|v| v.as_str()) {
-            if name.to_lowercase() == target_lower {
+            if normalize_name(name) == target_lower {
                 return true;
             }
         }
     }
 
-    // Check path (last segment)
+    // Check path (last segment) — handles both "Aaron_Gabriel" and "aaron-gabriel"
     if let Some(path) = &note.path {
         let filename = path.split('/').last().unwrap_or("");
-        if filename.to_lowercase().replace('-', " ") == target_lower {
+        if normalize_name(filename) == target_lower {
             return true;
         }
     }
@@ -169,12 +195,23 @@ fn person_name_matches(note: &Note, target: &str) -> bool {
     // Check content first line (# Name)
     if note.content.starts_with("# ") {
         let first_line = note.content.lines().next().unwrap_or("");
-        if first_line[2..].trim().to_lowercase() == target_lower {
+        if first_line.len() > 2 && normalize_name(&first_line[2..]) == target_lower {
             return true;
         }
     }
 
     false
+}
+
+/// Normalize a name for comparison: lowercase, collapse separators to spaces, trim.
+fn normalize_name(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .replace('_', " ")
+        .replace('-', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Check if note metadata contains a value at a given key path.

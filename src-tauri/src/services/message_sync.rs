@@ -22,6 +22,12 @@ pub async fn run(
 ) {
     log::info!("Message sync service starting");
 
+    // Mark as running immediately
+    {
+        let mut s = status.lock().unwrap();
+        s.running = true;
+    }
+
     // Initial delay — let the app boot up
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
@@ -37,22 +43,24 @@ pub async fn run(
         }
         Err(e) => {
             log::warn!("Message sync: initial sync failed: {}. Will retry.", e);
+            let mut s = status.lock().unwrap();
+            s.last_error = Some(format!("Initial sync failed: {}", e));
         }
     }
 
     // First run: do a full index of existing rooms
-    {
-        let mut s = status.lock().unwrap();
-        s.running = true;
-    }
-
-    if let Err(e) = full_index(&matrix, &parachute).await {
-        log::warn!("Message sync: full index failed: {}", e);
-        let mut s = status.lock().unwrap();
-        s.last_error = Some(e.to_string());
-    } else {
-        let mut s = status.lock().unwrap();
-        s.last_run = Some(chrono::Utc::now().to_rfc3339());
+    match full_index(&matrix, &parachute).await {
+        Ok(count) => {
+            let mut s = status.lock().unwrap();
+            s.last_run = Some(chrono::Utc::now().to_rfc3339());
+            s.items_processed = count;
+            s.last_error = None;
+        }
+        Err(e) => {
+            log::warn!("Message sync: full index failed: {}", e);
+            let mut s = status.lock().unwrap();
+            s.last_error = Some(e.to_string());
+        }
     }
 
     loop {
@@ -97,15 +105,15 @@ pub async fn run(
 }
 
 /// Full index: get all joined rooms and create/update conversation notes.
-/// Used on first run to populate the vault.
+/// Used on first run to populate the vault. Returns number of rooms indexed.
 async fn full_index(
     matrix: &MatrixClient,
     parachute: &ParachuteClient,
-) -> Result<(), crate::error::PrismError> {
+) -> Result<u64, crate::error::PrismError> {
     let room_ids = matrix.get_joined_rooms().await?;
     log::info!("Message sync: full indexing {} rooms", room_ids.len());
 
-    let mut indexed = 0;
+    let mut indexed = 0u64;
     for room_id in &room_ids {
         match index_room(matrix, parachute, room_id).await {
             Ok(true) => indexed += 1,
@@ -117,7 +125,7 @@ async fn full_index(
     }
 
     log::info!("Message sync: full index complete, {} rooms indexed", indexed);
-    Ok(())
+    Ok(indexed)
 }
 
 /// Incremental sync: use Matrix /sync with since token to get new events.
@@ -262,12 +270,18 @@ async fn process_room_messages(
             "lastMessageAt": last_ts,
             "messageCount": count,
         });
-        let note = parachute.create_note(&CreateNoteParams {
+        let note = match parachute.create_note(&CreateNoteParams {
             content,
             path: Some(path),
             metadata: Some(metadata),
             tags: Some(vec!["message-thread".into()]),
-        }).await?;
+        }).await {
+            Ok(note) => note,
+            Err(e) => {
+                log::debug!("Message sync: create failed for room {}: {}", room_id, e);
+                return Ok(0);
+            }
+        };
 
         // Link to person notes
         link_participants(parachute, &note.id, &members, &member_ids, &platform).await;
@@ -362,13 +376,18 @@ async fn index_room(
         }).await?;
         note.id
     } else {
-        let note = parachute.create_note(&CreateNoteParams {
+        match parachute.create_note(&CreateNoteParams {
             content,
             path: Some(path),
             metadata: Some(metadata),
             tags: Some(vec!["message-thread".into()]),
-        }).await?;
-        note.id
+        }).await {
+            Ok(note) => note.id,
+            Err(e) => {
+                log::debug!("Message sync: create failed for room {}: {}", room_id, e);
+                return Ok(false);
+            }
+        }
     };
 
     // Link to person notes

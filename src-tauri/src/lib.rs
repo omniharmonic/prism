@@ -133,6 +133,7 @@ pub fn run() {
             notion_pages::notion_list_pages,
             // Background services
             service_cmds::get_service_status,
+            service_cmds::calendar_sync_range,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

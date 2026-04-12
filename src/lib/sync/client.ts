@@ -71,4 +71,10 @@ export const calendarApi = {
 
   deleteEvent: (eventId: string) =>
     invoke<void>("calendar_delete_event", { eventId }),
+
+  /** On-demand sync: fetch Google Calendar events for a date range into Parachute */
+  syncRange: (from: string, to: string) =>
+    invoke<{ synced: number; errors: number; total: number; from: string; to: string }>(
+      "calendar_sync_range", { from, to }
+    ),
 };

@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, RefreshCw } from "lucide-react";
 import { calendarApi } from "../../lib/sync/client";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -91,6 +91,35 @@ export default function CalendarDashboard(_props: RendererProps) {
 
   const events: CalEvent[] = Array.isArray(data) ? (data as CalEvent[]) : [];
 
+  // On-demand sync: when the view range changes, sync that range into Parachute
+  const [syncing, setSyncing] = useState(false);
+  const rangeKey = `${rangeStart.toISOString()}-${rangeEnd.toISOString()}`;
+  const [syncedRanges, setSyncedRanges] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (syncedRanges.has(rangeKey)) return;
+    let cancelled = false;
+    setSyncing(true);
+    const fromStr = rangeStart.toISOString().split("T")[0];
+    const toStr = rangeEnd.toISOString().split("T")[0];
+    calendarApi.syncRange(fromStr, toStr)
+      .then((result) => {
+        if (!cancelled) {
+          setSyncedRanges((prev) => new Set(prev).add(rangeKey));
+          if (result.synced > 0) {
+            console.log("Calendar sync:", result.synced, "events synced for", fromStr, "to", toStr);
+          }
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) console.warn("Calendar sync error:", e);
+      })
+      .finally(() => {
+        if (!cancelled) setSyncing(false);
+      });
+    return () => { cancelled = true; };
+  }, [rangeKey]);
+
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalEvent[]>();
     for (const ev of events) {
@@ -138,6 +167,12 @@ export default function CalendarDashboard(_props: RendererProps) {
             <button onClick={next} className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
           </div>
           <button onClick={goToday} className="px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
+          {syncing && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <RefreshCw size={10} className="animate-spin" style={{ animationDuration: "2s" }} />
+              Syncing...
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {(["month", "week", "day"] as ViewMode[]).map((v) => (
