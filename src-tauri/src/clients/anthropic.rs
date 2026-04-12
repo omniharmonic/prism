@@ -83,13 +83,20 @@ impl ClaudeClient {
         model: &str,
         timeout_secs: u64,
     ) -> Result<String, PrismError> {
-        let args = vec![
+        let mcp_config = self.prism_root.join(".mcp.json");
+        let mut args = vec![
             "-p".to_string(),
             "--model".to_string(),
             model.to_string(),
             "--dangerously-skip-permissions".to_string(),
-            prompt.to_string(),
         ];
+        if mcp_config.exists() {
+            args.push("--mcp-config".to_string());
+            args.push(mcp_config.to_string_lossy().to_string());
+        }
+        // Use -- to separate flags from prompt (prevents --mcp-config from consuming it)
+        args.push("--".to_string());
+        args.push(prompt.to_string());
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
@@ -127,6 +134,7 @@ impl ClaudeClient {
         session_id: Option<&str>,
         timeout_secs: u64,
     ) -> Result<ClaudeJsonResponse, PrismError> {
+        let mcp_config = self.prism_root.join(".mcp.json");
         let mut args = vec![
             "-p".to_string(),
             "--model".to_string(),
@@ -135,12 +143,18 @@ impl ClaudeClient {
             "--output-format".to_string(),
             "json".to_string(),
         ];
+        if mcp_config.exists() {
+            args.push("--mcp-config".to_string());
+            args.push(mcp_config.to_string_lossy().to_string());
+        }
 
         if let Some(sid) = session_id {
             args.push("--resume".to_string());
             args.push(sid.to_string());
         }
 
+        // Use -- to separate flags from prompt
+        args.push("--".to_string());
         args.push(prompt.to_string());
 
         let result = tokio::time::timeout(

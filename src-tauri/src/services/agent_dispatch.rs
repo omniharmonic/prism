@@ -105,13 +105,31 @@ impl DispatchManager {
             .filter(|(k, _)| k != "CLAUDECODE")
             .collect();
 
+        // Build MCP config path — must explicitly pass it in -p mode
+        let mcp_config_path = prism_root.join(".mcp.json");
+        let mcp_config_str = mcp_config_path.to_string_lossy().to_string();
+
+        let mut args = vec![
+            "-p".to_string(),
+            "--model".to_string(), "sonnet".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+
+        // Only add MCP config if the file exists
+        if mcp_config_path.exists() {
+            args.push("--mcp-config".to_string());
+            args.push(mcp_config_str);
+            log::info!("Dispatch {}: loading MCP config from {:?}", dispatch_id, mcp_config_path);
+        } else {
+            log::warn!("Dispatch {}: .mcp.json not found at {:?}", dispatch_id, mcp_config_path);
+        }
+
+        // Use -- to separate flags from the prompt (prevents --mcp-config from consuming it)
+        args.push("--".to_string());
+        args.push(prompt_owned);
+
         let child = tokio::process::Command::new(&claude_bin)
-            .args(&[
-                "-p",
-                "--model", "sonnet",
-                "--dangerously-skip-permissions",
-                &prompt_owned,
-            ])
+            .args(&args)
             .current_dir(&prism_root)
             .envs(&clean_env)
             .stdout(std::process::Stdio::piped())
