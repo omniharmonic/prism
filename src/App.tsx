@@ -44,8 +44,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 function App() {
-  // Always go straight to the app. Settings is accessible from the status bar gear icon.
-  const [onboarded, setOnboarded] = useState(true);
+  // Show onboarding for first-time users, skip for returning users
+  const [onboarded, setOnboarded] = useState(() => {
+    try {
+      return localStorage.getItem("prism:onboarded") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const handleOnboardingComplete = () => {
     try {

@@ -117,7 +117,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         <StatusIndicator status={parachuteStatus} />
       </div>
       {parachuteError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{parachuteError}</div>}
-      <NavButtons onBack={() => setStep(0)} onNext={() => setStep(2)} canProceed={parachuteStatus === "success"} />
+      <NavButtons onBack={() => setStep(0)} onNext={() => setStep(2)} canProceed skipLabel={parachuteStatus !== "success" ? "Skip" : undefined} />
     </div>,
 
     // Step 2: Matrix

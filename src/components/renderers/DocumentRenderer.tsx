@@ -261,15 +261,11 @@ function WikilinkDropdown({ editor, notes, autocomplete }: {
 
   const handleSelect = (note: Note) => {
     const name = (note.path || "").split("/").pop() || note.id;
-    const trigger = autocomplete.trigger;
 
+    // Both @ and [[ insert the same wikilink format — the decoration renders it clean
     editor.chain().focus()
       .deleteRange({ from: autocomplete.from, to: autocomplete.to })
-      .insertContent(
-        trigger === "@"
-          ? `<span class="wikilink" data-wikilink-target="${note.path || name}">@${name}</span>&nbsp;`
-          : `[[${note.path || name}|${name}]]`
-      )
+      .insertContent(`[[${note.path || name}|${name}]] `)
       .run();
   };
 

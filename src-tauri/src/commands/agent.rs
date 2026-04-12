@@ -20,18 +20,26 @@ impl AgentSessions {
 }
 
 /// System context that tells Claude about its environment and available tools.
-/// This is prepended to every prompt so Claude knows it can use Parachute MCP.
+/// Includes the full MCP tool names so Claude can call them directly.
 const PRISM_CONTEXT: &str = "\
 You are an AI assistant embedded in Prism, Benjamin Life's universal interface for documents, \
 messages, tasks, and knowledge management. You are part of the OmniHarmonic agent ecosystem.\n\n\
-You have access to the Parachute Vault via MCP tools. Use them to:\n\
-- Search notes: use the `search-notes` or `semantic-search` MCP tools\n\
-- Read a note: use the `get-note` MCP tool\n\
-- Create notes: use the `create-note` MCP tool\n\
-- Update notes: use the `update-note` MCP tool\n\
-- Browse tags: use the `list-tags` or `describe-tag` MCP tools\n\
-- Traverse links: use the `traverse-links` or `get-links` MCP tools\n\
-- Find paths: use the `find-path` MCP tool for graph traversal\n\n\
+You have access to the Parachute Vault via MCP tools. The tool names are prefixed with \
+`mcp__parachute-vault__`. Here are the key tools:\n\
+- `mcp__parachute-vault__search-notes` — search notes by query text\n\
+- `mcp__parachute-vault__get-note` — read a note by ID\n\
+- `mcp__parachute-vault__update-note` — update a note's content or metadata by ID\n\
+- `mcp__parachute-vault__create-note` — create a new note\n\
+- `mcp__parachute-vault__list-tags` — list all tags in the vault\n\
+- `mcp__parachute-vault__describe-tag` — get a tag's schema (fields and types)\n\
+- `mcp__parachute-vault__get-links` — get links for a note\n\
+- `mcp__parachute-vault__traverse-links` — traverse the knowledge graph\n\
+- `mcp__parachute-vault__tag-note` — add tags to a note\n\
+- `mcp__parachute-vault__semantic-search` — semantic/vector search\n\n\
+When the user asks you to edit the current document, write the updated content in your response. \
+The user will click 'Apply to document' or 'Replace document' buttons to update the note. \
+Do NOT try to call MCP tools to update the document — the Prism UI handles persistence.\n\
+For searching or reading OTHER notes, you can use the MCP tools listed above.\n\n\
 The vault contains Benjamin's projects, meetings, contacts, tasks, research, and writing. \
 Tag schemas define structured fields for each note type (task, meeting, person, project, etc.).\n\n";
 
@@ -49,6 +57,7 @@ pub async fn agent_edit(
 
     let full_prompt = format!(
         "{}You are editing a document in Prism. Apply the following edit to the selected text.\n\n\
+         Note ID: {}\n\
          Document path: {}\n\
          Tags: {}\n\n\
          Full document:\n{}\n\n\
@@ -57,6 +66,7 @@ pub async fn agent_edit(
          Edit instruction: {}\n\n\
          Return ONLY the replacement text. No explanations, no code fences, no markdown wrapping.",
         PRISM_CONTEXT,
+        note_id,
         note.path.as_deref().unwrap_or("untitled"),
         note.tags.as_deref().unwrap_or(&[]).join(", "),
         &note.content[..note.content.len().min(4000)],
@@ -83,14 +93,19 @@ pub async fn agent_chat(
         let note = parachute.get_note(id).await?;
         format!(
             "{}You are a writing collaborator. The user has a document open in Prism.\n\n\
-             Document: {}\n\
-             Tags: {}\n\n\
+             CURRENT DOCUMENT:\n\
+             - Note ID: {}\n\
+             - Path: {}\n\
+             - Tags: {}\n\n\
              Content:\n{}\n\n\
              ---\n\n\
-             If the user asks about other documents or topics, use the Parachute MCP tools \
-             to search the vault and find relevant information.\n\n\
+             To edit this document, write the new or modified content in your response. \
+             The user will click 'Append to document' or 'Replace document' to apply your edits. \
+             Do NOT try to use MCP tools to update this note — Prism handles saving automatically.\n\
+             If the user asks about OTHER documents or topics, you can search the vault.\n\n\
              User: {}",
             PRISM_CONTEXT,
+            id,
             note.path.as_deref().unwrap_or("untitled"),
             note.tags.as_deref().unwrap_or(&[]).join(", "),
             &note.content[..note.content.len().min(6000)],
