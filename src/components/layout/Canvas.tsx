@@ -62,7 +62,8 @@ export function Canvas() {
     [note, isVirtual, updateNote],
   );
 
-  const contentType = effectiveNote ? inferContentType(effectiveNote) : (activeTab?.type ?? null);
+  // For virtual tabs, use the tab type directly (inferContentType doesn't know virtual types)
+  const contentType = isVirtual ? (activeTab?.type ?? null) : (effectiveNote ? inferContentType(effectiveNote) : (activeTab?.type ?? null));
   const Renderer = contentType ? getRenderer(contentType) : null;
 
   return (
