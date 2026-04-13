@@ -1,12 +1,15 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User } from "lucide-react";
+import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
+import { matrixApi } from "../../lib/matrix/client";
 import { useUIStore } from "../../app/stores/ui";
 import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
 import type { Note } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
+
+type ViewMode = "people" | "platforms";
 
 function formatRelativeTime(ts: number | string): string {
   try {
@@ -26,29 +29,129 @@ function formatRelativeTime(ts: number | string): string {
   }
 }
 
+interface PersonWithThreads {
+  person: Note;
+  name: string;
+  threads: Note[];
+  platforms: string[];
+  lastMessageAt: number;
+  channels: Record<string, string>;
+}
+
 export default function VaultMessagesDashboard(_props: RendererProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [viewMode, setViewMode] = useState<ViewMode>("people");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const openTab = useUIStore((s) => s.openTab);
 
-  // Fetch message-thread notes from Parachute
-  const { data: notes, isLoading } = useQuery({
+  // Fetch all message-thread notes
+  const { data: threadNotes, isLoading: threadsLoading } = useQuery({
     queryKey: ["vault", "notes", { tag: "message-thread" }],
     queryFn: () => vaultApi.listNotes({ tag: "message-thread", limit: 500 }),
     refetchInterval: 30_000,
   });
 
+  // Fetch email notes
+  const { data: emailNotes } = useQuery({
+    queryKey: ["vault", "notes", { tag: "email" }],
+    queryFn: () => vaultApi.listNotes({ tag: "email", limit: 200 }),
+    refetchInterval: 30_000,
+  });
+
+  // Fetch person notes (for People view)
+  const { data: personNotes } = useQuery({
+    queryKey: ["vault", "notes", { tag: "person", limit: 2000 }],
+    queryFn: () => vaultApi.listNotes({ tag: "person", limit: 2000 }),
+    refetchInterval: 60_000,
+  });
+
+  const allMessages = useMemo(() => [...(threadNotes || []), ...(emailNotes || [])], [threadNotes, emailNotes]);
+
+  // Build people-with-threads index
+  const peopleWithThreads = useMemo(() => {
+    if (!personNotes || !allMessages.length) return [];
+
+    // Index threads by participant name (from metadata.participants)
+    const threadsByParticipant = new Map<string, Note[]>();
+    for (const note of allMessages) {
+      const meta = (note.metadata || {}) as Record<string, unknown>;
+      const participants = (meta.participants as string[]) || [];
+      const from = meta.from as string;
+      // Add thread to each participant
+      for (const p of participants) {
+        const key = p.toLowerCase().trim();
+        if (!threadsByParticipant.has(key)) threadsByParticipant.set(key, []);
+        threadsByParticipant.get(key)!.push(note);
+      }
+      // For emails, add sender
+      if (from) {
+        const name = extractName(from).toLowerCase().trim();
+        if (!threadsByParticipant.has(name)) threadsByParticipant.set(name, []);
+        threadsByParticipant.get(name)!.push(note);
+      }
+    }
+
+    // Match person notes to their threads
+    const result: PersonWithThreads[] = [];
+    for (const person of personNotes) {
+      const meta = (person.metadata || {}) as Record<string, unknown>;
+      const personName = (meta.name as string) || (person.path || "").split("/").pop()?.replace(/-/g, " ") || "";
+      if (!personName) continue;
+
+      const channels = (meta.channels as Record<string, string>) || {};
+
+      // Find threads by name match
+      const nameKey = personName.toLowerCase().trim();
+      const threads = threadsByParticipant.get(nameKey) || [];
+
+      // Also check path-based name
+      const pathName = (person.path || "").split("/").pop()?.replace(/[-_]/g, " ").toLowerCase().trim() || "";
+      if (pathName !== nameKey) {
+        const pathThreads = threadsByParticipant.get(pathName) || [];
+        for (const t of pathThreads) {
+          if (!threads.includes(t)) threads.push(t);
+        }
+      }
+
+      if (threads.length === 0) continue;
+
+      // Get platforms and latest message time
+      const platforms = new Set<string>();
+      let lastMessageAt = 0;
+      for (const t of threads) {
+        const tm = (t.metadata || {}) as Record<string, unknown>;
+        platforms.add((tm.platform as string) || "matrix");
+        const ts = (tm.lastMessageAt as number) || 0;
+        if (ts > lastMessageAt) lastMessageAt = ts;
+      }
+
+      result.push({
+        person,
+        name: personName,
+        threads,
+        platforms: Array.from(platforms),
+        lastMessageAt,
+        channels,
+      });
+    }
+
+    // Sort by most recent message
+    result.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+    return result;
+  }, [personNotes, allMessages]);
+
+  // Platform groups (for platform view)
   const { platformGroups, platformCounts, totalCount } = useMemo(() => {
-    if (!notes) return { platformGroups: new Map<string, Note[]>(), platformCounts: new Map<string, number>(), totalCount: 0 };
+    if (!allMessages.length) return { platformGroups: new Map<string, Note[]>(), platformCounts: new Map<string, number>(), totalCount: 0 };
 
     const platformCounts = new Map<string, number>();
-    for (const note of notes) {
-      const p = (note.metadata as Record<string, unknown>)?.platform as string || "matrix";
+    for (const note of allMessages) {
+      const p = ((note.metadata || {}) as Record<string, unknown>).platform as string || "matrix";
       platformCounts.set(p, (platformCounts.get(p) || 0) + 1);
     }
 
     const q = searchQuery.toLowerCase();
-    const filtered = notes.filter((note) => {
+    const filtered = allMessages.filter((note) => {
       const meta = (note.metadata || {}) as Record<string, unknown>;
       const platform = (meta.platform as string) || "matrix";
       if (platformFilter !== "all" && platform !== platformFilter) return false;
@@ -60,7 +163,6 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       return true;
     });
 
-    // Sort by lastMessageAt descending
     filtered.sort((a, b) => {
       const aTime = ((a.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
       const bTime = ((b.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
@@ -74,8 +176,19 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       groups.get(p)!.push(note);
     }
 
-    return { platformGroups: groups, platformCounts, totalCount: notes.length };
-  }, [notes, searchQuery, platformFilter]);
+    return { platformGroups: groups, platformCounts, totalCount: allMessages.length };
+  }, [allMessages, searchQuery, platformFilter]);
+
+  // Filtered people
+  const filteredPeople = useMemo(() => {
+    if (!searchQuery) return peopleWithThreads;
+    const q = searchQuery.toLowerCase();
+    return peopleWithThreads.filter((p) =>
+      p.name.toLowerCase().includes(q)
+      || p.platforms.some((pl) => pl.includes(q))
+      || p.threads.some((t) => (t.content || "").toLowerCase().includes(q))
+    );
+  }, [peopleWithThreads, searchQuery]);
 
   const handleOpenThread = (note: Note) => {
     const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || note.id;
@@ -84,7 +197,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
   const platforms = useMemo(() => Array.from(platformCounts.keys()).sort(), [platformCounts]);
 
-  if (isLoading) {
+  if (threadsLoading) {
     return <div className="flex items-center justify-center h-full"><Spinner size={24} /></div>;
   }
 
@@ -95,94 +208,278 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
         <div className="flex-1">
           <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Vault Messages</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {totalCount} conversations indexed in Parachute
-            <span style={{ color: "var(--text-muted)" }}> · searchable · linked to people</span>
+            {totalCount} conversations
+            {viewMode === "people" && ` · ${filteredPeople.length} people`}
           </p>
         </div>
 
-        {/* Search — this searches Parachute, so it finds content across all messages */}
-        <div
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-xs"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
-        >
-          <Search size={13} style={{ color: "var(--text-muted)" }} />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search messages..."
-            className="bg-transparent text-xs outline-none w-40"
-            style={{ color: "var(--text-primary)" }}
-          />
+        {/* View toggle */}
+        <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+          <button onClick={() => setViewMode("people")}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs"
+            style={{ background: viewMode === "people" ? "var(--color-accent)" : "transparent", color: viewMode === "people" ? "white" : "var(--text-secondary)" }}>
+            <Users size={11} /> People
+          </button>
+          <button onClick={() => setViewMode("platforms")}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs"
+            style={{ background: viewMode === "platforms" ? "var(--color-accent)" : "transparent", color: viewMode === "platforms" ? "white" : "var(--text-secondary)" }}>
+            <MessageSquare size={11} /> Platforms
+          </button>
         </div>
 
-        {/* Platform filter */}
-        <div className="flex items-center gap-1.5">
-          <Filter size={12} style={{ color: "var(--text-muted)" }} />
-          <select
-            value={platformFilter}
-            onChange={(e) => setPlatformFilter(e.target.value)}
-            className="h-7 rounded-md px-2 text-xs outline-none"
-            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-          >
-            <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>
-            {platforms.map((p) => {
-              const config = getPlatformConfig(p);
-              return <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>{config.label} ({platformCounts.get(p) || 0})</option>;
-            })}
-          </select>
+        {/* Search */}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-xs"
+          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+          <Search size={13} style={{ color: "var(--text-muted)" }} />
+          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={viewMode === "people" ? "Search people or messages..." : "Search messages..."}
+            className="bg-transparent text-xs outline-none w-40"
+            style={{ color: "var(--text-primary)" }} />
         </div>
+
+        {/* Platform filter (platforms view only) */}
+        {viewMode === "platforms" && (
+          <div className="flex items-center gap-1.5">
+            <Filter size={12} style={{ color: "var(--text-muted)" }} />
+            <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}
+              className="h-7 rounded-md px-2 text-xs outline-none"
+              style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
+              <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>
+              {platforms.map((p) => {
+                const config = getPlatformConfig(p);
+                return <option key={p} value={p} style={{ background: "var(--bg-elevated)" }}>{config.label} ({platformCounts.get(p) || 0})</option>;
+              })}
+            </select>
+          </div>
+        )}
       </div>
 
-      {/* Conversation list */}
+      {/* Content */}
       <div className="flex-1 overflow-auto">
-        {platformGroups.size === 0 ? (
-          <div className="text-center py-12">
-            <MessageSquare size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              {searchQuery || platformFilter !== "all" ? "No conversations match your filters." : "No indexed conversations yet. Wait for sync to complete."}
-            </p>
-          </div>
+        {viewMode === "people" ? (
+          <PeopleView people={filteredPeople} onOpenThread={handleOpenThread} />
         ) : (
-          Array.from(platformGroups.entries()).map(([platform, platformNotes]) => {
-            const config = getPlatformConfig(platform);
-            return (
-              <CollapsibleSection
-                key={platform}
-                label={config.label}
-                color={config.color}
-                notes={platformNotes}
-                onOpen={handleOpenThread}
-              />
-            );
-          })
+          <PlatformView groups={platformGroups} onOpenThread={handleOpenThread} searchQuery={searchQuery} platformFilter={platformFilter} />
         )}
       </div>
     </div>
   );
 }
 
-function CollapsibleSection({
-  label, color, notes, onOpen,
-}: {
+// ─── People View ─────────────────────────────────────────────
+
+function PeopleView({ people, onOpenThread }: { people: PersonWithThreads[]; onOpenThread: (note: Note) => void }) {
+  if (people.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <Users size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>No people with messages found.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {people.map((p) => (
+        <PersonCard key={p.person.id} person={p} onOpenThread={onOpenThread} />
+      ))}
+    </div>
+  );
+}
+
+function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; onOpenThread: (note: Note) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [composeChannel, setComposeChannel] = useState("");
+  const [composeBody, setComposeBody] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const handleSend = async () => {
+    if (!composeBody.trim() || !composeChannel) return;
+    setSending(true);
+    try {
+      // The channel value is the Matrix room ID or user ID
+      // Find the matching thread to get the room ID
+      const matchThread = p.threads.find((t) => {
+        const meta = (t.metadata || {}) as Record<string, unknown>;
+        return (meta.platform as string) === composeChannel || (meta.matrixRoomId as string) === p.channels[composeChannel];
+      });
+      const roomId = matchThread
+        ? ((matchThread.metadata || {}) as Record<string, unknown>).matrixRoomId as string
+        : p.channels[composeChannel];
+
+      if (roomId) {
+        await matrixApi.sendMessage(roomId, composeBody.trim());
+        setComposeBody("");
+        setComposing(false);
+      }
+    } catch (e) {
+      console.error("Send failed:", e);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}>
+      {/* Person header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-start gap-3 px-6 py-3 hover:bg-[var(--glass-hover)] transition-colors text-left"
+      >
+        <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+          <User size={15} style={{ color: "var(--text-muted)" }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium capitalize" style={{ color: "var(--text-primary)" }}>
+              {p.name}
+            </span>
+            <span className="ml-auto text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+              {p.lastMessageAt ? formatRelativeTime(p.lastMessageAt) : ""}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            {/* Platform badges */}
+            {p.platforms.map((pl) => {
+              const config = getPlatformConfig(pl);
+              return (
+                <span key={pl} className="text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: config.color, color: "white", opacity: 0.85 }}>
+                  {config.label}
+                </span>
+              );
+            })}
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              {p.threads.length} thread{p.threads.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+        </div>
+        {expanded ? <ChevronDown size={14} style={{ color: "var(--text-muted)" }} /> : <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />}
+      </button>
+
+      {/* Expanded: show threads + compose */}
+      {expanded && (
+        <div className="pb-2">
+          {/* Thread list */}
+          {p.threads.map((thread) => {
+            const meta = (thread.metadata || {}) as Record<string, unknown>;
+            const platform = (meta.platform as string) || "matrix";
+            const config = getPlatformConfig(platform);
+            const threadName = (thread.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
+            const lastTs = meta.lastMessageAt as number;
+            const lines = (thread.content || "").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+            const lastLine = lines[lines.length - 1] || "";
+
+            return (
+              <button
+                key={thread.id}
+                onClick={() => onOpenThread(thread)}
+                className="w-full flex items-start gap-3 px-6 pl-16 py-2 hover:bg-[var(--glass-hover)] transition-colors text-left"
+              >
+                <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: config.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs capitalize truncate" style={{ color: "var(--text-primary)" }}>{threadName}</span>
+                    <span className="text-[9px] px-1 rounded" style={{ color: config.color }}>{config.label}</span>
+                    {lastTs && <span className="ml-auto text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>{formatRelativeTime(lastTs)}</span>}
+                  </div>
+                  {lastLine && <div className="text-[10px] truncate mt-0.5" style={{ color: "var(--text-muted)" }}>{lastLine}</div>}
+                </div>
+              </button>
+            );
+          })}
+
+          {/* Quick compose */}
+          <div className="px-6 pl-16 pt-2">
+            {!composing ? (
+              <button
+                onClick={() => { setComposing(true); setComposeChannel(p.platforms[0] || ""); }}
+                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                style={{ color: "var(--color-accent)" }}
+              >
+                <PenSquare size={10} /> Send message
+              </button>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>via</span>
+                  <select value={composeChannel} onChange={(e) => setComposeChannel(e.target.value)}
+                    className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
+                    {p.platforms.map((pl) => (
+                      <option key={pl} value={pl}>{getPlatformConfig(pl).label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                    placeholder={`Message ${p.name}...`}
+                    className="flex-1 rounded px-2 py-1.5 text-xs outline-none"
+                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                    autoFocus
+                  />
+                  <button onClick={handleSend} disabled={!composeBody.trim() || sending}
+                    className="p-1.5 rounded transition-colors disabled:opacity-30"
+                    style={{ background: "var(--color-accent)", color: "white" }}>
+                    <Send size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Platform View (existing) ────────────────────────────────
+
+function PlatformView({ groups, onOpenThread, searchQuery, platformFilter }: {
+  groups: Map<string, Note[]>; onOpenThread: (note: Note) => void; searchQuery: string; platformFilter: string;
+}) {
+  if (groups.size === 0) {
+    return (
+      <div className="text-center py-12">
+        <MessageSquare size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+          {searchQuery || platformFilter !== "all" ? "No conversations match your filters." : "No indexed conversations yet."}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {Array.from(groups.entries()).map(([platform, platformNotes]) => {
+        const config = getPlatformConfig(platform);
+        return (
+          <CollapsibleSection key={platform} label={config.label} color={config.color} notes={platformNotes} onOpen={onOpenThread} />
+        );
+      })}
+    </>
+  );
+}
+
+function CollapsibleSection({ label, color, notes, onOpen }: {
   label: string; color: string; notes: Note[]; onOpen: (note: Note) => void;
 }) {
   const [open, setOpen] = useState(true);
 
   return (
     <div>
-      <button
-        onClick={() => setOpen(!open)}
+      <button onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-5 py-2 sticky top-0 hover:bg-[var(--glass-hover)] transition-colors"
-        style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--glass-border)" }}
-      >
+        style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--glass-border)" }}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
-        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>
-          {label}
-        </span>
+        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>{label}</span>
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>{notes.length}</span>
       </button>
-
       {open && notes.map((note) => (
         <ConversationRow key={note.id} note={note} onClick={() => onOpen(note)} />
       ))}
@@ -197,43 +494,30 @@ function ConversationRow({ note, onClick }: { note: Note; onClick: () => void })
   const lastMessageAt = meta.lastMessageAt as number;
   const messageCount = meta.messageCount as number;
   const timeStr = lastMessageAt ? formatRelativeTime(lastMessageAt) : "";
-
-  // Get last message from content (last non-empty line)
   const lines = (note.content || "").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
   const lastLine = lines[lines.length - 1] || "";
 
   return (
-    <button
-      onClick={onClick}
+    <button onClick={onClick}
       className="w-full flex items-start gap-3 px-6 py-2.5 hover:bg-[var(--glass-hover)] transition-colors text-left"
-      style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}
-    >
-      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+      style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}>
+      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+        style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
         <MessageSquare size={13} style={{ color: "var(--text-muted)" }} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm truncate capitalize" style={{ color: "var(--text-primary)" }}>
-            {name}
-          </span>
+          <span className="text-sm truncate capitalize" style={{ color: "var(--text-primary)" }}>{name}</span>
           {timeStr && <span className="ml-auto text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>{timeStr}</span>}
         </div>
-        {lastLine && (
-          <div className="text-xs truncate mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {lastLine}
-          </div>
-        )}
+        {lastLine && <div className="text-xs truncate mt-0.5" style={{ color: "var(--text-muted)" }}>{lastLine}</div>}
         <div className="flex items-center gap-2 mt-1">
           {participants.length > 0 && (
             <span className="flex items-center gap-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <User size={9} /> {participants.length}
             </span>
           )}
-          {messageCount && (
-            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-              {messageCount} msgs
-            </span>
-          )}
+          {messageCount && <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{messageCount} msgs</span>}
           <span className="flex items-center gap-0.5 text-[10px]" style={{ color: "var(--color-accent)" }}>
             <Link2 size={9} /> vault
           </span>
@@ -241,4 +525,13 @@ function ConversationRow({ note, onClick }: { note: Note; onClick: () => void })
       </div>
     </button>
   );
+}
+
+function extractName(from: string): string {
+  if (from.includes("<")) {
+    const name = from.split("<")[0].trim().replace(/"/g, "");
+    if (name) return name;
+  }
+  if (from.includes("@")) return from.split("@")[0];
+  return from;
 }
