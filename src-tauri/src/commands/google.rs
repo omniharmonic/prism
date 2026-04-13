@@ -102,6 +102,8 @@ pub async fn calendar_create_event(
     _with_meet: Option<bool>,
 ) -> Result<serde_json::Value, PrismError> {
     let att_str = attendees.as_ref().map(|a| a.join(","));
+    let start = ensure_timezone(&start);
+    let end = ensure_timezone(&end);
     let result = client.calendar_create_event(
         &config.google_account_primary,
         &summary, &start, &end,
@@ -132,6 +134,8 @@ pub async fn calendar_update_event(
     #[allow(unused)] location: Option<String>,
 ) -> Result<serde_json::Value, PrismError> {
     let att_str = attendees.as_ref().map(|a| a.join(","));
+    let start = start.map(|s| ensure_timezone(&s));
+    let end = end.map(|s| ensure_timezone(&s));
     client.calendar_update_event(
         &config.google_account_primary,
         &eventId,
@@ -166,4 +170,16 @@ pub fn google_check_auth(
         "primary": { "account": config.google_account_primary, "authenticated": primary_ok },
         "agent": { "account": config.google_account_agent, "authenticated": agent_ok },
     }))
+}
+
+/// Ensure a datetime string has a timezone offset.
+/// Google Calendar API requires timezone info. If missing, append local offset.
+fn ensure_timezone(dt: &str) -> String {
+    // Already has timezone info (Z, +HH:MM, -HH:MM)
+    if dt.ends_with('Z') || dt.contains('+') || (dt.len() > 19 && dt[19..].contains('-')) {
+        return dt.to_string();
+    }
+    // Append local timezone offset
+    let offset = chrono::Local::now().offset().to_string();
+    format!("{}{}", dt, offset)
 }
