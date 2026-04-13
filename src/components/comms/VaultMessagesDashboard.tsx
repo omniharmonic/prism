@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox } from "lucide-react";
+import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox, Check } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
 import { matrixApi } from "../../lib/matrix/client";
 import { useUIStore } from "../../app/stores/ui";
@@ -299,10 +299,11 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 // ─── Triage View ─────────────────────────────────────────────
 
 const PRIORITY_TIERS = [
-  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.3)" },
-  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.08)", borderColor: "rgba(245,158,11,0.3)" },
-  { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)" },
-  { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)" },
+  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.3)", defaultCollapsed: false },
+  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.08)", borderColor: "rgba(245,158,11,0.3)", defaultCollapsed: false },
+  { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)", defaultCollapsed: false },
+  { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
+  { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)", bgColor: "transparent", borderColor: "rgba(34,197,94,0.3)", defaultCollapsed: true },
 ] as const;
 
 function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[]; onOpenThread: (note: Note) => void; searchQuery: string }) {
@@ -316,7 +317,7 @@ function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[];
       if (tier.tag === "unclassified") {
         notes = messages.filter((n) => {
           const tags = n.tags || [];
-          return !tags.includes("urgent") && !tags.includes("action-required") && !tags.includes("informational") && !tags.includes("social");
+          return !tags.includes("urgent") && !tags.includes("action-required") && !tags.includes("informational") && !tags.includes("social") && !tags.includes("handled");
         });
       } else {
         notes = messages.filter((n) => (n.tags || []).includes(tier.tag));
@@ -388,7 +389,7 @@ function TriageTier({ tier, notes, onOpenThread }: {
   notes: Note[];
   onOpenThread: (note: Note) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(tier.tag === "informational");
+  const [collapsed, setCollapsed] = useState(tier.defaultCollapsed);
   const Icon = tier.icon;
 
   return (

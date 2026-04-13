@@ -65,9 +65,24 @@ function groupMessages(messages: MatrixMessage[]): MessageGroupData[] {
     if (last && last.sender === msg.sender) {
       last.messages.push(msg);
     } else {
+      // Use display name, falling back to cleaned-up Matrix ID
+      let displayName = msg.sender_name || "";
+      if (!displayName) {
+        // Clean up Matrix IDs: @telegram_12345:localhost → "telegram_12345"
+        // @whatsapp_1234:localhost → "whatsapp_1234"
+        const localpart = msg.sender.split(":")[0].replace("@", "");
+        // Strip bridge prefixes for readability
+        displayName = localpart
+          .replace(/^telegram_\d+$/, "User")
+          .replace(/^whatsapp_\d+$/, "User")
+          .replace(/^discord_\d+$/, "User")
+          .replace(/^signal_\d+$/, "User")
+          .replace(/^instagram_\d+$/, "User");
+        if (displayName === "User") displayName = localpart; // keep original if no good name
+      }
       groups.push({
         sender: msg.sender,
-        senderName: msg.sender_name || msg.sender.split(":")[0].replace("@", ""),
+        senderName: displayName,
         isOutgoing: msg.is_outgoing,
         messages: [msg],
       });
