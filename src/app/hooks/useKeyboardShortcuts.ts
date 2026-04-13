@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useUIStore } from "../stores/ui";
 
 export function useKeyboardShortcuts() {
-  const { toggleSidebar, toggleContextPanel, openCommandBar } = useUIStore();
+  const { toggleSidebar, toggleContextPanel, openCommandBar, activeTabId, closeTab } = useUIStore();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -10,6 +10,11 @@ export function useKeyboardShortcuts() {
       if (!mod) return;
 
       switch (e.key) {
+        case "w":
+          // Close active tab instead of closing the window
+          e.preventDefault();
+          if (activeTabId) closeTab(activeTabId);
+          break;
         case "b":
           e.preventDefault();
           toggleSidebar();
@@ -27,5 +32,5 @@ export function useKeyboardShortcuts() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [toggleSidebar, toggleContextPanel, openCommandBar]);
+  }, [toggleSidebar, toggleContextPanel, openCommandBar, activeTabId, closeTab]);
 }
