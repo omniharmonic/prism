@@ -75,7 +75,7 @@ pub async fn calendar_sync_range(
 /// Dispatch a background agent task.
 #[tauri::command]
 pub async fn agent_dispatch(
-    dispatch_mgr: State<'_, DispatchManager>,
+    dispatch_mgr: State<'_, std::sync::Arc<DispatchManager>>,
     parachute: State<'_, ParachuteClient>,
     skill: String,
     prompt: String,
@@ -95,7 +95,7 @@ pub async fn agent_dispatch(
 /// List all dispatches (active and completed).
 #[tauri::command]
 pub async fn agent_get_dispatches(
-    dispatch_mgr: State<'_, DispatchManager>,
+    dispatch_mgr: State<'_, std::sync::Arc<DispatchManager>>,
 ) -> Result<Vec<crate::services::agent_dispatch::Dispatch>, PrismError> {
     Ok(dispatch_mgr.list().await)
 }
@@ -103,8 +103,63 @@ pub async fn agent_get_dispatches(
 /// Cancel a running dispatch.
 #[tauri::command]
 pub async fn agent_cancel_dispatch(
-    dispatch_mgr: State<'_, DispatchManager>,
+    dispatch_mgr: State<'_, std::sync::Arc<DispatchManager>>,
     id: String,
 ) -> Result<(), PrismError> {
     dispatch_mgr.cancel(&id).await
+}
+
+/// List all agent skills.
+#[tauri::command]
+pub async fn agent_get_skills(
+    parachute: State<'_, ParachuteClient>,
+) -> Result<Vec<serde_json::Value>, PrismError> {
+    let notes = parachute.list_notes(&crate::models::note::ListNotesParams {
+        tag: Some("agent-skill".into()),
+        path: None,
+        limit: Some(100),
+        offset: None,
+    }).await?;
+
+    Ok(notes.into_iter().map(|n| {
+        let meta = n.metadata.clone().unwrap_or(serde_json::json!({}));
+        serde_json::json!({
+            "id": n.id,
+            "path": n.path,
+            "prompt": n.content,
+            "skillName": meta.get("skillName").cloned().unwrap_or(serde_json::json!("")),
+            "description": meta.get("description").cloned().unwrap_or(serde_json::json!("")),
+            "intervalSecs": meta.get("intervalSecs").cloned().unwrap_or(serde_json::json!(3600)),
+            "enabled": meta.get("enabled").cloned().unwrap_or(serde_json::json!(false)),
+            "lastRun": meta.get("lastRun").cloned().unwrap_or(serde_json::json!(null)),
+        })
+    }).collect())
+}
+
+/// Update an agent skill's settings.
+#[tauri::command]
+pub async fn agent_update_skill(
+    parachute: State<'_, ParachuteClient>,
+    id: String,
+    enabled: Option<bool>,
+    #[allow(non_snake_case)] intervalSecs: Option<u64>,
+    prompt: Option<String>,
+    description: Option<String>,
+) -> Result<(), PrismError> {
+    let note = parachute.get_note(&id).await?;
+    let mut meta = note.metadata.unwrap_or(serde_json::json!({}));
+
+    if let Some(obj) = meta.as_object_mut() {
+        if let Some(e) = enabled { obj.insert("enabled".into(), serde_json::json!(e)); }
+        if let Some(i) = intervalSecs { obj.insert("intervalSecs".into(), serde_json::json!(i)); }
+        if let Some(d) = description { obj.insert("description".into(), serde_json::json!(d)); }
+    }
+
+    parachute.update_note(&id, &crate::models::note::UpdateNoteParams {
+        content: prompt,
+        path: None,
+        metadata: Some(meta),
+    }).await?;
+
+    Ok(())
 }

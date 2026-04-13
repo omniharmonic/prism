@@ -3,6 +3,7 @@ pub mod calendar_sync;
 pub mod email_sync;
 pub mod person_linker;
 pub mod agent_dispatch;
+pub mod skill_scheduler;
 
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -27,10 +28,12 @@ pub struct ServiceStatus {
 /// Each service runs as a tokio task with a shutdown channel.
 pub struct ServiceManager {
     shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
     handles: Vec<JoinHandle<()>>,
     pub message_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub calendar_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub email_status: Arc<std::sync::Mutex<ServiceStatus>>,
+    pub scheduler_status: Arc<std::sync::Mutex<ServiceStatus>>,
 }
 
 impl ServiceManager {
@@ -109,15 +112,36 @@ impl ServiceManager {
             log::info!("Email sync disabled: no Google account configured");
         }
 
+        let scheduler_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
+            name: "skill-scheduler".into(),
+            running: false,
+            last_run: None,
+            last_error: None,
+            items_processed: 0,
+        }));
+
         log::info!("ServiceManager started {} background services", handles.len());
 
         Self {
             shutdown_tx,
+            shutdown_rx,
             handles,
             message_status,
             calendar_status,
             email_status,
+            scheduler_status,
         }
+    }
+
+    /// Start the skill scheduler (must be called after DispatchManager is created).
+    pub fn start_scheduler(&self, dispatch_manager: Arc<agent_dispatch::DispatchManager>) {
+        let parachute = Arc::new(ParachuteClient::new(1940, None));
+        let rx = self.shutdown_rx.clone();
+        let status = self.scheduler_status.clone();
+        tauri::async_runtime::spawn(async move {
+            skill_scheduler::run(parachute, dispatch_manager, rx, status).await;
+        });
+        log::info!("Skill scheduler started");
     }
 
     /// Get status of all services.
@@ -126,6 +150,7 @@ impl ServiceManager {
             self.message_status.lock().unwrap().clone(),
             self.calendar_status.lock().unwrap().clone(),
             self.email_status.lock().unwrap().clone(),
+            self.scheduler_status.lock().unwrap().clone(),
         ]
     }
 

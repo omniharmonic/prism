@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight } from "lucide-react";
-import { agentApi, type AgentDispatch } from "../../lib/parachute/client";
+import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight } from "lucide-react";
+import { agentApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
 
@@ -18,17 +18,33 @@ function formatTime(iso: string): string {
   catch { return ""; }
 }
 
-const QUICK_SKILLS = [
-  { skill: "message-triage", label: "Triage Messages", prompt: "Review recent message-thread notes in the vault that don't have importance tags. For each, classify as urgent/action-required/informational/social and add the appropriate tag. If you find action items, create linked task notes. Summarize what you triaged." },
-  { skill: "meeting-processor", label: "Process Meetings", prompt: "Find meeting notes in the vault that have transcript content but haven't been processed (no 'processed' tag). For each, extract attendees, action items, decisions, and key topics. Create linked task notes for action items. Add the 'processed' tag when done. Summarize what you found." },
-  { skill: "daily-briefing", label: "Generate Briefing", prompt: "Generate a daily briefing for today. Check: overdue tasks, today's calendar events (meetings, deadlines), recent important messages, and any follow-ups needed. Write the briefing to a new note at vault/agent/briefings/today tagged 'briefing'. Be concise and actionable." },
-  { skill: "intelligence-scan", label: "Intelligence Scan", prompt: "Analyze the vault for patterns and insights. Look for: stalled projects (no updates in 7+ days), overdue tasks, upcoming meetings without agendas, commitments others made that need follow-up, and calendar gaps that match pending tasks. Write insights to vault/agent/insights/today tagged 'agent-insight'." },
+const INTERVAL_OPTIONS = [
+  { label: "15 min", value: 900 },
+  { label: "30 min", value: 1800 },
+  { label: "1 hour", value: 3600 },
+  { label: "3 hours", value: 10800 },
+  { label: "6 hours", value: 21600 },
+  { label: "12 hours", value: 43200 },
+  { label: "24 hours", value: 86400 },
 ];
+
+function formatInterval(secs: number): string {
+  if (secs < 3600) return `${Math.round(secs / 60)}m`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h`;
+  return `${Math.round(secs / 86400)}d`;
+}
 
 export default function AgentActivity(_props: RendererProps) {
   const queryClient = useQueryClient();
   const [customPrompt, setCustomPrompt] = useState("");
   const customSkill = "custom";
+  const [showSkillConfig, setShowSkillConfig] = useState(false);
+
+  const { data: skills } = useQuery({
+    queryKey: ["agent", "skills"],
+    queryFn: agentApi.getSkills,
+    refetchInterval: 30_000,
+  });
 
   const { data: dispatches, isLoading } = useQuery({
     queryKey: ["agent", "dispatches"],
@@ -84,22 +100,52 @@ export default function AgentActivity(_props: RendererProps) {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-4 space-y-6">
-        {/* Quick dispatch buttons */}
+        {/* Skills */}
         <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>Quick Actions</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {QUICK_SKILLS.map((qs) => (
-              <button
-                key={qs.skill}
-                onClick={() => handleDispatch(qs.skill, qs.prompt)}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-left transition-colors hover:bg-[var(--glass-hover)]"
-                style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-              >
-                <Play size={12} style={{ color: "var(--color-accent)" }} />
-                {qs.label}
-              </button>
-            ))}
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skills</h3>
+            <button
+              onClick={() => setShowSkillConfig(!showSkillConfig)}
+              className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+              title="Configure skills"
+            >
+              <Settings2 size={12} style={{ color: showSkillConfig ? "var(--color-accent)" : "var(--text-muted)" }} />
+            </button>
           </div>
+
+          {showSkillConfig ? (
+            <div className="space-y-2">
+              {(skills || []).map((skill) => (
+                <SkillConfigCard key={skill.id} skill={skill} onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })} onRun={() => handleDispatch(skill.skillName, skill.prompt)} />
+              ))}
+              {(!skills || skills.length === 0) && (
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>No skills configured. They'll be created automatically on next restart.</div>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {(skills || []).map((skill) => (
+                <button
+                  key={skill.id}
+                  onClick={() => handleDispatch(skill.skillName, skill.prompt)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-left transition-colors hover:bg-[var(--glass-hover)]"
+                  style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                >
+                  <Play size={12} style={{ color: "var(--color-accent)" }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate capitalize">{skill.skillName.replace(/-/g, " ")}</div>
+                    {skill.enabled && (
+                      <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>
+                        every {formatInterval(skill.intervalSecs)}
+                        {skill.lastRun && ` · ran ${formatTime(skill.lastRun)}`}
+                      </div>
+                    )}
+                  </div>
+                  {skill.enabled && <Clock size={9} style={{ color: "var(--color-success)" }} />}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Custom dispatch */}
@@ -236,6 +282,97 @@ function DispatchCard({ dispatch, onCancel }: { dispatch: AgentDispatch; onCance
             <div className="rounded p-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--color-danger)" }}>
               {dispatch.error}
             </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Skill Config Card ───────────────────────────────────────
+
+function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpdate: () => void; onRun: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [editPrompt, setEditPrompt] = useState(skill.prompt);
+  const [saving, setSaving] = useState(false);
+
+  const handleToggle = async () => {
+    await agentApi.updateSkill(skill.id, { enabled: !skill.enabled });
+    onUpdate();
+  };
+
+  const handleIntervalChange = async (secs: number) => {
+    await agentApi.updateSkill(skill.id, { intervalSecs: secs });
+    onUpdate();
+  };
+
+  const handleSavePrompt = async () => {
+    setSaving(true);
+    await agentApi.updateSkill(skill.id, { prompt: editPrompt });
+    setSaving(false);
+    onUpdate();
+  };
+
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button onClick={handleToggle} title={skill.enabled ? "Disable" : "Enable"}>
+          {skill.enabled
+            ? <ToggleRight size={16} style={{ color: "var(--color-success)" }} />
+            : <ToggleLeft size={16} style={{ color: "var(--text-muted)" }} />
+          }
+        </button>
+        <button onClick={() => setExpanded(!expanded)} className="flex-1 text-left">
+          <div className="text-xs font-medium capitalize" style={{ color: "var(--text-primary)" }}>
+            {skill.skillName.replace(/-/g, " ")}
+          </div>
+          <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            {skill.description}
+          </div>
+        </button>
+        <button onClick={onRun} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Run now">
+          <Play size={12} style={{ color: "var(--color-accent)" }} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
+          <div className="flex items-center gap-2 pt-2">
+            <Clock size={11} style={{ color: "var(--text-muted)" }} />
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Run every:</span>
+            <select
+              value={skill.intervalSecs}
+              onChange={(e) => handleIntervalChange(Number(e.target.value))}
+              className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+            >
+              {INTERVAL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            {skill.lastRun && (
+              <span className="text-[9px] ml-auto" style={{ color: "var(--text-muted)" }}>
+                Last: {formatTime(skill.lastRun)}
+              </span>
+            )}
+          </div>
+
+          <textarea
+            value={editPrompt}
+            onChange={(e) => setEditPrompt(e.target.value)}
+            rows={6}
+            className="w-full rounded px-2 py-1.5 text-[10px] outline-none resize-none font-mono"
+            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}
+          />
+          {editPrompt !== skill.prompt && (
+            <button
+              onClick={handleSavePrompt}
+              disabled={saving}
+              className="px-3 py-1 rounded text-[10px] font-medium"
+              style={{ background: "var(--color-accent)", color: "white" }}
+            >
+              {saving ? "Saving..." : "Save Prompt"}
+            </button>
           )}
         </div>
       )}

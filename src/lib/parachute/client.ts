@@ -93,6 +93,17 @@ export interface AgentDispatch {
   note_id: string | null;
 }
 
+export interface AgentSkill {
+  id: string;
+  path: string;
+  prompt: string;
+  skillName: string;
+  description: string;
+  intervalSecs: number;
+  enabled: boolean;
+  lastRun: string | null;
+}
+
 export const agentApi = {
   dispatch: (skill: string, prompt: string, context?: string) =>
     invoke<{ id: string }>("agent_dispatch", { skill, prompt, context }),
@@ -102,6 +113,12 @@ export const agentApi = {
 
   cancelDispatch: (id: string) =>
     invoke<void>("agent_cancel_dispatch", { id }),
+
+  getSkills: () =>
+    invoke<AgentSkill[]>("agent_get_skills"),
+
+  updateSkill: (id: string, updates: { enabled?: boolean; intervalSecs?: number; prompt?: string; description?: string }) =>
+    invoke<void>("agent_update_skill", { id, ...updates }),
 };
 
 export const convertApi = {

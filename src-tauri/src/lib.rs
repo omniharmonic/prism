@@ -51,7 +51,10 @@ pub fn run() {
 
     // Start background sync services (uses tauri::async_runtime which is always available)
     let service_manager = ServiceManager::start(&app_config);
-    let dispatch_manager = DispatchManager::new();
+    let dispatch_manager = std::sync::Arc::new(DispatchManager::new());
+
+    // Start skill scheduler (needs both ServiceManager and DispatchManager)
+    service_manager.start_scheduler(dispatch_manager.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -140,6 +143,8 @@ pub fn run() {
             service_cmds::agent_dispatch,
             service_cmds::agent_get_dispatches,
             service_cmds::agent_cancel_dispatch,
+            service_cmds::agent_get_skills,
+            service_cmds::agent_update_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
