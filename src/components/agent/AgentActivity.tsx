@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight } from "lucide-react";
-import { agentApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
+import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight, PlusCircle, X } from "lucide-react";
+import { agentApi, vaultApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
 
@@ -25,13 +25,25 @@ const INTERVAL_OPTIONS = [
   { label: "3 hours", value: 10800 },
   { label: "6 hours", value: 21600 },
   { label: "12 hours", value: 43200 },
-  { label: "24 hours", value: 86400 },
+  { label: "Daily", value: 86400 },
 ];
 
-function formatInterval(secs: number): string {
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => ({
+  label: `${i === 0 ? 12 : i > 12 ? i - 12 : i}:00 ${i < 12 ? "AM" : "PM"}`,
+  value: i,
+}));
+
+function formatInterval(secs: number, runAtHour?: number | null): string {
+  if (secs >= 86400) {
+    if (runAtHour != null) {
+      const h = runAtHour % 12 || 12;
+      const ampm = runAtHour < 12 ? "AM" : "PM";
+      return `daily @ ${h}${ampm}`;
+    }
+    return "daily";
+  }
   if (secs < 3600) return `${Math.round(secs / 60)}m`;
-  if (secs < 86400) return `${Math.round(secs / 3600)}h`;
-  return `${Math.round(secs / 86400)}d`;
+  return `${Math.round(secs / 3600)}h`;
 }
 
 export default function AgentActivity(_props: RendererProps) {
@@ -39,6 +51,7 @@ export default function AgentActivity(_props: RendererProps) {
   const [customPrompt, setCustomPrompt] = useState("");
   const customSkill = "custom";
   const [showSkillConfig, setShowSkillConfig] = useState(false);
+  const [showSkillBuilder, setShowSkillBuilder] = useState(false);
 
   const { data: skills } = useQuery({
     queryKey: ["agent", "skills"],
@@ -104,21 +117,33 @@ export default function AgentActivity(_props: RendererProps) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skills</h3>
-            <button
-              onClick={() => setShowSkillConfig(!showSkillConfig)}
-              className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-              title="Configure skills"
-            >
-              <Settings2 size={12} style={{ color: showSkillConfig ? "var(--color-accent)" : "var(--text-muted)" }} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => { setShowSkillBuilder(true); setShowSkillConfig(true); }}
+                className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                title="Create new skill"
+              >
+                <PlusCircle size={12} style={{ color: "var(--color-accent)" }} />
+              </button>
+              <button
+                onClick={() => { setShowSkillConfig(!showSkillConfig); setShowSkillBuilder(false); }}
+                className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                title="Configure skills"
+              >
+                <Settings2 size={12} style={{ color: showSkillConfig ? "var(--color-accent)" : "var(--text-muted)" }} />
+              </button>
+            </div>
           </div>
 
           {showSkillConfig ? (
             <div className="space-y-2">
+              {showSkillBuilder && (
+                <SkillBuilder onCreated={() => { setShowSkillBuilder(false); queryClient.invalidateQueries({ queryKey: ["agent", "skills"] }); }} onCancel={() => setShowSkillBuilder(false)} />
+              )}
               {(skills || []).map((skill) => (
                 <SkillConfigCard key={skill.id} skill={skill} onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })} onRun={() => handleDispatch(skill.skillName, skill.prompt)} />
               ))}
-              {(!skills || skills.length === 0) && (
+              {(!skills || skills.length === 0) && !showSkillBuilder && (
                 <div className="text-xs" style={{ color: "var(--text-muted)" }}>No skills configured. They'll be created automatically on next restart.</div>
               )}
             </div>
@@ -136,7 +161,7 @@ export default function AgentActivity(_props: RendererProps) {
                     <div className="truncate capitalize">{skill.skillName.replace(/-/g, " ")}</div>
                     {skill.enabled && (
                       <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>
-                        every {formatInterval(skill.intervalSecs)}
+                        {formatInterval(skill.intervalSecs, skill.runAtHour)}
                         {skill.lastRun && ` · ran ${formatTime(skill.lastRun)}`}
                       </div>
                     )}
@@ -289,6 +314,121 @@ function DispatchCard({ dispatch, onCancel }: { dispatch: AgentDispatch; onCance
   );
 }
 
+// ─── Skill Builder ───────────────────────────────────────────
+
+function SkillBuilder({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [interval, setInterval] = useState(3600);
+  const [runAtHour, setRunAtHour] = useState(7);
+  const [saving, setSaving] = useState(false);
+
+  const handleCreate = async () => {
+    if (!name.trim() || !prompt.trim()) return;
+    setSaving(true);
+    try {
+      const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      const path = `vault/agent/skills/${slug}`;
+      const metadata: Record<string, unknown> = {
+        type: "agent-skill",
+        skillName: slug,
+        description: description.trim(),
+        intervalSecs: interval,
+        enabled: false,
+        lastRun: null,
+      };
+      if (interval >= 86400) {
+        metadata.runAtHour = runAtHour;
+      }
+      await vaultApi.createNote({
+        content: prompt,
+        path,
+        tags: ["agent-skill"],
+        metadata,
+      });
+      onCreated();
+    } catch (e) {
+      console.error("Failed to create skill:", e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ background: "var(--glass)", border: "2px solid var(--color-accent)" }}>
+      <div className="flex items-center justify-between px-3 py-2" style={{ background: "rgba(var(--accent-rgb, 99,102,241), 0.1)", borderBottom: "1px solid var(--glass-border)" }}>
+        <span className="text-xs font-semibold" style={{ color: "var(--color-accent)" }}>New Skill</span>
+        <button onClick={onCancel} className="p-0.5 rounded hover:bg-[var(--glass-hover)]">
+          <X size={12} style={{ color: "var(--text-muted)" }} />
+        </button>
+      </div>
+      <div className="px-3 py-3 space-y-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Skill name (e.g., Weekly Report)"
+          className="w-full rounded px-2 py-1.5 text-xs outline-none"
+          style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+          autoFocus
+        />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Short description"
+          className="w-full rounded px-2 py-1.5 text-xs outline-none"
+          style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+        />
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="What should the agent do? Describe the task in detail...&#10;&#10;Use {{today}}, {{yesterday}}, {{now}} for dynamic dates.&#10;Use Parachute MCP tools to search, create, and update notes."
+          rows={6}
+          className="w-full rounded px-2 py-1.5 text-xs outline-none resize-none font-mono"
+          style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}
+        />
+        <div className="flex items-center gap-2">
+          <Clock size={11} style={{ color: "var(--text-muted)" }} />
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Run:</span>
+          <select
+            value={interval}
+            onChange={(e) => setInterval(Number(e.target.value))}
+            className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+          >
+            {INTERVAL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          {interval >= 86400 && (
+            <>
+              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>at</span>
+              <select
+                value={runAtHour}
+                onChange={(e) => setRunAtHour(Number(e.target.value))}
+                className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              >
+                {HOUR_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
+        <button
+          onClick={handleCreate}
+          disabled={!name.trim() || !prompt.trim() || saving}
+          className="w-full py-1.5 rounded text-xs font-medium transition-colors disabled:opacity-50"
+          style={{ background: "var(--color-accent)", color: "white" }}
+        >
+          {saving ? "Creating..." : "Create Skill"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Skill Config Card ───────────────────────────────────────
 
 function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpdate: () => void; onRun: () => void }) {
@@ -303,6 +443,14 @@ function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpda
 
   const handleIntervalChange = async (secs: number) => {
     await agentApi.updateSkill(skill.id, { intervalSecs: secs });
+    onUpdate();
+  };
+
+  const handleRunAtHourChange = async (hour: number) => {
+    // Store runAtHour by updating skill metadata via a direct vault update
+    const note = await vaultApi.getNote(skill.id);
+    const meta = (note.metadata || {}) as Record<string, unknown>;
+    await vaultApi.updateNote(skill.id, { metadata: { ...meta, runAtHour: hour } });
     onUpdate();
   };
 
@@ -337,9 +485,9 @@ function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpda
 
       {expanded && (
         <div className="px-3 pb-3 space-y-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
-          <div className="flex items-center gap-2 pt-2">
+          <div className="flex items-center gap-2 pt-2 flex-wrap">
             <Clock size={11} style={{ color: "var(--text-muted)" }} />
-            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Run every:</span>
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Run:</span>
             <select
               value={skill.intervalSecs}
               onChange={(e) => handleIntervalChange(Number(e.target.value))}
@@ -350,6 +498,21 @@ function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpda
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+            {skill.intervalSecs >= 86400 && (
+              <>
+                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>at</span>
+                <select
+                  value={skill.runAtHour ?? 7}
+                  onChange={(e) => handleRunAtHourChange(Number(e.target.value))}
+                  className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+                  style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                >
+                  {HOUR_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </>
+            )}
             {skill.lastRun && (
               <span className="text-[9px] ml-auto" style={{ color: "var(--text-muted)" }}>
                 Last: {formatTime(skill.lastRun)}

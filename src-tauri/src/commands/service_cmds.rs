@@ -132,6 +132,7 @@ pub async fn agent_get_skills(
             "intervalSecs": meta.get("intervalSecs").cloned().unwrap_or(serde_json::json!(3600)),
             "enabled": meta.get("enabled").cloned().unwrap_or(serde_json::json!(false)),
             "lastRun": meta.get("lastRun").cloned().unwrap_or(serde_json::json!(null)),
+            "runAtHour": meta.get("runAtHour").cloned().unwrap_or(serde_json::json!(null)),
         })
     }).collect())
 }

@@ -102,6 +102,7 @@ export interface AgentSkill {
   intervalSecs: number;
   enabled: boolean;
   lastRun: string | null;
+  runAtHour: number | null;
 }
 
 export const agentApi = {

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::watch;
+use chrono::Timelike;
 use crate::clients::parachute::ParachuteClient;
 use crate::models::note::{CreateNoteParams, UpdateNoteParams, ListNotesParams};
 use crate::services::agent_dispatch::DispatchManager;
@@ -121,13 +122,28 @@ async fn check_and_dispatch(
         }
 
         let interval_secs = meta.get("intervalSecs").and_then(|v| v.as_u64()).unwrap_or(3600);
+        let run_at_hour = meta.get("runAtHour").and_then(|v| v.as_u64());
         let last_run = meta.get("lastRun").and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
-        let is_due = match last_run {
-            Some(lr) => (now - lr).num_seconds() as u64 >= interval_secs,
-            None => true, // Never run → due
+        let is_due = if interval_secs >= 86400 && run_at_hour.is_some() {
+            // Daily skill with specific hour: check if we're past the target hour
+            // and haven't run today yet
+            let target_hour = run_at_hour.unwrap() as u32;
+            let local_now = chrono::Local::now();
+            let current_hour = local_now.hour();
+            let ran_today = last_run.map(|lr| {
+                let local_lr = lr.with_timezone(&chrono::Local);
+                local_lr.date_naive() == local_now.date_naive()
+            }).unwrap_or(false);
+
+            current_hour >= target_hour && !ran_today
+        } else {
+            match last_run {
+                Some(lr) => (now - lr).num_seconds() as u64 >= interval_secs,
+                None => true, // Never run → due
+            }
         };
 
         if !is_due {
