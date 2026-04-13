@@ -3,7 +3,7 @@ import {
   FileText,
   Presentation,
   Code,
-  Mail,
+  MessageSquare,
   Table2,
   Globe,
   CheckSquare,
@@ -15,12 +15,13 @@ import { useUIStore } from "../../app/stores/ui";
 import { useVaultPaths } from "../../app/hooks/useParachute";
 import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
+import { ComposeMessage } from "../comms/ComposeMessage";
 
 const CONTENT_TYPE_OPTIONS = [
   { type: "document" as ContentType, label: "Document", icon: FileText },
   { type: "presentation" as ContentType, label: "Presentation", icon: Presentation },
   { type: "code" as ContentType, label: "Code File", icon: Code },
-  { type: "email" as ContentType, label: "Email", icon: Mail },
+  { type: "message" as ContentType, label: "Message", icon: MessageSquare },
   { type: "spreadsheet" as ContentType, label: "Spreadsheet", icon: Table2 },
   { type: "website" as ContentType, label: "Website", icon: Globe },
   { type: "task" as ContentType, label: "Task", icon: CheckSquare },
@@ -58,9 +59,15 @@ export function NewContentMenu({ onClose }: NewContentMenuProps) {
     ? dirPaths.filter((p) => p.toLowerCase().includes(pathInput.toLowerCase())).slice(0, 6)
     : dirPaths.slice(0, 6);
 
+  const [showCompose, setShowCompose] = useState(false);
+
   const handleTypeClick = (type: ContentType) => {
     if (type === "task") {
       setShowTaskDialog(true);
+      return;
+    }
+    if (type === ("message" as ContentType)) {
+      setShowCompose(true);
       return;
     }
     setSelectedType(type);
@@ -91,6 +98,10 @@ export function NewContentMenu({ onClose }: NewContentMenuProps) {
 
   if (showTaskDialog) {
     return <TaskCreateDialog onClose={onClose} />;
+  }
+
+  if (showCompose) {
+    return <ComposeMessage onClose={onClose} />;
   }
 
   // Step 2: path picker for the selected type

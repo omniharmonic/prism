@@ -146,7 +146,7 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
       onClick={onClose}
     >
       <div
-        className="glass-elevated rounded-xl w-[480px] max-h-[70vh] overflow-hidden flex flex-col"
+        className="glass-elevated rounded-xl w-[540px] max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -204,7 +204,7 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
                   />
                 </div>
                 {/* Dropdown results */}
-                {filteredPeople.length > 0 && (
+                {searchQuery.length > 0 && filteredPeople.length > 0 && (
                   <div
                     className="absolute top-full left-0 right-0 mt-1 rounded-lg overflow-hidden z-10 max-h-48 overflow-auto"
                     style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)" }}

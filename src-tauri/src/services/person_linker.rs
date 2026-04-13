@@ -58,8 +58,17 @@ pub async fn find_or_create_person(
     platform: Option<&str>,
 ) -> Result<String, PrismError> {
     let clean = clean_display_name(name);
-    if clean.is_empty() || clean.len() < 2 {
+    if clean.is_empty() || clean.len() < 3 {
         return Err(PrismError::Other("Name too short to create person note".into()));
+    }
+    // Skip phone numbers, numeric IDs, and obviously non-name strings
+    let digits: usize = clean.chars().filter(|c| c.is_ascii_digit()).count();
+    if digits as f32 / clean.len() as f32 > 0.5 {
+        return Err(PrismError::Other("Name looks like a phone number or ID".into()));
+    }
+    // Skip email-only names
+    if clean.contains('@') && !clean.contains(' ') {
+        return Err(PrismError::Other("Name is an email address, not a person name".into()));
     }
 
     // Try to find existing
