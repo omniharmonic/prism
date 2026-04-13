@@ -35,9 +35,12 @@ interface PersonChannel {
 
 function extractChannels(person: Note): PersonChannel[] {
   const meta = person.metadata || {};
+  // Channels are nested under metadata.channels (from person linker)
+  const channelsObj = (meta.channels as Record<string, string>) || {};
   const channels: PersonChannel[] = [];
   for (const { key, platform } of CHANNEL_KEYS) {
-    const handle = meta[key] as string | undefined;
+    // Check both metadata.channels.X and metadata.X (legacy)
+    const handle = channelsObj[key] || (meta[key] as string | undefined);
     if (handle) {
       const config = getPlatformConfig(platform);
       channels.push({
