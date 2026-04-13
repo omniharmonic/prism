@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare } from "lucide-react";
+import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
 import { matrixApi } from "../../lib/matrix/client";
 import { useUIStore } from "../../app/stores/ui";
@@ -15,7 +15,7 @@ interface LinkData {
   relationship: string;
 }
 
-type ViewMode = "people" | "platforms";
+type ViewMode = "triage" | "people" | "platforms";
 
 function formatRelativeTime(ts: number | string): string {
   try {
@@ -46,7 +46,7 @@ interface PersonWithThreads {
 
 export default function VaultMessagesDashboard(_props: RendererProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>("people");
+  const [viewMode, setViewMode] = useState<ViewMode>("triage");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const openTab = useUIStore((s) => s.openTab);
 
@@ -238,6 +238,11 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
         {/* View toggle */}
         <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+          <button onClick={() => setViewMode("triage")}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs"
+            style={{ background: viewMode === "triage" ? "var(--color-accent)" : "transparent", color: viewMode === "triage" ? "white" : "var(--text-secondary)" }}>
+            <Inbox size={11} /> Triage
+          </button>
           <button onClick={() => setViewMode("people")}
             className="flex items-center gap-1 px-2.5 py-1 text-xs"
             style={{ background: viewMode === "people" ? "var(--color-accent)" : "transparent", color: viewMode === "people" ? "white" : "var(--text-secondary)" }}>
@@ -279,12 +284,182 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        {viewMode === "people" ? (
+        {viewMode === "triage" ? (
+          <TriageView messages={allMessages} onOpenThread={handleOpenThread} searchQuery={searchQuery} />
+        ) : viewMode === "people" ? (
           <PeopleView people={filteredPeople} onOpenThread={handleOpenThread} />
         ) : (
           <PlatformView groups={platformGroups} onOpenThread={handleOpenThread} searchQuery={searchQuery} platformFilter={platformFilter} />
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Triage View ─────────────────────────────────────────────
+
+const PRIORITY_TIERS = [
+  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.3)" },
+  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.08)", borderColor: "rgba(245,158,11,0.3)" },
+  { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)" },
+  { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)" },
+] as const;
+
+function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[]; onOpenThread: (note: Note) => void; searchQuery: string }) {
+  const q = searchQuery.toLowerCase();
+
+  const tiers = useMemo(() => {
+    const result: Array<{ tier: typeof PRIORITY_TIERS[number]; notes: Note[] }> = [];
+
+    for (const tier of PRIORITY_TIERS) {
+      let notes: Note[];
+      if (tier.tag === "unclassified") {
+        notes = messages.filter((n) => {
+          const tags = n.tags || [];
+          return !tags.includes("urgent") && !tags.includes("action-required") && !tags.includes("informational") && !tags.includes("social");
+        });
+      } else {
+        notes = messages.filter((n) => (n.tags || []).includes(tier.tag));
+      }
+
+      // Apply search filter
+      if (q) {
+        notes = notes.filter((n) => {
+          const name = (n.path || "").split("/").pop() || "";
+          return name.toLowerCase().includes(q) || (n.content || "").toLowerCase().includes(q);
+        });
+      }
+
+      // Sort by most recent
+      notes.sort((a, b) => {
+        const aTime = ((a.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
+        const bTime = ((b.metadata as Record<string, unknown>)?.lastMessageAt as number) || 0;
+        return bTime - aTime;
+      });
+
+      if (notes.length > 0) {
+        result.push({ tier, notes });
+      }
+    }
+
+    return result;
+  }, [messages, q]);
+
+  const urgentCount = messages.filter((n) => (n.tags || []).includes("urgent")).length;
+  const actionCount = messages.filter((n) => (n.tags || []).includes("action-required")).length;
+
+  if (messages.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <Inbox size={24} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>No messages to triage.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Summary banner */}
+      {(urgentCount > 0 || actionCount > 0) && (
+        <div className="flex items-center gap-4 px-6 py-2.5" style={{ background: urgentCount > 0 ? "rgba(239,68,68,0.06)" : "rgba(245,158,11,0.06)", borderBottom: "1px solid var(--glass-border)" }}>
+          {urgentCount > 0 && (
+            <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: "var(--color-danger)" }}>
+              <AlertTriangle size={13} /> {urgentCount} urgent
+            </span>
+          )}
+          {actionCount > 0 && (
+            <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: "var(--color-warning)" }}>
+              <Bell size={13} /> {actionCount} need action
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Priority tiers */}
+      {tiers.map(({ tier, notes }) => (
+        <TriageTier key={tier.tag} tier={tier} notes={notes} onOpenThread={onOpenThread} />
+      ))}
+    </div>
+  );
+}
+
+function TriageTier({ tier, notes, onOpenThread }: {
+  tier: typeof PRIORITY_TIERS[number];
+  notes: Note[];
+  onOpenThread: (note: Note) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(tier.tag === "informational");
+  const Icon = tier.icon;
+
+  return (
+    <div>
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center gap-2 px-5 py-2.5 sticky top-0 hover:bg-[var(--glass-hover)] transition-colors"
+        style={{ background: tier.bgColor, borderBottom: `1px solid ${tier.borderColor}` }}
+      >
+        {collapsed ? <ChevronRight size={13} style={{ color: tier.color }} /> : <ChevronDown size={13} style={{ color: tier.color }} />}
+        <Icon size={13} style={{ color: tier.color }} />
+        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: tier.color }}>
+          {tier.label}
+        </span>
+        <span className="text-xs font-medium px-1.5 py-0.5 rounded-full" style={{ background: tier.borderColor, color: tier.color }}>
+          {notes.length}
+        </span>
+      </button>
+
+      {!collapsed && notes.map((note) => {
+        const meta = (note.metadata || {}) as Record<string, unknown>;
+        const platform = (meta.platform as string) || "matrix";
+        const config = getPlatformConfig(platform);
+        const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
+        const lastTs = meta.lastMessageAt as number;
+        const participants = (meta.participants as string[]) || [];
+
+        // Get last message preview
+        const lines = (note.content || "").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+        const lastLine = lines[lines.length - 1] || "";
+
+        return (
+          <button
+            key={note.id}
+            onClick={() => onOpenThread(note)}
+            className="w-full flex items-start gap-3 px-6 py-3 hover:bg-[var(--glass-hover)] transition-colors text-left"
+            style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)", borderLeft: `3px solid ${tier.color}` }}
+          >
+            <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+              style={{ background: config.color, opacity: 0.15 }}>
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: config.color }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium capitalize truncate" style={{ color: "var(--text-primary)" }}>
+                  {name}
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0" style={{ background: config.color, color: "white" }}>
+                  {config.label}
+                </span>
+                {lastTs && (
+                  <span className="ml-auto text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+                    {formatRelativeTime(lastTs)}
+                  </span>
+                )}
+              </div>
+              {lastLine && (
+                <div className="text-xs truncate mt-0.5" style={{ color: "var(--text-muted)" }}>{lastLine}</div>
+              )}
+              {participants.length > 0 && (
+                <div className="flex items-center gap-1 mt-1">
+                  <User size={9} style={{ color: "var(--text-muted)" }} />
+                  <span className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>
+                    {participants.slice(0, 3).join(", ")}{participants.length > 3 ? ` +${participants.length - 3}` : ""}
+                  </span>
+                </div>
+              )}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
