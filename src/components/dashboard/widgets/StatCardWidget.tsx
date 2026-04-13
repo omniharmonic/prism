@@ -15,9 +15,9 @@ export function StatCardWidget() {
   }
 
   const items = [
-    { label: "Notes", value: stats?.noteCount ?? 0, icon: FileText, color: "var(--color-accent)" },
+    { label: "Notes", value: stats?.totalNotes ?? 0, icon: FileText, color: "var(--color-accent)" },
     { label: "Tags", value: stats?.tagCount ?? 0, icon: Tags, color: "var(--color-success)" },
-    { label: "Links", value: stats?.linkCount ?? 0, icon: Link2, color: "var(--color-warning)" },
+    { label: "Top Tags", value: stats?.topTags?.length ?? 0, icon: Link2, color: "var(--color-warning)" },
   ];
 
   return (

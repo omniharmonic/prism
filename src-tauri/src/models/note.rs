@@ -75,7 +75,12 @@ pub struct TagCount {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultStats {
-    pub note_count: u64,
+    pub total_notes: u64,
     pub tag_count: u64,
-    pub link_count: u64,
+    pub earliest_note: Option<serde_json::Value>,
+    pub latest_note: Option<serde_json::Value>,
+    #[serde(default)]
+    pub notes_by_month: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub top_tags: Vec<TagCount>,
 }

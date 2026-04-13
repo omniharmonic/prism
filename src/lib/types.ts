@@ -45,9 +45,12 @@ export interface TagCount {
 }
 
 export interface VaultStats {
-  noteCount: number;
+  totalNotes: number;
   tagCount: number;
-  linkCount: number;
+  earliestNote: { id: string; createdAt: string } | null;
+  latestNote: { id: string; createdAt: string } | null;
+  notesByMonth: { month: string; count: number }[];
+  topTags: TagCount[];
 }
 
 export interface Link {
