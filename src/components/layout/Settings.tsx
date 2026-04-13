@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { X, Loader2, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2 } from "lucide-react";
+import { X, Loader2, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { configApi } from "../../lib/agent/client";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 
@@ -175,6 +176,9 @@ export function Settings({ open, onClose }: SettingsProps) {
                 <Conn icon={<Sparkles size={14} />} name="Claude Code" ok detail="Native CLI" />
               </Section>
 
+              {/* Data Sources */}
+              <DataSourcesSection />
+
               {/* Sync */}
               <Section title="Sync">
                 <Row label="Default direction">
@@ -209,6 +213,103 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return <div className="flex items-center justify-between py-1.5"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
+}
+
+function DataSourcesSection() {
+  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    invoke<Record<string, unknown>>("get_full_config").then(setConfig);
+  }, []);
+
+  const handleSave = async (key: string, value: string) => {
+    setSaving(key);
+    await invoke("update_config", { updates: { [key]: value } });
+    const updated = await invoke<Record<string, unknown>>("get_full_config");
+    setConfig(updated);
+    setEditValues((prev) => { const n = { ...prev }; delete n[key]; return n; });
+    setSaving(null);
+  };
+
+  const handleDiscoverMeetily = async () => {
+    const result = await invoke<{ found: boolean; path?: string }>("discover_meetily_path");
+    if (result.found && result.path) {
+      setEditValues((prev) => ({ ...prev, meetily_db_path: result.path! }));
+    }
+  };
+
+  if (!config) return null;
+
+  const sources = [
+    { key: "fathom_api_key", label: "Fathom", icon: <Video size={14} />, desc: "Meeting recording & AI summaries", placeholder: "Fathom API key", isSet: config.fathom_api_key_set, masked: config.fathom_api_key as string, type: "password" as const },
+    { key: "meetily_db_path", label: "Meetily", icon: <Mic size={14} />, desc: "Local meeting transcription", placeholder: "/path/to/meeting_minutes.sqlite", isSet: !!(config.meetily_db_path as string), masked: config.meetily_db_path as string, type: "path" as const },
+    { key: "readai_api_key", label: "Read.ai", icon: <Video size={14} />, desc: "Meeting copilot & transcription", placeholder: "Read.ai API key", isSet: config.readai_api_key_set, masked: config.readai_api_key as string, type: "password" as const },
+    { key: "otter_api_key", label: "Otter.ai", icon: <Mic size={14} />, desc: "Meeting notes & transcription", placeholder: "Otter API key", isSet: config.otter_api_key_set, masked: config.otter_api_key as string, type: "password" as const },
+    { key: "fireflies_api_key", label: "Fireflies.ai", icon: <Mic size={14} />, desc: "AI meeting assistant", placeholder: "Fireflies API key", isSet: config.fireflies_api_key_set, masked: config.fireflies_api_key as string, type: "password" as const },
+    { key: "notion_api_key", label: "Notion", icon: <Cloud size={14} />, desc: "Workspace & knowledge base", placeholder: "Notion API key", isSet: config.notion_api_key_set, masked: config.notion_api_key as string, type: "password" as const },
+  ];
+
+  return (
+    <Section title="Data Sources">
+      <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+        Connect services to pull transcripts, meetings, and documents into your Parachute vault.
+        Changes take effect on restart.
+      </p>
+      <div className="space-y-2">
+        {sources.map((src) => {
+          const isEditing = src.key in editValues;
+          const currentValue = isEditing ? editValues[src.key] : "";
+
+          return (
+            <div key={src.key} className="rounded-lg p-2.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+              <div className="flex items-center gap-2">
+                <span style={{ color: "var(--text-secondary)" }}>{src.icon}</span>
+                <div className="flex-1">
+                  <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>{src.label}</div>
+                  <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{src.desc}</div>
+                </div>
+                {src.isSet ? (
+                  <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--color-success)" }}>
+                    <Check size={10} /> Configured
+                  </span>
+                ) : (
+                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Not set</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 mt-2">
+                <input
+                  type={src.type === "password" && !isEditing ? "password" : "text"}
+                  value={isEditing ? currentValue : (src.isSet ? (src.masked || "") : "")}
+                  onChange={(e) => setEditValues((prev) => ({ ...prev, [src.key]: e.target.value }))}
+                  onFocus={() => { if (!isEditing) setEditValues((prev) => ({ ...prev, [src.key]: "" })); }}
+                  placeholder={src.placeholder}
+                  className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
+                  style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: src.type === "path" ? "var(--font-mono)" : undefined }}
+                />
+                {src.key === "meetily_db_path" && (
+                  <button onClick={handleDiscoverMeetily} className="px-2 py-0.5 rounded text-[10px] hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }} title="Auto-discover">
+                    <Search size={10} />
+                  </button>
+                )}
+                {isEditing && currentValue && (
+                  <button
+                    onClick={() => handleSave(src.key, currentValue)}
+                    disabled={saving === src.key}
+                    className="px-2 py-0.5 rounded text-[10px] font-medium"
+                    style={{ background: "var(--color-accent)", color: "white" }}
+                  >
+                    {saving === src.key ? "..." : "Save"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
 }
 
 function Conn({ icon, name, ok, detail }: { icon: React.ReactNode; name: string; ok: boolean; detail: string }) {

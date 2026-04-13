@@ -4,6 +4,7 @@ pub mod email_sync;
 pub mod person_linker;
 pub mod agent_dispatch;
 pub mod skill_scheduler;
+pub mod transcript_sync;
 
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -33,6 +34,7 @@ pub struct ServiceManager {
     pub message_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub calendar_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub email_status: Arc<std::sync::Mutex<ServiceStatus>>,
+    pub transcript_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub scheduler_status: Arc<std::sync::Mutex<ServiceStatus>>,
 }
 
@@ -112,6 +114,28 @@ impl ServiceManager {
             log::info!("Email sync disabled: no Google account configured");
         }
 
+        // Transcript sync (Fathom + Meetily → Parachute) — every 10 minutes
+        let transcript_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
+            name: "transcript-sync".into(),
+            running: false,
+            last_run: None,
+            last_error: None,
+            items_processed: 0,
+        }));
+
+        let has_transcript_sources = !config.fathom_api_key.is_empty() || !config.meetily_db_path.is_empty();
+        if has_transcript_sources {
+            let p = parachute.clone();
+            let rx = shutdown_rx.clone();
+            let status = transcript_status.clone();
+            let cfg = config.clone();
+            handles.push(tauri::async_runtime::spawn(async move {
+                transcript_sync::run(p, cfg, rx, status).await;
+            }));
+        } else {
+            log::info!("Transcript sync disabled: no Fathom or Meetily configured");
+        }
+
         let scheduler_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
             name: "skill-scheduler".into(),
             running: false,
@@ -129,6 +153,7 @@ impl ServiceManager {
             message_status,
             calendar_status,
             email_status,
+            transcript_status,
             scheduler_status,
         }
     }
@@ -150,6 +175,7 @@ impl ServiceManager {
             self.message_status.lock().unwrap().clone(),
             self.calendar_status.lock().unwrap().clone(),
             self.email_status.lock().unwrap().clone(),
+            self.transcript_status.lock().unwrap().clone(),
             self.scheduler_status.lock().unwrap().clone(),
         ]
     }

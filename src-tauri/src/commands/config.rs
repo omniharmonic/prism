@@ -8,6 +8,7 @@ use crate::error::PrismError;
 /// Serializable so it can be persisted and updated at runtime.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
+    // Core services
     pub matrix_homeserver: String,
     pub matrix_user: String,
     pub matrix_access_token: String,
@@ -19,6 +20,18 @@ pub struct AppConfig {
     #[serde(skip)]
     pub omniharmonic_root: PathBuf,
     pub parachute_url: String,
+
+    // Transcript data sources
+    #[serde(default)]
+    pub fathom_api_key: String,
+    #[serde(default)]
+    pub meetily_db_path: String,
+    #[serde(default)]
+    pub readai_api_key: String,
+    #[serde(default)]
+    pub otter_api_key: String,
+    #[serde(default)]
+    pub fireflies_api_key: String,
 }
 
 impl Default for AppConfig {
@@ -34,6 +47,11 @@ impl Default for AppConfig {
             anthropic_api_key: String::new(),
             omniharmonic_root: PathBuf::new(),
             parachute_url: "http://localhost:1940".into(),
+            fathom_api_key: String::new(),
+            meetily_db_path: String::new(),
+            readai_api_key: String::new(),
+            otter_api_key: String::new(),
+            fireflies_api_key: String::new(),
         }
     }
 }
@@ -77,6 +95,12 @@ impl AppConfig {
                 .unwrap_or_default(),
             omniharmonic_root: omni_root,
             parachute_url: "http://localhost:1940".into(),
+            fathom_api_key: vars.get("FATHOM_API_KEY").cloned().unwrap_or_default(),
+            meetily_db_path: vars.get("MEETILY_DB_PATH").cloned()
+                .unwrap_or_else(|| auto_discover_meetily().unwrap_or_default()),
+            readai_api_key: String::new(),
+            otter_api_key: String::new(),
+            fireflies_api_key: String::new(),
         };
 
         // Save to prism-config.json for next time
@@ -124,6 +148,24 @@ fn load_env_file(path: &std::path::Path) -> Result<HashMap<String, String>, Pris
         }
     }
     Ok(vars)
+}
+
+/// Auto-discover Meetily's SQLite database on macOS.
+fn auto_discover_meetily() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let candidates = [
+        "Library/Application Support/com.meetily.ai/meeting_minutes.sqlite",
+        "Library/Application Support/ai.meetily.app/meeting_minutes.sqlite",
+        "Library/Application Support/meetily/meeting_minutes.sqlite",
+        "Library/Application Support/com.meetily.ai/meetily.db",
+    ];
+    for candidate in &candidates {
+        let path = home.join(candidate);
+        if path.exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 fn try_keychain_anthropic() -> Option<String> {
@@ -236,6 +278,83 @@ pub fn check_claude_cli() -> Result<serde_json::Value, PrismError> {
             Ok(serde_json::json!({ "installed": true, "path": path }))
         }
         _ => Ok(serde_json::json!({ "installed": false })),
+    }
+}
+
+/// Get full config (for Settings UI to populate fields).
+/// Masks sensitive keys for display.
+#[tauri::command]
+pub fn get_full_config(
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    fn mask(s: &str) -> String {
+        if s.is_empty() { return String::new(); }
+        if s.len() <= 8 { return "*".repeat(s.len()); }
+        format!("{}...{}", &s[..4], &s[s.len()-4..])
+    }
+
+    Ok(serde_json::json!({
+        "matrix_homeserver": config.matrix_homeserver,
+        "matrix_user": config.matrix_user,
+        "matrix_access_token": mask(&config.matrix_access_token),
+        "matrix_access_token_set": !config.matrix_access_token.is_empty(),
+        "notion_api_key": mask(&config.notion_api_key),
+        "notion_api_key_set": !config.notion_api_key.is_empty(),
+        "google_account_primary": config.google_account_primary,
+        "google_account_agent": config.google_account_agent,
+        "anthropic_api_key": mask(&config.anthropic_api_key),
+        "anthropic_api_key_set": !config.anthropic_api_key.is_empty(),
+        "parachute_url": config.parachute_url,
+        "fathom_api_key": mask(&config.fathom_api_key),
+        "fathom_api_key_set": !config.fathom_api_key.is_empty(),
+        "meetily_db_path": config.meetily_db_path,
+        "readai_api_key": mask(&config.readai_api_key),
+        "readai_api_key_set": !config.readai_api_key.is_empty(),
+        "otter_api_key": mask(&config.otter_api_key),
+        "otter_api_key_set": !config.otter_api_key.is_empty(),
+        "fireflies_api_key": mask(&config.fireflies_api_key),
+        "fireflies_api_key_set": !config.fireflies_api_key.is_empty(),
+    }))
+}
+
+/// Update config fields and persist. Only non-null fields are updated.
+#[tauri::command]
+pub fn update_config(
+    config: tauri::State<'_, AppConfig>,
+    updates: serde_json::Value,
+) -> Result<(), PrismError> {
+    // We need mutable access — clone, modify, save, and update managed state
+    // Tauri doesn't allow mutable State, so we save to file and the changes
+    // take effect on next restart. For immediate effect on some fields, we
+    // update the config file.
+    let mut new_config = config.inner().clone();
+
+    if let Some(obj) = updates.as_object() {
+        if let Some(v) = obj.get("matrix_homeserver").and_then(|v| v.as_str()) { new_config.matrix_homeserver = v.to_string(); }
+        if let Some(v) = obj.get("matrix_user").and_then(|v| v.as_str()) { new_config.matrix_user = v.to_string(); }
+        if let Some(v) = obj.get("matrix_access_token").and_then(|v| v.as_str()) { new_config.matrix_access_token = v.to_string(); }
+        if let Some(v) = obj.get("notion_api_key").and_then(|v| v.as_str()) { new_config.notion_api_key = v.to_string(); }
+        if let Some(v) = obj.get("google_account_primary").and_then(|v| v.as_str()) { new_config.google_account_primary = v.to_string(); }
+        if let Some(v) = obj.get("anthropic_api_key").and_then(|v| v.as_str()) { new_config.anthropic_api_key = v.to_string(); }
+        if let Some(v) = obj.get("parachute_url").and_then(|v| v.as_str()) { new_config.parachute_url = v.to_string(); }
+        if let Some(v) = obj.get("fathom_api_key").and_then(|v| v.as_str()) { new_config.fathom_api_key = v.to_string(); }
+        if let Some(v) = obj.get("meetily_db_path").and_then(|v| v.as_str()) { new_config.meetily_db_path = v.to_string(); }
+        if let Some(v) = obj.get("readai_api_key").and_then(|v| v.as_str()) { new_config.readai_api_key = v.to_string(); }
+        if let Some(v) = obj.get("otter_api_key").and_then(|v| v.as_str()) { new_config.otter_api_key = v.to_string(); }
+        if let Some(v) = obj.get("fireflies_api_key").and_then(|v| v.as_str()) { new_config.fireflies_api_key = v.to_string(); }
+    }
+
+    new_config.save()?;
+    log::info!("Config updated and saved to {:?}", AppConfig::config_path());
+    Ok(())
+}
+
+/// Auto-discover Meetily database path.
+#[tauri::command]
+pub fn discover_meetily_path() -> Result<serde_json::Value, PrismError> {
+    match auto_discover_meetily() {
+        Some(path) => Ok(serde_json::json!({ "found": true, "path": path })),
+        None => Ok(serde_json::json!({ "found": false })),
     }
 }
 

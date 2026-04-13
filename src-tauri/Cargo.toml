@@ -39,4 +39,5 @@ async-trait = "0.1"
 log = "0.4"
 env_logger = "0.11"
 urlencoding = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
 

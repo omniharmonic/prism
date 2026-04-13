@@ -129,6 +129,9 @@ pub fn run() {
             config::test_notion,
             config::check_claude_cli,
             config::check_google_cli,
+            config::get_full_config,
+            config::update_config,
+            config::discover_meetily_path,
             // Editor events
             editor::editor_set_content,
             editor::editor_replace_selection,
