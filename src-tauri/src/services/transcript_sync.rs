@@ -236,16 +236,17 @@ fn read_meetily_meetings(db_path: &str) -> Result<Vec<serde_json::Value>, PrismE
 }
 
 fn get_meetily_transcript(conn: &rusqlite::Connection, meeting_id: &str) -> String {
-    let result = conn.prepare("SELECT * FROM transcripts WHERE meeting_id = ? ORDER BY timestamp")
+    // Schema: id, meeting_id, transcript, timestamp, summary, action_items, key_points,
+    //         audio_start_time, audio_end_time, duration, speaker
+    let result = conn.prepare("SELECT transcript, speaker, timestamp FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, timestamp")
         .and_then(|mut stmt| {
-            let rows: Vec<(String, String)> = stmt.query_map(
+            let rows: Vec<(String, String, String)> = stmt.query_map(
                 rusqlite::params![meeting_id],
                 |row| {
-                    let speaker: String = row.get::<_, String>(row.as_ref().column_index("speaker").unwrap_or(0)).unwrap_or_default();
-                    let text: String = row.get::<_, String>(row.as_ref().column_index("text").unwrap_or(
-                        row.as_ref().column_index("transcript").unwrap_or(1)
-                    )).unwrap_or_default();
-                    Ok((speaker, text))
+                    let text: String = row.get::<_, String>(0).unwrap_or_default();
+                    let speaker: String = row.get::<_, String>(1).unwrap_or_default();
+                    let timestamp: String = row.get::<_, String>(2).unwrap_or_default();
+                    Ok((text, speaker, timestamp))
                 },
             )?.filter_map(|r| r.ok()).collect();
             Ok(rows)
@@ -253,10 +254,21 @@ fn get_meetily_transcript(conn: &rusqlite::Connection, meeting_id: &str) -> Stri
 
     match result {
         Ok(rows) => rows.iter()
-            .map(|(speaker, text)| format!("**{}**: {}", speaker, text))
+            .filter(|(text, _, _)| !text.is_empty())
+            .map(|(text, speaker, ts)| {
+                let speaker_label = if speaker.is_empty() { "Speaker".to_string() } else { speaker.clone() };
+                if ts.is_empty() {
+                    format!("**{}**: {}", speaker_label, text)
+                } else {
+                    format!("**{}** ({}): {}", speaker_label, ts, text)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n\n"),
-        Err(_) => String::new(),
+        Err(e) => {
+            log::debug!("Meetily transcript read error: {}", e);
+            String::new()
+        }
     }
 }
 
