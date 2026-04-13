@@ -35,8 +35,8 @@ impl ParachuteClient {
         if let Some(ref path) = params.path {
             query_parts.push(format!("path={}", path));
         }
-        // Default to 2000 to get all notes (Parachute defaults to 100)
-        let limit = params.limit.unwrap_or(2000);
+        // Default to 10000 to get all notes (vault grew to 5000+ with sync services)
+        let limit = params.limit.unwrap_or(10000);
         query_parts.push(format!("limit={}", limit));
         if let Some(offset) = params.offset {
             query_parts.push(format!("offset={}", offset));
