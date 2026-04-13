@@ -1,5 +1,6 @@
 use tauri::State;
 use crate::clients::google::GoogleClient;
+use crate::clients::parachute::ParachuteClient;
 use crate::commands::config::AppConfig;
 use crate::error::PrismError;
 
@@ -90,35 +91,66 @@ pub async fn calendar_list_events(
 #[tauri::command]
 pub async fn calendar_create_event(
     client: State<'_, GoogleClient>,
+    parachute: State<'_, ParachuteClient>,
     config: State<'_, AppConfig>,
     summary: String,
     start: String,
     end: String,
-    _attendees: Option<Vec<String>>,
-    _description: Option<String>,
-    _location: Option<String>,
+    attendees: Option<Vec<String>>,
+    description: Option<String>,
+    location: Option<String>,
     _with_meet: Option<bool>,
 ) -> Result<serde_json::Value, PrismError> {
-    client.calendar_create_event(&config.google_account_primary, &summary, &start, &end)
+    let att_str = attendees.as_ref().map(|a| a.join(","));
+    let result = client.calendar_create_event(
+        &config.google_account_primary,
+        &summary, &start, &end,
+        description.as_deref(),
+        location.as_deref(),
+        att_str.as_deref(),
+    )?;
+
+    // Also create a meeting note in Parachute
+    let event_data = result.get("event").unwrap_or(&result);
+    if let Err(e) = crate::services::calendar_sync::sync_single_event(&parachute, event_data).await {
+        log::warn!("Failed to sync new event to Parachute: {}", e);
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn calendar_update_event(
-    _event_id: String,
-    _summary: Option<String>,
-    _start: Option<String>,
-    _end: Option<String>,
-    _attendees: Option<Vec<String>>,
-    _description: Option<String>,
+    client: State<'_, GoogleClient>,
+    config: State<'_, AppConfig>,
+    #[allow(non_snake_case)] eventId: String,
+    summary: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    attendees: Option<Vec<String>>,
+    description: Option<String>,
+    #[allow(unused)] location: Option<String>,
 ) -> Result<serde_json::Value, PrismError> {
-    Err(PrismError::Google("Event update not yet implemented via gog CLI".into()))
+    let att_str = attendees.as_ref().map(|a| a.join(","));
+    client.calendar_update_event(
+        &config.google_account_primary,
+        &eventId,
+        summary.as_deref(),
+        start.as_deref(),
+        end.as_deref(),
+        description.as_deref(),
+        location.as_deref(),
+        att_str.as_deref(),
+    )
 }
 
 #[tauri::command]
 pub async fn calendar_delete_event(
-    _event_id: String,
-) -> Result<(), PrismError> {
-    Err(PrismError::Google("Event delete not yet implemented via gog CLI".into()))
+    client: State<'_, GoogleClient>,
+    config: State<'_, AppConfig>,
+    #[allow(non_snake_case)] eventId: String,
+) -> Result<serde_json::Value, PrismError> {
+    client.calendar_delete_event(&config.google_account_primary, &eventId)
 }
 
 // ─── Auth Check ──────────────────────────────────────────

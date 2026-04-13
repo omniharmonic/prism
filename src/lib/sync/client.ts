@@ -66,8 +66,8 @@ export const calendarApi = {
   createEvent: (summary: string, start: string, end: string, attendees?: string[], description?: string, location?: string, withMeet?: boolean) =>
     invoke<CalendarEvent>("calendar_create_event", { summary, start, end, attendees, description, location, withMeet }),
 
-  updateEvent: (eventId: string, summary?: string, start?: string, end?: string, attendees?: string[], description?: string) =>
-    invoke<CalendarEvent>("calendar_update_event", { eventId, summary, start, end, attendees, description }),
+  updateEvent: (eventId: string, summary?: string, start?: string, end?: string, attendees?: string[], description?: string, location?: string) =>
+    invoke<CalendarEvent>("calendar_update_event", { eventId, summary, start, end, attendees, description, location }),
 
   deleteEvent: (eventId: string) =>
     invoke<void>("calendar_delete_event", { eventId }),

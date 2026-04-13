@@ -169,8 +169,53 @@ impl GoogleClient {
         summary: &str,
         start: &str,
         end: &str,
+        description: Option<&str>,
+        location: Option<&str>,
+        attendees: Option<&str>,
     ) -> Result<serde_json::Value, PrismError> {
-        self.run_gog(&["calendar", "events", "create", "--summary", summary, "--start", start, "--end", end], account)
+        let mut args = vec!["calendar", "create", "primary", "--summary", summary, "--from", start, "--to", end];
+        if let Some(desc) = description {
+            args.push("--description");
+            args.push(desc);
+        }
+        if let Some(loc) = location {
+            args.push("--location");
+            args.push(loc);
+        }
+        if let Some(att) = attendees {
+            args.push("--attendees");
+            args.push(att);
+        }
+        self.run_gog(&args, account)
+    }
+
+    pub fn calendar_update_event(
+        &self,
+        account: &str,
+        event_id: &str,
+        summary: Option<&str>,
+        start: Option<&str>,
+        end: Option<&str>,
+        description: Option<&str>,
+        location: Option<&str>,
+        attendees: Option<&str>,
+    ) -> Result<serde_json::Value, PrismError> {
+        let mut args = vec!["calendar", "update", "primary", event_id];
+        if let Some(s) = summary { args.push("--summary"); args.push(s); }
+        if let Some(s) = start { args.push("--from"); args.push(s); }
+        if let Some(s) = end { args.push("--to"); args.push(s); }
+        if let Some(s) = description { args.push("--description"); args.push(s); }
+        if let Some(s) = location { args.push("--location"); args.push(s); }
+        if let Some(s) = attendees { args.push("--attendees"); args.push(s); }
+        self.run_gog(&args, account)
+    }
+
+    pub fn calendar_delete_event(
+        &self,
+        account: &str,
+        event_id: &str,
+    ) -> Result<serde_json::Value, PrismError> {
+        self.run_gog(&["calendar", "delete", "primary", event_id, "--send-updates", "all"], account)
     }
 
     // ─── Google Docs ─────────────────────────────────────────
