@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
@@ -8,6 +8,12 @@ import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
 import type { Note } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
+
+interface LinkData {
+  sourceId: string;
+  targetId: string;
+  relationship: string;
+}
 
 type ViewMode = "people" | "platforms";
 
@@ -67,31 +73,52 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
   const allMessages = useMemo(() => [...(threadNotes || []), ...(emailNotes || [])], [threadNotes, emailNotes]);
 
-  // Build people-with-threads index
+  // Fetch links for all person notes (messages-with relationships)
+  // We batch this by fetching from the graph API
+  const [personLinks, setPersonLinks] = useState<Map<string, LinkData[]>>(new Map());
+
+  useEffect(() => {
+    if (!personNotes || personNotes.length === 0) return;
+    // Fetch links for people who have messages-with connections
+    // Use a sampling approach: fetch links for people with vault/people/ paths
+    const fetchLinks = async () => {
+      const linkMap = new Map<string, LinkData[]>();
+      // Only fetch for people with auto-created paths (they have links from sync)
+      const candidates = personNotes.filter((n) => (n.path || "").startsWith("vault/people/")).slice(0, 500);
+      // Batch fetch using Promise.all in chunks
+      const chunkSize = 20;
+      for (let i = 0; i < candidates.length; i += chunkSize) {
+        const chunk = candidates.slice(i, i + chunkSize);
+        const results = await Promise.all(
+          chunk.map((n) => vaultApi.getLinks(n.id, "messages-with").then((links) => ({ id: n.id, links })).catch(() => ({ id: n.id, links: [] as LinkData[] })))
+        );
+        for (const { id, links } of results) {
+          if (links.length > 0) linkMap.set(id, links);
+        }
+      }
+      // Also check pre-existing people
+      const preExisting = personNotes.filter((n) => !(n.path || "").startsWith("vault/people/"));
+      for (const n of preExisting) {
+        try {
+          const links = await vaultApi.getLinks(n.id, "messages-with");
+          if (links.length > 0) linkMap.set(n.id, links);
+        } catch {}
+      }
+      setPersonLinks(linkMap);
+    };
+    fetchLinks();
+  }, [personNotes]);
+
+  // Build people-with-threads index using graph links (not name matching)
   const peopleWithThreads = useMemo(() => {
     if (!personNotes || !allMessages.length) return [];
 
-    // Index threads by participant name (from metadata.participants)
-    const threadsByParticipant = new Map<string, Note[]>();
+    // Index messages by note ID for fast lookup
+    const messageById = new Map<string, Note>();
     for (const note of allMessages) {
-      const meta = (note.metadata || {}) as Record<string, unknown>;
-      const participants = (meta.participants as string[]) || [];
-      const from = meta.from as string;
-      // Add thread to each participant
-      for (const p of participants) {
-        const key = p.toLowerCase().trim();
-        if (!threadsByParticipant.has(key)) threadsByParticipant.set(key, []);
-        threadsByParticipant.get(key)!.push(note);
-      }
-      // For emails, add sender
-      if (from) {
-        const name = extractName(from).toLowerCase().trim();
-        if (!threadsByParticipant.has(name)) threadsByParticipant.set(name, []);
-        threadsByParticipant.get(name)!.push(note);
-      }
+      messageById.set(note.id, note);
     }
 
-    // Match person notes to their threads
     const result: PersonWithThreads[] = [];
     for (const person of personNotes) {
       const meta = (person.metadata || {}) as Record<string, unknown>;
@@ -100,17 +127,13 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
       const channels = (meta.channels as Record<string, string>) || {};
 
-      // Find threads by name match
-      const nameKey = personName.toLowerCase().trim();
-      const threads = threadsByParticipant.get(nameKey) || [];
-
-      // Also check path-based name
-      const pathName = (person.path || "").split("/").pop()?.replace(/[-_]/g, " ").toLowerCase().trim() || "";
-      if (pathName !== nameKey) {
-        const pathThreads = threadsByParticipant.get(pathName) || [];
-        for (const t of pathThreads) {
-          if (!threads.includes(t)) threads.push(t);
-        }
+      // Get threads via graph links (primary method)
+      const links = personLinks.get(person.id) || [];
+      const threads: Note[] = [];
+      for (const link of links) {
+        const threadId = link.sourceId === person.id ? link.targetId : link.sourceId;
+        const thread = messageById.get(threadId);
+        if (thread) threads.push(thread);
       }
 
       if (threads.length === 0) continue;
@@ -138,7 +161,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
     // Sort by most recent message
     result.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
     return result;
-  }, [personNotes, allMessages]);
+  }, [personNotes, allMessages, personLinks]);
 
   // Platform groups (for platform view)
   const { platformGroups, platformCounts, totalCount } = useMemo(() => {
@@ -527,11 +550,3 @@ function ConversationRow({ note, onClick }: { note: Note; onClick: () => void })
   );
 }
 
-function extractName(from: string): string {
-  if (from.includes("<")) {
-    const name = from.split("<")[0].trim().replace(/"/g, "");
-    if (name) return name;
-  }
-  if (from.includes("@")) return from.split("@")[0];
-  return from;
-}

@@ -367,6 +367,12 @@ export default function CanvasRenderer({ note }: RendererProps) {
       }
 
       linkArrowIds.current.add(arrowId);
+      // Also track in syncedArrows so deletion is detected
+      syncedArrows.current.set(arrowId, {
+        sourceId: link.sourceId,
+        targetId: link.targetId,
+        relationship: link.relationship || "related",
+      });
       rawElements.push(arrowDef);
     }
 

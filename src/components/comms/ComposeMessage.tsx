@@ -146,7 +146,8 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
       onClick={onClose}
     >
       <div
-        className="glass-elevated rounded-xl w-[540px] max-h-[80vh] flex flex-col"
+        className="glass-elevated rounded-xl w-[560px] flex flex-col"
+        style={{ height: "min(600px, 85vh)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -206,10 +207,10 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
                 {/* Dropdown results */}
                 {searchQuery.length > 0 && filteredPeople.length > 0 && (
                   <div
-                    className="absolute top-full left-0 right-0 mt-1 rounded-lg overflow-hidden z-10 max-h-48 overflow-auto"
-                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)" }}
+                    className="absolute top-full left-0 right-0 mt-1 rounded-lg overflow-hidden z-50 max-h-72 overflow-auto"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
                   >
-                    {filteredPeople.slice(0, 20).map((person) => (
+                    {filteredPeople.slice(0, 30).map((person) => (
                       <button
                         key={person.id}
                         onClick={() => handleSelectPerson(person)}
