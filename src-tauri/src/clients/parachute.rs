@@ -220,6 +220,11 @@ impl ParachuteClient {
 
     /// Get the full graph. v2: `GET /api/notes?format=graph&include_links=true`.
     /// Response shape: `{ nodes: [...], edges: [...] }`.
+    ///
+    /// Semantic note: v2 only honors `depth` in combination with a `near`
+    /// anchor (graph neighborhood). Without `center_id`, the response is the
+    /// full graph; `depth` is ignored. This is a behavior change from v1 where
+    /// `depth` applied globally.
     pub async fn get_graph(&self, params: &GetGraphParams) -> Result<Graph, PrismError> {
         let mut url = format!("{}/notes?format=graph&include_links=true", self.base_url);
         if let Some(ref center_id) = params.center_id {
@@ -228,6 +233,9 @@ impl ParachuteClient {
                 url.push_str(&format!("&depth={}", depth));
             }
         }
+        // If the caller passed `depth` without `center_id`, it's silently
+        // dropped — v2 doesn't support depth-bounded full-graph queries.
+        // Callers should anchor on a note when they need depth-limiting.
         let resp = self.authed(self.client.get(&url)).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_graph failed: {}", resp.status())));
