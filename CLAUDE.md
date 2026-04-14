@@ -64,10 +64,17 @@ Each is lazy-loaded via `Registry.ts`. Dashboard has 9 configurable widget types
 
 ## Parachute MCP
 
-The `.mcp.json` registers the Parachute vault MCP server. Claude Code sessions spawned by Prism have access to:
-- `search-notes`, `get-note`, `create-note`, `update-note`
-- `list-tags`, `describe-tag`, `traverse-links`, `find-path`
-- `semantic-search`, `embed-notes`
+The `.mcp.json` registers the Parachute vault MCP server. Parachute Vault v2 consolidated
+its MCP surface to 9 tools. Claude Code sessions spawned by Prism have access to:
+- `query-notes` — read single note OR query/search/filter, optionally scoped to a graph neighborhood
+- `create-note` — single or batch
+- `update-note` — content, metadata (merge), tags (add/remove), links (add/remove)
+- `delete-note`
+- `list-tags` — with optional schema detail
+- `update-tag` — upsert description + field schema
+- `delete-tag`
+- `find-path` — BFS shortest path between two notes
+- `vault-info` — description + stats (read and update)
 
 ## File Structure
 

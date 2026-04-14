@@ -5,9 +5,14 @@ use serde::{Deserialize, Serialize};
 pub struct Link {
     pub source_id: String,
     pub target_id: String,
-    pub relationship: String,
+    /// v2 API may return links with or without relationship — default to None.
+    #[serde(default)]
+    pub relationship: Option<String>,
+    #[serde(default)]
     pub metadata: Option<serde_json::Value>,
-    pub created_at: String,
+    /// v2 responses embedded in notes may omit created_at.
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -36,23 +41,8 @@ pub struct DeleteLinkParams {
     pub relationship: String,
 }
 
-/// Body sent to Parachute API (snake_case required)
-#[derive(Serialize)]
-pub struct CreateLinkBody {
-    pub source_id: String,
-    pub target_id: String,
-    pub relationship: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-}
-
-/// Body sent to Parachute API for deletion (snake_case required)
-#[derive(Serialize)]
-pub struct DeleteLinkBody {
-    pub source_id: String,
-    pub target_id: String,
-    pub relationship: String,
-}
+// CreateLinkBody / DeleteLinkBody removed in v2: link mutations now flow
+// through `PATCH /api/notes/:source_id` with `links.add` / `links.remove`.
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Graph {
@@ -71,7 +61,8 @@ pub struct GraphNode {
 pub struct GraphEdge {
     pub source: String,
     pub target: String,
-    pub relationship: String,
+    #[serde(default)]
+    pub relationship: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

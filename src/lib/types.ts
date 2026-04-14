@@ -45,9 +45,10 @@ export interface TagCount {
 }
 
 export interface VaultStats {
-  noteCount: number;
+  totalNotes: number;
   tagCount: number;
-  linkCount: number;
+  /** v2 API doesn't return link count at the top level; present if computed backend-side. */
+  linkCount?: number;
 }
 
 export interface Link {

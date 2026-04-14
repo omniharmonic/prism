@@ -72,10 +72,14 @@ pub struct TagCount {
     pub count: u32,
 }
 
+/// Vault stats returned by `GET /api/vault?include_stats=true` (v2).
+/// Response shape: `{ totalNotes, tagCount, notesByMonth, topTags, ... }`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultStats {
-    pub note_count: u64,
+    pub total_notes: u64,
     pub tag_count: u64,
+    /// v2 response doesn't include link_count at the top level. Default 0.
+    #[serde(default)]
     pub link_count: u64,
 }
