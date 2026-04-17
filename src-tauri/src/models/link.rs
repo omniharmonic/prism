@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Link {
     pub source_id: String,
     pub target_id: String,
-    /// v2 API may return links with or without relationship — default to None.
-    #[serde(default)]
-    pub relationship: Option<String>,
+    pub relationship: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// v2 responses embedded in notes may omit created_at.
@@ -61,8 +59,7 @@ pub struct GraphNode {
 pub struct GraphEdge {
     pub source: String,
     pub target: String,
-    #[serde(default)]
-    pub relationship: Option<String>,
+    pub relationship: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

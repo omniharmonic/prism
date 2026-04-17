@@ -54,8 +54,7 @@ export interface VaultStats {
 export interface Link {
   sourceId: string;
   targetId: string;
-  /** v2 links embedded in note responses may omit relationship. */
-  relationship?: string | null;
+  relationship: string;
   metadata?: Record<string, unknown> | null;
   /** v2 links embedded in note responses may omit createdAt. */
   createdAt?: string;

@@ -357,7 +357,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
         customData: { prismLinkViz: true },
       };
 
-      if (link.relationship && link.relationship !== "related") {
+      if (link.relationship !== "related") {
         arrowDef.label = {
           text: link.relationship,
           fontSize: 11,
@@ -371,7 +371,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
       syncedArrows.current.set(arrowId, {
         sourceId: link.sourceId,
         targetId: link.targetId,
-        relationship: link.relationship || "related",
+        relationship: link.relationship,
       });
       rawElements.push(arrowDef);
     }

@@ -40,25 +40,23 @@ impl ParachuteClient {
 
     /// List or query notes. v2: `GET /api/notes` with query params.
     pub async fn list_notes(&self, params: &ListNotesParams) -> Result<Vec<Note>, PrismError> {
-        let mut url = format!("{}/notes", self.base_url);
-        let mut query_parts = Vec::new();
+        let url = format!("{}/notes", self.base_url);
+        let limit = params.limit.unwrap_or(10000);
+        let mut qp: Vec<(&str, String)> = vec![
+            ("limit", limit.to_string()),
+            ("include_content", "true".into()),
+        ];
         if let Some(ref tag) = params.tag {
-            query_parts.push(format!("tag={}", tag));
+            qp.push(("tag", tag.clone()));
         }
         if let Some(ref path) = params.path {
-            query_parts.push(format!("path={}", path));
+            qp.push(("path", path.clone()));
         }
-        let limit = params.limit.unwrap_or(10000);
-        query_parts.push(format!("limit={}", limit));
         if let Some(offset) = params.offset {
-            query_parts.push(format!("offset={}", offset));
-        }
-        query_parts.push("include_content=true".to_string());
-        if !query_parts.is_empty() {
-            url = format!("{}?{}", url, query_parts.join("&"));
+            qp.push(("offset", offset.to_string()));
         }
 
-        let resp = self.authed(self.client.get(&url)).send().await?;
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("list_notes failed: {}", resp.status())));
         }
@@ -107,11 +105,16 @@ impl ParachuteClient {
 
     /// Search notes. v2: absorbed into `GET /api/notes?search=...`.
     pub async fn search(&self, query: &str, tags: &[String], limit: u32) -> Result<Vec<Note>, PrismError> {
-        let mut url = format!("{}/notes?search={}&limit={}&include_content=true", self.base_url, query, limit);
+        let url = format!("{}/notes", self.base_url);
+        let mut qp: Vec<(&str, String)> = vec![
+            ("search", query.into()),
+            ("limit", limit.to_string()),
+            ("include_content", "true".into()),
+        ];
         for tag in tags {
-            url.push_str(&format!("&tag={}", tag));
+            qp.push(("tag", tag.clone()));
         }
-        let resp = self.authed(self.client.get(&url)).send().await?;
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("search failed: {}", resp.status())));
         }
@@ -155,8 +158,10 @@ impl ParachuteClient {
     pub async fn get_links(&self, params: &GetLinksParams) -> Result<Vec<Link>, PrismError> {
         let note_id = params.note_id.as_ref()
             .ok_or_else(|| PrismError::Parachute("get_links requires note_id".into()))?;
-        let url = format!("{}/notes/{}?include_links=true", self.base_url, note_id);
-        let resp = self.authed(self.client.get(&url)).send().await?;
+        let url = format!("{}/notes/{}", self.base_url, note_id);
+        let resp = self.authed(self.client.get(&url))
+            .query(&[("include_links", "true")])
+            .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_links failed: {}", resp.status())));
         }
@@ -167,7 +172,7 @@ impl ParachuteClient {
             .map_err(|e| PrismError::Parachute(format!("links parse error: {}", e)))?;
         // Filter by relationship if requested
         let filtered = if let Some(ref rel) = params.relationship {
-            links.into_iter().filter(|l| l.relationship.as_deref() == Some(rel.as_str())).collect()
+            links.into_iter().filter(|l| l.relationship == *rel).collect()
         } else {
             links
         };
@@ -194,7 +199,7 @@ impl ParachuteClient {
         Ok(Link {
             source_id: params.source_id.clone(),
             target_id: params.target_id.clone(),
-            relationship: Some(params.relationship.clone()),
+            relationship: params.relationship.clone(),
             metadata: params.metadata.clone(),
             created_at: None,
         })
@@ -226,17 +231,20 @@ impl ParachuteClient {
     /// full graph; `depth` is ignored. This is a behavior change from v1 where
     /// `depth` applied globally.
     pub async fn get_graph(&self, params: &GetGraphParams) -> Result<Graph, PrismError> {
-        let mut url = format!("{}/notes?format=graph&include_links=true", self.base_url);
+        let url = format!("{}/notes", self.base_url);
+        let mut qp: Vec<(&str, String)> = vec![
+            ("format", "graph".into()),
+            ("include_links", "true".into()),
+        ];
         if let Some(ref center_id) = params.center_id {
-            url.push_str(&format!("&near={}", center_id));
+            qp.push(("near", center_id.clone()));
             if let Some(depth) = params.depth {
-                url.push_str(&format!("&depth={}", depth));
+                qp.push(("depth", depth.to_string()));
             }
         }
         // If the caller passed `depth` without `center_id`, it's silently
         // dropped — v2 doesn't support depth-bounded full-graph queries.
-        // Callers should anchor on a note when they need depth-limiting.
-        let resp = self.authed(self.client.get(&url)).send().await?;
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_graph failed: {}", resp.status())));
         }
@@ -245,7 +253,9 @@ impl ParachuteClient {
 
     /// Get vault stats. v2: `GET /api/vault?include_stats=true`.
     pub async fn get_stats(&self) -> Result<VaultStats, PrismError> {
-        let resp = self.authed(self.client.get(format!("{}/vault?include_stats=true", self.base_url)))
+        let url = format!("{}/vault", self.base_url);
+        let resp = self.authed(self.client.get(&url))
+            .query(&[("include_stats", "true")])
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_stats failed: {}", resp.status())));
