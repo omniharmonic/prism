@@ -45,17 +45,20 @@ export interface TagCount {
 }
 
 export interface VaultStats {
-  noteCount: number;
+  totalNotes: number;
   tagCount: number;
-  linkCount: number;
+  /** v2 API doesn't return link count at the top level; present if computed backend-side. */
+  linkCount?: number;
 }
 
 export interface Link {
   sourceId: string;
   targetId: string;
-  relationship: string;
-  metadata: Record<string, unknown> | null;
-  createdAt: string;
+  /** v2 links embedded in note responses may omit relationship. */
+  relationship?: string | null;
+  metadata?: Record<string, unknown> | null;
+  /** v2 links embedded in note responses may omit createdAt. */
+  createdAt?: string;
 }
 
 // Sync configuration per document

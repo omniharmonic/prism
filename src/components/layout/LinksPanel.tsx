@@ -13,9 +13,10 @@ interface LinksPanelProps {
 interface VaultLink {
   sourceId: string;
   targetId: string;
-  relationship: string;
-  metadata: Record<string, unknown> | null;
-  createdAt: string;
+  /** v2 links embedded in note responses may omit relationship. */
+  relationship?: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt?: string;
 }
 
 export function LinksPanel({ noteId }: LinksPanelProps) {
@@ -103,7 +104,7 @@ export function LinksPanel({ noteId }: LinksPanelProps) {
             <LinkIcon size={13} style={{ color: "var(--text-muted)" }} />
             <span className="flex-1 truncate">{title}</span>
             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {link.relationship}
+              {link.relationship ?? ""}
             </span>
             <ArrowRight size={11} style={{ color: "var(--text-muted)" }} />
           </button>
