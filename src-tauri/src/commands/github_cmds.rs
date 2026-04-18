@@ -125,12 +125,26 @@ pub async fn github_sync_init(
     github::init_clone(&config).await?;
 
     // Perform initial sync: push existing vault notes into the repo.
-    let notes = parachute
+    // Parachute's path param is exact-match, not prefix — so we list all
+    // notes and filter by path prefix in Rust.
+    let all_notes = parachute
         .list_notes(&ListNotesParams {
-            path: Some(config.vault_path.clone()),
+            limit: Some(10000),
             ..Default::default()
         })
         .await?;
+
+    let notes: Vec<_> = all_notes
+        .into_iter()
+        .filter(|n| {
+            n.path
+                .as_deref()
+                .map(|p| p.starts_with(&config.vault_path))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    log::info!("GitHub sync init: {} notes match path prefix '{}'", notes.len(), config.vault_path);
 
     if !notes.is_empty() {
         let _result = github::sync_directory(&config, &notes, &parachute).await?;
@@ -171,13 +185,23 @@ pub async fn github_sync_push(
             .ok_or_else(|| PrismError::Other(format!("No sync config found for id '{config_id}'")))?
     };
 
-    // Fetch notes whose path starts with the vault_path prefix.
-    let notes = parachute
+    // Parachute path param is exact-match — list all and filter by prefix.
+    let all_notes = parachute
         .list_notes(&ListNotesParams {
-            path: Some(config.vault_path.clone()),
+            limit: Some(10000),
             ..Default::default()
         })
         .await?;
+
+    let notes: Vec<_> = all_notes
+        .into_iter()
+        .filter(|n| {
+            n.path
+                .as_deref()
+                .map(|p| p.starts_with(&config.vault_path))
+                .unwrap_or(false)
+        })
+        .collect();
 
     let result = github::sync_directory(&config, &notes, &parachute).await?;
 
