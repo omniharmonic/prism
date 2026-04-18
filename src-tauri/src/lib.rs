@@ -59,7 +59,7 @@ pub fn run() {
     let ollama_agent = tauri::async_runtime::block_on(async {
         let mcp_url = format!("{}/mcp", parachute_url);
         let ollama_url = "http://localhost:11434".to_string(); // TODO: make configurable
-        match PrismMcpClient::connect(&mcp_url).await {
+        match PrismMcpClient::connect(&mcp_url, parachute_key.as_deref()).await {
             Ok(mcp) => {
                 log::info!("PrismMcpClient connected — {} tools", mcp.tools().len());
                 Some(OllamaAgent::new(ollama_url, mcp).await)

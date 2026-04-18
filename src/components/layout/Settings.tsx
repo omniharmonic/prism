@@ -49,9 +49,14 @@ export function Settings({ open, onClose }: SettingsProps) {
   }, [open, loadConfig]);
 
   useEffect(() => {
-    ollamaApi.status().then(setOllamaConnected).catch(() => setOllamaConnected(false));
-    ollamaApi.listModels().then(setAvailableModels).catch(() => {});
-    ollamaApi.getSkillModels().then(setSkillModels).catch(() => {});
+    // Guard against browser-only mode (outside Tauri webview)
+    try {
+      ollamaApi.status().then(setOllamaConnected).catch(() => setOllamaConnected(false));
+      ollamaApi.listModels().then(setAvailableModels).catch(() => {});
+      ollamaApi.getSkillModels().then(setSkillModels).catch(() => {});
+    } catch {
+      // Not running in Tauri — invoke unavailable
+    }
   }, []);
 
   const handleSkillModelChange = async (skill: string, provider: string, model: string) => {

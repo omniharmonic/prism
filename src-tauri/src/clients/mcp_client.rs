@@ -23,7 +23,7 @@ pub struct McpToolDef {
 /// # Usage
 ///
 /// ```ignore
-/// let mcp = PrismMcpClient::connect("http://localhost:1940/mcp").await?;
+/// let mcp = PrismMcpClient::connect("http://localhost:1940/mcp", Some("my-api-key")).await?;
 /// let result = mcp.call_tool("query-notes", json!({"search": "hello"})).await?;
 /// ```
 pub struct PrismMcpClient {
@@ -31,11 +31,11 @@ pub struct PrismMcpClient {
     client: Client,
     tools: Vec<McpToolDef>,
     session_id: Option<String>,
+    api_key: Option<String>,
     next_id: AtomicU64,
 }
 
 // reqwest::Client is Send+Sync, AtomicU64 is Send+Sync, the rest are plain data.
-// Rust derives Send+Sync automatically here, but we assert it for clarity.
 const _: () = {
     fn _assert_send_sync<T: Send + Sync>() {}
     fn _check() { _assert_send_sync::<PrismMcpClient>(); }
@@ -46,9 +46,11 @@ impl PrismMcpClient {
     /// the available tool definitions.
     ///
     /// `mcp_url` should be the full endpoint, e.g. `http://localhost:1940/mcp`.
-    pub async fn connect(mcp_url: &str) -> Result<Self, PrismError> {
+    /// `api_key` is optional — if provided, sent as a Bearer token on every request.
+    pub async fn connect(mcp_url: &str, api_key: Option<&str>) -> Result<Self, PrismError> {
         let client = Client::new();
         let next_id = AtomicU64::new(1);
+        let api_key = api_key.map(|s| s.to_string());
 
         // --- initialize ---
         let init_id = next_id.fetch_add(1, Ordering::Relaxed);
@@ -63,9 +65,15 @@ impl PrismMcpClient {
             }
         });
 
-        let init_resp = client
+        let mut init_req = client
             .post(mcp_url)
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &api_key {
+            init_req = init_req.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let init_resp = init_req
             .json(&init_body)
             .send()
             .await
@@ -93,16 +101,20 @@ impl PrismMcpClient {
         log::debug!("MCP initialized: {}", init_json);
 
         // --- notifications/initialized ---
-        let mut notif_req = client
-            .post(mcp_url)
-            .header("Content-Type", "application/json");
-        if let Some(sid) = &session_id {
-            notif_req = notif_req.header("mcp-session-id", sid);
-        }
         let notif_body = json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         });
+        let mut notif_req = client
+            .post(mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &api_key {
+            notif_req = notif_req.header("Authorization", format!("Bearer {key}"));
+        }
+        if let Some(sid) = &session_id {
+            notif_req = notif_req.header("mcp-session-id", sid);
+        }
         notif_req
             .json(&notif_body)
             .send()
@@ -119,7 +131,11 @@ impl PrismMcpClient {
 
         let mut list_req = client
             .post(mcp_url)
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &api_key {
+            list_req = list_req.header("Authorization", format!("Bearer {key}"));
+        }
         if let Some(sid) = &session_id {
             list_req = list_req.header("mcp-session-id", sid);
         }
@@ -152,8 +168,25 @@ impl PrismMcpClient {
             client,
             tools,
             session_id,
+            api_key,
             next_id,
         })
+    }
+
+    /// Build a POST request to the MCP endpoint with auth + session + accept headers.
+    fn build_request(&self) -> reqwest::RequestBuilder {
+        let mut req = self
+            .client
+            .post(&self.mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &self.api_key {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+        if let Some(sid) = &self.session_id {
+            req = req.header("mcp-session-id", sid);
+        }
+        req
     }
 
     /// Call an MCP tool by name with the given arguments.
@@ -173,15 +206,7 @@ impl PrismMcpClient {
             }
         });
 
-        let mut req = self
-            .client
-            .post(&self.mcp_url)
-            .header("Content-Type", "application/json");
-        if let Some(sid) = &self.session_id {
-            req = req.header("mcp-session-id", sid);
-        }
-
-        let resp: Value = req
+        let resp: Value = self.build_request()
             .json(&body)
             .send()
             .await
@@ -221,11 +246,6 @@ impl PrismMcpClient {
     }
 
     /// Convert the cached tool definitions to Ollama's tool-calling format.
-    ///
-    /// Each tool becomes:
-    /// ```json
-    /// { "type": "function", "function": { "name": "...", "description": "...", "parameters": {...} } }
-    /// ```
     pub fn tools_as_ollama_format(&self) -> Vec<Value> {
         self.tools
             .iter()
@@ -248,9 +268,6 @@ impl PrismMcpClient {
     }
 
     /// Check whether the MCP server is reachable.
-    ///
-    /// Sends a lightweight `tools/list` request and returns `true` if the
-    /// server responds successfully.
     pub async fn health(&self) -> bool {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
@@ -258,16 +275,7 @@ impl PrismMcpClient {
             "id": id,
             "method": "tools/list"
         });
-
-        let mut req = self
-            .client
-            .post(&self.mcp_url)
-            .header("Content-Type", "application/json");
-        if let Some(sid) = &self.session_id {
-            req = req.header("mcp-session-id", sid);
-        }
-
-        matches!(req.json(&body).send().await, Ok(resp) if resp.status().is_success())
+        matches!(self.build_request().json(&body).send().await, Ok(resp) if resp.status().is_success())
     }
 
     /// Access the cached tool definitions.
