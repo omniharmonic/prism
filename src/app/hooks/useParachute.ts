@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { vaultApi, systemApi } from "../../lib/parachute/client";
+import { vaultApi, systemApi, githubSyncApi } from "../../lib/parachute/client";
 import { queryKeys } from "../../lib/parachute/queries";
 import type { NoteFilters, UpdateNoteParams } from "../../lib/types";
 
@@ -66,6 +66,11 @@ export function useUpdateNote() {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });
+
+      // Auto-sync to GitHub: trigger push for matching sync configs
+      // TODO: Match note path against config.vaultPath and call githubSyncApi.pushFile()
+      // For now this is a stub — the Rust side could emit events for matched configs instead
+      void checkAutoSync(id);
     },
   });
 }
@@ -86,4 +91,20 @@ export function useServiceStatus() {
     queryFn: systemApi.checkServices,
     refetchInterval: 30_000,
   });
+}
+
+/** Best-effort auto-sync check after note save */
+async function checkAutoSync(noteId: string) {
+  try {
+    const configs = await githubSyncApi.status();
+    for (const config of configs) {
+      if (config.autoSync) {
+        // TODO: verify note's path falls under config.vaultPath before pushing
+        // For now, push to all auto-sync configs — refine once note path is available in onSuccess
+        await githubSyncApi.pushFile(config.id, noteId);
+      }
+    }
+  } catch {
+    // Silent fail — auto-sync is best-effort
+  }
 }

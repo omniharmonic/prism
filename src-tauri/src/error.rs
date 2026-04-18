@@ -16,6 +16,14 @@ pub enum PrismError {
     Auth(String),
     #[error("Sync conflict")]
     SyncConflict { local: String, remote: String },
+    #[error("Config: {0}")]
+    Config(String),
+    #[error("MCP: {0}")]
+    Mcp(String),
+    #[error("Ollama: {0}")]
+    Ollama(String),
+    #[error("Git: {0}")]
+    Git(String),
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
     #[error("IO: {0}")]

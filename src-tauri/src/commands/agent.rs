@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
-use crate::clients::anthropic::ClaudeClient;
+use crate::clients::model_router::ModelRouter;
 use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
 
@@ -49,7 +49,7 @@ Tag schemas define structured fields for each note type.\n\n";
 /// Uses `claude -p` with a focused editing prompt.
 #[tauri::command]
 pub async fn agent_edit(
-    claude: State<'_, ClaudeClient>,
+    router: State<'_, ModelRouter>,
     parachute: State<'_, ParachuteClient>,
     note_id: String,
     selection: String,
@@ -58,8 +58,8 @@ pub async fn agent_edit(
     let note = parachute.get_note(&note_id).await
         .map_err(|e| PrismError::Parachute(format!("Cannot edit: note {} not found ({})", note_id, e)))?;
 
-    let full_prompt = format!(
-        "{}You are editing a document in Prism. Apply the following edit to the selected text.\n\n\
+    let edit_prompt = format!(
+        "You are editing a document in Prism. Apply the following edit to the selected text.\n\n\
          Note ID: {}\n\
          Document path: {}\n\
          Tags: {}\n\n\
@@ -68,7 +68,6 @@ pub async fn agent_edit(
          Selected text:\n\"{}\"\n\n\
          Edit instruction: {}\n\n\
          Return ONLY the replacement text. No explanations, no code fences, no markdown wrapping.",
-        PRISM_CONTEXT,
         note_id,
         note.path.as_deref().unwrap_or("untitled"),
         note.tags.as_deref().unwrap_or(&[]).join(", "),
@@ -77,7 +76,7 @@ pub async fn agent_edit(
         prompt,
     );
 
-    claude.run(&full_prompt, "sonnet", 60).await
+    router.run("edit", PRISM_CONTEXT, &edit_prompt, &note_id, 60).await
 }
 
 /// Chat: conversational exchange with document context.
@@ -85,20 +84,20 @@ pub async fn agent_edit(
 /// Claude has access to Parachute MCP tools to search, read, and modify vault notes.
 #[tauri::command]
 pub async fn agent_chat(
-    claude: State<'_, ClaudeClient>,
+    router: State<'_, ModelRouter>,
     parachute: State<'_, ParachuteClient>,
     sessions: State<'_, AgentSessions>,
     note_id: Option<String>,
     message: String,
 ) -> Result<serde_json::Value, PrismError> {
-    // Build context-aware prompt
+    // Build context-aware prompt, split into system vs user parts
     let note = if let Some(id) = &note_id {
         parachute.get_note(id).await.ok()
     } else {
         None
     };
 
-    let prompt = if let Some(note) = &note {
+    let system_prompt = if let Some(note) = &note {
         let id = note_id.as_deref().unwrap_or("");
         format!(
             "{}You are a writing collaborator. The user has a document open in Prism.\n\n\
@@ -110,22 +109,18 @@ pub async fn agent_chat(
              ---\n\n\
              To edit this document, use `mcp__parachute-vault__update-note` with the note ID above \
              and the updated content. After editing, briefly describe what you changed.\n\
-             You can also search the vault, create new notes, add tags, and traverse links.\n\n\
-             User: {}",
+             You can also search the vault, create new notes, add tags, and traverse links.",
             PRISM_CONTEXT,
             id,
             note.path.as_deref().unwrap_or("untitled"),
             note.tags.as_deref().unwrap_or(&[]).join(", "),
             &note.content[..note.content.len().min(6000)],
-            message,
         )
     } else {
         format!(
             "{}You are a helpful assistant. Use the Parachute MCP tools to search and browse \
-             the vault when answering questions about documents, projects, people, or tasks.\n\n\
-             User: {}",
+             the vault when answering questions about documents, projects, people, or tasks.",
             PRISM_CONTEXT,
-            message,
         )
     };
 
@@ -133,9 +128,11 @@ pub async fn agent_chat(
     let session_key = note_id.clone().unwrap_or_else(|| "global".into());
     let session_id = sessions.sessions.lock().unwrap().get(&session_key).cloned();
 
-    let response = claude.run_conversational(
-        &prompt,
-        "sonnet",
+    let response = router.run_conversational(
+        "chat",
+        &system_prompt,
+        &message,
+        &session_key,
         session_id.as_deref(),
         120,
     ).await?;
@@ -156,54 +153,53 @@ pub async fn agent_chat(
 /// Claude can use Parachute MCP to look up related content for context.
 #[tauri::command]
 pub async fn agent_transform(
-    claude: State<'_, ClaudeClient>,
+    router: State<'_, ModelRouter>,
     parachute: State<'_, ParachuteClient>,
     note_id: String,
     target_type: String,
 ) -> Result<String, PrismError> {
     let note = parachute.get_note(&note_id).await?;
 
-    let prompt = format!(
-        "{}Convert the following document into a {}. \
+    let transform_prompt = format!(
+        "Convert the following document into a {}. \
          Preserve all semantic content. Use formatting conventions appropriate for the target type.\n\
          If you need additional context, use the Parachute MCP tools to search related notes.\n\n\
          Source document ({}, tags: {}):\n{}\n\n\
          Return ONLY the converted content.",
-        PRISM_CONTEXT,
         target_type,
         note.path.as_deref().unwrap_or("untitled"),
         note.tags.as_deref().unwrap_or(&[]).join(", "),
         note.content,
     );
 
-    claude.run(&prompt, "sonnet", 120).await
+    router.run("transform", PRISM_CONTEXT, &transform_prompt, &note_id, 120).await
 }
 
 /// Generate: create new content from a prompt.
 /// Claude can use Parachute MCP to pull relevant context from the vault.
 #[tauri::command]
 pub async fn agent_generate(
-    claude: State<'_, ClaudeClient>,
+    router: State<'_, ModelRouter>,
     prompt: String,
     content_type: Option<String>,
 ) -> Result<String, PrismError> {
-    let full_prompt = if let Some(ct) = content_type {
+    let generate_prompt = if let Some(ct) = content_type {
         format!(
-            "{}Generate {} content based on this prompt. \
+            "Generate {} content based on this prompt. \
              Use the Parachute MCP tools to search the vault for relevant context if needed.\n\n\
              Prompt: {}\n\n\
              Return ONLY the generated content.",
-            PRISM_CONTEXT, ct, prompt,
+            ct, prompt,
         )
     } else {
         format!(
-            "{}Generate content based on this prompt. \
+            "Generate content based on this prompt. \
              Use the Parachute MCP tools to search the vault for relevant context if needed.\n\n\
              Prompt: {}\n\n\
              Return ONLY the generated content.",
-            PRISM_CONTEXT, prompt,
+            prompt,
         )
     };
 
-    claude.run(&full_prompt, "sonnet", 120).await
+    router.run("generate", PRISM_CONTEXT, &generate_prompt, "generate", 120).await
 }

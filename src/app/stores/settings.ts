@@ -28,6 +28,11 @@ interface SettingsStore {
   defaultSyncDirection: "push" | "pull" | "bidirectional";
   autoSyncOnSave: boolean;
 
+  // AI Model Selection
+  ollamaUrl: string;
+  defaultProvider: "claude" | "ollama";
+  skillModels: Record<string, { provider: string; model: string }>;
+
   // Actions
   setTheme: (theme: Theme) => void;
   setFontFamily: (font: string) => void;
@@ -40,6 +45,9 @@ interface SettingsStore {
   setSidebarLabel: (label: string) => void;
   setDefaultSyncDirection: (dir: "push" | "pull" | "bidirectional") => void;
   setAutoSyncOnSave: (enabled: boolean) => void;
+  setOllamaUrl: (url: string) => void;
+  setDefaultProvider: (provider: "claude" | "ollama") => void;
+  setSkillModel: (skill: string, provider: string, model: string) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -61,6 +69,10 @@ export const useSettingsStore = create<SettingsStore>()(
 
       defaultSyncDirection: "bidirectional",
       autoSyncOnSave: false,
+
+      ollamaUrl: "http://localhost:11434",
+      defaultProvider: "claude" as const,
+      skillModels: {},
 
       // Actions
       setTheme: (theme) => {
@@ -102,6 +114,12 @@ export const useSettingsStore = create<SettingsStore>()(
       setSidebarLabel: (label) => set({ sidebarLabel: label }),
       setDefaultSyncDirection: (dir) => set({ defaultSyncDirection: dir }),
       setAutoSyncOnSave: (enabled) => set({ autoSyncOnSave: enabled }),
+      setOllamaUrl: (url) => set({ ollamaUrl: url }),
+      setDefaultProvider: (provider) => set({ defaultProvider: provider }),
+      setSkillModel: (skill, provider, model) =>
+        set((s) => ({
+          skillModels: { ...s.skillModels, [skill]: { provider, model } },
+        })),
     }),
     {
       name: "prism-settings",

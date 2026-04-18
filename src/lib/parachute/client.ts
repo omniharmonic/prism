@@ -129,3 +129,107 @@ export const convertApi = {
   htmlToMarkdown: (html: string) =>
     invoke<string>("html_to_markdown", { html }),
 };
+
+// GitHub sync
+export const githubSyncApi = {
+  /** Initialize a new GitHub sync for a vault directory */
+  init: (params: {
+    vaultPath: string;
+    remoteUrl: string;
+    branch: string;
+    authToken: string;
+    commitStrategy: string;
+    conflictStrategy: string;
+    autoSync: boolean;
+  }) => invoke<string>("github_sync_init", params),
+
+  /** Sync vault directory to GitHub (push all changes) */
+  push: (configId: string) =>
+    invoke<{ pushed: string[]; pulled: string[]; conflicts: Array<{ path: string; localContent: string; remoteContent: string }>; errors: Array<[string, string]> }>(
+      "github_sync_push", { configId }
+    ),
+
+  /** Push a single file after save (auto-sync) */
+  pushFile: (configId: string, noteId: string) =>
+    invoke<void>("github_sync_push_file", { configId, noteId }),
+
+  /** Get status of all GitHub sync configs */
+  status: () =>
+    invoke<Array<{ id: string; vaultPath: string; remoteUrl: string; branch: string; lastSynced: string; autoSync: boolean }>>(
+      "github_sync_status"
+    ),
+
+  /** Remove a GitHub sync configuration */
+  remove: (configId: string) =>
+    invoke<void>("github_sync_remove", { configId }),
+};
+
+// Notion database sync
+export const notionDbSyncApi = {
+  /** List available Notion databases */
+  listDatabases: () =>
+    invoke<Array<{ id: string; title: string; propertyCount: number }>>("notion_db_list"),
+
+  /** Get database schema with auto-discovered mappings */
+  getSchema: (databaseId: string) =>
+    invoke<{
+      properties: Array<{ name: string; propertyType: string; options: string[] }>;
+      suggestedMappings: Array<{
+        notionProperty: string; notionType: string; parachuteField: string;
+        transform: string; valueMap: Record<string, string>; relationshipType: string | null;
+      }>;
+    }>("notion_db_schema", { databaseId }),
+
+  /** Initialize a new database sync */
+  init: (params: {
+    databaseId: string;
+    databaseName: string;
+    parachuteTag: string;
+    parachutePathPrefix: string;
+    propertyMap: Array<{
+      notionProperty: string; notionType: string; parachuteField: string;
+      transform: string; valueMap?: Record<string, string>; relationshipType?: string;
+    }>;
+    titleProperty: string;
+    contentProperty?: string;
+    syncDirection: string;
+    conflictStrategy: string;
+    autoSync: boolean;
+  }) => invoke<string>("notion_db_sync_init", params),
+
+  /** Run sync for a configured database */
+  sync: (configId: string) =>
+    invoke<{ created: number; updated: number; deleted: number; conflicts: number; errors: string[] }>(
+      "notion_db_sync", { configId }
+    ),
+
+  /** Get status of all Notion DB syncs */
+  status: () =>
+    invoke<Array<{ id: string; notionDatabaseName: string; parachuteTag: string; lastSynced: string; autoSync: boolean; syncedCount: number }>>(
+      "notion_db_sync_status"
+    ),
+
+  /** Remove a Notion DB sync configuration */
+  remove: (configId: string) =>
+    invoke<void>("notion_db_sync_remove", { configId }),
+};
+
+// Ollama / model management
+export const ollamaApi = {
+  /** Check if Ollama is available */
+  status: () => invoke<boolean>("ollama_status"),
+
+  /** List available models from all providers */
+  listModels: () =>
+    invoke<Array<{ id: string; name: string; provider: string; size: string | null }>>(
+      "ollama_list_models"
+    ),
+
+  /** Set model for a specific skill */
+  setSkillModel: (skill: string, provider: string, model: string) =>
+    invoke<void>("set_skill_model", { skill, provider, model }),
+
+  /** Get current skill model configurations */
+  getSkillModels: () =>
+    invoke<Record<string, { provider: string; model: string }>>("get_skill_models"),
+};

@@ -18,8 +18,10 @@ import {
   FolderInput,
   Trash2,
   FilePlus,
+  GitFork,
 } from "lucide-react";
 import { useNotes, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
+import { GitHubSyncModal } from "../layout/GitHubSyncModal";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { ContentType, Note } from "../../lib/types";
@@ -134,6 +136,16 @@ function collectNotes(node: TreeNode): Note[] {
   return notes;
 }
 
+/** Get a flat ordered list of note IDs from the tree (for shift-click range selection) */
+function getFlatNoteIds(nodes: TreeNode[]): string[] {
+  const ids: string[] = [];
+  for (const node of nodes) {
+    if (node.note) ids.push(node.note.id);
+    if (node.children.length > 0) ids.push(...getFlatNoteIds(node.children));
+  }
+  return ids;
+}
+
 // ─── Context Menu ────────────────────────────────────────────
 
 interface ContextMenuState {
@@ -150,6 +162,7 @@ function ContextMenu({
   onRename,
   onMove,
   onDelete,
+  onSyncToGitFork,
 }: {
   state: ContextMenuState;
   onClose: () => void;
@@ -158,6 +171,7 @@ function ContextMenu({
   onRename: (node: TreeNode) => void;
   onMove: (node: TreeNode) => void;
   onDelete: (node: TreeNode) => void;
+  onSyncToGitFork: (node: TreeNode) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const isFolder = !state.node.note;
@@ -187,6 +201,9 @@ function ContextMenu({
     { icon: Pencil, label: "Rename", action: () => onRename(state.node) },
     { icon: FolderInput, label: "Move to...", action: () => onMove(state.node) },
     { icon: Trash2, label: "Delete", action: () => onDelete(state.node), danger: true },
+    ...(isFolder
+      ? [{ icon: GitFork, label: "Sync to GitHub...", action: () => onSyncToGitFork(state.node) }]
+      : []),
   ];
 
   return (
@@ -378,6 +395,125 @@ function DeleteConfirm({
   );
 }
 
+// ─── Batch Delete Confirmation ──────────────────────────────
+
+function BatchDeleteConfirm({
+  count,
+  onConfirm,
+  onCancel,
+}: {
+  count: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+      <div
+        className="glass-elevated w-full max-w-xs mx-4 p-4"
+        style={{ borderRadius: "var(--radius-lg)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-sm font-medium mb-2" style={{ color: "var(--text-primary)" }}>
+          Delete {count} notes?
+        </div>
+        <div className="text-xs mb-4" style={{ color: "var(--text-secondary)" }}>
+          This will delete {count} selected note{count !== 1 ? "s" : ""}. This cannot be undone.
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-1.5 rounded-md text-xs font-medium"
+            style={{ background: "var(--color-danger)", color: "white" }}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Batch Move Dialog ──────────────────────────────────────
+
+function BatchMoveDialog({
+  count,
+  allPaths,
+  onMove,
+  onClose,
+}: {
+  count: number;
+  allPaths: string[];
+  onMove: (destPath: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const filtered = allPaths
+    .filter((p) => p.toLowerCase().includes(query.toLowerCase()))
+    .slice(0, 10);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+      <div
+        className="glass-elevated w-full max-w-sm mx-4 p-4"
+        style={{ borderRadius: "var(--radius-lg)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-sm font-medium mb-3" style={{ color: "var(--text-primary)" }}>
+          Move {count} note{count !== 1 ? "s" : ""} to...
+        </div>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search folders..."
+          autoFocus
+          className="w-full h-8 rounded-md px-2.5 text-sm outline-none mb-2"
+          style={{
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            color: "var(--text-primary)",
+          }}
+        />
+        <div className="max-h-48 overflow-auto space-y-0.5">
+          {/* Root option */}
+          <button
+            onClick={() => onMove("vault")}
+            className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            / (vault root)
+          </button>
+          {filtered.map((p) => (
+            <button
+              key={p}
+              onClick={() => onMove(p)}
+              className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors truncate"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {normalizePath(p)}
+            </button>
+          ))}
+        </div>
+        <div className="flex justify-end mt-3">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ──────────────────────────────────────────
 
 export function ProjectTree() {
@@ -393,6 +529,13 @@ export function ProjectTree() {
   const [newFolder, setNewFolder] = useState<{ parentPath: string } | null>(null);
   const [moveTarget, setMoveTarget] = useState<TreeNode | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
+  const [githubSyncPath, setGitForkSyncPath] = useState<string | null>(null);
+
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastClickedId, setLastClickedId] = useState<string | null>(null);
+  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
+  const [batchMoveTarget, setBatchMoveTarget] = useState(false);
 
   // Gather all unique directory paths for move dialog
   const dirPaths = useMemo(() => {
@@ -493,6 +636,68 @@ export function ProjectTree() {
     setDeleteTarget(null);
   }, [deleteNote, invalidate]);
 
+  // ─── Multi-select click handler ──────────────────
+  const handleNodeClick = useCallback((e: React.MouseEvent, node: TreeNode): boolean => {
+    if (!node.note) return false; // folders don't participate in multi-select
+
+    const noteId = node.note.id;
+
+    if (e.metaKey || e.ctrlKey) {
+      // Toggle selection
+      e.preventDefault();
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(noteId)) next.delete(noteId);
+        else next.add(noteId);
+        return next;
+      });
+      setLastClickedId(noteId);
+      return true; // signal: handled, don't open
+    } else if (e.shiftKey && lastClickedId) {
+      // Range select
+      e.preventDefault();
+      const flatIds = getFlatNoteIds(tree);
+      const startIdx = flatIds.indexOf(lastClickedId);
+      const endIdx = flatIds.indexOf(noteId);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [from, to] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const rangeIds = flatIds.slice(from, to + 1);
+        setSelectedIds(new Set(rangeIds));
+      }
+      return true; // signal: handled, don't open
+    } else {
+      // Normal click — clear selection, let default open behavior run
+      setSelectedIds(new Set());
+      setLastClickedId(noteId);
+      return false; // signal: not handled, proceed with open
+    }
+  }, [lastClickedId, tree]);
+
+  // ─── Batch operations ──────────────────────────────
+  const handleBatchDelete = useCallback(async () => {
+    const closeTabs = useUIStore.getState().closeTabs;
+    for (const id of selectedIds) {
+      if (closeTabs) closeTabs(id);
+      await deleteNote.mutateAsync(id);
+    }
+    setSelectedIds(new Set());
+    setBatchDeleteConfirm(false);
+    invalidate();
+  }, [selectedIds, deleteNote, invalidate]);
+
+  const handleBatchMove = useCallback(async (destPath: string) => {
+    for (const id of selectedIds) {
+      const note = (notes || []).find(n => n.id === id);
+      if (!note) continue;
+      const name = (note.path || "Untitled").split("/").pop() || "Untitled";
+      const newPath = `${destPath}/${name}`;
+      await updateNote.mutateAsync({ id, path: newPath });
+    }
+    setSelectedIds(new Set());
+    setBatchMoveTarget(false);
+    invalidate();
+  }, [selectedIds, notes, updateNote, invalidate]);
+
   if (isLoading) {
     return (
       <div className="flex justify-center py-4">
@@ -511,6 +716,40 @@ export function ProjectTree() {
 
   return (
     <>
+      {/* Batch actions toolbar */}
+      {selectedIds.size > 1 && (
+        <div className="flex items-center gap-2 px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
+          <span style={{ color: "var(--text-secondary)" }}>{selectedIds.size} selected</span>
+          <button
+            onClick={() => setBatchDeleteConfirm(true)}
+            className="px-2 py-1 rounded transition-colors"
+            style={{ background: "rgba(239,68,68,0.15)", color: "rgb(252,165,165)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.25)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.15)"; }}
+          >
+            Delete
+          </button>
+          <button
+            onClick={() => setBatchMoveTarget(true)}
+            className="px-2 py-1 rounded transition-colors"
+            style={{ background: "var(--glass-hover)", color: "var(--text-secondary)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--glass-hover-strong, rgba(255,255,255,0.15))"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--glass-hover)"; }}
+          >
+            Move to...
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto transition-colors"
+            style={{ color: "var(--text-muted)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       <div className="py-0.5">
         {tree.map((node) => (
           <TreeNodeView
@@ -524,6 +763,8 @@ export function ProjectTree() {
             newFolder={newFolder}
             onNewFolderConfirm={handleNewFolderConfirm}
             onNewFolderCancel={() => setNewFolder(null)}
+            selectedIds={selectedIds}
+            onNodeClick={handleNodeClick}
           />
         ))}
       </div>
@@ -538,10 +779,11 @@ export function ProjectTree() {
           onRename={(n) => setRenaming(n)}
           onMove={(n) => setMoveTarget(n)}
           onDelete={(n) => setDeleteTarget(n)}
+          onSyncToGitFork={(n) => setGitForkSyncPath(n.rawPath)}
         />
       )}
 
-      {/* Move dialog */}
+      {/* Move dialog (single item) */}
       {moveTarget && (
         <MoveDialog
           node={moveTarget}
@@ -551,12 +793,40 @@ export function ProjectTree() {
         />
       )}
 
-      {/* Delete confirmation */}
+      {/* Batch move dialog */}
+      {batchMoveTarget && (
+        <BatchMoveDialog
+          count={selectedIds.size}
+          allPaths={dirPaths}
+          onMove={handleBatchMove}
+          onClose={() => setBatchMoveTarget(false)}
+        />
+      )}
+
+      {/* Delete confirmation (single item) */}
       {deleteTarget && (
         <DeleteConfirm
           node={deleteTarget}
           onConfirm={() => handleDelete(deleteTarget)}
           onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {/* Batch delete confirmation */}
+      {batchDeleteConfirm && (
+        <BatchDeleteConfirm
+          count={selectedIds.size}
+          onConfirm={handleBatchDelete}
+          onCancel={() => setBatchDeleteConfirm(false)}
+        />
+      )}
+
+      {/* GitHub sync modal */}
+      {githubSyncPath && (
+        <GitHubSyncModal
+          isOpen={true}
+          onClose={() => setGitForkSyncPath(null)}
+          vaultPath={githubSyncPath}
         />
       )}
     </>
@@ -573,6 +843,8 @@ function TreeNodeView({
   newFolder,
   onNewFolderConfirm,
   onNewFolderCancel,
+  selectedIds,
+  onNodeClick,
 }: {
   node: TreeNode;
   depth: number;
@@ -583,17 +855,25 @@ function TreeNodeView({
   newFolder: { parentPath: string } | null;
   onNewFolderConfirm: (name: string) => void;
   onNewFolderCancel: () => void;
+  selectedIds: Set<string>;
+  onNodeClick: (e: React.MouseEvent, node: TreeNode) => boolean;
 }) {
   const [open, setOpen] = useState(depth === 0);
   const openTab = useUIStore((s) => s.openTab);
   const isFolder = !node.note && node.children.length > 0;
   const isRenaming = renamingNode?.fullPath === node.fullPath && renamingNode?.note?.id === node.note?.id;
   const showNewFolderInput = newFolder?.parentPath === node.rawPath && isFolder;
+  const isSelected = node.note ? selectedIds.has(node.note.id) : false;
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent) => {
     if (isFolder) {
       setOpen(!open);
-    } else if (node.note) {
+      return;
+    }
+    // Let multi-select handler run first
+    const handled = onNodeClick(e, node);
+    if (!handled && node.note) {
+      // Normal click — open the note
       const type = inferContentType(node.note);
       openTab(node.note.id, node.name, type);
     }
@@ -615,6 +895,7 @@ function TreeNodeView({
         onContextMenu={(e) => onContextMenu(e, node)}
         className={cn(
           "w-full flex items-center gap-1.5 py-1 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate",
+          isSelected && "bg-white/10 ring-1 ring-white/20",
         )}
         style={{
           paddingLeft: `${12 + depth * 16}px`,
@@ -660,6 +941,8 @@ function TreeNodeView({
               newFolder={newFolder}
               onNewFolderConfirm={onNewFolderConfirm}
               onNewFolderCancel={onNewFolderCancel}
+              selectedIds={selectedIds}
+              onNodeClick={onNodeClick}
             />
           ))}
         </div>

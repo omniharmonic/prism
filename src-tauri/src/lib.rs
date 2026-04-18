@@ -10,7 +10,12 @@ use clients::parachute::ParachuteClient;
 use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds};
+use clients::mcp_client::PrismMcpClient;
+use clients::ollama::OllamaAgent;
+use clients::model_router::ModelRouter;
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds, ollama_cmds, github_cmds, notion_db_cmds};
+use commands::github_cmds::GitHubSyncState;
+use commands::notion_db_cmds::NotionDbSyncState;
 use commands::agent::AgentSessions;
 use commands::config::AppConfig;
 use services::ServiceManager;
@@ -49,6 +54,25 @@ pub fn run() {
     });
     let claude_client = ClaudeClient::new(prism_root, app_config.omniharmonic_root.clone());
 
+    // Try to connect Ollama agent with MCP vault access.
+    // This is optional — if Ollama or Parachute MCP aren't running, we proceed without it.
+    let ollama_agent = tauri::async_runtime::block_on(async {
+        let mcp_url = format!("{}/mcp", parachute_url);
+        let ollama_url = "http://localhost:11434".to_string(); // TODO: make configurable
+        match PrismMcpClient::connect(&mcp_url).await {
+            Ok(mcp) => {
+                log::info!("PrismMcpClient connected — {} tools", mcp.tools().len());
+                Some(OllamaAgent::new(ollama_url, mcp).await)
+            }
+            Err(e) => {
+                log::warn!("MCP connection failed, Ollama unavailable: {}", e);
+                None
+            }
+        }
+    });
+
+    let model_router = ModelRouter::new(claude_client, ollama_agent);
+
     let agent_sessions = AgentSessions::new();
 
     // Start background sync services (uses tauri::async_runtime which is always available)
@@ -63,11 +87,13 @@ pub fn run() {
         .manage(parachute)
         .manage(matrix_client)
         .manage(google_client)
-        .manage(claude_client)
+        .manage(model_router)
         .manage(agent_sessions)
         .manage(app_config)
         .manage(service_manager)
         .manage(dispatch_manager)
+        .manage(GitHubSyncState::new())
+        .manage(NotionDbSyncState::new())
         .invoke_handler(tauri::generate_handler![
             // Vault CRUD
             vault::vault_list_notes,
@@ -150,6 +176,24 @@ pub fn run() {
             service_cmds::agent_cancel_dispatch,
             service_cmds::agent_get_skills,
             service_cmds::agent_update_skill,
+            // Ollama / model management
+            ollama_cmds::ollama_status,
+            ollama_cmds::ollama_list_models,
+            ollama_cmds::set_skill_model,
+            ollama_cmds::get_skill_models,
+            // GitHub sync
+            github_cmds::github_sync_init,
+            github_cmds::github_sync_push,
+            github_cmds::github_sync_push_file,
+            github_cmds::github_sync_status,
+            github_cmds::github_sync_remove,
+            // Notion database sync
+            notion_db_cmds::notion_db_list,
+            notion_db_cmds::notion_db_schema,
+            notion_db_cmds::notion_db_sync_init,
+            notion_db_cmds::notion_db_sync,
+            notion_db_cmds::notion_db_sync_status,
+            notion_db_cmds::notion_db_sync_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

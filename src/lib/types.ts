@@ -62,7 +62,7 @@ export interface Link {
 
 // Sync configuration per document
 export interface SyncConfig {
-  adapter: "google-docs" | "google-slides" | "google-sheets" | "notion" | "gmail" | "github" | "vercel";
+  adapter: "google-docs" | "google-slides" | "google-sheets" | "notion" | "gmail" | "github" | "vercel" | "notion-db";
   remoteId: string;
   lastSynced: string;
   direction: "push" | "pull" | "bidirectional";
@@ -123,6 +123,31 @@ export interface TaskMeta extends PrismMetadata {
   priority: string;
   deadline?: string;
   notionPageId?: string;
+}
+
+// Notion database sync configuration
+export interface NotionDbSyncConfig {
+  id: string;
+  notionDatabaseId: string;
+  notionDatabaseName: string;
+  parachuteTag: string;
+  parachutePathPrefix: string;
+  propertyMap: PropertyMapping[];
+  titleProperty: string;
+  contentProperty?: string;
+  syncDirection: "bidirectional" | "notion-to-parachute" | "parachute-to-notion";
+  conflictStrategy: "notion-wins" | "parachute-wins" | "newer-wins";
+  lastSynced: string;
+  autoSync: boolean;
+}
+
+export interface PropertyMapping {
+  notionProperty: string;
+  notionType: "title" | "rich_text" | "select" | "multi_select" | "date" | "people" | "checkbox" | "number" | "url" | "relation" | "formula" | "rollup";
+  parachuteField: string;
+  transform: "identity" | "slugify" | "value_map" | "date_extract" | "people_extract" | "relation_to_links";
+  valueMap?: Record<string, string>;
+  relationshipType?: string;
 }
 
 export interface EventMeta extends PrismMetadata {

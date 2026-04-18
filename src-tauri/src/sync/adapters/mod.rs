@@ -1,5 +1,7 @@
+pub mod github;
 pub mod google_docs;
 pub mod notion;
+pub mod notion_db;
 
 use async_trait::async_trait;
 use crate::models::note::Note;

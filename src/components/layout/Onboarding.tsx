@@ -1,6 +1,6 @@
-import { useState, useCallback } from "react";
-import { Check, Loader2, Database, MessageSquare, Sparkles, ArrowRight, ArrowLeft, Mail, Cloud, AlertCircle } from "lucide-react";
-import { configApi } from "../../lib/agent/client";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Check, Loader2, Database, MessageSquare, Sparkles, ArrowRight, ArrowLeft, Mail, Cloud, AlertCircle, Layers } from "lucide-react";
+import { agentApi, configApi } from "../../lib/agent/client";
 import { Button } from "../ui/Button";
 import { useSettingsStore } from "../../app/stores/settings";
 
@@ -24,6 +24,11 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   const [matrixStatus, setMatrixStatus] = useState<StepStatus>("pending");
   const [matrixError, setMatrixError] = useState("");
   const [matrixRooms, setMatrixRooms] = useState(0);
+
+  const [schemaMessages, setSchemaMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [schemaInput, setSchemaInput] = useState("");
+  const [schemaLoading, setSchemaLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   const [googleStatus, setGoogleStatus] = useState<StepStatus>("pending");
   const [notionKey, setNotionKey] = useState("");
@@ -86,6 +91,44 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     }
   }, []);
 
+  const sendSchemaMessage = useCallback(async (message: string) => {
+    if (!message.trim() || schemaLoading) return;
+
+    setSchemaMessages(prev => [...prev, { role: "user", content: message }]);
+    setSchemaInput("");
+    setSchemaLoading(true);
+
+    try {
+      const systemContext = `You are helping set up a new Parachute vault for Prism. The user will describe their use case. Based on that, create appropriate tag schemas using the Parachute MCP tools (mcp__parachute-vault__update-tag). Create 6-12 tags with field schemas appropriate for their use case. Be conversational and friendly. After creating tags, confirm what you've set up.`;
+
+      const result = await agentApi.chat(
+        `${systemContext}\n\nUser: ${message}`
+      );
+
+      setSchemaMessages(prev => [...prev, { role: "assistant", content: result.message }]);
+    } catch (e) {
+      setSchemaMessages(prev => [...prev, { role: "assistant", content: `Setup error: ${e}. You can skip this step and configure tags later.` }]);
+    }
+
+    setSchemaLoading(false);
+  }, [schemaLoading]);
+
+  const useTemplate = useCallback((template: string) => {
+    const prompts: Record<string, string> = {
+      "Personal KM": "I want to use Prism as a personal knowledge management system. I track people, topics, sources, insights, and reference materials across my work and personal life.",
+      "Project Tracking": "I need Prism for project management. I track projects, tasks, milestones, decisions, risks, and stakeholders.",
+      "Research": "I'm a researcher. I need to track papers, experiments, datasets, findings, methodologies, and citations.",
+      "CRM": "I want to use Prism as a CRM. I track people, companies, deals, interactions, and pipeline stages.",
+      "Writing": "I'm a writer. I need to organize drafts, chapters, characters, settings, research notes, and outlines.",
+      "Meeting Notes": "I use Prism primarily for meeting notes. I need to track meetings, action items, decisions, attendees, and agendas.",
+    };
+    sendSchemaMessage(prompts[template] || template);
+  }, [sendSchemaMessage]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [schemaMessages, schemaLoading]);
+
   const steps = [
     // Step 0: Welcome
     <div key="welcome" className="text-center space-y-6 max-w-md mx-auto">
@@ -120,7 +163,83 @@ export function Onboarding({ onComplete }: OnboardingProps) {
       <NavButtons onBack={() => setStep(0)} onNext={() => setStep(2)} canProceed skipLabel={parachuteStatus !== "success" ? "Skip" : undefined} />
     </div>,
 
-    // Step 2: Matrix
+    // Step 2: Knowledge Schema
+    <div key="schema" className="space-y-4 max-w-md mx-auto">
+      <StepHeader icon={<Layers size={20} />} title="Knowledge Schema" description="Let's set up your vault's knowledge schema. Tell Claude about what you'll use Prism for, and it'll create the right tags." />
+
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        Tell Claude about your use case and it will create the right tag schemas for your vault.
+      </p>
+
+      {/* Template buttons */}
+      <div className="flex flex-wrap gap-2">
+        {["Personal KM", "Project Tracking", "Research", "CRM", "Writing", "Meeting Notes"].map(t => (
+          <button
+            key={t}
+            onClick={() => useTemplate(t)}
+            className="px-3 py-1.5 text-xs rounded-lg transition-colors"
+            style={{
+              background: "var(--glass)",
+              border: "1px solid var(--glass-border)",
+              color: "var(--text-muted)",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = "var(--glass-hover, rgba(255,255,255,0.1))"; e.currentTarget.style.color = "var(--text-primary)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "var(--glass)"; e.currentTarget.style.color = "var(--text-muted)"; }}
+            disabled={schemaLoading}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Chat messages */}
+      <div className="h-48 overflow-y-auto space-y-3 p-3 rounded-lg" style={{ background: "rgba(0,0,0,0.2)", border: "1px solid var(--glass-border)" }}>
+        {schemaMessages.length === 0 && (
+          <p className="text-xs italic" style={{ color: "var(--text-muted)" }}>Choose a template above or describe your use case...</p>
+        )}
+        {schemaMessages.map((msg, i) => (
+          <div key={i} className="text-sm" style={{ color: msg.role === "user" ? "var(--text-secondary)" : "var(--color-accent)" }}>
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>{msg.role === "user" ? "You" : "Claude"}:</span>
+            <p className="mt-0.5 whitespace-pre-wrap">{msg.content}</p>
+          </div>
+        ))}
+        {schemaLoading && (
+          <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            <Loader2 className="w-3 h-3 animate-spin" /> Claude is setting up your vault...
+          </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={schemaInput}
+          onChange={e => setSchemaInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && sendSchemaMessage(schemaInput)}
+          placeholder="Describe your use case..."
+          className="flex-1 px-3 py-2 text-sm rounded-lg outline-none"
+          style={{
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            color: "var(--text-primary)",
+          }}
+          disabled={schemaLoading}
+        />
+        <Button
+          variant="secondary"
+          onClick={() => sendSchemaMessage(schemaInput)}
+          disabled={schemaLoading || !schemaInput.trim()}
+        >
+          Send
+        </Button>
+      </div>
+
+      <NavButtons onBack={() => setStep(1)} onNext={() => setStep(3)} canProceed skipLabel="Skip" />
+    </div>,
+
+    // Step 3: Matrix
     <div key="matrix" className="space-y-4 max-w-md mx-auto">
       <StepHeader icon={<MessageSquare size={20} />} title="Matrix Messaging" description="Unified messaging across platforms. Optional." />
       <div className="space-y-2">
@@ -138,10 +257,10 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         <Button variant="secondary" onClick={testMatrix} loading={matrixStatus === "testing"}>Test</Button>
         <StatusIndicator status={matrixStatus} detail={matrixStatus === "success" ? `${matrixRooms} rooms` : matrixError} />
       </div>
-      <NavButtons onBack={() => setStep(1)} onNext={() => setStep(3)} canProceed skipLabel="Skip" />
+      <NavButtons onBack={() => setStep(2)} onNext={() => setStep(4)} canProceed skipLabel="Skip" />
     </div>,
 
-    // Step 3: Google + Notion + Claude
+    // Step 4: Google + Notion + Claude
     <div key="services" className="space-y-4 max-w-md mx-auto">
       <StepHeader icon={<Sparkles size={20} />} title="Additional Services" description="These enhance Prism's capabilities." />
 
@@ -194,10 +313,10 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         </div>
       </div>
 
-      <NavButtons onBack={() => setStep(2)} onNext={() => setStep(4)} canProceed skipLabel="Skip All" />
+      <NavButtons onBack={() => setStep(3)} onNext={() => setStep(5)} canProceed skipLabel="Skip All" />
     </div>,
 
-    // Step 4: Ready
+    // Step 5: Ready
     <div key="ready" className="text-center space-y-6 max-w-md mx-auto">
       <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(111,207,151,0.15)" }}>
         <Check size={32} style={{ color: "var(--color-success)" }} />

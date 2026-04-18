@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
+import { ollamaApi } from "../../lib/parachute/client";
 
 interface SettingsProps {
   open: boolean;
@@ -33,6 +34,12 @@ export function Settings({ open, onClose }: SettingsProps) {
   const [newVaultName, setNewVaultName] = useState("");
   const [newVaultUrl, setNewVaultUrl] = useState("");
 
+  // AI Models state
+  const [ollamaConnected, setOllamaConnected] = useState(false);
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
+  const [skillModels, setSkillModels] = useState<Record<string, { provider: string; model: string }>>({});
+  const { ollamaUrl, setOllamaUrl, setSkillModel } = useSettingsStore();
+
   const loadConfig = useCallback(() => {
     invoke<Record<string, unknown>>("get_full_config").then(setConfig);
   }, []);
@@ -40,6 +47,18 @@ export function Settings({ open, onClose }: SettingsProps) {
   useEffect(() => {
     if (open) loadConfig();
   }, [open, loadConfig]);
+
+  useEffect(() => {
+    ollamaApi.status().then(setOllamaConnected).catch(() => setOllamaConnected(false));
+    ollamaApi.listModels().then(setAvailableModels).catch(() => {});
+    ollamaApi.getSkillModels().then(setSkillModels).catch(() => {});
+  }, []);
+
+  const handleSkillModelChange = async (skill: string, provider: string, model: string) => {
+    await ollamaApi.setSkillModel(skill, provider, model);
+    setSkillModel(skill, provider, model);
+    setSkillModels(prev => ({ ...prev, [skill]: { provider, model } }));
+  };
 
   const handleSave = async (key: string, value: string) => {
     setSaving(key);
@@ -213,6 +232,90 @@ export function Settings({ open, onClose }: SettingsProps) {
                     <option value="bidirectional" style={{ background: "var(--bg-elevated)" }}>Bidirectional</option>
                   </select>
                 </Row>
+              </Section>
+
+              <Section title="AI Models">
+                <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+                  Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
+                </p>
+
+                {/* Ollama Connection */}
+                <div className="rounded-lg p-2.5 mb-3" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Cpu size={14} style={{ color: "var(--text-secondary)" }} />
+                    <div className="flex-1">
+                      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>Ollama</div>
+                      <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>Local model inference</div>
+                    </div>
+                    <span className="flex items-center gap-1.5 text-[10px]">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: ollamaConnected ? "var(--color-success)" : "var(--color-error, #ef4444)" }} />
+                      <span style={{ color: ollamaConnected ? "var(--color-success)" : "var(--text-muted)" }}>
+                        {ollamaConnected ? "Connected" : "Disconnected"}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={ollamaUrl}
+                      onChange={(e) => setOllamaUrl(e.target.value)}
+                      placeholder="http://localhost:11434"
+                      className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
+                      style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}
+                    />
+                    <button
+                      onClick={() => {
+                        ollamaApi.status().then((ok) => {
+                          setOllamaConnected(ok);
+                          if (ok) ollamaApi.listModels().then(setAvailableModels).catch(() => {});
+                        }).catch(() => setOllamaConnected(false));
+                      }}
+                      className="px-2 py-0.5 rounded text-[10px] font-medium"
+                      style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}
+                    >
+                      Test Connection
+                    </button>
+                  </div>
+                </div>
+
+                {/* Skill Model Assignments */}
+                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
+                  <div className="grid grid-cols-[1fr_100px_1fr] gap-0 px-3 py-1.5" style={{ background: "var(--glass)", borderBottom: "1px solid var(--glass-border)" }}>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skill</span>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Provider</span>
+                    <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Model</span>
+                  </div>
+                  {(["edit", "chat", "transform", "generate"] as const).map((skill) => {
+                    const current = skillModels[skill] || { provider: "claude", model: "" };
+                    const modelsForProvider = availableModels.filter((m) => m.provider === current.provider);
+                    return (
+                      <div key={skill} className="grid grid-cols-[1fr_100px_1fr] gap-2 items-center px-3 py-1.5" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+                        <span className="text-xs capitalize" style={{ color: "var(--text-primary)" }}>{skill}</span>
+                        <select
+                          value={current.provider}
+                          onChange={(e) => handleSkillModelChange(skill, e.target.value, "")}
+                          className="h-6 rounded px-1 text-[10px] outline-none"
+                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                        >
+                          <option value="claude" style={{ background: "var(--bg-elevated)" }}>Claude</option>
+                          <option value="ollama" style={{ background: "var(--bg-elevated)" }}>Ollama</option>
+                        </select>
+                        <select
+                          value={current.model}
+                          onChange={(e) => handleSkillModelChange(skill, current.provider, e.target.value)}
+                          className="h-6 rounded px-1 text-[10px] outline-none"
+                          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                        >
+                          <option value="" style={{ background: "var(--bg-elevated)" }}>Default</option>
+                          {modelsForProvider.map((m) => (
+                            <option key={m.id} value={m.id} style={{ background: "var(--bg-elevated)" }}>
+                              {m.name}{m.size ? ` (${m.size})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
               </Section>
             </>
           )}
