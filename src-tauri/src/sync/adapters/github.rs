@@ -273,8 +273,8 @@ pub async fn sync_directory(
 ) -> Result<DirectorySyncResult, PrismError> {
     let clone_path = &config.local_clone_path;
 
-    // 1. Fetch and fast-forward
-    run_git(&["fetch", "origin"], clone_path).await?;
+    // 1. Fetch and fast-forward (may fail on empty repos with no commits yet)
+    let _ = run_git(&["fetch", "origin"], clone_path).await;
     let _ = run_git(&["pull", "--ff-only"], clone_path).await;
 
     let mut result = DirectorySyncResult {
@@ -364,7 +364,13 @@ pub async fn sync_directory(
             result.pushed.len()
         );
         run_git(&["commit", "-m", &message, "--author", "Prism Sync <prism@local>"], clone_path).await?;
-        run_git(&["push", "origin", &config.branch], clone_path).await?;
+
+        // Try normal push first; if it fails (e.g. empty repo with no upstream),
+        // fall back to setting the upstream branch.
+        let push_target = format!("HEAD:{}", config.branch);
+        if run_git(&["push", "origin", &config.branch], clone_path).await.is_err() {
+            run_git(&["push", "-u", "origin", &push_target], clone_path).await?;
+        }
         info!("Pushed {} file(s) to remote", result.pushed.len());
     } else {
         debug!("No staged changes to commit");
@@ -397,7 +403,12 @@ pub async fn push_single_file(
 
     let message = format!("Update {filename}");
     run_git(&["commit", "-m", &message, "--author", "Prism Sync <prism@local>"], clone_path).await?;
-    run_git(&["push", "origin", &config.branch], clone_path).await?;
+
+    // Handle empty repo case where upstream branch doesn't exist yet.
+    let push_target = format!("HEAD:{}", config.branch);
+    if run_git(&["push", "origin", &config.branch], clone_path).await.is_err() {
+        run_git(&["push", "-u", "origin", &push_target], clone_path).await?;
+    }
 
     info!("Pushed single file: {repo_rel}");
     Ok(())

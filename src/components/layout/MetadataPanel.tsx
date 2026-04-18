@@ -1,12 +1,14 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
 import { useUpdateNote, useTags, useNotes } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { syncApi, type SyncStatus } from "../../lib/sync/client";
+import { githubSyncApi } from "../../lib/parachute/client";
+import { GitHubSyncModal } from "./GitHubSyncModal";
 import { cn } from "../../lib/cn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -205,7 +207,7 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
       </div>
 
       {/* Sync */}
-      <SyncSection noteId={note.id} metadata={note.metadata} />
+      <SyncSection noteId={note.id} metadata={note.metadata} notePath={note.path} />
 
       {/* Advanced JSON (collapsible) */}
       <button
@@ -612,9 +614,10 @@ function TagEditor({
 const SYNC_ADAPTERS = [
   { id: "google-docs", label: "Google Docs", icon: Cloud },
   { id: "notion", label: "Notion", icon: Cloud },
+  { id: "github", label: "GitHub", icon: GitFork },
 ];
 
-function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<string, unknown> | null }) {
+function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata: Record<string, unknown> | null; notePath: string | null }) {
   const [showAdd, setShowAdd] = useState(false);
   const queryClient = useQueryClient();
 
@@ -629,14 +632,38 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const [showNotionSetup, setShowNotionSetup] = useState(false);
+  const [showGitHubSetup, setShowGitHubSetup] = useState(false);
+
+  // Check if this note is in a directory with an active GitHub sync
+  const [githubConfig, setGithubConfig] = useState<{ id: string; vaultPath: string } | null>(null);
+  useEffect(() => {
+    try {
+      githubSyncApi.status().then((configs) => {
+        const match = configs.find((c) => notePath?.startsWith(c.vaultPath));
+        setGithubConfig(match ? { id: match.id, vaultPath: match.vaultPath } : null);
+      }).catch(() => {});
+    } catch { /* not in Tauri */ }
+  }, [notePath]);
 
   const handleAddSync = async (adapter: string) => {
     setSyncError(null);
     try {
       if (adapter === "notion") {
-        // Show inline Notion setup instead of window.prompt (blocked in WKWebView)
         setShowNotionSetup(true);
         setShowAdd(false);
+        return;
+      }
+      if (adapter === "github") {
+        if (githubConfig) {
+          // Directory already has GitHub sync — push this file
+          await githubSyncApi.pushFile(githubConfig.id, noteId);
+          setSyncError(null);
+          setShowAdd(false);
+        } else {
+          // No GitHub sync for this directory — open setup modal
+          setShowGitHubSetup(true);
+          setShowAdd(false);
+        }
         return;
       }
       await syncApi.addConfig(noteId, adapter);
@@ -780,6 +807,48 @@ function SyncSection({ noteId, metadata }: { noteId: string; metadata: Record<st
           }}
           onCancel={() => setShowNotionSetup(false)}
           onError={(msg) => setSyncError(msg)}
+        />
+      )}
+
+      {/* GitHub sync status indicator for notes in synced directories */}
+      {githubConfig && (
+        <div className="glass p-2 rounded-md flex items-center gap-2 text-xs">
+          <GitFork size={12} style={{ color: "var(--text-secondary)" }} />
+          <div className="flex-1 min-w-0">
+            <div style={{ color: "var(--text-primary)" }}>GitHub</div>
+            <div style={{ color: "var(--text-muted)" }}>Synced via {githubConfig.vaultPath}</div>
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                await githubSyncApi.pushFile(githubConfig.id, noteId);
+              } catch (e) {
+                setSyncError(`GitHub push failed: ${e}`);
+              }
+            }}
+            className="px-2 py-1 rounded text-[10px] hover:bg-[var(--glass-hover)] transition-colors"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Push
+          </button>
+        </div>
+      )}
+
+      {/* GitHub sync setup modal */}
+      {showGitHubSetup && (
+        <GitHubSyncModal
+          isOpen={true}
+          onClose={() => {
+            setShowGitHubSetup(false);
+            // Refresh GitHub config
+            try {
+              githubSyncApi.status().then((configs) => {
+                const match = configs.find((c) => notePath?.startsWith(c.vaultPath));
+                setGithubConfig(match ? { id: match.id, vaultPath: match.vaultPath } : null);
+              }).catch(() => {});
+            } catch { /* not in Tauri */ }
+          }}
+          vaultPath={notePath?.split("/").slice(0, -1).join("/") || "vault"}
         />
       )}
     </div>

@@ -61,6 +61,7 @@ pub async fn github_check_auth() -> Result<GitHubAuthStatus, PrismError> {
 #[tauri::command]
 pub async fn github_sync_init(
     github_state: State<'_, GitHubSyncState>,
+    parachute: State<'_, ParachuteClient>,
     vault_path: String,
     remote_url: String,
     branch: String,
@@ -123,7 +124,21 @@ pub async fn github_sync_init(
     // Clone / fetch the repository.
     github::init_clone(&config).await?;
 
-    // Persist config in managed state.
+    // Perform initial sync: push existing vault notes into the repo.
+    let notes = parachute
+        .list_notes(&ListNotesParams {
+            path: Some(config.vault_path.clone()),
+            ..Default::default()
+        })
+        .await?;
+
+    if !notes.is_empty() {
+        let _result = github::sync_directory(&config, &notes, &parachute).await?;
+    }
+
+    // Update last_synced and persist config in managed state.
+    let mut config = config;
+    config.last_synced = chrono::Utc::now().to_rfc3339();
     github_state
         .configs
         .lock()
