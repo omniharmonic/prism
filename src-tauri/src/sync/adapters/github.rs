@@ -242,16 +242,16 @@ pub async fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> 
     }
 
     let clone_path_str = config.local_clone_path.to_string_lossy().to_string();
-    run_gh(&[
-        "repo",
-        "clone",
-        &config.remote_url,
-        &clone_path_str,
-        "--",
-        "-b",
-        &config.branch,
-    ])
-    .await?;
+
+    // Clone without specifying branch — the repo might be empty (no branches yet).
+    // We'll checkout the target branch after if it exists.
+    run_gh(&["repo", "clone", &config.remote_url, &clone_path_str])
+        .await?;
+
+    // If the repo isn't empty, try checking out the desired branch.
+    // For empty repos this will fail silently, which is fine — the first
+    // push will create the branch.
+    let _ = run_git(&["checkout", &config.branch], &config.local_clone_path).await;
 
     info!("Clone complete");
     Ok(())
