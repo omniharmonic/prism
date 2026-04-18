@@ -19,7 +19,25 @@ const DEFAULT_SKILLS: &[(&str, &str, u64, bool, &str)] = &[
     ),
     (
         "meeting-processor",
-        "Find meeting notes in the vault that have transcript content (more than 500 characters) but don't have a 'processed' tag. For each:\n1. Extract attendees and match to person notes\n2. Extract action items and create linked task notes\n3. Extract key decisions and topics\n4. If the meeting note has a calendarEventId in metadata, find the corresponding calendar event note and ensure they're linked\n5. Write a concise summary at the top of the meeting note\n6. Add the 'processed' tag when done\nSummarize what you processed.",
+        "Process unprocessed transcript notes in the vault.\n\n\
+Step 1: Use the read-notes MCP tool to get unprocessed transcripts:\n\
+  - tags: [\"transcript\"]\n\
+  - exclude_tags: [\"processed\"]\n\
+  - include_content: false\n\
+  - limit: 10\n\
+  - sort: \"desc\"\n\
+This returns a lightweight index. Process up to 10 transcripts per run \
+(the skill runs every 30 minutes, so it will catch up over time).\n\n\
+Step 2: For each transcript note, use get-note to read the full content, then:\n\
+  a. Extract attendees and match to person notes (use search-notes with tags [\"person\"])\n\
+  b. Extract action items — create linked task notes at vault/tasks/active/ if any\n\
+  c. Extract key decisions and topics\n\
+  d. Write a concise summary and prepend it to the note content using update-note\n\
+  e. Add the \"processed\" tag using tag-note\n\n\
+Step 3: For each transcript, check if there is a matching meeting note:\n\
+  - Use read-notes with tags [\"meeting\"] and date_from/date_to matching the transcript date\n\
+  - If found, use create-link to link meeting to transcript with relationship \"has-transcript\"\n\n\
+Summarize what you processed.",
         1800, // 30 minutes
         false,
         "Process meeting transcripts, extract action items, link to calendar events",

@@ -211,6 +211,9 @@ pub async fn sync_single_event(
         }
     }
 
+    // Check for existing unlinked transcripts matching this meeting
+    link_meeting_to_transcripts(parachute, &note_id, summary, date_part, &attendees).await;
+
     Ok(())
 }
 
@@ -271,6 +274,144 @@ async fn find_meeting_note(
     }
 
     Ok(None)
+}
+
+/// When a meeting note is created/updated, check for existing transcript notes
+/// that match and create links if not already linked.
+async fn link_meeting_to_transcripts(
+    parachute: &ParachuteClient,
+    meeting_note_id: &str,
+    meeting_title: &str,
+    meeting_date: &str,
+    meeting_attendees: &[String],
+) {
+    // Check if already linked
+    if let Ok(links) = parachute.get_links(&crate::models::link::GetLinksParams {
+        note_id: Some(meeting_note_id.to_string()),
+        relationship: Some("has-transcript".into()),
+    }).await {
+        if !links.is_empty() {
+            return; // Already has a transcript link
+        }
+    }
+
+    // Search for transcript notes on the same date
+    let transcripts = parachute.search(meeting_date, &["transcript".into()], 20)
+        .await
+        .unwrap_or_default();
+
+    if transcripts.is_empty() {
+        return;
+    }
+
+    let norm_meeting_attendees: Vec<String> = meeting_attendees.iter()
+        .map(|a| normalize_attendee(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+
+    let meeting_words = significant_words(meeting_title);
+
+    for transcript in &transcripts {
+        let meta = match &transcript.metadata {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Check date match
+        let transcript_date = meta.get("date").and_then(|v| v.as_str()).unwrap_or("");
+        if transcript_date != meeting_date {
+            // Allow ±1 day for timezone differences
+            let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+            match (parse(meeting_date), parse(transcript_date)) {
+                (Some(md), Some(td)) if (md - td).num_days().unsigned_abs() <= 1 => {},
+                _ => continue,
+            }
+        }
+
+        // Check if this transcript is already linked to any meeting
+        if meta.get("meetingNoteId").and_then(|v| v.as_str()).is_some() {
+            continue;
+        }
+
+        let mut score: u32 = 1; // Base score for date match
+
+        // Attendee overlap
+        let transcript_attendees: Vec<String> = meta.get("attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(|s| normalize_attendee(s))).collect())
+            .unwrap_or_default();
+
+        for ma in &norm_meeting_attendees {
+            for ta in &transcript_attendees {
+                if ma == ta || ma.contains(ta) || ta.contains(ma) {
+                    score += 3;
+                }
+            }
+        }
+
+        // Title overlap
+        let transcript_title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let transcript_words = significant_words(transcript_title);
+        for mw in &meeting_words {
+            if transcript_words.contains(mw) {
+                score += 1;
+            }
+        }
+
+        if score >= 2 {
+            log::info!(
+                "Calendar sync: linking meeting '{}' → transcript '{}' (score: {})",
+                meeting_title,
+                transcript.path.as_deref().unwrap_or(&transcript.id),
+                score
+            );
+
+            let _ = parachute.create_link(&crate::models::link::CreateLinkParams {
+                source_id: meeting_note_id.to_string(),
+                target_id: transcript.id.clone(),
+                relationship: "has-transcript".into(),
+                metadata: None,
+            }).await;
+
+            // Update meeting metadata
+            let _ = parachute.update_note(meeting_note_id, &UpdateNoteParams {
+                content: None,
+                path: None,
+                metadata: Some(serde_json::json!({ "transcriptNoteId": transcript.id })),
+            }).await;
+
+            // Update transcript metadata
+            let _ = parachute.update_note(&transcript.id, &UpdateNoteParams {
+                content: None,
+                path: None,
+                metadata: Some(serde_json::json!({ "meetingNoteId": meeting_note_id })),
+            }).await;
+
+            break; // Link to best/first match only
+        }
+    }
+}
+
+fn normalize_attendee(name: &str) -> String {
+    let s = name.trim().to_lowercase();
+    if let Some(at_pos) = s.find('@') {
+        return s[..at_pos].replace('.', " ").replace('_', " ").replace('-', " ");
+    }
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn significant_words(title: &str) -> Vec<String> {
+    let skip = ["meeting", "call", "sync", "the", "and", "with", "for", "a", "an", "of", "in", "on", "at", "to"];
+    title.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2 && !skip.contains(w))
+        .map(String::from)
+        .collect()
 }
 
 fn sanitize_path(name: &str) -> String {

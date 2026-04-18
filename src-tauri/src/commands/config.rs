@@ -20,6 +20,8 @@ pub struct AppConfig {
     #[serde(skip)]
     pub omniharmonic_root: PathBuf,
     pub parachute_url: String,
+    #[serde(default)]
+    pub parachute_api_key: String,
 
     // Transcript data sources
     #[serde(default)]
@@ -47,6 +49,7 @@ impl Default for AppConfig {
             anthropic_api_key: String::new(),
             omniharmonic_root: PathBuf::new(),
             parachute_url: "http://localhost:1940".into(),
+            parachute_api_key: String::new(),
             fathom_api_key: String::new(),
             meetily_db_path: String::new(),
             readai_api_key: String::new(),
@@ -94,7 +97,10 @@ impl AppConfig {
                 .cloned().or_else(try_keychain_anthropic)
                 .unwrap_or_default(),
             omniharmonic_root: omni_root,
-            parachute_url: "http://localhost:1940".into(),
+            parachute_url: vars.get("PARACHUTE_URL")
+                .cloned().unwrap_or_else(|| "http://localhost:1940".into()),
+            parachute_api_key: vars.get("PARACHUTE_API_KEY")
+                .cloned().unwrap_or_default(),
             fathom_api_key: vars.get("FATHOM_API_KEY").cloned().unwrap_or_default(),
             meetily_db_path: vars.get("MEETILY_DB_PATH").cloned()
                 .unwrap_or_else(|| auto_discover_meetily().unwrap_or_default()),
@@ -203,6 +209,7 @@ pub fn get_config_status(
         },
         "parachute": {
             "url": config.parachute_url,
+            "configured": !config.parachute_api_key.is_empty(),
         },
     }))
 }
@@ -223,7 +230,7 @@ pub fn set_anthropic_key(key: String) -> Result<(), PrismError> {
 #[tauri::command]
 pub async fn test_parachute(url: String) -> Result<serde_json::Value, PrismError> {
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/health", url))
+        .get(format!("{}/health", url))
         .timeout(std::time::Duration::from_secs(5))
         .send().await?;
     if resp.status().is_success() {
@@ -305,6 +312,8 @@ pub fn get_full_config(
         "anthropic_api_key": mask(&config.anthropic_api_key),
         "anthropic_api_key_set": !config.anthropic_api_key.is_empty(),
         "parachute_url": config.parachute_url,
+        "parachute_api_key": mask(&config.parachute_api_key),
+        "parachute_api_key_set": !config.parachute_api_key.is_empty(),
         "fathom_api_key": mask(&config.fathom_api_key),
         "fathom_api_key_set": !config.fathom_api_key.is_empty(),
         "meetily_db_path": config.meetily_db_path,
@@ -337,6 +346,7 @@ pub fn update_config(
         if let Some(v) = obj.get("google_account_primary").and_then(|v| v.as_str()) { new_config.google_account_primary = v.to_string(); }
         if let Some(v) = obj.get("anthropic_api_key").and_then(|v| v.as_str()) { new_config.anthropic_api_key = v.to_string(); }
         if let Some(v) = obj.get("parachute_url").and_then(|v| v.as_str()) { new_config.parachute_url = v.to_string(); }
+        if let Some(v) = obj.get("parachute_api_key").and_then(|v| v.as_str()) { new_config.parachute_api_key = v.to_string(); }
         if let Some(v) = obj.get("fathom_api_key").and_then(|v| v.as_str()) { new_config.fathom_api_key = v.to_string(); }
         if let Some(v) = obj.get("meetily_db_path").and_then(|v| v.as_str()) { new_config.meetily_db_path = v.to_string(); }
         if let Some(v) = obj.get("readai_api_key").and_then(|v| v.as_str()) { new_config.readai_api_key = v.to_string(); }

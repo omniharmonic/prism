@@ -61,10 +61,33 @@ impl ClaudeClient {
                 "claude".to_string()
             });
 
-        // Build clean env: strip CLAUDECODE to avoid nested session detection
-        let env: HashMap<String, String> = std::env::vars()
+        // Build clean env: strip CLAUDECODE to avoid nested session detection,
+        // and ensure PATH includes common binary directories (macOS Dock launches
+        // have a minimal PATH that misses homebrew, nvm, bun, etc.)
+        let mut env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k != "CLAUDECODE")
             .collect();
+
+        let home = dirs::home_dir().unwrap_or_default();
+        let extra_paths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            &home.join(".npm-global/bin").to_string_lossy().to_string(),
+            &home.join(".bun/bin").to_string_lossy().to_string(),
+            &home.join(".nvm/versions/node").to_string_lossy().to_string(),
+            &home.join(".local/bin").to_string_lossy().to_string(),
+        ];
+        let current_path = env.get("PATH").cloned().unwrap_or_default();
+        let mut parts: Vec<&str> = Vec::new();
+        for p in &extra_paths {
+            if !current_path.contains(*p) {
+                parts.push(p);
+            }
+        }
+        if !parts.is_empty() {
+            parts.push(&current_path);
+            env.insert("PATH".to_string(), parts.join(":"));
+        }
 
         Self {
             claude_bin,

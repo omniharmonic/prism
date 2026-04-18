@@ -55,7 +55,8 @@ pub async fn agent_edit(
     selection: String,
     prompt: String,
 ) -> Result<String, PrismError> {
-    let note = parachute.get_note(&note_id).await?;
+    let note = parachute.get_note(&note_id).await
+        .map_err(|e| PrismError::Parachute(format!("Cannot edit: note {} not found ({})", note_id, e)))?;
 
     let full_prompt = format!(
         "{}You are editing a document in Prism. Apply the following edit to the selected text.\n\n\
@@ -91,8 +92,14 @@ pub async fn agent_chat(
     message: String,
 ) -> Result<serde_json::Value, PrismError> {
     // Build context-aware prompt
-    let prompt = if let Some(id) = &note_id {
-        let note = parachute.get_note(id).await?;
+    let note = if let Some(id) = &note_id {
+        parachute.get_note(id).await.ok()
+    } else {
+        None
+    };
+
+    let prompt = if let Some(note) = &note {
+        let id = note_id.as_deref().unwrap_or("");
         format!(
             "{}You are a writing collaborator. The user has a document open in Prism.\n\n\
              CURRENT DOCUMENT:\n\

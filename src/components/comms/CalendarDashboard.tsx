@@ -127,21 +127,29 @@ export default function CalendarDashboard(_props: RendererProps) {
   }, [refreshEvents]);
 
   const handleOpenMeetingNote = useCallback(async (ev: CalEvent) => {
-    const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
-    const slug = (ev.summary || "untitled").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
-    const path = `vault/meetings/${dateStr}/${slug}`;
+    try {
+      const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      const slug = (ev.summary || "untitled").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
+      const path = `vault/meetings/${dateStr}/${slug}`;
 
-    // Search for existing meeting note
-    const existing = await vaultApi.search(ev.id || slug, ["meeting"], 5);
-    const match = existing.find((n) => n.path === path || (n.metadata as Record<string, unknown>)?.calendarEventId === ev.id);
+      // Search by title (not event ID — Parachute search doesn't index metadata)
+      const existing = await vaultApi.search(ev.summary || slug, ["meeting"], 10);
+      const match = existing.find((n) =>
+        n.path === path ||
+        (n.metadata as Record<string, unknown>)?.calendarEventId === ev.id
+      );
 
-    if (match) {
-      openTab(match.id, match.path?.split("/").pop() || "Meeting Notes", "document");
-    } else {
-      // Create new meeting note
-      const content = `# ${ev.summary || "Meeting"}\n\n**Date:** ${dateStr}\n**Time:** ${formatTime(ev.start?.dateTime)} – ${formatTime(ev.end?.dateTime)}\n${ev.location ? `**Location:** ${ev.location}\n` : ""}\n---\n\n## Notes\n\n`;
-      const note = await vaultApi.createNote({ content, path, tags: ["meeting"], metadata: { type: "meeting", calendarEventId: ev.id, date: dateStr } });
-      openTab(note.id, slug, "document");
+      if (match) {
+        openTab(match.id, match.path?.split("/").pop() || "Meeting Notes", "document");
+      } else {
+        const content = `# ${ev.summary || "Meeting"}\n\n**Date:** ${dateStr}\n**Time:** ${formatTime(ev.start?.dateTime)} – ${formatTime(ev.end?.dateTime)}\n${ev.location ? `**Location:** ${ev.location}\n` : ""}\n---\n\n## Notes\n\n`;
+        const note = await vaultApi.createNote({ content, path, tags: ["meeting"], metadata: { type: "meeting", calendarEventId: ev.id, date: dateStr } });
+        if (note?.id) {
+          openTab(note.id, slug, "document");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to open/create meeting note:", err);
     }
   }, [openTab]);
 
@@ -276,6 +284,7 @@ export default function CalendarDashboard(_props: RendererProps) {
               onEdit={() => { setEditingEvent(selectedEvent); setSelectedEvent(null); setShowCreateForm(true); }}
               onDelete={() => selectedEvent.id && handleDeleteEvent(selectedEvent.id)}
               onOpenNotes={() => handleOpenMeetingNote(selectedEvent)}
+              onOpenTranscript={(noteId, label) => openTab(noteId, label, "document")}
             />
           ) : showCreateForm ? (
             <EventFormPanel
@@ -486,14 +495,39 @@ function EventCard({ event }: { event: CalEvent }) {
 
 // ─── Event Detail Panel ──────────────────────────────────────
 
-function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes }: {
+function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpenTranscript }: {
   event: CalEvent;
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onOpenNotes: () => void;
+  onOpenTranscript: (noteId: string, label: string) => void;
 }) {
   const meetUrl = event.hangoutLink || event.meetUrl;
+
+  // Check for linked transcript
+  const dateStr = (event.start?.dateTime || event.start?.date || "").slice(0, 10);
+  const { data: transcriptMatch } = useQuery({
+    queryKey: ["transcript-link", event.id, dateStr],
+    queryFn: async () => {
+      // First try: search for transcript by meeting title keywords + date
+      const slug = (event.summary || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const searchTerms = slug ? `${dateStr} ${slug}` : dateStr;
+      const results = await vaultApi.search(searchTerms, ["transcript"], 5);
+      if (results.length > 0) {
+        // Find one matching the date
+        const match = results.find((n) => {
+          const meta = n.metadata as Record<string, unknown> | undefined;
+          return meta?.date === dateStr;
+        });
+        if (match) return match;
+        return results[0]; // Best effort
+      }
+      return null;
+    },
+    enabled: !!dateStr,
+    staleTime: 60_000,
+  });
 
   return (
     <div className="p-3 space-y-3">
@@ -560,6 +594,19 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes }: {
         <div className="text-xs whitespace-pre-wrap rounded p-2" style={{ color: "var(--text-secondary)", background: "var(--glass)" }}>
           {event.description}
         </div>
+      )}
+
+      {/* Transcript link */}
+      {transcriptMatch && (
+        <button
+          onClick={() => onOpenTranscript(transcriptMatch.id, transcriptMatch.path?.split("/").pop() || "Transcript")}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]"
+          style={{ color: "var(--text-secondary)", background: "var(--glass)", border: "1px solid var(--glass-border)" }}
+        >
+          <FileText size={12} style={{ color: "var(--color-accent)" }} />
+          <span className="truncate">Transcript available</span>
+          <ExternalLink size={10} className="ml-auto flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+        </button>
       )}
 
       {/* Actions */}

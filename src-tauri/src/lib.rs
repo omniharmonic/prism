@@ -27,7 +27,8 @@ pub fn run() {
         AppConfig::default()
     });
 
-    let parachute = ParachuteClient::new(1940, None);
+    let parachute_key = if app_config.parachute_api_key.is_empty() { None } else { Some(app_config.parachute_api_key.clone()) };
+    let parachute = ParachuteClient::new(1940, parachute_key.clone());
 
     // Matrix client configured from omniharmonic .env
     let matrix_client = MatrixClient::new(
@@ -51,7 +52,7 @@ pub fn run() {
 
     // Start background sync services (uses tauri::async_runtime which is always available)
     let service_manager = ServiceManager::start(&app_config);
-    let dispatch_manager = std::sync::Arc::new(DispatchManager::new());
+    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(parachute_key.clone()));
 
     // Start skill scheduler (needs both ServiceManager and DispatchManager)
     service_manager.start_scheduler(dispatch_manager.clone());

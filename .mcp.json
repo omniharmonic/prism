@@ -1,9 +1,8 @@
 {
   "mcpServers": {
     "parachute-vault": {
-      "command": "bun",
-      "args": ["../parachute-vault/src/server.ts"],
-      "env": {}
+      "type": "http",
+      "url": "http://127.0.0.1:1940/mcp"
     }
   }
 }

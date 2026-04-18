@@ -110,8 +110,9 @@ export function Settings({ open, onClose }: SettingsProps) {
                   desc="Knowledge graph vault"
                   fields={[
                     { key: "parachute_url", label: "URL", value: config.parachute_url as string, placeholder: "http://localhost:1940" },
+                    { key: "parachute_api_key", label: "API Key", value: config.parachute_api_key as string, placeholder: "pvt_...", sensitive: true, isSet: config.parachute_api_key_set as boolean },
                   ]}
-                  isSet={true}
+                  isSet={!!(config.parachute_api_key_set)}
                   editValues={editValues}
                   saving={saving}
                   savedKeys={savedKeys}

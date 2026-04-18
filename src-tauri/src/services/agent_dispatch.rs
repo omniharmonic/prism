@@ -37,10 +37,10 @@ pub struct DispatchManager {
 }
 
 impl DispatchManager {
-    pub fn new() -> Self {
+    pub fn new(parachute_api_key: Option<String>) -> Self {
         Self {
             dispatches: Arc::new(Mutex::new(HashMap::new())),
-            parachute: Arc::new(ParachuteClient::new(1940, None)),
+            parachute: Arc::new(ParachuteClient::new(1940, parachute_api_key)),
         }
     }
 
@@ -78,9 +78,18 @@ impl DispatchManager {
             format!("{}\n\n{}", ctx, prompt)
         } else {
             format!(
-                "You are an agent running a background task in Prism. \
-                 Use the Parachute MCP tools to read and write vault notes as needed.\n\n\
-                 Task: {}\n\n\
+                "You are a background agent for Prism, a desktop knowledge management app.\n\n\
+                 ## CRITICAL: Data access rules\n\n\
+                 - ALL vault data lives in the Parachute database, accessed ONLY via the \
+                 parachute-vault MCP server tools (search-notes, get-note, create-note, \
+                 update-note, list-tags, traverse-links, etc.).\n\
+                 - NEVER read or write vault data using filesystem tools (Read, Write, Bash, \
+                 Grep, Glob). The vault is NOT on the local filesystem.\n\
+                 - When a task mentions paths like \"vault/meetings/...\" or \"vault/tasks/...\", \
+                 these are Parachute note paths passed to MCP tools, NOT filesystem paths.\n\
+                 - Do NOT search the filesystem for vault content. There may be an unrelated \
+                 Obsidian vault on disk — ignore it completely.\n\n\
+                 ## Task\n\n{}\n\n\
                  When done, output a concise summary of what you did and any results.",
                 prompt
             )
@@ -101,27 +110,34 @@ impl DispatchManager {
         let prism_root = find_prism_root();
         log::info!("Dispatch {}: spawning claude at {:?} in {:?}", dispatch_id, claude_bin, prism_root);
 
-        let clean_env: HashMap<String, String> = std::env::vars()
+        let mut clean_env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k != "CLAUDECODE")
             .collect();
 
-        // Build MCP config path — must explicitly pass it in -p mode
-        let mcp_config_path = prism_root.join(".mcp.json");
-        let mcp_config_str = mcp_config_path.to_string_lossy().to_string();
+        // Ensure PATH includes common Node.js locations — macOS .app bundles
+        // inherit a minimal PATH that excludes Homebrew, nvm, fnm, etc.
+        ensure_node_in_path(&mut clean_env);
+
+        // Build a resolved MCP config with absolute paths so the spawned
+        // claude process can find the Parachute MCP server regardless of cwd.
+        let mcp_config_path = resolve_mcp_config(&prism_root, &dispatch_id);
 
         let mut args = vec![
             "-p".to_string(),
             "--model".to_string(), "sonnet".to_string(),
             "--dangerously-skip-permissions".to_string(),
+            // Block filesystem tools — agents must use Parachute MCP, not local files.
+            // Without this, agents find the Obsidian vault on disk and operate there.
+            "--disallowedTools".to_string(),
+            "Read,Write,Edit,Bash,Glob,Grep".to_string(),
         ];
 
-        // Only add MCP config if the file exists
-        if mcp_config_path.exists() {
+        if let Some(ref config_path) = mcp_config_path {
             args.push("--mcp-config".to_string());
-            args.push(mcp_config_str);
-            log::info!("Dispatch {}: loading MCP config from {:?}", dispatch_id, mcp_config_path);
+            args.push(config_path.clone());
+            log::info!("Dispatch {}: using resolved MCP config at {}", dispatch_id, config_path);
         } else {
-            log::warn!("Dispatch {}: .mcp.json not found at {:?}", dispatch_id, mcp_config_path);
+            log::warn!("Dispatch {}: no MCP config available", dispatch_id);
         }
 
         // Use -- to separate flags from the prompt (prevents --mcp-config from consuming it)
@@ -148,9 +164,10 @@ impl DispatchManager {
                 tauri::async_runtime::spawn(async move {
                     let start = std::time::Instant::now();
 
-                    // Wait with timeout (10 minutes max)
+                    // Wait with timeout (30 minutes max — batch transcript
+                    // processing can take 15-20 min with 20+ notes)
                     let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(600),
+                        std::time::Duration::from_secs(1800),
                         child.wait_with_output(),
                     ).await;
 
@@ -190,7 +207,7 @@ impl DispatchManager {
                             }
                             Err(_) => {
                                 dispatch.status = DispatchStatus::Failed;
-                                dispatch.error = Some("Timed out after 10 minutes".into());
+                                dispatch.error = Some("Timed out after 30 minutes".into());
                             }
                         }
 
@@ -199,8 +216,9 @@ impl DispatchManager {
                             process_id, dispatch.skill, dispatch.status, elapsed
                         );
 
-                        // Auto-persist completed dispatches to Parachute
-                        if dispatch.status == DispatchStatus::Completed {
+                        // Auto-persist completed and failed dispatches to Parachute
+                        if dispatch.status == DispatchStatus::Completed
+                            || dispatch.status == DispatchStatus::Failed {
                             let dispatch_clone = dispatch.clone();
                             let parachute = persist_parachute.clone();
                             tauri::async_runtime::spawn(async move {
@@ -353,6 +371,85 @@ async fn persist_to_vault(
     Ok(())
 }
 
+/// Resolve the .mcp.json config into a temporary file with absolute paths.
+/// The original .mcp.json may use relative paths (e.g., `../parachute-vault/...`)
+/// and tools like `bun` that aren't on the system PATH. This function resolves
+/// both issues so the spawned claude process can connect to MCP servers.
+fn resolve_mcp_config(prism_root: &std::path::Path, dispatch_id: &str) -> Option<String> {
+    let source = prism_root.join(".mcp.json");
+    if !source.exists() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(&source).ok()?;
+    let mut config: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let servers = config.get_mut("mcpServers")?.as_object_mut()?;
+    let home = dirs::home_dir().unwrap_or_default();
+
+    for (_name, server) in servers.iter_mut() {
+        // Resolve command — replace bare `bun`/`node` with absolute paths
+        if let Some(cmd) = server.get("command").and_then(|v| v.as_str()) {
+            let resolved_cmd = match cmd {
+                "bun" => {
+                    let bun_path = home.join(".bun/bin/bun");
+                    if bun_path.exists() {
+                        Some(bun_path.to_string_lossy().to_string())
+                    } else {
+                        None
+                    }
+                }
+                "node" => {
+                    // Try to find node
+                    std::process::Command::new("which").arg("node")
+                        .output().ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                }
+                _ => None,
+            };
+            if let Some(abs_cmd) = resolved_cmd {
+                server.as_object_mut().map(|s| s.insert("command".into(), serde_json::json!(abs_cmd)));
+            }
+        }
+
+        // Resolve relative paths in args
+        if let Some(args) = server.get_mut("args").and_then(|v| v.as_array_mut()) {
+            for arg in args.iter_mut() {
+                if let Some(s) = arg.as_str() {
+                    if s.starts_with("../") || s.starts_with("./") {
+                        let resolved = prism_root.join(s);
+                        if let Ok(canonical) = resolved.canonicalize() {
+                            *arg = serde_json::json!(canonical.to_string_lossy().to_string());
+                        } else {
+                            // canonicalize may fail on iCloud paths — resolve manually
+                            let resolved_str = resolved.to_string_lossy().to_string();
+                            *arg = serde_json::json!(resolved_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Write resolved config to temp file
+    let tmp_dir = std::env::temp_dir().join("prism-mcp");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let tmp_path = tmp_dir.join(format!("mcp-{}.json", &dispatch_id[..8]));
+
+    match std::fs::write(&tmp_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+        Ok(_) => {
+            log::info!("Resolved MCP config written to {:?}", tmp_path);
+            Some(tmp_path.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            log::warn!("Failed to write resolved MCP config: {}", e);
+            // Fall back to original
+            Some(source.to_string_lossy().to_string())
+        }
+    }
+}
+
 /// Find the Prism project root (where .mcp.json lives).
 /// In dev: current_dir works. In release .app bundle: fall back to known paths.
 fn find_prism_root() -> std::path::PathBuf {
@@ -373,6 +470,72 @@ fn find_prism_root() -> std::path::PathBuf {
     // Last resort: search common locations
     log::warn!("Could not find Prism project root with .mcp.json, using fallback");
     known
+}
+
+/// Ensure the PATH in the environment includes directories where `node` is likely installed.
+/// macOS .app bundles inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that won't
+/// include Homebrew, nvm, fnm, or volta-managed Node.js installations.
+fn ensure_node_in_path(env: &mut HashMap<String, String>) {
+    let current_path = env.get("PATH").cloned().unwrap_or_default();
+
+    // Check if node is already reachable in the current PATH
+    let node_found = std::process::Command::new("node")
+        .arg("--version")
+        .env("PATH", &current_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if node_found {
+        return;
+    }
+
+    let home = dirs::home_dir().unwrap_or_default();
+    let extra_dirs: Vec<std::path::PathBuf> = vec![
+        // Homebrew (Apple Silicon + Intel)
+        "/opt/homebrew/bin".into(),
+        "/usr/local/bin".into(),
+        // bun
+        home.join(".bun/bin"),
+        // nvm
+        home.join(".nvm/versions/node"),
+        // fnm
+        home.join(".local/share/fnm/aliases/default/bin"),
+        home.join("Library/Application Support/fnm/aliases/default/bin"),
+        // volta
+        home.join(".volta/bin"),
+        // Global npm
+        home.join(".npm-global/bin"),
+    ];
+
+    let mut additions = Vec::new();
+    for dir in &extra_dirs {
+        if dir.to_string_lossy().contains(".nvm/versions/node") {
+            // nvm: find the latest installed version
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                if let Some(latest) = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().join("bin/node").exists())
+                    .max_by_key(|e| e.file_name())
+                {
+                    let bin = latest.path().join("bin");
+                    if !current_path.contains(&*bin.to_string_lossy()) {
+                        additions.push(bin.to_string_lossy().to_string());
+                    }
+                }
+            }
+        } else if dir.exists() && !current_path.contains(&*dir.to_string_lossy()) {
+            additions.push(dir.to_string_lossy().to_string());
+        }
+    }
+
+    if !additions.is_empty() {
+        let new_path = format!("{}:{}", additions.join(":"), current_path);
+        log::info!("Augmented PATH for subprocess: added {}", additions.join(", "));
+        env.insert("PATH".to_string(), new_path);
+    }
 }
 
 fn which_claude() -> String {

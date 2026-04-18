@@ -153,7 +153,13 @@ async fn sync_meetily(
             metadata: Some(metadata),
             tags: Some(vec!["transcript".into(), "meetily".into()]),
         }).await {
-            Ok(_) => ingested += 1,
+            Ok(note) => {
+                ingested += 1;
+                // Link transcript to matching meeting note
+                link_transcript_to_meeting(
+                    parachute, &note.id, title, date, &[],
+                ).await;
+            }
             Err(e) => log::debug!("Meetily: failed to create note for '{}': {}", title, e),
         }
     }
@@ -344,16 +350,28 @@ async fn sync_fathom(
     let mut ingested = 0u64;
 
     for meeting in &items {
-        let recording_id = meeting.get("recording_id").and_then(|v| v.as_str())
-            .or_else(|| meeting.get("id").and_then(|v| v.as_str()))
-            .unwrap_or("");
+        // recording_id may be a number or string in the Fathom API
+        let recording_id = meeting.get("recording_id")
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            })
+            .or_else(|| meeting.get("id").map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            }))
+            .unwrap_or_default();
 
         let title = meeting.get("title")
             .or(meeting.get("meeting_title"))
             .and_then(|v| v.as_str())
             .unwrap_or("Untitled Meeting");
 
-        let date = meeting.get("scheduled_at")
+        let date = meeting.get("scheduled_start_time")
+            .or(meeting.get("scheduled_at"))
+            .or(meeting.get("recording_start_time"))
             .or(meeting.get("recorded_at"))
             .or(meeting.get("created_at"))
             .and_then(|v| v.as_str())
@@ -367,7 +385,7 @@ async fn sync_fathom(
             n.metadata.as_ref()
                 .and_then(|m| m.get("sourceId"))
                 .and_then(|v| v.as_str())
-                == Some(recording_id)
+                == Some(recording_id.as_str())
         });
 
         if already_exists {
@@ -376,14 +394,14 @@ async fn sync_fathom(
 
         // Fetch summary
         let summary = if !recording_id.is_empty() {
-            fetch_fathom_summary(&client, api_key, recording_id).await.unwrap_or_default()
+            fetch_fathom_summary(&client, api_key, &recording_id).await.unwrap_or_default()
         } else {
             String::new()
         };
 
         // Fetch transcript
         let transcript = if !recording_id.is_empty() {
-            fetch_fathom_transcript(&client, api_key, recording_id).await.unwrap_or_default()
+            fetch_fathom_transcript(&client, api_key, &recording_id).await.unwrap_or_default()
         } else {
             String::new()
         };
@@ -444,6 +462,10 @@ async fn sync_fathom(
                         ).await;
                     }
                 }
+                // Link transcript to matching meeting note
+                link_transcript_to_meeting(
+                    parachute, &note.id, title, date, &attendees,
+                ).await;
             }
             Err(e) => log::debug!("Fathom: failed to create note for '{}': {}", title, e),
         }
@@ -471,6 +493,7 @@ async fn fetch_fathom_summary(
     let data: serde_json::Value = resp.json().await.unwrap_or_default();
     // Try various response formats
     let md = data.get("markdown")
+        .or_else(|| data.get("summary").and_then(|s| s.get("markdown_formatted")))
         .or_else(|| data.get("summary").and_then(|s| s.get("markdown")))
         .or_else(|| data.get("recording").and_then(|r| r.get("markdown_formatted")))
         .or_else(|| data.get("content"))
@@ -515,6 +538,177 @@ async fn fetch_fathom_transcript(
     }).collect();
 
     Ok(lines.join("\n\n"))
+}
+
+/// After creating a transcript note, find matching meeting notes and create
+/// bidirectional links + cross-reference metadata.
+///
+/// Matching strategy:
+/// 1. Same date (required, ±1 day for timezone tolerance)
+/// 2. Attendee name/email overlap (strong signal)
+/// 3. Title word overlap (fallback)
+async fn link_transcript_to_meeting(
+    parachute: &ParachuteClient,
+    transcript_note_id: &str,
+    transcript_title: &str,
+    transcript_date: &str,
+    transcript_attendees: &[String],
+) {
+    // Search for meeting notes on the same date
+    let meeting_notes = parachute.search(transcript_date, &["meeting".into()], 20)
+        .await
+        .unwrap_or_default();
+
+    if meeting_notes.is_empty() {
+        log::debug!("Transcript linking: no meeting notes found for date {}", transcript_date);
+        return;
+    }
+
+    // Normalize attendee names for fuzzy matching
+    let norm_transcript_attendees: Vec<String> = transcript_attendees.iter()
+        .map(|a| normalize_name(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+
+    let transcript_title_words = title_words(transcript_title);
+
+    let mut best_match: Option<(&crate::models::note::Note, u32)> = None;
+
+    for note in &meeting_notes {
+        let meta = match &note.metadata {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Check date match (±1 day)
+        let meeting_date = meta.get("date").and_then(|v| v.as_str()).unwrap_or("");
+        if !dates_within_one_day(transcript_date, meeting_date) {
+            continue;
+        }
+
+        let mut score: u32 = 0;
+
+        // Attendee overlap scoring
+        let meeting_attendees: Vec<String> = meta.get("attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(|s| normalize_name(s))).collect())
+            .unwrap_or_default();
+
+        for ta in &norm_transcript_attendees {
+            for ma in &meeting_attendees {
+                if ta == ma || ta.contains(ma) || ma.contains(ta) {
+                    score += 3;
+                }
+            }
+        }
+
+        // Title word overlap scoring
+        let meeting_title = meta.get("title")
+            .and_then(|v| v.as_str())
+            .or_else(|| note.path.as_ref().and_then(|p| p.split('/').last()))
+            .unwrap_or("");
+        let meeting_title_words = title_words(meeting_title);
+
+        for tw in &transcript_title_words {
+            if meeting_title_words.contains(tw) {
+                score += 1;
+            }
+        }
+
+        // Date match alone is worth 1 point
+        if meeting_date == transcript_date {
+            score += 1;
+        }
+
+        if score > 0 {
+            if best_match.as_ref().map(|(_, s)| score > *s).unwrap_or(true) {
+                best_match = Some((note, score));
+            }
+        }
+    }
+
+    // Require minimum score of 2 (date match + at least one attendee or title word)
+    if let Some((meeting_note, score)) = best_match {
+        if score < 2 {
+            log::debug!("Transcript linking: best match score {} too low for '{}'", score, transcript_title);
+            return;
+        }
+
+        let meeting_id = &meeting_note.id;
+        log::info!(
+            "Transcript linking: linking '{}' → meeting '{}' (score: {})",
+            transcript_title,
+            meeting_note.path.as_deref().unwrap_or(meeting_id),
+            score
+        );
+
+        // Create bidirectional links
+        let _ = parachute.create_link(&crate::models::link::CreateLinkParams {
+            source_id: meeting_id.clone(),
+            target_id: transcript_note_id.to_string(),
+            relationship: "has-transcript".into(),
+            metadata: None,
+        }).await;
+
+        // Update meeting note metadata with transcript reference
+        if let Some(mut meta) = meeting_note.metadata.clone() {
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert("transcriptNoteId".into(), serde_json::json!(transcript_note_id));
+                let _ = parachute.update_note(meeting_id, &UpdateNoteParams {
+                    content: None,
+                    path: None,
+                    metadata: Some(meta.clone()),
+                }).await;
+            }
+        }
+
+        // Update transcript note metadata with meeting reference
+        let _ = parachute.update_note(transcript_note_id, &UpdateNoteParams {
+            content: None,
+            path: None,
+            metadata: Some(serde_json::json!({
+                "meetingNoteId": meeting_id,
+            })),
+        }).await;
+    } else {
+        log::debug!("Transcript linking: no match found for '{}'", transcript_title);
+    }
+}
+
+/// Normalize a name for fuzzy matching: lowercase, strip email domains, collapse whitespace
+fn normalize_name(name: &str) -> String {
+    let s = name.trim().to_lowercase();
+    // If it looks like an email, extract the part before @
+    if let Some(at_pos) = s.find('@') {
+        let local = &s[..at_pos];
+        return local.replace('.', " ").replace('_', " ").replace('-', " ");
+    }
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Extract significant title words (skip common filler words)
+fn title_words(title: &str) -> Vec<String> {
+    let skip = ["meeting", "call", "sync", "the", "and", "with", "for", "a", "an", "of", "in", "on", "at", "to", "-", "—"];
+    title.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2 && !skip.contains(w))
+        .map(String::from)
+        .collect()
+}
+
+/// Check if two date strings (YYYY-MM-DD) are within 1 day of each other
+fn dates_within_one_day(a: &str, b: &str) -> bool {
+    if a == b { return true; }
+    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    match (parse(a), parse(b)) {
+        (Some(da), Some(db)) => (da - db).num_days().unsigned_abs() <= 1,
+        _ => false,
+    }
 }
 
 fn sanitize_path(name: &str) -> String {
