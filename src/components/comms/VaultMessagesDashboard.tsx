@@ -229,7 +229,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       {/* Header */}
       <div className="flex items-center gap-4 px-6 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <div className="flex-1">
-          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Vault Messages</h1>
+          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Messages</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
             {totalCount} conversations
             {viewMode === "people" && ` · ${filteredPeople.length} people`}

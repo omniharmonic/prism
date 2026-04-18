@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Database, Sparkles } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Sparkles } from "lucide-react";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
@@ -19,15 +19,11 @@ export function Navigation() {
   const openTab = useUIStore((s) => s.openTab);
 
   const handleOpenMessages = () => {
-    openTab("messages-dashboard", "Messages", "messages-dashboard" as ContentType);
+    openTab("vault-messages", "Messages", "vault-messages" as ContentType);
   };
 
   const handleOpenCalendar = () => {
     openTab("calendar-dashboard", "Calendar", "calendar-dashboard" as ContentType);
-  };
-
-  const handleOpenVaultMessages = () => {
-    openTab("vault-messages", "Vault Messages", "vault-messages" as ContentType);
   };
 
   const handleOpenAgentActivity = () => {
@@ -74,14 +70,6 @@ export function Navigation() {
               >
                 <PenSquare size={11} />
               </button>
-            </button>
-            <button
-              onClick={handleOpenVaultMessages}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <Database size={14} />
-              <span>Vault Messages</span>
             </button>
             <button
               onClick={handleOpenCalendar}
