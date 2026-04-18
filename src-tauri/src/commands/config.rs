@@ -68,6 +68,24 @@ impl AppConfig {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
                     config.omniharmonic_root = Self::find_omniharmonic_root();
+                    // Backfill empty keys from .env — handles newly-added fields
+                    // that don't exist in older saved config files
+                    let env_path = config.omniharmonic_root.join(".env");
+                    if let Ok(vars) = load_env_file(&env_path) {
+                        if config.parachute_api_key.is_empty() {
+                            config.parachute_api_key = vars.get("PARACHUTE_API_KEY").cloned().unwrap_or_default();
+                        }
+                        if config.anthropic_api_key.is_empty() {
+                            config.anthropic_api_key = vars.get("ANTHROPIC_API_KEY")
+                                .cloned().or_else(try_keychain_anthropic).unwrap_or_default();
+                        }
+                        if config.fathom_api_key.is_empty() {
+                            config.fathom_api_key = vars.get("FATHOM_API_KEY").cloned().unwrap_or_default();
+                        }
+                        if config.notion_api_key.is_empty() {
+                            config.notion_api_key = vars.get("NOTION_API_KEY").cloned().unwrap_or_default();
+                        }
+                    }
                     return Ok(config);
                 }
             }

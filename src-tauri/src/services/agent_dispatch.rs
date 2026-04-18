@@ -37,10 +37,10 @@ pub struct DispatchManager {
 }
 
 impl DispatchManager {
-    pub fn new(parachute_api_key: Option<String>) -> Self {
+    pub fn new(parachute_url: &str, parachute_api_key: Option<String>) -> Self {
         Self {
             dispatches: Arc::new(Mutex::new(HashMap::new())),
-            parachute: Arc::new(ParachuteClient::new(1940, parachute_api_key)),
+            parachute: Arc::new(ParachuteClient::new(parachute_url, parachute_api_key)),
         }
     }
 

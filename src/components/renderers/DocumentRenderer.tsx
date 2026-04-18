@@ -90,12 +90,21 @@ export default function DocumentRenderer({ note }: RendererProps) {
     return () => { cancelled = true; };
   }, [note.id]); // Only re-convert when opening a different note
 
-  // Detect external changes (e.g., agent edited via MCP)
+  // Track what the user has saved so we can distinguish user saves from agent edits.
+  // When note.content changes on the server, if it matches what we last saved,
+  // it's our own save round-tripping — not an agent edit.
   const lastKnownContent = useRef(note.content);
+  const lastUserSavedContent = useRef<string | null>(null);
+
   useEffect(() => {
-    // Skip if content hasn't changed or if this is the initial load
     if (note.content === lastKnownContent.current) return;
     if (!editorRef.current) return;
+
+    // If this server update matches what the user just saved, it's not an agent edit
+    if (lastUserSavedContent.current !== null && note.content === lastUserSavedContent.current) {
+      lastKnownContent.current = note.content;
+      return;
+    }
 
     // External source (agent MCP) changed the note — show as ghost text for review
     const { setGhostText } = useUIStore.getState();
@@ -108,7 +117,10 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }, [note.content, note.id]);
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, scheduleSave, saveNow } = useAutoSave(note.id, getContent);
+  const onSaved = useCallback((content: string) => {
+    lastUserSavedContent.current = content;
+  }, []);
+  const { isSaving, lastSaved, scheduleSave, saveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
 
   const editor = useEditor({
     extensions,

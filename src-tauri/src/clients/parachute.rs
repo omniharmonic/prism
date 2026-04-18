@@ -15,9 +15,16 @@ pub struct ParachuteClient {
 }
 
 impl ParachuteClient {
-    pub fn new(port: u16, api_key: Option<String>) -> Self {
+    pub fn new(base_url: &str, api_key: Option<String>) -> Self {
+        // Strip trailing slash, then append /api if not already present
+        let url = base_url.trim_end_matches('/');
+        let api_url = if url.ends_with("/api") {
+            url.to_string()
+        } else {
+            format!("{}/api", url)
+        };
         Self {
-            base_url: format!("http://localhost:{}/api", port),
+            base_url: api_url,
             api_key,
             client: Client::new(),
         }

@@ -5,6 +5,7 @@ export function useAutoSave(
   noteId: string,
   getContent: () => string,
   debounceMs = 2000,
+  onSaved?: (content: string) => void,
 ) {
   const updateNote = useUpdateNote();
   const [isSaving, setIsSaving] = useState(false);
@@ -24,6 +25,7 @@ export function useAutoSave(
     try {
       await updateNote.mutateAsync({ id: noteId, content });
       setLastSaved(new Date());
+      onSaved?.(content);
     } finally {
       setIsSaving(false);
     }
