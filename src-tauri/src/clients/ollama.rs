@@ -236,8 +236,7 @@ impl OllamaAgent {
 
                         messages.push(ChatMessage {
                             role: "tool".into(),
-                            content: serde_json::to_string(&result)
-                                .unwrap_or_else(|_| result.to_string()),
+                            content: Self::simplify_tool_result(name, &result),
                             tool_calls: None,
                         });
                     }
@@ -387,6 +386,71 @@ impl OllamaAgent {
             Err(e) => {
                 error!("failed to save conversation: lock poisoned: {e}");
             }
+        }
+    }
+
+    /// Post-process MCP tool results to make them more readable for the LLM.
+    /// Extracts the key content from verbose JSON responses.
+    fn simplify_tool_result(tool_name: &str, result: &Value) -> String {
+        // For query-notes results, extract just the content and key metadata
+        if tool_name == "query-notes" {
+            return Self::simplify_notes_result(result);
+        }
+        // For other tools, return as-is
+        serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
+    }
+
+    /// Extract readable content from query-notes results, stripping structural
+    /// noise (id, createdAt, updatedAt, byteSize) so the LLM focuses on the
+    /// actual note text rather than describing JSON structure.
+    fn simplify_notes_result(result: &Value) -> String {
+        // Result might be a Value::String containing JSON, or already-parsed JSON
+        let text = match result {
+            Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+
+        // Try to parse as JSON
+        let parsed: Value = serde_json::from_str(&text).unwrap_or(result.clone());
+
+        match &parsed {
+            Value::Array(notes) => {
+                // Multiple notes — extract content from each
+                let mut output = Vec::new();
+                for note in notes {
+                    let title = note.get("path")
+                        .and_then(|p| p.as_str())
+                        .and_then(|p| p.split('/').last())
+                        .unwrap_or("Untitled");
+                    let content = note.get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    let tags = note.get("tags")
+                        .and_then(|t| t.as_array())
+                        .map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default();
+
+                    output.push(format!("## {}\nTags: {}\n\n{}", title, tags, content));
+                }
+                output.join("\n\n---\n\n")
+            }
+            Value::Object(obj) => {
+                // Single note
+                let title = obj.get("path")
+                    .and_then(|p| p.as_str())
+                    .and_then(|p| p.split('/').last())
+                    .unwrap_or("Untitled");
+                let content = obj.get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                let tags = obj.get("tags")
+                    .and_then(|t| t.as_array())
+                    .map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default();
+
+                format!("## {}\nTags: {}\n\n{}", title, tags, content)
+            }
+            _ => text
         }
     }
 

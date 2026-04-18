@@ -8,8 +8,8 @@ use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
 use crate::models::note::ListNotesParams;
 use crate::sync::adapters::github::{
-    init_clone, push_single_file, sync_directory, CommitStrategy, DirectorySyncConfig,
-    DirectorySyncResult,
+    self, check_gh_auth, CommitStrategy, DirectorySyncConfig, DirectorySyncResult,
+    GitHubAuthStatus,
 };
 
 // ─── Managed state ──────────────────────────────────────────
@@ -43,11 +43,19 @@ pub struct GitHubSyncInfo {
 
 // ─── Commands ───────────────────────────────────────────────
 
+/// Check whether the user is authenticated via `gh auth`.
+#[tauri::command]
+pub async fn github_check_auth() -> Result<GitHubAuthStatus, PrismError> {
+    check_gh_auth().await
+}
+
 /// Initialise a new GitHub directory sync.
 ///
 /// Clones (or fetches) the remote repository into a local cache directory
 /// under `~/.config/prism/sync/github/<repo-name>` and stores the
 /// configuration so subsequent push/pull operations can use it.
+///
+/// Auth is handled by `gh` CLI — no token parameter needed.
 ///
 /// Returns the generated config id.
 #[tauri::command]
@@ -56,11 +64,18 @@ pub async fn github_sync_init(
     vault_path: String,
     remote_url: String,
     branch: String,
-    auth_token: String,
     commit_strategy: String,
     conflict_strategy: String,
     auto_sync: bool,
 ) -> Result<String, PrismError> {
+    // Verify gh auth before proceeding
+    let auth = check_gh_auth().await?;
+    if !auth.authenticated {
+        return Err(PrismError::Auth(
+            "GitHub CLI not authenticated. Run `gh auth login` in your terminal.".into(),
+        ));
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
 
     // Derive a human-friendly repo directory name from the remote URL.
@@ -97,7 +112,6 @@ pub async fn github_sync_init(
         remote_url,
         branch,
         local_clone_path,
-        auth_token,
         commit_strategy: strategy,
         conflict_strategy,
         last_synced: String::new(),
@@ -107,7 +121,7 @@ pub async fn github_sync_init(
     };
 
     // Clone / fetch the repository.
-    init_clone(&config)?;
+    github::init_clone(&config).await?;
 
     // Persist config in managed state.
     github_state
@@ -150,7 +164,7 @@ pub async fn github_sync_push(
         })
         .await?;
 
-    let result = sync_directory(&config, &notes, &parachute)?;
+    let result = github::sync_directory(&config, &notes, &parachute).await?;
 
     // Update last_synced timestamp.
     config.last_synced = chrono::Utc::now().to_rfc3339();
@@ -183,7 +197,7 @@ pub async fn github_sync_push_file(
     };
 
     let note = parachute.get_note(&note_id).await?;
-    push_single_file(&config, &note)?;
+    github::push_single_file(&config, &note).await?;
 
     Ok(())
 }

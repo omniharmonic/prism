@@ -182,6 +182,7 @@ pub fn run() {
             ollama_cmds::set_skill_model,
             ollama_cmds::get_skill_models,
             // GitHub sync
+            github_cmds::github_check_auth,
             github_cmds::github_sync_init,
             github_cmds::github_sync_push,
             github_cmds::github_sync_push_file,

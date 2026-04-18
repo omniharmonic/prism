@@ -42,6 +42,10 @@ the changes directly — pass the note ID and updated content. Tag mutations use
 `update-note` with `tags: { add: [...], remove: [...] }`. Link mutations use \
 `update-note` with `links: { add: [{ target, relationship }], remove: [...] }`.\n\
 Graph neighborhood queries use `query-notes` with `near: <id>` and optional `depth`.\n\n\
+When you receive results from `query-notes`, focus on the `content` field — that's the actual \
+note text. Ignore structural fields like `id`, `createdAt`, `updatedAt`, and `byteSize`. \
+The `metadata` object contains structured properties (status, priority, etc.) and `tags` shows \
+the note's type. Summarize the CONTENT, not the JSON structure.\n\n\
 The vault contains Benjamin's projects, meetings, contacts, tasks, research, and writing. \
 Tag schemas define structured fields for each note type.\n\n";
 

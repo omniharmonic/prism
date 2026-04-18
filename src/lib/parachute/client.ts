@@ -132,12 +132,17 @@ export const convertApi = {
 
 // GitHub sync
 export const githubSyncApi = {
+  /** Check if user is authenticated via gh CLI */
+  checkAuth: () =>
+    invoke<{ authenticated: boolean; username: string | null; message: string }>(
+      "github_check_auth"
+    ),
+
   /** Initialize a new GitHub sync for a vault directory */
   init: (params: {
     vaultPath: string;
     remoteUrl: string;
     branch: string;
-    authToken: string;
     commitStrategy: string;
     conflictStrategy: string;
     autoSync: boolean;

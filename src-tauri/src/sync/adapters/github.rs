@@ -3,14 +3,17 @@
 //! Unlike the note-level `SyncAdapter` trait, this module syncs an entire
 //! directory of Parachute vault notes to/from a GitHub repository, committing
 //! changes on each sync cycle.
+//!
+//! Uses the `git` and `gh` CLI tools instead of libgit2. Auth is handled by
+//! `gh auth` — no PAT tokens stored in Prism.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use git2::{Cred, FetchOptions, PushOptions, RemoteCallbacks, Repository};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 use crate::error::PrismError;
 use crate::models::note::Note;
@@ -32,8 +35,6 @@ pub struct DirectorySyncConfig {
     pub branch: String,
     /// Local filesystem path where the repo is cloned.
     pub local_clone_path: PathBuf,
-    /// GitHub personal access token (passed in from keychain).
-    pub auth_token: String,
     /// How commits are grouped.
     pub commit_strategy: CommitStrategy,
     /// Conflict resolution: `"local-wins"` or `"remote-wins"`.
@@ -84,55 +85,148 @@ pub struct FileSyncConflict {
     pub remote_content: String,
 }
 
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-/// Build `RemoteCallbacks` that authenticate via a GitHub PAT.
-fn make_callbacks(token: &str) -> RemoteCallbacks<'_> {
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|_url, _username, _allowed| {
-        Cred::userpass_plaintext("x-access-token", token)
-    });
-    callbacks
+/// Status of GitHub CLI authentication.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GitHubAuthStatus {
+    /// Whether the user is authenticated via `gh auth`.
+    pub authenticated: bool,
+    /// The GitHub username if authenticated.
+    pub username: Option<String>,
+    /// Human-readable status message.
+    pub message: String,
 }
 
-/// Build `FetchOptions` with token-based auth.
-fn make_fetch_options(token: &str) -> FetchOptions<'_> {
-    let mut fo = FetchOptions::new();
-    fo.remote_callbacks(make_callbacks(token));
-    fo
+// ---------------------------------------------------------------------------
+// CLI helpers
+// ---------------------------------------------------------------------------
+
+/// Build a clean PATH that includes common binary locations (homebrew, etc.)
+/// so CLI tools are found even when launched from macOS Dock.
+fn enriched_path() -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    let extra = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        &home.join(".npm-global/bin").to_string_lossy().to_string(),
+        &home.join(".bun/bin").to_string_lossy().to_string(),
+        &home.join(".local/bin").to_string_lossy().to_string(),
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = Vec::new();
+    for p in &extra {
+        if !current.contains(*p) {
+            parts.push(p);
+        }
+    }
+    parts.push(&current);
+    parts.join(":")
+}
+
+/// Run a `git` CLI command in the given working directory.
+async fn run_git(args: &[&str], work_dir: &Path) -> Result<String, PrismError> {
+    debug!("git {}", args.join(" "));
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(work_dir)
+        .env("PATH", enriched_path())
+        .output()
+        .await
+        .map_err(|e| PrismError::Git(format!("Failed to run git: {e}")))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(PrismError::Git(format!(
+            "git {} failed: {stderr}",
+            args.join(" ")
+        )))
+    }
+}
+
+/// Run a `gh` CLI command (not directory-specific).
+async fn run_gh(args: &[&str]) -> Result<String, PrismError> {
+    debug!("gh {}", args.join(" "));
+    let output = Command::new("gh")
+        .args(args)
+        .env("PATH", enriched_path())
+        .output()
+        .await
+        .map_err(|e| PrismError::Git(format!("Failed to run gh: {e}")))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(PrismError::Git(format!(
+            "gh {} failed: {stderr}",
+            args.join(" ")
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Clone the repository (or fetch if it already exists) and check out the
+/// Check whether the user is authenticated via `gh auth`.
+pub async fn check_gh_auth() -> Result<GitHubAuthStatus, PrismError> {
+    // `gh auth status` exits 0 when authenticated, 1 otherwise.
+    // We also try `gh api user` to get the username cleanly.
+    let output = Command::new("gh")
+        .args(["auth", "status"])
+        .env("PATH", enriched_path())
+        .output()
+        .await
+        .map_err(|e| PrismError::Git(format!("Failed to run gh: {e}")))?;
+
+    if output.status.success() {
+        // Try to get the username
+        let username = match Command::new("gh")
+            .args(["api", "user", "--jq", ".login"])
+            .env("PATH", enriched_path())
+            .output()
+            .await
+        {
+            Ok(o) if o.status.success() => {
+                let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if name.is_empty() { None } else { Some(name) }
+            }
+            _ => None,
+        };
+
+        let msg = match &username {
+            Some(u) => format!("Authenticated as @{u}"),
+            None => "Authenticated".to_string(),
+        };
+
+        Ok(GitHubAuthStatus {
+            authenticated: true,
+            username,
+            message: msg,
+        })
+    } else {
+        Ok(GitHubAuthStatus {
+            authenticated: false,
+            username: None,
+            message: "Not authenticated. Run `gh auth login` in your terminal.".to_string(),
+        })
+    }
+}
+
+/// Clone the repository (or fetch/pull if it already exists) and check out the
 /// configured branch.
-///
-/// This should be called once when a sync binding is first set up, and can
-/// safely be called again later to ensure the local clone is up to date.
-pub fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> {
+pub async fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> {
     if config.local_clone_path.exists() {
         info!(
             "Repo already cloned at {:?}, fetching latest",
             config.local_clone_path
         );
-        let repo = Repository::open(&config.local_clone_path)
-            .map_err(|e| PrismError::Git(format!("Failed to open repo: {e}")))?;
-
-        // Fetch from origin
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| PrismError::Git(format!("No remote 'origin': {e}")))?;
-
-        let mut fo = make_fetch_options(&config.auth_token);
-        remote
-            .fetch(&[&config.branch], Some(&mut fo), None)
-            .map_err(|e| PrismError::Git(format!("Fetch failed: {e}")))?;
-
-        checkout_branch(&repo, &config.branch)?;
+        run_git(&["fetch", "origin"], &config.local_clone_path).await?;
+        // Ensure correct branch is checked out
+        run_git(&["checkout", &config.branch], &config.local_clone_path).await?;
+        // Fast-forward to latest
+        let _ = run_git(&["pull", "--ff-only"], &config.local_clone_path).await;
         return Ok(());
     }
 
@@ -147,14 +241,17 @@ pub fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> {
         fs::create_dir_all(parent)?;
     }
 
-    let mut builder = git2::build::RepoBuilder::new();
-    let mut fo = make_fetch_options(&config.auth_token);
-    builder.fetch_options(fo);
-    builder.branch(&config.branch);
-
-    builder
-        .clone(&config.remote_url, &config.local_clone_path)
-        .map_err(|e| PrismError::Git(format!("Clone failed: {e}")))?;
+    let clone_path_str = config.local_clone_path.to_string_lossy().to_string();
+    run_gh(&[
+        "repo",
+        "clone",
+        &config.remote_url,
+        &clone_path_str,
+        "--",
+        "-b",
+        &config.branch,
+    ])
+    .await?;
 
     info!("Clone complete");
     Ok(())
@@ -164,32 +261,21 @@ pub fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> {
 /// the GitHub repository.
 ///
 /// Steps:
-/// 1. Fetch latest from remote.
+/// 1. Fetch and fast-forward from remote.
 /// 2. For each note under `vault_path`, compare with the on-disk file.
 /// 3. Write changed notes to disk and stage them.
 /// 4. Detect files on disk with no matching note (pulled candidates).
 /// 5. Commit staged changes and push.
-pub fn sync_directory(
+pub async fn sync_directory(
     config: &DirectorySyncConfig,
     notes: &[Note],
     _parachute: &crate::clients::parachute::ParachuteClient,
 ) -> Result<DirectorySyncResult, PrismError> {
-    let repo = Repository::open(&config.local_clone_path)
-        .map_err(|e| PrismError::Git(format!("Failed to open repo: {e}")))?;
+    let clone_path = &config.local_clone_path;
 
-    // 1. Fetch
-    {
-        let mut remote = repo
-            .find_remote("origin")
-            .map_err(|e| PrismError::Git(format!("No remote 'origin': {e}")))?;
-        let mut fo = make_fetch_options(&config.auth_token);
-        remote
-            .fetch(&[&config.branch], Some(&mut fo), None)
-            .map_err(|e| PrismError::Git(format!("Fetch failed: {e}")))?;
-    }
-
-    // Fast-forward local branch to FETCH_HEAD if possible
-    fast_forward_to_fetch_head(&repo, &config.branch)?;
+    // 1. Fetch and fast-forward
+    run_git(&["fetch", "origin"], clone_path).await?;
+    let _ = run_git(&["pull", "--ff-only"], clone_path).await;
 
     let mut result = DirectorySyncResult {
         pushed: Vec::new(),
@@ -218,7 +304,7 @@ pub fn sync_directory(
         let repo_rel = map_vault_path_to_repo_path(note_path, config);
         note_repo_paths.insert(repo_rel.clone(), note);
 
-        let disk_path = config.local_clone_path.join(&repo_rel);
+        let disk_path = clone_path.join(&repo_rel);
 
         // Read existing file content (if any)
         let disk_content = if disk_path.exists() {
@@ -240,22 +326,22 @@ pub fn sync_directory(
                 // No change
                 debug!("No change for {repo_rel}");
             }
-            Some(existing) => {
+            Some(_existing) => {
                 // Content differs — decide based on conflict strategy
-                // For now, local (vault) wins by default
                 if config.conflict_strategy == "remote-wins" {
-                    // Remote content is newer; flag as pulled
                     result.pulled.push(repo_rel.clone());
                 } else {
                     // local-wins: overwrite disk, stage
-                    write_and_stage(&repo, &config.local_clone_path, &repo_rel, &note.content)?;
+                    write_file(clone_path, &repo_rel, &note.content)?;
+                    run_git(&["add", &repo_rel], clone_path).await?;
                     result.pushed.push(repo_rel.clone());
                     staged_any = true;
                 }
             }
             None => {
                 // New file — write and stage
-                write_and_stage(&repo, &config.local_clone_path, &repo_rel, &note.content)?;
+                write_file(clone_path, &repo_rel, &note.content)?;
+                run_git(&["add", &repo_rel], clone_path).await?;
                 result.pushed.push(repo_rel.clone());
                 staged_any = true;
             }
@@ -264,8 +350,8 @@ pub fn sync_directory(
 
     // 4. Detect files in repo not matching any note (pulled candidates)
     scan_unmatched_files(
-        &config.local_clone_path,
-        &config.local_clone_path,
+        clone_path,
+        clone_path,
         &note_repo_paths,
         &config.file_extension,
         &mut result.pulled,
@@ -277,8 +363,8 @@ pub fn sync_directory(
             "Prism sync: {} file(s) updated",
             result.pushed.len()
         );
-        create_commit(&repo, &message, config)?;
-        push_to_remote(&repo, &config.branch, &config.auth_token)?;
+        run_git(&["commit", "-m", &message, "--author", "Prism Sync <prism@local>"], clone_path).await?;
+        run_git(&["push", "origin", &config.branch], clone_path).await?;
         info!("Pushed {} file(s) to remote", result.pushed.len());
     } else {
         debug!("No staged changes to commit");
@@ -289,10 +375,7 @@ pub fn sync_directory(
 
 /// Push a single note to the repository immediately (used with `PerSave`
 /// commit strategy).
-///
-/// Opens the repo, writes the note content to the mapped file, commits, and
-/// pushes in one shot.
-pub fn push_single_file(
+pub async fn push_single_file(
     config: &DirectorySyncConfig,
     note: &Note,
 ) -> Result<(), PrismError> {
@@ -301,12 +384,11 @@ pub fn push_single_file(
         .as_deref()
         .ok_or_else(|| PrismError::Git("Note has no path".into()))?;
 
-    let repo = Repository::open(&config.local_clone_path)
-        .map_err(|e| PrismError::Git(format!("Failed to open repo: {e}")))?;
-
+    let clone_path = &config.local_clone_path;
     let repo_rel = map_vault_path_to_repo_path(note_path, config);
 
-    write_and_stage(&repo, &config.local_clone_path, &repo_rel, &note.content)?;
+    write_file(clone_path, &repo_rel, &note.content)?;
+    run_git(&["add", &repo_rel], clone_path).await?;
 
     let filename = Path::new(&repo_rel)
         .file_name()
@@ -314,8 +396,8 @@ pub fn push_single_file(
         .unwrap_or_else(|| repo_rel.clone());
 
     let message = format!("Update {filename}");
-    create_commit(&repo, &message, config)?;
-    push_to_remote(&repo, &config.branch, &config.auth_token)?;
+    run_git(&["commit", "-m", &message, "--author", "Prism Sync <prism@local>"], clone_path).await?;
+    run_git(&["push", "origin", &config.branch], clone_path).await?;
 
     info!("Pushed single file: {repo_rel}");
     Ok(())
@@ -343,189 +425,15 @@ fn map_vault_path_to_repo_path(vault_path: &str, config: &DirectorySyncConfig) -
     }
 }
 
-/// Write content to a file on disk and stage it in the repository index.
-fn write_and_stage(
-    repo: &Repository,
-    clone_root: &Path,
-    repo_rel: &str,
-    content: &str,
-) -> Result<(), PrismError> {
+/// Write content to a file on disk, creating parent directories as needed.
+fn write_file(clone_root: &Path, repo_rel: &str, content: &str) -> Result<(), PrismError> {
     let disk_path = clone_root.join(repo_rel);
 
-    // Ensure parent directories exist
     if let Some(parent) = disk_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
     fs::write(&disk_path, content)?;
-
-    let mut index = repo
-        .index()
-        .map_err(|e| PrismError::Git(format!("Failed to get index: {e}")))?;
-
-    index
-        .add_path(Path::new(repo_rel))
-        .map_err(|e| PrismError::Git(format!("Failed to stage {repo_rel}: {e}")))?;
-
-    index
-        .write()
-        .map_err(|e| PrismError::Git(format!("Failed to write index: {e}")))?;
-
-    Ok(())
-}
-
-/// Create a commit on the current branch from the current index state.
-///
-/// Committer and author are both set to `"Prism Sync" <prism@local>`.
-fn create_commit(
-    repo: &Repository,
-    message: &str,
-    _config: &DirectorySyncConfig,
-) -> Result<git2::Oid, PrismError> {
-    let sig = git2::Signature::now("Prism Sync", "prism@local")
-        .map_err(|e| PrismError::Git(format!("Failed to create signature: {e}")))?;
-
-    let mut index = repo
-        .index()
-        .map_err(|e| PrismError::Git(format!("Failed to get index: {e}")))?;
-
-    let tree_oid = index
-        .write_tree()
-        .map_err(|e| PrismError::Git(format!("Failed to write tree: {e}")))?;
-
-    let tree = repo
-        .find_tree(tree_oid)
-        .map_err(|e| PrismError::Git(format!("Failed to find tree: {e}")))?;
-
-    // Get parent commit (HEAD), if any
-    let parent_commit = match repo.head() {
-        Ok(head) => {
-            let oid = head
-                .target()
-                .ok_or_else(|| PrismError::Git("HEAD has no target".into()))?;
-            Some(
-                repo.find_commit(oid)
-                    .map_err(|e| PrismError::Git(format!("Failed to find HEAD commit: {e}")))?,
-            )
-        }
-        Err(_) => None,
-    };
-
-    let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
-
-    let oid = repo
-        .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
-        .map_err(|e| PrismError::Git(format!("Commit failed: {e}")))?;
-
-    debug!("Created commit {oid}");
-    Ok(oid)
-}
-
-/// Push the current branch to the `origin` remote.
-fn push_to_remote(
-    repo: &Repository,
-    branch: &str,
-    token: &str,
-) -> Result<(), PrismError> {
-    let mut remote = repo
-        .find_remote("origin")
-        .map_err(|e| PrismError::Git(format!("No remote 'origin': {e}")))?;
-
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-
-    let mut push_opts = PushOptions::new();
-    push_opts.remote_callbacks(make_callbacks(token));
-
-    remote
-        .push(&[&refspec], Some(&mut push_opts))
-        .map_err(|e| PrismError::Git(format!("Push failed: {e}")))?;
-
-    Ok(())
-}
-
-/// Check out a local branch, creating it from the remote tracking branch if it
-/// doesn't exist yet.
-fn checkout_branch(repo: &Repository, branch: &str) -> Result<(), PrismError> {
-    let refname = format!("refs/heads/{branch}");
-
-    // If the branch doesn't exist locally, create it from origin/<branch>
-    if repo.find_reference(&refname).is_err() {
-        let remote_ref = format!("refs/remotes/origin/{branch}");
-        let remote_oid = repo
-            .find_reference(&remote_ref)
-            .map_err(|e| PrismError::Git(format!("Remote branch not found: {e}")))?
-            .target()
-            .ok_or_else(|| PrismError::Git("Remote ref has no target".into()))?;
-
-        let commit = repo
-            .find_commit(remote_oid)
-            .map_err(|e| PrismError::Git(format!("Failed to find commit: {e}")))?;
-
-        repo.branch(branch, &commit, false)
-            .map_err(|e| PrismError::Git(format!("Failed to create branch: {e}")))?;
-    }
-
-    // Set HEAD and checkout
-    repo.set_head(&refname)
-        .map_err(|e| PrismError::Git(format!("Failed to set HEAD: {e}")))?;
-
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-        .map_err(|e| PrismError::Git(format!("Checkout failed: {e}")))?;
-
-    Ok(())
-}
-
-/// Attempt a fast-forward merge of the local branch to match FETCH_HEAD.
-fn fast_forward_to_fetch_head(repo: &Repository, branch: &str) -> Result<(), PrismError> {
-    let fetch_head = match repo.find_reference("FETCH_HEAD") {
-        Ok(r) => r,
-        Err(_) => {
-            debug!("No FETCH_HEAD found, skipping fast-forward");
-            return Ok(());
-        }
-    };
-
-    let fetch_oid = match fetch_head.target() {
-        Some(oid) => oid,
-        None => return Ok(()),
-    };
-
-    let refname = format!("refs/heads/{branch}");
-    let local_ref = match repo.find_reference(&refname) {
-        Ok(r) => r,
-        Err(_) => return Ok(()),
-    };
-
-    let local_oid = match local_ref.target() {
-        Some(oid) => oid,
-        None => return Ok(()),
-    };
-
-    if local_oid == fetch_oid {
-        return Ok(());
-    }
-
-    // Check if fast-forward is possible (local is ancestor of fetch)
-    let can_ff = repo
-        .graph_descendant_of(fetch_oid, local_oid)
-        .unwrap_or(false);
-
-    if can_ff {
-        let mut reference = repo
-            .find_reference(&refname)
-            .map_err(|e| PrismError::Git(format!("Ref lookup failed: {e}")))?;
-        reference
-            .set_target(fetch_oid, "fast-forward from Prism sync")
-            .map_err(|e| PrismError::Git(format!("Fast-forward failed: {e}")))?;
-
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .map_err(|e| PrismError::Git(format!("Checkout after ff failed: {e}")))?;
-
-        info!("Fast-forwarded {branch} to {fetch_oid}");
-    } else {
-        warn!("Cannot fast-forward {branch}; local and remote have diverged");
-    }
-
     Ok(())
 }
 
@@ -596,7 +504,6 @@ mod tests {
             remote_url: String::new(),
             branch: "main".into(),
             local_clone_path: PathBuf::from("/tmp/test"),
-            auth_token: String::new(),
             commit_strategy: CommitStrategy::Batched,
             conflict_strategy: "local-wins".into(),
             last_synced: String::new(),
@@ -627,7 +534,6 @@ mod tests {
             remote_url: String::new(),
             branch: "main".into(),
             local_clone_path: PathBuf::from("/tmp/test"),
-            auth_token: String::new(),
             commit_strategy: CommitStrategy::PerSave,
             conflict_strategy: "local-wins".into(),
             last_synced: String::new(),
@@ -636,8 +542,6 @@ mod tests {
             id_map: HashMap::new(),
         };
 
-        // After stripping "vault/docs" from "vault/docs/intro", we get "/intro"
-        // which should be trimmed to "intro"
         assert_eq!(
             map_vault_path_to_repo_path("vault/docs/intro", &config),
             "intro.md"

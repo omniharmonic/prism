@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight, PlusCircle, X } from "lucide-react";
-import { agentApi, vaultApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
+import { agentApi, ollamaApi, vaultApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
 
@@ -52,6 +52,26 @@ export default function AgentActivity(_props: RendererProps) {
   const customSkill = "custom";
   const [showSkillConfig, setShowSkillConfig] = useState(false);
   const [showSkillBuilder, setShowSkillBuilder] = useState(false);
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
+  const [skillModels, setSkillModels] = useState<Record<string, { provider: string; model: string }>>({});
+
+  useEffect(() => {
+    try {
+      ollamaApi.listModels().then(setAvailableModels).catch(() => {});
+      ollamaApi.getSkillModels().then(setSkillModels).catch(() => {});
+    } catch { /* not in Tauri */ }
+  }, []);
+
+  const handleModelChange = async (skillName: string, provider: string, model: string) => {
+    if (!model) {
+      const firstModel = availableModels.find(m => m.provider === provider);
+      model = firstModel?.id || (provider === "claude" ? "sonnet" : "");
+    }
+    try {
+      await ollamaApi.setSkillModel(skillName, provider, model);
+      setSkillModels(prev => ({ ...prev, [skillName]: { provider, model } }));
+    } catch { /* silent fail */ }
+  };
 
   const { data: skills } = useQuery({
     queryKey: ["agent", "skills"],
@@ -141,7 +161,7 @@ export default function AgentActivity(_props: RendererProps) {
                 <SkillBuilder onCreated={() => { setShowSkillBuilder(false); queryClient.invalidateQueries({ queryKey: ["agent", "skills"] }); }} onCancel={() => setShowSkillBuilder(false)} />
               )}
               {(skills || []).map((skill) => (
-                <SkillConfigCard key={skill.id} skill={skill} onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })} onRun={() => handleDispatch(skill.skillName, skill.prompt)} />
+                <SkillConfigCard key={skill.id} skill={skill} onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })} onRun={() => handleDispatch(skill.skillName, skill.prompt)} availableModels={availableModels} skillModels={skillModels} onModelChange={handleModelChange} />
               ))}
               {(!skills || skills.length === 0) && !showSkillBuilder && (
                 <div className="text-xs" style={{ color: "var(--text-muted)" }}>No skills configured. They'll be created automatically on next restart.</div>
@@ -431,7 +451,7 @@ function SkillBuilder({ onCreated, onCancel }: { onCreated: () => void; onCancel
 
 // ─── Skill Config Card ───────────────────────────────────────
 
-function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpdate: () => void; onRun: () => void }) {
+function SkillConfigCard({ skill, onUpdate, onRun, availableModels, skillModels, onModelChange }: { skill: AgentSkill; onUpdate: () => void; onRun: () => void; availableModels: Array<{ id: string; name: string; provider: string; size: string | null }>; skillModels: Record<string, { provider: string; model: string }>; onModelChange: (skillName: string, provider: string, model: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [editPrompt, setEditPrompt] = useState(skill.prompt);
   const [saving, setSaving] = useState(false);
@@ -520,12 +540,38 @@ function SkillConfigCard({ skill, onUpdate, onRun }: { skill: AgentSkill; onUpda
             )}
           </div>
 
+          {availableModels.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Model:</span>
+              <select
+                value={skillModels[skill.skillName]?.provider || "claude"}
+                onChange={(e) => onModelChange(skill.skillName, e.target.value, "")}
+                className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              >
+                <option value="claude">Claude</option>
+                <option value="ollama">Ollama</option>
+              </select>
+              <select
+                value={skillModels[skill.skillName]?.model || "sonnet"}
+                onChange={(e) => onModelChange(skill.skillName, skillModels[skill.skillName]?.provider || "claude", e.target.value)}
+                className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              >
+                {availableModels
+                  .filter(m => m.provider === (skillModels[skill.skillName]?.provider || "claude"))
+                  .map(m => <option key={m.id} value={m.id}>{m.name}</option>)
+                }
+              </select>
+            </div>
+          )}
+
           <textarea
             value={editPrompt}
             onChange={(e) => setEditPrompt(e.target.value)}
             rows={6}
             className="w-full rounded px-2 py-1.5 text-[10px] outline-none resize-none font-mono"
-            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}
+            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           />
           {editPrompt !== skill.prompt && (
             <button

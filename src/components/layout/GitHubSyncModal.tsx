@@ -1,13 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   X,
   GitFork,
   GitBranch,
-  Key,
   ArrowRight,
   ArrowLeft,
   Loader2,
   Check,
+  Circle,
 } from "lucide-react";
 import { githubSyncApi } from "../../lib/parachute/client";
 
@@ -32,7 +32,6 @@ export function GitHubSyncModal({
   const [step, setStep] = useState(0);
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
-  const [token, setToken] = useState("");
   const [commitStrategy, setCommitStrategy] =
     useState<CommitStrategy>("per_save");
   const [conflictStrategy, setConflictStrategy] =
@@ -41,6 +40,40 @@ export function GitHubSyncModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  // GitHub CLI auth state
+  const [authChecking, setAuthChecking] = useState(false);
+  const [authStatus, setAuthStatus] = useState<{
+    authenticated: boolean;
+    username: string | null;
+    message: string;
+  } | null>(null);
+
+  // Check gh auth status when the modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+
+    async function checkAuth() {
+      setAuthChecking(true);
+      try {
+        const status = await githubSyncApi.checkAuth();
+        if (!cancelled) setAuthStatus(status);
+      } catch {
+        if (!cancelled)
+          setAuthStatus({
+            authenticated: false,
+            username: null,
+            message: "Could not reach GitHub CLI. Is `gh` installed?",
+          });
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    }
+
+    checkAuth();
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -56,7 +89,6 @@ export function GitHubSyncModal({
         vaultPath,
         remoteUrl: repoUrl,
         branch,
-        authToken: token,
         commitStrategy,
         conflictStrategy,
         autoSync,
@@ -69,8 +101,9 @@ export function GitHubSyncModal({
     }
   };
 
+  const ghAuthenticated = authStatus?.authenticated ?? false;
   const canAdvance =
-    step === 0 ? repoUrl.trim() !== "" && token.trim() !== "" : true;
+    step === 0 ? repoUrl.trim() !== "" && ghAuthenticated : true;
 
   const commitLabels: Record<CommitStrategy, { label: string; desc: string }> = {
     per_save: {
@@ -120,9 +153,37 @@ export function GitHubSyncModal({
           ))}
         </div>
 
-        {/* Step 0: Repository */}
+        {/* Step 0: Repository + Auth */}
         {step === 0 && (
           <div className="space-y-4">
+            {/* GitHub CLI auth status */}
+            <div className="rounded-lg bg-white/5 border border-white/10 p-3">
+              <label className={`${labelClass} mb-2 block`}>GitHub CLI</label>
+              {authChecking ? (
+                <div className="flex items-center gap-2 text-white/50 text-sm">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Checking authentication...
+                </div>
+              ) : authStatus?.authenticated ? (
+                <div className="flex items-center gap-2 text-sm">
+                  <Circle className="w-2.5 h-2.5 fill-emerald-400 text-emerald-400" />
+                  <span className="text-emerald-400">
+                    Authenticated as @{authStatus.username ?? "unknown"}
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Circle className="w-2.5 h-2.5 fill-red-400 text-red-400" />
+                    <span className="text-red-400">Not authenticated</span>
+                  </div>
+                  <p className="text-xs text-white/40">
+                    Run <code className="px-1.5 py-0.5 rounded bg-white/10 text-white/70 font-mono text-[11px]">gh auth login</code> in your terminal, then reopen this dialog.
+                  </p>
+                </div>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <label className={labelClass}>Repository URL</label>
               <div className="relative">
@@ -148,22 +209,6 @@ export function GitHubSyncModal({
                   className={`${inputClass} pl-9`}
                 />
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className={labelClass}>Personal Access Token</label>
-              <div className="relative">
-                <Key className="absolute left-3 top-2.5 w-4 h-4 text-white/30" />
-                <input
-                  type="password"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  placeholder="ghp_..."
-                  className={`${inputClass} pl-9`}
-                />
-              </div>
-              <p className="text-xs text-white/30">
-                Create a PAT at github.com/settings/tokens with repo scope
-              </p>
             </div>
           </div>
         )}
