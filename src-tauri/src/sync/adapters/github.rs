@@ -222,10 +222,9 @@ pub async fn init_clone(config: &DirectorySyncConfig) -> Result<(), PrismError> 
             "Repo already cloned at {:?}, fetching latest",
             config.local_clone_path
         );
-        run_git(&["fetch", "origin"], &config.local_clone_path).await?;
-        // Ensure correct branch is checked out
-        run_git(&["checkout", &config.branch], &config.local_clone_path).await?;
-        // Fast-forward to latest
+        // Fetch and checkout may fail on empty repos (no commits/branches yet) — that's fine.
+        let _ = run_git(&["fetch", "origin"], &config.local_clone_path).await;
+        let _ = run_git(&["checkout", &config.branch], &config.local_clone_path).await;
         let _ = run_git(&["pull", "--ff-only"], &config.local_clone_path).await;
         return Ok(());
     }
