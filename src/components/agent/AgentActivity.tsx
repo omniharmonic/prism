@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Square, Loader2, CheckCircle2, XCircle, Sparkles, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight, PlusCircle, X } from "lucide-react";
+import { Play, Square, Loader2, CheckCircle2, XCircle, Bot, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight, PlusCircle, X } from "lucide-react";
 import { agentApi, ollamaApi, vaultApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -124,8 +124,8 @@ export default function AgentActivity(_props: RendererProps) {
       {/* Header */}
       <div className="px-6 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <h1 className="text-lg font-semibold flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
-          <Sparkles size={18} style={{ color: "var(--color-accent)" }} />
-          Agent Activity
+          <Bot size={18} style={{ color: "var(--color-accent)" }} />
+          Agent
         </h1>
         <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
           Background tasks, triage, and intelligence
@@ -234,7 +234,7 @@ export default function AgentActivity(_props: RendererProps) {
         {/* Empty state */}
         {!dispatches?.length && (
           <div className="text-center py-8">
-            <Sparkles size={32} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
+            <Bot size={32} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>No dispatches yet. Use the quick actions above to get started.</p>
           </div>
         )}

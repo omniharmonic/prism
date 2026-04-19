@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Check, Loader2, Database, MessageSquare, Sparkles, ArrowRight, ArrowLeft, Mail, Cloud, AlertCircle, Layers } from "lucide-react";
+import { Check, Loader2, Database, MessageSquare, Bot, ArrowRight, ArrowLeft, Mail, Cloud, AlertCircle, Layers } from "lucide-react";
 import { agentApi, configApi } from "../../lib/agent/client";
 import { Button } from "../ui/Button";
 import { useSettingsStore } from "../../app/stores/settings";
@@ -262,7 +262,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
     // Step 4: Google + Notion + Claude
     <div key="services" className="space-y-4 max-w-md mx-auto">
-      <StepHeader icon={<Sparkles size={20} />} title="Additional Services" description="These enhance Prism's capabilities." />
+      <StepHeader icon={<Bot size={20} />} title="Additional Services" description="These enhance Prism's capabilities." />
 
       {/* Google */}
       <div className="glass p-3 rounded-lg space-y-2">
@@ -303,7 +303,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
       <div className="glass p-3 rounded-lg">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Sparkles size={14} style={{ color: "var(--text-secondary)" }} />
+            <Bot size={14} style={{ color: "var(--text-secondary)" }} />
             <span className="text-sm" style={{ color: "var(--text-primary)" }}>Claude Code CLI</span>
           </div>
           <div className="flex items-center gap-2">

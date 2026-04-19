@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Loader2, Sparkles, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
+import { Send, Loader2, Bot, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
@@ -92,7 +92,7 @@ export function PanelChat() {
     <div className="flex flex-col h-full">
       {/* Chat header */}
       <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <Sparkles size={14} style={{ color: "var(--color-accent)" }} />
+        <Bot size={14} style={{ color: "var(--color-accent)" }} />
         <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
           Claude
         </span>
@@ -122,7 +122,7 @@ export function PanelChat() {
       <div className="flex-1 overflow-auto px-3 py-2 space-y-3">
         {messages.length === 0 && (
           <div className="text-center pt-8 space-y-2">
-            <Sparkles size={24} className="mx-auto" style={{ color: "var(--text-muted)" }} />
+            <Bot size={24} className="mx-auto" style={{ color: "var(--text-muted)" }} />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               Ask Claude anything about your document
             </p>

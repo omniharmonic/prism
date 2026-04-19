@@ -1,4 +1,4 @@
-import { X, PanelLeft, PanelRight, Sparkles } from "lucide-react";
+import { X, PanelLeft, PanelRight, Bot } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { cn } from "../../lib/cn";
 
@@ -71,7 +71,7 @@ export function TabBar() {
           className="px-2 h-full hover:bg-[var(--glass-hover)] transition-colors"
           title="AI Agent"
         >
-          <Sparkles size={15} style={{ color: "var(--text-muted)" }} />
+          <Bot size={15} style={{ color: "var(--text-muted)" }} />
         </button>
         {/* Panel toggle = opens Metadata by default */}
         <button

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, vaultApi } from "../../lib/parachute/client";
@@ -189,7 +189,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                   onSave={handleSave}
                 />
                 <ServiceField
-                  icon={<Sparkles size={14} />}
+                  icon={<Bot size={14} />}
                   label="Claude"
                   desc="AI agent (Claude Code CLI + Anthropic API)"
                   fields={[

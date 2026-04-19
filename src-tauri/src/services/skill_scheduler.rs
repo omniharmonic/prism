@@ -15,10 +15,9 @@ const DEFAULT_SKILLS: &[(&str, &str, u64, bool, &str, Option<u64>, Option<&str>)
         "message-triage",
         "Triage recent unclassified emails and messages. Surface what matters, filter noise.\n\n\
 ## Step 1: Gather unclassified items\n\n\
-Query for email notes WITHOUT importance tags:\n\
-  query-notes: tags [\"email\"], exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 30, include_content true\n\n\
-Query for message threads WITHOUT importance tags:\n\
-  query-notes: tags [\"message-thread\"], exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 20, include_content true\n\n\
+Query for ALL unclassified emails and message threads in a single call:\n\
+  query-notes: tag [\"email\", \"message-thread\"], tag_match \"any\", exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 50, include_content true\n\n\
+This returns both email notes AND message-thread notes. Process all of them in the following steps.\n\n\
 ## Step 2: Classify each item\n\n\
 Apply ONE importance tag per item:\n\n\
 URGENT (tag: \"urgent\") — needs response within hours:\n\

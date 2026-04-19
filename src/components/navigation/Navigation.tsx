@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Sparkles } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot } from "lucide-react";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
@@ -27,7 +27,7 @@ export function Navigation() {
   };
 
   const handleOpenAgentActivity = () => {
-    openTab("agent-activity", "Agent Activity", "agent-activity" as ContentType);
+    openTab("agent-activity", "Agent", "agent-activity" as ContentType);
   };
 
   return (
@@ -84,8 +84,8 @@ export function Navigation() {
               className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
               style={{ color: "var(--text-secondary)" }}
             >
-              <Sparkles size={14} />
-              <span>Agent Activity</span>
+              <Bot size={14} />
+              <span>Agent</span>
             </button>
           </div>
 

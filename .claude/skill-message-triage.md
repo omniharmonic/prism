@@ -18,11 +18,10 @@ Triage recent unclassified emails and messages. Your goal is to surface what act
 
 ## Step 1: Gather unclassified items
 
-Query for email notes WITHOUT importance tags:
-- search-notes: tags ["email"], exclude_tags ["urgent", "action-required", "informational", "low", "triaged"], limit 30, include_content true
+Query for ALL unclassified emails and message threads in a single call:
+- query-notes: tag ["email", "message-thread"], tag_match "any", exclude_tags ["urgent", "action-required", "informational", "low", "triaged"], limit 50, include_content true
 
-Query for message threads WITHOUT importance tags:
-- search-notes: tags ["message-thread"], exclude_tags ["urgent", "action-required", "informational", "low", "triaged"], limit 20, include_content true
+This returns both email notes AND message-thread notes. Process all of them in the following steps.
 
 ## Step 2: Classify each item
 
@@ -60,7 +59,7 @@ LOW (tag: "low") — ignore or batch-process:
 ## Step 3: Sender context boost
 
 Before finalizing classification, check if the sender has a person note in the vault:
-- search-notes with the sender's name/email, tags ["person"]
+- query-notes with the sender's name/email, tag ["person"]
 - If the person is linked to one of Benjamin's active projects, boost importance by one tier (e.g., informational → action-required)
 - If the person has relationship_type "collaborator" or "stakeholder", boost by one tier
 
@@ -79,8 +78,8 @@ For items where someone committed to do something FOR Benjamin:
 ## Step 5: Tag and summarize
 
 After classification:
-- Add the importance tag to each note using tag-note
-- Also add "triaged" tag to prevent re-processing
+- Add the importance tag AND "triaged" tag to each note using update-note with tags add
+- This prevents re-processing on the next run
 
 Output a summary:
 - Count by category (urgent/action/informational/low)

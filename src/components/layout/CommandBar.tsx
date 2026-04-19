@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, Sparkles, ArrowRight, Settings, RefreshCw, Wand2,
+  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -76,7 +76,7 @@ export function CommandBar() {
     },
     {
       id: "agent-panel", label: "Open Agent Panel", category: "navigate" as const,
-      icon: <Sparkles size={15} />,
+      icon: <Bot size={15} />,
       action: () => { setContextPanelTab("agent"); toggleContextPanel(); closeCommandBar(); },
     },
     // Sync commands (only show when a note is open)
@@ -304,7 +304,7 @@ export function CommandBar() {
                   color: "var(--color-accent)",
                 }}
               >
-                <Sparkles size={15} />
+                <Bot size={15} />
                 Ask Claude: "{query}"
                 <ArrowRight size={13} className="ml-auto" />
               </button>

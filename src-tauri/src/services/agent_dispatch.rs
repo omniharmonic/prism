@@ -83,8 +83,10 @@ impl DispatchManager {
                  - ALL vault data lives in the Parachute database, accessed ONLY via the \
                  parachute-vault MCP server tools (search-notes, get-note, create-note, \
                  update-note, list-tags, traverse-links, etc.).\n\
-                 - NEVER read or write vault data using filesystem tools (Read, Write, Bash, \
-                 Grep, Glob). The vault is NOT on the local filesystem.\n\
+                 - NEVER write vault data using filesystem tools (Write, Bash). \
+                 The vault is NOT on the local filesystem.\n\
+                 - The Read tool is available ONLY for reading temp files that Claude Code \
+                 creates when MCP responses are too large. Do NOT use Read to explore the filesystem.\n\
                  - When a task mentions paths like \"vault/meetings/...\" or \"vault/tasks/...\", \
                  these are Parachute note paths passed to MCP tools, NOT filesystem paths.\n\
                  - Do NOT search the filesystem for vault content. There may be an unrelated \
@@ -126,10 +128,12 @@ impl DispatchManager {
             "-p".to_string(),
             "--model".to_string(), "sonnet".to_string(),
             "--dangerously-skip-permissions".to_string(),
-            // Block filesystem tools — agents must use Parachute MCP, not local files.
+            // Block filesystem write/search tools — agents must use Parachute MCP, not local files.
             // Without this, agents find the Obsidian vault on disk and operate there.
+            // Read is allowed because Claude Code saves large MCP responses to temp files
+            // and needs Read to access them (the agent can't discover paths without Glob/Grep/Bash).
             "--disallowedTools".to_string(),
-            "Read,Write,Edit,Bash,Glob,Grep".to_string(),
+            "Write,Edit,Bash,Glob,Grep".to_string(),
         ];
 
         if let Some(ref config_path) = mcp_config_path {
