@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Sparkles, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
-import { ollamaApi } from "../../lib/parachute/client";
+import { ollamaApi, vaultApi } from "../../lib/parachute/client";
 
 interface SettingsProps {
   open: boolean;
@@ -34,6 +34,13 @@ export function Settings({ open, onClose }: SettingsProps) {
   const [newVaultName, setNewVaultName] = useState("");
   const [newVaultUrl, setNewVaultUrl] = useState("");
 
+  // Vault description state
+  const [vaultDescription, setVaultDescription] = useState("");
+  const [vaultDescriptionDraft, setVaultDescriptionDraft] = useState("");
+  const [vaultDescriptionLoading, setVaultDescriptionLoading] = useState(false);
+  const [vaultDescriptionSaved, setVaultDescriptionSaved] = useState(false);
+  const [vaultDescriptionExpanded, setVaultDescriptionExpanded] = useState(false);
+
   // AI Models state
   const [ollamaConnected, setOllamaConnected] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
@@ -45,7 +52,14 @@ export function Settings({ open, onClose }: SettingsProps) {
   }, []);
 
   useEffect(() => {
-    if (open) loadConfig();
+    if (open) {
+      loadConfig();
+      vaultApi.getVaultInfo().then((info) => {
+        const desc = info.description || "";
+        setVaultDescription(desc);
+        setVaultDescriptionDraft(desc);
+      }).catch(() => {});
+    }
   }, [open, loadConfig]);
 
   useEffect(() => {
@@ -224,6 +238,85 @@ export function Settings({ open, onClose }: SettingsProps) {
                       <Plus size={11} />
                     </button>
                   </div>
+                </div>
+              </Section>
+
+              <Section title="Vault Description">
+                <p className="text-[10px] mb-2" style={{ color: "var(--text-muted)" }}>
+                  Context sent to every AI agent session. Describe yourself, your projects, and conventions so skills produce better results.
+                </p>
+                <div className="rounded-lg" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+                  <button
+                    onClick={() => setVaultDescriptionExpanded(!vaultDescriptionExpanded)}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-[var(--glass-hover)] transition-colors rounded-lg"
+                  >
+                    <FileText size={14} style={{ color: "var(--text-secondary)" }} />
+                    <div className="flex-1">
+                      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>Agent Context</div>
+                      <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                        {vaultDescription ? `${vaultDescription.split("\n").length} lines configured` : "Not set — agents have no persistent context"}
+                      </div>
+                    </div>
+                    {vaultDescription ? (
+                      <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded" style={{ color: "var(--color-success)", background: "rgba(34,197,94,0.1)" }}>
+                        <Check size={9} /> Set
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: "var(--text-muted)", background: "var(--glass)" }}>Not configured</span>
+                    )}
+                  </button>
+                  {vaultDescriptionExpanded && (
+                    <div className="px-3 pb-3" style={{ borderTop: "1px solid var(--glass-border)" }}>
+                      <textarea
+                        value={vaultDescriptionDraft}
+                        onChange={(e) => setVaultDescriptionDraft(e.target.value)}
+                        placeholder={"Describe your vault context for AI agents...\n\nExample:\n- Your name and role\n- Key projects and organizations\n- Important collaborators\n- Tag conventions and path structure\n- Privacy rules"}
+                        rows={12}
+                        className="w-full mt-2 rounded-md px-3 py-2 text-xs outline-none resize-y"
+                        style={{
+                          background: "var(--bg-surface)",
+                          border: "1px solid var(--glass-border)",
+                          color: "var(--text-primary)",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "11px",
+                          lineHeight: "1.5",
+                        }}
+                      />
+                      <div className="flex items-center justify-between mt-2">
+                        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                          Stored in vault — shared across all agent sessions via MCP
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {vaultDescriptionSaved && (
+                            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--color-success)" }}>
+                              <Check size={9} /> Saved
+                            </span>
+                          )}
+                          {vaultDescriptionDraft !== vaultDescription && (
+                            <button
+                              onClick={async () => {
+                                setVaultDescriptionLoading(true);
+                                try {
+                                  await vaultApi.updateVaultDescription(vaultDescriptionDraft);
+                                  setVaultDescription(vaultDescriptionDraft);
+                                  setVaultDescriptionSaved(true);
+                                  setTimeout(() => setVaultDescriptionSaved(false), 2000);
+                                } catch {
+                                  // Error will show in console
+                                }
+                                setVaultDescriptionLoading(false);
+                              }}
+                              disabled={vaultDescriptionLoading}
+                              className="px-3 py-1 rounded text-[10px] font-medium"
+                              style={{ background: "var(--color-accent)", color: "white" }}
+                            >
+                              {vaultDescriptionLoading ? "Saving..." : "Save"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Section>
 

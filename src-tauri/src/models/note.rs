@@ -83,3 +83,10 @@ pub struct VaultStats {
     #[serde(default)]
     pub link_count: u64,
 }
+
+/// Vault info returned by `GET /api/vault` (v2).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VaultInfo {
+    pub name: String,
+    pub description: Option<String>,
+}

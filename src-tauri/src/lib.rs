@@ -52,7 +52,7 @@ pub fn run() {
             .unwrap_or_default()
             .join("iCloud Drive (Archive)/Documents/cursor projects/prism")
     });
-    let claude_client = ClaudeClient::new(prism_root, app_config.omniharmonic_root.clone());
+    let claude_client = ClaudeClient::new(prism_root);
 
     // Try to connect Ollama agent with MCP vault access.
     // This is optional — if Ollama or Parachute MCP aren't running, we proceed without it.
@@ -101,11 +101,14 @@ pub fn run() {
             vault::vault_create_note,
             vault::vault_update_note,
             vault::vault_delete_note,
+            vault::vault_batch_delete,
             vault::vault_search,
             vault::vault_get_tags,
             vault::vault_add_tags,
             vault::vault_remove_tags,
             vault::vault_get_stats,
+            vault::vault_get_info,
+            vault::vault_update_description,
             vault::vault_get_paths,
             vault::vault_get_links,
             vault::vault_create_link,

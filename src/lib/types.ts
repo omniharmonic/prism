@@ -51,6 +51,11 @@ export interface VaultStats {
   linkCount?: number;
 }
 
+export interface VaultInfo {
+  name: string;
+  description: string | null;
+}
+
 export interface Link {
   sourceId: string;
   targetId: string;

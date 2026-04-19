@@ -5,6 +5,7 @@ use serde::{Serialize, Deserialize};
 use crate::commands::config::AppConfig;
 use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
+use crate::services::notion_task_sync;
 use crate::sync::adapters::notion_db::{
     NotionDatabaseAdapter, NotionDatabaseInfo, NotionDbSyncConfig,
     NotionDbSyncResult, PropertyMapping, PropertySchema,
@@ -18,8 +19,10 @@ pub struct NotionDbSyncState {
 
 impl NotionDbSyncState {
     pub fn new() -> Self {
+        // Load persisted configs on startup
+        let configs = notion_task_sync::load_configs();
         Self {
-            configs: std::sync::Mutex::new(HashMap::new()),
+            configs: std::sync::Mutex::new(configs),
         }
     }
 }
@@ -118,6 +121,7 @@ pub async fn notion_db_sync_init(
     let mut configs = sync_state.configs.lock()
         .map_err(|e| PrismError::Other(format!("Failed to lock sync state: {}", e)))?;
     configs.insert(id.clone(), config);
+    notion_task_sync::save_configs(&configs);
 
     Ok(id)
 }
@@ -193,6 +197,7 @@ pub async fn notion_db_sync(
         let mut configs = sync_state.configs.lock()
             .map_err(|e| PrismError::Other(format!("Failed to lock sync state: {}", e)))?;
         configs.insert(config_id, config);
+        notion_task_sync::save_configs(&configs);
     }
 
     Ok(result)
@@ -228,6 +233,7 @@ pub async fn notion_db_sync_remove(
     if configs.remove(&config_id).is_none() {
         return Err(PrismError::Other(format!("Sync config '{}' not found", config_id)));
     }
+    notion_task_sync::save_configs(&configs);
 
     Ok(())
 }

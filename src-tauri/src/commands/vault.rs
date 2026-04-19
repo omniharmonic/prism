@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
 use crate::models::note::*;
@@ -153,6 +153,42 @@ pub async fn vault_delete_note(
 }
 
 #[tauri::command]
+pub async fn vault_batch_delete(
+    app: AppHandle,
+    client: State<'_, ParachuteClient>,
+    ids: Vec<String>,
+) -> Result<serde_json::Value, PrismError> {
+    let total = ids.len();
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+
+    for chunk in ids.chunks(30) {
+        let futures: Vec<_> = chunk.iter()
+            .map(|id| client.delete_note(id))
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+        for r in results {
+            match r {
+                Ok(_) => deleted += 1,
+                Err(e) => {
+                    log::warn!("batch delete failed for a note: {}", e);
+                    failed += 1;
+                }
+            }
+        }
+
+        let _ = app.emit("vault:batch-delete-progress", serde_json::json!({
+            "deleted": deleted,
+            "failed": failed,
+            "total": total,
+        }));
+    }
+
+    Ok(serde_json::json!({ "deleted": deleted, "failed": failed, "total": total }))
+}
+
+#[tauri::command]
 pub async fn vault_search(
     client: State<'_, ParachuteClient>,
     query: String,
@@ -193,6 +229,21 @@ pub async fn vault_get_stats(
     client: State<'_, ParachuteClient>,
 ) -> Result<VaultStats, PrismError> {
     client.get_stats().await
+}
+
+#[tauri::command]
+pub async fn vault_get_info(
+    client: State<'_, ParachuteClient>,
+) -> Result<crate::models::note::VaultInfo, PrismError> {
+    client.get_vault_info().await
+}
+
+#[tauri::command]
+pub async fn vault_update_description(
+    client: State<'_, ParachuteClient>,
+    description: String,
+) -> Result<crate::models::note::VaultInfo, PrismError> {
+    client.update_vault_description(&description).await
 }
 
 /// Get unique directory paths from the vault for path filter dropdowns

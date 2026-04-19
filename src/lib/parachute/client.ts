@@ -6,6 +6,7 @@ import type {
   UpdateNoteParams,
   TagCount,
   VaultStats,
+  VaultInfo,
   ServiceStatus,
 } from "../types";
 
@@ -24,6 +25,9 @@ export const vaultApi = {
 
   deleteNote: (id: string) =>
     invoke<void>("vault_delete_note", { id }),
+
+  batchDelete: (ids: string[]) =>
+    invoke<{ deleted: number; failed: number; total: number }>("vault_batch_delete", { ids }),
 
   search: (query: string, tags?: string[], limit?: number) =>
     invoke<Note[]>("vault_search", { query, tags, limit }),
@@ -60,6 +64,12 @@ export const vaultApi = {
     invoke<{ nodes: Array<{ id: string; path?: string; tags?: string[] }>; edges: Array<{ source: string; target: string; relationship: string }> }>(
       "vault_get_graph", { depth, centerId }
     ),
+
+  getVaultInfo: () =>
+    invoke<VaultInfo>("vault_get_info"),
+
+  updateVaultDescription: (description: string) =>
+    invoke<VaultInfo>("vault_update_description", { description }),
 };
 
 export const systemApi = {

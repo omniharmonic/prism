@@ -31,7 +31,6 @@ Benjamin is active in these organizations. Use them to route meetings, tasks, an
 
 When you see these names in transcripts, emails, or messages, they are significant:
 
-- Tim Archer — OpenCivics co-founder, primary collaborator
 - Patricia Parkinson — OpenCivics co-founder
 - Christopher Life — One Nation / broader network
 - Sophia Life — One Nation / broader network

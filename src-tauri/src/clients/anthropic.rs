@@ -23,8 +23,6 @@ pub struct ClaudeClient {
     claude_bin: String,
     /// Prism project root — where .mcp.json lives, so Claude gets Parachute MCP access
     prism_root: PathBuf,
-    /// Omniharmonic project root — for access to CLAUDE.md agent context
-    omniharmonic_root: PathBuf,
     env: HashMap<String, String>,
 }
 
@@ -39,7 +37,7 @@ pub struct ClaudeJsonResponse {
 }
 
 impl ClaudeClient {
-    pub fn new(prism_root: PathBuf, omniharmonic_root: PathBuf) -> Self {
+    pub fn new(prism_root: PathBuf) -> Self {
         // Resolve claude binary
         let claude_bin = std::process::Command::new("which")
             .arg("claude")
@@ -92,7 +90,6 @@ impl ClaudeClient {
         Self {
             claude_bin,
             prism_root,
-            omniharmonic_root,
             env,
         }
     }

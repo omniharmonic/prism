@@ -273,4 +273,27 @@ impl ParachuteClient {
             .map_err(|e| PrismError::Parachute(format!("stats parse error: {}", e)))?;
         Ok(stats)
     }
+
+    /// Get vault info including description. v2: `GET /api/vault`.
+    pub async fn get_vault_info(&self) -> Result<VaultInfo, PrismError> {
+        let url = format!("{}/vault", self.base_url);
+        let resp = self.authed(self.client.get(&url))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("get_vault_info failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Update vault description. v2: `PATCH /api/vault`.
+    pub async fn update_vault_description(&self, description: &str) -> Result<VaultInfo, PrismError> {
+        let url = format!("{}/vault", self.base_url);
+        let body = serde_json::json!({ "description": description });
+        let resp = self.authed(self.client.patch(&url).json(&body))
+            .send().await?;
+        if !resp.status().is_success() {
+            return Err(PrismError::Parachute(format!("update_vault_description failed: {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
 }

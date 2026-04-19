@@ -5,6 +5,7 @@ pub mod person_linker;
 pub mod agent_dispatch;
 pub mod skill_scheduler;
 pub mod transcript_sync;
+pub mod notion_task_sync;
 
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -38,6 +39,7 @@ pub struct ServiceManager {
     pub email_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub transcript_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub scheduler_status: Arc<std::sync::Mutex<ServiceStatus>>,
+    pub notion_task_sync_status: Arc<std::sync::Mutex<ServiceStatus>>,
 }
 
 impl ServiceManager {
@@ -148,6 +150,27 @@ impl ServiceManager {
             items_processed: 0,
         }));
 
+        // Notion task sync — background bidirectional sync for configured databases
+        let notion_task_sync_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
+            name: "notion-task-sync".into(),
+            running: false,
+            last_run: None,
+            last_error: None,
+            items_processed: 0,
+        }));
+
+        if !config.notion_api_key.is_empty() {
+            let p = parachute.clone();
+            let rx = shutdown_rx.clone();
+            let status = notion_task_sync_status.clone();
+            let api_key = config.notion_api_key.clone();
+            handles.push(tauri::async_runtime::spawn(async move {
+                notion_task_sync::run(p, api_key, rx, status).await;
+            }));
+        } else {
+            log::info!("Notion task sync disabled: no Notion API key configured");
+        }
+
         log::info!("ServiceManager started {} background services", handles.len());
 
         Self {
@@ -161,6 +184,7 @@ impl ServiceManager {
             email_status,
             transcript_status,
             scheduler_status,
+            notion_task_sync_status,
         }
     }
 
@@ -183,6 +207,7 @@ impl ServiceManager {
             self.email_status.lock().unwrap().clone(),
             self.transcript_status.lock().unwrap().clone(),
             self.scheduler_status.lock().unwrap().clone(),
+            self.notion_task_sync_status.lock().unwrap().clone(),
         ]
     }
 

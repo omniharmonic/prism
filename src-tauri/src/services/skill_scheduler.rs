@@ -9,52 +9,180 @@ use crate::services::ServiceStatus;
 const CHECK_INTERVAL_SECS: u64 = 60; // Check for due skills every minute
 
 /// Default skills to create on first run if no agent-skill notes exist.
-const DEFAULT_SKILLS: &[(&str, &str, u64, bool, &str)] = &[
+/// Tuple: (name, prompt, interval_secs, enabled, description, run_at_hour, depends_on)
+const DEFAULT_SKILLS: &[(&str, &str, u64, bool, &str, Option<u64>, Option<&str>)] = &[
     (
         "message-triage",
-        "Review recent message-thread notes that don't have importance tags (urgent/action-required/informational/social). For each untagged conversation, classify its importance and add the appropriate tag. If you find action items, create linked task notes at vault/tasks/active/. Summarize what you triaged.",
+        "Triage recent unclassified emails and messages. Surface what matters, filter noise.\n\n\
+## Step 1: Gather unclassified items\n\n\
+Query for email notes WITHOUT importance tags:\n\
+  query-notes: tags [\"email\"], exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 30, include_content true\n\n\
+Query for message threads WITHOUT importance tags:\n\
+  query-notes: tags [\"message-thread\"], exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 20, include_content true\n\n\
+## Step 2: Classify each item\n\n\
+Apply ONE importance tag per item:\n\n\
+URGENT (tag: \"urgent\") — needs response within hours:\n\
+- Explicit deadline today or tomorrow\n\
+- Direct request from a key collaborator (check person notes with relationship_type \"collaborator\" or \"stakeholder\")\n\
+- Time-sensitive opportunity with closing window\n\
+- System outage, legal notice, or financial deadline\n\n\
+ACTION-REQUIRED (tag: \"action-required\") — needs response within 1-3 days:\n\
+- Direct question requiring input or decision\n\
+- Meeting request or scheduling coordination\n\
+- Review or approval request\n\
+- Task assignment or delegation\n\n\
+INFORMATIONAL (tag: \"informational\") — good to know, no action:\n\
+- Status update, newsletter, FYI CC, community announcement\n\
+- Automated notification (GitHub, Notion, etc.)\n\n\
+LOW (tag: \"low\") — ignore or batch-process:\n\
+- Marketing, spam, social media notifications, duplicate alerts\n\n\
+## Step 3: Sender context boost\n\n\
+Before finalizing, check if sender has a person note (query-notes with sender name, tags [\"person\"]).\n\
+If person is linked to an active project or has relationship_type \"collaborator\"/\"stakeholder\", boost importance one tier.\n\n\
+## Step 4: Extract action items\n\n\
+For URGENT or ACTION-REQUIRED items with actionable requests, create task notes:\n\
+  create-note at vault/tasks/active/{slug}\n\
+  Tags: [\"task\"] + project tag if identifiable\n\
+  Metadata: status=\"todo\", type based on content, assigned=sender name\n\
+  Link task to source note with relationship \"extracted-from\"\n\n\
+For commitments someone made TO the vault owner:\n\
+  Create task with type=\"followup-expected\" — tracks what others owe.\n\n\
+## Step 5: Tag and summarize\n\n\
+Add the importance tag + \"triaged\" tag to each note using update-note with tags.add.\n\n\
+Output summary: count by category, list urgent items with sender/subject, note any tasks created.",
         3600, // 1 hour
         false, // disabled by default
         "Classify message importance and extract action items",
+        None,
+        None,
     ),
     (
         "meeting-processor",
-        "Process unprocessed transcript notes in the vault.\n\n\
-Step 1: Use the read-notes MCP tool to get unprocessed transcripts:\n\
-  - tags: [\"transcript\"]\n\
-  - exclude_tags: [\"processed\"]\n\
-  - include_content: false\n\
-  - limit: 10\n\
-  - sort: \"desc\"\n\
-This returns a lightweight index. Process up to 10 transcripts per run \
-(the skill runs every 30 minutes, so it will catch up over time).\n\n\
-Step 2: For each transcript note, use get-note to read the full content, then:\n\
-  a. Extract attendees and match to person notes (use search-notes with tags [\"person\"])\n\
-  b. Extract action items — create linked task notes at vault/tasks/active/ if any\n\
-  c. Extract key decisions and topics\n\
-  d. Write a concise summary and prepend it to the note content using update-note\n\
-  e. Add the \"processed\" tag using tag-note\n\n\
-Step 3: For each transcript, check if there is a matching meeting note:\n\
-  - Use read-notes with tags [\"meeting\"] and date_from/date_to matching the transcript date\n\
-  - If found, use create-link to link meeting to transcript with relationship \"has-transcript\"\n\n\
-Summarize what you processed.",
+        "Process unprocessed meeting transcripts. Extract entities, route to projects, create tasks, enrich person profiles.\n\n\
+## Step 1: Get unprocessed transcripts\n\n\
+query-notes: tags [\"transcript\"], exclude_tags [\"processed\"], include_content false, limit 10, sort desc\n\n\
+If none found, output \"No unprocessed transcripts\" and stop.\n\n\
+## Step 2: For each transcript\n\n\
+Read full content with query-notes (pass the note path), then:\n\n\
+### 2a. Project matching (weighted scoring)\n\n\
+Score against project notes (query-notes: tags [\"project\"], include_content true).\n\n\
+Scoring: project name in title +5, in body +3, keyword match +2 each (max 6),\n\
+collaborator as attendee +3 each, collaborator in text +2 each, org name in text +3.\n\n\
+Score >= 8: assign to project (high confidence). 4-7: assign with medium confidence. <4: unassigned.\n\
+If assigned, add project slug as tag and set metadata \"project\". Link to project with \"belongs-to\".\n\n\
+### 2b. Attendee extraction and person matching\n\n\
+For each speaker/attendee:\n\
+1. Search existing person notes: query-notes with name, tags [\"person\"]\n\
+2. If found: update last-contact date, link transcript to person with \"attended-by\"\n\
+3. If NOT found: create person note at vault/people/{Full Name}\n\
+   Tags: [\"person\"], metadata: role, organizations (if mentioned)\n\
+   Link to transcript with \"attended-by\"\n\n\
+### 2c. Action item extraction\n\n\
+Look for: \"[Name] will...\", \"[Name] to...\", \"Action item:...\", \"TODO:...\",\n\
+\"Next step:...\", \"Can you...\", \"I'll...\", \"Let's...\" + agreement.\n\n\
+For each action item, create task at vault/tasks/active/{slug}:\n\
+  Tags: [\"task\"] + project slug if known\n\
+  Metadata: status=\"todo\", type=\"meeting-action-item\" (owner's commitment) or\n\
+  \"followup-expected\" (someone else's commitment TO owner), assigned=person,\n\
+  project=slug, due=resolve relative dates to ISO-8601, confidence=high/medium\n\
+  Link to transcript with \"extracted-from\"\n\
+Only create medium or high confidence tasks.\n\n\
+### 2d. Summary\n\n\
+Prepend structured summary to transcript content using update-note:\n\
+## Summary, ## Attendees, ## Key Decisions, ## Action Items, ## Topics Discussed\n\n\
+### 2e. Mark processed\n\n\
+Add \"processed\" tag via update-note with tags.add.\n\n\
+## Step 3: Link to calendar events\n\n\
+For each processed transcript, search meeting notes (query-notes: tags [\"meeting\"], search by date).\n\
+Match by attendee overlap and title similarity. Link: meeting → transcript with \"has-transcript\".\n\n\
+Summarize: transcripts processed, project assignments, tasks created, person notes created/updated.",
         1800, // 30 minutes
         false,
         "Process meeting transcripts, extract action items, link to calendar events",
+        None,
+        None,
     ),
     (
         "daily-briefing",
-        "Generate a daily briefing for today. Check:\n1. Today's calendar events (meetings with times, attendees, meet links)\n2. Overdue and due-today tasks\n3. Recent urgent/action-required messages from the last 24 hours\n4. Meetings in the next 24 hours without agendas\n5. Follow-ups from recent meetings\n\nWrite the briefing to vault/agent/briefings/{{today}} tagged 'briefing'. Be concise and actionable — bullet points, not paragraphs.",
+        "Generate the daily briefing for {{today}}. This is the primary situational awareness tool — concise, actionable, complete.\n\n\
+## Section 1: ESCALATION ALERTS\n\n\
+Check latest agent-insight note (query-notes: tags [\"agent-insight\"], limit 1, sort desc).\n\
+If recent (today or yesterday), extract emergency/critical items.\n\
+Otherwise scan tasks directly: query-notes: tags [\"task\"], include_content false, limit 200.\n\
+Calculate days overdue for each task with a due date:\n\
+- 14+ days → EMERGENCY (!!) | 7-13 days → CRITICAL (!) | 3-6 days → ALERT\n\n\
+## Section 2: OVERDUE & URGENT\n\n\
+From tasks: all past-due grouped by days overdue (worst first), due today, due tomorrow,\n\
+high-priority approaching (within 48h).\n\
+Format: [status] description (X days overdue) — project\n\n\
+## Section 3: TODAY'S SCHEDULE\n\n\
+query-notes: tags [\"meeting\"], search for {{today}}. List time, title, attendees, meet link.\n\n\
+## Section 4: MEETING PREP\n\n\
+For each meeting in next 8 hours:\n\
+- Find related tasks by project tag or attendee names\n\
+- Find last meeting with same people (query-notes: tags [\"meeting\", \"processed\"], search by attendee)\n\
+- Find recent email threads with attendees\n\
+- List: open questions, pending items, relevant tasks\n\n\
+## Section 5: FOLLOW-UP NEEDED\n\n\
+Query tasks with type=\"followup-expected\" and status=\"todo\".\n\
+These are things OTHER PEOPLE committed to the vault owner. Sort by age, oldest first.\n\
+Flag any 7+ days old.\n\n\
+## Section 6: EMAIL & MESSAGE HIGHLIGHTS (Last 24h)\n\n\
+query-notes: tags [\"email\", \"urgent\"], limit 10\n\
+query-notes: tags [\"email\", \"action-required\"], limit 10\n\
+query-notes: tags [\"message-thread\", \"urgent\"], limit 5\n\
+List action-required items with sender and subject.\n\n\
+## Section 7: HEADS UP\n\n\
+Tomorrow's schedule, tasks due this week, pattern warnings from latest agent-insight.\n\n\
+## Output\n\n\
+Write briefing to vault/agent/briefings/{{today}} with tag \"briefing\" and metadata date={{today}}.\n\
+Use plain text with section headers. Each section: bullet points, not paragraphs.\n\
+If a section has no items, write \"None\". Entire briefing readable in 2 minutes.",
         86400, // 24 hours
         false,
-        "Morning briefing with calendar, tasks, and messages",
+        "Morning briefing with escalations, tasks, schedule, meeting prep, and pattern warnings",
+        Some(7),
+        Some("intelligence-scan"),
     ),
     (
         "intelligence-scan",
-        "Analyze the vault for patterns and insights:\n1. Stalled projects (no updates in 7+ days)\n2. Overdue tasks with graduated urgency\n3. Upcoming meetings without agendas or notes\n4. Calendar gaps that match pending tasks\n5. Commitments others made in recent meetings that need follow-up\n6. Patterns in meeting density or project activity\n\nWrite insights to vault/agent/insights/{{today}} tagged 'agent-insight'. Focus on actionable findings.",
+        "Run intelligence analysis on the vault. Look for patterns, escalations, and opportunities.\n\
+This output feeds into the daily briefing.\n\n\
+## Analyzer 1: Task Escalation (Graduated Urgency)\n\n\
+Query all active tasks: query-notes: tags [\"task\"], include_content false, limit 500.\n\
+For each task with a due date that isn't empty:\n\
+  Calculate days overdue = (today - due date)\n\
+  1-2 days → MENTION | 3-6 days → ALERT | 7-13 days → CRITICAL | 14+ days → EMERGENCY\n\
+Sort by severity then by days overdue.\n\n\
+## Analyzer 2: Slot Opportunities\n\n\
+Query today's and tomorrow's meeting notes. Identify free blocks during 9AM-6PM.\n\
+Blocks >1 hour are available slots. For each, find matching overdue tasks.\n\
+Output: \"You have 2 free hours between 1-3 PM. Consider: [overdue task X from project Y]\"\n\n\
+## Analyzer 3: Commitment Tracker\n\n\
+Query tasks with type=\"followup-expected\" and status=\"todo\".\n\
+For each, calculate days since created or last updated.\n\
+7-13 days: \"Consider a gentle nudge\" | 14+ days: \"Likely forgotten — follow up directly\"\n\n\
+## Analyzer 4: Pattern Detection\n\n\
+### Stalled Projects\n\
+Group tasks by project. If ALL active tasks in a project are overdue:\n\
+\"STALLED: {project} — all {N} tasks overdue. Decide: escalate, pause, or reschedule.\"\n\n\
+### Overdue Saturation\n\
+(overdue / total active) * 100. >60%: SATURATION warning. >40%: APPROACHING warning.\n\n\
+### Zombie Tasks\n\
+Tasks with no update in 21+ days and status still \"todo\":\n\
+\"ZOMBIE: {task} — no activity in {N} days. Suggest: archive, reschedule, or keep.\"\n\n\
+### Forgotten Follow-ups\n\
+followup-expected tasks older than 14 days:\n\
+\"{person} committed to {task} on {date} — {N} days ago, no update.\"\n\n\
+## Output\n\n\
+Write to vault/agent/insights/{{today}} with tag \"agent-insight\" and metadata date={{today}}.\n\
+Structure: SUMMARY (counts), EMERGENCY, CRITICAL, SLOT OPPORTUNITIES, AGING COMMITMENTS, PATTERN WARNINGS.\n\
+Keep factual and structured. No filler.",
         86400, // 24 hours
         false,
-        "Detect patterns, stalled projects, and opportunities",
+        "Graduated task escalation, slot detection, commitment tracking, pattern analysis",
+        Some(6),
+        None,
     ),
 ];
 
@@ -168,6 +296,25 @@ async fn check_and_dispatch(
             continue;
         }
 
+        // Check dependsOn: if this skill depends on another, ensure it ran today
+        let depends_on = meta.get("dependsOn").and_then(|v| v.as_str());
+        if let Some(dep_name) = depends_on {
+            let dep_ran_today = skills.iter().any(|s| {
+                let s_meta = match &s.metadata { Some(m) => m, None => return false };
+                let s_name = s_meta.get("skillName").and_then(|v| v.as_str()).unwrap_or("");
+                if s_name != dep_name { return false; }
+                s_meta.get("lastRun").and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Local).date_naive() == chrono::Local::now().date_naive())
+                    .unwrap_or(false)
+            });
+            if !dep_ran_today {
+                log::debug!("Skill '{}' waiting on dependency '{}'",
+                    meta.get("skillName").and_then(|v| v.as_str()).unwrap_or("?"), dep_name);
+                continue;
+            }
+        }
+
         let skill_name = meta.get("skillName").and_then(|v| v.as_str()).unwrap_or("unknown");
         let prompt = skill.content.clone();
 
@@ -218,7 +365,7 @@ async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate:
 
     log::info!("Skill scheduler: creating {} default skills", DEFAULT_SKILLS.len());
 
-    for (name, prompt, interval, enabled, description) in DEFAULT_SKILLS {
+    for (name, prompt, interval, enabled, description, run_at_hour, depends_on) in DEFAULT_SKILLS {
         let path = format!("vault/agent/skills/{}", name);
         let metadata = serde_json::json!({
             "type": "agent-skill",
@@ -227,6 +374,8 @@ async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate:
             "intervalSecs": interval,
             "enabled": enabled,
             "lastRun": null,
+            "runAtHour": run_at_hour,
+            "dependsOn": depends_on,
         });
 
         parachute.create_note(&CreateNoteParams {

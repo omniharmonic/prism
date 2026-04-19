@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 *.png
 .playwright-mcp/
+.mcp.json

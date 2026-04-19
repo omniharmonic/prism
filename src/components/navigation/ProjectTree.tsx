@@ -19,8 +19,12 @@ import {
   Trash2,
   FilePlus,
   GitFork,
+  Square,
+  CheckSquare2,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { useNotes, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
+import { vaultApi } from "../../lib/parachute/client";
 import { GitHubSyncModal } from "../layout/GitHubSyncModal";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -535,6 +539,7 @@ export function ProjectTree() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedId, setLastClickedId] = useState<string | null>(null);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
+  const [batchDeleteProgress, setBatchDeleteProgress] = useState<{ deleted: number; total: number } | null>(null);
   const [batchMoveTarget, setBatchMoveTarget] = useState(false);
 
   // Gather all unique directory paths for move dialog
@@ -673,17 +678,59 @@ export function ProjectTree() {
     }
   }, [lastClickedId, tree]);
 
+  // ─── Toggle a single note's selection (from checkbox click) ───
+  const handleToggleSelect = useCallback((noteId: string, shiftKey?: boolean) => {
+    if (shiftKey && lastClickedId) {
+      // Range select from last clicked to this one
+      const flatIds = getFlatNoteIds(tree);
+      const startIdx = flatIds.indexOf(lastClickedId);
+      const endIdx = flatIds.indexOf(noteId);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [from, to] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const rangeIds = flatIds.slice(from, to + 1);
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          for (const id of rangeIds) next.add(id);
+          return next;
+        });
+      }
+    } else {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(noteId)) next.delete(noteId);
+        else next.add(noteId);
+        return next;
+      });
+    }
+    setLastClickedId(noteId);
+  }, [lastClickedId, tree]);
+
   // ─── Batch operations ──────────────────────────────
   const handleBatchDelete = useCallback(async () => {
     const closeTabs = useUIStore.getState().closeTabs;
-    for (const id of selectedIds) {
-      if (closeTabs) closeTabs(id);
-      await deleteNote.mutateAsync(id);
-    }
-    setSelectedIds(new Set());
+    const ids = Array.from(selectedIds);
+
+    // Close open tabs for notes being deleted
+    if (closeTabs) ids.forEach(id => closeTabs(id));
+
     setBatchDeleteConfirm(false);
-    invalidate();
-  }, [selectedIds, deleteNote, invalidate]);
+    setBatchDeleteProgress({ deleted: 0, total: ids.length });
+
+    // Listen for progress events from Rust
+    const unlisten = await listen<{ deleted: number; failed: number; total: number }>(
+      "vault:batch-delete-progress",
+      (event) => setBatchDeleteProgress({ deleted: event.payload.deleted, total: event.payload.total }),
+    );
+
+    try {
+      await vaultApi.batchDelete(ids);
+    } finally {
+      unlisten();
+      setBatchDeleteProgress(null);
+      setSelectedIds(new Set());
+      invalidate();
+    }
+  }, [selectedIds, invalidate]);
 
   const handleBatchMove = useCallback(async (destPath: string) => {
     for (const id of selectedIds) {
@@ -716,8 +763,29 @@ export function ProjectTree() {
 
   return (
     <>
+      {/* Batch delete progress */}
+      {batchDeleteProgress && (
+        <div className="px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <Spinner size={12} />
+            <span style={{ color: "var(--text-secondary)" }}>
+              Deleting {batchDeleteProgress.deleted} / {batchDeleteProgress.total}
+            </span>
+          </div>
+          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
+            <div
+              className="h-full rounded-full transition-all duration-200"
+              style={{
+                width: `${(batchDeleteProgress.deleted / batchDeleteProgress.total) * 100}%`,
+                background: "rgb(239,68,68)",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Batch actions toolbar */}
-      {selectedIds.size > 1 && (
+      {selectedIds.size > 0 && !batchDeleteProgress && (
         <div className="flex items-center gap-2 px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
           <span style={{ color: "var(--text-secondary)" }}>{selectedIds.size} selected</span>
           <button
@@ -764,6 +832,8 @@ export function ProjectTree() {
             onNewFolderConfirm={handleNewFolderConfirm}
             onNewFolderCancel={() => setNewFolder(null)}
             selectedIds={selectedIds}
+            selectionMode={selectedIds.size > 0}
+            onToggleSelect={handleToggleSelect}
             onNodeClick={handleNodeClick}
           />
         ))}
@@ -844,6 +914,8 @@ function TreeNodeView({
   onNewFolderConfirm,
   onNewFolderCancel,
   selectedIds,
+  selectionMode,
+  onToggleSelect,
   onNodeClick,
 }: {
   node: TreeNode;
@@ -856,6 +928,8 @@ function TreeNodeView({
   onNewFolderConfirm: (name: string) => void;
   onNewFolderCancel: () => void;
   selectedIds: Set<string>;
+  selectionMode: boolean;
+  onToggleSelect: (noteId: string, shiftKey?: boolean) => void;
   onNodeClick: (e: React.MouseEvent, node: TreeNode) => boolean;
 }) {
   const [open, setOpen] = useState(depth === 0);
@@ -870,7 +944,12 @@ function TreeNodeView({
       setOpen(!open);
       return;
     }
-    // Let multi-select handler run first
+    // In selection mode, clicks toggle selection instead of opening
+    if (selectionMode && noteId) {
+      onToggleSelect(noteId, e.shiftKey);
+      return;
+    }
+    // Let multi-select handler run first (Cmd/Ctrl + Shift clicks)
     const handled = onNodeClick(e, node);
     if (!handled && node.note) {
       // Normal click — open the note
@@ -888,13 +967,22 @@ function TreeNodeView({
 
   const IconComponent = getIcon();
 
+  const isNote = !!node.note;
+  const showCheckbox = isNote && selectionMode;
+  const noteId = node.note?.id;
+
+  const handleCheckboxClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (noteId) onToggleSelect(noteId, e.shiftKey);
+  };
+
   return (
     <div>
       <button
         onClick={handleClick}
         onContextMenu={(e) => onContextMenu(e, node)}
         className={cn(
-          "w-full flex items-center gap-1.5 py-1 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate",
+          "group w-full flex items-center gap-1.5 py-1 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate",
           isSelected && "bg-white/10 ring-1 ring-white/20",
         )}
         style={{
@@ -902,7 +990,38 @@ function TreeNodeView({
           color: "var(--text-secondary)",
         }}
       >
-        {IconComponent ? <IconComponent size={14} className="flex-shrink-0" style={{ opacity: 0.7 }} /> : null}
+        {/* Icon area: checkbox on hover (or always in selection mode) */}
+        <span className="relative flex-shrink-0 w-[14px] h-[14px]">
+          {isNote && (
+            <>
+              {/* Normal icon — hidden on hover or in selection mode */}
+              <span
+                className={cn(
+                  "absolute inset-0 flex items-center justify-center transition-opacity pointer-events-none",
+                  showCheckbox ? "opacity-0" : "opacity-100 group-hover:opacity-0",
+                )}
+              >
+                {IconComponent ? <IconComponent size={14} style={{ opacity: 0.7 }} /> : null}
+              </span>
+              {/* Checkbox — visible on hover or in selection mode, on top for clicks */}
+              <span
+                className={cn(
+                  "absolute inset-0 flex items-center justify-center z-10",
+                  showCheckbox ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                )}
+                onClick={handleCheckboxClick}
+              >
+                {isSelected
+                  ? <CheckSquare2 size={14} style={{ color: "var(--accent, #60a5fa)" }} />
+                  : <Square size={14} style={{ opacity: 0.5 }} />
+                }
+              </span>
+            </>
+          )}
+          {!isNote && IconComponent && (
+            <IconComponent size={14} style={{ opacity: 0.7 }} />
+          )}
+        </span>
         {isRenaming ? (
           <InlineEdit
             initialValue={node.name}
@@ -942,6 +1061,8 @@ function TreeNodeView({
               onNewFolderConfirm={onNewFolderConfirm}
               onNewFolderCancel={onNewFolderCancel}
               selectedIds={selectedIds}
+              selectionMode={selectionMode}
+              onToggleSelect={onToggleSelect}
               onNodeClick={onNodeClick}
             />
           ))}

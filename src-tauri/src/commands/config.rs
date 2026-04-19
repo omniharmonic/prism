@@ -17,8 +17,6 @@ pub struct AppConfig {
     pub google_account_primary: String,
     pub google_account_agent: String,
     pub anthropic_api_key: String,
-    #[serde(skip)]
-    pub omniharmonic_root: PathBuf,
     pub parachute_url: String,
     #[serde(default)]
     pub parachute_api_key: String,
@@ -47,7 +45,6 @@ impl Default for AppConfig {
             google_account_primary: String::new(),
             google_account_agent: String::new(),
             anthropic_api_key: String::new(),
-            omniharmonic_root: PathBuf::new(),
             parachute_url: "http://localhost:1940".into(),
             parachute_api_key: String::new(),
             fathom_api_key: String::new(),
@@ -60,75 +57,73 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// Load config: prism-config.json → omniharmonic .env → defaults
+    /// Load config from prism-config.json, falling back to defaults.
+    ///
+    /// On first launch the config file won't exist — we create it with defaults
+    /// so Settings UI always has a file to read/write. Users configure
+    /// everything through Settings; no external .env required.
     pub fn load() -> Result<Self, PrismError> {
-        // Try prism-config.json first
         let config_path = Self::config_path();
+        log::debug!("Loading config from {:?} (exists: {})", config_path, config_path.exists());
+
+        // Try loading existing config
         if config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
-                    config.omniharmonic_root = Self::find_omniharmonic_root();
-                    // Backfill empty keys from .env — handles newly-added fields
-                    // that don't exist in older saved config files
-                    let env_path = config.omniharmonic_root.join(".env");
-                    if let Ok(vars) = load_env_file(&env_path) {
-                        if config.parachute_api_key.is_empty() {
-                            config.parachute_api_key = vars.get("PARACHUTE_API_KEY").cloned().unwrap_or_default();
+                    // Try macOS Keychain for Anthropic key if not in config
+                    if config.anthropic_api_key.is_empty() {
+                        if let Some(key) = try_keychain_anthropic() {
+                            config.anthropic_api_key = key;
                         }
-                        if config.anthropic_api_key.is_empty() {
-                            config.anthropic_api_key = vars.get("ANTHROPIC_API_KEY")
-                                .cloned().or_else(try_keychain_anthropic).unwrap_or_default();
-                        }
-                        if config.fathom_api_key.is_empty() {
-                            config.fathom_api_key = vars.get("FATHOM_API_KEY").cloned().unwrap_or_default();
-                        }
-                        if config.notion_api_key.is_empty() {
-                            config.notion_api_key = vars.get("NOTION_API_KEY").cloned().unwrap_or_default();
-                        }
+                    }
+                    // Auto-discover Meetily if not configured
+                    if config.meetily_db_path.is_empty() {
+                        config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
                     }
                     return Ok(config);
                 }
             }
         }
 
-        // Fall back to omniharmonic .env
-        let omni_root = Self::find_omniharmonic_root();
-        let env_path = omni_root.join(".env");
-        let vars = load_env_file(&env_path).unwrap_or_default();
+        // First launch — check for legacy omniharmonic .env to migrate from
+        log::info!("No existing config found, checking for legacy .env to migrate");
+        let mut config = Self::default();
+        if let Some(env_path) = Self::find_legacy_env() {
+            if let Ok(vars) = load_env_file(&env_path) {
+                log::info!("Migrating config from legacy .env at {:?}", env_path);
+                if let Some(v) = vars.get("MATRIX_HOMESERVER") { config.matrix_homeserver = v.clone(); }
+                if let Some(v) = vars.get("MATRIX_USER") { config.matrix_user = v.clone(); }
+                if let Some(v) = vars.get("MATRIX_ACCESS_TOKEN") { config.matrix_access_token = v.clone(); }
+                if let Some(v) = vars.get("MATRIX_DEVICE_ID") { config.matrix_device_id = v.clone(); }
+                if let Some(v) = vars.get("NOTION_API_KEY") { config.notion_api_key = v.clone(); }
+                if let Some(v) = vars.get("GOOGLE_ACCOUNT_BENJAMIN").or(vars.get("GOOGLE_ACCOUNT_PRIMARY")) {
+                    config.google_account_primary = v.clone();
+                }
+                if let Some(v) = vars.get("GOOGLE_ACCOUNT_AGENT") { config.google_account_agent = v.clone(); }
+                if let Some(v) = vars.get("PARACHUTE_URL") { config.parachute_url = v.clone(); }
+                if let Some(v) = vars.get("PARACHUTE_API_KEY") { config.parachute_api_key = v.clone(); }
+                if let Some(v) = vars.get("FATHOM_API_KEY") { config.fathom_api_key = v.clone(); }
+                if let Some(v) = vars.get("MEETILY_DB_PATH") { config.meetily_db_path = v.clone(); }
+            }
+        }
 
-        let config = Self {
-            matrix_homeserver: vars.get("MATRIX_HOMESERVER")
-                .cloned().unwrap_or_else(|| "http://localhost:8008".into()),
-            matrix_user: vars.get("MATRIX_USER")
-                .cloned().unwrap_or_else(|| "@prism:localhost".into()),
-            matrix_access_token: vars.get("MATRIX_ACCESS_TOKEN")
-                .cloned().unwrap_or_default(),
-            matrix_device_id: vars.get("MATRIX_DEVICE_ID")
-                .cloned().unwrap_or_else(|| "PRISM".into()),
-            notion_api_key: vars.get("NOTION_API_KEY")
-                .cloned().unwrap_or_default(),
-            google_account_primary: vars.get("GOOGLE_ACCOUNT_BENJAMIN")
-                .cloned().unwrap_or_default(),
-            google_account_agent: vars.get("GOOGLE_ACCOUNT_AGENT")
-                .cloned().unwrap_or_default(),
-            anthropic_api_key: vars.get("ANTHROPIC_API_KEY")
-                .cloned().or_else(try_keychain_anthropic)
-                .unwrap_or_default(),
-            omniharmonic_root: omni_root,
-            parachute_url: vars.get("PARACHUTE_URL")
-                .cloned().unwrap_or_else(|| "http://localhost:1940".into()),
-            parachute_api_key: vars.get("PARACHUTE_API_KEY")
-                .cloned().unwrap_or_default(),
-            fathom_api_key: vars.get("FATHOM_API_KEY").cloned().unwrap_or_default(),
-            meetily_db_path: vars.get("MEETILY_DB_PATH").cloned()
-                .unwrap_or_else(|| auto_discover_meetily().unwrap_or_default()),
-            readai_api_key: String::new(),
-            otter_api_key: String::new(),
-            fireflies_api_key: String::new(),
-        };
+        // Try keychain for Anthropic key
+        if config.anthropic_api_key.is_empty() {
+            if let Some(key) = try_keychain_anthropic() {
+                config.anthropic_api_key = key;
+            }
+        }
 
-        // Save to prism-config.json for next time
-        let _ = config.save();
+        // Auto-discover Meetily
+        if config.meetily_db_path.is_empty() {
+            config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
+        }
+
+        // Always persist so the file exists for future launches
+        match config.save() {
+            Ok(_) => log::info!("Created initial config at {:?}", config_path),
+            Err(e) => log::error!("Failed to save initial config to {:?}: {}", config_path, e),
+        }
 
         Ok(config)
     }
@@ -136,8 +131,10 @@ impl AppConfig {
     /// Save config to prism-config.json
     pub fn save(&self) -> Result<(), PrismError> {
         let path = Self::config_path();
+        log::debug!("Saving config to {:?}", path);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| PrismError::Other(format!("Serialize config: {}", e)))?;
@@ -153,10 +150,21 @@ impl AppConfig {
             .join("prism-config.json")
     }
 
-    fn find_omniharmonic_root() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join("iCloud Drive (Archive)/Documents/cursor projects/omniharmonic_agent")
+    /// Search common locations for a legacy omniharmonic .env file (one-time migration).
+    fn find_legacy_env() -> Option<PathBuf> {
+        let home = dirs::home_dir()?;
+        let candidates = [
+            "iCloud Drive (Archive)/Documents/cursor projects/omniharmonic_agent/.env",
+            "omniharmonic_agent/.env",
+            "Documents/omniharmonic_agent/.env",
+        ];
+        for candidate in &candidates {
+            let path = home.join(candidate);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
     }
 }
 
