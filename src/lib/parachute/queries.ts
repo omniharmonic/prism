@@ -10,6 +10,7 @@ export const queryKeys = {
     search: (query: string) => ["vault", "search", query] as const,
     tags: () => ["vault", "tags"] as const,
     stats: () => ["vault", "stats"] as const,
+    graph: () => ["vault", "graph"] as const,
   },
   services: {
     status: () => ["services", "status"] as const,

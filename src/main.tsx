@@ -4,8 +4,15 @@ import "./styles/tokens.css";
 import "./styles/glass.css";
 import "./styles/typography.css";
 
-// Show errors visibly on screen instead of white screen
+// Show errors visibly on screen ONLY before React mounts.
+// Once React is mounted, ErrorBoundary handles rendering errors.
+let reactMounted = false;
+
 window.addEventListener("error", (e) => {
+  if (reactMounted) {
+    console.error("[Prism] Uncaught error:", e.message, e.filename, e.lineno);
+    return; // Let React ErrorBoundary handle it
+  }
   document.getElementById("root")!.innerHTML = `
     <div style="padding:40px;color:white;font-family:monospace;background:#0a0a0b;height:100vh;">
       <h2 style="color:#EB5757;">Startup Error</h2>
@@ -15,6 +22,10 @@ window.addEventListener("error", (e) => {
 });
 
 window.addEventListener("unhandledrejection", (e) => {
+  if (reactMounted) {
+    console.error("[Prism] Unhandled rejection:", e.reason);
+    return;
+  }
   document.getElementById("root")!.innerHTML = `
     <div style="padding:40px;color:white;font-family:monospace;background:#0a0a0b;height:100vh;">
       <h2 style="color:#EB5757;">Unhandled Promise Error</h2>
@@ -34,6 +45,7 @@ import("./App").then(({ default: App }) => {
       <App />
     </React.StrictMode>,
   );
+  reactMounted = true;
 }).catch((err) => {
   document.getElementById("root")!.innerHTML = `
     <div style="padding:40px;color:white;font-family:monospace;background:#0a0a0b;height:100vh;">

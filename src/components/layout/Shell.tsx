@@ -6,6 +6,7 @@ import { Canvas } from "./Canvas";
 import { ContextPanel } from "./ContextPanel";
 import { StatusBar } from "./StatusBar";
 import { CommandBar } from "./CommandBar";
+import { GraphFullscreen } from "./GraphFullscreen";
 
 export function Shell() {
   const {
@@ -57,6 +58,9 @@ export function Shell() {
 
       {/* Command Bar overlay */}
       <CommandBar />
+
+      {/* Graph fullscreen overlay */}
+      <GraphFullscreen />
     </div>
   );
 }

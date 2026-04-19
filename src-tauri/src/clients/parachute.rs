@@ -242,6 +242,7 @@ impl ParachuteClient {
         let mut qp: Vec<(&str, String)> = vec![
             ("format", "graph".into()),
             ("include_links", "true".into()),
+            ("limit", "10000".into()),
         ];
         if let Some(ref center_id) = params.center_id {
             qp.push(("near", center_id.clone()));

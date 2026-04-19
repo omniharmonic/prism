@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
 import { Tabs } from "../ui/Tabs";
@@ -5,12 +6,16 @@ import { MetadataPanel } from "./MetadataPanel";
 import { PanelChat } from "../agent/PanelChat";
 import { LinksPanel } from "./LinksPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { Spinner } from "../ui/Spinner";
+
+const GraphPanel = lazy(() => import("./GraphPanel"));
 
 const PANEL_TABS = [
   { id: "metadata", label: "Meta" },
   { id: "agent", label: "Agent" },
   { id: "links", label: "Links" },
   { id: "history", label: "History" },
+  { id: "graph", label: "Graph" },
 ];
 
 export function ContextPanel() {
@@ -37,7 +42,13 @@ export function ContextPanel() {
         />
       </div>
 
-      <div className="flex-1 overflow-auto p-3">
+      <div
+        className={
+          contextPanelTab === "graph"
+            ? "flex-1 overflow-hidden"
+            : "flex-1 overflow-auto p-3"
+        }
+      >
         {contextPanelTab === "metadata" && note ? (
           <MetadataPanel note={note} />
         ) : contextPanelTab === "metadata" && !note ? (
@@ -52,6 +63,18 @@ export function ContextPanel() {
           <HistoryPanel note={note} />
         ) : contextPanelTab === "history" ? (
           <Placeholder text="Select a note to view history" />
+        ) : contextPanelTab === "graph" && note ? (
+          <Suspense
+            fallback={
+              <div className="flex justify-center items-center h-full">
+                <Spinner size={20} />
+              </div>
+            }
+          >
+            <GraphPanel noteId={note.id} />
+          </Suspense>
+        ) : contextPanelTab === "graph" ? (
+          <Placeholder text="Select a note to view its graph" />
         ) : null}
       </div>
     </div>

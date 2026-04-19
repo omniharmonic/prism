@@ -41,6 +41,66 @@ export function useVaultPaths() {
   });
 }
 
+/**
+ * Fetch the full vault graph (all nodes + edges). Cached aggressively since
+ * the Parachute `near` parameter isn't functional — neighborhood filtering
+ * happens client-side via `filterNeighborhood()`.
+ */
+export function useFullGraph() {
+  return useQuery({
+    queryKey: queryKeys.vault.graph(),
+    queryFn: () => vaultApi.getGraph(),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * BFS from `centerId` to extract a neighborhood subgraph up to `depth` hops.
+ * Returns only the nodes and edges within that neighborhood.
+ */
+export function filterNeighborhood(
+  graph: { nodes: Array<{ id: string; path?: string; tags?: string[] }>; edges: Array<{ source: string; target: string; relationship: string }> },
+  centerId: string,
+  depth: number,
+): { nodes: typeof graph.nodes; edges: typeof graph.edges } {
+  // Build adjacency list
+  const adj = new Map<string, Set<string>>();
+  for (const edge of graph.edges) {
+    if (!adj.has(edge.source)) adj.set(edge.source, new Set());
+    if (!adj.has(edge.target)) adj.set(edge.target, new Set());
+    adj.get(edge.source)!.add(edge.target);
+    adj.get(edge.target)!.add(edge.source);
+  }
+
+  // BFS with safety cap to prevent graph explosion on hub nodes
+  const MAX_BFS_NODES = 600;
+  const visited = new Set<string>();
+  let frontier = [centerId];
+  visited.add(centerId);
+
+  for (let d = 0; d < depth && frontier.length > 0; d++) {
+    const next: string[] = [];
+    for (const nodeId of frontier) {
+      for (const neighbor of adj.get(nodeId) ?? []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          next.push(neighbor);
+          if (visited.size >= MAX_BFS_NODES) break;
+        }
+      }
+      if (visited.size >= MAX_BFS_NODES) break;
+    }
+    frontier = next;
+    if (visited.size >= MAX_BFS_NODES) break;
+  }
+
+  const nodes = graph.nodes.filter((n) => visited.has(n.id));
+  const edges = graph.edges.filter(
+    (e) => visited.has(e.source) && visited.has(e.target),
+  );
+  return { nodes, edges };
+}
+
 export function useVaultStats() {
   return useQuery({
     queryKey: queryKeys.vault.stats(),

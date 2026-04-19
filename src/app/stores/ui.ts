@@ -15,7 +15,7 @@ interface UIStore {
   // Context panel
   contextPanelOpen: boolean;
   contextPanelWidth: number;
-  contextPanelTab: "agent" | "metadata" | "links" | "history";
+  contextPanelTab: "agent" | "metadata" | "links" | "history" | "graph";
 
   // Tabs
   openTabs: TabState[];
@@ -31,6 +31,9 @@ interface UIStore {
 
   // Pending editor edit (agent → editor communication)
   pendingEdit: PendingEdit | null;
+
+  // Graph fullscreen
+  graphFullscreen: boolean;
 
   // Ghost text: agent-generated content waiting for accept/reject
   ghostText: { noteId: string; content: string; position: "cursor" | "end" } | null;
@@ -54,6 +57,8 @@ interface UIStore {
   openInlinePrompt: (position: { x: number; y: number }, selection: string) => void;
   closeInlinePrompt: () => void;
 
+  setGraphFullscreen: (open: boolean) => void;
+
   setPendingEdit: (edit: PendingEdit) => void;
   clearPendingEdit: () => void;
 
@@ -74,6 +79,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   inlinePromptOpen: false,
   inlinePromptPosition: null,
   inlinePromptSelection: "",
+  graphFullscreen: false,
   pendingEdit: null,
   ghostText: null,
 
@@ -83,6 +89,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   toggleContextPanel: () => set((s) => ({ contextPanelOpen: !s.contextPanelOpen })),
   setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
   setContextPanelTab: (tab) => set({ contextPanelTab: tab }),
+  setGraphFullscreen: (open) => set({ graphFullscreen: open }),
 
   openTab: (noteId, title, type) => {
     const { openTabs } = get();
