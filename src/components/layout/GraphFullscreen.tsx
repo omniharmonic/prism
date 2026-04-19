@@ -105,7 +105,7 @@ export function GraphFullscreen() {
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col"
-      style={{ background: "var(--bg-base)" }}
+      style={{ background: "var(--bg-surface)" }}
     >
       {/* Header */}
       <div
@@ -168,7 +168,6 @@ export function GraphFullscreen() {
             height={dimensions.height}
             centerId={centerId}
             onNodeClick={handleNodeClick}
-            backgroundColor="#09090b"
             isVisible={graphFullscreen}
           />
         )}

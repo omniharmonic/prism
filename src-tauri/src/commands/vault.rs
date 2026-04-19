@@ -93,7 +93,7 @@ pub async fn vault_list_notes(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<Vec<Note>, PrismError> {
-    let params = ListNotesParams { tag, path, limit, offset };
+    let params = ListNotesParams { tag, path, limit, offset, ..Default::default() };
     let notes = match client.list_notes(&params).await {
         Ok(n) => n,
         Err(e) => {

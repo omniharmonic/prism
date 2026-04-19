@@ -251,6 +251,7 @@ async fn check_and_dispatch(
         path: None,
         limit: Some(100),
         offset: None,
+        include_content: true,
     }).await?;
 
     let now = chrono::Utc::now();
@@ -354,9 +355,8 @@ async fn check_and_dispatch(
 async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate::error::PrismError> {
     let existing = parachute.list_notes(&ListNotesParams {
         tag: Some("agent-skill".into()),
-        path: None,
         limit: Some(100),
-        offset: None,
+        ..Default::default()
     }).await?;
 
     if !existing.is_empty() {

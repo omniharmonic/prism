@@ -97,9 +97,8 @@ async fn sync_meetily(
     // Load existing transcript notes to avoid duplicates
     let existing = parachute.list_notes(&ListNotesParams {
         tag: Some("transcript".into()),
-        path: None,
         limit: Some(500),
-        offset: None,
+        ..Default::default()
     }).await.unwrap_or_default();
 
     let mut ingested = 0u64;
@@ -342,9 +341,8 @@ async fn sync_fathom(
     // Load existing transcript notes
     let existing = parachute.list_notes(&ListNotesParams {
         tag: Some("transcript".into()),
-        path: None,
         limit: Some(500),
-        offset: None,
+        ..Default::default()
     }).await.unwrap_or_default();
 
     let mut ingested = 0u64;

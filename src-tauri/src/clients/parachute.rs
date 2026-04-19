@@ -1,3 +1,4 @@
+use std::sync::RwLock;
 use reqwest::{Client, RequestBuilder};
 use crate::error::PrismError;
 use crate::models::note::*;
@@ -8,9 +9,12 @@ use crate::models::link::*;
 /// All mutations (tags, links) flow through `PATCH /api/notes/:id`.
 /// Search is absorbed into `GET /api/notes?search=...`.
 /// Stats come from `GET /api/vault?include_stats=true`.
+///
+/// The `api_key` is wrapped in `RwLock` so it can be updated at runtime
+/// (e.g. when the user changes it in Settings) without restarting the app.
 pub struct ParachuteClient {
     base_url: String,
-    api_key: Option<String>,
+    api_key: RwLock<Option<String>>,
     client: Client,
 }
 
@@ -25,15 +29,24 @@ impl ParachuteClient {
         };
         Self {
             base_url: api_url,
-            api_key,
+            api_key: RwLock::new(api_key),
             client: Client::new(),
         }
     }
 
+    /// Update the API key at runtime (called when user changes config).
+    pub fn set_api_key(&self, key: Option<String>) {
+        if let Ok(mut guard) = self.api_key.write() {
+            *guard = key;
+        }
+    }
+
     fn authed(&self, req: RequestBuilder) -> RequestBuilder {
-        if let Some(key) = &self.api_key {
+        let key = self.api_key.read().ok().and_then(|g| g.clone());
+        if let Some(key) = key {
             req.header("Authorization", format!("Bearer {}", key))
         } else {
+            log::warn!("ParachuteClient: making request WITHOUT api_key");
             req
         }
     }
@@ -51,8 +64,10 @@ impl ParachuteClient {
         let limit = params.limit.unwrap_or(10000);
         let mut qp: Vec<(&str, String)> = vec![
             ("limit", limit.to_string()),
-            ("include_content", "true".into()),
         ];
+        if params.include_content {
+            qp.push(("include_content", "true".into()));
+        }
         if let Some(ref tag) = params.tag {
             qp.push(("tag", tag.clone()));
         }
@@ -65,7 +80,10 @@ impl ParachuteClient {
 
         let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
         if !resp.status().is_success() {
-            return Err(PrismError::Parachute(format!("list_notes failed: {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::error!("list_notes {} — body: {} — api_key_present: {}", status, body, self.api_key.read().ok().map(|g| g.is_some()).unwrap_or(false));
+            return Err(PrismError::Parachute(format!("list_notes failed: {}", status)));
         }
         let text = resp.text().await?;
         let notes: Vec<Note> = serde_json::from_str(&text)

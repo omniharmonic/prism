@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox, Check } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
@@ -16,6 +16,14 @@ interface LinkData {
 }
 
 type ViewMode = "triage" | "people" | "platforms";
+
+/** Derive platform from metadata or fall back to tags (email notes lack metadata.platform). */
+function getPlatform(note: Note): string {
+  const meta = (note.metadata || {}) as Record<string, unknown>;
+  if (meta.platform) return meta.platform as string;
+  if ((note.tags || []).includes("email")) return "email";
+  return "matrix";
+}
 
 function formatRelativeTime(ts: number | string): string {
   try {
@@ -73,41 +81,28 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
   const allMessages = useMemo(() => [...(threadNotes || []), ...(emailNotes || [])], [threadNotes, emailNotes]);
 
-  // Fetch links for all person notes (messages-with relationships)
-  // We batch this by fetching from the graph API
-  const [personLinks, setPersonLinks] = useState<Map<string, LinkData[]>>(new Map());
+  // Build person→message link index from the full graph (single API call
+  // instead of hundreds of individual getLinks calls that overwhelm the vault).
+  const { data: graphData } = useQuery({
+    queryKey: ["vault", "graph"],
+    queryFn: () => vaultApi.getGraph(),
+    staleTime: 60_000,
+  });
 
-  useEffect(() => {
-    if (!personNotes || personNotes.length === 0) return;
-    // Fetch links for people who have messages-with connections
-    // Use a sampling approach: fetch links for people with vault/people/ paths
-    const fetchLinks = async () => {
-      const linkMap = new Map<string, LinkData[]>();
-      // Only fetch for people with auto-created paths (they have links from sync)
-      const candidates = personNotes.filter((n) => (n.path || "").startsWith("vault/people/")).slice(0, 500);
-      // Batch fetch using Promise.all in chunks
-      const chunkSize = 20;
-      for (let i = 0; i < candidates.length; i += chunkSize) {
-        const chunk = candidates.slice(i, i + chunkSize);
-        const results = await Promise.all(
-          chunk.map((n) => vaultApi.getLinks(n.id, "messages-with").then((links) => ({ id: n.id, links })).catch(() => ({ id: n.id, links: [] as LinkData[] })))
-        );
-        for (const { id, links } of results) {
-          if (links.length > 0) linkMap.set(id, links);
-        }
-      }
-      // Also check pre-existing people
-      const preExisting = personNotes.filter((n) => !(n.path || "").startsWith("vault/people/"));
-      for (const n of preExisting) {
-        try {
-          const links = await vaultApi.getLinks(n.id, "messages-with");
-          if (links.length > 0) linkMap.set(n.id, links);
-        } catch {}
-      }
-      setPersonLinks(linkMap);
-    };
-    fetchLinks();
-  }, [personNotes]);
+  const personLinks = useMemo(() => {
+    const linkMap = new Map<string, LinkData[]>();
+    if (!graphData?.edges) return linkMap;
+    for (const edge of graphData.edges) {
+      if (edge.relationship !== "messages-with" && edge.relationship !== "email-from") continue;
+      const link: LinkData = { sourceId: edge.source, targetId: edge.target, relationship: edge.relationship };
+      // Index by both endpoints so lookup works regardless of direction
+      if (!linkMap.has(edge.source)) linkMap.set(edge.source, []);
+      linkMap.get(edge.source)!.push(link);
+      if (!linkMap.has(edge.target)) linkMap.set(edge.target, []);
+      linkMap.get(edge.target)!.push(link);
+    }
+    return linkMap;
+  }, [graphData]);
 
   // Build people-with-threads index using graph links (not name matching)
   const peopleWithThreads = useMemo(() => {
@@ -143,7 +138,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       let lastMessageAt = 0;
       for (const t of threads) {
         const tm = (t.metadata || {}) as Record<string, unknown>;
-        platforms.add((tm.platform as string) || "matrix");
+        platforms.add(getPlatform(t));
         const ts = (tm.lastMessageAt as number) || 0;
         if (ts > lastMessageAt) lastMessageAt = ts;
       }
@@ -169,14 +164,13 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
     const platformCounts = new Map<string, number>();
     for (const note of allMessages) {
-      const p = ((note.metadata || {}) as Record<string, unknown>).platform as string || "matrix";
+      const p = getPlatform(note);
       platformCounts.set(p, (platformCounts.get(p) || 0) + 1);
     }
 
     const q = searchQuery.toLowerCase();
     const filtered = allMessages.filter((note) => {
-      const meta = (note.metadata || {}) as Record<string, unknown>;
-      const platform = (meta.platform as string) || "matrix";
+      const platform = getPlatform(note);
       if (platformFilter !== "all" && platform !== platformFilter) return false;
       if (q) {
         const name = (note.path || "").split("/").pop() || "";
@@ -194,7 +188,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
     const groups = new Map<string, Note[]>();
     for (const note of filtered) {
-      const p = ((note.metadata || {}) as Record<string, unknown>).platform as string || "matrix";
+      const p = getPlatform(note);
       if (!groups.has(p)) groups.set(p, []);
       groups.get(p)!.push(note);
     }
@@ -215,7 +209,8 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
   const handleOpenThread = (note: Note) => {
     const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || note.id;
-    openTab(note.id, name, "message-thread");
+    const isEmail = (note.tags || []).includes("email");
+    openTab(note.id, name, isEmail ? "email" : "message-thread");
   };
 
   const platforms = useMemo(() => Array.from(platformCounts.keys()).sort(), [platformCounts]);
@@ -299,8 +294,8 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 // ─── Triage View ─────────────────────────────────────────────
 
 const PRIORITY_TIERS = [
-  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.3)", defaultCollapsed: false },
-  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.08)", borderColor: "rgba(245,158,11,0.3)", defaultCollapsed: false },
+  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.25)", borderColor: "rgba(239,68,68,0.4)", defaultCollapsed: false },
+  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.25)", borderColor: "rgba(245,158,11,0.4)", defaultCollapsed: false },
   { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)", defaultCollapsed: false },
   { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
   { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)", bgColor: "transparent", borderColor: "rgba(34,197,94,0.3)", defaultCollapsed: true },
@@ -396,8 +391,8 @@ function TriageTier({ tier, notes, onOpenThread }: {
     <div>
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-5 py-2.5 sticky top-0 hover:bg-[var(--glass-hover)] transition-colors"
-        style={{ background: tier.bgColor, borderBottom: `1px solid ${tier.borderColor}` }}
+        className="w-full flex items-center gap-2 px-5 py-2.5 sticky top-0 z-10 hover:bg-[var(--glass-hover)] transition-colors backdrop-blur-md"
+        style={{ background: tier.bgColor, borderBottom: `1px solid ${tier.borderColor}`, backdropFilter: "blur(12px) saturate(1.4)", WebkitBackdropFilter: "blur(12px) saturate(1.4)" }}
       >
         {collapsed ? <ChevronRight size={13} style={{ color: tier.color }} /> : <ChevronDown size={13} style={{ color: tier.color }} />}
         <Icon size={13} style={{ color: tier.color }} />
@@ -411,7 +406,7 @@ function TriageTier({ tier, notes, onOpenThread }: {
 
       {!collapsed && notes.map((note) => {
         const meta = (note.metadata || {}) as Record<string, unknown>;
-        const platform = (meta.platform as string) || "matrix";
+        const platform = getPlatform(note);
         const config = getPlatformConfig(platform);
         const name = (note.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
         const lastTs = meta.lastMessageAt as number;
@@ -563,7 +558,7 @@ function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; on
           {/* Thread list */}
           {p.threads.map((thread) => {
             const meta = (thread.metadata || {}) as Record<string, unknown>;
-            const platform = (meta.platform as string) || "matrix";
+            const platform = getPlatform(thread);
             const config = getPlatformConfig(platform);
             const threadName = (thread.path || "").split("/").pop()?.replace(/-/g, " ") || "Thread";
             const lastTs = meta.lastMessageAt as number;

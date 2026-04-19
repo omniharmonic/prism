@@ -42,6 +42,10 @@ pub struct ListNotesParams {
     pub path: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    /// Request note content in the response. Default false — saves bandwidth
+    /// and avoids vault stack overflows on large result sets.
+    #[serde(default)]
+    pub include_content: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

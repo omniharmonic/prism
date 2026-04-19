@@ -39,10 +39,10 @@ pub async fn gmail_send(
     subject: String,
     body: String,
     _cc: Option<Vec<String>>,
-    _in_reply_to: Option<String>,
+    in_reply_to: Option<String>,
 ) -> Result<serde_json::Value, PrismError> {
     let acct = account.as_deref().unwrap_or(&config.google_account_primary);
-    client.gmail_send(acct, &to.join(","), &subject, &body)
+    client.gmail_send(acct, &to.join(","), &subject, &body, in_reply_to.as_deref())
 }
 
 #[tauri::command]

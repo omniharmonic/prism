@@ -70,9 +70,21 @@ export function GraphCanvas({
   height,
   centerId,
   onNodeClick,
-  backgroundColor = "#111114",
+  backgroundColor,
   isVisible = true,
 }: GraphCanvasProps) {
+  // Reactively detect light/dark mode from the html class
+  const [isLight, setIsLight] = useState(() => document.documentElement.classList.contains("light"));
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsLight(document.documentElement.classList.contains("light"));
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  const resolvedBg = backgroundColor ?? (isLight ? "#f4f4f6" : "#111114");
+  const linkBaseColor = isLight ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.2)";
+  const arrowColor = isLight ? "rgba(0,0,0,0.25)" : "rgba(255,255,255,0.3)";
   const graphRef = useRef<any>(null);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
 
@@ -127,14 +139,16 @@ export function GraphCanvas({
     };
   }, []);
 
+  const dimColor = isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.1)";
+  const defaultNodeColor = isLight ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.3)";
   const handleNodeColor = useCallback(
     (node: GraphNode) => {
       if (node.id === centerId) return "#7C9FE8";
-      if (neighborSet && !neighborSet.has(node.id)) return "rgba(255,255,255,0.1)";
+      if (neighborSet && !neighborSet.has(node.id)) return dimColor;
       if (node.tags?.[0]) return tagToColor(node.tags[0]);
-      return "rgba(255,255,255,0.3)";
+      return defaultNodeColor;
     },
-    [centerId, neighborSet],
+    [centerId, neighborSet, dimColor, defaultNodeColor],
   );
 
   const handleNodeLabel = useCallback(
@@ -161,16 +175,17 @@ export function GraphCanvas({
       graphData={graphData}
       width={width}
       height={height}
-      backgroundColor={backgroundColor}
+      backgroundColor={resolvedBg}
       nodeColor={handleNodeColor}
       nodeLabel={handleNodeLabel}
       nodeVal={(node: GraphNode) => (node.id === centerId ? 3 : 1)}
       nodeOpacity={0.9}
       nodeResolution={8}
-      linkColor={() => "rgba(255,255,255,0.08)"}
-      linkWidth={0.5}
+      linkColor={() => linkBaseColor}
+      linkWidth={0.8}
       linkDirectionalArrowLength={3}
       linkDirectionalArrowRelPos={1}
+      linkDirectionalArrowColor={() => arrowColor}
       linkLabel={(link: GraphLink) => link.relationship}
       onNodeClick={handleClick}
       onNodeHover={(node: GraphNode | null) => {

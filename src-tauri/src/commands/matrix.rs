@@ -111,18 +111,37 @@ pub async fn matrix_get_messages(
         }
     }
 
-    // Detect the user's bridge puppet IDs (they share the user's display name)
+    // Detect the user's bridge puppet IDs
     let user_id = client.user_id().to_string();
     let user_display = display_names.get(&user_id).cloned().unwrap_or_default();
-    let is_user = |sender: &str| -> bool {
-        if sender == user_id { return true; }
-        // Check if sender has same display name as the configured user
-        if !user_display.is_empty() {
-            if let Some(name) = display_names.get(sender) {
-                if name == &user_display { return true; }
+    let user_display_lower = user_display.trim().to_lowercase();
+
+    // Pre-compute set of all sender IDs that belong to the user.
+    // This includes the Matrix user ID and any bridge ghost whose display name
+    // matches (case-insensitive, also matching if one name contains the other).
+    let mut self_senders: std::collections::HashSet<String> = std::collections::HashSet::new();
+    self_senders.insert(user_id.clone());
+    if !user_display_lower.is_empty() {
+        for (sender_id, name) in &display_names {
+            if sender_id == &user_id { continue; }
+            let name_lower = name.trim().to_lowercase();
+            if name_lower == user_display_lower
+                || name_lower.contains(&user_display_lower)
+                || user_display_lower.contains(&name_lower)
+            {
+                log::debug!("is_user match: {} ({}) matches user display '{}'", sender_id, name, user_display);
+                self_senders.insert(sender_id.clone());
             }
         }
-        false
+    }
+
+    log::debug!(
+        "matrix_get_messages room={}: user_id={}, user_display='{}', display_names={:?}, self_senders={:?}",
+        room_id, user_id, user_display, display_names, self_senders
+    );
+
+    let is_user = |sender: &str| -> bool {
+        self_senders.contains(sender)
     };
 
     let messages = data["chunk"]

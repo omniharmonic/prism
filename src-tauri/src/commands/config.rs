@@ -353,15 +353,14 @@ pub fn get_full_config(
 }
 
 /// Update config fields and persist. Only non-null fields are updated.
+/// Hot-reloads the Parachute API key into the running client so it takes
+/// effect immediately without restarting the app.
 #[tauri::command]
 pub fn update_config(
     config: tauri::State<'_, AppConfig>,
+    parachute: tauri::State<'_, crate::clients::parachute::ParachuteClient>,
     updates: serde_json::Value,
 ) -> Result<(), PrismError> {
-    // We need mutable access — clone, modify, save, and update managed state
-    // Tauri doesn't allow mutable State, so we save to file and the changes
-    // take effect on next restart. For immediate effect on some fields, we
-    // update the config file.
     let mut new_config = config.inner().clone();
 
     if let Some(obj) = updates.as_object() {
@@ -380,8 +379,12 @@ pub fn update_config(
         if let Some(v) = obj.get("fireflies_api_key").and_then(|v| v.as_str()) { new_config.fireflies_api_key = v.to_string(); }
     }
 
+    // Hot-reload Parachute API key into the running client
+    let new_key = if new_config.parachute_api_key.is_empty() { None } else { Some(new_config.parachute_api_key.clone()) };
+    parachute.set_api_key(new_key);
+
     new_config.save()?;
-    log::info!("Config updated and saved to {:?}", AppConfig::config_path());
+    log::info!("Config updated and saved (parachute api_key hot-reloaded)");
     Ok(())
 }
 

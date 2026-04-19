@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::watch;
+use chrono;
 use crate::clients::google::GoogleClient;
 use crate::clients::parachute::ParachuteClient;
 use crate::models::note::{CreateNoteParams, UpdateNoteParams, ListNotesParams};
@@ -11,11 +12,8 @@ const SYNC_INTERVAL_SECS: u64 = 180; // 3 minutes
 /// Continuous Gmail → Parachute email sync.
 ///
 /// Every 3 minutes: fetch recent inbox messages via `gog gmail messages search`
-/// → create/update email notes in Parachute tagged `email`
+/// with `--include-body` → create/update email notes in Parachute tagged `email`
 /// → link to person notes for sender.
-///
-/// Note: gog's search returns summary data (from, subject, date, labels)
-/// but not full message bodies. This gives us enough for triage and linking.
 pub async fn run(
     google: Arc<GoogleClient>,
     parachute: Arc<ParachuteClient>,
@@ -28,6 +26,8 @@ pub async fn run(
     // Initial delay — stagger with other services
     tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
 
+    let mut first_run = true;
+
     loop {
         if *shutdown.borrow() {
             break;
@@ -38,7 +38,15 @@ pub async fn run(
             s.running = true;
         }
 
-        match sync_emails(&google, &parachute, &account).await {
+        // First run: broader window to backfill bodies for older emails
+        let query = if first_run {
+            first_run = false;
+            "in:inbox newer_than:14d"
+        } else {
+            "in:inbox newer_than:3h"
+        };
+
+        match sync_emails(&google, &parachute, &account, query).await {
             Ok(count) => {
                 let mut s = status.lock().unwrap();
                 s.last_run = Some(chrono::Utc::now().to_rfc3339());
@@ -72,13 +80,16 @@ async fn sync_emails(
     google: &GoogleClient,
     parachute: &ParachuteClient,
     account: &str,
+    query: &str,
 ) -> Result<u64, crate::error::PrismError> {
-    // Fetch recent inbox messages — gog returns { "messages": [...], "nextPageToken": ... }
-    // Each message has: id, threadId, date, from, subject, labels
+    // Fetch inbox messages — gog returns { "messages": [...], "nextPageToken": ... }
+    // Each message has: id, threadId, date, from, subject, labels, body (with --include-body)
+    let max_results = if query.contains("14d") { 100 } else { 30 };
     let data = tokio::task::spawn_blocking({
         let google = google.clone();
         let account = account.to_string();
-        move || google.gmail_list_threads(&account, Some("in:inbox newer_than:3h"), 30)
+        let query = query.to_string();
+        move || google.gmail_list_threads(&account, Some(&query), max_results)
     }).await
         .map_err(|e| crate::error::PrismError::Google(format!("spawn error: {}", e)))??;
 
@@ -99,9 +110,8 @@ async fn sync_emails(
     // Load existing email notes
     let existing_notes = parachute.list_notes(&ListNotesParams {
         tag: Some("email".into()),
-        path: None,
         limit: Some(500),
-        offset: None,
+        ..Default::default()
     }).await.unwrap_or_default();
 
     // Group messages by threadId to create one note per thread
@@ -138,16 +148,39 @@ async fn sync_emails(
 
         let is_unread = labels.iter().any(|l| l == "UNREAD");
 
-        // Build content from all messages in thread
+        // Build content from all messages in thread (includes body from --include-body)
         let mut content = format!("# {}\n\n", subject);
         for msg in thread_msgs {
             let msg_from = msg.get("from").and_then(|v| v.as_str()).unwrap_or("Unknown");
             let msg_date = msg.get("date").and_then(|v| v.as_str()).unwrap_or("");
-            content.push_str(&format!("**From:** {}  \n**Date:** {}\n\n---\n\n", msg_from, msg_date));
+            let msg_body = msg.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+            content.push_str(&format!("**From:** {}  \n**Date:** {}\n\n", msg_from, msg_date));
+
+            if !msg_body.is_empty() {
+                // Trim excessive whitespace and limit body length to keep notes manageable
+                let trimmed_body = msg_body.trim();
+                let body_text = if trimmed_body.len() > 20_000 {
+                    format!("{}…\n\n*(truncated)*", &trimmed_body[..20_000])
+                } else {
+                    trimmed_body.to_string()
+                };
+                content.push_str(&body_text);
+                content.push_str("\n\n");
+            }
+
+            content.push_str("---\n\n");
         }
+
+        // Parse date to epoch ms for consistent sorting with message-threads
+        let last_message_at: i64 = chrono::DateTime::parse_from_rfc2822(date)
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(date))
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0);
 
         let metadata = serde_json::json!({
             "type": "email",
+            "platform": "email",
             "threadId": thread_id,
             "from": from,
             "subject": subject,
@@ -155,6 +188,7 @@ async fn sync_emails(
             "labels": labels,
             "isUnread": is_unread,
             "messageCount": thread_msgs.len(),
+            "lastMessageAt": last_message_at,
         });
 
         // Find existing note for this thread
@@ -174,13 +208,21 @@ async fn sync_emails(
             note.id.clone()
         } else {
             let slug = sanitize_path(subject);
-            let path = format!("vault/messages/email/{}", slug);
-            let note = parachute.create_note(&CreateNoteParams {
-                content,
+            // Append short thread ID suffix to avoid path collisions on recurring subjects
+            let tid_suffix = if thread_id.len() > 6 { &thread_id[thread_id.len()-6..] } else { thread_id.as_str() };
+            let path = format!("vault/messages/email/{}-{}", slug, tid_suffix);
+            let note = match parachute.create_note(&CreateNoteParams {
+                content: content.clone(),
                 path: Some(path),
-                metadata: Some(metadata),
+                metadata: Some(metadata.clone()),
                 tags: Some(vec!["email".into()]),
-            }).await?;
+            }).await {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("Email create_note failed for '{}': {} — skipping", subject, e);
+                    continue;
+                }
+            };
             note.id
         };
 

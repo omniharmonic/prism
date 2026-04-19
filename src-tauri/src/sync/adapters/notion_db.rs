@@ -431,7 +431,7 @@ impl NotionDatabaseAdapter {
             tag: Some(config.parachute_tag.clone()),
             path: Some(config.parachute_path_prefix.clone()),
             limit: Some(10000),
-            offset: None,
+            ..Default::default()
         };
 
         let notes = parachute.list_notes(&params).await?;

@@ -119,6 +119,7 @@ pub async fn agent_get_skills(
         path: None,
         limit: Some(100),
         offset: None,
+        include_content: true,
     }).await?;
 
     Ok(notes.into_iter().map(|n| {

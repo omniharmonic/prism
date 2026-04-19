@@ -407,6 +407,7 @@ async fn find_conversation_note(
         path: None,
         limit: Some(2000),
         offset: None,
+        include_content: true,
     }).await?;
 
     Ok(notes.into_iter().find(|n| {

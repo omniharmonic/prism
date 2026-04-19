@@ -118,15 +118,18 @@ impl GoogleClient {
         }
         args.push("--max");
         args.push(&max_str);
+        args.push("--include-body");
         self.run_gog(&args, account)
     }
 
+    /// Fetch a thread by ID. Uses `gog gmail thread get` which returns
+    /// `{ thread: { messages: [...] } }` in raw Gmail API format.
     pub fn gmail_get_thread(
         &self,
         account: &str,
         thread_id: &str,
     ) -> Result<serde_json::Value, PrismError> {
-        self.run_gog(&["gmail", "messages", "get", thread_id], account)
+        self.run_gog(&["gmail", "thread", "get", thread_id], account)
     }
 
     pub fn gmail_send(
@@ -135,8 +138,14 @@ impl GoogleClient {
         to: &str,
         subject: &str,
         body: &str,
+        thread_id: Option<&str>,
     ) -> Result<serde_json::Value, PrismError> {
-        self.run_gog(&["gmail", "messages", "send", "--to", to, "--subject", subject, "--body", body], account)
+        let mut args = vec!["gmail", "send", "--to", to, "--subject", subject, "--body", body];
+        if let Some(tid) = thread_id {
+            args.push("--thread-id");
+            args.push(tid);
+        }
+        self.run_gog(&args, account)
     }
 
     // ─── Calendar ────────────────────────────────────────────

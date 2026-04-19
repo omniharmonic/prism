@@ -34,6 +34,7 @@ pub fn run() {
 
     let parachute_key = if app_config.parachute_api_key.is_empty() { None } else { Some(app_config.parachute_api_key.clone()) };
     let parachute_url = app_config.parachute_url.clone();
+    log::info!("Parachute: url={}, api_key_present={}", parachute_url, parachute_key.is_some());
     let parachute = ParachuteClient::new(&parachute_url, parachute_key.clone());
 
     // Matrix client configured from omniharmonic .env
