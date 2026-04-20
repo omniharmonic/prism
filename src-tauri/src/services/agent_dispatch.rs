@@ -100,11 +100,7 @@ impl DispatchManager {
         // Spawn the Claude process
         let dispatches = self.dispatches.clone();
         let dispatch_id = id.clone();
-        let parachute_url = "http://localhost:1940".to_string();
 
-        // We need to run claude CLI — get the binary path and env from the client
-        // Since ClaudeClient doesn't expose internals, we'll spawn via its run method
-        // in a background task
         let prompt_owned = full_prompt.clone();
         let skill_owned = skill.to_string();
 
@@ -120,11 +116,10 @@ impl DispatchManager {
         // inherit a minimal PATH that excludes Homebrew, nvm, fnm, etc.
         ensure_node_in_path(&mut clean_env);
 
-        // Build a resolved MCP config with absolute paths so the spawned
-        // claude process can find the Parachute MCP server regardless of cwd.
-        let mcp_config_path = resolve_mcp_config(&prism_root, &dispatch_id);
-
-        let mut args = vec![
+        // Parachute vault MCP is configured globally in ~/.claude/settings.json.
+        // We rely on that instead of --mcp-config temp files, which can race with
+        // global config and cause the MCP server to fail to connect in -p mode.
+        let args = vec![
             "-p".to_string(),
             "--model".to_string(), "sonnet".to_string(),
             "--dangerously-skip-permissions".to_string(),
@@ -134,19 +129,9 @@ impl DispatchManager {
             // and needs Read to access them (the agent can't discover paths without Glob/Grep/Bash).
             "--disallowedTools".to_string(),
             "Write,Edit,Bash,Glob,Grep".to_string(),
+            "--".to_string(),
+            prompt_owned,
         ];
-
-        if let Some(ref config_path) = mcp_config_path {
-            args.push("--mcp-config".to_string());
-            args.push(config_path.clone());
-            log::info!("Dispatch {}: using resolved MCP config at {}", dispatch_id, config_path);
-        } else {
-            log::warn!("Dispatch {}: no MCP config available", dispatch_id);
-        }
-
-        // Use -- to separate flags from the prompt (prevents --mcp-config from consuming it)
-        args.push("--".to_string());
-        args.push(prompt_owned);
 
         let child = tokio::process::Command::new(&claude_bin)
             .args(&args)
@@ -373,85 +358,6 @@ async fn persist_to_vault(
 
     log::info!("Persisted dispatch {} to vault", dispatch.id);
     Ok(())
-}
-
-/// Resolve the .mcp.json config into a temporary file with absolute paths.
-/// The original .mcp.json may use relative paths (e.g., `../parachute-vault/...`)
-/// and tools like `bun` that aren't on the system PATH. This function resolves
-/// both issues so the spawned claude process can connect to MCP servers.
-fn resolve_mcp_config(prism_root: &std::path::Path, dispatch_id: &str) -> Option<String> {
-    let source = prism_root.join(".mcp.json");
-    if !source.exists() {
-        return None;
-    }
-
-    let content = std::fs::read_to_string(&source).ok()?;
-    let mut config: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-    let servers = config.get_mut("mcpServers")?.as_object_mut()?;
-    let home = dirs::home_dir().unwrap_or_default();
-
-    for (_name, server) in servers.iter_mut() {
-        // Resolve command — replace bare `bun`/`node` with absolute paths
-        if let Some(cmd) = server.get("command").and_then(|v| v.as_str()) {
-            let resolved_cmd = match cmd {
-                "bun" => {
-                    let bun_path = home.join(".bun/bin/bun");
-                    if bun_path.exists() {
-                        Some(bun_path.to_string_lossy().to_string())
-                    } else {
-                        None
-                    }
-                }
-                "node" => {
-                    // Try to find node
-                    std::process::Command::new("which").arg("node")
-                        .output().ok()
-                        .filter(|o| o.status.success())
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                }
-                _ => None,
-            };
-            if let Some(abs_cmd) = resolved_cmd {
-                server.as_object_mut().map(|s| s.insert("command".into(), serde_json::json!(abs_cmd)));
-            }
-        }
-
-        // Resolve relative paths in args
-        if let Some(args) = server.get_mut("args").and_then(|v| v.as_array_mut()) {
-            for arg in args.iter_mut() {
-                if let Some(s) = arg.as_str() {
-                    if s.starts_with("../") || s.starts_with("./") {
-                        let resolved = prism_root.join(s);
-                        if let Ok(canonical) = resolved.canonicalize() {
-                            *arg = serde_json::json!(canonical.to_string_lossy().to_string());
-                        } else {
-                            // canonicalize may fail on iCloud paths — resolve manually
-                            let resolved_str = resolved.to_string_lossy().to_string();
-                            *arg = serde_json::json!(resolved_str);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Write resolved config to temp file
-    let tmp_dir = std::env::temp_dir().join("prism-mcp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-    let tmp_path = tmp_dir.join(format!("mcp-{}.json", &dispatch_id[..8]));
-
-    match std::fs::write(&tmp_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
-        Ok(_) => {
-            log::info!("Resolved MCP config written to {:?}", tmp_path);
-            Some(tmp_path.to_string_lossy().to_string())
-        }
-        Err(e) => {
-            log::warn!("Failed to write resolved MCP config: {}", e);
-            // Fall back to original
-            Some(source.to_string_lossy().to_string())
-        }
-    }
 }
 
 /// Find the Prism project root (where .mcp.json lives).
