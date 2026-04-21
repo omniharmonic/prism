@@ -50,6 +50,7 @@ interface UIStore {
   closeTabs: (noteId: string) => void;
   setActiveTab: (tabId: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
+  renameTab: (noteId: string, newTitle: string) => void;
 
   openCommandBar: () => void;
   closeCommandBar: () => void;
@@ -144,6 +145,13 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set((s) => ({
       openTabs: s.openTabs.map((t) =>
         t.id === tabId ? { ...t, isDirty } : t,
+      ),
+    })),
+
+  renameTab: (noteId, newTitle) =>
+    set((s) => ({
+      openTabs: s.openTabs.map((t) =>
+        t.noteId === noteId ? { ...t, title: newTitle } : t,
       ),
     })),
 

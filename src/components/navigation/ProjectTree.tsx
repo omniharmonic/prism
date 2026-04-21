@@ -249,10 +249,18 @@ function InlineEdit({
 }) {
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
+  const confirmedRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.select();
   }, []);
+
+  const doConfirm = () => {
+    if (confirmedRef.current) return; // prevent double-fire (Enter + unmount blur)
+    confirmedRef.current = true;
+    if (value.trim()) onConfirm(value.trim());
+    else onCancel();
+  };
 
   return (
     <input
@@ -260,10 +268,10 @@ function InlineEdit({
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && value.trim()) onConfirm(value.trim());
+        if (e.key === "Enter") doConfirm();
         if (e.key === "Escape") onCancel();
       }}
-      onBlur={() => { if (value.trim()) onConfirm(value.trim()); else onCancel(); }}
+      onBlur={doConfirm}
       autoFocus
       className="w-full h-6 px-1.5 text-sm rounded outline-none"
       style={{
@@ -590,21 +598,27 @@ export function ProjectTree() {
   }, [createNote, invalidate]);
 
   const handleRename = useCallback(async (node: TreeNode, newName: string) => {
-    const isFolder = !node.note;
-    if (isFolder) {
-      // Rename folder = update path prefix for all notes inside
-      const notesInside = collectNotes(node);
-      for (const n of notesInside) {
-        const oldPrefix = node.rawPath;
-        const newPrefix = oldPrefix.replace(/\/[^/]+$/, `/${newName}`);
-        const newPath = n.path!.replace(oldPrefix, newPrefix);
-        await updateNote.mutateAsync({ id: n.id, path: newPath });
+    try {
+      const isFolder = !node.note;
+      if (isFolder) {
+        // Rename folder = update path prefix for all notes inside
+        const notesInside = collectNotes(node);
+        for (const n of notesInside) {
+          const oldPrefix = node.rawPath;
+          const newPrefix = oldPrefix.replace(/\/[^/]+$/, `/${newName}`);
+          const newPath = n.path!.replace(oldPrefix, newPrefix);
+          await updateNote.mutateAsync({ id: n.id, path: newPath });
+        }
+      } else if (node.note) {
+        // Rename note = change last path segment
+        const parts = node.note.path!.split("/");
+        parts[parts.length - 1] = newName;
+        await updateNote.mutateAsync({ id: node.note.id, path: parts.join("/") });
+        // Update the tab title if this note is open
+        useUIStore.getState().renameTab(node.note.id, newName);
       }
-    } else if (node.note) {
-      // Rename note = change last path segment
-      const parts = node.note.path!.split("/");
-      parts[parts.length - 1] = newName;
-      await updateNote.mutateAsync({ id: node.note.id, path: parts.join("/") });
+    } catch (e) {
+      console.error("Rename failed:", e);
     }
     invalidate();
     setRenaming(null);
