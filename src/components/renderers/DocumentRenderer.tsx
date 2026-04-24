@@ -7,6 +7,8 @@ import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
+import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
@@ -65,6 +67,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
+    SearchHighlight,
   ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
@@ -175,6 +178,10 @@ export default function DocumentRenderer({ note }: RendererProps) {
     applyEdit();
   }, [pendingEdit, note.id, clearPendingEdit, scheduleSave]);
 
+  // In-note find bar state
+  const [findOpen, setFindOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   // Inline prompt state
   const { inlinePromptOpen, inlinePromptPosition, inlinePromptSelection, openInlinePrompt, closeInlinePrompt } = useUIStore();
 
@@ -206,6 +213,34 @@ export default function DocumentRenderer({ note }: RendererProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [saveNow, editor, openInlinePrompt]);
 
+  // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
+  // inside this DocumentRenderer's subtree (or when document.activeElement is
+  // inside it), so it won't hijack Cmd+F on dashboard/graph/agent views.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "f") return;
+      // Only activate if focus (or the event target) is inside this container.
+      const active = document.activeElement;
+      const target = e.target as Node | null;
+      const insideContainer =
+        (active && container.contains(active)) ||
+        (target && container.contains(target));
+      if (!insideContainer) return;
+      e.preventDefault();
+      setFindOpen(true);
+    };
+
+    // Listen on the container itself so the event only bubbles from within.
+    container.addEventListener("keydown", handler);
+    return () => container.removeEventListener("keydown", handler);
+    // Re-run when initialHtml flips from null → string: on first mount the
+    // component renders a loading placeholder and containerRef is null, so
+    // the listener must re-attach once the real container mounts.
+  }, [initialHtml]);
+
   if (initialHtml === null) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -215,7 +250,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full">
       {/* Toolbar */}
       {editor && <EditorToolbar editor={editor} />}
 
@@ -227,6 +262,10 @@ export default function DocumentRenderer({ note }: RendererProps) {
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
           <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+        )}
+        {/* In-note find bar (Cmd+F / Ctrl+F) */}
+        {editor && findOpen && (
+          <EditorFindBar editor={editor} onClose={() => setFindOpen(false)} />
         )}
       </div>
 

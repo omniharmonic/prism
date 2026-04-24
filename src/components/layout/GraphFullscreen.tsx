@@ -60,15 +60,18 @@ export function GraphFullscreen() {
     };
   }, [fullGraph, centerId, depth]);
 
-  // Track container size
+  // Track container size. Dedupe identical dimensions so ResizeObserver's
+  // extra initial callback doesn't re-trigger force-graph warmup (visible
+  // "double pop-in").
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
-      setDimensions({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      });
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      setDimensions((prev) =>
+        prev.width === width && prev.height === height ? prev : { width, height },
+      );
     });
     ro.observe(el);
     return () => ro.disconnect();

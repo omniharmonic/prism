@@ -116,6 +116,14 @@ impl DispatchManager {
         // inherit a minimal PATH that excludes Homebrew, nvm, fnm, etc.
         ensure_node_in_path(&mut clean_env);
 
+        // Raise the Claude CLI's stream idle watchdog from 90s (default) to
+        // 300s. MCP-heavy skills like intelligence-scan and daily-briefing
+        // produce long silent stretches while the vault returns large result
+        // sets; the outer 30-min wall-clock timeout below still bounds hangs.
+        clean_env
+            .entry("CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string())
+            .or_insert_with(|| "300000".to_string());
+
         // Parachute vault MCP is configured globally in ~/.claude/settings.json.
         // We rely on that instead of --mcp-config temp files, which can race with
         // global config and cause the MCP server to fail to connect in -p mode.

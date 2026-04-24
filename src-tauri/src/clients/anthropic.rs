@@ -87,6 +87,12 @@ impl ClaudeClient {
             env.insert("PATH".to_string(), parts.join(":"));
         }
 
+        // Raise the Claude CLI's stream idle watchdog from 90s (default) to
+        // 300s. Interactive flows with long MCP tool calls or model reasoning
+        // pauses can otherwise trip "Stream idle timeout - partial response".
+        env.entry("CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string())
+            .or_insert_with(|| "300000".to_string());
+
         Self {
             claude_bin,
             prism_root,

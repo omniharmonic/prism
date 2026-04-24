@@ -180,6 +180,32 @@ html.light .wikilink:hover::after {
   background: rgba(74, 125, 215, 0.15);
 }
 
+/* ─── In-note find (Cmd+F) highlights ─── */
+.prism-search-match {
+  background: rgba(250, 204, 21, 0.28);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.35);
+}
+.prism-search-match-active {
+  background: rgba(251, 146, 60, 0.55);
+  box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.8);
+  color: inherit;
+}
+html.light .prism-search-match {
+  background: rgba(250, 204, 21, 0.45);
+}
+html.light .prism-search-match-active {
+  background: rgba(251, 146, 60, 0.65);
+}
+/* If a match lands inside a wikilink span (font-size: 0), mirror the highlight
+   onto the ::after pseudo so the visible display name is tinted. */
+.wikilink.prism-search-match::after {
+  background: rgba(250, 204, 21, 0.35);
+}
+.wikilink.prism-search-match-active::after {
+  background: rgba(251, 146, 60, 0.65);
+}
+
 /* ─── Keyboard shortcut indicators ─── */
 kbd {
   font-family: var(--font-sans);
