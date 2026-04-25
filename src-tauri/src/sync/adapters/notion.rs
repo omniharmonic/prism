@@ -63,7 +63,15 @@ impl SyncAdapter for NotionAdapter {
             .and_then(|p| p.split('/').last())
             .unwrap_or("Untitled");
 
-        // Create a page in the user's workspace (no parent database)
+        // Notion caps `children` at 100 in the create call too — send the first
+        // 100 inline, then append the rest after we have the page id.
+        let all_blocks = markdown_to_notion_blocks(&note.content);
+        let (initial, remainder) = if all_blocks.len() > 100 {
+            all_blocks.split_at(100)
+        } else {
+            (all_blocks.as_slice(), &[][..])
+        };
+
         let payload = serde_json::json!({
             "parent": { "type": "workspace", "workspace": true },
             "properties": {
@@ -73,7 +81,7 @@ impl SyncAdapter for NotionAdapter {
                     }]
                 }
             },
-            "children": markdown_to_notion_blocks(&note.content),
+            "children": initial,
         });
 
         let resp = self.client()
@@ -90,10 +98,16 @@ impl SyncAdapter for NotionAdapter {
         }
 
         let data: serde_json::Value = resp.json().await?;
-        data["id"]
+        let page_id = data["id"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| PrismError::Notion("No id in response".into()))
+            .ok_or_else(|| PrismError::Notion("No id in response".into()))?;
+
+        if !remainder.is_empty() {
+            self.append_blocks(&page_id, remainder).await?;
+        }
+
+        Ok(page_id)
     }
 
     async fn remote_modified_since(&self, config: &SyncConfig) -> Result<bool, PrismError> {
@@ -126,23 +140,49 @@ impl SyncAdapter for NotionAdapter {
 
 impl NotionAdapter {
     async fn get_page_blocks(&self, page_id: &str) -> Result<Vec<serde_json::Value>, PrismError> {
-        let url = format!(
-            "https://api.notion.com/v1/blocks/{}/children?page_size=100",
-            page_id,
-        );
-        let resp = self.client()
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Notion-Version", "2022-06-28")
-            .send()
-            .await?;
+        // Notion paginates children at 100/page; follow `next_cursor` until exhausted.
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
 
-        if !resp.status().is_success() {
-            return Err(PrismError::Notion(format!("get blocks failed: {}", resp.status())));
+        loop {
+            let url = match &cursor {
+                Some(c) => format!(
+                    "https://api.notion.com/v1/blocks/{}/children?page_size=100&start_cursor={}",
+                    page_id, c,
+                ),
+                None => format!(
+                    "https://api.notion.com/v1/blocks/{}/children?page_size=100",
+                    page_id,
+                ),
+            };
+
+            let resp = self.client()
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Notion-Version", "2022-06-28")
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                return Err(PrismError::Notion(format!("get blocks failed: {}", resp.status())));
+            }
+
+            let data: serde_json::Value = resp.json().await?;
+            if let Some(results) = data["results"].as_array() {
+                all.extend(results.iter().cloned());
+            }
+
+            if data["has_more"].as_bool().unwrap_or(false) {
+                cursor = data["next_cursor"].as_str().map(String::from);
+                if cursor.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
 
-        let data: serde_json::Value = resp.json().await?;
-        Ok(data["results"].as_array().cloned().unwrap_or_default())
+        Ok(all)
     }
 
     async fn delete_block(&self, block_id: &str) -> Result<(), PrismError> {
@@ -170,19 +210,23 @@ impl NotionAdapter {
         }
 
         let url = format!("https://api.notion.com/v1/blocks/{}/children", page_id);
-        let payload = serde_json::json!({ "children": blocks });
 
-        let resp = self.client()
-            .patch(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Notion-Version", "2022-06-28")
-            .json(&payload)
-            .send()
-            .await?;
+        // Notion caps children at 100 per request — chunk and send sequentially.
+        for chunk in blocks.chunks(100) {
+            let payload = serde_json::json!({ "children": chunk });
 
-        if !resp.status().is_success() {
-            let err = resp.text().await.unwrap_or_default();
-            return Err(PrismError::Notion(format!("append blocks failed: {}", err)));
+            let resp = self.client()
+                .patch(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Notion-Version", "2022-06-28")
+                .json(&payload)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let err = resp.text().await.unwrap_or_default();
+                return Err(PrismError::Notion(format!("append blocks failed: {}", err)));
+            }
         }
         Ok(())
     }
