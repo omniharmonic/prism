@@ -172,11 +172,15 @@ async fn sync_emails(
             content.push_str("---\n\n");
         }
 
-        // Parse date to epoch ms for consistent sorting with message-threads
-        let last_message_at: i64 = chrono::DateTime::parse_from_rfc2822(date)
-            .or_else(|_| chrono::DateTime::parse_from_rfc3339(date))
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or(0);
+        // Parse date to epoch ms for consistent sorting with message-threads.
+        // gog returns dates in three observed shapes:
+        //   "2026-04-25 10:41"             (no TZ — naive, gog's default)
+        //   "Fri, 25 Apr 2026 10:41:00 ..."(RFC 2822, sometimes from raw headers)
+        //   "2026-04-25T10:41:00Z"         (RFC 3339)
+        // Try the standards first, then fall back to the naive form parsed
+        // as UTC — slight TZ skew is fine since this field is only used for
+        // recency sorting at day granularity.
+        let last_message_at: i64 = parse_email_date_to_millis(date);
 
         let metadata = serde_json::json!({
             "type": "email",
@@ -276,4 +280,70 @@ fn sanitize_path(name: &str) -> String {
         .trim()
         .replace(' ', "-")
         .to_lowercase()
+}
+
+/// Parse the email-date string `gog` returns and convert to epoch milliseconds.
+/// Returns 0 only when no known format matches.
+fn parse_email_date_to_millis(date: &str) -> i64 {
+    let s = date.trim();
+    if s.is_empty() {
+        return 0;
+    }
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
+        return dt.timestamp_millis();
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.timestamp_millis();
+    }
+
+    // gog's default shape is naive: "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS"
+    let naive_formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"];
+    for fmt in naive_formats {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            // Treat as UTC — TZ skew of a few hours is acceptable for
+            // recency-sorting at day granularity.
+            return naive.and_utc().timestamp_millis();
+        }
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rfc3339() {
+        let ms = parse_email_date_to_millis("2026-04-25T17:24:10Z");
+        assert!(ms > 1_700_000_000_000);
+    }
+
+    #[test]
+    fn parses_rfc2822() {
+        let ms = parse_email_date_to_millis("Sat, 25 Apr 2026 17:24:10 +0000");
+        assert!(ms > 1_700_000_000_000);
+    }
+
+    #[test]
+    fn parses_gog_naive_minute() {
+        // The format gog has been emitting that previously fell back to 0.
+        let ms = parse_email_date_to_millis("2026-04-25 10:41");
+        // Cross-checked against `chrono::NaiveDate::from_ymd_opt(2026,4,25)
+        // .unwrap().and_hms_opt(10,41,0).unwrap().and_utc().timestamp_millis()`
+        assert_eq!(ms, 1_777_113_660_000);
+    }
+
+    #[test]
+    fn parses_gog_naive_second() {
+        let ms = parse_email_date_to_millis("2026-04-25 10:41:30");
+        assert_eq!(ms, 1_777_113_690_000);
+    }
+
+    #[test]
+    fn empty_or_garbage_returns_zero() {
+        assert_eq!(parse_email_date_to_millis(""), 0);
+        assert_eq!(parse_email_date_to_millis("not a date"), 0);
+    }
 }
