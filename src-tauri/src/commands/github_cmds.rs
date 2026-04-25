@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,53 @@ use crate::sync::adapters::github::{
     GitHubAuthStatus,
 };
 
+// ─── Persistence ────────────────────────────────────────────
+
+/// Path to the JSON file that stores GitHub sync configurations.
+fn configs_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("prism")
+        .join("github-sync-configs.json")
+}
+
+/// Load persisted GitHub sync configurations from disk.
+/// Returns an empty map if the file doesn't exist or fails to parse —
+/// failure to load should never block app startup.
+fn load_configs() -> HashMap<String, DirectorySyncConfig> {
+    let path = configs_path();
+    if !path.exists() {
+        return HashMap::new();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+            log::warn!("Failed to parse GitHub sync configs ({path:?}): {e}");
+            HashMap::new()
+        }),
+        Err(e) => {
+            log::warn!("Failed to read GitHub sync configs: {e}");
+            HashMap::new()
+        }
+    }
+}
+
+/// Persist GitHub sync configurations to disk. Logs but does not propagate
+/// errors — failure to save shouldn't fail the user-facing command.
+fn save_configs(configs: &HashMap<String, DirectorySyncConfig>) {
+    let path = configs_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(configs) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                log::warn!("Failed to save GitHub sync configs: {e}");
+            }
+        }
+        Err(e) => log::warn!("Failed to serialize GitHub sync configs: {e}"),
+    }
+}
+
 // ─── Managed state ──────────────────────────────────────────
 
 /// Holds all active GitHub directory-sync configurations, keyed by config id.
@@ -21,8 +69,14 @@ pub struct GitHubSyncState {
 
 impl GitHubSyncState {
     pub fn new() -> Self {
+        // Restore configurations persisted from a previous session so syncs
+        // survive app restarts.
+        let configs = load_configs();
+        if !configs.is_empty() {
+            log::info!("Loaded {} GitHub sync config(s) from disk", configs.len());
+        }
         Self {
-            configs: Mutex::new(HashMap::new()),
+            configs: Mutex::new(configs),
         }
     }
 }
@@ -117,7 +171,7 @@ pub async fn github_sync_init(
         conflict_strategy,
         last_synced: String::new(),
         auto_sync,
-        file_extension: "md".to_string(),
+        file_extension: ".md".to_string(),
         id_map: HashMap::new(),
     };
 
@@ -130,6 +184,7 @@ pub async fn github_sync_init(
     let all_notes = parachute
         .list_notes(&ListNotesParams {
             limit: Some(10000),
+            include_content: true,
             ..Default::default()
         })
         .await?;
@@ -150,14 +205,17 @@ pub async fn github_sync_init(
         let _result = github::sync_directory(&config, &notes, &parachute).await?;
     }
 
-    // Update last_synced and persist config in managed state.
+    // Update last_synced and persist config in managed state + on disk.
     let mut config = config;
     config.last_synced = chrono::Utc::now().to_rfc3339();
-    github_state
-        .configs
-        .lock()
-        .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?
-        .insert(id.clone(), config);
+    {
+        let mut configs = github_state
+            .configs
+            .lock()
+            .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?;
+        configs.insert(id.clone(), config);
+        save_configs(&configs);
+    }
 
     Ok(id)
 }
@@ -189,6 +247,7 @@ pub async fn github_sync_push(
     let all_notes = parachute
         .list_notes(&ListNotesParams {
             limit: Some(10000),
+            include_content: true,
             ..Default::default()
         })
         .await?;
@@ -205,13 +264,16 @@ pub async fn github_sync_push(
 
     let result = github::sync_directory(&config, &notes, &parachute).await?;
 
-    // Update last_synced timestamp.
+    // Update last_synced timestamp and persist.
     config.last_synced = chrono::Utc::now().to_rfc3339();
-    github_state
-        .configs
-        .lock()
-        .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?
-        .insert(config_id, config);
+    {
+        let mut configs = github_state
+            .configs
+            .lock()
+            .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?;
+        configs.insert(config_id, config);
+        save_configs(&configs);
+    }
 
     Ok(result)
 }
@@ -236,7 +298,19 @@ pub async fn github_sync_push_file(
     };
 
     let note = parachute.get_note(&note_id).await?;
-    github::push_single_file(&config, &note).await?;
+
+    // Fetch siblings under the same vault path so wikilink resolution can find
+    // them. We use a list with include_content=false to keep this cheap —
+    // serialize_note_to_markdown only needs paths/tags/title for lookup.
+    let siblings = parachute
+        .list_notes(&ListNotesParams {
+            limit: Some(10000),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+
+    github::push_single_file(&config, &note, &siblings).await?;
 
     Ok(())
 }
@@ -272,17 +346,60 @@ pub async fn github_sync_remove(
     github_state: State<'_, GitHubSyncState>,
     config_id: String,
 ) -> Result<(), PrismError> {
-    let removed = github_state
+    let mut configs = github_state
         .configs
         .lock()
-        .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?
-        .remove(&config_id);
+        .map_err(|e| PrismError::Other(format!("Lock poisoned: {e}")))?;
 
-    if removed.is_none() {
+    if configs.remove(&config_id).is_none() {
         return Err(PrismError::Other(format!(
             "No sync config found for id '{config_id}'"
         )));
     }
 
+    save_configs(&configs);
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// `DirectorySyncConfig` must round-trip cleanly through `serde_json` so
+    /// the persistence file is forward-compatible. This test guards against
+    /// accidentally adding a non-serializable field.
+    #[test]
+    fn directory_sync_config_round_trips_through_json() {
+        let mut id_map = HashMap::new();
+        id_map.insert("note-123".to_string(), "people/peter-thiel.md".to_string());
+
+        let config = DirectorySyncConfig {
+            id: "abc-123".into(),
+            vault_path: "vault/research/thiel-karp-genealogy".into(),
+            remote_url: "https://github.com/omniharmonic/thiel-karp-geneology".into(),
+            branch: "main".into(),
+            local_clone_path: PathBuf::from("/tmp/clone"),
+            commit_strategy: CommitStrategy::Batched,
+            conflict_strategy: "local-wins".into(),
+            last_synced: "2026-04-25T00:00:00Z".into(),
+            auto_sync: false,
+            file_extension: ".md".into(),
+            id_map,
+        };
+
+        let mut original = HashMap::new();
+        original.insert(config.id.clone(), config);
+
+        let json = serde_json::to_string_pretty(&original).expect("serialize");
+        let restored: HashMap<String, DirectorySyncConfig> =
+            serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.len(), 1);
+        let r = restored.get("abc-123").expect("missing config");
+        assert_eq!(r.vault_path, "vault/research/thiel-karp-genealogy");
+        assert_eq!(r.local_clone_path, PathBuf::from("/tmp/clone"));
+        assert_eq!(r.id_map.get("note-123").unwrap(), "people/peter-thiel.md");
+    }
 }

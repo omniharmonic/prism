@@ -285,25 +285,35 @@ pub async fn sync_directory(
 
     let mut staged_any = false;
 
+    // Filter notes to those that fall under the configured vault path —
+    // we'll sync these and use them to resolve wikilink targets.
+    let in_scope: Vec<&Note> = notes
+        .iter()
+        .filter(|n| {
+            n.path
+                .as_deref()
+                .map(|p| p.starts_with(&config.vault_path))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let lookup = build_wikilink_lookup(&in_scope, config);
+
     // Collect repo-relative paths from notes for later diffing
     let mut note_repo_paths: HashMap<String, &Note> = HashMap::new();
 
     // 2-3. Process each note
-    for note in notes {
+    for note in &in_scope {
         let note_path = match &note.path {
             Some(p) => p.as_str(),
             None => continue,
         };
 
-        // Only sync notes under the configured vault path
-        if !note_path.starts_with(&config.vault_path) {
-            continue;
-        }
-
         let repo_rel = map_vault_path_to_repo_path(note_path, config);
-        note_repo_paths.insert(repo_rel.clone(), note);
+        note_repo_paths.insert(repo_rel.clone(), *note);
 
         let disk_path = clone_path.join(&repo_rel);
+        let serialized = serialize_note_to_markdown(note, &repo_rel, &lookup);
 
         // Read existing file content (if any)
         let disk_content = if disk_path.exists() {
@@ -321,7 +331,7 @@ pub async fn sync_directory(
         };
 
         match disk_content {
-            Some(existing) if existing == note.content => {
+            Some(existing) if existing == serialized => {
                 // No change
                 debug!("No change for {repo_rel}");
             }
@@ -331,7 +341,7 @@ pub async fn sync_directory(
                     result.pulled.push(repo_rel.clone());
                 } else {
                     // local-wins: overwrite disk, stage
-                    write_file(clone_path, &repo_rel, &note.content)?;
+                    write_file(clone_path, &repo_rel, &serialized)?;
                     run_git(&["add", &repo_rel], clone_path).await?;
                     result.pushed.push(repo_rel.clone());
                     staged_any = true;
@@ -339,7 +349,7 @@ pub async fn sync_directory(
             }
             None => {
                 // New file — write and stage
-                write_file(clone_path, &repo_rel, &note.content)?;
+                write_file(clone_path, &repo_rel, &serialized)?;
                 run_git(&["add", &repo_rel], clone_path).await?;
                 result.pushed.push(repo_rel.clone());
                 staged_any = true;
@@ -348,11 +358,12 @@ pub async fn sync_directory(
     }
 
     // 4. Detect files in repo not matching any note (pulled candidates)
+    let normalized_ext = normalize_extension(&config.file_extension);
     scan_unmatched_files(
         clone_path,
         clone_path,
         &note_repo_paths,
-        &config.file_extension,
+        &normalized_ext,
         &mut result.pulled,
     )?;
 
@@ -380,9 +391,15 @@ pub async fn sync_directory(
 
 /// Push a single note to the repository immediately (used with `PerSave`
 /// commit strategy).
+///
+/// `siblings` is the full set of notes under the same vault path; it's used
+/// to resolve wikilink targets to repo-relative paths. Pass an empty slice
+/// for cheap single-file updates that don't need cross-note link resolution
+/// (unresolved wikilinks will be left as `[[name]]`).
 pub async fn push_single_file(
     config: &DirectorySyncConfig,
     note: &Note,
+    siblings: &[Note],
 ) -> Result<(), PrismError> {
     let note_path = note
         .path
@@ -392,7 +409,20 @@ pub async fn push_single_file(
     let clone_path = &config.local_clone_path;
     let repo_rel = map_vault_path_to_repo_path(note_path, config);
 
-    write_file(clone_path, &repo_rel, &note.content)?;
+    let in_scope: Vec<&Note> = siblings
+        .iter()
+        .filter(|n| {
+            n.path
+                .as_deref()
+                .map(|p| p.starts_with(&config.vault_path))
+                .unwrap_or(false)
+        })
+        .chain(std::iter::once(note))
+        .collect();
+    let lookup = build_wikilink_lookup(&in_scope, config);
+    let serialized = serialize_note_to_markdown(note, &repo_rel, &lookup);
+
+    write_file(clone_path, &repo_rel, &serialized)?;
     run_git(&["add", &repo_rel], clone_path).await?;
 
     let filename = Path::new(&repo_rel)
@@ -417,6 +447,240 @@ pub async fn push_single_file(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Normalize a file extension so it always starts with a single leading dot.
+/// Tolerates configs saved as either `"md"` or `".md"`.
+fn normalize_extension(ext: &str) -> String {
+    let trimmed = ext.trim_start_matches('.');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(".{trimmed}")
+    }
+}
+
+/// Build a lookup table from wikilink target (a name or full vault path,
+/// lowercased) to that note's repo-relative file path.
+///
+/// Wikilinks in note content can reference targets by either the bare name
+/// (`[[Peter Thiel]]`) or the full vault path (`[[vault/people/peter-thiel]]`).
+/// We index both forms so resolution succeeds regardless of which one was
+/// authored.
+fn build_wikilink_lookup(
+    notes: &[&Note],
+    config: &DirectorySyncConfig,
+) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+
+    for note in notes {
+        let Some(vault_path) = note.path.as_deref() else {
+            continue;
+        };
+
+        let repo_rel = map_vault_path_to_repo_path(vault_path, config);
+
+        // Index by full vault path
+        map.entry(vault_path.to_lowercase())
+            .or_insert_with(|| repo_rel.clone());
+
+        // Index by basename (without extension)
+        if let Some(stem) = Path::new(vault_path).file_stem() {
+            let stem = stem.to_string_lossy().to_lowercase();
+            map.entry(stem).or_insert_with(|| repo_rel.clone());
+        }
+
+        // Index by metadata.title if present
+        if let Some(title) = note
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("title"))
+            .and_then(|v| v.as_str())
+        {
+            map.entry(title.to_lowercase())
+                .or_insert_with(|| repo_rel.clone());
+        }
+    }
+
+    map
+}
+
+/// Compute a relative path from one repo file to another, suitable for use in
+/// a markdown link (e.g. `../people/peter-thiel.md`).
+fn relative_link(from_repo_path: &str, to_repo_path: &str) -> String {
+    let from = Path::new(from_repo_path).parent().unwrap_or_else(|| Path::new(""));
+    let to = Path::new(to_repo_path);
+
+    let from_parts: Vec<&str> = from
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let to_parts: Vec<&str> = to
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let common = from_parts
+        .iter()
+        .zip(to_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut out: Vec<String> = Vec::new();
+    for _ in common..from_parts.len() {
+        out.push("..".to_string());
+    }
+    for part in &to_parts[common..] {
+        out.push((*part).to_string());
+    }
+
+    if out.is_empty() {
+        to_repo_path.to_string()
+    } else {
+        out.join("/")
+    }
+}
+
+/// Convert Obsidian-style `[[wikilinks]]` in `content` to standard markdown
+/// links resolved against the synced note set. Unresolved wikilinks are left
+/// as-is so authors can spot dangling references.
+///
+/// Supported forms:
+/// - `[[target]]` → `[target](relative/path.md)`
+/// - `[[target|display]]` → `[display](relative/path.md)`
+fn convert_wikilinks(
+    content: &str,
+    current_repo_path: &str,
+    lookup: &HashMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(content.len());
+    let bytes = content.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Look for the "[[" marker. Stay in O(n) by scanning forward.
+        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            // Find the matching "]]"
+            let close_search = content[i + 2..].find("]]");
+            if let Some(rel_close) = close_search {
+                let inner = &content[i + 2..i + 2 + rel_close];
+                // Disallow newlines inside a wikilink — bail out and treat as literal "[["
+                if !inner.contains('\n') {
+                    let (target, explicit_display) = match inner.split_once('|') {
+                        Some((t, d)) => (t.trim(), Some(d.trim())),
+                        None => (inner.trim(), None),
+                    };
+
+                    if let Some(target_path) = lookup.get(&target.to_lowercase()) {
+                        // When no explicit display text is given, use the
+                        // basename of the target — matches Obsidian behavior
+                        // and avoids ugly full-path link text on GitHub.
+                        let display: String = match explicit_display {
+                            Some(d) => d.to_string(),
+                            None if target.contains('/') => {
+                                target.rsplit('/').next().unwrap_or(target).to_string()
+                            }
+                            None => target.to_string(),
+                        };
+                        let rel = relative_link(current_repo_path, target_path);
+                        out.push('[');
+                        out.push_str(&display);
+                        out.push_str("](");
+                        out.push_str(&rel);
+                        out.push(')');
+                    } else {
+                        // Unresolved — keep the original syntax
+                        out.push_str(&content[i..i + 2 + rel_close + 2]);
+                    }
+                    i += 2 + rel_close + 2;
+                    continue;
+                }
+            }
+        }
+
+        // Default: copy the current char verbatim. Use a char-aware step to
+        // avoid splitting multi-byte UTF-8 sequences.
+        let ch_len = content[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&content[i..i + ch_len]);
+        i += ch_len;
+    }
+
+    out
+}
+
+/// Serialize a note to markdown with YAML frontmatter (tags, title, key
+/// metadata) and wikilinks rewritten to GitHub-renderable links.
+///
+/// `current_repo_path` is the repo-relative path the serialized output will be
+/// written to — used to compute correct relative links to other notes.
+fn serialize_note_to_markdown(
+    note: &Note,
+    current_repo_path: &str,
+    lookup: &HashMap<String, String>,
+) -> String {
+    use serde_yaml::{Mapping, Value as Yaml};
+
+    let mut fm = Mapping::new();
+
+    // Title: prefer metadata.title, fall back to filename stem
+    let title = note
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("title"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            note.path
+                .as_deref()
+                .and_then(|p| Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()))
+        });
+    if let Some(t) = title {
+        fm.insert(Yaml::from("title"), Yaml::from(t));
+    }
+
+    // Tags
+    if let Some(tags) = note.tags.as_ref() {
+        if !tags.is_empty() {
+            let tag_seq: Vec<Yaml> = tags.iter().map(|t| Yaml::from(t.clone())).collect();
+            fm.insert(Yaml::from("tags"), Yaml::Sequence(tag_seq));
+        }
+    }
+
+    // Vault path (round-trip aid)
+    if let Some(p) = note.path.as_deref() {
+        fm.insert(Yaml::from("vault_path"), Yaml::from(p.to_string()));
+    }
+
+    // Carry through metadata fields verbatim, except "title" (already promoted)
+    // and bulky internal fields. serde_yaml::Value already accepts JSON
+    // values via its Deserialize impl, but we'd need to round-trip — easier
+    // to convert manually.
+    if let Some(meta) = note.metadata.as_ref().and_then(|m| m.as_object()) {
+        for (k, v) in meta {
+            if k == "title" {
+                continue;
+            }
+            if let Ok(yaml_val) = serde_yaml::to_value(v) {
+                fm.insert(Yaml::from(k.clone()), yaml_val);
+            }
+        }
+    }
+
+    let frontmatter = match serde_yaml::to_string(&Yaml::Mapping(fm)) {
+        Ok(s) => s,
+        Err(_) => String::new(),
+    };
+
+    let body = convert_wikilinks(&note.content, current_repo_path, lookup);
+
+    let trimmed_fm = frontmatter.trim_end();
+    if trimmed_fm.is_empty() {
+        body
+    } else {
+        format!("---\n{trimmed_fm}\n---\n\n{body}")
+    }
+}
+
 /// Map a vault note path to a repo-relative file path.
 ///
 /// Strips the `config.vault_path` prefix and appends `config.file_extension`
@@ -431,7 +695,7 @@ fn map_vault_path_to_repo_path(vault_path: &str, config: &DirectorySyncConfig) -
     if p.extension().is_some() {
         stripped.to_string()
     } else {
-        format!("{stripped}{}", config.file_extension)
+        format!("{stripped}{}", normalize_extension(&config.file_extension))
     }
 }
 
@@ -534,6 +798,115 @@ mod tests {
             map_vault_path_to_repo_path("vault/projects/docs/file.txt", &config),
             "file.txt"
         );
+    }
+
+    #[test]
+    fn test_map_vault_path_tolerates_dotless_extension() {
+        // Regression: configs created before the dot-normalization fix saved
+        // file_extension as "md" rather than ".md", which produced files like
+        // "filenamemd" with no separator. Normalization now handles both.
+        let config = DirectorySyncConfig {
+            id: "test".into(),
+            vault_path: "vault/docs".into(),
+            remote_url: String::new(),
+            branch: "main".into(),
+            local_clone_path: PathBuf::from("/tmp/test"),
+            commit_strategy: CommitStrategy::Batched,
+            conflict_strategy: "local-wins".into(),
+            last_synced: String::new(),
+            auto_sync: false,
+            file_extension: "md".into(),
+            id_map: HashMap::new(),
+        };
+
+        assert_eq!(
+            map_vault_path_to_repo_path("vault/docs/john-thiel", &config),
+            "john-thiel.md"
+        );
+    }
+
+    #[test]
+    fn test_relative_link_same_dir() {
+        assert_eq!(
+            relative_link("people/peter-thiel.md", "people/alex-karp.md"),
+            "alex-karp.md"
+        );
+    }
+
+    #[test]
+    fn test_relative_link_up_one() {
+        assert_eq!(
+            relative_link("people/peter-thiel.md", "concepts/mimesis.md"),
+            "../concepts/mimesis.md"
+        );
+    }
+
+    #[test]
+    fn test_relative_link_root_to_subdir() {
+        assert_eq!(
+            relative_link("README.md", "people/peter-thiel.md"),
+            "people/peter-thiel.md"
+        );
+    }
+
+    #[test]
+    fn test_convert_wikilinks_resolves_known_targets() {
+        let mut lookup = HashMap::new();
+        lookup.insert("peter thiel".to_string(), "people/peter-thiel.md".to_string());
+        lookup.insert("mimesis".to_string(), "concepts/mimesis.md".to_string());
+
+        let input = "Talked to [[Peter Thiel]] about [[mimesis|girardian theory]] and [[Unknown Person]].";
+        let out = convert_wikilinks(input, "people/alex-karp.md", &lookup);
+
+        assert_eq!(
+            out,
+            "Talked to [Peter Thiel](peter-thiel.md) about [girardian theory](../concepts/mimesis.md) and [[Unknown Person]]."
+        );
+    }
+
+    #[test]
+    fn test_convert_wikilinks_uses_basename_for_full_paths() {
+        let mut lookup = HashMap::new();
+        lookup.insert(
+            "vault/people/alex-karp".to_string(),
+            "people/alex-karp.md".to_string(),
+        );
+
+        let input = "Co-founded with [[vault/people/alex-karp]].";
+        let out = convert_wikilinks(input, "people/peter-thiel.md", &lookup);
+
+        // Display should be the basename ("alex-karp"), not the full path
+        assert_eq!(out, "Co-founded with [alex-karp](alex-karp.md).");
+    }
+
+    #[test]
+    fn test_convert_wikilinks_preserves_non_wikilink_brackets() {
+        let lookup = HashMap::new();
+        let input = "Use [link](http://example.com) and an array like [1, 2, 3].";
+        assert_eq!(convert_wikilinks(input, "x.md", &lookup), input);
+    }
+
+    #[test]
+    fn test_serialize_note_emits_frontmatter_with_tags() {
+        let note = Note {
+            id: "1".into(),
+            content: "# Hello\n\nBody here.".into(),
+            path: Some("vault/notes/hello".into()),
+            metadata: Some(serde_json::json!({"title": "Hello", "type": "doc"})),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: None,
+            tags: Some(vec!["greeting".into(), "test".into()]),
+        };
+        let lookup = HashMap::new();
+        let out = serialize_note_to_markdown(&note, "notes/hello.md", &lookup);
+
+        assert!(out.starts_with("---\n"), "should start with frontmatter fence");
+        assert!(out.contains("title: Hello"));
+        assert!(out.contains("- greeting"));
+        assert!(out.contains("- test"));
+        assert!(out.contains("type: doc"));
+        assert!(out.contains("vault_path: vault/notes/hello"));
+        assert!(out.contains("# Hello\n\nBody here."));
     }
 
     #[test]
