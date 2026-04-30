@@ -11,6 +11,18 @@ export function useNotes(filters?: NoteFilters) {
   });
 }
 
+/**
+ * Lean tree-view query: returns id/path/tags/metadata only.
+ * Auto-invalidates on any vault mutation since mutations invalidate
+ * the `["vault"]` prefix.
+ */
+export function useVaultTree() {
+  return useQuery({
+    queryKey: ["vault", "tree"] as const,
+    queryFn: vaultApi.listTree,
+  });
+}
+
 export function useNote(id: string | null) {
   return useQuery({
     queryKey: queryKeys.vault.note(id!),

@@ -28,6 +28,17 @@ export interface Note {
   tags: string[] | null;
 }
 
+// Lean note shape for tree/index views — matches the Rust `NoteTreeEntry`
+// struct returned by the `vault_list_tree` Tauri command. Strict subset of
+// `Note`: drops content, timestamps, byteSize, preview to reduce IPC payload
+// when rendering 10k+ entries (e.g. in ProjectTree).
+export interface NoteTreeEntry {
+  id: string;
+  path: string | null;
+  tags: string[] | null;
+  metadata: Record<string, unknown> | null;
+}
+
 export interface NoteIndex {
   id: string;
   path: string | null;

@@ -23,12 +23,12 @@ import {
   CheckSquare2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { useNotes, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
+import { useVaultTree, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
 import { vaultApi } from "../../lib/parachute/client";
 import { GitHubSyncModal } from "../layout/GitHubSyncModal";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
-import type { ContentType, Note } from "../../lib/types";
+import type { ContentType, NoteTreeEntry } from "../../lib/types";
 import { Spinner } from "../ui/Spinner";
 import { cn } from "../../lib/cn";
 import { useQueryClient } from "@tanstack/react-query";
@@ -60,7 +60,7 @@ interface TreeNode {
   /** The raw vault path (before normalization) — used for operations */
   rawPath: string;
   children: TreeNode[];
-  note?: Note;
+  note?: NoteTreeEntry;
 }
 
 // Paths to hide from the project tree (templates, staging pipeline)
@@ -74,7 +74,7 @@ function normalizePath(path: string): string {
   return path;
 }
 
-function buildTree(notes: Note[]): TreeNode[] {
+function buildTree(notes: NoteTreeEntry[]): TreeNode[] {
   const root: TreeNode = { name: "", fullPath: "", rawPath: "", children: [] };
 
   for (const note of notes) {
@@ -133,8 +133,8 @@ function collectNoteIds(node: TreeNode): string[] {
 }
 
 /** Collect all notes under a tree node */
-function collectNotes(node: TreeNode): Note[] {
-  const notes: Note[] = [];
+function collectNotes(node: TreeNode): NoteTreeEntry[] {
+  const notes: NoteTreeEntry[] = [];
   if (node.note) notes.push(node.note);
   for (const child of node.children) notes.push(...collectNotes(child));
   return notes;
@@ -529,7 +529,7 @@ function BatchMoveDialog({
 // ─── Main Component ──────────────────────────────────────────
 
 export function ProjectTree() {
-  const { data: notes, isLoading } = useNotes();
+  const { data: notes, isLoading } = useVaultTree();
   const tree = useMemo(() => buildTree(notes || []), [notes]);
   const queryClient = useQueryClient();
   const deleteNote = useDeleteNote();

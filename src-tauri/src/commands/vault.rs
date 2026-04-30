@@ -232,6 +232,13 @@ pub async fn vault_get_stats(
 }
 
 #[tauri::command]
+pub async fn vault_list_tree(
+    client: State<'_, ParachuteClient>,
+) -> Result<Vec<crate::models::note::NoteTreeEntry>, PrismError> {
+    client.list_tree().await
+}
+
+#[tauri::command]
 pub async fn vault_get_info(
     client: State<'_, ParachuteClient>,
 ) -> Result<crate::models::note::VaultInfo, PrismError> {

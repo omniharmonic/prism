@@ -22,6 +22,19 @@ pub struct Note {
     pub tags: Option<Vec<String>>,
 }
 
+/// Minimal note shape used by ProjectTree and other consumers that only need
+/// to render a directory tree / pick an icon. Strict subset of Note — drops
+/// content, createdAt, updatedAt, byteSize, preview to shrink the IPC payload.
+/// `metadata` is preserved because `inferContentType` reads `prism_type`/`type`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTreeEntry {
+    pub id: String,
+    pub path: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub metadata: Option<serde_json::Value>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteIndex {

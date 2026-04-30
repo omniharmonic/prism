@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Note,
   NoteFilters,
+  NoteTreeEntry,
   CreateNoteParams,
   UpdateNoteParams,
   TagCount,
@@ -13,6 +14,10 @@ import type {
 export const vaultApi = {
   listNotes: (filters?: NoteFilters) =>
     invoke<Note[]>("vault_list_notes", { ...filters }),
+
+  /** Lean variant — returns only id/path/tags/metadata for tree/index views. */
+  listTree: () =>
+    invoke<NoteTreeEntry[]>("vault_list_tree"),
 
   getNote: (id: string) =>
     invoke<Note>("vault_get_note", { id }),

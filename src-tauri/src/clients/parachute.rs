@@ -96,6 +96,29 @@ impl ParachuteClient {
         Ok(notes)
     }
 
+    /// Lean variant of `list_notes` for tree/index views. Same endpoint, but
+    /// deserializes into `NoteTreeEntry` (id/path/tags/metadata only) so the
+    /// Rust→JS payload skips content/timestamps/preview/byteSize. Used by
+    /// ProjectTree, which renders ~13k+ entries on app start.
+    pub async fn list_tree(&self) -> Result<Vec<NoteTreeEntry>, PrismError> {
+        let url = format!("{}/notes", self.base_url);
+        let qp: Vec<(&str, String)> = vec![
+            ("limit", "50000".into()),
+            ("sort", "desc".into()),
+        ];
+        let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::error!("list_tree {} — body: {}", status, body);
+            return Err(PrismError::Parachute(format!("list_tree failed: {}", status)));
+        }
+        let text = resp.text().await?;
+        let entries: Vec<NoteTreeEntry> = serde_json::from_str(&text)
+            .map_err(|e| PrismError::Parachute(format!("JSON parse error: {} (response size: {} bytes)", e, text.len())))?;
+        Ok(entries)
+    }
+
     /// Get a single note by ID or path. v2: `GET /api/notes/:id`.
     pub async fn get_note(&self, id: &str) -> Result<Note, PrismError> {
         let resp = self.authed(self.client.get(format!("{}/notes/{}", self.base_url, id)))

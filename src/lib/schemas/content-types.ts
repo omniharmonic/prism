@@ -1,5 +1,12 @@
 import type { ContentType, Note } from "../types";
 
+/**
+ * Structural subset that `inferContentType` / `getStructuralTag` actually read.
+ * Both `Note` and `NoteTreeEntry` satisfy it — accepting this lets the lean
+ * tree-view payload share the same type-inference helpers as full notes.
+ */
+type NoteForTypeInference = Pick<Note, "metadata" | "tags" | "path">;
+
 // Known Prism renderer types
 const KNOWN_TYPES = new Set<string>([
   "document", "note", "presentation", "code", "email",
@@ -39,7 +46,7 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
 ];
 
 // Infer content type from note metadata, tags, or heuristics
-export function inferContentType(note: Note): ContentType {
+export function inferContentType(note: NoteForTypeInference): ContentType {
   const meta = note.metadata;
 
   // 1a. Backend-enriched prism_type (set by Rust enrichment layer)
@@ -106,7 +113,7 @@ export function inferContentType(note: Note): ContentType {
 }
 
 // The original vault tag for a note (the structural tag that determined its type)
-export function getStructuralTag(note: Note): string | null {
+export function getStructuralTag(note: NoteForTypeInference): string | null {
   if (note.tags && note.tags.length > 0) {
     const tagSet = new Set(note.tags);
     for (const [tag] of TAG_TO_CONTENT_TYPE) {

@@ -108,6 +108,7 @@ pub fn run() {
             vault::vault_add_tags,
             vault::vault_remove_tags,
             vault::vault_get_stats,
+            vault::vault_list_tree,
             vault::vault_get_info,
             vault::vault_update_description,
             vault::vault_get_paths,
