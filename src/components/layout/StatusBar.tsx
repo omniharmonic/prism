@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { Settings as SettingsIcon, RefreshCw } from "lucide-react";
-import { useNotes, useServiceStatus } from "../../app/hooks/useParachute";
+import { useVaultStats, useServiceStatus } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { Settings } from "./Settings";
 import { useQuery } from "@tanstack/react-query";
 import { serviceApi, type BackgroundServiceStatus } from "../../lib/parachute/client";
 
 export function StatusBar() {
-  const { data: notes } = useNotes();
+  const { data: stats } = useVaultStats();
   const { data: services } = useServiceStatus();
   const { openTabs, activeTabId } = useUIStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const noteCount = notes?.length ?? 0;
+  const noteCount = stats?.totalNotes ?? 0;
 
   const { data: bgServices } = useQuery({
     queryKey: ["services", "background"],

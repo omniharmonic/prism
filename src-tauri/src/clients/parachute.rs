@@ -59,11 +59,16 @@ impl ParachuteClient {
     }
 
     /// List or query notes. v2: `GET /api/notes` with query params.
+    ///
+    /// Defaults to `sort=desc` so the newest notes are always returned first —
+    /// without this, parachute defaults to ascending and any cap on `limit`
+    /// silently hides the most recent content as the vault grows.
     pub async fn list_notes(&self, params: &ListNotesParams) -> Result<Vec<Note>, PrismError> {
         let url = format!("{}/notes", self.base_url);
-        let limit = params.limit.unwrap_or(10000);
+        let limit = params.limit.unwrap_or(50000);
         let mut qp: Vec<(&str, String)> = vec![
             ("limit", limit.to_string()),
+            ("sort", "desc".into()),
         ];
         if params.include_content {
             qp.push(("include_content", "true".into()));
