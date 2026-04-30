@@ -130,6 +130,24 @@ impl ParachuteClient {
     }
 
     pub async fn create_note(&self, params: &CreateNoteParams) -> Result<Note, PrismError> {
+        // Refuse empty pathless creates. A note with no content AND no path is
+        // never legitimate — it shows up as an "Unsorted" empty entry in the
+        // tree and fattens list_tree responses with garbage. We had a leak
+        // (parachute-vault#213) where ~7k of these accumulated overnight from
+        // a buggy MCP caller; this guard makes Prism unable to contribute.
+        let has_content = !params.content.trim().is_empty();
+        let has_path = params.path.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false);
+        if !has_content && !has_path {
+            return Err(PrismError::Parachute(
+                "create_note refused: empty content and missing path".into()
+            ));
+        }
+        log::debug!(
+            "create_note: path={:?} content_len={} tags={:?}",
+            params.path,
+            params.content.len(),
+            params.tags,
+        );
         let resp = self.authed(self.client.post(format!("{}/notes", self.base_url)).json(params))
             .send().await?;
         if !resp.status().is_success() {
