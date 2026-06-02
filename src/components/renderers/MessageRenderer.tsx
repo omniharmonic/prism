@@ -7,6 +7,7 @@ import { vaultApi } from "../../lib/parachute/client";
 import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
 import { PlatformBadge } from "../comms/PlatformBadge";
+import type { MatrixMessage } from "../../lib/matrix/types";
 
 const TRIAGE_OPTIONS = [
   { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)" },
@@ -15,11 +16,42 @@ const TRIAGE_OPTIONS = [
   { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)" },
 ] as const;
 
+// Parse the vault note's text content (lines like "[YYYY-MM-DD HH:MM] sender: body")
+// into MatrixMessage[]. The vault is the canonical source — Matrix is optional live data.
+const LINE_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s+([^:]+):\s(.*)$/;
+
+function parseThreadContent(content: string | null | undefined): MatrixMessage[] {
+  if (!content) return [];
+  const messages: MatrixMessage[] = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = LINE_RE.exec(lines[i]);
+    if (!m) continue;
+    const [, timeStr, sender, body] = m;
+    const ts = Date.parse(timeStr.replace(" ", "T"));
+    messages.push({
+      event_id: `vault-${i}`,
+      sender,
+      sender_name: sender,
+      body,
+      msg_type: "m.text",
+      timestamp: Number.isNaN(ts) ? 0 : ts,
+      is_outgoing: false,
+      media_url: null,
+      media_info: null,
+    });
+  }
+  return messages;
+}
+
 export default function MessageRenderer({ note }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
-  const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || note.id.replace("matrix:", "");
+  const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || "";
   const platform = (meta?.platform as string) || "matrix";
   const queryClient = useQueryClient();
+
+  // Vault content is the source of truth — parse it once for instant render.
+  const vaultMessages = useMemo(() => parseThreadContent(note.content), [note.content]);
 
   // Determine current triage status from tags
   const currentTriage = useMemo(() => {
@@ -49,27 +81,30 @@ export default function MessageRenderer({ note }: RendererProps) {
     queryClient.invalidateQueries({ queryKey: ["vault"] });
   }, [note.id, note.tags, queryClient]);
 
-  const { data, isLoading } = useQuery({
+  // Live Matrix fetch is best-effort. No retries (avoids the "load forever" symptom
+  // when Synapse is offline or slow), and we never gate render on it.
+  const { data: liveData } = useQuery({
     queryKey: ["matrix", "messages", roomId],
     queryFn: () => matrixApi.getMessages(roomId, 50),
     enabled: !!roomId,
+    retry: false,
+    staleTime: 30_000,
   });
 
   const handleSend = useCallback(async (body: string) => {
+    if (!roomId) return;
     await matrixApi.sendMessage(roomId, body);
     queryClient.invalidateQueries({ queryKey: ["matrix", "messages", roomId] });
   }, [roomId, queryClient]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-sm" style={{ color: "var(--text-muted)" }}>Loading messages...</div>
-      </div>
-    );
-  }
-
-  // Reverse messages so oldest are at top (Matrix returns newest first with dir=b)
-  const messages = [...(data?.messages || [])].reverse();
+  // Prefer live Matrix data when it arrives (richer: real event IDs, is_outgoing).
+  // Fall back to vault content immediately so the thread renders even if Matrix is unavailable.
+  const messages = useMemo(() => {
+    if (liveData?.messages && liveData.messages.length > 0) {
+      return [...liveData.messages].reverse();
+    }
+    return vaultMessages;
+  }, [liveData, vaultMessages]);
 
   // Determine the triage option for display
   const triageOption = TRIAGE_OPTIONS.find((o) => o.tag === triageStatus);
@@ -126,7 +161,7 @@ export default function MessageRenderer({ note }: RendererProps) {
       {/* Messages */}
       <MessageThread
         messages={messages}
-        hasMore={data?.has_more}
+        hasMore={liveData?.has_more}
       />
 
       {/* Composer with auto-suggest handled */}

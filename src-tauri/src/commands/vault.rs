@@ -139,8 +139,19 @@ pub async fn vault_update_note(
     content: Option<String>,
     path: Option<String>,
     metadata: Option<serde_json::Value>,
+    // The `updatedAt` the frontend last read for this note. Forwarded as the
+    // optimistic-concurrency precondition so a stale editor write fails with a
+    // 409 rather than silently clobbering a newer revision. When absent the
+    // client falls back to `force:true` (see ParachuteClient::update_note).
+    if_updated_at: Option<String>,
 ) -> Result<Note, PrismError> {
-    let params = UpdateNoteParams { content, path, metadata };
+    let params = UpdateNoteParams {
+        content,
+        path,
+        metadata,
+        if_updated_at,
+        force: None,
+    };
     client.update_note(&id, &params).await
 }
 

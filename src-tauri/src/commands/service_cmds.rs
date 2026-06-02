@@ -161,6 +161,7 @@ pub async fn agent_update_skill(
         content: prompt,
         path: None,
         metadata: Some(meta),
+        ..Default::default()
     }).await?;
 
     Ok(())

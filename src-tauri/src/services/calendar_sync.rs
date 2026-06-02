@@ -165,6 +165,7 @@ pub async fn sync_single_event(
             content: None, // Don't overwrite user's meeting notes
             path: None,
             metadata: Some(metadata),
+            ..Default::default()
         }).await?;
         note.id
     } else {
@@ -378,6 +379,7 @@ async fn link_meeting_to_transcripts(
                 content: None,
                 path: None,
                 metadata: Some(serde_json::json!({ "transcriptNoteId": transcript.id })),
+                ..Default::default()
             }).await;
 
             // Update transcript metadata
@@ -385,6 +387,7 @@ async fn link_meeting_to_transcripts(
                 content: None,
                 path: None,
                 metadata: Some(serde_json::json!({ "meetingNoteId": meeting_note_id })),
+                ..Default::default()
             }).await;
 
             break; // Link to best/first match only

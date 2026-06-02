@@ -30,8 +30,11 @@ pub async fn sync_trigger(
         return Err(PrismError::Other("No sync destinations configured".into()));
     }
 
-    // Convert content from HTML to markdown for external services
-    let markdown_content = if note.content.contains('<') {
+    // Convert content from HTML to markdown for external services.
+    // Notes from the TipTap editor are HTML; agent-authored notes are already
+    // markdown. Only run the HTML→markdown converter on genuine HTML —
+    // running it on markdown collapses blank lines and corrupts structure.
+    let markdown_content = if looks_like_html(&note.content) {
         let md = htmd::convert(&note.content).unwrap_or_default();
         if md.is_empty() { note.content.clone() } else { md }
     } else {
@@ -73,6 +76,27 @@ pub async fn sync_trigger(
     }
 
     Ok(results)
+}
+
+/// Heuristic: does this note's content need HTML→markdown conversion before
+/// being pushed to an external service?
+///
+/// The old check — `content.contains('<')` — misfired on plain markdown that
+/// merely contains a `<` ("Gitcoin <> OpenCivics", "a < b", an email like
+/// "<benjamin@opencivics.co>"), sending markdown through an HTML parser that
+/// collapses its blank lines.
+///
+/// Instead we look for actual block-level tags that the TipTap editor always
+/// emits when it serializes a document. A note is only treated as HTML if one
+/// of these is present — a bare `<` never qualifies. Erring toward "markdown"
+/// is the safe default: pushing markdown as-is is lossless, whereas running
+/// the converter on markdown is not.
+fn looks_like_html(content: &str) -> bool {
+    const HTML_BLOCK_TAGS: [&str; 12] = [
+        "<p>", "<p ", "<h1", "<h2", "<h3", "<ul>", "<ol>", "<li>", "<br",
+        "<div", "<blockquote", "<table",
+    ];
+    HTML_BLOCK_TAGS.iter().any(|tag| content.contains(tag))
 }
 
 /// Google Docs sync: create or push

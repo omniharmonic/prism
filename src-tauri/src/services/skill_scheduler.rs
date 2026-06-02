@@ -338,6 +338,7 @@ async fn check_and_dispatch(
                     content: None,
                     path: None,
                     metadata: Some(updated_meta),
+                    ..Default::default()
                 }).await;
                 dispatched += 1;
             }

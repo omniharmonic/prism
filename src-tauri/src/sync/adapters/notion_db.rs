@@ -360,6 +360,7 @@ impl NotionDatabaseAdapter {
                         content: Some(content),
                         metadata: Some(meta_value),
                         path: None,
+                        ..Default::default()
                     };
                     match parachute.update_note(note_id, &params).await {
                         Ok(_) => result.updated += 1,

@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::error::PrismError;
 
+/// Default vault name when the config predates the `parachute_vault` field.
+fn default_vault_name() -> String {
+    "default".into()
+}
+
 /// App configuration — loaded from prism-config.json, falling back to
 /// omniharmonic .env, falling back to defaults.
 /// Serializable so it can be persisted and updated at runtime.
@@ -20,6 +25,12 @@ pub struct AppConfig {
     pub parachute_url: String,
     #[serde(default)]
     pub parachute_api_key: String,
+    /// Vault name for the scoped REST/MCP URLs (`/vault/{name}/...`). Almost
+    /// always "default" for a single-vault install. Custom serde default so
+    /// pre-existing config files (written before this field existed) resolve
+    /// to "default" rather than an empty string.
+    #[serde(default = "default_vault_name")]
+    pub parachute_vault: String,
 
     // Transcript data sources
     #[serde(default)]
@@ -47,6 +58,7 @@ impl Default for AppConfig {
             anthropic_api_key: String::new(),
             parachute_url: "http://localhost:1940".into(),
             parachute_api_key: String::new(),
+            parachute_vault: "default".into(),
             fathom_api_key: String::new(),
             meetily_db_path: String::new(),
             readai_api_key: String::new(),
@@ -102,6 +114,7 @@ impl AppConfig {
                 if let Some(v) = vars.get("GOOGLE_ACCOUNT_AGENT") { config.google_account_agent = v.clone(); }
                 if let Some(v) = vars.get("PARACHUTE_URL") { config.parachute_url = v.clone(); }
                 if let Some(v) = vars.get("PARACHUTE_API_KEY") { config.parachute_api_key = v.clone(); }
+                if let Some(v) = vars.get("PARACHUTE_VAULT") { config.parachute_vault = v.clone(); }
                 if let Some(v) = vars.get("FATHOM_API_KEY") { config.fathom_api_key = v.clone(); }
                 if let Some(v) = vars.get("MEETILY_DB_PATH") { config.meetily_db_path = v.clone(); }
             }
@@ -338,6 +351,7 @@ pub fn get_full_config(
         "anthropic_api_key": mask(&config.anthropic_api_key),
         "anthropic_api_key_set": !config.anthropic_api_key.is_empty(),
         "parachute_url": config.parachute_url,
+        "parachute_vault": config.parachute_vault,
         "parachute_api_key": mask(&config.parachute_api_key),
         "parachute_api_key_set": !config.parachute_api_key.is_empty(),
         "fathom_api_key": mask(&config.fathom_api_key),
@@ -371,6 +385,9 @@ pub fn update_config(
         if let Some(v) = obj.get("google_account_primary").and_then(|v| v.as_str()) { new_config.google_account_primary = v.to_string(); }
         if let Some(v) = obj.get("anthropic_api_key").and_then(|v| v.as_str()) { new_config.anthropic_api_key = v.to_string(); }
         if let Some(v) = obj.get("parachute_url").and_then(|v| v.as_str()) { new_config.parachute_url = v.to_string(); }
+        // Note: changing the vault name requires an app restart — the scoped
+        // base URL is baked into ParachuteClient at construction.
+        if let Some(v) = obj.get("parachute_vault").and_then(|v| v.as_str()) { new_config.parachute_vault = v.to_string(); }
         if let Some(v) = obj.get("parachute_api_key").and_then(|v| v.as_str()) { new_config.parachute_api_key = v.to_string(); }
         if let Some(v) = obj.get("fathom_api_key").and_then(|v| v.as_str()) { new_config.fathom_api_key = v.to_string(); }
         if let Some(v) = obj.get("meetily_db_path").and_then(|v| v.as_str()) { new_config.meetily_db_path = v.to_string(); }

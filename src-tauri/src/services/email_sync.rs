@@ -208,6 +208,7 @@ async fn sync_emails(
                 content: Some(content),
                 path: None,
                 metadata: Some(metadata),
+                ..Default::default()
             }).await?;
             note.id.clone()
         } else {

@@ -6,8 +6,11 @@ use crate::models::sync_config::{SyncConfig, SyncResult};
 use super::SyncAdapter;
 
 /// Sync adapter for Google Docs.
-/// Push: converts markdown → plain text and inserts into Google Doc.
-/// Pull: reads Google Doc content and converts back to markdown.
+///
+/// All Google operations are delegated to the `gog` CLI via `GoogleClient`,
+/// which handles OAuth through its own keyring — Prism never manages tokens
+/// directly. (See CLAUDE.md: "All external API calls happen in Rust clients".)
+///
 /// MVP approach: full content replacement (not diff-based).
 pub struct GoogleDocsAdapter {
     client: GoogleClient,
@@ -23,43 +26,10 @@ impl GoogleDocsAdapter {
 #[async_trait]
 impl SyncAdapter for GoogleDocsAdapter {
     async fn push(&self, note: &Note, config: &SyncConfig) -> Result<SyncResult, PrismError> {
-        let token = self.get_token()?;
-        let doc_id = &config.remote_id;
-
-        // For MVP: delete all content, then insert the note content
-        // Step 1: Get current doc to find content length
-        let doc = self.get_doc(doc_id, &token).await?;
-        let end_index = doc["body"]["content"]
-            .as_array()
-            .and_then(|arr| arr.last())
-            .and_then(|e| e["endIndex"].as_u64())
-            .unwrap_or(1);
-
-        // Step 2: Delete existing content (if any beyond the initial newline)
-        if end_index > 2 {
-            let delete_req = serde_json::json!({
-                "requests": [{
-                    "deleteContentRange": {
-                        "range": {
-                            "startIndex": 1,
-                            "endIndex": end_index - 1
-                        }
-                    }
-                }]
-            });
-            self.batch_update(doc_id, &delete_req, &token).await?;
-        }
-
-        // Step 3: Insert note content
-        let insert_req = serde_json::json!({
-            "requests": [{
-                "insertText": {
-                    "location": { "index": 1 },
-                    "text": &note.content
-                }
-            }]
-        });
-        self.batch_update(doc_id, &insert_req, &token).await?;
+        // `gog docs write --replace` swaps the entire doc body in one call,
+        // so there is no separate delete-then-insert dance to manage.
+        self.client
+            .docs_write(&self.account, &config.remote_id, &note.content)?;
 
         Ok(SyncResult::Pushed {
             content: note.content.clone(),
@@ -67,167 +37,71 @@ impl SyncAdapter for GoogleDocsAdapter {
     }
 
     async fn pull(&self, _note: &Note, config: &SyncConfig) -> Result<SyncResult, PrismError> {
-        let token = self.get_token()?;
-        let doc = self.get_doc(&config.remote_id, &token).await?;
-
-        // Extract plain text from Google Docs body
-        let content = extract_text_from_doc(&doc);
-
+        let content = self.client.docs_read(&self.account, &config.remote_id)?;
         Ok(SyncResult::Pulled { content })
     }
 
     async fn create_remote(&self, note: &Note) -> Result<String, PrismError> {
-        let token = self.get_token()?;
         let title = note
             .path
             .as_ref()
             .and_then(|p| p.split('/').last())
+            .map(|name| name.trim_end_matches(".md"))
+            .filter(|name| !name.is_empty())
             .unwrap_or("Untitled");
 
-        let create_req = serde_json::json!({ "title": title });
+        let doc_id = self.client.docs_create(&self.account, title)?;
 
-        let resp = reqwest::Client::new()
-            .post("https://docs.googleapis.com/v1/documents")
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&create_req)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!(
-                "create doc failed: {}",
-                resp.status()
-            )));
-        }
-
-        let data: serde_json::Value = resp.json().await?;
-        let doc_id = data["documentId"]
-            .as_str()
-            .ok_or_else(|| PrismError::Google("No documentId in response".into()))?
-            .to_string();
-
-        // Insert initial content
+        // Seed the new doc with the note's content.
         if !note.content.is_empty() {
-            let insert_req = serde_json::json!({
-                "requests": [{
-                    "insertText": {
-                        "location": { "index": 1 },
-                        "text": &note.content
-                    }
-                }]
-            });
-            self.batch_update(&doc_id, &insert_req, &token).await?;
+            self.client
+                .docs_write(&self.account, &doc_id, &note.content)?;
         }
 
         Ok(doc_id)
     }
 
     async fn remote_modified_since(&self, config: &SyncConfig) -> Result<bool, PrismError> {
-        let token = self.get_token()?;
-        let url = format!(
-            "https://www.googleapis.com/drive/v3/files/{}?fields=modifiedTime",
-            config.remote_id
-        );
+        let info = self.client.docs_info(&self.account, &config.remote_id)?;
 
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
+        // `gog docs info --json` returns Drive file metadata. Depending on
+        // gog's version the fields may be flat or nested under "file".
+        let modified = info
+            .get("modifiedTime")
+            .or_else(|| info.get("file").and_then(|f| f.get("modifiedTime")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!(
-                "drive metadata failed: {}",
-                resp.status()
-            )));
-        }
-
-        let data: serde_json::Value = resp.json().await?;
-        let modified = data["modifiedTime"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-
-        Ok(modified > config.last_synced)
+        Ok(is_remote_newer(modified, &config.last_synced))
     }
 
     async fn get_remote_content(&self, config: &SyncConfig) -> Result<String, PrismError> {
-        let token = self.get_token()?;
-        let doc = self.get_doc(&config.remote_id, &token).await?;
-        Ok(extract_text_from_doc(&doc))
+        self.client.docs_read(&self.account, &config.remote_id)
     }
 }
 
-impl GoogleDocsAdapter {
-    fn get_token(&self) -> Result<String, PrismError> {
-        // In production, get from GoogleClient's managed token store
-        // For now, return error prompting OAuth setup
-        Err(PrismError::Auth(
-            "Google Docs sync requires OAuth2 setup. Configure via Settings.".into(),
-        ))
+/// Returns true if the Google Doc has been modified since Prism last synced it.
+///
+/// Both inputs are RFC 3339 timestamps. `remote_modified` is empty if the
+/// metadata call returned nothing useful; `last_synced` is empty on a config
+/// that has never completed a sync.
+///
+/// Semantics chosen here (conservative — favours a redundant pull/conflict
+/// check over silently missing a remote edit):
+///   - empty `last_synced` (never synced) → treat remote as newer
+///   - empty `remote_modified` (unknown)  → treat remote as newer
+///   - otherwise compare as parsed instants, falling back to string compare
+fn is_remote_newer(remote_modified: &str, last_synced: &str) -> bool {
+    if last_synced.is_empty() || remote_modified.is_empty() {
+        return true;
     }
-
-    async fn get_doc(
-        &self,
-        doc_id: &str,
-        token: &str,
-    ) -> Result<serde_json::Value, PrismError> {
-        let url = format!("https://docs.googleapis.com/v1/documents/{}", doc_id);
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!(
-                "get doc failed: {}",
-                resp.status()
-            )));
-        }
-        Ok(resp.json().await?)
+    match (
+        chrono::DateTime::parse_from_rfc3339(remote_modified),
+        chrono::DateTime::parse_from_rfc3339(last_synced),
+    ) {
+        (Ok(remote), Ok(synced)) => remote > synced,
+        // Unparseable timestamp — fall back to lexical compare rather than
+        // claiming "unchanged" and risking a missed edit.
+        _ => remote_modified > last_synced,
     }
-
-    async fn batch_update(
-        &self,
-        doc_id: &str,
-        body: &serde_json::Value,
-        token: &str,
-    ) -> Result<(), PrismError> {
-        let url = format!(
-            "https://docs.googleapis.com/v1/documents/{}:batchUpdate",
-            doc_id
-        );
-        let resp = reqwest::Client::new()
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(PrismError::Google(format!(
-                "batch update failed: {}",
-                resp.status()
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// Extract plain text from a Google Docs JSON structure
-fn extract_text_from_doc(doc: &serde_json::Value) -> String {
-    let mut text = String::new();
-    if let Some(content) = doc["body"]["content"].as_array() {
-        for element in content {
-            if let Some(paragraph) = element["paragraph"]["elements"].as_array() {
-                for elem in paragraph {
-                    if let Some(t) = elem["textRun"]["content"].as_str() {
-                        text.push_str(t);
-                    }
-                }
-            }
-        }
-    }
-    text
 }

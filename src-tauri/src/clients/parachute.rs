@@ -4,30 +4,40 @@ use crate::error::PrismError;
 use crate::models::note::*;
 use crate::models::link::*;
 
-/// HTTP client for Parachute Vault v2 API (9 consolidated tools).
+/// HTTP client for Parachute Vault 0.5.x API.
 ///
-/// All mutations (tags, links) flow through `PATCH /api/notes/:id`.
-/// Search is absorbed into `GET /api/notes?search=...`.
-/// Stats come from `GET /api/vault?include_stats=true`.
+/// Every per-vault resource lives under a vault-scoped root:
+/// `GET/POST/PATCH/DELETE {server_root}/vault/{vault}/api/...`. The unscoped
+/// `/api/...` surface was removed in vault 0.4.x — there is no fallback.
+/// All mutations (tags, links) flow through `PATCH .../notes/:id`.
+/// Search is absorbed into `GET .../notes?search=...`.
+/// Stats come from `GET .../vault?include_stats=true`.
+///
+/// `server_root` is kept separately from the api base so the cross-vault,
+/// unauthenticated `GET /health` liveness probe hits the server root rather
+/// than the vault-scoped path.
 ///
 /// The `api_key` is wrapped in `RwLock` so it can be updated at runtime
 /// (e.g. when the user changes it in Settings) without restarting the app.
 pub struct ParachuteClient {
+    /// e.g. `http://localhost:1940` — used for the root `/health` probe.
+    server_root: String,
+    /// e.g. `http://localhost:1940/vault/default/api` — the REST base.
     base_url: String,
     api_key: RwLock<Option<String>>,
     client: Client,
 }
 
 impl ParachuteClient {
-    pub fn new(base_url: &str, api_key: Option<String>) -> Self {
-        // Strip trailing slash, then append /api if not already present
-        let url = base_url.trim_end_matches('/');
-        let api_url = if url.ends_with("/api") {
-            url.to_string()
-        } else {
-            format!("{}/api", url)
-        };
+    pub fn new(base_url: &str, vault: &str, api_key: Option<String>) -> Self {
+        // Normalize to the bare server root. Tolerate a configured URL that
+        // still carries a legacy `/api` suffix or a trailing slash.
+        let root = base_url.trim_end_matches('/');
+        let root = root.strip_suffix("/api").unwrap_or(root);
+        let server_root = root.to_string();
+        let api_url = format!("{}/vault/{}/api", server_root, vault);
         Self {
+            server_root,
             base_url: api_url,
             api_key: RwLock::new(api_key),
             client: Client::new(),
@@ -52,8 +62,9 @@ impl ParachuteClient {
     }
 
     pub async fn health(&self) -> Result<serde_json::Value, PrismError> {
-        // /health lives at the server root, not /api — strip /api suffix.
-        let url = self.base_url.trim_end_matches("/api").to_string() + "/health";
+        // /health is a cross-vault, unauthenticated liveness probe at the
+        // server root — never under the vault-scoped /vault/{name}/api path.
+        let url = format!("{}/health", self.server_root);
         let resp = self.client.get(&url).send().await?.json().await?;
         Ok(resp)
     }
@@ -157,10 +168,27 @@ impl ParachuteClient {
     }
 
     pub async fn update_note(&self, id: &str, params: &UpdateNoteParams) -> Result<Note, PrismError> {
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(params))
+        // Mandatory optimistic-concurrency guard (vault 0.4.0+): a PATCH that
+        // touches content/metadata/path/tags/links must carry `if_updated_at`
+        // or `force:true`, else 428. The editor path passes `if_updated_at`
+        // (real lost-update protection on the contended note). Any caller that
+        // supplies neither — background sync, which is the sole writer of its
+        // own notes — gets `force:true` injected here so it never 428s.
+        let mut body = serde_json::to_value(params)
+            .map_err(|e| PrismError::Parachute(format!("update_note serialize error: {}", e)))?;
+        if params.if_updated_at.is_none() && params.force.is_none() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("force".into(), serde_json::Value::Bool(true));
+            }
+        }
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
-            return Err(PrismError::Parachute(format!("update_note failed: {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // 428 = missing if_updated_at/force; 409 = stale if_updated_at.
+            log::error!("update_note {} {} — body: {}", id, status, body);
+            return Err(PrismError::Parachute(format!("update_note failed: {} — {}", status, body)));
         }
         Ok(resp.json().await?)
     }
@@ -202,9 +230,11 @@ impl ParachuteClient {
         Ok(resp.json().await?)
     }
 
-    /// Add tags to a note. v2: `PATCH /api/notes/:id` with `tags.add`.
+    /// Add tags to a note. `PATCH .../notes/:id` with `tags.add`.
+    /// `force: true` — tag set-ops are sole-writer/idempotent and carry no
+    /// contended `updatedAt`; without it the mandatory concurrency check 428s.
     pub async fn add_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
-        let body = serde_json::json!({ "tags": { "add": tags } });
+        let body = serde_json::json!({ "tags": { "add": tags }, "force": true });
         let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
@@ -213,9 +243,9 @@ impl ParachuteClient {
         Ok(())
     }
 
-    /// Remove tags from a note. v2: `PATCH /api/notes/:id` with `tags.remove`.
+    /// Remove tags from a note. `PATCH .../notes/:id` with `tags.remove`.
     pub async fn remove_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
-        let body = serde_json::json!({ "tags": { "remove": tags } });
+        let body = serde_json::json!({ "tags": { "remove": tags }, "force": true });
         let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
@@ -258,7 +288,8 @@ impl ParachuteClient {
                     "target": params.target_id,
                     "relationship": params.relationship,
                 }]
-            }
+            },
+            "force": true
         });
         let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, params.source_id)).json(&body))
             .send().await?;
@@ -284,7 +315,8 @@ impl ParachuteClient {
                     "target": params.target_id,
                     "relationship": params.relationship,
                 }]
-            }
+            },
+            "force": true
         });
         let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, params.source_id)).json(&body))
             .send().await?;
@@ -297,10 +329,9 @@ impl ParachuteClient {
     /// Get the full graph. v2: `GET /api/notes?format=graph&include_links=true`.
     /// Response shape: `{ nodes: [...], edges: [...] }`.
     ///
-    /// Semantic note: v2 only honors `depth` in combination with a `near`
-    /// anchor (graph neighborhood). Without `center_id`, the response is the
-    /// full graph; `depth` is ignored. This is a behavior change from v1 where
-    /// `depth` applied globally.
+    /// Semantic note: the API only honors a neighborhood scope via the
+    /// bracket-style `near[note_id]` / `near[depth]` params (depth default 2,
+    /// capped at 5). Without `center_id`, the response is the full graph.
     pub async fn get_graph(&self, params: &GetGraphParams) -> Result<Graph, PrismError> {
         let url = format!("{}/notes", self.base_url);
         let mut qp: Vec<(&str, String)> = vec![
@@ -309,13 +340,13 @@ impl ParachuteClient {
             ("limit", "10000".into()),
         ];
         if let Some(ref center_id) = params.center_id {
-            qp.push(("near", center_id.clone()));
+            qp.push(("near[note_id]", center_id.clone()));
             if let Some(depth) = params.depth {
-                qp.push(("depth", depth.to_string()));
+                qp.push(("near[depth]", depth.to_string()));
             }
         }
         // If the caller passed `depth` without `center_id`, it's silently
-        // dropped — v2 doesn't support depth-bounded full-graph queries.
+        // dropped — a depth bound is only meaningful with a neighborhood anchor.
         let resp = self.authed(self.client.get(&url)).query(&qp).send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_graph failed: {}", resp.status())));

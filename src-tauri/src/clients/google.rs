@@ -241,9 +241,49 @@ impl GoogleClient {
             .ok_or_else(|| PrismError::Google(format!("No doc ID in response: {}", data)))
     }
 
-    /// Write content to a Google Doc (replaces all content)
+    /// Write content to a Google Doc (replaces all content).
+    ///
+    /// Content is streamed to gog via stdin (`--file -`) rather than passed as
+    /// a CLI positional argument. gog's parser (Kong) treats any argument
+    /// starting with `-`/`--` as a flag, and note content routinely begins
+    /// with `---` (YAML frontmatter) — passing it positionally fails with
+    /// "unknown flag ---". stdin sidesteps argv entirely.
     pub fn docs_write(&self, account: &str, doc_id: &str, content: &str) -> Result<(), PrismError> {
-        self.run_gog_text(&["docs", "write", doc_id, content, "--replace"], account)?;
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(&self.gog_bin)
+            .args(["docs", "write", doc_id, "--file", "-", "--replace", "--account", account])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| PrismError::Google(format!("Failed to run gog: {}", e)))?;
+
+        // Write content, then drop the stdin handle so gog sees EOF.
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| PrismError::Google("gog stdin unavailable".into()))?;
+            stdin
+                .write_all(content.as_bytes())
+                .map_err(|e| PrismError::Google(format!("Failed to pipe content to gog: {}", e)))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| PrismError::Google(format!("gog docs write failed: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(PrismError::Google(format!(
+                "gog docs write failed: {} {}",
+                stderr.trim(),
+                stdout.trim(),
+            )));
+        }
         Ok(())
     }
 

@@ -133,6 +133,7 @@ async fn index_room(
             content: Some(content),
             path: None,
             metadata: Some(metadata),
+            ..Default::default()
         };
         parachute.update_note(&note.id, &params).await?;
     } else {

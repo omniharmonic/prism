@@ -34,8 +34,9 @@ pub fn run() {
 
     let parachute_key = if app_config.parachute_api_key.is_empty() { None } else { Some(app_config.parachute_api_key.clone()) };
     let parachute_url = app_config.parachute_url.clone();
-    log::info!("Parachute: url={}, api_key_present={}", parachute_url, parachute_key.is_some());
-    let parachute = ParachuteClient::new(&parachute_url, parachute_key.clone());
+    let parachute_vault = app_config.parachute_vault.clone();
+    log::info!("Parachute: url={}, vault={}, api_key_present={}", parachute_url, parachute_vault, parachute_key.is_some());
+    let parachute = ParachuteClient::new(&parachute_url, &parachute_vault, parachute_key.clone());
 
     // Matrix client configured from omniharmonic .env
     let matrix_client = MatrixClient::new(
@@ -58,7 +59,7 @@ pub fn run() {
     // Try to connect Ollama agent with MCP vault access.
     // This is optional — if Ollama or Parachute MCP aren't running, we proceed without it.
     let ollama_agent = tauri::async_runtime::block_on(async {
-        let mcp_url = format!("{}/mcp", parachute_url);
+        let mcp_url = format!("{}/vault/{}/mcp", parachute_url, parachute_vault);
         let ollama_url = "http://localhost:11434".to_string(); // TODO: make configurable
         match PrismMcpClient::connect(&mcp_url, parachute_key.as_deref()).await {
             Ok(mcp) => {
@@ -78,7 +79,7 @@ pub fn run() {
 
     // Start background sync services (uses tauri::async_runtime which is always available)
     let service_manager = ServiceManager::start(&app_config);
-    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(&parachute_url, parachute_key.clone()));
+    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(&parachute_url, &parachute_vault, parachute_key.clone()));
 
     // Start skill scheduler (needs both ServiceManager and DispatchManager)
     service_manager.start_scheduler(dispatch_manager.clone());

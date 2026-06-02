@@ -656,6 +656,7 @@ async fn link_transcript_to_meeting(
                     content: None,
                     path: None,
                     metadata: Some(meta.clone()),
+                    ..Default::default()
                 }).await;
             }
         }
@@ -667,6 +668,7 @@ async fn link_transcript_to_meeting(
             metadata: Some(serde_json::json!({
                 "meetingNoteId": meeting_id,
             })),
+            ..Default::default()
         }).await;
     } else {
         log::debug!("Transcript linking: no match found for '{}'", transcript_title);

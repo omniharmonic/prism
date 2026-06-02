@@ -8,6 +8,10 @@ use crate::services::person_linker;
 
 const SYNC_INTERVAL_SECS: u64 = 60;
 const SYNC_TIMEOUT_MS: u64 = 10_000; // 10s long-poll timeout
+// After this many consecutive sync failures we discard the since token and
+// re-run full_index on recovery, so a Synapse outage doesn't leave the vault
+// stuck on stale data once messages backfill via the bridges.
+const REBOOTSTRAP_AFTER_FAILURES: u32 = 3;
 
 /// Continuous Matrix → Parachute message sync.
 ///
@@ -32,72 +36,85 @@ pub async fn run(
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     let mut since_token: Option<String> = None;
-
-    // Do an initial sync with no timeout to get the since token without processing all history
-    match matrix.sync(None, Some(0)).await {
-        Ok(resp) => {
-            since_token = resp.get("next_batch")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            log::info!("Message sync: got initial since token, starting incremental sync");
-        }
-        Err(e) => {
-            log::warn!("Message sync: initial sync failed: {}. Will retry.", e);
-            let mut s = status.lock().unwrap();
-            s.last_error = Some(format!("Initial sync failed: {}", e));
-        }
-    }
-
-    // First run: do a full index of existing rooms
-    match full_index(&matrix, &parachute).await {
-        Ok(count) => {
-            let mut s = status.lock().unwrap();
-            s.last_run = Some(chrono::Utc::now().to_rfc3339());
-            s.items_processed = count;
-            s.last_error = None;
-        }
-        Err(e) => {
-            log::warn!("Message sync: full index failed: {}", e);
-            let mut s = status.lock().unwrap();
-            s.last_error = Some(e.to_string());
-        }
-    }
+    let mut bootstrap_done = false;
+    let mut consecutive_failures: u32 = 0;
 
     loop {
-        // Check shutdown
         if *shutdown.borrow() {
             log::info!("Message sync service shutting down");
             break;
         }
 
-        // Wait for interval or shutdown
-        tokio::select! {
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(SYNC_INTERVAL_SECS)) => {},
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    log::info!("Message sync service shutting down");
-                    break;
+        // Step 1: ensure we have a since token. Retried every cycle until success
+        // so a Synapse outage at startup self-heals once it returns.
+        if since_token.is_none() {
+            match matrix.sync(None, Some(0)).await {
+                Ok(resp) => {
+                    since_token = resp.get("next_batch")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    log::info!("Message sync: got since token");
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    log::warn!("Message sync: initial sync failed: {}. Will retry.", e);
+                    record_failure(&status, format!("Initial sync failed: {}", e), &mut consecutive_failures);
+                    if !sleep_or_shutdown(SYNC_INTERVAL_SECS, &mut shutdown).await { break; }
+                    continue;
                 }
             }
         }
 
-        // Incremental sync
+        // Step 2: ensure full_index has run successfully at least once since the
+        // last sustained failure. After a bridge backfills missed messages this
+        // is what walks every joined room and pulls the latest 50 events into
+        // the vault.
+        if !bootstrap_done {
+            match full_index(&matrix, &parachute).await {
+                Ok(count) => {
+                    bootstrap_done = true;
+                    consecutive_failures = 0;
+                    let mut s = status.lock().unwrap();
+                    s.last_run = Some(chrono::Utc::now().to_rfc3339());
+                    s.items_processed = s.items_processed.saturating_add(count);
+                    s.last_error = None;
+                }
+                Err(e) => {
+                    log::warn!("Message sync: full index failed: {}", e);
+                    record_failure(&status, format!("Full index failed: {}", e), &mut consecutive_failures);
+                    if !sleep_or_shutdown(SYNC_INTERVAL_SECS, &mut shutdown).await { break; }
+                    continue;
+                }
+            }
+        }
+
+        // Step 3: incremental sync.
         match incremental_sync(&matrix, &parachute, since_token.as_deref()).await {
             Ok((new_token, processed)) => {
                 if let Some(t) = new_token {
                     since_token = Some(t);
                 }
+                consecutive_failures = 0;
                 let mut s = status.lock().unwrap();
                 s.last_run = Some(chrono::Utc::now().to_rfc3339());
-                s.items_processed += processed;
+                s.items_processed = s.items_processed.saturating_add(processed);
                 s.last_error = None;
             }
             Err(e) => {
                 log::warn!("Message sync error: {}", e);
-                let mut s = status.lock().unwrap();
-                s.last_error = Some(e.to_string());
+                record_failure(&status, e.to_string(), &mut consecutive_failures);
+                if consecutive_failures >= REBOOTSTRAP_AFTER_FAILURES {
+                    log::info!(
+                        "Message sync: {} consecutive failures — will re-bootstrap on recovery",
+                        consecutive_failures
+                    );
+                    bootstrap_done = false;
+                    since_token = None;
+                }
             }
         }
+
+        if !sleep_or_shutdown(SYNC_INTERVAL_SECS, &mut shutdown).await { break; }
     }
 
     let mut s = status.lock().unwrap();
@@ -254,6 +271,7 @@ async fn process_room_messages(
             content: Some(updated_content),
             path: None,
             metadata: Some(metadata),
+            ..Default::default()
         }).await?;
 
         // Link to person notes for participants
@@ -373,6 +391,7 @@ async fn index_room(
             content: Some(content),
             path: None,
             metadata: Some(metadata),
+            ..Default::default()
         }).await?;
         note.id
     } else {
@@ -449,6 +468,24 @@ async fn link_participants(
             }
         }
     }
+}
+
+/// Sleep for `secs` or return false if shutdown was signalled.
+async fn sleep_or_shutdown(secs: u64, shutdown: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(secs)) => true,
+        _ = shutdown.changed() => !*shutdown.borrow(),
+    }
+}
+
+fn record_failure(
+    status: &Arc<std::sync::Mutex<ServiceStatus>>,
+    msg: String,
+    consecutive_failures: &mut u32,
+) {
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    let mut s = status.lock().unwrap();
+    s.last_error = Some(msg);
 }
 
 fn platform_label(platform: &str) -> &str {

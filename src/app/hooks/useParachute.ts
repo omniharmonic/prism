@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { vaultApi, systemApi, githubSyncApi } from "../../lib/parachute/client";
 import { queryKeys } from "../../lib/parachute/queries";
-import type { NoteFilters, UpdateNoteParams } from "../../lib/types";
+import type { Note, NoteFilters, UpdateNoteParams } from "../../lib/types";
 
 export function useNotes(filters?: NoteFilters) {
   return useQuery({
@@ -133,8 +133,17 @@ export function useCreateNote() {
 export function useUpdateNote() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...params }: { id: string } & UpdateNoteParams) =>
-      vaultApi.updateNote(id, params),
+    mutationFn: ({ id, ...params }: { id: string } & UpdateNoteParams) => {
+      // Optimistic concurrency (vault 0.4.0+): forward the `updatedAt` we last
+      // read for this note (from the query cache) so a stale write fails with a
+      // 409 rather than clobbering a newer revision. If the cache has no
+      // updatedAt, the backend falls back to force:true.
+      if (params.ifUpdatedAt === undefined) {
+        const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
+        if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
+      }
+      return vaultApi.updateNote(id, params);
+    },
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.notes() });

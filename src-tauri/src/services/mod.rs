@@ -33,6 +33,7 @@ pub struct ServiceManager {
     shutdown_rx: watch::Receiver<bool>,
     handles: Vec<JoinHandle<()>>,
     parachute_url: String,
+    parachute_vault: String,
     parachute_api_key: Option<String>,
     pub message_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub calendar_status: Arc<std::sync::Mutex<ServiceStatus>>,
@@ -73,7 +74,8 @@ impl ServiceManager {
         // Create separate client instances for background services
         let parachute_key = if config.parachute_api_key.is_empty() { None } else { Some(config.parachute_api_key.clone()) };
         let parachute_url = config.parachute_url.clone();
-        let parachute = Arc::new(ParachuteClient::new(&parachute_url, parachute_key.clone()));
+        let parachute_vault = config.parachute_vault.clone();
+        let parachute = Arc::new(ParachuteClient::new(&parachute_url, &parachute_vault, parachute_key.clone()));
 
         // Message sync (Matrix → Parachute) — every 60 seconds
         if !config.matrix_access_token.is_empty() {
@@ -178,6 +180,7 @@ impl ServiceManager {
             shutdown_rx,
             handles,
             parachute_url,
+            parachute_vault,
             parachute_api_key: parachute_key,
             message_status,
             calendar_status,
@@ -190,7 +193,7 @@ impl ServiceManager {
 
     /// Start the skill scheduler (must be called after DispatchManager is created).
     pub fn start_scheduler(&self, dispatch_manager: Arc<agent_dispatch::DispatchManager>) {
-        let parachute = Arc::new(ParachuteClient::new(&self.parachute_url, self.parachute_api_key.clone()));
+        let parachute = Arc::new(ParachuteClient::new(&self.parachute_url, &self.parachute_vault, self.parachute_api_key.clone()));
         let rx = self.shutdown_rx.clone();
         let status = self.scheduler_status.clone();
         tauri::async_runtime::spawn(async move {

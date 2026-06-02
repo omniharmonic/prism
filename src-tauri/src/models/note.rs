@@ -70,6 +70,17 @@ pub struct CreateNoteParams {
     pub tags: Option<Vec<String>>,
 }
 
+/// Update body for `PATCH /vault/{vault}/api/notes/:id`.
+///
+/// As of vault 0.4.0 the optimistic-concurrency check is **mandatory**: a
+/// content/metadata/path/tags/links update must carry either `if_updated_at`
+/// (the `updatedAt` the caller last read) or `force: true`, otherwise the
+/// server returns `428 Precondition Required`. Pure append/prepend updates are
+/// exempt, but Prism does full-content replaces, so every caller must set one.
+///
+/// Field-name note: the struct is `camelCase` for `content`/`path`/`metadata`
+/// (single words — unaffected), but the concurrency fields use the API's
+/// snake_case contract (`if_updated_at`, `force`) via explicit `rename`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNoteParams {
@@ -79,6 +90,14 @@ pub struct UpdateNoteParams {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// The `updatedAt` the caller last read for this note. Sent as
+    /// `if_updated_at`; on mismatch the server returns `409 conflict`.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "if_updated_at")]
+    pub if_updated_at: Option<String>,
+    /// Bypass the optimistic-concurrency check. Used by sole-writer paths
+    /// (background sync) that have no contended `updatedAt` to echo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

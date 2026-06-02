@@ -41,6 +41,7 @@ pub async fn sync_note(
                             content: Some(content.clone()),
                             path: None,
                             metadata: None,
+                            ..Default::default()
                         },
                     )
                     .await?;
@@ -61,6 +62,7 @@ pub async fn sync_note(
                                 content: Some(content.clone()),
                                 path: None,
                                 metadata: None,
+                                ..Default::default()
                             },
                         )
                         .await?;

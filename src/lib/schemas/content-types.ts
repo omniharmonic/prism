@@ -17,13 +17,15 @@ const KNOWN_TYPES = new Set<string>([
 
 // Tag → ContentType mapping, ordered by priority (first match wins)
 // When a note has multiple structural tags, higher-priority mappings take precedence.
+// NOTE: "project" is intentionally lower-priority than document subtypes — the "project"
+// tag is often used organizationally ("belongs to X project"), not structurally ("IS a
+// project definition"). Only use ProjectRenderer when no more specific type is present.
 const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
   // High-priority: specific renderers
   ["task", "task"],
   ["slides", "presentation"],
   ["briefing", "briefing"],
   ["dashboard", "dashboard"],
-  ["project", "project"],
   ["project-page", "website"],
 
   // Medium-priority: document subtypes (all render as documents)
@@ -33,6 +35,9 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
   ["writing", "document"],
   ["research", "document"],
   ["proposal", "document"],
+  ["questionnaire", "document"],
+  ["discovery", "document"],
+  ["scoping", "document"],
   ["spec", "document"],
   ["script", "document"],
   ["person", "document"],
@@ -43,6 +48,9 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
   ["report", "document"],
   ["page", "document"],
   ["index", "document"],
+
+  // Low-priority: project renderer only when no document subtype tag present
+  ["project", "project"],
 ];
 
 // Infer content type from note metadata, tags, or heuristics
@@ -54,9 +62,13 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
     return meta.prism_type as ContentType;
   }
 
-  // 1b. Explicit metadata.type — only if it's a known renderer type
-  if (meta && typeof meta.type === "string" && KNOWN_TYPES.has(meta.type)) {
-    return meta.type as ContentType;
+  // 1b. Explicit metadata.type — known renderer types pass through; unknown types
+  // that clearly describe document-like content fall back to "document" rather than
+  // continuing to tag inference (which might incorrectly pick a structural renderer).
+  if (meta && typeof meta.type === "string") {
+    if (KNOWN_TYPES.has(meta.type)) return meta.type as ContentType;
+    // Treat any unrecognized type as a document subtype
+    if (meta.type.length > 0) return "document";
   }
 
   // 2. Tag-based inference — check tags against the mapping table

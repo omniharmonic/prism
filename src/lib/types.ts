@@ -226,6 +226,10 @@ export interface UpdateNoteParams {
   content?: string;
   path?: string;
   metadata?: Record<string, unknown>;
+  /** The `updatedAt` the client last read for this note. Forwarded to the
+   *  backend as the optimistic-concurrency precondition (vault 0.4.0+). When
+   *  omitted the backend falls back to `force:true`. */
+  ifUpdatedAt?: string;
 }
 
 // Tab state for the UI
