@@ -510,20 +510,43 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
   const { data: transcriptMatch } = useQuery({
     queryKey: ["transcript-link", event.id, dateStr],
     queryFn: async () => {
-      // First try: search for transcript by meeting title keywords + date
+      // 1. Resolve the meeting note for this event (match on the stored event ID).
+      const meetingCandidates = await vaultApi.search(event.summary || dateStr, ["meeting"], 10);
+      const meetingNote = meetingCandidates.find(
+        (n) => (n.metadata as Record<string, unknown> | undefined)?.calendarEventId === event.id
+      );
+
+      // 2. Prefer the link the backend linker writes — the meeting note's
+      //    `transcriptNoteId` metadata, or its `has-transcript` graph edge.
+      //    (The UI previously ignored these and re-searched from scratch.)
+      if (meetingNote) {
+        const transcriptId = (meetingNote.metadata as Record<string, unknown> | undefined)?.transcriptNoteId as
+          | string
+          | undefined;
+        if (transcriptId) {
+          try {
+            return await vaultApi.getNote(transcriptId);
+          } catch { /* note may have been deleted — fall through */ }
+        }
+        const links = await vaultApi.getLinks(meetingNote.id, "has-transcript");
+        const target = links.find((l) => l.sourceId === meetingNote.id)?.targetId;
+        if (target) {
+          try {
+            return await vaultApi.getNote(target);
+          } catch { /* fall through */ }
+        }
+      }
+
+      // 3. Fallback: best-effort search by date + title, but ONLY accept a
+      //    same-date hit. (The old code returned results[0] unconditionally,
+      //    which could surface a transcript from an unrelated meeting.)
       const slug = (event.summary || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       const searchTerms = slug ? `${dateStr} ${slug}` : dateStr;
       const results = await vaultApi.search(searchTerms, ["transcript"], 5);
-      if (results.length > 0) {
-        // Find one matching the date
-        const match = results.find((n) => {
-          const meta = n.metadata as Record<string, unknown> | undefined;
-          return meta?.date === dateStr;
-        });
-        if (match) return match;
-        return results[0]; // Best effort
-      }
-      return null;
+      const match = results.find(
+        (n) => (n.metadata as Record<string, unknown> | undefined)?.date === dateStr
+      );
+      return match || null;
     },
     enabled: !!dateStr,
     staleTime: 60_000,

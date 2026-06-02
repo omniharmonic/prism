@@ -15,11 +15,14 @@ const DEFAULT_SKILLS: &[(&str, &str, u64, bool, &str, Option<u64>, Option<&str>)
         "message-triage",
         "Triage recent unclassified emails and messages. Surface what matters, filter noise.\n\n\
 ## Step 1: Gather unclassified items\n\n\
-Query for ALL unclassified emails and message threads in a single call:\n\
-  query-notes: tag [\"email\", \"message-thread\"], tag_match \"any\", exclude_tags [\"urgent\", \"action-required\", \"informational\", \"low\", \"triaged\"], limit 50, include_content true\n\n\
-This returns both email notes AND message-thread notes. Process all of them in the following steps.\n\n\
+The query-notes tool takes ONE tag per call, so run these TWO queries separately:\n\
+  1. query-notes { tag: \"email\", limit 50, include_content: true }\n\
+  2. query-notes { tag: \"message-thread\", limit 50, include_content: true }\n\
+Combine both result sets. Then SKIP any note that ALREADY carries one of these tags:\n\
+\"urgent\", \"action-required\", \"informational\", \"low\", or \"triaged\" — those were processed on a prior run.\n\
+Process every remaining (untagged) note in the steps below.\n\n\
 ## Step 2: Classify each item\n\n\
-Apply ONE importance tag per item:\n\n\
+Apply EXACTLY ONE importance tag per item (these four tags are the ones the Messages UI reads):\n\n\
 URGENT (tag: \"urgent\") — needs response within hours:\n\
 - Explicit deadline today or tomorrow\n\
 - Direct request from a key collaborator (check person notes with relationship_type \"collaborator\" or \"stakeholder\")\n\
@@ -50,7 +53,7 @@ For commitments someone made TO the vault owner:\n\
 Add the importance tag + \"triaged\" tag to each note using update-note with tags.add.\n\n\
 Output summary: count by category, list urgent items with sender/subject, note any tasks created.",
         3600, // 1 hour
-        false, // disabled by default
+        true, // enabled by default — message triage is core to the Messages UX
         "Classify message importance and extract action items",
         None,
         None,
@@ -96,7 +99,7 @@ For each processed transcript, search meeting notes (query-notes: tags [\"meetin
 Match by attendee overlap and title similarity. Link: meeting → transcript with \"has-transcript\".\n\n\
 Summarize: transcripts processed, project assignments, tasks created, person notes created/updated.",
         1800, // 30 minutes
-        false,
+        true, // enabled by default — AI linking + entity extraction for meetings
         "Process meeting transcripts, extract action items, link to calendar events",
         None,
         None,
@@ -351,39 +354,94 @@ async fn check_and_dispatch(
     Ok(dispatched)
 }
 
-/// Create default skill notes if none exist.
+/// Reconcile the app-managed default skills into the vault.
+///
+/// For each entry in `DEFAULT_SKILLS`:
+/// - **New** (no existing `agent-skill` note with this `skillName`): created with
+///   the full shipped defaults, including `enabled` and `intervalSecs`.
+/// - **Existing**: only the prompt body is updated (when it changed), shipping
+///   prompt fixes to vaults provisioned by older builds. All metadata —
+///   `enabled`, `intervalSecs`, `lastRun`, `runAtHour`, `dependsOn` — is treated
+///   as user-owned operational state and left untouched, so this never flips a
+///   skill the user toggled or rewrites a cadence they tuned.
+///
+/// These are app-managed skills keyed by `skillName`; user-authored skills live
+/// under different names and are never touched.
 async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate::error::PrismError> {
     let existing = parachute.list_notes(&ListNotesParams {
         tag: Some("agent-skill".into()),
-        limit: Some(100),
+        limit: Some(200),
+        include_content: true,
         ..Default::default()
     }).await?;
 
-    if !existing.is_empty() {
-        return Ok(());
-    }
+    let find_existing = |name: &str| {
+        existing.iter().find(|n| {
+            n.metadata.as_ref()
+                .and_then(|m| m.get("skillName"))
+                .and_then(|v| v.as_str())
+                == Some(name)
+        })
+    };
 
-    log::info!("Skill scheduler: creating {} default skills", DEFAULT_SKILLS.len());
+    let mut created = 0u32;
+    let mut reconciled = 0u32;
 
     for (name, prompt, interval, enabled, description, run_at_hour, depends_on) in DEFAULT_SKILLS {
-        let path = format!("vault/agent/skills/{}", name);
-        let metadata = serde_json::json!({
-            "type": "agent-skill",
-            "skillName": name,
-            "description": description,
-            "intervalSecs": interval,
-            "enabled": enabled,
-            "lastRun": null,
-            "runAtHour": run_at_hour,
-            "dependsOn": depends_on,
-        });
+        match find_existing(name) {
+            Some(note) => {
+                // Ship the latest prompt body to vaults provisioned by an older
+                // build, but treat the note's metadata as user-owned: `enabled`,
+                // `intervalSecs`, `lastRun`, and `runAtHour` are operational
+                // settings the user may have tuned from the Settings UI, so we
+                // never overwrite them here. (A live vault was found running
+                // meeting-processor at intervalSecs=86400 while the shipped
+                // default is 1800 — stomping that would have changed its cadence
+                // 48×.) Only the prompt is app-owned; update it when it changed.
+                if note.content == *prompt {
+                    continue;
+                }
+                if let Err(e) = parachute.update_note(&note.id, &UpdateNoteParams {
+                    content: Some(prompt.to_string()),
+                    path: None,
+                    metadata: None, // preserve all existing operational metadata
+                    force: Some(true),
+                    ..Default::default()
+                }).await {
+                    log::warn!("Skill scheduler: failed to reconcile skill '{}' prompt: {}", name, e);
+                } else {
+                    reconciled += 1;
+                }
+            }
+            None => {
+                let path = format!("vault/agent/skills/{}", name);
+                let metadata = serde_json::json!({
+                    "type": "agent-skill",
+                    "skillName": name,
+                    "description": description,
+                    "intervalSecs": interval,
+                    "enabled": enabled,
+                    "lastRun": null,
+                    "runAtHour": run_at_hour,
+                    "dependsOn": depends_on,
+                });
 
-        parachute.create_note(&CreateNoteParams {
-            content: prompt.to_string(),
-            path: Some(path),
-            metadata: Some(metadata),
-            tags: Some(vec!["agent-skill".into()]),
-        }).await?;
+                if let Err(e) = parachute.create_note(&CreateNoteParams {
+                    content: prompt.to_string(),
+                    path: Some(path),
+                    metadata: Some(metadata),
+                    tags: Some(vec!["agent-skill".into()]),
+                }).await {
+                    log::warn!("Skill scheduler: failed to create skill '{}': {}", name, e);
+                } else {
+                    created += 1;
+                }
+            }
+        }
+    }
+
+    if created > 0 || reconciled > 0 {
+        log::info!("Skill scheduler: {} skills created, {} reconciled", created, reconciled);
     }
 
     Ok(())

@@ -109,6 +109,10 @@ async fn sync_meetily(
         let date = meeting.get("date").and_then(|v| v.as_str()).unwrap_or("");
         let transcript = meeting.get("transcript").and_then(|v| v.as_str()).unwrap_or("");
         let summary = meeting.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        let attendees: Vec<String> = meeting.get("attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(String::from)).collect())
+            .unwrap_or_default();
 
         if transcript.is_empty() && summary.is_empty() {
             continue;
@@ -144,6 +148,7 @@ async fn sync_meetily(
             "sourceId": meeting_id,
             "title": title,
             "date": date,
+            "attendees": attendees,
         });
 
         match parachute.create_note(&CreateNoteParams {
@@ -154,9 +159,9 @@ async fn sync_meetily(
         }).await {
             Ok(note) => {
                 ingested += 1;
-                // Link transcript to matching meeting note
+                // Link transcript to matching meeting note (speakers as attendees)
                 link_transcript_to_meeting(
-                    parachute, &note.id, title, date, &[],
+                    parachute, &note.id, title, date, &attendees,
                 ).await;
             }
             Err(e) => log::debug!("Meetily: failed to create note for '{}': {}", title, e),
@@ -216,6 +221,7 @@ fn read_meetily_meetings(db_path: &str) -> Result<Vec<serde_json::Value>, PrismE
                 // Get transcript
                 let transcript = get_meetily_transcript(&conn, &id);
                 let summary = get_meetily_summary(&conn, &id);
+                let speakers = get_meetily_speakers(&conn, &id);
 
                 let date = meeting.get("created_at").or(meeting.get("scheduled_at"))
                     .and_then(|v| v.as_str())
@@ -231,6 +237,7 @@ fn read_meetily_meetings(db_path: &str) -> Result<Vec<serde_json::Value>, PrismE
                     "date": date,
                     "transcript": transcript,
                     "summary": summary,
+                    "attendees": speakers,
                 }));
             }
         }
@@ -273,6 +280,33 @@ fn get_meetily_transcript(conn: &rusqlite::Connection, meeting_id: &str) -> Stri
         Err(e) => {
             log::debug!("Meetily transcript read error: {}", e);
             String::new()
+        }
+    }
+}
+
+/// Distinct, non-empty speaker labels for a Meetily meeting. Used as the
+/// transcript's `attendees`, which is the strongest signal the meeting↔event
+/// linker has (previously Meetily passed an empty slice, leaving only date +
+/// title-word overlap to reach the minimum match score of 2).
+fn get_meetily_speakers(conn: &rusqlite::Connection, meeting_id: &str) -> Vec<String> {
+    let result = conn.prepare(
+        "SELECT DISTINCT speaker FROM transcripts WHERE meeting_id = ? AND speaker IS NOT NULL AND speaker != ''",
+    ).and_then(|mut stmt| {
+        let rows: Vec<String> = stmt.query_map(rusqlite::params![meeting_id], |row| {
+            row.get::<_, String>(0)
+        })?.filter_map(|r| r.ok()).collect();
+        Ok(rows)
+    });
+
+    match result {
+        Ok(rows) => rows.into_iter()
+            .map(|s| s.trim().to_string())
+            // Drop generic placeholder labels that add no matching signal.
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("speaker") && !s.eq_ignore_ascii_case("unknown"))
+            .collect(),
+        Err(e) => {
+            log::debug!("Meetily speaker read error: {}", e);
+            Vec::new()
         }
     }
 }
@@ -552,23 +586,15 @@ async fn link_transcript_to_meeting(
     transcript_date: &str,
     transcript_attendees: &[String],
 ) {
-    // Search for meeting notes on the same date
-    let meeting_notes = parachute.search(transcript_date, &["meeting".into()], 20)
-        .await
-        .unwrap_or_default();
+    // List ALL meeting notes and match on metadata.date. The prior full-text
+    // search(date) ranked by content relevance and capped at 20, so the real
+    // same-day meeting could rank out below unrelated notes mentioning the date.
+    let meeting_notes = parachute.list_all_by_tag("meeting").await.unwrap_or_default();
 
     if meeting_notes.is_empty() {
         log::debug!("Transcript linking: no meeting notes found for date {}", transcript_date);
         return;
     }
-
-    // Normalize attendee names for fuzzy matching
-    let norm_transcript_attendees: Vec<String> = transcript_attendees.iter()
-        .map(|a| normalize_name(a))
-        .filter(|a| !a.is_empty())
-        .collect();
-
-    let transcript_title_words = title_words(transcript_title);
 
     let mut best_match: Option<(&crate::models::note::Note, u32)> = None;
 
@@ -584,44 +610,24 @@ async fn link_transcript_to_meeting(
             continue;
         }
 
-        let mut score: u32 = 0;
-
-        // Attendee overlap scoring
         let meeting_attendees: Vec<String> = meta.get("attendees")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(|s| normalize_name(s))).collect())
+            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        for ta in &norm_transcript_attendees {
-            for ma in &meeting_attendees {
-                if ta == ma || ta.contains(ma) || ma.contains(ta) {
-                    score += 3;
-                }
-            }
-        }
-
-        // Title word overlap scoring
+        // Title from metadata, falling back to the path slug.
         let meeting_title = meta.get("title")
             .and_then(|v| v.as_str())
             .or_else(|| note.path.as_ref().and_then(|p| p.split('/').last()))
             .unwrap_or("");
-        let meeting_title_words = title_words(meeting_title);
 
-        for tw in &transcript_title_words {
-            if meeting_title_words.contains(tw) {
-                score += 1;
-            }
-        }
+        let score = score_transcript_meeting_match(
+            transcript_title, transcript_attendees, transcript_date,
+            meeting_title, &meeting_attendees, meeting_date,
+        );
 
-        // Date match alone is worth 1 point
-        if meeting_date == transcript_date {
-            score += 1;
-        }
-
-        if score > 0 {
-            if best_match.as_ref().map(|(_, s)| score > *s).unwrap_or(true) {
-                best_match = Some((note, score));
-            }
+        if score > 0 && best_match.as_ref().map(|(_, s)| score > *s).unwrap_or(true) {
+            best_match = Some((note, score));
         }
     }
 
@@ -718,4 +724,160 @@ fn sanitize_path(name: &str) -> String {
         .trim()
         .replace(' ', "-")
         .to_lowercase()
+}
+
+/// Pure relevance score between a transcript and a candidate meeting note.
+///
+/// Heuristic (caller pre-filters candidates to within ±1 day):
+/// - +3 per fuzzy attendee match (exact, or one name contained in the other)
+/// - +1 per shared significant title word
+/// - +1 when the dates match exactly
+///
+/// A score of ≥2 is required to create a link, i.e. an exact-date match alone
+/// (score 1) is never enough — there must be at least one attendee or title-word
+/// signal. Extracted from `link_transcript_to_meeting` so the matching logic can
+/// be unit-tested without a live vault.
+fn score_transcript_meeting_match(
+    transcript_title: &str,
+    transcript_attendees: &[String],
+    transcript_date: &str,
+    meeting_title: &str,
+    meeting_attendees: &[String],
+    meeting_date: &str,
+) -> u32 {
+    let nt: Vec<String> = transcript_attendees.iter()
+        .map(|a| normalize_name(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+    let nm: Vec<String> = meeting_attendees.iter()
+        .map(|a| normalize_name(a))
+        .filter(|a| !a.is_empty())
+        .collect();
+
+    let mut score: u32 = 0;
+    for ta in &nt {
+        for ma in &nm {
+            if ta == ma || ta.contains(ma.as_str()) || ma.contains(ta.as_str()) {
+                score += 3;
+            }
+        }
+    }
+
+    let mw = title_words(meeting_title);
+    for tw in title_words(transcript_title) {
+        if mw.contains(&tw) {
+            score += 1;
+        }
+    }
+
+    if meeting_date == transcript_date {
+        score += 1;
+    }
+
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LINK_THRESHOLD: u32 = 2;
+
+    #[test]
+    fn normalize_name_strips_email_and_punctuation() {
+        assert_eq!(normalize_name("Alice Smith"), "alice smith");
+        assert_eq!(normalize_name("alice.smith@example.com"), "alice smith");
+        assert_eq!(normalize_name("  Bob_Jones-PhD  "), "bob jones phd");
+    }
+
+    #[test]
+    fn title_words_drops_filler_and_short_words() {
+        let w = title_words("Q2 Roadmap Review - Sync with the Team");
+        assert!(w.contains(&"roadmap".to_string()));
+        assert!(w.contains(&"review".to_string()));
+        assert!(w.contains(&"team".to_string()));
+        // fillers / short tokens excluded
+        assert!(!w.contains(&"sync".to_string()));
+        assert!(!w.contains(&"with".to_string()));
+        assert!(!w.contains(&"the".to_string()));
+        assert!(!w.contains(&"q2".to_string())); // len <= 2
+    }
+
+    #[test]
+    fn dates_within_one_day_tolerates_timezone_skew() {
+        assert!(dates_within_one_day("2026-05-28", "2026-05-28"));
+        assert!(dates_within_one_day("2026-05-28", "2026-05-29"));
+        assert!(dates_within_one_day("2026-05-28", "2026-05-27"));
+        assert!(!dates_within_one_day("2026-05-28", "2026-05-30"));
+        assert!(!dates_within_one_day("2026-05-28", "not-a-date"));
+    }
+
+    #[test]
+    fn strong_attendee_overlap_links() {
+        // Same day + one shared attendee → 1 (date) + 3 (attendee) = 4 ≥ threshold.
+        let score = score_transcript_meeting_match(
+            "Untitled", &["Alice Smith".into(), "Bob Jones".into()], "2026-05-28",
+            "Standup", &["alice.smith@example.com".into()], "2026-05-28",
+        );
+        assert!(score >= LINK_THRESHOLD, "expected link, got {score}");
+    }
+
+    #[test]
+    fn title_overlap_alone_links_on_same_day() {
+        // No attendees, but two shared title words + exact date = 1 + 2 = 3.
+        let score = score_transcript_meeting_match(
+            "Roadmap Review", &[], "2026-05-28",
+            "Roadmap Review", &[], "2026-05-28",
+        );
+        assert!(score >= LINK_THRESHOLD, "expected link, got {score}");
+    }
+
+    #[test]
+    fn generic_title_no_attendees_does_not_link() {
+        // The Meetily failure mode before speakers were extracted: identical
+        // generic single filler-ish word, no attendees. Only the date matches.
+        let score = score_transcript_meeting_match(
+            "Standup", &[], "2026-05-28",
+            "Standup", &[], "2026-05-28",
+        );
+        // "standup" is a single 7-char non-filler word shared → +1, plus exact
+        // date +1 = 2. It links — which is the *intended* behavior once a real
+        // title word matches. The true ambiguous case (no shared words) below:
+        assert_eq!(score, 2);
+
+        let ambiguous = score_transcript_meeting_match(
+            "Check-in", &[], "2026-05-28",
+            "Standup", &[], "2026-05-28",
+        );
+        // Different titles, no attendees → only exact date (+1). Below threshold.
+        assert!(ambiguous < LINK_THRESHOLD, "expected NO link, got {ambiguous}");
+    }
+
+    #[test]
+    fn wrong_day_scores_only_title() {
+        // Candidate one day off (passes the ±1 pre-filter) but not exact date:
+        // shared title words still score, exact-date bonus does not apply.
+        let score = score_transcript_meeting_match(
+            "Roadmap Review", &[], "2026-05-28",
+            "Roadmap Review", &[], "2026-05-29",
+        );
+        assert_eq!(score, 2); // two title words, no date bonus
+    }
+
+    #[test]
+    fn meetily_speakers_as_attendees_rescue_a_match() {
+        // Regression: Meetily used to pass &[] for attendees. With speakers
+        // extracted, a shared speaker now lifts a generic-title meeting over
+        // the threshold where title words alone would not.
+        let without = score_transcript_meeting_match(
+            "Weekly", &[], "2026-05-28",
+            "Weekly Team Meeting", &[], "2026-05-28",
+        );
+        let with = score_transcript_meeting_match(
+            "Weekly", &["Carla Diaz".into()], "2026-05-28",
+            "Weekly Team Meeting", &["carla.diaz@org.com".into()], "2026-05-28",
+        );
+        assert!(with > without);
+        assert!(with >= LINK_THRESHOLD);
+    }
 }

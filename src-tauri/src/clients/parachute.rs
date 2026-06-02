@@ -107,6 +107,40 @@ impl ParachuteClient {
         Ok(notes)
     }
 
+    /// Fetch EVERY note carrying a tag, paginating until the tag is exhausted.
+    ///
+    /// The meeting↔transcript linker and the calendar-event dedup lookup must see
+    /// all candidates: a fixed `limit` silently drops notes once a tag grows past
+    /// it (the `meeting` tag already exceeds 500, `email` exceeds 1000), and the
+    /// list is server-sorted `desc`, so a capped fetch keeps only the newest and
+    /// can never link an older meeting. Metadata is included; content is not.
+    pub async fn list_all_by_tag(&self, tag: &str) -> Result<Vec<Note>, PrismError> {
+        const PAGE: u32 = 500;
+        let mut out: Vec<Note> = Vec::new();
+        let mut offset: u32 = 0;
+        loop {
+            let page = self.list_notes(&ListNotesParams {
+                tag: Some(tag.to_string()),
+                limit: Some(PAGE),
+                offset: Some(offset),
+                include_content: false,
+                ..Default::default()
+            }).await?;
+            let got = page.len() as u32;
+            out.extend(page);
+            if got < PAGE {
+                break;
+            }
+            offset += PAGE;
+            // Backstop against an unbounded loop if the server ignores offset.
+            if offset >= 50_000 {
+                log::warn!("list_all_by_tag('{}') hit pagination backstop at {}", tag, offset);
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Lean variant of `list_notes` for tree/index views. Same endpoint, but
     /// deserializes into `NoteTreeEntry` (id/path/tags/metadata only) so the
     /// Rust→JS payload skips content/timestamps/preview/byteSize. Used by

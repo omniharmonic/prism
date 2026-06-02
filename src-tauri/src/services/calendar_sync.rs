@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use crate::clients::google::GoogleClient;
 use crate::clients::parachute::ParachuteClient;
-use crate::models::note::{CreateNoteParams, UpdateNoteParams, ListNotesParams};
+use crate::models::note::{CreateNoteParams, UpdateNoteParams};
 use crate::services::ServiceStatus;
 use crate::services::person_linker;
 
@@ -146,6 +146,7 @@ pub async fn sync_single_event(
 
     let metadata = serde_json::json!({
         "type": "meeting",
+        "title": summary,
         "calendarEventId": event_id,
         "date": date_part,
         "start": start,
@@ -252,29 +253,24 @@ async fn find_meeting_note(
     event_id: &str,
     path: &str,
 ) -> Result<Option<crate::models::note::Note>, crate::error::PrismError> {
-    // Search for the event ID in meeting-tagged notes
-    let results = parachute.search(event_id, &["meeting".into()], 5).await.unwrap_or_default();
-    if let Some(note) = results.into_iter().find(|n| {
+    // Google event IDs are long opaque strings that never appear in note
+    // content, so the prior full-text `search(event_id)` almost always returned
+    // nothing. List meeting notes and match on the stored metadata/path instead.
+    let meetings = parachute.list_all_by_tag("meeting").await.unwrap_or_default();
+
+    // Prefer an exact calendarEventId match, fall back to an exact path match.
+    let by_event_id = meetings.iter().find(|n| {
         n.metadata.as_ref()
             .and_then(|m| m.get("calendarEventId"))
             .and_then(|v| v.as_str())
             == Some(event_id)
-    }) {
-        return Ok(Some(note));
+    });
+    if let Some(note) = by_event_id {
+        return Ok(Some(note.clone()));
     }
 
-    // Also check by path
-    let slug = path.split('/').last().unwrap_or("");
-    if !slug.is_empty() {
-        let results = parachute.search(slug, &["meeting".into()], 5).await.unwrap_or_default();
-        if let Some(note) = results.into_iter().find(|n| {
-            n.path.as_deref() == Some(path)
-        }) {
-            return Ok(Some(note));
-        }
-    }
-
-    Ok(None)
+    let by_path = meetings.into_iter().find(|n| n.path.as_deref() == Some(path));
+    Ok(by_path)
 }
 
 /// When a meeting note is created/updated, check for existing transcript notes
@@ -296,10 +292,10 @@ async fn link_meeting_to_transcripts(
         }
     }
 
-    // Search for transcript notes on the same date
-    let transcripts = parachute.search(meeting_date, &["transcript".into()], 20)
-        .await
-        .unwrap_or_default();
+    // List ALL transcript notes and match on metadata.date (the prior full-text
+    // search on the date string ranked by content relevance and capped at 20,
+    // so the real same-day transcript could rank out or a wrong note rank in).
+    let transcripts = parachute.list_all_by_tag("transcript").await.unwrap_or_default();
 
     if transcripts.is_empty() {
         return;
@@ -424,4 +420,34 @@ fn sanitize_path(name: &str) -> String {
         .trim()
         .replace(' ', "-")
         .to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn significant_words_drops_filler_and_short_tokens() {
+        let w = significant_words("Meeting: Q2 Roadmap Review with Acme");
+        assert!(w.contains(&"roadmap".to_string()));
+        assert!(w.contains(&"review".to_string()));
+        assert!(w.contains(&"acme".to_string()));
+        assert!(!w.contains(&"meeting".to_string())); // filler
+        assert!(!w.contains(&"with".to_string()));    // filler
+        assert!(!w.contains(&"q2".to_string()));      // len <= 2
+    }
+
+    #[test]
+    fn normalize_attendee_handles_emails_and_display_names() {
+        assert_eq!(normalize_attendee("Alice Smith"), "alice smith");
+        assert_eq!(normalize_attendee("alice.smith@example.com"), "alice smith");
+        // Display name with punctuation collapses to clean tokens.
+        assert_eq!(normalize_attendee("O'Brien, Pat"), "o brien pat");
+    }
+
+    #[test]
+    fn sanitize_path_is_slug_safe() {
+        assert_eq!(sanitize_path("Q2 Roadmap: Review!"), "q2-roadmap--review-");
+        assert!(!sanitize_path("a/b\\c").contains('/'));
+    }
 }

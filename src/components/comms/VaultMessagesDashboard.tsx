@@ -293,11 +293,17 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
 // ─── Triage View ─────────────────────────────────────────────
 
+// Importance tags written by the `message-triage` skill (skill_scheduler.rs).
+// Keep this list in sync with the skill prompt's Step 2 tags — a note carrying
+// any of these has been classified and must NOT fall back into "Needs Triage".
+const IMPORTANCE_TAGS = ["urgent", "action-required", "informational", "low"] as const;
+
 const PRIORITY_TIERS = [
   { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.25)", borderColor: "rgba(239,68,68,0.4)", defaultCollapsed: false },
   { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.25)", borderColor: "rgba(245,158,11,0.4)", defaultCollapsed: false },
   { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)", defaultCollapsed: false },
   { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
+  { tag: "low", label: "Low Priority", icon: Inbox, color: "var(--text-muted)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
   { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)", bgColor: "transparent", borderColor: "rgba(34,197,94,0.3)", defaultCollapsed: true },
 ] as const;
 
@@ -310,9 +316,13 @@ function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[];
     for (const tier of PRIORITY_TIERS) {
       let notes: Note[];
       if (tier.tag === "unclassified") {
+        // A note "needs triage" only if the skill hasn't classified it (no
+        // importance tag) and the user hasn't manually handled it. Previously
+        // this excluded "social" (a tag nothing writes) but NOT "low" — so
+        // every low-priority item the skill tagged still showed as untriaged.
         notes = messages.filter((n) => {
           const tags = n.tags || [];
-          return !tags.includes("urgent") && !tags.includes("action-required") && !tags.includes("informational") && !tags.includes("social") && !tags.includes("handled");
+          return !IMPORTANCE_TAGS.some((t) => tags.includes(t)) && !tags.includes("handled") && !tags.includes("triaged");
         });
       } else {
         notes = messages.filter((n) => (n.tags || []).includes(tier.tag));
