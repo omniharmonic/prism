@@ -296,9 +296,12 @@ def merge_pair(canonical_note, secondary, when):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--apply", action="store_true", help="tombstone-merge SAFE clusters")
     ap.add_argument("--include-fuzzy", action="store_true")
     ap.add_argument("--show", type=int, default=15)
+    ap.add_argument("--junk", action="store_true", help="list non-human person notes")
+    ap.add_argument("--apply-junk", action="store_true", help="declassify junk: remove person tag, add non-human")
+    ap.add_argument("--emit-fuzzy", metavar="FILE", help="write fuzzy pairs grouped into components as JSON, then exit")
     args = ap.parse_args()
     if args.apply and not TOKEN:
         sys.exit("--apply requires PARACHUTE_TOKEN (vault:%s:write)" % VAULT)
@@ -374,6 +377,54 @@ def main():
         print("\n  FUZZY (human review):")
         for a, b, an, bn in fuzzy[:args.show]:
             print(f"    {by_id[a].get('path')}  ~?  {by_id[b].get('path')}   ({an} ⊂ {bn})")
+
+    # ---- JUNK: non-human person notes (declassify, don't delete — preserves links) ----
+    # High precision: word-boundary "bot" (so "botsford"/"abbot-as-surname" survive)
+    # plus an explicit service denylist. Better to miss junk than untag a real person.
+    SERVICE_SUBSTR = ("noreply", "no-reply", "no reply", "github", "read ai", "read-ai",
+                      "team at read", "hacken", "xero", "vercel", "mailer-daemon", "ccasync")
+
+    def is_junk_person(n):
+        name = norm_name(display_name(n))
+        leaf = (n.get("path") or "").split("/")[-1].lower().replace("_", " ").replace("-", " ")
+        hay = f"{name} {leaf}"
+        tokens = re.split(r"[^a-z0-9]+", hay)
+        if any(t == "bot" or (t.endswith("bot") and len(t) >= 5) for t in tokens):
+            return True
+        return any(s in hay for s in SERVICE_SUBSTR)
+
+    if args.junk or args.apply_junk:
+        junk = [n for n in people if is_junk_person(n)]
+        print(f"\nJUNK (non-human) person notes: {len(junk)}")
+        for n in junk:
+            print(f"  {'declassify' if args.apply_junk else 'candidate'}  {n.get('path')}")
+            if args.apply_junk:
+                req("PATCH", f"/notes/{n['id']}",
+                    {"tags": {"add": ["non-human"], "remove": ["person"]}, "force": True})
+        print("Done." if args.apply_junk else "List only. Re-run with --apply-junk to declassify.")
+        return
+
+    # ---- EMIT FUZZY: group pairs into connected components for the swarm ----
+    if args.emit_fuzzy:
+        uf_f = UF([i for pair in fuzzy for i in pair[:2]])
+        for a, b, *_ in fuzzy:
+            uf_f.union(a, b)
+        comps = {}
+        for a, b, an, bn in fuzzy:
+            comps.setdefault(uf_f.find(a), {"members": set(), "pairs": []})
+            comps[uf_f.find(a)]["members"].update([a, b])
+            comps[uf_f.find(a)]["pairs"].append([a, b])
+        out = []
+        for c in comps.values():
+            members = [{"id": i, "path": by_id[i].get("path"), "name": display_name(by_id[i])}
+                       for i in c["members"]]
+            out.append({"members": members, "pairs": c["pairs"]})
+        out.sort(key=lambda c: len(c["members"]), reverse=True)
+        with open(args.emit_fuzzy, "w") as f:
+            json.dump(out, f, indent=1)
+        print(f"\nWrote {len(fuzzy)} fuzzy pairs in {len(out)} components → {args.emit_fuzzy}")
+        print(f"  largest components: {[len(c['members']) for c in out[:8]]}")
+        return
 
     if not args.apply:
         print("\nAnalysis only. Re-run with --apply (and PARACHUTE_TOKEN :write) to tombstone-merge SAFE clusters.")
