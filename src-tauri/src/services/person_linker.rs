@@ -70,6 +70,12 @@ pub async fn find_or_create_person(
     if clean.contains('@') && !clean.contains(' ') {
         return Err(PrismError::Other("Name is an email address, not a person name".into()));
     }
+    // Skip automated / role addresses (noreply@, notifications@, billing@, …).
+    // These never represent a real person and are a major source of person-node
+    // sprawl — applies to the email and to a name that is itself an address.
+    if email.map(is_nonhuman_email).unwrap_or(false) || is_nonhuman_email(name) {
+        return Err(PrismError::Other("Skipping automated/role email address".into()));
+    }
 
     // Try to find existing
     if let Some(note) = find_person(parachute, Some(name), email, matrix_id).await? {
@@ -262,4 +268,50 @@ fn sanitize_path(name: &str) -> String {
         .trim()
         .replace(' ', "-")
         .to_lowercase()
+}
+
+/// True for automated / role addresses that should never become person notes.
+/// Conservative: only fires on noreply-style substrings in the local part, or a
+/// local part that is exactly a role account — so real names never match.
+fn is_nonhuman_email(s: &str) -> bool {
+    let s = s.trim().to_lowercase();
+    let local = s.split('@').next().unwrap_or(&s);
+    const SUBSTR: &[&str] = &[
+        "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
+        "notification", "mailer-daemon", "postmaster", "bounce", "automated",
+    ];
+    if SUBSTR.iter().any(|n| local.contains(n)) {
+        return true;
+    }
+    const ROLES: &[&str] = &[
+        "support", "billing", "hello", "info", "admin", "team", "help", "sales",
+        "contact", "notifications", "newsletter", "news", "updates", "alerts", "noreply",
+    ];
+    ROLES.contains(&local)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_nonhuman_email;
+
+    #[test]
+    fn rejects_automated_and_role_addresses() {
+        for e in [
+            "noreply@example.com", "no-reply@x.io", "notifications@github.com",
+            "billing@stripe.com", "support@acme.com", "mailer-daemon@mail.com",
+            "team@company.com",
+        ] {
+            assert!(is_nonhuman_email(e), "expected non-human: {e}");
+        }
+    }
+
+    #[test]
+    fn keeps_real_people() {
+        for e in [
+            "benjamin@opencivics.co", "alice.smith@example.com", "Alice Smith",
+            "christopher@unitedindependents.us", "pat.obrien@firm.org",
+        ] {
+            assert!(!is_nonhuman_email(e), "expected human: {e}");
+        }
+    }
 }

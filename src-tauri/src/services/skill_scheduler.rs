@@ -42,7 +42,9 @@ LOW (tag: \"low\") — ignore or batch-process:\n\
 Before finalizing, check if sender has a person note (query-notes with sender name, tags [\"person\"]).\n\
 If person is linked to an active project or has relationship_type \"collaborator\"/\"stakeholder\", boost importance one tier.\n\n\
 ## Step 4: Extract action items\n\n\
-For URGENT or ACTION-REQUIRED items with actionable requests, create task notes:\n\
+For URGENT or ACTION-REQUIRED items with actionable requests, create task notes.\n\
+IDEMPOTENCY — before creating, run query-notes { tag: \"task\", search: \"<key phrase from the request>\" };\n\
+if an open task (status not done/cancelled) already covers it, update that one instead of duplicating.\n\
   create-note at vault/tasks/active/{slug}\n\
   Tags: [\"task\"] + project tag if identifiable\n\
   Metadata: status=\"todo\", type based on content, assigned=sender name\n\
@@ -82,7 +84,9 @@ For each speaker/attendee:\n\
 ### 2c. Action item extraction\n\n\
 Look for: \"[Name] will...\", \"[Name] to...\", \"Action item:...\", \"TODO:...\",\n\
 \"Next step:...\", \"Can you...\", \"I'll...\", \"Let's...\" + agreement.\n\n\
-For each action item, create task at vault/tasks/active/{slug}:\n\
+For each action item, create task at vault/tasks/active/{slug}.\n\
+IDEMPOTENCY — before creating, query-notes { tag: \"task\", search: \"<key phrase>\" }; if an open task\n\
+already tracks this commitment (same transcript source or near-identical title), update it, don't duplicate.\n\
   Tags: [\"task\"] + project slug if known\n\
   Metadata: status=\"todo\", type=\"meeting-action-item\" (owner's commitment) or\n\
   \"followup-expected\" (someone else's commitment TO owner), assigned=person,\n\
@@ -184,6 +188,30 @@ Keep factual and structured. No filler.",
         false,
         "Graduated task escalation, slot detection, commitment tracking, pattern analysis",
         Some(6),
+        None,
+    ),
+    (
+        "task-lifecycle",
+        "Close the task loop: archive finished tasks, retire demonstrably-stale ones, propose ambiguous closures.\n\n\
+## Step 1: Load active tasks\n\n\
+query-notes: tags [\"task\"], exclude_tags [\"archived\"], include_content false, limit 500.\n\n\
+## Step 2: Archive terminal tasks\n\n\
+For any task whose status is \"done\" or \"cancelled\" but still lives under vault/tasks/active/:\n\
+  update-note: set path to vault/tasks/done/{slug}, tags.add \"archived\", and metadata completed={{today}} if empty.\n\n\
+## Step 3: Auto-retire stale tasks (conservative, reversible)\n\n\
+Only when ALL hold: status is \"todo\" or \"in-progress\"; due date is >30 days before {{today}};\n\
+and no update in 21+ days. Then set status=\"cancelled\", metadata closedReason=\"auto-stale\",\n\
+tags.add \"archived\", move to vault/tasks/done/{slug}. The reason + tag keep this fully reversible.\n\n\
+## Step 4: Propose ambiguous closures — do NOT modify these\n\n\
+List as CANDIDATES (with reason) any task that looks done but isn't certain: linked via \"extracted-from\" to a\n\
+meeting/email that is resolved, or whose due date passed 7-30 days ago. Leave them untouched for human review.\n\n\
+## Output\n\n\
+Write vault/agent/insights/task-lifecycle-{{today}} tagged \"agent-insight\". Report: archived count,\n\
+auto-retired list (titles + why), and the review CANDIDATES. Factual, no filler.",
+        86400, // 24 hours
+        true, // enabled — closes the open loop that let the task list only ever grow
+        "Archive finished tasks, retire stale ones, propose ambiguous closures",
+        Some(4), // before the scans (5/6/8h) so they see a cleaned task set
         None,
     ),
 ];
