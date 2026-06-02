@@ -155,7 +155,12 @@ pub async fn sync_single_event(
         "location": location,
         "meetLink": meet_url,
         "htmlLink": html_link,
-        "status": status_str,
+        // The `meeting` schema's `status` is a processing-state enum
+        // {raw,cleaned,processed} — NOT the calendar event's lifecycle. Writing
+        // Google's "confirmed"/"cancelled" there violated the enum, so the
+        // calendar status now lives in its own `event_status` field and `status`
+        // is left for the processing pipeline to own.
+        "event_status": status_str,
     });
 
     // Check if note already exists for this event (by calendarEventId or path)

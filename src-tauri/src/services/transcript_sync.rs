@@ -122,11 +122,10 @@ async fn sync_meetily(
         let slug = sanitize_path(title);
         let path = format!("vault/_inbox/transcripts/meetily/{}-{}", date, slug);
         let already_exists = existing.iter().any(|n| {
-            n.metadata.as_ref()
-                .and_then(|m| m.get("sourceId"))
-                .and_then(|v| v.as_str())
-                == Some(meeting_id)
-            || n.path.as_deref() == Some(&path)
+            let by_source = n.metadata.as_ref()
+                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
+                .and_then(|v| v.as_str());
+            by_source == Some(meeting_id) || n.path.as_deref() == Some(&path)
         });
 
         if already_exists {
@@ -142,10 +141,14 @@ async fn sync_meetily(
             content.push_str(&format!("## Transcript\n\n{}\n", transcript));
         }
 
+        // Schema-declared transcript fields: source, source_id, date,
+        // duration_minutes, synced_at. `title`/`attendees` are undeclared but the
+        // meeting↔transcript linker reads them, so they stay.
         let metadata = serde_json::json!({
             "type": "transcript",
             "source": "meetily",
-            "sourceId": meeting_id,
+            "source_id": meeting_id,
+            "synced_at": chrono::Utc::now().to_rfc3339(),
             "title": title,
             "date": date,
             "attendees": attendees,
@@ -415,7 +418,7 @@ async fn sync_fathom(
         // Check if already ingested
         let already_exists = existing.iter().any(|n| {
             n.metadata.as_ref()
-                .and_then(|m| m.get("sourceId"))
+                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
                 .and_then(|v| v.as_str())
                 == Some(recording_id.as_str())
         });
@@ -469,11 +472,12 @@ async fn sync_fathom(
         let metadata = serde_json::json!({
             "type": "transcript",
             "source": "fathom",
-            "sourceId": recording_id,
+            "source_id": recording_id,
+            "synced_at": chrono::Utc::now().to_rfc3339(),
             "title": title,
             "date": date,
             "attendees": attendees,
-            "fathomUrl": share_url,
+            "fathom_url": share_url,
         });
 
         match parachute.create_note(&CreateNoteParams {
