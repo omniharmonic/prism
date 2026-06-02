@@ -211,6 +211,59 @@ def fetch_note(nid):
     return req("GET", f"/notes/{urllib.parse.quote(nid, safe='')}")
 
 
+def fetch_full(nid):
+    """Full note including links — used when applying swarm verdicts."""
+    return req("GET", f"/notes/{urllib.parse.quote(nid, safe='')}?include_links=true")
+
+
+def apply_fuzzy(path, min_conf):
+    """Apply an agent-swarm verdict file: tombstone-merge MERGE verdicts at or above
+    min_conf. Resolves chains (A→B, B→C) into one canonical per connected cluster;
+    canonical chosen by agent vote, then the standard heuristic."""
+    from datetime import datetime, timezone
+    when = datetime.now(timezone.utc).isoformat()
+    data = json.load(open(path))
+    verdicts = data["verdicts"] if isinstance(data, dict) else data
+    merges = [v for v in verdicts
+              if v.get("decision") == "MERGE" and float(v.get("confidence", 0)) >= min_conf
+              and v.get("a_id") and v.get("b_id")]
+    tally = {}
+    for v in verdicts:
+        tally[v.get("decision")] = tally.get(v.get("decision"), 0) + 1
+    print(f"Verdicts: {len(verdicts)}  {tally}")
+    print(f"MERGE ≥{min_conf}: {len(merges)}")
+
+    ids = {x for v in merges for x in (v["a_id"], v["b_id"])}
+    uf = UF(list(ids))
+    for v in merges:
+        uf.union(v["a_id"], v["b_id"])
+    clusters = {}
+    for i in ids:
+        clusters.setdefault(uf.find(i), []).append(i)
+
+    votes = {}
+    for v in merges:
+        c = v.get("canonical_id")
+        if c:
+            votes[c] = votes.get(c, 0) + 1
+
+    tombstoned = 0
+    for members in clusters.values():
+        notes = [n for n in (fetch_full(i) for i in members) if n and n.get("id")
+                 and (n.get("metadata") or {}).get("status") != "merged_into_canonical"]
+        if len(notes) < 2:
+            continue
+        voted = [n for n in notes if votes.get(n["id"])]
+        can = max(voted, key=lambda n: votes[n["id"]]) if voted else canonical(notes)
+        for n in notes:
+            if n["id"] == can["id"]:
+                continue
+            print(f"  merge {n.get('path')} → {can.get('path')}")
+            merge_pair(can, n, when)
+            tombstoned += 1
+    print(f"\nApplied fuzzy merges: {tombstoned} tombstoned across {len(clusters)} clusters.")
+
+
 def is_boilerplate(content):
     """Stub content carries no information worth preserving on merge."""
     c = (content or "").strip().lower()
@@ -302,9 +355,15 @@ def main():
     ap.add_argument("--junk", action="store_true", help="list non-human person notes")
     ap.add_argument("--apply-junk", action="store_true", help="declassify junk: remove person tag, add non-human")
     ap.add_argument("--emit-fuzzy", metavar="FILE", help="write fuzzy pairs grouped into components as JSON, then exit")
+    ap.add_argument("--apply-fuzzy", metavar="FILE", help="apply an agent-swarm verdict JSON file (tombstone-merge MERGE verdicts)")
+    ap.add_argument("--min-conf", type=float, default=0.8, help="min confidence to apply a MERGE verdict")
     args = ap.parse_args()
-    if args.apply and not TOKEN:
-        sys.exit("--apply requires PARACHUTE_TOKEN (vault:%s:write)" % VAULT)
+    if (args.apply or args.apply_junk or args.apply_fuzzy) and not TOKEN:
+        sys.exit("write ops require PARACHUTE_TOKEN (vault:%s:write)" % VAULT)
+
+    if args.apply_fuzzy:
+        apply_fuzzy(args.apply_fuzzy, args.min_conf)
+        return
 
     raw = all_people(include_links=args.apply)
 
