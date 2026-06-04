@@ -444,6 +444,7 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
   const [expanded, setExpanded] = useState(false);
   const [editPrompt, setEditPrompt] = useState(skill.prompt);
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // Per-skill AI routing, persisted to the skill note (read by DispatchManager).
   // provider null = inherit the global background default.
@@ -460,10 +461,19 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
     await agentApi.updateSkill(skill.id, { executionMode });
     onUpdate();
   };
+  // Two-click inline confirm — window.confirm() is unreliable in the Tauri webview.
   const handleDelete = async () => {
-    if (!window.confirm(`Delete skill "${skill.skillName.replace(/-/g, " ")}"? This permanently removes the skill note from the vault.`)) return;
-    await vaultApi.deleteNote(skill.id);
-    onUpdate();
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    setConfirmingDelete(false);
+    try {
+      await vaultApi.deleteNote(skill.id);
+      onUpdate();
+    } catch (e) {
+      console.error("Failed to delete skill:", e);
+    }
   };
 
   const handleToggle = async () => {
@@ -511,9 +521,20 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
         <button onClick={onRun} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Run now">
           <Play size={12} style={{ color: "var(--color-accent)" }} />
         </button>
-        <button onClick={handleDelete} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Delete skill">
-          <Trash2 size={12} style={{ color: "var(--text-muted)" }} />
-        </button>
+        {confirmingDelete ? (
+          <span className="flex items-center gap-1">
+            <button onClick={handleDelete} className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ background: "var(--color-error, #ef4444)", color: "white" }} title="Confirm delete">
+              Delete
+            </button>
+            <button onClick={() => setConfirmingDelete(false)} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Cancel">
+              <X size={11} style={{ color: "var(--text-muted)" }} />
+            </button>
+          </span>
+        ) : (
+          <button onClick={handleDelete} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Delete skill">
+            <Trash2 size={12} style={{ color: "var(--text-muted)" }} />
+          </button>
+        )}
       </div>
 
       {expanded && (
