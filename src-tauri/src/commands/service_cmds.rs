@@ -82,12 +82,46 @@ pub async fn agent_dispatch(
     context: Option<String>,
 ) -> Result<serde_json::Value, PrismError> {
     // We need a dummy ClaudeClient reference — but dispatch_manager spawns its own process
-    let id = dispatch_mgr.dispatch(
-        // ClaudeClient not needed — dispatch spawns its own process
-        skill.as_str(),
-        prompt.as_str(),
-        context.as_deref(),
-    ).await?;
+    // Look up a matching agent-skill note so manual "Run now" honors the same
+    // routing the scheduler uses: executionMode (structured vs agentic), per-skill
+    // provider/model override, and template variables. Falls back to a plain
+    // agentic dispatch of the given prompt for ad-hoc/custom runs (no note).
+    let skills = parachute.list_notes(&crate::models::note::ListNotesParams {
+        tag: Some("agent-skill".into()),
+        limit: Some(200),
+        include_content: true,
+        ..Default::default()
+    }).await.unwrap_or_default();
+
+    let matched = skills.into_iter().find(|n| {
+        n.metadata.as_ref()
+            .and_then(|m| m.get("skillName"))
+            .and_then(|v| v.as_str())
+            == Some(skill.as_str())
+    });
+
+    let id = if let Some(note) = matched {
+        let meta = note.metadata.clone().unwrap_or(serde_json::json!({}));
+        let provider = meta.get("provider").and_then(|v| v.as_str());
+        let model = meta.get("model").and_then(|v| v.as_str());
+        let mode = meta.get("executionMode").and_then(|v| v.as_str()).unwrap_or("agentic");
+
+        // Resolve template variables (same as the scheduler).
+        let now = chrono::Utc::now();
+        let resolved = note.content
+            .replace("{{today}}", &now.format("%Y-%m-%d").to_string())
+            .replace("{{yesterday}}", &(now - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+            .replace("{{now}}", &now.to_rfc3339());
+
+        if mode == "structured" {
+            dispatch_mgr.dispatch_structured(skill.as_str(), &resolved, meta.clone(), provider, model).await?
+        } else {
+            dispatch_mgr.dispatch(skill.as_str(), &resolved, None, provider, model).await?
+        }
+    } else {
+        // Ad-hoc / custom prompt — agentic, global routing.
+        dispatch_mgr.dispatch(skill.as_str(), prompt.as_str(), context.as_deref(), None, None).await?
+    };
 
     Ok(serde_json::json!({ "id": id }))
 }
@@ -134,6 +168,10 @@ pub async fn agent_get_skills(
             "enabled": meta.get("enabled").cloned().unwrap_or(serde_json::json!(false)),
             "lastRun": meta.get("lastRun").cloned().unwrap_or(serde_json::json!(null)),
             "runAtHour": meta.get("runAtHour").cloned().unwrap_or(serde_json::json!(null)),
+            // Per-skill AI routing override (defaults handled by DispatchManager).
+            "provider": meta.get("provider").cloned().unwrap_or(serde_json::json!(null)),
+            "model": meta.get("model").cloned().unwrap_or(serde_json::json!(null)),
+            "executionMode": meta.get("executionMode").cloned().unwrap_or(serde_json::json!("agentic")),
         })
     }).collect())
 }
@@ -147,6 +185,9 @@ pub async fn agent_update_skill(
     #[allow(non_snake_case)] intervalSecs: Option<u64>,
     prompt: Option<String>,
     description: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    #[allow(non_snake_case)] executionMode: Option<String>,
 ) -> Result<(), PrismError> {
     let note = parachute.get_note(&id).await?;
     let mut meta = note.metadata.unwrap_or(serde_json::json!({}));
@@ -155,12 +196,19 @@ pub async fn agent_update_skill(
         if let Some(e) = enabled { obj.insert("enabled".into(), serde_json::json!(e)); }
         if let Some(i) = intervalSecs { obj.insert("intervalSecs".into(), serde_json::json!(i)); }
         if let Some(d) = description { obj.insert("description".into(), serde_json::json!(d)); }
+        // Per-skill AI routing override. An empty string is the "use global
+        // default" sentinel (DispatchManager::effective_routing treats empty as
+        // fallback), which avoids serde's null→None ambiguity for Option fields.
+        if let Some(p) = provider { obj.insert("provider".into(), serde_json::json!(p)); }
+        if let Some(m) = model { obj.insert("model".into(), serde_json::json!(m)); }
+        if let Some(em) = executionMode { obj.insert("executionMode".into(), serde_json::json!(em)); }
     }
 
     parachute.update_note(&id, &crate::models::note::UpdateNoteParams {
         content: prompt,
         path: None,
         metadata: Some(meta),
+        force: Some(true),
         ..Default::default()
     }).await?;
 

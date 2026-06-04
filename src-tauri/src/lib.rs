@@ -11,7 +11,7 @@ use clients::matrix::MatrixClient;
 use clients::google::GoogleClient;
 use clients::anthropic::ClaudeClient;
 use clients::mcp_client::PrismMcpClient;
-use clients::ollama::OllamaAgent;
+use clients::local_agent::LocalAgent;
 use clients::model_router::ModelRouter;
 use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds, ollama_cmds, github_cmds, notion_db_cmds};
 use commands::github_cmds::GitHubSyncState;
@@ -56,30 +56,69 @@ pub fn run() {
     });
     let claude_client = ClaudeClient::new(prism_root);
 
-    // Try to connect Ollama agent with MCP vault access.
-    // This is optional — if Ollama or Parachute MCP aren't running, we proceed without it.
-    let ollama_agent = tauri::async_runtime::block_on(async {
-        let mcp_url = format!("{}/vault/{}/mcp", parachute_url, parachute_vault);
-        let ollama_url = "http://localhost:11434".to_string(); // TODO: make configurable
-        match PrismMcpClient::connect(&mcp_url, parachute_key.as_deref()).await {
-            Ok(mcp) => {
-                log::info!("PrismMcpClient connected — {} tools", mcp.tools().len());
-                Some(OllamaAgent::new(ollama_url, mcp).await)
+    // Build ONE shared local OpenAI-compatible agent (LM Studio / Ollama `/v1` /
+    // llama.cpp / vLLM), used by BOTH the model router (interactive skills) and
+    // the dispatch manager (recurring skills). Built whenever a base URL is set
+    // so interactive skills can select "local" even if the background default is
+    // still Claude. Optional — if MCP can't connect, local skills fall back to Claude.
+    let local_agent: Option<std::sync::Arc<LocalAgent>> = if !app_config.local_ai_base_url.is_empty() {
+        tauri::async_runtime::block_on(async {
+            let mcp_url = format!("{}/vault/{}/mcp", parachute_url, parachute_vault);
+            // Retry the startup MCP connect: this runs synchronously during app
+            // setup, which can race a still-warming Parachute/network stack right
+            // after launch. A transient failure here would otherwise disable the
+            // local provider for the entire session (forcing the Claude fallback),
+            // so we give it several attempts with a short backoff before giving up.
+            const MAX_ATTEMPTS: u32 = 5;
+            let mut last_err = String::new();
+            for attempt in 1..=MAX_ATTEMPTS {
+                match PrismMcpClient::connect(&mcp_url, parachute_key.as_deref()).await {
+                    Ok(mcp) => {
+                        log::info!(
+                            "LocalAgent ready (attempt {}): {} MCP tools, server {}",
+                            attempt,
+                            mcp.tools().len(),
+                            app_config.local_ai_base_url
+                        );
+                        return Some(std::sync::Arc::new(LocalAgent::new(
+                            app_config.local_ai_base_url.clone(),
+                            None,
+                            mcp,
+                        )));
+                    }
+                    Err(e) => {
+                        last_err = e.to_string();
+                        log::warn!("LocalAgent MCP connect attempt {}/{} failed: {}", attempt, MAX_ATTEMPTS, last_err);
+                        if attempt < MAX_ATTEMPTS {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                log::warn!("MCP connection failed, Ollama unavailable: {}", e);
-                None
-            }
-        }
-    });
+            log::warn!(
+                "LocalAgent unavailable after {} attempts ({}); local skills will fall back to Claude",
+                MAX_ATTEMPTS, last_err
+            );
+            None
+        })
+    } else {
+        None
+    };
 
-    let model_router = ModelRouter::new(claude_client, ollama_agent);
+    let model_router = ModelRouter::new(claude_client, local_agent.clone());
 
     let agent_sessions = AgentSessions::new();
 
     // Start background sync services (uses tauri::async_runtime which is always available)
     let service_manager = ServiceManager::start(&app_config);
-    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(&parachute_url, &parachute_vault, parachute_key.clone()));
+    let dispatch_manager = std::sync::Arc::new(DispatchManager::new(
+        &parachute_url,
+        &parachute_vault,
+        parachute_key.clone(),
+        local_agent.clone(),
+        app_config.background_skill_provider.clone(),
+        app_config.local_ai_model.clone(),
+    ));
 
     // Start skill scheduler (needs both ServiceManager and DispatchManager)
     service_manager.start_scheduler(dispatch_manager.clone());
@@ -187,6 +226,8 @@ pub fn run() {
             ollama_cmds::ollama_list_models,
             ollama_cmds::set_skill_model,
             ollama_cmds::get_skill_models,
+            ollama_cmds::local_ai_list_models,
+            ollama_cmds::test_local_ai,
             // GitHub sync
             github_cmds::github_check_auth,
             github_cmds::github_sync_init,

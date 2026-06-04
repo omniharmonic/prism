@@ -356,9 +356,32 @@ async fn check_and_dispatch(
             .replace("{{yesterday}}", &(now - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
             .replace("{{now}}", &now.to_rfc3339());
 
-        log::info!("Skill scheduler: dispatching '{}' (last run: {:?})", skill_name, last_run);
+        // Execution mode: "structured" runs the grammar-constrained classifier
+        // (schema lives in the note's `structured` metadata); anything else runs
+        // the free-text agentic path. Defaults to agentic when unset.
+        let execution_mode = meta.get("executionMode").and_then(|v| v.as_str()).unwrap_or("agentic");
 
-        match dispatch_manager.dispatch(skill_name, &resolved_prompt, None).await {
+        log::info!(
+            "Skill scheduler: dispatching '{}' (mode: {}, last run: {:?})",
+            skill_name, execution_mode, last_run
+        );
+
+        // Per-skill provider/model override (falls back to the global background
+        // defaults inside DispatchManager when absent).
+        let provider_override = meta.get("provider").and_then(|v| v.as_str());
+        let model_override = meta.get("model").and_then(|v| v.as_str());
+
+        let dispatch_result = if execution_mode == "structured" {
+            dispatch_manager
+                .dispatch_structured(skill_name, &resolved_prompt, meta.clone(), provider_override, model_override)
+                .await
+        } else {
+            dispatch_manager
+                .dispatch(skill_name, &resolved_prompt, None, provider_override, model_override)
+                .await
+        };
+
+        match dispatch_result {
             Ok(_id) => {
                 // Update lastRun in the skill note
                 let mut updated_meta = meta.clone();

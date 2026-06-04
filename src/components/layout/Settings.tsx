@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
-import { ollamaApi, vaultApi } from "../../lib/parachute/client";
+import { ollamaApi, localAiApi, vaultApi } from "../../lib/parachute/client";
 
 interface SettingsProps {
   open: boolean;
@@ -42,10 +42,9 @@ export function Settings({ open, onClose }: SettingsProps) {
   const [vaultDescriptionExpanded, setVaultDescriptionExpanded] = useState(false);
 
   // AI Models state
-  const [ollamaConnected, setOllamaConnected] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
   const [skillModels, setSkillModels] = useState<Record<string, { provider: string; model: string }>>({});
-  const { ollamaUrl, setOllamaUrl, setSkillModel } = useSettingsStore();
+  const { setSkillModel } = useSettingsStore();
 
   const loadConfig = useCallback(() => {
     invoke<Record<string, unknown>>("get_full_config").then(setConfig);
@@ -65,7 +64,6 @@ export function Settings({ open, onClose }: SettingsProps) {
   useEffect(() => {
     // Guard against browser-only mode (outside Tauri webview)
     try {
-      ollamaApi.status().then(setOllamaConnected).catch(() => setOllamaConnected(false));
       ollamaApi.listModels().then(setAvailableModels).catch(() => {});
       ollamaApi.getSkillModels().then(setSkillModels).catch(() => {});
     } catch {
@@ -337,45 +335,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                   Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
                 </p>
 
-                {/* Ollama Connection */}
-                <div className="rounded-lg p-2.5 mb-3" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Cpu size={14} style={{ color: "var(--text-secondary)" }} />
-                    <div className="flex-1">
-                      <div className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>Ollama</div>
-                      <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>Local model inference</div>
-                    </div>
-                    <span className="flex items-center gap-1.5 text-[10px]">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: ollamaConnected ? "var(--color-success)" : "var(--color-error, #ef4444)" }} />
-                      <span style={{ color: ollamaConnected ? "var(--color-success)" : "var(--text-muted)" }}>
-                        {ollamaConnected ? "Connected" : "Disconnected"}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      value={ollamaUrl}
-                      onChange={(e) => setOllamaUrl(e.target.value)}
-                      placeholder="http://localhost:11434"
-                      className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
-                      style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}
-                    />
-                    <button
-                      onClick={() => {
-                        ollamaApi.status().then((ok) => {
-                          setOllamaConnected(ok);
-                          if (ok) ollamaApi.listModels().then(setAvailableModels).catch(() => {});
-                        }).catch(() => setOllamaConnected(false));
-                      }}
-                      className="px-2 py-0.5 rounded text-[10px] font-medium"
-                      style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}
-                    >
-                      Test Connection
-                    </button>
-                  </div>
-                </div>
-
-                {/* Skill Model Assignments */}
+                {/* Interactive-skill model assignments (provider configured in the Local AI section below) */}
                 <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
                   <div className="grid grid-cols-[1fr_100px_1fr] gap-0 px-3 py-1.5" style={{ background: "var(--glass)", borderBottom: "1px solid var(--glass-border)" }}>
                     <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skill</span>
@@ -395,7 +355,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
                         >
                           <option value="claude" style={{ background: "var(--bg-elevated)" }}>Claude</option>
-                          <option value="ollama" style={{ background: "var(--bg-elevated)" }}>Ollama</option>
+                          <option value="local" style={{ background: "var(--bg-elevated)" }}>Local</option>
                         </select>
                         <select
                           value={current.model}
@@ -415,6 +375,8 @@ export function Settings({ open, onClose }: SettingsProps) {
                   })}
                 </div>
               </Section>
+
+              <LocalAiSettings config={config} onSave={handleSave} saving={saving} savedKeys={savedKeys} />
             </>
           )}
 
@@ -543,6 +505,141 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return <div className="flex items-center justify-between py-1.5"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
+}
+
+// ─── Local AI (recurring-skill provider) ─────────────────────
+
+function LocalAiSettings({ config, onSave, saving, savedKeys }: {
+  config: Record<string, unknown>;
+  onSave: (key: string, value: string) => void;
+  saving: string | null;
+  savedKeys: Set<string>;
+}) {
+  const provider = (config.background_skill_provider as string) || "claude";
+  const baseUrl = (config.local_ai_base_url as string) || "http://localhost:1234/v1";
+  const model = (config.local_ai_model as string) || "";
+
+  const [urlDraft, setUrlDraft] = useState(baseUrl);
+  const [models, setModels] = useState<Array<{ id: string; name: string; size: string | null }>>([]);
+  const [status, setStatus] = useState<"unknown" | "ok" | "fail">("unknown");
+  const [testing, setTesting] = useState(false);
+
+  // Keep the URL draft in sync when config reloads after a save.
+  useEffect(() => { setUrlDraft(baseUrl); }, [baseUrl]);
+
+  // Auto-probe the configured server while the local provider is active.
+  useEffect(() => {
+    if (provider !== "local") return;
+    localAiApi.listModels(baseUrl)
+      .then((m) => { setModels(m); setStatus("ok"); })
+      .catch(() => setStatus("fail"));
+  }, [provider, baseUrl]);
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      const ok = await localAiApi.test(urlDraft);
+      setStatus(ok ? "ok" : "fail");
+      if (ok) setModels(await localAiApi.listModels(urlDraft));
+    } catch {
+      setStatus("fail");
+    }
+    setTesting(false);
+  };
+
+  // Show the configured model even if the server isn't reachable to enumerate it.
+  const modelInList = models.some((m) => m.id === model);
+
+  return (
+    <Section title="Local AI">
+      <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+        One OpenAI-compatible server (LM Studio, Ollama <code>/v1</code>, llama.cpp…) powers both the
+        interactive skills above and recurring background skills. The toggle sets the <strong>default</strong>
+        provider for recurring skills (falls back to Claude if the server is unreachable); override it
+        per-skill in the Agent panel. Server URL/provider changes take effect on restart.
+      </p>
+
+      {/* Default provider toggle for recurring skills */}
+      <div className="flex rounded-lg overflow-hidden mb-2" style={{ border: "1px solid var(--glass-border)" }}>
+        {([["claude", "Claude (claude -p)", <Bot size={12} key="b" />], ["local", "Local AI", <Zap size={12} key="z" />]] as const).map(([val, label, icon]) => (
+          <button
+            key={val}
+            onClick={() => provider !== val && onSave("background_skill_provider", val)}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
+            style={{
+              background: provider === val ? "var(--glass-active)" : "transparent",
+              color: provider === val ? "var(--text-primary)" : "var(--text-muted)",
+            }}
+          >
+            {icon}{label}
+          </button>
+        ))}
+      </div>
+
+      {provider === "local" && (
+        <div className="rounded-lg p-2.5 space-y-2" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+          {/* Server URL + status + test */}
+          <div className="flex items-center gap-2">
+            <Cpu size={14} style={{ color: "var(--text-secondary)" }} />
+            <div className="flex-1 text-xs font-medium" style={{ color: "var(--text-primary)" }}>OpenAI-compatible server</div>
+            <span className="flex items-center gap-1.5 text-[10px]">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: status === "ok" ? "var(--color-success)" : status === "fail" ? "var(--color-error, #ef4444)" : "var(--text-muted)" }} />
+              <span style={{ color: status === "ok" ? "var(--color-success)" : "var(--text-muted)" }}>
+                {status === "ok" ? "Connected" : status === "fail" ? "Unreachable" : "Unknown"}
+              </span>
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              value={urlDraft}
+              onChange={(e) => setUrlDraft(e.target.value)}
+              placeholder="http://localhost:1234/v1"
+              className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
+              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}
+            />
+            {urlDraft !== baseUrl && (
+              <button onClick={() => onSave("local_ai_base_url", urlDraft)} disabled={saving === "local_ai_base_url"}
+                className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ background: "var(--color-accent)", color: "white" }}>
+                {saving === "local_ai_base_url" ? "..." : "Save"}
+              </button>
+            )}
+            {savedKeys.has("local_ai_base_url") && <Check size={10} style={{ color: "var(--color-success)" }} />}
+            <button onClick={test} disabled={testing}
+              className="px-2 py-0.5 rounded text-[10px] font-medium" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
+              {testing ? "..." : "Test"}
+            </button>
+          </div>
+
+          {/* Model selector */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] w-12 flex-shrink-0" style={{ color: "var(--text-muted)" }}>Model</span>
+            <select
+              value={model}
+              onChange={(e) => onSave("local_ai_model", e.target.value)}
+              className="flex-1 h-6 rounded px-1 text-[10px] outline-none"
+              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+            >
+              <option value="" style={{ background: "var(--bg-elevated)" }}>Select a model…</option>
+              {!modelInList && model && (
+                <option value={model} style={{ background: "var(--bg-elevated)" }}>{model} (configured)</option>
+              )}
+              {models.map((m) => (
+                <option key={m.id} value={m.id} style={{ background: "var(--bg-elevated)" }}>
+                  {m.name}{m.size ? ` (${m.size})` : ""}
+                </option>
+              ))}
+            </select>
+            {savedKeys.has("local_ai_model") && <Check size={10} style={{ color: "var(--color-success)" }} />}
+          </div>
+          {models.length === 0 && status !== "ok" && (
+            <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Start your local server and click Test to load available models.
+            </p>
+          )}
+        </div>
+      )}
+    </Section>
+  );
 }
 
 // ─── Service Field (multi-field config card) ─────────────────

@@ -8,6 +8,21 @@ fn default_vault_name() -> String {
     "default".into()
 }
 
+/// Default base URL for the local OpenAI-compatible AI server.
+/// LM Studio serves its OpenAI-compatible API at port 1234 under `/v1`.
+/// (Ollama's equivalent is `http://localhost:11434/v1`.)
+fn default_local_ai_base_url() -> String {
+    "http://localhost:1234/v1".into()
+}
+
+/// Default provider for background (recurring) skill dispatches.
+/// `"claude"` spawns `claude -p` (legacy); `"local"` routes to the
+/// OpenAI-compatible local server. Defaults to `"claude"` so existing
+/// installs keep their current behavior until the user opts in.
+fn default_background_skill_provider() -> String {
+    "claude".into()
+}
+
 /// App configuration — loaded from prism-config.json, falling back to
 /// omniharmonic .env, falling back to defaults.
 /// Serializable so it can be persisted and updated at runtime.
@@ -43,6 +58,22 @@ pub struct AppConfig {
     pub otter_api_key: String,
     #[serde(default)]
     pub fireflies_api_key: String,
+
+    // ── Local AI (OpenAI-compatible: LM Studio, Ollama /v1, llama.cpp, vLLM) ──
+    /// Base URL of the local OpenAI-compatible server, including the `/v1` path
+    /// segment (e.g. `http://localhost:1234/v1`). Used for recurring-skill
+    /// processing and as a local provider in the model router.
+    #[serde(default = "default_local_ai_base_url")]
+    pub local_ai_base_url: String,
+    /// Model identifier to request from the local server (the id it exposes via
+    /// `/v1/models`, e.g. `"qwen2.5-14b-instruct"`). Empty = none configured.
+    #[serde(default)]
+    pub local_ai_model: String,
+    /// Which provider runs background (recurring) skills: `"claude"` (spawn
+    /// `claude -p`, legacy) or `"local"` (OpenAI-compatible server, with a
+    /// `claude -p` fallback when the local server is unavailable).
+    #[serde(default = "default_background_skill_provider")]
+    pub background_skill_provider: String,
 }
 
 impl Default for AppConfig {
@@ -64,6 +95,9 @@ impl Default for AppConfig {
             readai_api_key: String::new(),
             otter_api_key: String::new(),
             fireflies_api_key: String::new(),
+            local_ai_base_url: default_local_ai_base_url(),
+            local_ai_model: String::new(),
+            background_skill_provider: default_background_skill_provider(),
         }
     }
 }
@@ -363,6 +397,9 @@ pub fn get_full_config(
         "otter_api_key_set": !config.otter_api_key.is_empty(),
         "fireflies_api_key": mask(&config.fireflies_api_key),
         "fireflies_api_key_set": !config.fireflies_api_key.is_empty(),
+        "local_ai_base_url": config.local_ai_base_url,
+        "local_ai_model": config.local_ai_model,
+        "background_skill_provider": config.background_skill_provider,
     }))
 }
 
@@ -394,6 +431,11 @@ pub fn update_config(
         if let Some(v) = obj.get("readai_api_key").and_then(|v| v.as_str()) { new_config.readai_api_key = v.to_string(); }
         if let Some(v) = obj.get("otter_api_key").and_then(|v| v.as_str()) { new_config.otter_api_key = v.to_string(); }
         if let Some(v) = obj.get("fireflies_api_key").and_then(|v| v.as_str()) { new_config.fireflies_api_key = v.to_string(); }
+        // Local AI (OpenAI-compatible). Changing these takes effect on the next
+        // app restart — the LocalAgent + DispatchManager wiring is built at launch.
+        if let Some(v) = obj.get("local_ai_base_url").and_then(|v| v.as_str()) { new_config.local_ai_base_url = v.to_string(); }
+        if let Some(v) = obj.get("local_ai_model").and_then(|v| v.as_str()) { new_config.local_ai_model = v.to_string(); }
+        if let Some(v) = obj.get("background_skill_provider").and_then(|v| v.as_str()) { new_config.background_skill_provider = v.to_string(); }
     }
 
     // Hot-reload Parachute API key into the running client

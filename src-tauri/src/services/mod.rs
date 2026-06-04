@@ -4,6 +4,7 @@ pub mod email_sync;
 pub mod person_linker;
 pub mod agent_dispatch;
 pub mod skill_scheduler;
+pub mod structured_skill;
 pub mod transcript_sync;
 pub mod notion_task_sync;
 

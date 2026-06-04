@@ -118,6 +118,11 @@ export interface AgentSkill {
   enabled: boolean;
   lastRun: string | null;
   runAtHour: number | null;
+  /** Per-skill AI routing override. null = use the global background default. */
+  provider: string | null;
+  model: string | null;
+  /** "agentic" (tool loop) or "structured" (grammar-constrained classification). */
+  executionMode: string;
 }
 
 export const agentApi = {
@@ -133,8 +138,21 @@ export const agentApi = {
   getSkills: () =>
     invoke<AgentSkill[]>("agent_get_skills"),
 
-  updateSkill: (id: string, updates: { enabled?: boolean; intervalSecs?: number; prompt?: string; description?: string }) =>
-    invoke<void>("agent_update_skill", { id, ...updates }),
+  updateSkill: (
+    id: string,
+    updates: {
+      enabled?: boolean;
+      intervalSecs?: number;
+      prompt?: string;
+      description?: string;
+      /** "" = use the global default; "claude" | "local" otherwise. */
+      provider?: string;
+      /** "" = provider's default model. */
+      model?: string;
+      /** "agentic" | "structured" */
+      executionMode?: string;
+    }
+  ) => invoke<void>("agent_update_skill", { id, ...updates }),
 };
 
 export const convertApi = {
@@ -252,4 +270,17 @@ export const ollamaApi = {
   /** Get current skill model configurations */
   getSkillModels: () =>
     invoke<Record<string, { provider: string; model: string }>>("get_skill_models"),
+};
+
+// Local AI (OpenAI-compatible server: LM Studio, Ollama /v1, llama.cpp) for recurring skills
+export const localAiApi = {
+  /** List models exposed by the OpenAI-compatible server at baseUrl. */
+  listModels: (baseUrl: string) =>
+    invoke<Array<{ id: string; name: string; size: string | null }>>(
+      "local_ai_list_models",
+      { baseUrl }
+    ),
+
+  /** Health-check the OpenAI-compatible server at baseUrl. */
+  test: (baseUrl: string) => invoke<boolean>("test_local_ai", { baseUrl }),
 };

@@ -1,19 +1,30 @@
 //! Model routing layer for AI requests.
 //!
-//! Routes requests to either Claude Code CLI (default) or Ollama+MCP (user opt-in per skill).
-//! Claude Code is the primary provider; Ollama is an optional alternative that users can
-//! select on a per-skill basis. Both paths get full vault access — Claude via `.mcp.json`,
-//! Ollama via the built-in `PrismMcpClient`.
+//! Routes requests to either Claude Code CLI (default) or a local OpenAI-compatible
+//! server (user opt-in per skill). Claude Code is the primary provider; the local
+//! provider is an optional alternative selectable per skill. Both paths get full
+//! vault access — Claude via `.mcp.json`, local via the shared [`LocalAgent`]'s
+//! built-in `PrismMcpClient`.
+//!
+//! The local provider is the generic OpenAI-compatible [`LocalAgent`] (LM Studio,
+//! Ollama `/v1`, llama.cpp, …); the legacy Ollama-native path has been retired.
+//! The provider string `"local"` is canonical; `"ollama"` is accepted as an alias.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::clients::anthropic::{ClaudeClient, ClaudeJsonResponse};
-use crate::clients::ollama::{ModelInfo, OllamaAgent};
+use crate::clients::local_agent::LocalAgent;
 use crate::error::PrismError;
+
+/// Whether a provider string selects the local OpenAI-compatible provider.
+/// `"local"` is canonical; `"ollama"` is accepted for backward compatibility.
+fn is_local_provider(provider: &str) -> bool {
+    provider == "local" || provider == "ollama"
+}
 
 /// Per-skill model configuration specifying which provider and model to use.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,17 +64,18 @@ pub struct AvailableModel {
 /// Thread-safe: the skill configuration map is protected by a [`Mutex`].
 pub struct ModelRouter {
     claude: ClaudeClient,
-    ollama: Option<OllamaAgent>,
+    /// Shared local OpenAI-compatible agent (also used by `DispatchManager`).
+    local: Option<Arc<LocalAgent>>,
     /// Per-skill model configuration. Key: skill name (e.g. "edit", "chat", "transform", "generate").
     skill_config: Mutex<HashMap<String, SkillModelConfig>>,
 }
 
 impl ModelRouter {
     /// Create a new router with the given providers and an empty skill configuration.
-    pub fn new(claude: ClaudeClient, ollama: Option<OllamaAgent>) -> Self {
+    pub fn new(claude: ClaudeClient, local: Option<Arc<LocalAgent>>) -> Self {
         Self {
             claude,
-            ollama,
+            local,
             skill_config: Mutex::new(HashMap::new()),
         }
     }
@@ -104,15 +116,15 @@ impl ModelRouter {
         let config = self.resolve_config(skill);
 
         if let Some(ref cfg) = config {
-            if cfg.provider == "ollama" {
-                if let Some(ref ollama) = self.ollama {
-                    debug!("Routing skill '{}' to Ollama model '{}'", skill, cfg.model);
-                    return ollama
-                        .run(system_prompt, user_prompt, context_key, &cfg.model, timeout_secs)
+            if is_local_provider(&cfg.provider) {
+                if let Some(ref local) = self.local {
+                    debug!("Routing skill '{}' to local model '{}'", skill, cfg.model);
+                    return local
+                        .run_agentic(system_prompt, user_prompt, context_key, &cfg.model, timeout_secs)
                         .await;
                 }
                 warn!(
-                    "Skill '{}' configured for Ollama but no Ollama agent available; falling back to Claude",
+                    "Skill '{}' configured for local but no local agent available; falling back to Claude",
                     skill
                 );
             }
@@ -146,14 +158,14 @@ impl ModelRouter {
         let config = self.resolve_config(skill);
 
         if let Some(ref cfg) = config {
-            if cfg.provider == "ollama" {
-                if let Some(ref ollama) = self.ollama {
+            if is_local_provider(&cfg.provider) {
+                if let Some(ref local) = self.local {
                     debug!(
-                        "Routing conversational skill '{}' to Ollama model '{}'",
+                        "Routing conversational skill '{}' to local model '{}'",
                         skill, cfg.model
                     );
-                    let result = ollama
-                        .run(system_prompt, user_prompt, context_key, &cfg.model, timeout_secs)
+                    let result = local
+                        .run_agentic(system_prompt, user_prompt, context_key, &cfg.model, timeout_secs)
                         .await?;
                     return Ok(LlmResponse {
                         result,
@@ -162,7 +174,7 @@ impl ModelRouter {
                     });
                 }
                 warn!(
-                    "Skill '{}' configured for Ollama but no Ollama agent available; falling back to Claude",
+                    "Skill '{}' configured for local but no local agent available; falling back to Claude",
                     skill
                 );
             }
@@ -194,8 +206,9 @@ impl ModelRouter {
 
     /// List all available models across configured providers.
     ///
-    /// Claude models are hardcoded (sonnet, opus, haiku). Ollama models are
-    /// discovered dynamically via `list_models()` if an agent is configured.
+    /// Claude models are hardcoded (sonnet, opus, haiku). Local models are
+    /// discovered dynamically from the local server's `/v1/models` if a local
+    /// agent is configured, tagged with provider `"local"`.
     pub async fn list_available_models(&self) -> Result<Vec<AvailableModel>, PrismError> {
         let mut models = vec![
             AvailableModel {
@@ -218,20 +231,20 @@ impl ModelRouter {
             },
         ];
 
-        if let Some(ref ollama) = self.ollama {
-            match ollama.list_models().await {
-                Ok(ollama_models) => {
-                    for m in ollama_models {
+        if let Some(ref local) = self.local {
+            match local.list_models().await {
+                Ok(local_models) => {
+                    for m in local_models {
                         models.push(AvailableModel {
                             id: m.id,
                             name: m.name,
-                            provider: "ollama".to_string(),
+                            provider: "local".to_string(),
                             size: m.size,
                         });
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to list Ollama models: {}", e);
+                    warn!("Failed to list local models: {}", e);
                 }
             }
         }
@@ -239,10 +252,10 @@ impl ModelRouter {
         Ok(models)
     }
 
-    /// Check whether the Ollama provider is configured and healthy.
-    pub async fn ollama_available(&self) -> bool {
-        match &self.ollama {
-            Some(ollama) => ollama.health().await.unwrap_or(false),
+    /// Check whether the local provider is configured and healthy.
+    pub async fn local_available(&self) -> bool {
+        match &self.local {
+            Some(local) => local.health().await,
             None => false,
         }
     }
