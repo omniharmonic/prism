@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
+import YProvider from "y-partyserver/provider";
 import { marked } from "marked";
 import { CollabEditor } from "@prism/core";
 import { loadConnection, setActiveConnection } from "../config";
@@ -10,6 +11,16 @@ const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444"
 function randomColor() {
   return COLORS[Math.floor(Math.random() * COLORS.length)];
 }
+
+/** Minimal shape shared by the y-partyserver and y-webrtc providers. */
+type CollabProvider = {
+  awareness: {
+    getStates(): Map<number, unknown>;
+    on(type: string, cb: () => void): void;
+    off(type: string, cb: () => void): void;
+  };
+  destroy(): void;
+};
 
 /**
  * Real-time collaborative editing of a note over a CRDT. Room = note id, so a
@@ -25,16 +36,26 @@ function randomColor() {
 export function CollabPage({ noteId }: { noteId: string }) {
   const conn = useMemo(() => loadConnection(), []);
   const [ydoc] = useState(() => new Y.Doc());
-  const [provider, setProvider] = useState<WebrtcProvider | null>(null);
+  const [provider, setProvider] = useState<CollabProvider | null>(null);
   const [peers, setPeers] = useState(1);
 
   useEffect(() => {
     if (conn) setActiveConnection(conn);
-    const signaling = (import.meta.env.VITE_COLLAB_SIGNALING as string | undefined)
-      ?.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const p = new WebrtcProvider(`prism-collab-${noteId}`, ydoc, signaling ? { signaling } : undefined);
+    const room = `prism-collab-${noteId}`;
+    const host = import.meta.env.VITE_COLLAB_HOST as string | undefined;
+    // Prefer the hosted y-partyserver sync server (durable, server-relayed,
+    // works without peers being simultaneously online); fall back to
+    // peer-to-peer y-webrtc when no host is configured.
+    let p: CollabProvider;
+    if (host) {
+      p = new YProvider(host, room, ydoc, { party: "document" }) as unknown as CollabProvider;
+    } else {
+      const signaling = (import.meta.env.VITE_COLLAB_SIGNALING as string | undefined)
+        ?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      p = new WebrtcProvider(room, ydoc, signaling ? { signaling } : undefined) as unknown as CollabProvider;
+    }
     setProvider(p);
     const update = () => setPeers(p.awareness.getStates().size || 1);
     p.awareness.on("change", update);
