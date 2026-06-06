@@ -47,6 +47,11 @@ export default defineConfig({
           "**/createText-*",
         ],
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        // Activate a new build immediately instead of waiting for every tab to
+        // close — so users stop getting a stale app shell after a deploy.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         navigateFallback: "index.html",
         runtimeCaching: [
           {

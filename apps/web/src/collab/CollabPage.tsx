@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
 import YProvider from "y-partyserver/provider";
@@ -47,6 +47,8 @@ export function CollabPage({ noteId }: { noteId: string }) {
   // True once the doc is synced with the server (or a fallback elapses). Gates
   // seeding so a late server sync isn't clobbered by a stale seed.
   const [synced, setSynced] = useState(!usingServer);
+  // The resolved grant (shared link or owner-minted) — used to persist via /save.
+  const grantRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (conn) setActiveConnection(conn);
@@ -69,6 +71,7 @@ export function CollabPage({ noteId }: { noteId: string }) {
           setDenied(true);
           return;
         }
+        grantRef.current = grant;
         p = new YProvider(host, room, ydoc, {
           party: "document",
           params: { t: grant },
@@ -130,13 +133,31 @@ export function CollabPage({ noteId }: { noteId: string }) {
   }, [noteId, conn]);
 
   const onChange = useMemo(() => {
+    const host = import.meta.env.VITE_COLLAB_HOST as string | undefined;
+    if (host) {
+      // Persist through the Worker (server holds the vault token). Works for
+      // every grant-holder — including token-less collaborators — so edits land
+      // in Parachute regardless of who's connected.
+      let timer: number | undefined;
+      return (html: string) => {
+        clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          const g = grantRef.current;
+          if (!g) return;
+          void fetch(`https://${host}/save?t=${encodeURIComponent(g)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ html }),
+          });
+        }, 2500);
+      };
+    }
+    // P2P fallback (no hosted server): only a vault-holder can persist directly.
     if (!conn) return undefined;
     let timer: number | undefined;
     return (html: string) => {
       clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        void rest.updateNote(noteId, { content: html });
-      }, 2500);
+      timer = window.setTimeout(() => void rest.updateNote(noteId, { content: html }), 2500);
     };
   }, [noteId, conn]);
 

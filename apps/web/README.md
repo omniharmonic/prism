@@ -106,11 +106,22 @@ doesn't carry a valid, unexpired grant signed for that exact room:
   id, a grant for another note, or no grant all fail closed. The vault REST API
   itself remains JWT-only, so the rest of the graph is never exposed via collab.
 
+**Persistence to Parachute.** All collab saves route through the Worker's
+`/save` endpoint (authed by the per-note grant). The Worker derives the note id
+*from the grant* and writes only that note to Parachute using its own vault
+token — so edits land in the vault **regardless of who's connected** (even
+token-less collaborators), and a collaborator can never write any other note.
+The Yjs doc is also persisted in the Durable Object (onLoad/onSave) so live
+state survives disconnects. The client resyncs periodically (`resyncInterval`)
+so dropped updates self-heal rather than silently diverging.
+
 **Deploy notes.** The Worker needs:
 - `wrangler secret put COLLAB_SECRET` — HMAC key for signing grants (without it,
   all connections are rejected — fail-closed).
+- `wrangler secret put VAULT_TOKEN` — a vault write token; the Worker uses it to
+  persist collab edits to Parachute server-side.
 - `vars.VAULT_URL` / `vars.VAULT_NAME` in `wrangler.jsonc` — the trusted vault
-  used to validate owner tokens.
+  used to validate owner tokens and as the persistence target.
 
 If `VITE_COLLAB_HOST` is unset, the client falls back to peer-to-peer y-webrtc
 (public signaling, no gating) — set it to the deployed Worker for the hardened,
