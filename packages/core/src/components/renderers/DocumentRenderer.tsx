@@ -54,7 +54,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }, [allNotes, openTab]);
 
   const extensions = useMemo(() => [
-    StarterKit.configure({ codeBlock: false }),
+    StarterKit.configure({ codeBlock: false, link: false }),
     Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
     Image,
     Table.configure({ resizable: true }),

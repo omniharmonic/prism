@@ -52,7 +52,10 @@ export function CollabEditor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ undoRedo: false }),
+      // StarterKit 3.26 bundles Link; disable it so the explicit Link below
+      // (with our options) isn't a duplicate — duplicates corrupt the schema
+      // and make setContent() silently fail (blank editor).
+      StarterKit.configure({ undoRedo: false, link: false }),
       Placeholder.configure({ placeholder: "Start writing together…" }),
       Link.configure({ openOnClick: false, autolink: true }),
       Typography,
@@ -75,13 +78,13 @@ export function CollabEditor({
     let cancelled = false;
     const timer = setTimeout(async () => {
       if (cancelled) return;
-      const meta = ydoc.getMap<boolean>("meta");
-      if (meta.get("seeded")) return;
-      if (ydoc.getXmlFragment("default").length > 0) return; // a peer already has content
+      // If a peer/server already populated the shared doc, never overwrite it.
+      if (ydoc.getXmlFragment("default").length > 0) return;
       const content = seedContent ? await seedContent() : null;
+      // Re-check after the async fetch in case content synced in the meantime.
       if (cancelled || !content || editor.isDestroyed) return;
+      if (ydoc.getXmlFragment("default").length > 0) return;
       editor.commands.setContent(content);
-      ydoc.transact(() => meta.set("seeded", true));
     }, 900);
     return () => {
       cancelled = true;
