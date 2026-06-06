@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { VitePWA } from "vite-plugin-pwa";
 
 // The shared UI in `@prism/core` imports `invoke`/`listen` from `@tauri-apps/api`
 // directly (editor markdown conversion, project tree, links panel, etc.). In the
@@ -10,7 +11,69 @@ import tailwindcss from "@tailwindcss/vite";
 // degrades desktop-only commands; `listen` is a no-op. This lets the entire
 // existing UI run on the web with zero changes to `@prism/core`.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    VitePWA({
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+      includeAssets: ["apple-touch-icon.png", "vite.svg"],
+      manifest: {
+        name: "Prism",
+        short_name: "Prism",
+        description: "Your Parachute vault — notes, graph, and dashboards, anywhere.",
+        theme_color: "#0a0a0b",
+        background_color: "#0a0a0b",
+        display: "standalone",
+        orientation: "any",
+        start_url: "/",
+        icons: [
+          { src: "icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "icon-512.png", sizes: "512x512", type: "image/png" },
+          { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ],
+      },
+      workbox: {
+        // Precache the app shell, but skip the large lazy diagram/math chunks —
+        // they runtime-cache on demand instead of bloating the install.
+        globPatterns: ["**/*.{js,css,html}", "icon-*.png", "apple-touch-icon.png"],
+        globIgnores: [
+          "**/mindmap-*",
+          "**/flowchart-*",
+          "**/*Diagram*",
+          "**/katex-*",
+          "**/percentages-*",
+          "**/subset-shared*",
+          "**/createText-*",
+        ],
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        navigateFallback: "index.html",
+        runtimeCaching: [
+          {
+            // Recently-viewed vault content stays available offline (read-only).
+            urlPattern: ({ url }) =>
+              url.pathname.includes("/api/notes") ||
+              url.pathname.includes("/api/vault") ||
+              url.pathname.includes("/api/tags"),
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "vault-api",
+              networkTimeoutSeconds: 5,
+              expiration: { maxEntries: 500, maxAgeSeconds: 60 * 60 * 24 * 7 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // Lazily-loaded JS chunks (diagrams, code editor) cache on first use.
+            urlPattern: ({ request }) => request.destination === "script",
+            handler: "StaleWhileRevalidate",
+            options: { cacheName: "app-chunks" },
+          },
+        ],
+      },
+      devOptions: { enabled: false },
+    }),
+  ],
   resolve: {
     alias: {
       "@tauri-apps/api/core": fileURLToPath(
