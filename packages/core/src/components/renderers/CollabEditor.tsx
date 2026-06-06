@@ -6,6 +6,7 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
 import { collabExtensions } from "../../editor/collabSchema";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { CollabToolbar } from "./CollabToolbar";
 
 export interface CollabUser {
   name: string;
@@ -34,6 +35,8 @@ export function CollabEditor({
   seedContent,
   onChange,
   seedReady,
+  toolbar,
+  editable = true,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -44,6 +47,10 @@ export function CollabEditor({
    *  server sync can't be clobbered by a stale seed). When undefined, falls
    *  back to a short delay (e.g. P2P with no sync signal). */
   seedReady?: boolean;
+  /** Show the formatting toolbar (Google-Docs-style). */
+  toolbar?: boolean;
+  /** When false, the editor is read-only (view/comment grants). */
+  editable?: boolean;
 }) {
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
@@ -63,9 +70,15 @@ export function CollabEditor({
         ? [CollaborationCaret.configure({ provider: provider as never, user })]
         : []),
     ],
+    editable,
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });
+
+  // Reflect editable changes (e.g. level resolved after connect) onto the editor.
+  useEffect(() => {
+    editor?.setEditable(editable);
+  }, [editor, editable]);
 
   // One-time seed from the backing store, but only once the doc is synced with
   // the server (seedReady) — so a late server sync can't be overwritten by a
@@ -103,6 +116,7 @@ export function CollabEditor({
           line-height: 1; color: #fff; padding: 1px 4px; border-radius: 4px 4px 4px 0; white-space: nowrap; user-select: none;
         }
       `}</style>
+      {toolbar && editor && editable && <CollabToolbar editor={editor} />}
       <EditorContent editor={editor} />
     </>
   );
