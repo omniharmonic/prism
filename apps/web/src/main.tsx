@@ -4,6 +4,7 @@ import { App, VaultClientProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { loadConnection, setActiveConnection } from "./config";
 import { ConnectScreen } from "./auth/ConnectScreen";
+import { ShareView } from "./share/ShareView";
 
 // Importing `@prism/core` pulls in the global design system (tokens/glass/
 // typography) as a side effect, so the connect screen is styled too.
@@ -11,6 +12,18 @@ import { ConnectScreen } from "./auth/ConnectScreen";
 function start() {
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+
+  // Public, read-only share route: /share/:id (or /view/:id). No login.
+  const share = window.location.pathname.match(/^\/(?:share|view)\/(.+)$/);
+  if (share) {
+    root.render(
+      <React.StrictMode>
+        <ShareView noteId={decodeURIComponent(share[1])} />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
   const conn = loadConnection();
 
   if (!conn) {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { saveConnection, type Connection } from "../config";
+import { saveConnection, DEFAULT_VAULT_URL, DEFAULT_VAULT_NAME, type Connection } from "../config";
 
 /**
  * First-run connection form. Collects the vault URL + name + bearer token,
@@ -7,8 +7,8 @@ import { saveConnection, type Connection } from "../config";
  * off to the app. Shown whenever there is no stored connection.
  */
 export function ConnectScreen({ onConnected }: { onConnected: () => void }) {
-  const [vaultUrl, setVaultUrl] = useState("http://localhost:1940");
-  const [vaultName, setVaultName] = useState("default");
+  const [vaultUrl, setVaultUrl] = useState(DEFAULT_VAULT_URL);
+  const [vaultName, setVaultName] = useState(DEFAULT_VAULT_NAME);
   const [token, setToken] = useState("");
   const [status, setStatus] = useState<"idle" | "testing" | "error">("idle");
   const [error, setError] = useState("");

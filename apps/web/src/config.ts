@@ -16,6 +16,13 @@ export interface Connection {
 
 const STORAGE_KEY = "prism-web-connection";
 
+/** Build-time defaults so a deployed instance knows which vault it fronts
+ *  (set VITE_VAULT_URL / VITE_VAULT_NAME at build time; falls back to local dev). */
+export const DEFAULT_VAULT_URL =
+  (import.meta.env.VITE_VAULT_URL as string | undefined)?.replace(/\/+$/, "") || "http://localhost:1940";
+export const DEFAULT_VAULT_NAME =
+  (import.meta.env.VITE_VAULT_NAME as string | undefined) || "default";
+
 let active: Connection | null = null;
 
 export function loadConnection(): Connection | null {
