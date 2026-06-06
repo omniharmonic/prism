@@ -1,30 +1,24 @@
 import type { CollabSharing } from "@prism/core";
-import { getConnection } from "../config";
-
-const collabHost = () => import.meta.env.VITE_COLLAB_HOST as string | undefined;
 
 /**
- * Mint a collab grant for a note from the hardened Worker, using the vault
- * token. The Worker verifies the token against the vault before signing a
- * capability scoped to this note's room — so only people with vault access can
- * create share links.
+ * Collab share-link minting. The old path (browser vault token → Cloudflare
+ * Worker /grant) was retired in the security pivot: the browser no longer holds
+ * a vault token, and the Worker was taken down. Real-time collab + capability
+ * link minting are rebuilt server-side (Prism Server + Hocuspocus, plan phases
+ * P2/P3). Until then this seam reports that sharing is unavailable rather than
+ * silently producing a dead link.
  */
-export async function mintGrant(noteId: string, token: string): Promise<string> {
-  const host = collabHost();
-  if (!host) throw new Error("Collab host not configured");
-  const res = await fetch(`https://${host}/grant`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ noteId }),
-  });
-  if (!res.ok) throw new Error(`Could not mint collab grant: ${res.status}`);
-  return (await res.json()).grant as string;
-}
-
-/** Web implementation of the CollabSharing seam consumed by the core ShareButton. */
 export const webCollabSharing: CollabSharing = {
-  async createShareLink(noteId: string): Promise<string> {
-    const grant = await mintGrant(noteId, getConnection().token);
-    return `${location.origin}/collab/${encodeURIComponent(noteId)}?t=${encodeURIComponent(grant)}`;
+  async createShareLink(): Promise<string> {
+    throw new Error("Sharing is being rebuilt on the new Prism Server — coming soon.");
   },
 };
+
+/**
+ * Retired: minted a collab grant from the Worker using the browser's vault
+ * token. Kept as a throwing stub so the /collab route still compiles until the
+ * Hocuspocus-based path (P3) replaces it. Callers wrap this in `.catch`.
+ */
+export async function mintGrant(_noteId: string, _token: string): Promise<string> {
+  throw new Error("Collab grant minting moved server-side (Prism Server, P3).");
+}

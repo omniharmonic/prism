@@ -53,6 +53,10 @@ export default defineConfig({
         clientsClaim: true,
         cleanupOutdatedCaches: true,
         navigateFallback: "index.html",
+        // Let server-handled routes reach the network instead of being shadowed
+        // by the SPA shell: /auth/* (magic-link callback sets the session cookie
+        // + redirects — must hit the server) and /api/* (the gateway).
+        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//],
         runtimeCaching: [
           {
             // Recently-viewed vault content stays available offline (read-only).

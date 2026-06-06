@@ -3,17 +3,17 @@ import ReactDOM from "react-dom/client";
 import { App, VaultClientProvider, CollabSharingProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
-import { loadConnection, setActiveConnection } from "./config";
-import { ConnectScreen } from "./auth/ConnectScreen";
+import { fetchMe } from "./config";
+import { LoginScreen } from "./auth/LoginScreen";
 import { ShareView } from "./share/ShareView";
 import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 
 // Importing `@prism/core` pulls in the global design system (tokens/glass/
-// typography) as a side effect, so the connect screen is styled too.
+// typography) as a side effect, so the login screen is styled too.
 
-function start() {
+async function start() {
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
@@ -28,7 +28,8 @@ function start() {
     return;
   }
 
-  // Real-time collaborative editing route: /collab/:id (CRDT, peer-to-peer).
+  // Real-time collaborative editing route: /collab/:id (CRDT). Capability link
+  // in ?t= carries access — no session required.
   const collab = window.location.pathname.match(/^\/collab\/(.+)$/);
   if (collab) {
     root.render(
@@ -39,18 +40,24 @@ function start() {
     return;
   }
 
-  const conn = loadConnection();
-
-  if (!conn) {
+  // Everything else requires a session. Ask the gateway who we are.
+  const me = await fetchMe();
+  if (!me.authenticated) {
+    const reason = new URLSearchParams(window.location.search).get("login");
+    const notice =
+      reason === "expired"
+        ? "That sign-in link expired or was already used. Request a new one."
+        : reason === "error"
+          ? "Something went wrong with that link. Try again."
+          : undefined;
     root.render(
       <React.StrictMode>
-        <ConnectScreen onConnected={() => window.location.reload()} />
+        <LoginScreen notice={notice} />
       </React.StrictMode>,
     );
     return;
   }
 
-  setActiveConnection(conn);
   startOutboxSync();
   root.render(
     <React.StrictMode>
@@ -64,4 +71,4 @@ function start() {
   );
 }
 
-start();
+void start();

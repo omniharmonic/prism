@@ -59,8 +59,57 @@ export function getConnection(): Connection {
   return active;
 }
 
-/** Base URL for the vault-scoped REST API. */
+// ---------------------------------------------------------------------------
+// Prism Server gateway (the secure path). The browser holds NO vault token;
+// it talks only to the gateway, authenticated by an httpOnly session cookie set
+// via magic-link sign-in. The gateway holds the vault token server-side. The
+// legacy Connection bits above remain only for the public ShareView and the
+// (being-rebuilt) collab route; the main app uses the gateway exclusively.
+// ---------------------------------------------------------------------------
+
+/** Gateway origin. Empty = same-origin (Prism Server serves this app). For dev,
+ *  set VITE_GATEWAY_URL=http://localhost:8787. */
+export const GATEWAY_ORIGIN =
+  (import.meta.env.VITE_GATEWAY_URL as string | undefined)?.replace(/\/+$/, "") ?? "";
+
+/** Base URL for the gateway REST API. */
 export function apiBase(): string {
-  const c = getConnection();
-  return `${c.vaultUrl}/vault/${c.vaultName}/api`;
+  return `${GATEWAY_ORIGIN}/api`;
+}
+
+export interface Me {
+  authenticated: boolean;
+  email?: string;
+  isOwner?: boolean;
+}
+
+/** Current identity per the session cookie. Never throws. */
+export async function fetchMe(): Promise<Me> {
+  try {
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, { credentials: "include" });
+    if (!r.ok) return { authenticated: false };
+    return (await r.json()) as Me;
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+/** Request a magic-link sign-in email. Resolves on 200 (the server never
+ *  reveals whether an address is known). */
+export async function requestMagicLink(email: string): Promise<void> {
+  const r = await fetch(`${GATEWAY_ORIGIN}/auth/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) throw new Error(`Sign-in request failed (${r.status}).`);
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${GATEWAY_ORIGIN}/auth/logout`, { method: "POST", credentials: "include" });
+  } catch {
+    /* best-effort */
+  }
 }

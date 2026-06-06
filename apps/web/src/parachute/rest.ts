@@ -19,20 +19,18 @@ import type {
   VaultLink,
   VaultGraph,
 } from "@prism/core";
-import { apiBase, getConnection } from "../config";
+import { apiBase, DEFAULT_VAULT_NAME } from "../config";
 import { enqueue } from "../offline/outbox";
 
-function authHeaders(): Record<string, string> {
-  return {
-    Authorization: `Bearer ${getConnection().token}`,
-    "Content-Type": "application/json",
-  };
-}
+// Auth rides the httpOnly session cookie (credentials: "include"); the browser
+// holds no vault token — the gateway authorizes and proxies to Parachute.
+const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
   const resp = await fetch(`${apiBase()}${path}`, {
     ...init,
-    headers: { ...authHeaders(), ...(init?.headers as Record<string, string>) },
+    credentials: "include",
+    headers: { ...JSON_HEADERS, ...(init?.headers as Record<string, string>) },
   });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
@@ -69,7 +67,7 @@ async function writeJson<T>(method: string, path: string, body: unknown, optimis
     return optimistic();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, headers: authHeaders(), body: bodyStr });
+    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: JSON_HEADERS, body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     const text = await resp.text();
     return text ? (JSON.parse(text) as T) : optimistic();
@@ -91,7 +89,7 @@ async function mutate<T>(method: string, path: string, body: unknown, result: ()
     return result();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, headers: authHeaders(), body: bodyStr });
+    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: JSON_HEADERS, body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     return result();
   } catch (e) {
@@ -258,7 +256,7 @@ export async function getVaultInfo(): Promise<VaultInfo> {
 
 export async function updateVaultDescription(description: string): Promise<VaultInfo> {
   return writeJson("PATCH", `/vault`, { description }, () => ({
-    name: getConnection().vaultName,
+    name: DEFAULT_VAULT_NAME,
     description,
   }));
 }
