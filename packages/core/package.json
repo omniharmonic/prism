@@ -8,6 +8,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./editor-schema": "./src/editor/collabSchema.ts",
     "./styles/*": "./src/styles/*"
   },
   "scripts": {

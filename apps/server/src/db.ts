@@ -52,6 +52,12 @@ db.exec(`
     created_at    INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS capabilities_resource ON capabilities(resource_type, resource);
+  CREATE TABLE IF NOT EXISTS collab_docs (
+    name              TEXT PRIMARY KEY,   -- note id
+    state             BLOB NOT NULL,      -- Yjs encoded state (CRDT continuity)
+    source_updated_at INTEGER,            -- Parachute updatedAt at last store (external-edit detection)
+    updated_at        INTEGER NOT NULL
+  );
 `);
 
 export type SubjectType = "user" | "link" | "anyone";
@@ -230,4 +236,30 @@ export function capabilitiesForResource(type: ResourceType, resource: string): C
 }
 export function deleteCapability(id: string): void {
   deleteCapabilityStmt.run(id);
+}
+
+// ---- collab doc state (Yjs CRDT continuity across unloads) ----
+export interface DocState {
+  state: Uint8Array;
+  sourceUpdatedAt: number | null;
+}
+const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE name = ?");
+const upsertDocState = db.prepare(
+  `INSERT INTO collab_docs (name, state, source_updated_at, updated_at)
+   VALUES (@name, @state, @source_updated_at, @updated_at)
+   ON CONFLICT(name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
+);
+
+export function getDocState(name: string): DocState | null {
+  const row = selectDocState.get(name) as { state: Buffer; source_updated_at: number | null } | undefined;
+  if (!row) return null;
+  return { state: new Uint8Array(row.state), sourceUpdatedAt: row.source_updated_at };
+}
+export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null): void {
+  upsertDocState.run({
+    name,
+    state: Buffer.from(state),
+    source_updated_at: sourceUpdatedAt,
+    updated_at: now(),
+  });
 }

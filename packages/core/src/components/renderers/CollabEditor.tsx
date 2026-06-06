@@ -1,15 +1,10 @@
 import { useCallback, useEffect } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import Link from "@tiptap/extension-link";
-import Typography from "@tiptap/extension-typography";
-import Highlight from "@tiptap/extension-highlight";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
+import { collabExtensions } from "../../editor/collabSchema";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 
 export interface CollabUser {
@@ -17,7 +12,7 @@ export interface CollabUser {
   color: string;
 }
 
-/** Minimal shape of a Yjs provider with awareness (e.g. y-webrtc WebrtcProvider). */
+/** Minimal shape of a Yjs provider with awareness (e.g. HocuspocusProvider). */
 export interface AwarenessProvider {
   awareness: unknown;
 }
@@ -57,16 +52,11 @@ export function CollabEditor({
 
   const editor = useEditor({
     extensions: [
-      // StarterKit 3.26 bundles Link; disable it so the explicit Link below
-      // (with our options) isn't a duplicate — duplicates corrupt the schema
-      // and make setContent() silently fail (blank editor).
-      StarterKit.configure({ undoRedo: false, link: false }),
+      // Shared content schema (StarterKit + Link/Typography/Highlight/Tasks) —
+      // the SAME list the Prism Server uses to seed/persist the Yjs doc, so the
+      // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
+      ...collabExtensions(),
       Placeholder.configure({ placeholder: "Start writing together…" }),
-      Link.configure({ openOnClick: false, autolink: true }),
-      Typography,
-      Highlight.configure({ multicolor: true }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
       WikilinkExtension.configure({ onNavigate: () => {} }),
       Collaboration.configure({ document: ydoc }),
       ...(provider

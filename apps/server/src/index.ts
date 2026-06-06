@@ -14,6 +14,7 @@ import { config, assertConfig, emailEnabled } from "./config";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
 import { acl } from "./routes/acl";
+import { attachCollab } from "./collab";
 
 assertConfig();
 
@@ -36,9 +37,13 @@ app.use("/assets/*", serveStatic({ root: WEB_ROOT }));
 app.get("/*", serveStatic({ root: WEB_ROOT }));
 app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html` }));
 
-serve({ fetch: app.fetch, port: config.port }, (info) => {
+const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`Prism Server → http://localhost:${info.port}`);
   console.log(`  vault:  ${config.parachuteUrl} (vault=${config.parachuteVault})`);
   console.log(`  owner:  ${config.ownerEmail}`);
   console.log(`  email:  ${emailEnabled() ? "Resend" : "DISABLED (dev: links logged to console)"}`);
+  console.log(`  collab: ws://localhost:${info.port}/collab (Hocuspocus)`);
 });
+
+// Real-time collaboration shares this HTTP server (WebSocket upgrades on /collab).
+attachCollab(server as unknown as import("node:http").Server);

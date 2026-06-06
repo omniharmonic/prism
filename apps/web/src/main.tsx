@@ -17,6 +17,10 @@ async function start() {
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
+  // Capture a ?t= capability token early so every route (incl. /collab) can use
+  // it — a share/collab link is the recipient's only credential.
+  const capability = initCapability();
+
   // Public, read-only share route: /share/:id (or /view/:id). No login.
   const share = window.location.pathname.match(/^\/(?:share|view)\/(.+)$/);
   if (share) {
@@ -42,8 +46,6 @@ async function start() {
 
   // Capability link (?t=): a recipient with no session. The token authorizes
   // gateway calls; they see only the shared notes. Share UI is hidden for them.
-  const capability = initCapability();
-
   if (!capability) {
     // Otherwise a session is required. Ask the gateway who we are.
     const me = await fetchMe();

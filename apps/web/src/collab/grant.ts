@@ -49,12 +49,3 @@ export const webCollabSharing: CollabSharing = {
     return users.map((u) => u.email);
   },
 };
-
-/**
- * Retired: minted a collab grant from the Worker using the browser's vault
- * token. Throwing stub keeps the /collab route compiling until the
- * Hocuspocus-based path (P3) replaces it. Callers wrap this in `.catch`.
- */
-export async function mintGrant(_noteId: string, _token: string): Promise<string> {
-  throw new Error("Collab grant minting moved server-side (Prism Server, P3).");
-}
