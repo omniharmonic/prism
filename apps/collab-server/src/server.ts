@@ -1,5 +1,6 @@
 import { routePartykitRequest, type Connection, type WSMessage } from "partyserver";
 import { YServer } from "y-partyserver";
+import * as Y from "yjs";
 
 interface Env {
   Document: DurableObjectNamespace;
@@ -23,6 +24,21 @@ const roomFor = (noteId: string) => `prism-collab-${noteId}`;
  * exposes notes that have been explicitly shared — never the whole vault.
  */
 export class Document extends YServer<Env> {
+  // Persist the doc to this DO's storage so it survives all clients
+  // disconnecting — otherwise a collaborator opening a shared link while the
+  // owner is offline would get an empty doc (they can't seed without vault
+  // access). onLoad restores it; onSave writes it (debounced + on empty).
+  static callbackOptions = { debounceWait: 2000, debounceMaxWait: 10000, timeout: 5000 };
+
+  async onLoad() {
+    const stored = await this.ctx.storage.get<Uint8Array>("ydoc");
+    if (stored) Y.applyUpdate(this.document, stored);
+  }
+
+  async onSave() {
+    await this.ctx.storage.put("ydoc", Y.encodeStateAsUpdate(this.document));
+  }
+
   // Cloudflare delivers binary WS frames to the server as `Blob` (binaryType
   // defaults to "blob"); y-partyserver only understands ArrayBuffer/Uint8Array,
   // so a Blob decodes empty ("Unexpected end of array") and nothing relays.
