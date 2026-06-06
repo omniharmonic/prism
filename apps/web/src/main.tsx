@@ -5,6 +5,8 @@ import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { loadConnection, setActiveConnection } from "./config";
 import { ConnectScreen } from "./auth/ConnectScreen";
 import { ShareView } from "./share/ShareView";
+import { startOutboxSync } from "./offline/outbox";
+import { OfflineIndicator } from "./offline/OfflineIndicator";
 
 // Importing `@prism/core` pulls in the global design system (tokens/glass/
 // typography) as a side effect, so the connect screen is styled too.
@@ -36,10 +38,12 @@ function start() {
   }
 
   setActiveConnection(conn);
+  startOutboxSync();
   root.render(
     <React.StrictMode>
       <VaultClientProvider client={httpVaultClient}>
         <App />
+        <OfflineIndicator />
       </VaultClientProvider>
     </React.StrictMode>,
   );

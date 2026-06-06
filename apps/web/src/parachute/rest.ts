@@ -20,6 +20,7 @@ import type {
   VaultGraph,
 } from "@prism/core";
 import { apiBase, getConnection } from "../config";
+import { enqueue } from "../offline/outbox";
 
 function authHeaders(): Record<string, string> {
   return {
@@ -49,6 +50,59 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return s ? `?${s}` : "";
 }
 
+function nowISO(): string {
+  return new Date().toISOString();
+}
+
+const isOffline = () => typeof navigator !== "undefined" && !navigator.onLine;
+
+/**
+ * Mutation whose JSON response we return (create/update note). When offline or
+ * the fetch fails with a network error, queue it in the outbox and resolve with
+ * an optimistic copy so the editor proceeds; it replays on reconnect. HTTP
+ * errors (4xx/5xx) still throw.
+ */
+async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T): Promise<T> {
+  const bodyStr = JSON.stringify(body);
+  if (isOffline()) {
+    await enqueue(method, path, bodyStr);
+    return optimistic();
+  }
+  try {
+    const resp = await fetch(`${apiBase()}${path}`, { method, headers: authHeaders(), body: bodyStr });
+    if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
+    const text = await resp.text();
+    return text ? (JSON.parse(text) as T) : optimistic();
+  } catch (e) {
+    if (e instanceof TypeError) {
+      await enqueue(method, path, bodyStr);
+      return optimistic();
+    }
+    throw e;
+  }
+}
+
+/** Mutation whose response we don't use (tags/links/delete/description). Returns
+ *  `result` whether it lands online or is queued offline. */
+async function mutate<T>(method: string, path: string, body: unknown, result: () => T): Promise<T> {
+  const bodyStr = body === undefined ? undefined : JSON.stringify(body);
+  if (isOffline()) {
+    await enqueue(method, path, bodyStr);
+    return result();
+  }
+  try {
+    const resp = await fetch(`${apiBase()}${path}`, { method, headers: authHeaders(), body: bodyStr });
+    if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
+    return result();
+  } catch (e) {
+    if (e instanceof TypeError) {
+      await enqueue(method, path, bodyStr);
+      return result();
+    }
+    throw e;
+  }
+}
+
 // ---- notes ----------------------------------------------------------------
 
 export async function listNotes(filters?: NoteFilters): Promise<Note[]> {
@@ -72,7 +126,15 @@ export async function getNote(id: string): Promise<Note> {
 }
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
-  return (await req(`/notes`, { method: "POST", body: JSON.stringify(params) })).json();
+  return writeJson("POST", `/notes`, params, () => ({
+    id: `offline-${Date.now()}`,
+    content: params.content,
+    path: params.path ?? null,
+    metadata: params.metadata ?? null,
+    tags: params.tags ?? null,
+    createdAt: nowISO(),
+    updatedAt: nowISO(),
+  }));
 }
 
 export async function updateNote(id: string, params: UpdateNoteParams): Promise<Note> {
@@ -84,13 +146,19 @@ export async function updateNote(id: string, params: UpdateNoteParams): Promise<
   if (params.metadata !== undefined) body.metadata = params.metadata;
   if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
   if (body.if_updated_at === undefined) body.force = true;
-  return (
-    await req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })
-  ).json();
+  return writeJson("PATCH", `/notes/${encodeURIComponent(id)}`, body, () => ({
+    id,
+    content: params.content ?? "",
+    path: params.path ?? null,
+    metadata: params.metadata ?? null,
+    tags: null,
+    createdAt: nowISO(),
+    updatedAt: nowISO(),
+  }));
 }
 
 export async function deleteNote(id: string): Promise<void> {
-  await req(`/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await mutate("DELETE", `/notes/${encodeURIComponent(id)}`, undefined, () => {});
 }
 
 export async function batchDelete(
@@ -123,17 +191,11 @@ export async function getTags(): Promise<TagCount[]> {
 }
 
 export async function addTags(id: string, tags: string[]): Promise<void> {
-  await req(`/notes/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ tags: { add: tags }, force: true }),
-  });
+  await mutate("PATCH", `/notes/${encodeURIComponent(id)}`, { tags: { add: tags }, force: true }, () => {});
 }
 
 export async function removeTags(id: string, tags: string[]): Promise<void> {
-  await req(`/notes/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ tags: { remove: tags }, force: true }),
-  });
+  await mutate("PATCH", `/notes/${encodeURIComponent(id)}`, { tags: { remove: tags }, force: true }, () => {});
 }
 
 // ---- links ----------------------------------------------------------------
@@ -153,11 +215,12 @@ export async function createLink(
   relationship: string,
   metadata?: unknown,
 ): Promise<VaultLink> {
-  await req(`/notes/${encodeURIComponent(sourceId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ links: { add: [{ target: targetId, relationship }] }, force: true }),
-  });
-  return { sourceId, targetId, relationship, metadata, createdAt: new Date().toISOString() };
+  return mutate(
+    "PATCH",
+    `/notes/${encodeURIComponent(sourceId)}`,
+    { links: { add: [{ target: targetId, relationship }] }, force: true },
+    () => ({ sourceId, targetId, relationship, metadata, createdAt: nowISO() }),
+  );
 }
 
 export async function deleteLink(
@@ -165,10 +228,12 @@ export async function deleteLink(
   targetId: string,
   relationship: string,
 ): Promise<void> {
-  await req(`/notes/${encodeURIComponent(sourceId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ links: { remove: [{ target: targetId, relationship }] }, force: true }),
-  });
+  await mutate(
+    "PATCH",
+    `/notes/${encodeURIComponent(sourceId)}`,
+    { links: { remove: [{ target: targetId, relationship }] }, force: true },
+    () => {},
+  );
 }
 
 // ---- graph / vault --------------------------------------------------------
@@ -192,9 +257,10 @@ export async function getVaultInfo(): Promise<VaultInfo> {
 }
 
 export async function updateVaultDescription(description: string): Promise<VaultInfo> {
-  return (
-    await req(`/vault`, { method: "PATCH", body: JSON.stringify({ description }) })
-  ).json();
+  return writeJson("PATCH", `/vault`, { description }, () => ({
+    name: getConnection().vaultName,
+    description,
+  }));
 }
 
 // ---- derived --------------------------------------------------------------
