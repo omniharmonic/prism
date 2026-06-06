@@ -1,13 +1,18 @@
 {
-  "name": "prism-app",
+  "name": "prism-monorepo",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "dev": "npm run dev -w @prism/desktop",
+    "build": "npm run build -w @prism/desktop",
+    "preview": "npm run preview -w @prism/desktop",
+    "tauri": "npm run tauri -w @prism/desktop --",
+    "typecheck": "npm run typecheck -w @prism/core && npm run typecheck -w @prism/desktop"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
