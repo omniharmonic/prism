@@ -20,8 +20,11 @@ type CollabProvider = {
     on(type: string, cb: () => void): void;
     off(type: string, cb: () => void): void;
   };
+  on(type: string, cb: (...args: unknown[]) => void): void;
   destroy(): void;
 };
+
+const usingServer = !!(import.meta.env.VITE_COLLAB_HOST as string | undefined);
 
 /**
  * Real-time collaborative editing of a note over a CRDT. Room = note id, so a
@@ -40,6 +43,10 @@ export function CollabPage({ noteId }: { noteId: string }) {
   const [provider, setProvider] = useState<CollabProvider | null>(null);
   const [denied, setDenied] = useState(false);
   const [peers, setPeers] = useState(1);
+  const [connected, setConnected] = useState(false);
+  // True once the doc is synced with the server (or a fallback elapses). Gates
+  // seeding so a late server sync isn't clobbered by a stale seed.
+  const [synced, setSynced] = useState(!usingServer);
 
   useEffect(() => {
     if (conn) setActiveConnection(conn);
@@ -48,6 +55,7 @@ export function CollabPage({ noteId }: { noteId: string }) {
     let p: CollabProvider | null = null;
     let cancelled = false;
     let cleanupAwareness: (() => void) | undefined;
+    let seedFallback: ReturnType<typeof setTimeout> | undefined;
 
     (async () => {
       if (host) {
@@ -64,6 +72,11 @@ export function CollabPage({ noteId }: { noteId: string }) {
         p = new YProvider(host, room, ydoc, {
           party: "document",
           params: { t: grant },
+          // Periodically re-sync with the server so a dropped update or a
+          // half-open socket (sleep/wake, flaky wifi) self-heals instead of
+          // silently diverging; reconnect quickly on disconnect.
+          resyncInterval: 5000,
+          maxBackoffTime: 2500,
         }) as unknown as CollabProvider;
       } else {
         // No hosted server configured → peer-to-peer y-webrtc fallback.
@@ -81,12 +94,25 @@ export function CollabPage({ noteId }: { noteId: string }) {
       const update = () => setPeers(p!.awareness.getStates().size || 1);
       p.awareness.on("change", update);
       update();
+      if (host) {
+        p.on("status", (...args) => {
+          setConnected((args[0] as { status?: string })?.status === "connected");
+        });
+        p.on("sync", () => setSynced(true));
+        p.on("synced", () => setSynced(true));
+        // Safety net: seed even if no sync event arrives (CollabEditor still
+        // only seeds when the doc is actually empty).
+        seedFallback = setTimeout(() => setSynced(true), 2500);
+      } else {
+        setConnected(true); // y-webrtc P2P fallback has no status event
+      }
       cleanupAwareness = () => p!.awareness.off("change", update);
     })();
 
     return () => {
       cancelled = true;
       cleanupAwareness?.();
+      if (seedFallback) clearTimeout(seedFallback);
       p?.destroy();
       ydoc.destroy();
     };
@@ -154,9 +180,19 @@ export function CollabPage({ noteId }: { noteId: string }) {
             color: "var(--text-muted, #888)",
           }}
         >
-          <span>Live collaboration{conn ? "" : " · syncing from peers (no vault access)"}</span>
+          <span>
+            {connected ? "Live collaboration" : "Reconnecting…"}
+            {conn ? "" : " · syncing from peers (no vault access)"}
+          </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 999, background: "#22c55e" }} />
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: connected ? "#22c55e" : "#eab308",
+              }}
+            />
             {peers} here
           </span>
         </div>
@@ -166,6 +202,7 @@ export function CollabPage({ noteId }: { noteId: string }) {
           user={user}
           seedContent={seedContent}
           onChange={onChange}
+          seedReady={usingServer ? synced : undefined}
         />
       </div>
     </div>

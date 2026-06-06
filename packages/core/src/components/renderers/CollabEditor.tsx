@@ -38,12 +38,17 @@ export function CollabEditor({
   user,
   seedContent,
   onChange,
+  seedReady,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
   user: CollabUser;
   seedContent?: () => Promise<string | null>;
   onChange?: (html: string) => void;
+  /** Gate seeding until the doc is known-synced with the server (so a late
+   *  server sync can't be clobbered by a stale seed). When undefined, falls
+   *  back to a short delay (e.g. P2P with no sync signal). */
+  seedReady?: boolean;
 }) {
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
@@ -72,11 +77,13 @@ export function CollabEditor({
     onUpdate: handleUpdate,
   });
 
-  // One-time seed from the backing store if no peer has populated the doc.
+  // One-time seed from the backing store, but only once the doc is synced with
+  // the server (seedReady) — so a late server sync can't be overwritten by a
+  // stale seed. When no readiness signal is given, fall back to a short delay.
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || seedReady === false) return;
     let cancelled = false;
-    const timer = setTimeout(async () => {
+    const run = async () => {
       if (cancelled) return;
       // If a peer/server already populated the shared doc, never overwrite it.
       if (ydoc.getXmlFragment("default").length > 0) return;
@@ -85,12 +92,14 @@ export function CollabEditor({
       if (cancelled || !content || editor.isDestroyed) return;
       if (ydoc.getXmlFragment("default").length > 0) return;
       editor.commands.setContent(content);
-    }, 900);
+    };
+    const timer = seedReady === undefined ? setTimeout(run, 900) : undefined;
+    if (seedReady === true) void run();
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [editor, ydoc, seedContent]);
+  }, [editor, ydoc, seedContent, seedReady]);
 
   return (
     <>
