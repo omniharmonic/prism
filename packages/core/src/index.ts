@@ -11,6 +11,19 @@ export { default as App } from "./App";
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph } from "./data/VaultClient";
 
+// Shared data types host shells need to implement a VaultClient.
+export type {
+  Note,
+  NoteFilters,
+  NoteTreeEntry,
+  CreateNoteParams,
+  UpdateNoteParams,
+  TagCount,
+  VaultStats,
+  VaultInfo,
+  ContentType,
+} from "./lib/types";
+
 // The Tauri/desktop adapter delegates to this existing invoke-based client.
 // (The web shell does NOT use this; it supplies its own fetch-based client.)
 export { vaultApi } from "./lib/parachute/client";
