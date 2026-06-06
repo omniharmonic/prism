@@ -4,20 +4,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Prism?
 
-Prism is a Tauri 2.x desktop app (Rust backend + React 19 frontend) that serves as a universal interface for documents, messages, tasks, calendar, and knowledge management. It reads from a Parachute vault (SQLite-backed knowledge graph at localhost:1940).
+Prism is a universal interface for documents, messages, tasks, calendar, and knowledge management, backed by a Parachute vault (SQLite knowledge graph at localhost:1940). It ships in two shells over one shared React 19 UI core:
+
+- **Desktop** (`apps/desktop`) — Tauri 2.x (Rust backend + React frontend). The trusted, local, full-featured app; talks to Parachute (and Matrix/Google/Claude/Notion) directly.
+- **Web** (`apps/web`) — a static PWA (mobile + desktop browser) for editing the vault from anywhere and **Google-Docs-style sharing**. The browser holds **no vault credentials**; it talks only to the **Prism Server** gateway.
+
+### Monorepo layout (npm workspaces)
+
+```
+packages/core         Shared React UI: renderers, editor, layout, stores, VaultClient seam
+apps/desktop          Tauri shell (was the repo root; src-tauri lives here)
+apps/web              Vite PWA shell (HttpVaultClient → Prism Server gateway)
+apps/server           Prism Server — Node home-server: auth + permission gateway + (P3) collab
+apps/collab-server    Cloudflare Worker (Yjs) — RETIRED, superseded by apps/server collab
+```
+
+**VaultClient seam** (`packages/core/src/data/`): the UI core depends on a `VaultClient` interface, dependency-injected per shell — `TauriVaultClient` (invoke) for desktop, `HttpVaultClient` (fetch → gateway) for web. One UI, two transports.
 
 ## Commands
 
 ```bash
-npm run tauri dev        # Dev mode with hot reload
-npm run tauri build      # Production build → src-tauri/target/release/bundle/
-npm run build            # Frontend only (Vite)
-npx tsc --noEmit         # TypeScript type check
-cd src-tauri && cargo check   # Rust check
-cd src-tauri && cargo build   # Rust build only
+# Desktop (Tauri) — run from apps/desktop
+cd apps/desktop && npm run tauri dev      # Dev mode with hot reload
+cd apps/desktop && npm run tauri build    # Production bundle
+cd apps/desktop/src-tauri && cargo check  # Rust check
+
+# Web PWA
+npm run build -w @prism/web               # Build static PWA → apps/web/dist
+npm run dev -w @prism/web                  # Vite dev server
+
+# Prism Server (the gateway) — run from apps/server
+cd apps/server && npm run dev              # node --env-file=.env --watch (needs .env; see below)
+cd apps/server && npm run typecheck        # tsc --noEmit
+cd apps/server && node --env-file=.env --import tsx scripts/verify-gateway.ts   # security e2e
+
+# Type check everything
+npx tsc --noEmit                           # (per-workspace tsconfigs exist too)
 ```
 
-There are no test suites currently in the project.
+There are no unit test suites; verification is typecheck + build + run-against-the-live-vault (curl / Playwright). `apps/server/scripts/verify-gateway.ts` is the gateway security check.
 
 ## Architecture
 
@@ -37,6 +62,30 @@ Frontend (React/TypeScript)     ← Tauri IPC →     Backend (Rust)
 3. **Frontend talks only to Rust.** All external API calls (Matrix, Google, Claude, Notion) happen in Rust commands. Frontend calls `invoke()` only.
 4. **Agent uses Claude Code CLI.** The `ClaudeClient` spawns `claude -p` subprocesses (not the Anthropic HTTP API). It runs in the Prism project root so it picks up `.mcp.json` and gets Parachute MCP access.
 5. **Tauri commands return `Result<T, PrismError>`.** `PrismError` serializes to a string for the frontend. All new commands must follow this pattern.
+
+## Prism Server & Web Sharing (the security gateway)
+
+`apps/server` is a Node home-server (Hono + better-sqlite3) that is the **single trust boundary** for the web/shared path. It is the **only** component that holds the vault token; clients never get one.
+
+```
+Browser ── session cookie OR capability link ──▶ PRISM SERVER (apps/server) ── vault token ──▶ Parachute
+          (httpOnly, no token in JS)              ├ /auth/*  magic-link sign-in, sessions, logout, me
+                                                   ├ /api/*   permission gateway (authorize every read/write)
+                                                   └ /*       serves the built web PWA (same-origin)
+```
+
+**Auth (`src/auth/`).** Three actor kinds resolved per request (`actor.ts`): a signed-in **user** (httpOnly session cookie → SQLite row, `session.ts`), an **anyone-with-link capability** (HMAC-signed token naming a grant id, `capability.ts`), or **anon**. Sign-in is **magic-link** (`magiclink.ts`): email → one-time hashed token (15-min, single-use) → session. Email via **Resend** (`RESEND_API_KEY`); with no key, links are logged to the server console (dev only).
+
+**Permissions (`src/permissions.ts`).** Levels `view < comment < suggest < edit < own`. `effectiveLevel(grants, note, isOwner)` = max over grants matching the note **id** or any of its **tags**, with owner → `own`. Grants live in SQLite (`db.ts`): `(subject_type: user|link|anyone, subject, resource_type: note|tag, resource, level)`.
+
+**Gateway (`src/routes/api.ts`).** The owner short-circuits to a **transparent passthrough** (`proxyToVault`) — full vault, token-free, so the desktop-grade app works unchanged in the browser. Non-owners hit only allowlisted routes (notes/search/tags), each filtered by `effectiveLevel`; **every other `/api` path → 403**. `effectiveLevel` is the authoritative guard — tag queries only *narrow* what's fetched (defense-in-depth vs. the Parachute REST tag-scope gap, vault #404).
+
+**Web client.** `apps/web` talks to the gateway with `credentials: "include"` (the session cookie); it stores **no token** (verified: `document.cookie` empty, nothing in localStorage). `main.tsx` gates the app on `GET /auth/me` → `LoginScreen` when unauthenticated.
+
+**Gotchas.**
+- The PWA service worker's `navigateFallback: index.html` will **shadow server routes** unless they're in `navigateFallbackDenylist` (currently `[/^\/auth\//, /^\/api\//]`). Any new server-owned route must be added there, or sign-in/API breaks **only in the browser** (curl still works).
+- Run config: `apps/server/.env` (gitignored) — `PARACHUTE_TOKEN`, `SESSION_SECRET`, `CAPABILITY_SECRET`, `OWNER_EMAIL`, optional `RESEND_API_KEY`/`MAGIC_FROM`, `APP_ORIGIN`, `WEB_ROOT` (default `../web/dist`). `assertConfig()` fails fast on missing required secrets.
+- Token rotation: `parachute auth revoke-token <jti>` has a **~60s cache TTL** before the vault enforces it. The macOS desktop config is `~/Library/Application Support/prism/prism-config.json` (NOT `~/.config/prism`).
 
 ## Content Type & Renderer Pipeline
 
@@ -103,7 +152,7 @@ The `PRISM_CONTEXT` constant in `commands/agent.rs` is the system prompt prepend
 
 ## Configuration
 
-Config loads from `~/.config/prism/prism-config.json`. On first launch the file is created with defaults. The Settings UI writes back to this file. No external `.env` is required.
+Desktop config loads from the platform app-config dir — on **macOS that is `~/Library/Application Support/prism/prism-config.json`** (Tauri app-data), not `~/.config/prism`. On first launch the file is created with defaults. The Settings UI writes back to it. No external `.env` is required for desktop. (The web/server path uses `apps/server/.env` instead — see *Prism Server* above.)
 
 Key fields in `AppConfig`:
 - `parachute_url` (default: `http://localhost:1940`) — server root; the client appends the vault-scoped `/vault/{name}/api` path itself
