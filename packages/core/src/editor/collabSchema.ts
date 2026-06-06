@@ -5,6 +5,7 @@ import Highlight from "@tiptap/extension-highlight";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import type { Extensions } from "@tiptap/core";
+import { suggestionMarks } from "./suggestionMarks";
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -28,5 +29,9 @@ export function collabExtensions(): Extensions {
     Highlight.configure({ multicolor: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
+    // Suggested-edit marks (insertion/deletion). Schema-only here so the server
+    // can round-trip them through HTML; the suggest-mode behavior plugin is
+    // added client-side in CollabEditor.
+    ...suggestionMarks(),
   ];
 }

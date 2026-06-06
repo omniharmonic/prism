@@ -30,11 +30,12 @@ export function CollabPage({ noteId }: { noteId: string }) {
   const [denied, setDenied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
-  const [editable, setEditable] = useState(true);
+  const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
 
-  // Resolve our access level from the gateway → drives read-only + title.
+  // Resolve our access level from the gateway → drives role + title.
   useEffect(() => {
     (async () => {
       try {
@@ -44,15 +45,26 @@ export function CollabPage({ noteId }: { noteId: string }) {
         });
         if (!r.ok) return;
         const note = await r.json();
-        const level: string | undefined = note._level;
-        if (level && !["suggest", "edit", "own"].includes(level)) setEditable(false);
+        setLevel(note._level ?? "own"); // owner passthrough omits _level → treat as owner
         const firstLine = (note.content || "").split("\n").find((l: string) => l.trim());
         if (firstLine) setTitle(firstLine.replace(/^#+\s*/, "").slice(0, 100));
       } catch {
-        /* level unknown → default editable; server still enforces */
+        /* level unknown → default to editing; server still enforces */
       }
     })();
   }, [noteId]);
+
+  // Role from level. suggest → locked suggest-mode; edit/own → reviewer (toggle
+  // suggesting + accept/reject); view/comment → read-only.
+  const isSuggestLevel = level === "suggest";
+  const canReview = level === null || level === "edit" || level === "own";
+  const editable = level === null || ["suggest", "edit", "own"].includes(level);
+  const effectiveSuggesting = isSuggestLevel ? true : suggesting;
+
+  // A suggest-level user is locked into suggesting mode from the start.
+  useEffect(() => {
+    if (isSuggestLevel) setSuggesting(true);
+  }, [isSuggestLevel]);
 
   useEffect(() => {
     const p = new HocuspocusProvider({
@@ -119,7 +131,13 @@ export function CollabPage({ noteId }: { noteId: string }) {
               {title}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>
-              {connected ? (editable ? "Live · editing" : "Live · view only") : "Connecting…"}
+              {connected
+                ? !editable
+                  ? "Live · view only"
+                  : effectiveSuggesting
+                    ? "Live · suggesting"
+                    : "Live · editing"
+                : "Connecting…"}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -138,7 +156,17 @@ export function CollabPage({ noteId }: { noteId: string }) {
             minHeight: "70vh",
           }}
         >
-          <CollabEditor ydoc={ydoc} provider={provider as never} user={user} seedReady={synced} toolbar editable={editable} />
+          <CollabEditor
+            ydoc={ydoc}
+            provider={provider as never}
+            user={user}
+            seedReady={synced}
+            toolbar
+            editable={editable}
+            suggesting={effectiveSuggesting}
+            onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
+            canReview={canReview}
+          />
         </div>
       </div>
     </div>

@@ -5,6 +5,7 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
 import { collabExtensions } from "../../editor/collabSchema";
+import { SuggestionMode } from "../../editor/suggestions";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { CollabToolbar } from "./CollabToolbar";
 
@@ -37,6 +38,9 @@ export function CollabEditor({
   seedReady,
   toolbar,
   editable = true,
+  suggesting,
+  onSetSuggesting,
+  canReview,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -51,6 +55,13 @@ export function CollabEditor({
   toolbar?: boolean;
   /** When false, the editor is read-only (view/comment grants). */
   editable?: boolean;
+  /** Suggest-mode on: typing/deletes become tracked suggestions. */
+  suggesting?: boolean;
+  /** If provided, the toolbar shows an Editing/Suggesting toggle. Omit to lock
+   *  the mode (e.g. a suggest-level user can't switch to direct editing). */
+  onSetSuggesting?: (on: boolean) => void;
+  /** Show Accept all / Reject all (for edit/owner reviewers). */
+  canReview?: boolean;
 }) {
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
@@ -65,6 +76,7 @@ export function CollabEditor({
       ...collabExtensions(),
       Placeholder.configure({ placeholder: "Start writing together…" }),
       WikilinkExtension.configure({ onNavigate: () => {} }),
+      SuggestionMode.configure({ user }),
       Collaboration.configure({ document: ydoc }),
       ...(provider
         ? [CollaborationCaret.configure({ provider: provider as never, user })]
@@ -79,6 +91,11 @@ export function CollabEditor({
   useEffect(() => {
     editor?.setEditable(editable);
   }, [editor, editable]);
+
+  // Reflect suggest-mode onto the editor's suggestion plugin.
+  useEffect(() => {
+    editor?.commands.setSuggesting(!!suggesting);
+  }, [editor, suggesting]);
 
   // One-time seed from the backing store, but only once the doc is synced with
   // the server (seedReady) — so a late server sync can't be overwritten by a
@@ -116,7 +133,18 @@ export function CollabEditor({
           line-height: 1; color: #fff; padding: 1px 4px; border-radius: 4px 4px 4px 0; white-space: nowrap; user-select: none;
         }
       `}</style>
-      {toolbar && editor && editable && <CollabToolbar editor={editor} />}
+      {toolbar && editor && editable && (
+        <CollabToolbar
+          editor={editor}
+          suggesting={!!suggesting}
+          onSetSuggesting={onSetSuggesting}
+          canReview={canReview}
+        />
+      )}
+      <style>{`
+        span[data-suggestion='insert'] { background: rgba(34,197,94,0.12); }
+        span[data-suggestion='delete'] { background: rgba(239,68,68,0.10); }
+      `}</style>
       <EditorContent editor={editor} />
     </>
   );

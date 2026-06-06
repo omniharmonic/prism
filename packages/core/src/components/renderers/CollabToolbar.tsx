@@ -12,6 +12,9 @@ import {
   ListChecks,
   Quote,
   Link as LinkIcon,
+  PencilLine,
+  Check,
+  X,
 } from "lucide-react";
 
 /**
@@ -20,7 +23,17 @@ import {
  * which aren't registered there (calling them would throw). Undo/redo is handled
  * by Yjs, not a toolbar button.
  */
-export function CollabToolbar({ editor }: { editor: Editor }) {
+export function CollabToolbar({
+  editor,
+  suggesting = false,
+  onSetSuggesting,
+  canReview = false,
+}: {
+  editor: Editor;
+  suggesting?: boolean;
+  onSetSuggesting?: (on: boolean) => void;
+  canReview?: boolean;
+}) {
   const Btn = ({
     on,
     active,
@@ -113,6 +126,57 @@ export function CollabToolbar({ editor }: { editor: Editor }) {
       >
         <LinkIcon size={15} />
       </Btn>
+
+      {/* Suggesting mode + review (right side) */}
+      {(onSetSuggesting || canReview || suggesting) && (
+        <span style={{ width: 1, height: 18, background: "var(--glass-border)", margin: "0 4px" }} />
+      )}
+      {onSetSuggesting ? (
+        <button
+          type="button"
+          title={suggesting ? "Suggesting — changes are tracked" : "Switch to suggesting"}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onSetSuggesting(!suggesting)}
+          className="px-2 py-1 rounded text-xs flex items-center gap-1"
+          style={{
+            color: suggesting ? "#fff" : "var(--text-muted)",
+            background: suggesting ? "#22c55e" : "transparent",
+            border: "1px solid var(--glass-border)",
+          }}
+        >
+          <PencilLine size={13} />
+          {suggesting ? "Suggesting" : "Editing"}
+        </button>
+      ) : suggesting ? (
+        <span className="px-2 py-1 rounded text-xs flex items-center gap-1" style={{ color: "#22c55e" }}>
+          <PencilLine size={13} /> Suggesting
+        </span>
+      ) : null}
+
+      {canReview && (
+        <>
+          <button
+            type="button"
+            title="Accept all suggestions"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().acceptAllSuggestions().run()}
+            className="p-1.5 rounded"
+            style={{ color: "#22c55e" }}
+          >
+            <Check size={15} />
+          </button>
+          <button
+            type="button"
+            title="Reject all suggestions"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().rejectAllSuggestions().run()}
+            className="p-1.5 rounded"
+            style={{ color: "#ef4444" }}
+          >
+            <X size={15} />
+          </button>
+        </>
+      )}
     </div>
   );
 }
