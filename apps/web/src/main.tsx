@@ -1,7 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, initializeSettings } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
+import { webCollabSharing } from "./collab/grant";
 import { loadConnection, setActiveConnection } from "./config";
 import { ConnectScreen } from "./auth/ConnectScreen";
 import { ShareView } from "./share/ShareView";
@@ -54,8 +55,10 @@ function start() {
   root.render(
     <React.StrictMode>
       <VaultClientProvider client={httpVaultClient}>
-        <App />
-        <OfflineIndicator />
+        <CollabSharingProvider value={webCollabSharing}>
+          <App />
+          <OfflineIndicator />
+        </CollabSharingProvider>
       </VaultClientProvider>
     </React.StrictMode>,
   );

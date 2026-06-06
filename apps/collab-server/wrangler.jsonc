@@ -4,6 +4,10 @@
   "main": "src/server.ts",
   "compatibility_date": "2026-05-01",
   "observability": { "enabled": true },
+  "vars": {
+    "VAULT_URL": "https://agent.omniharmonic.com",
+    "VAULT_NAME": "default"
+  },
   "durable_objects": {
     "bindings": [{ "name": "Document", "class_name": "Document" }]
   },

@@ -87,20 +87,31 @@ then falls back to an authenticated read for viewers who have access.
 > links only resolve for viewers who already have a stored connection. Enabling
 > public view on the vault unblocks anonymous sharing with no app changes.
 
-## Real-time collaboration (CRDT)
+## Real-time collaboration (CRDT) — hardened
 
-`/collab/<noteId>` opens a note in a live, multi-cursor collaborative editor
-backed by a Yjs CRDT over **y-webrtc** (peer-to-peer — no server to run;
-same-origin tabs also sync instantly via BroadcastChannel).
+A note is shared for live editing via the **Share** button (tab bar, desktop +
+mobile) or by opening `/collab/<noteId>`. Editing is a Yjs CRDT synced through a
+hosted **y-partyserver** Worker (`apps/collab-server`, one Durable Object per
+note). Presence carets via CollaborationCaret. The owner seeds content from the
+vault and persists changes back (debounced).
 
-- Room = note id, so a `/collab/<id>` link is the invite.
-- The **owner** (a viewer with a vault connection) seeds the initial content and
-  persists changes back to Parachute (debounced). Collaborators **without** vault
-  access still edit live — the document syncs peer-to-peer via the CRDT.
-- Presence carets are shown via CollaborationCaret.
+**Access control (capability links).** The Worker rejects every connection that
+doesn't carry a valid, unexpired grant signed for that exact room:
 
-Signaling defaults to y-webrtc's public servers. For production reliability,
-run your own signaling server (or a hosted Yjs backend such as PartyKit /
-y-sweet on Cloudflare) and set `VITE_COLLAB_SIGNALING` (comma-separated `wss://`
-URLs) at build time. A hosted `y-websocket`/PartyKit backend also adds durable
-presence and history beyond the P2P "both-online" model.
+- The owner's app mints a grant on the fly using its vault token; the Share
+  button bakes one into a copyable link (`/collab/<id>?t=<grant>`).
+- The Worker only mints a grant after verifying the requester's token against
+  the vault — so only people with vault access can create share links.
+- A grant authorizes **one note's** room and expires (30 days). A guessed note
+  id, a grant for another note, or no grant all fail closed. The vault REST API
+  itself remains JWT-only, so the rest of the graph is never exposed via collab.
+
+**Deploy notes.** The Worker needs:
+- `wrangler secret put COLLAB_SECRET` — HMAC key for signing grants (without it,
+  all connections are rejected — fail-closed).
+- `vars.VAULT_URL` / `vars.VAULT_NAME` in `wrangler.jsonc` — the trusted vault
+  used to validate owner tokens.
+
+If `VITE_COLLAB_HOST` is unset, the client falls back to peer-to-peer y-webrtc
+(public signaling, no gating) — set it to the deployed Worker for the hardened,
+durable path.

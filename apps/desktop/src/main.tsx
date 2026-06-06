@@ -35,20 +35,32 @@ window.addEventListener("unhandledrejection", (e) => {
 
 // Lazy-import the shared core + the desktop's Tauri data adapter so a crash in
 // either surfaces in the catch handler below rather than a blank screen.
-Promise.all([import("@prism/core"), import("./data/TauriVaultClient")])
-  .then(([{ App, VaultClientProvider, initializeSettings }, { tauriVaultClient }]) => {
-    // Initialize settings (theme, fonts) before first paint.
-    initializeSettings();
+Promise.all([
+  import("@prism/core"),
+  import("./data/TauriVaultClient"),
+  import("./data/TauriCollabSharing"),
+])
+  .then(
+    ([
+      { App, VaultClientProvider, CollabSharingProvider, initializeSettings },
+      { tauriVaultClient },
+      { tauriCollabSharing },
+    ]) => {
+      // Initialize settings (theme, fonts) before first paint.
+      initializeSettings();
 
-    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-      <React.StrictMode>
-        <VaultClientProvider client={tauriVaultClient}>
-          <App />
-        </VaultClientProvider>
-      </React.StrictMode>,
-    );
-    reactMounted = true;
-  })
+      ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+        <React.StrictMode>
+          <VaultClientProvider client={tauriVaultClient}>
+            <CollabSharingProvider value={tauriCollabSharing}>
+              <App />
+            </CollabSharingProvider>
+          </VaultClientProvider>
+        </React.StrictMode>,
+      );
+      reactMounted = true;
+    },
+  )
   .catch((err) => {
     document.getElementById("root")!.innerHTML = `
       <div style="padding:40px;color:white;font-family:monospace;background:#0a0a0b;height:100vh;">

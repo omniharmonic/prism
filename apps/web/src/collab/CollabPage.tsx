@@ -5,6 +5,7 @@ import YProvider from "y-partyserver/provider";
 import { marked } from "marked";
 import { CollabEditor } from "@prism/core";
 import { loadConnection, setActiveConnection } from "../config";
+import { mintGrant } from "./grant";
 import * as rest from "../parachute/rest";
 
 const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
@@ -37,32 +38,56 @@ export function CollabPage({ noteId }: { noteId: string }) {
   const conn = useMemo(() => loadConnection(), []);
   const [ydoc] = useState(() => new Y.Doc());
   const [provider, setProvider] = useState<CollabProvider | null>(null);
+  const [denied, setDenied] = useState(false);
   const [peers, setPeers] = useState(1);
 
   useEffect(() => {
     if (conn) setActiveConnection(conn);
     const room = `prism-collab-${noteId}`;
     const host = import.meta.env.VITE_COLLAB_HOST as string | undefined;
-    // Prefer the hosted y-partyserver sync server (durable, server-relayed,
-    // works without peers being simultaneously online); fall back to
-    // peer-to-peer y-webrtc when no host is configured.
-    let p: CollabProvider;
-    if (host) {
-      p = new YProvider(host, room, ydoc, { party: "document" }) as unknown as CollabProvider;
-    } else {
-      const signaling = (import.meta.env.VITE_COLLAB_SIGNALING as string | undefined)
-        ?.split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      p = new WebrtcProvider(room, ydoc, signaling ? { signaling } : undefined) as unknown as CollabProvider;
-    }
-    setProvider(p);
-    const update = () => setPeers(p.awareness.getStates().size || 1);
-    p.awareness.on("change", update);
-    update();
+    let p: CollabProvider | null = null;
+    let cancelled = false;
+    let cleanupAwareness: (() => void) | undefined;
+
+    (async () => {
+      if (host) {
+        // The hosted server gates every connection on a per-note grant: a shared
+        // link carries one (?t=), and the owner mints one with their vault token.
+        const urlGrant = new URLSearchParams(window.location.search).get("t");
+        let grant: string | null = urlGrant;
+        if (!grant && conn) grant = await mintGrant(noteId, conn.token).catch(() => null);
+        if (cancelled) return;
+        if (!grant) {
+          setDenied(true);
+          return;
+        }
+        p = new YProvider(host, room, ydoc, {
+          party: "document",
+          params: { t: grant },
+        }) as unknown as CollabProvider;
+      } else {
+        // No hosted server configured → peer-to-peer y-webrtc fallback.
+        const signaling = (import.meta.env.VITE_COLLAB_SIGNALING as string | undefined)
+          ?.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        p = new WebrtcProvider(room, ydoc, signaling ? { signaling } : undefined) as unknown as CollabProvider;
+      }
+      if (cancelled) {
+        p.destroy();
+        return;
+      }
+      setProvider(p);
+      const update = () => setPeers(p!.awareness.getStates().size || 1);
+      p.awareness.on("change", update);
+      update();
+      cleanupAwareness = () => p!.awareness.off("change", update);
+    })();
+
     return () => {
-      p.awareness.off("change", update);
-      p.destroy();
+      cancelled = true;
+      cleanupAwareness?.();
+      p?.destroy();
       ydoc.destroy();
     };
   }, [noteId, ydoc, conn]);
@@ -90,6 +115,29 @@ export function CollabPage({ noteId }: { noteId: string }) {
   }, [noteId, conn]);
 
   const user = useMemo(() => ({ name: conn ? "You" : "Guest", color: randomColor() }), [conn]);
+
+  if (denied) {
+    return (
+      <div
+        style={{
+          minHeight: "100dvh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          textAlign: "center",
+        }}
+      >
+        <div style={{ maxWidth: 420 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>This link isn’t valid</h1>
+          <p style={{ fontSize: 14, color: "var(--text-muted, #888)", marginTop: 8 }}>
+            Ask the document owner for a fresh collaboration link. Links grant access to a single
+            note and expire after 30 days.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!provider) return null;
 

@@ -361,6 +361,49 @@ pub fn check_claude_cli() -> Result<serde_json::Value, PrismError> {
     }
 }
 
+/// Mint a collaboration share link for a note. The collab Worker validates this
+/// token against the vault before signing a per-note capability — so the vault
+/// token never leaves the desktop process, and only a note-scoped grant is
+/// embedded in the link.
+#[tauri::command]
+pub async fn create_collab_share_link(
+    note_id: String,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<String, PrismError> {
+    const WORKER: &str = "https://prism-collab.benjamin-7c2.workers.dev";
+    const WEB_BASE: &str = "https://prism-5ko.pages.dev";
+
+    let token = config.parachute_api_key.clone();
+    if token.is_empty() {
+        return Err(PrismError::Config("No vault token configured".into()));
+    }
+
+    let resp = reqwest::Client::new()
+        .post(format!("{WORKER}/grant"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "noteId": note_id }))
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("collab grant request failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(PrismError::Other(format!("collab grant failed: {}", resp.status())));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| PrismError::Other(format!("collab grant parse failed: {e}")))?;
+    let grant = body
+        .get("grant")
+        .and_then(|g| g.as_str())
+        .ok_or_else(|| PrismError::Other("collab grant missing in response".into()))?;
+
+    Ok(format!(
+        "{WEB_BASE}/collab/{}?t={}",
+        urlencoding::encode(&note_id),
+        urlencoding::encode(grant)
+    ))
+}
+
 /// Get full config (for Settings UI to populate fields).
 /// Masks sensitive keys for display.
 #[tauri::command]
