@@ -4,8 +4,10 @@ import Placeholder from "@tiptap/extension-placeholder";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
+import type { Editor } from "@tiptap/react";
 import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode } from "../../editor/suggestions";
+import { CommentOnly } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { CollabToolbar } from "./CollabToolbar";
 
@@ -41,6 +43,8 @@ export function CollabEditor({
   suggesting,
   onSetSuggesting,
   canReview,
+  commentOnly,
+  onEditor,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -62,6 +66,10 @@ export function CollabEditor({
   onSetSuggesting?: (on: boolean) => void;
   /** Show Accept all / Reject all (for edit/owner reviewers). */
   canReview?: boolean;
+  /** Comment-only mode: selectable + commentable but content edits blocked. */
+  commentOnly?: boolean;
+  /** Receives the editor instance (for an external comments sidebar). */
+  onEditor?: (editor: Editor | null) => void;
 }) {
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
@@ -77,6 +85,7 @@ export function CollabEditor({
       Placeholder.configure({ placeholder: "Start writing together…" }),
       WikilinkExtension.configure({ onNavigate: () => {} }),
       SuggestionMode.configure({ user }),
+      CommentOnly.configure({ active: !!commentOnly }),
       Collaboration.configure({ document: ydoc }),
       ...(provider
         ? [CollaborationCaret.configure({ provider: provider as never, user })]
@@ -96,6 +105,17 @@ export function CollabEditor({
   useEffect(() => {
     editor?.commands.setSuggesting(!!suggesting);
   }, [editor, suggesting]);
+
+  // Keep the comment-only guard in sync, and surface the editor to the parent.
+  useEffect(() => {
+    const store = editor?.storage as unknown as Record<string, { active: boolean }> | undefined;
+    if (store?.commentOnly) store.commentOnly.active = !!commentOnly;
+  }, [editor, commentOnly]);
+
+  useEffect(() => {
+    onEditor?.(editor);
+    return () => onEditor?.(null);
+  }, [editor, onEditor]);
 
   // One-time seed from the backing store, but only once the doc is synced with
   // the server (seedReady) — so a late server sync can't be overwritten by a
@@ -133,7 +153,7 @@ export function CollabEditor({
           line-height: 1; color: #fff; padding: 1px 4px; border-radius: 4px 4px 4px 0; white-space: nowrap; user-select: none;
         }
       `}</style>
-      {toolbar && editor && editable && (
+      {toolbar && editor && editable && !commentOnly && (
         <CollabToolbar
           editor={editor}
           suggesting={!!suggesting}

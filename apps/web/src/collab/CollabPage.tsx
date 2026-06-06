@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
+import type { Editor } from "@tiptap/react";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { CollabEditor } from "@prism/core";
+import { CollabEditor, CommentsSidebar } from "@prism/core";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader } from "../config";
 import { getCapabilityToken } from "../config";
 
@@ -34,6 +35,7 @@ export function CollabPage({ noteId }: { noteId: string }) {
   const [title, setTitle] = useState("Shared document");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   const [suggesting, setSuggesting] = useState(false);
+  const [editor, setEditor] = useState<Editor | null>(null);
 
   // Resolve our access level from the gateway → drives role + title.
   useEffect(() => {
@@ -54,11 +56,15 @@ export function CollabPage({ noteId }: { noteId: string }) {
     })();
   }, [noteId]);
 
-  // Role from level. suggest → locked suggest-mode; edit/own → reviewer (toggle
-  // suggesting + accept/reject); view/comment → read-only.
+  // Role from level. comment → annotate read-only; suggest → locked suggest-mode;
+  // edit/own → reviewer (toggle suggesting + accept/reject); view → read-only.
   const isSuggestLevel = level === "suggest";
+  const isCommentLevel = level === "comment";
   const canReview = level === null || level === "edit" || level === "own";
-  const editable = level === null || ["suggest", "edit", "own"].includes(level);
+  const canComment = level !== "view"; // comment/suggest/edit/own (+ owner null)
+  // Comment level is "editable" only so text is selectable; CommentOnly blocks edits.
+  const editable = level !== "view";
+  const commentOnly = isCommentLevel;
   const effectiveSuggesting = isSuggestLevel ? true : suggesting;
 
   // A suggest-level user is locked into suggesting mode from the start.
@@ -132,11 +138,13 @@ export function CollabPage({ noteId }: { noteId: string }) {
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>
               {connected
-                ? !editable
+                ? level === "view"
                   ? "Live · view only"
-                  : effectiveSuggesting
-                    ? "Live · suggesting"
-                    : "Live · editing"
+                  : commentOnly
+                    ? "Live · commenting"
+                    : effectiveSuggesting
+                      ? "Live · suggesting"
+                      : "Live · editing"
                 : "Connecting…"}
             </div>
           </div>
@@ -146,27 +154,34 @@ export function CollabPage({ noteId }: { noteId: string }) {
           </div>
         </div>
 
-        {/* Paper */}
-        <div
-          style={{
-            background: "var(--bg-surface, rgba(255,255,255,0.03))",
-            border: "1px solid var(--glass-border)",
-            borderRadius: 14,
-            padding: "20px 28px 40px",
-            minHeight: "70vh",
-          }}
-        >
-          <CollabEditor
-            ydoc={ydoc}
-            provider={provider as never}
-            user={user}
-            seedReady={synced}
-            toolbar
-            editable={editable}
-            suggesting={effectiveSuggesting}
-            onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
-            canReview={canReview}
-          />
+        {/* Paper + comments sidebar */}
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              background: "var(--bg-surface, rgba(255,255,255,0.03))",
+              border: "1px solid var(--glass-border)",
+              borderRadius: 14,
+              padding: "20px 28px 40px",
+              minHeight: "70vh",
+            }}
+          >
+            <CollabEditor
+              ydoc={ydoc}
+              provider={provider as never}
+              user={user}
+              seedReady={synced}
+              toolbar
+              editable={editable}
+              suggesting={effectiveSuggesting}
+              onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
+              canReview={canReview}
+              commentOnly={commentOnly}
+              onEditor={setEditor}
+            />
+          </div>
+          <CommentsSidebar ydoc={ydoc} editor={editor} user={user} canComment={canComment} />
         </div>
       </div>
     </div>

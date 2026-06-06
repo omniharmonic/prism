@@ -26,6 +26,7 @@ export type {
   NoteAccess,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
+export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
 
 // Shared data types host shells need to implement a VaultClient.
 export type {

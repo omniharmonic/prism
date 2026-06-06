@@ -6,6 +6,7 @@ import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import type { Extensions } from "@tiptap/core";
 import { suggestionMarks } from "./suggestionMarks";
+import { commentMarks } from "./commentMark";
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -33,5 +34,7 @@ export function collabExtensions(): Extensions {
     // can round-trip them through HTML; the suggest-mode behavior plugin is
     // added client-side in CollabEditor.
     ...suggestionMarks(),
+    // Comment anchor mark; thread data lives in a Yjs Map (client-side).
+    ...commentMarks(),
   ];
 }
