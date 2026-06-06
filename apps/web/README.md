@@ -69,3 +69,21 @@ then falls back to an authenticated read for viewers who have access.
 > `/view` publicly. On Parachute builds where that endpoint requires auth, share
 > links only resolve for viewers who already have a stored connection. Enabling
 > public view on the vault unblocks anonymous sharing with no app changes.
+
+## Real-time collaboration (CRDT)
+
+`/collab/<noteId>` opens a note in a live, multi-cursor collaborative editor
+backed by a Yjs CRDT over **y-webrtc** (peer-to-peer — no server to run;
+same-origin tabs also sync instantly via BroadcastChannel).
+
+- Room = note id, so a `/collab/<id>` link is the invite.
+- The **owner** (a viewer with a vault connection) seeds the initial content and
+  persists changes back to Parachute (debounced). Collaborators **without** vault
+  access still edit live — the document syncs peer-to-peer via the CRDT.
+- Presence carets are shown via CollaborationCaret.
+
+Signaling defaults to y-webrtc's public servers. For production reliability,
+run your own signaling server (or a hosted Yjs backend such as PartyKit /
+y-sweet on Cloudflare) and set `VITE_COLLAB_SIGNALING` (comma-separated `wss://`
+URLs) at build time. A hosted `y-websocket`/PartyKit backend also adds durable
+presence and history beyond the P2P "both-online" model.

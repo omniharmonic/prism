@@ -7,6 +7,10 @@ import "./styles/typography.css";
 // App shell
 export { default as App } from "./App";
 
+// Collaborative editor (CRDT) — host shells supply the Yjs doc + provider.
+export { CollabEditor } from "./components/renderers/CollabEditor";
+export type { CollabUser, AwarenessProvider } from "./components/renderers/CollabEditor";
+
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph } from "./data/VaultClient";

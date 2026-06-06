@@ -5,6 +5,7 @@ import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { loadConnection, setActiveConnection } from "./config";
 import { ConnectScreen } from "./auth/ConnectScreen";
 import { ShareView } from "./share/ShareView";
+import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 
@@ -21,6 +22,17 @@ function start() {
     root.render(
       <React.StrictMode>
         <ShareView noteId={decodeURIComponent(share[1])} />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Real-time collaborative editing route: /collab/:id (CRDT, peer-to-peer).
+  const collab = window.location.pathname.match(/^\/collab\/(.+)$/);
+  if (collab) {
+    root.render(
+      <React.StrictMode>
+        <CollabPage noteId={decodeURIComponent(collab[1])} />
       </React.StrictMode>,
     );
     return;
