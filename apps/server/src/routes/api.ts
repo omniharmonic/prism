@@ -11,6 +11,7 @@
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { config } from "../config";
 import { vault, VaultError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
@@ -18,6 +19,39 @@ import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissio
 export const api = new Hono();
 
 const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+
+/**
+ * Transparent proxy to the vault for the OWNER only. Forwards the exact path,
+ * query, method, and body with the server-held token, so the owner's web app
+ * works identically to the direct client — minus the token, which never leaves
+ * this process. Non-owners never reach this (they hit the allowlisted routes
+ * below, or the final 403 catch-all).
+ */
+async function proxyToVault(c: Context) {
+  const url = new URL(c.req.url);
+  const path = url.pathname.replace(/^\/api/, "");
+  const target = `${config.parachuteUrl}/vault/${config.parachuteVault}/api${path}${url.search}`;
+  const method = c.req.method;
+  const headers: Record<string, string> = { Authorization: `Bearer ${config.parachuteToken}` };
+  const init: RequestInit = { method, headers };
+  if (method !== "GET" && method !== "HEAD") {
+    headers["Content-Type"] = "application/json";
+    init.body = await c.req.text();
+  }
+  const resp = await fetch(target, init);
+  const body = await resp.text();
+  return new Response(body, {
+    status: resp.status,
+    headers: { "Content-Type": resp.headers.get("content-type") ?? "application/json" },
+  });
+}
+
+// Owner short-circuit: full vault access, token-free. Registered before the
+// authorized routes so the owner bypasses per-note filtering entirely.
+api.use("*", async (c, next) => {
+  if (resolveActor(c).isOwner) return proxyToVault(c);
+  await next();
+});
 
 function vaultErr(c: Context, e: unknown) {
   if (e instanceof VaultError) {
@@ -166,3 +200,7 @@ api.get("/tags", async (c) => {
   const allowed = new Set(grantedTags(actor.grants));
   return c.json(tags.filter((t) => allowed.has(t.tag)));
 });
+
+// Non-owner catch-all: any /api path not authorized above is denied. (Owners
+// never reach here — they short-circuit to proxyToVault in the middleware.)
+api.all("/*", (c) => c.json({ error: "forbidden" }, 403));
