@@ -1,13 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { vaultApi, systemApi, githubSyncApi } from "../../lib/parachute/client";
+import { systemApi, githubSyncApi } from "../../lib/parachute/client";
+import { useVaultClient } from "../../data/VaultClientContext";
 import { queryKeys } from "../../lib/parachute/queries";
-import type { Note, NoteFilters, UpdateNoteParams } from "../../lib/types";
+import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
 
 export function useNotes(filters?: NoteFilters) {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.notes(filters),
-    queryFn: () => vaultApi.listNotes(filters),
+    queryFn: () => client.listNotes(filters),
   });
 }
 
@@ -17,32 +19,36 @@ export function useNotes(filters?: NoteFilters) {
  * the `["vault"]` prefix.
  */
 export function useVaultTree() {
+  const client = useVaultClient();
   return useQuery({
     queryKey: ["vault", "tree"] as const,
-    queryFn: vaultApi.listTree,
+    queryFn: () => client.listTree(),
   });
 }
 
 export function useNote(id: string | null) {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.note(id!),
-    queryFn: () => vaultApi.getNote(id!),
+    queryFn: () => client.getNote(id!),
     enabled: !!id,
   });
 }
 
 export function useVaultSearch(query: string) {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.search(query),
-    queryFn: () => vaultApi.search(query),
+    queryFn: () => client.search(query),
     enabled: query.length > 0,
   });
 }
 
 export function useTags() {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.tags(),
-    queryFn: vaultApi.getTags,
+    queryFn: () => client.getTags(),
   });
 }
 
@@ -59,9 +65,10 @@ export function useVaultPaths() {
  * happens client-side via `filterNeighborhood()`.
  */
 export function useFullGraph() {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.graph(),
-    queryFn: () => vaultApi.getGraph(),
+    queryFn: () => client.getGraph(),
     staleTime: 60_000,
   });
 }
@@ -114,16 +121,18 @@ export function filterNeighborhood(
 }
 
 export function useVaultStats() {
+  const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.stats(),
-    queryFn: vaultApi.getStats,
+    queryFn: () => client.getStats(),
   });
 }
 
 export function useCreateNote() {
+  const client = useVaultClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: vaultApi.createNote,
+    mutationFn: (params: CreateNoteParams) => client.createNote(params),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.all });
     },
@@ -131,6 +140,7 @@ export function useCreateNote() {
 }
 
 export function useUpdateNote() {
+  const client = useVaultClient();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, ...params }: { id: string } & UpdateNoteParams) => {
@@ -142,7 +152,7 @@ export function useUpdateNote() {
         const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
         if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
       }
-      return vaultApi.updateNote(id, params);
+      return client.updateNote(id, params);
     },
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
@@ -157,9 +167,10 @@ export function useUpdateNote() {
 }
 
 export function useDeleteNote() {
+  const client = useVaultClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: vaultApi.deleteNote,
+    mutationFn: (id: string) => client.deleteNote(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.all });
     },

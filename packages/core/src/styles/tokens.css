@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Explicitly scan the shared UI package. After the monorepo split this CSS is
+ * imported from packages/core, but Tailwind's automatic content detection roots
+ * at each app's Vite root and no longer reaches packages/core — so utility
+ * classes used only here (h-screen, flex-col, flex-1, ...) would be dropped.
+ * This @source (relative to this file: src/styles → src) restores them for
+ * every host shell that imports @prism/core. */
+@source "../**/*.{ts,tsx}";
+
 /*
  * Prism Glass Design System
  * A frosted-glass aesthetic with depth through transparency, blur, and luminance.

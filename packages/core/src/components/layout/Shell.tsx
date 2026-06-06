@@ -1,6 +1,7 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useUIStore } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { Navigation } from "../navigation/Navigation";
 import { Canvas } from "./Canvas";
 import { ContextPanel } from "./ContextPanel";
@@ -17,8 +18,59 @@ export function Shell() {
     contextPanelWidth,
     setContextPanelWidth,
   } = useUIStore();
+  const activeTabId = useUIStore((s) => s.activeTabId);
+  const isMobile = useIsMobile();
 
   useKeyboardShortcuts();
+
+  // When the viewport becomes mobile, collapse the panels so the canvas is
+  // visible; they reopen as overlay drawers on demand.
+  useEffect(() => {
+    if (isMobile) useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
+  }, [isMobile]);
+
+  // On mobile, opening a document should dismiss the sidebar drawer.
+  const prevTab = useRef(activeTabId);
+  useEffect(() => {
+    if (isMobile && activeTabId && activeTabId !== prevTab.current) {
+      useUIStore.setState({ sidebarOpen: false });
+    }
+    prevTab.current = activeTabId;
+  }, [activeTabId, isMobile]);
+
+  if (isMobile) {
+    return (
+      <div
+        className="h-screen w-screen flex flex-col overflow-hidden"
+        style={{ background: "var(--bg-base)", color: "var(--text-primary)" }}
+      >
+        <div className="relative flex-1 min-h-0">
+          {/* Canvas fills the screen */}
+          <div className="absolute inset-0">
+            <Canvas />
+          </div>
+
+          {/* Sidebar as a left drawer */}
+          {sidebarOpen && (
+            <MobileDrawer side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
+              <Navigation />
+            </MobileDrawer>
+          )}
+
+          {/* Context panel as a right drawer */}
+          {contextPanelOpen && (
+            <MobileDrawer side="right" onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
+              <ContextPanel />
+            </MobileDrawer>
+          )}
+        </div>
+
+        <StatusBar />
+        <CommandBar />
+        <GraphFullscreen />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -62,6 +114,38 @@ export function Shell() {
       {/* Graph fullscreen overlay */}
       <GraphFullscreen />
     </div>
+  );
+}
+
+/** Slide-in overlay panel for mobile: a backdrop that dismisses on tap plus a
+ *  fixed-position drawer pinned to one edge. */
+function MobileDrawer({
+  side,
+  onClose,
+  children,
+}: {
+  side: "left" | "right";
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <div
+        className="absolute inset-0 z-40"
+        style={{ background: "rgba(0,0,0,0.5)" }}
+        onClick={onClose}
+      />
+      <div
+        className="absolute top-0 bottom-0 z-50 shadow-2xl"
+        style={{
+          width: "min(85vw, 320px)",
+          background: "var(--bg-base)",
+          ...(side === "left" ? { left: 0 } : { right: 0 }),
+        }}
+      >
+        {children}
+      </div>
+    </>
   );
 }
 
