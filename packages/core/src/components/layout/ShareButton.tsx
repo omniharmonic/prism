@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Share2, Check, Copy, X } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useCollabSharing } from "../../data/CollabSharing";
+import { ShareDialog } from "./ShareDialog";
 
 const VIRTUAL = new Set([
   "messages-dashboard",
@@ -46,6 +47,10 @@ export function ShareButton() {
 
   if (!sharing || !activeTab || !isShareable(activeTab.noteId)) return null;
   const noteId = activeTab.noteId;
+
+  // Rich ACL (web → Prism Server gateway): open the full Google-Docs-style
+  // share dialog instead of the one-shot legacy link dropdown.
+  if (sharing.getAccess) return <RichShareButton noteId={noteId} />;
 
   async function generate() {
     setOpen(true);
@@ -143,5 +148,24 @@ export function ShareButton() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Tab-bar share control backed by the full ACL dialog (web shell). */
+function RichShareButton({ noteId }: { noteId: string }) {
+  const sharing = useCollabSharing();
+  const [open, setOpen] = useState(false);
+  if (!sharing) return null;
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="px-2 h-full hover:bg-[var(--glass-hover)] transition-colors"
+        title="Share"
+      >
+        <Share2 size={15} style={{ color: "var(--text-muted)" }} />
+      </button>
+      {open && <ShareDialog noteId={noteId} sharing={sharing} onClose={() => setOpen(false)} />}
+    </>
   );
 }

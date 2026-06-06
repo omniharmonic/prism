@@ -8,7 +8,7 @@
  * replay is a plain fetch against the current connection — no coupling to the
  * typed rest layer.
  */
-import { apiBase } from "../config";
+import { apiBase, capabilityHeader } from "../config";
 
 export interface QueuedWrite {
   id?: number;
@@ -84,8 +84,9 @@ export async function flush(): Promise<void> {
   if (flushing || !navigator.onLine) return;
   flushing = true;
   try {
-    // Auth via the session cookie (credentials: "include") — no vault token.
-    const auth = { "Content-Type": "application/json" };
+    // Auth via the session cookie (credentials: "include"); capability-link
+    // recipients also send the Capability header. No vault token.
+    const auth = { "Content-Type": "application/json", ...capabilityHeader() };
     for (const item of await allQueued()) {
       let resp: Response;
       try {

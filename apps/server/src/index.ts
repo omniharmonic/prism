@@ -13,6 +13,7 @@ import { cors } from "hono/cors";
 import { config, assertConfig, emailEnabled } from "./config";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
+import { acl } from "./routes/acl";
 
 assertConfig();
 
@@ -20,11 +21,14 @@ const app = new Hono();
 
 // Only needed when the web app is served from a different origin (e.g. Vite dev
 // on :5173 without a proxy). Same-origin production traffic never triggers CORS.
-app.use("/api/*", cors({ origin: config.appOrigin, credentials: true }));
-app.use("/auth/*", cors({ origin: config.appOrigin, credentials: true }));
+const corsMw = cors({ origin: config.appOrigin, credentials: true });
+app.use("/api/*", corsMw);
+app.use("/auth/*", corsMw);
+app.use("/acl/*", corsMw);
 
 app.route("/auth", auth);
 app.route("/api", api);
+app.route("/acl", acl);
 
 // Static web app + SPA fallback (relative to cwd = apps/server).
 const WEB_ROOT = process.env.WEB_ROOT ?? "../web/dist";

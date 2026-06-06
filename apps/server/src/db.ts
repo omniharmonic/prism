@@ -42,6 +42,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS grants_subject  ON grants(subject_type, subject);
   CREATE INDEX IF NOT EXISTS grants_resource ON grants(resource_type, resource);
+  CREATE TABLE IF NOT EXISTS capabilities (
+    id            TEXT PRIMARY KEY,   -- capability id (also the grant subject)
+    resource_type TEXT NOT NULL,
+    resource      TEXT NOT NULL,
+    level         TEXT NOT NULL,
+    label         TEXT,
+    expires_at    INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS capabilities_resource ON capabilities(resource_type, resource);
 `);
 
 export type SubjectType = "user" | "link" | "anyone";
@@ -151,4 +161,73 @@ export function grantsForResource(type: ResourceType, resource: string): Grant[]
 }
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
+}
+
+const selectGrantBySubjectResource = db.prepare(
+  `SELECT * FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+);
+const updateGrantLevel = db.prepare("UPDATE grants SET level = ? WHERE id = ?");
+
+/** Insert or, if a grant for the same (subject, resource) exists, update its level. */
+export function upsertGrant(g: Omit<Grant, "id" | "created_at">): Grant {
+  const existing = selectGrantBySubjectResource.get(
+    g.subject_type,
+    g.subject,
+    g.resource_type,
+    g.resource,
+  ) as Grant | undefined;
+  if (existing) {
+    updateGrantLevel.run(g.level, existing.id);
+    return { ...existing, level: g.level };
+  }
+  return addGrant(g);
+}
+
+const deleteGrantBySubjectResourceStmt = db.prepare(
+  `DELETE FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+);
+export function removeGrantBySubjectResource(
+  subjectType: SubjectType,
+  subject: string,
+  resourceType: ResourceType,
+  resource: string,
+): void {
+  deleteGrantBySubjectResourceStmt.run(subjectType, subject, resourceType, resource);
+}
+
+// ---- users (listing) ----
+const selectUsers = db.prepare("SELECT email, name FROM users ORDER BY email");
+export function listUsers(): Array<{ email: string; name: string | null }> {
+  return selectUsers.all() as Array<{ email: string; name: string | null }>;
+}
+
+// ---- capabilities (link metadata, so the share dialog can list + re-render links) ----
+export interface Capability {
+  id: string;
+  resource_type: ResourceType;
+  resource: string;
+  level: Level;
+  label: string | null;
+  expires_at: number;
+  created_at: number;
+}
+const insertCapability = db.prepare(
+  `INSERT INTO capabilities (id, resource_type, resource, level, label, expires_at, created_at)
+   VALUES (@id, @resource_type, @resource, @level, @label, @expires_at, @created_at)`,
+);
+const selectCapabilitiesByResource = db.prepare(
+  "SELECT * FROM capabilities WHERE resource_type = ? AND resource = ? ORDER BY created_at DESC",
+);
+const deleteCapabilityStmt = db.prepare("DELETE FROM capabilities WHERE id = ?");
+
+export function createCapability(c: Omit<Capability, "created_at">): Capability {
+  const row: Capability = { ...c, created_at: now() };
+  insertCapability.run(row);
+  return row;
+}
+export function capabilitiesForResource(type: ResourceType, resource: string): Capability[] {
+  return selectCapabilitiesByResource.all(type, resource) as Capability[];
+}
+export function deleteCapability(id: string): void {
+  deleteCapabilityStmt.run(id);
 }

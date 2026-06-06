@@ -17,7 +17,15 @@ export type { VaultClient, VaultLink, VaultGraph } from "./data/VaultClient";
 
 // Collab sharing seam — host shells inject how share links are minted.
 export { CollabSharingProvider, useCollabSharing } from "./data/CollabSharing";
-export type { CollabSharing } from "./data/CollabSharing";
+export type {
+  CollabSharing,
+  ShareLevel,
+  ShareLink,
+  SharePerson,
+  TagAccess,
+  NoteAccess,
+} from "./data/CollabSharing";
+export { ShareDialog } from "./components/layout/ShareDialog";
 
 // Shared data types host shells need to implement a VaultClient.
 export type {

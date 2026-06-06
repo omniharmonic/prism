@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { App, VaultClientProvider, CollabSharingProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
-import { fetchMe } from "./config";
+import { fetchMe, initCapability } from "./config";
 import { LoginScreen } from "./auth/LoginScreen";
 import { ShareView } from "./share/ShareView";
 import { CollabPage } from "./collab/CollabPage";
@@ -40,29 +40,35 @@ async function start() {
     return;
   }
 
-  // Everything else requires a session. Ask the gateway who we are.
-  const me = await fetchMe();
-  if (!me.authenticated) {
-    const reason = new URLSearchParams(window.location.search).get("login");
-    const notice =
-      reason === "expired"
-        ? "That sign-in link expired or was already used. Request a new one."
-        : reason === "error"
-          ? "Something went wrong with that link. Try again."
-          : undefined;
-    root.render(
-      <React.StrictMode>
-        <LoginScreen notice={notice} />
-      </React.StrictMode>,
-    );
-    return;
+  // Capability link (?t=): a recipient with no session. The token authorizes
+  // gateway calls; they see only the shared notes. Share UI is hidden for them.
+  const capability = initCapability();
+
+  if (!capability) {
+    // Otherwise a session is required. Ask the gateway who we are.
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      const reason = new URLSearchParams(window.location.search).get("login");
+      const notice =
+        reason === "expired"
+          ? "That sign-in link expired or was already used. Request a new one."
+          : reason === "error"
+            ? "Something went wrong with that link. Try again."
+            : undefined;
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice={notice} />
+        </React.StrictMode>,
+      );
+      return;
+    }
   }
 
   startOutboxSync();
   root.render(
     <React.StrictMode>
       <VaultClientProvider client={httpVaultClient}>
-        <CollabSharingProvider value={webCollabSharing}>
+        <CollabSharingProvider value={capability ? null : webCollabSharing}>
           <App />
           <OfflineIndicator />
         </CollabSharingProvider>

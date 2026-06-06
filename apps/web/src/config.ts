@@ -113,3 +113,44 @@ export async function logout(): Promise<void> {
     /* best-effort */
   }
 }
+
+// ---------------------------------------------------------------------------
+// Capability mode. A share link is `${origin}/?t=<token>` — the recipient has
+// no session, so the token is sent on every gateway call (Authorization:
+// Capability <token>) and the gateway authorizes via the link's grants. The
+// token is held in sessionStorage so SPA navigation (which drops the query)
+// keeps working within the tab.
+// ---------------------------------------------------------------------------
+
+const CAP_KEY = "prism-cap";
+let capabilityToken: string | null = null;
+
+/** Read ?t= from the URL (fresh link) or restore from sessionStorage. Returns
+ *  the active capability token, if any. Call once at startup. */
+export function initCapability(): string | null {
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  if (fromUrl) {
+    capabilityToken = fromUrl;
+    try {
+      sessionStorage.setItem(CAP_KEY, fromUrl);
+    } catch {
+      /* private mode */
+    }
+  } else {
+    try {
+      capabilityToken = sessionStorage.getItem(CAP_KEY);
+    } catch {
+      capabilityToken = null;
+    }
+  }
+  return capabilityToken;
+}
+
+export function getCapabilityToken(): string | null {
+  return capabilityToken;
+}
+
+/** Authorization header for capability mode (empty for session users). */
+export function capabilityHeader(): Record<string, string> {
+  return capabilityToken ? { Authorization: `Capability ${capabilityToken}` } : {};
+}

@@ -19,18 +19,19 @@ import type {
   VaultLink,
   VaultGraph,
 } from "@prism/core";
-import { apiBase, DEFAULT_VAULT_NAME } from "../config";
+import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader } from "../config";
 import { enqueue } from "../offline/outbox";
 
 // Auth rides the httpOnly session cookie (credentials: "include"); the browser
-// holds no vault token — the gateway authorizes and proxies to Parachute.
-const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+// holds no vault token. Capability-link recipients (no session) additionally
+// send Authorization: Capability <token>; the gateway authorizes either way.
+const jsonHeaders = (): Record<string, string> => ({ "Content-Type": "application/json", ...capabilityHeader() });
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
   const resp = await fetch(`${apiBase()}${path}`, {
     ...init,
     credentials: "include",
-    headers: { ...JSON_HEADERS, ...(init?.headers as Record<string, string>) },
+    headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
   });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
@@ -67,7 +68,7 @@ async function writeJson<T>(method: string, path: string, body: unknown, optimis
     return optimistic();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: JSON_HEADERS, body: bodyStr });
+    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: jsonHeaders(), body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     const text = await resp.text();
     return text ? (JSON.parse(text) as T) : optimistic();
@@ -89,7 +90,7 @@ async function mutate<T>(method: string, path: string, body: unknown, result: ()
     return result();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: JSON_HEADERS, body: bodyStr });
+    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: jsonHeaders(), body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     return result();
   } catch (e) {
