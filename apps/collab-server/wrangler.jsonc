@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prism-collab",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "Document", "class_name": "Document" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Document"] }]
+}

@@ -59,6 +59,23 @@ VITE_VAULT_URL=https://vault.example.com VITE_VAULT_NAME=default \
 3. Open the deployed URL on your phone, enter the vault URL + token, and
    "Add to Home Screen" to install.
 
+### This deployment (live)
+
+- **App:** https://prism-5ko.pages.dev (Cloudflare Pages, project `prism`) —
+  built with `VITE_VAULT_URL=https://agent.omniharmonic.com` (the vault's
+  existing Parachute Cloudflare tunnel) and `VITE_COLLAB_HOST=prism-collab.benjamin-7c2.workers.dev`.
+- **Collab server:** `apps/collab-server` → Cloudflare Worker `prism-collab`
+  (Durable Object `Document`, y-partyserver) at
+  https://prism-collab.benjamin-7c2.workers.dev.
+
+Redeploy:
+
+```bash
+npm run build -w @prism/web
+npx wrangler pages deploy apps/web/dist --project-name prism --branch main   # app
+npm -w @prism/collab-server run deploy                                       # collab server
+```
+
 ## Sharing
 
 `/(share|view)/<noteId>` renders a note read-only with no app chrome. It first
