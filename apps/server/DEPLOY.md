@@ -82,10 +82,18 @@ Set `APP_ORIGIN=https://prism.<your-domain>` to match.
 
 - Browser holds **no vault token**; auth is an httpOnly, SameSite=Lax, Secure
   (on https) session cookie, or an HMAC capability token.
+- **Invite-only accounts.** There is no open self-signup. The owner signs in via
+  an **owner-only** magic link (bootstrap/recovery). Everyone else is **invited**
+  by the owner → registers a **password account** (scrypt) → logs in with email +
+  password. Sharing by email auto-invites, binding the grant to a real account.
+  Generic 401s (no enumeration); `/auth/login`,`/auth/register`,`/auth/request`,
+  `/auth/callback` are rate-limited.
 - Gateway authorizes + tag-filters every read/write; non-owner non-allowlisted
-  paths → 403. `effectiveLevel` is the authoritative guard.
-- Magic links: single-use, SHA-256-hashed at rest, 15-min TTL; `/auth/request`
-  rate-limited (5 / 10 min / IP), `/auth/callback` (30 / 10 min / IP).
+  paths → 403. `effectiveLevel` is the authoritative guard. **A signed-in
+  non-owner with no grants sees nothing** — authentication never implies
+  authorization; the graph/vault is 403 for everyone but the owner.
+- Invites/magic links: single-use, SHA-256-hashed at rest (invites 7-day,
+  magic links 15-min).
 - Security headers: `X-Content-Type-Options`, `Referrer-Policy`,
   `X-Frame-Options`, HSTS on https.
 - Capability links are revocable instantly (delete the grant); vault-token

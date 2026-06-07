@@ -74,7 +74,10 @@ Browser ── session cookie OR capability link ──▶ PRISM SERVER (apps/se
                                                    └ /*       serves the built web PWA (same-origin)
 ```
 
-**Auth (`src/auth/`).** Three actor kinds resolved per request (`actor.ts`): a signed-in **user** (httpOnly session cookie → SQLite row, `session.ts`), an **anyone-with-link capability** (HMAC-signed token naming a grant id, `capability.ts`), or **anon**. Sign-in is **magic-link** (`magiclink.ts`): email → one-time hashed token (15-min, single-use) → session. Email via **Resend** (`RESEND_API_KEY`); with no key, links are logged to the server console (dev only).
+**Auth (`src/auth/`).** Three actor kinds resolved per request (`actor.ts`): a signed-in **user** (httpOnly session cookie → SQLite row, `session.ts`), an **anyone-with-link capability** (HMAC-signed token naming a grant id, `capability.ts`), or **anon**. Auth is **invite-only with passwords** — there is no open self-signup:
+- **Owner** (`OWNER_EMAIL`) signs in via **magic link**, which is **owner-only** (gated at both `/auth/request` and `/auth/callback`) — bootstrap/recovery, since the owner controls that inbox.
+- **Everyone else**: the owner issues an **invite** (`invite.ts` — single-use, hashed, 7-day) → recipient **registers** a password account (`password.ts` — scrypt) at `/accept-invite?token=` → logs in with email + password (`/auth/login`). Sharing by email (`/acl` people endpoints) auto-invites, so a grant binds to a real authenticated account, not a bare email. Generic 401s avoid account enumeration; `/auth/login` + `/auth/register` are rate-limited.
+- Email via **Resend** (`RESEND_API_KEY`, shared sender in `email.ts`); with no key, links log to the console (dev only). A signed-in **non-owner with no grants sees nothing** (empty `/api/notes`, 403 on notes + the graph) — authentication never implies authorization.
 
 **Permissions (`src/permissions.ts`).** Levels `view < comment < suggest < edit < own`. `effectiveLevel(grants, note, isOwner)` = max over grants matching the note **id** or any of its **tags**, with owner → `own`. Grants live in SQLite (`db.ts`): `(subject_type: user|link|anyone, subject, resource_type: note|tag, resource, level)`.
 
