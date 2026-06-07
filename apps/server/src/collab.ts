@@ -73,6 +73,16 @@ interface NoteMeta {
   path: string | null;
   tags: string[] | null;
   metadata: Record<string, unknown> | null;
+  content?: string | null;
+}
+
+/** A note body that is an Excalidraw scene — ground truth for canvas (mirrors the
+ *  client's looksLikeExcalidrawScene). */
+function looksLikeExcalidrawScene(content: string | null | undefined): boolean {
+  if (!content) return false;
+  const c = content.trimStart();
+  if (!c.startsWith("{") || !c.includes('"elements"')) return false;
+  return c.includes('"appState"') || c.includes("excalidraw") || /"type"\s*:\s*"(rectangle|ellipse|diamond|arrow|line|freedraw|text|frame)"/.test(c);
 }
 
 /** Detect how a note should be seeded/persisted for collaboration. Mirrors the
@@ -80,6 +90,8 @@ interface NoteMeta {
 export function noteKind(note: NoteMeta): CollabKind {
   const pt = note.metadata?.["prism_type"];
   if (pt === "canvas") return "canvas";
+  // Content ground truth: an Excalidraw scene is a canvas even without tag/metadata.
+  if (looksLikeExcalidrawScene(note.content)) return "canvas";
   if (pt === "spreadsheet") return "spreadsheet";
   if (pt === "code") return "code";
   const tags = new Set(note.tags ?? []);
@@ -248,7 +260,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   try {
     const n = await vault.getNote(documentName);
     note = { content: n.content, updatedAt: n.updatedAt };
-    kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata });
+    kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
     kindCache.set(documentName, kind);
   } catch {
     /* note may not be readable; leave empty */
@@ -299,7 +311,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   if (!kind) {
     try {
       const n = await vault.getNote(documentName);
-      kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata });
+      kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
       kindCache.set(documentName, kind);
     } catch {
       kind = "document";

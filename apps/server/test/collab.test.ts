@@ -232,6 +232,14 @@ test("noteKind detects canvas by tag, prism_type, and .excalidraw extension", ()
   assert.equal(noteKind({ path: "board.excalidraw", tags: null, metadata: null }), "canvas");
 });
 
+test("noteKind detects canvas by CONTENT even with no tag/metadata (the raw-text bug)", () => {
+  const scene = '{"elements":[{"id":"a","type":"rectangle","index":"a0"}],"appState":{}}';
+  // No tag, no prism_type, no extension — exactly the demo-canvas case.
+  assert.equal(noteKind({ path: "_test/demo-canvas", tags: [], metadata: null, content: scene }), "canvas");
+  // A real prose document must NOT be mis-detected as canvas.
+  assert.equal(noteKind({ path: "notes/essay.md", tags: [], metadata: null, content: "# Title\n\nProse about elements and appState." }), "document");
+});
+
 test("canvas scene round-trips through the Y.Map<id, element> model", () => {
   const scene = JSON.stringify({
     elements: [

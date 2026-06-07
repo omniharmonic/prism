@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 
@@ -31,25 +31,12 @@ interface PresenceUser {
 
 type CollabKind = "document" | "code" | "spreadsheet" | "canvas";
 
-const CODE_EXTS = new Set([
-  "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
-  "css", "scss", "less", "json", "yaml", "yml", "toml", "sh", "bash", "zsh", "sql",
-  "php", "swift", "kt", "lua", "r", "jl", "ex", "exs", "clj", "html", "htm", "xml",
-]);
-
-/** Client mirror of the server's noteKind — keep the two in sync so the editor
- *  matches how the server seeds/persists the Y.Doc. */
-function detectKind(note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null }): CollabKind {
-  const pt = note.metadata?.["prism_type"];
-  const tags = note.tags ?? [];
-  if (pt === "canvas" || tags.includes("canvas")) return "canvas";
-  if (pt === "spreadsheet" || tags.includes("spreadsheet")) return "spreadsheet";
-  if (pt === "code" || tags.includes("code")) return "code";
-  const ext = note.path?.split(".").pop()?.toLowerCase();
-  if (ext === "excalidraw") return "canvas";
-  if (ext === "csv" || ext === "tsv") return "spreadsheet";
-  if (ext && CODE_EXTS.has(ext)) return "code";
-  return "document";
+/** Derive the collab kind from the SAME `inferContentType` the renderers use, so
+ *  the live editor always matches how the note renders (and how the server seeds
+ *  it). Content sniffing inside inferContentType catches tag-less canvases. */
+function detectKind(note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null; content?: string | null }): CollabKind {
+  const t = inferContentType(note as never);
+  return t === "canvas" || t === "code" || t === "spreadsheet" ? t : "document";
 }
 
 /** A readable document title from either markdown or HTML content (collab
