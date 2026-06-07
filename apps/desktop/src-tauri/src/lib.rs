@@ -196,6 +196,7 @@ pub fn run() {
             message_index::index_messages,
             // Config + integration testing
             config::get_config_status,
+            config::get_collab_config,
             config::set_anthropic_key,
             config::test_parachute,
             config::test_matrix,

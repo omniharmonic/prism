@@ -39,12 +39,14 @@ Promise.all([
   import("@prism/core"),
   import("./data/TauriVaultClient"),
   import("./data/TauriCollabSharing"),
+  import("./data/DesktopCollabDocument"),
 ])
   .then(
     ([
-      { App, VaultClientProvider, CollabSharingProvider, initializeSettings },
+      { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, initializeSettings },
       { tauriVaultClient },
       { tauriCollabSharing },
+      { CollabDocument, useLiveCollab },
     ]) => {
       // Initialize settings (theme, fonts) before first paint.
       initializeSettings();
@@ -53,7 +55,12 @@ Promise.all([
         <React.StrictMode>
           <VaultClientProvider client={tauriVaultClient}>
             <CollabSharingProvider value={tauriCollabSharing}>
-              <App />
+              {/* Real-time: collab-capable notes edit live against the Prism
+                  Server, so desktop ⇄ web ⇄ phone stay in sync. Falls back to the
+                  offline editor when no COLLAB_TOKEN is configured. */}
+              <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
+                <App />
+              </CollabDocumentProvider>
             </CollabSharingProvider>
           </VaultClientProvider>
         </React.StrictMode>,

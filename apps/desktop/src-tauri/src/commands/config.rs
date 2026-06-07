@@ -23,6 +23,11 @@ fn default_background_skill_provider() -> String {
     "claude".into()
 }
 
+/// Default Prism Server collab WebSocket endpoint (same machine, default port).
+fn default_collab_url() -> String {
+    "ws://localhost:8787/collab".into()
+}
+
 /// App configuration — loaded from prism-config.json, falling back to
 /// omniharmonic .env, falling back to defaults.
 /// Serializable so it can be persisted and updated at runtime.
@@ -74,6 +79,18 @@ pub struct AppConfig {
     /// `claude -p` fallback when the local server is unavailable).
     #[serde(default = "default_background_skill_provider")]
     pub background_skill_provider: String,
+
+    // ── Real-time collaboration (Prism Server /collab) ──
+    /// WebSocket URL of the Prism Server's Hocuspocus endpoint. The desktop app
+    /// connects here so its edits sync live with web/phone sessions. Defaults to
+    /// the local server; point elsewhere if the Prism Server runs on another host.
+    #[serde(default = "default_collab_url")]
+    pub collab_url: String,
+    /// Dedicated owner token presented to /collab (must match the Prism Server's
+    /// COLLAB_TOKEN). Kept separate from the vault token. Empty = collab disabled
+    /// on desktop (falls back to the offline autosave editor).
+    #[serde(default)]
+    pub collab_token: String,
 }
 
 impl Default for AppConfig {
@@ -98,6 +115,8 @@ impl Default for AppConfig {
             local_ai_base_url: default_local_ai_base_url(),
             local_ai_model: String::new(),
             background_skill_provider: default_background_skill_provider(),
+            collab_url: default_collab_url(),
+            collab_token: String::new(),
         }
     }
 }
@@ -151,6 +170,8 @@ impl AppConfig {
                 if let Some(v) = vars.get("PARACHUTE_VAULT") { config.parachute_vault = v.clone(); }
                 if let Some(v) = vars.get("FATHOM_API_KEY") { config.fathom_api_key = v.clone(); }
                 if let Some(v) = vars.get("MEETILY_DB_PATH") { config.meetily_db_path = v.clone(); }
+                if let Some(v) = vars.get("COLLAB_URL") { config.collab_url = v.clone(); }
+                if let Some(v) = vars.get("COLLAB_TOKEN") { config.collab_token = v.clone(); }
             }
         }
 
@@ -259,6 +280,22 @@ fn try_keychain_anthropic() -> Option<String> {
 }
 
 // ─── Tauri Commands ──────────────────────────────────
+
+/// Real-time collab connection config for the webview: the Prism Server's
+/// WebSocket URL and the dedicated owner token. The token is intentionally
+/// surfaced to the (trusted) webview ONLY for the local collab connection — it is
+/// the dedicated COLLAB_TOKEN, never the vault token. `enabled` is false when no
+/// token is configured, so the UI stays on the offline editor.
+#[tauri::command]
+pub fn get_collab_config(
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    Ok(serde_json::json!({
+        "url": config.collab_url,
+        "token": config.collab_token,
+        "enabled": !config.collab_token.is_empty(),
+    }))
+}
 
 #[tauri::command]
 pub fn get_config_status(

@@ -210,13 +210,15 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
 
 /** Resolve the connection's effective level for a note (session wins over link). */
 export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null): Promise<Level | null> {
-  // Desktop owner path: the Tauri app runs on the same trusted machine as the
-  // vault and already holds the vault token (it talks to Parachute directly).
-  // Presenting that exact token to /collab authenticates it as the owner, so the
-  // desktop joins the same live Yjs doc as web/phone. This grants no capability
-  // the token-holder doesn't already have (full vault access), so it's not a new
-  // exposure — just a way to authenticate the trusted local app.
-  if (config.parachuteToken && token === config.parachuteToken) return "own";
+  // Desktop owner path: the trusted Tauri app presents the dedicated COLLAB_TOKEN
+  // (shared between the server .env and the desktop config) to join live docs as
+  // the owner. Kept separate from the vault token so the powerful vault credential
+  // never enters the webview. The vault token is also accepted as a fallback (its
+  // holder already has full vault access, so it's no new exposure). Guarded against
+  // empty so an unset secret can't match a blank token.
+  if (token && ((config.collabToken && token === config.collabToken) || (config.parachuteToken && token === config.parachuteToken))) {
+    return "own";
+  }
 
   const email = sessionEmailFromCookie(cookieHeader);
   let grants: Grant[] = [];

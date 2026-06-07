@@ -16,6 +16,12 @@ export const config = {
 
   ownerEmail: (process.env.OWNER_EMAIL ?? "").trim().toLowerCase(),
 
+  // Dedicated owner token for the trusted desktop app's real-time connection.
+  // The Tauri webview presents this to /collab to join live docs as the owner —
+  // separate from the vault token, so the powerful vault credential stays out of
+  // the webview. Shared between this .env and the desktop's prism-config.json.
+  collabToken: process.env.COLLAB_TOKEN ?? "",
+
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   magicFrom: process.env.MAGIC_FROM ?? "Prism <login@example.com>",
 

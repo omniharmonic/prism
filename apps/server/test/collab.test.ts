@@ -95,6 +95,16 @@ test("the desktop app connects as owner by presenting the vault token", async ()
   assert.equal(cc.readOnly, false);
 });
 
+test("the desktop app connects as owner with the dedicated COLLAB_TOKEN", async () => {
+  const { config } = await import("../src/config");
+  assert.ok(config.collabToken, "COLLAB_TOKEN must be set in .env.test");
+  fv.put({ id: "n1", content: "x", tags: ["private"] });
+  const cc = { readOnly: false };
+  const level = await authorizeConnection("n1", config.collabToken, null, cc);
+  assert.equal(level, "own");
+  assert.equal(cc.readOnly, false);
+});
+
 test("a bogus token is NOT treated as the desktop owner", async () => {
   fv.put({ id: "n1", content: "secret", tags: ["private"] });
   const cc = { readOnly: false };
