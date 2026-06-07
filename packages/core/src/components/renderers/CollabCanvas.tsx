@@ -130,7 +130,9 @@ export function CollabCanvas({
   };
 
   return (
-    <div style={{ position: "absolute", inset: 0 }}>
+    // touch-action:none lets Excalidraw own pinch-zoom/two-finger-pan on mobile
+    // instead of the browser zooming/scrolling the page behind the canvas.
+    <div style={{ position: "absolute", inset: 0, touchAction: "none" }}>
       <Excalidraw
         excalidrawAPI={(api: any) => (apiRef.current = api)}
         onChange={onChange}

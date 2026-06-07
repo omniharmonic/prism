@@ -18,6 +18,7 @@ import { sql } from "@codemirror/lang-sql";
 import { yCollab } from "y-codemirror.next";
 import type { Awareness } from "y-protocols/awareness";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 
 /**
  * Real-time collaborative code editor — CodeMirror 6 bound to a Yjs `Y.Text`
@@ -43,6 +44,7 @@ export function CollabCodeEditor({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -69,8 +71,10 @@ export function CollabCodeEditor({
       yCollab(ytext, awareness, { undoManager }),
       oneDark,
       EditorView.theme({
-        "&": { height: "100%", fontSize: "13px", background: "transparent" },
-        ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
+        // 16px on touch devices prevents iOS Safari from auto-zooming the page
+        // when the editor gains focus (it zooms any focused field below 16px).
+        "&": { height: "100%", fontSize: isMobile ? "16px" : "13px", background: "transparent" },
+        ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6", WebkitOverflowScrolling: "touch" },
       }),
       EditorView.editable.of(editable),
       EditorState.readOnly.of(!editable),
@@ -88,8 +92,8 @@ export function CollabCodeEditor({
       view.destroy();
       viewRef.current = null;
     };
-    // Rebuild only when the doc/provider/editability/language identity changes.
-  }, [ydoc, provider, language, editable, user.name, user.color]);
+    // Rebuild only when the doc/provider/editability/language/size identity changes.
+  }, [ydoc, provider, language, editable, user.name, user.color, isMobile]);
 
   return <div ref={hostRef} style={{ height: "100%", minHeight: "60vh", overflow: "auto" }} />;
 }

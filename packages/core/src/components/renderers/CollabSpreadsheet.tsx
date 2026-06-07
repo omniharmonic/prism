@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import * as Y from "yjs";
 import { Trash2 } from "lucide-react";
 import { Button } from "../ui/Button";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 
 /**
  * Real-time collaborative spreadsheet — an editable grid bound to a Yjs
@@ -21,6 +22,7 @@ export function CollabSpreadsheet({
 }) {
   const rows = ydoc.getArray<Y.Array<string>>("rows");
   const [data, setData] = useState<string[][]>(() => snapshot(rows));
+  const isMobile = useIsMobile();
 
   // Mirror the CRDT into React state on any (local or remote) change.
   useEffect(() => {
@@ -79,7 +81,7 @@ export function CollabSpreadsheet({
         )}
       </div>
 
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto" style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
         <table className="w-full border-collapse" style={{ minWidth: colCount * 120 }}>
           <tbody>
             {data.map((row, ri) => (
@@ -108,24 +110,30 @@ export function CollabSpreadsheet({
                       value={cell}
                       readOnly={!editable}
                       onChange={(e) => setCell(ri, ci, e.target.value)}
-                      className="w-full px-2 py-1 text-sm outline-none bg-transparent"
+                      className="w-full px-2 outline-none bg-transparent"
                       style={{
                         color: "var(--text-primary)",
                         fontWeight: isHeader && ri === 0 ? 600 : 400,
                         fontFamily: "var(--font-sans)",
                         minWidth: 80,
+                        // 16px on touch avoids iOS auto-zoom on focus; taller rows = easier taps.
+                        fontSize: isMobile ? 16 : 14,
+                        paddingTop: isMobile ? 10 : 4,
+                        paddingBottom: isMobile ? 10 : 4,
                       }}
                     />
                   </td>
                 ))}
                 {editable && (
-                  <td className="w-6" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+                  <td style={{ borderBottom: "1px solid var(--glass-border)", width: isMobile ? 40 : 24 }}>
                     <button
                       onClick={() => deleteRow(ri)}
-                      className="p-0.5 opacity-0 hover:opacity-100 transition-opacity"
-                      style={{ color: "var(--text-muted)" }}
+                      aria-label="Delete row"
+                      // On touch there is no hover, so the row-delete must stay visible.
+                      className={`grid place-items-center transition-opacity ${isMobile ? "opacity-60" : "opacity-0 hover:opacity-100"}`}
+                      style={{ color: "var(--text-muted)", width: isMobile ? 40 : 24, height: isMobile ? 40 : 28 }}
                     >
-                      <Trash2 size={10} />
+                      <Trash2 size={isMobile ? 15 : 10} />
                     </button>
                   </td>
                 )}
