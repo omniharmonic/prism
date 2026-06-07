@@ -23,16 +23,30 @@ export function useIsShared(noteId: string): boolean {
     setShared(false);
     if (!noteId) return;
     let cancelled = false;
-    fetch(`${GATEWAY_ORIGIN}/acl/notes/${encodeURIComponent(noteId)}`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((a) => {
-        if (cancelled || !a) return;
-        const count = (a.people?.length ?? 0) + (a.links?.length ?? 0) + (a.tagAccess?.length ?? 0);
-        setShared(count > 0);
-      })
-      .catch(() => {});
+    const check = () => {
+      fetch(`${GATEWAY_ORIGIN}/acl/notes/${encodeURIComponent(noteId)}`, { credentials: "include" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((a) => {
+          if (cancelled || !a) return;
+          const count = (a.people?.length ?? 0) + (a.links?.length ?? 0) + (a.tagAccess?.length ?? 0);
+          setShared(count > 0);
+        })
+        .catch(() => {});
+    };
+    check();
+    // Re-check when sharing changes for this note (share dialog) or on refocus,
+    // so sharing a currently-open note flips it to the live editor immediately.
+    const onAcl = (e: Event) => {
+      const id = (e as CustomEvent<{ noteId?: string }>).detail?.noteId;
+      if (!id || id === noteId) check();
+    };
+    const onFocus = () => check();
+    window.addEventListener("prism:acl-changed", onAcl);
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
+      window.removeEventListener("prism:acl-changed", onAcl);
+      window.removeEventListener("focus", onFocus);
     };
   }, [noteId]);
   return shared;

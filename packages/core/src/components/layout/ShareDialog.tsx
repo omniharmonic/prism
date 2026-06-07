@@ -39,6 +39,10 @@ export function ShareDialog({
     try {
       setAccess(await sharing.getAccess(noteId));
       setError(null);
+      // Notify the app so an open editor for this note can flip to live collab.
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("prism:acl-changed", { detail: { noteId } }));
+      }
     } catch {
       setError("Couldn't load sharing settings.");
     }
