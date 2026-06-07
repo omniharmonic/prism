@@ -15,6 +15,21 @@ export type { CollabUser, AwarenessProvider } from "./components/renderers/Colla
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph } from "./data/VaultClient";
 
+// Collab sharing seam — host shells inject how share links are minted.
+export { CollabSharingProvider, useCollabSharing } from "./data/CollabSharing";
+export type {
+  CollabSharing,
+  ShareLevel,
+  ShareLink,
+  SharePerson,
+  TagAccess,
+  NoteAccess,
+} from "./data/CollabSharing";
+export { ShareDialog } from "./components/layout/ShareDialog";
+export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
+export { CollabDocumentProvider, useCollabDocumentSeam } from "./data/CollabDocumentContext";
+export type { CollabDocumentSeam } from "./data/CollabDocumentContext";
+
 // Shared data types host shells need to implement a VaultClient.
 export type {
   Note,

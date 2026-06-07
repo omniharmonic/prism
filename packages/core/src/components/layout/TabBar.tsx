@@ -1,6 +1,7 @@
 import { X, PanelLeft, PanelRight, Bot } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { cn } from "../../lib/cn";
+import { ShareButton } from "./ShareButton";
 
 export function TabBar() {
   const {
@@ -58,6 +59,7 @@ export function TabBar() {
 
       {/* Right actions */}
       <div className="flex items-center flex-shrink-0">
+        <ShareButton />
         {/* Sparkles = opens Agent specifically */}
         <button
           onClick={() => {

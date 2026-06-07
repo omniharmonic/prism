@@ -8,7 +8,7 @@
  * replay is a plain fetch against the current connection — no coupling to the
  * typed rest layer.
  */
-import { apiBase, getConnection } from "../config";
+import { apiBase, capabilityHeader } from "../config";
 
 export interface QueuedWrite {
   id?: number;
@@ -84,13 +84,15 @@ export async function flush(): Promise<void> {
   if (flushing || !navigator.onLine) return;
   flushing = true;
   try {
-    const conn = getConnection();
-    const auth = { Authorization: `Bearer ${conn.token}`, "Content-Type": "application/json" };
+    // Auth via the session cookie (credentials: "include"); capability-link
+    // recipients also send the Capability header. No vault token.
+    const auth = { "Content-Type": "application/json", ...capabilityHeader() };
     for (const item of await allQueued()) {
       let resp: Response;
       try {
         resp = await fetch(`${apiBase()}${item.path}`, {
           method: item.method,
+          credentials: "include",
           headers: auth,
           body: item.body,
         });
@@ -102,7 +104,7 @@ export async function flush(): Promise<void> {
         // Stale precondition — re-send as a forced last-write-wins update.
         const forced = JSON.stringify({ ...JSON.parse(item.body), if_updated_at: undefined, force: true });
         try {
-          resp = await fetch(`${apiBase()}${item.path}`, { method: "PATCH", headers: auth, body: forced });
+          resp = await fetch(`${apiBase()}${item.path}`, { method: "PATCH", credentials: "include", headers: auth, body: forced });
         } catch {
           break;
         }

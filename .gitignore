@@ -25,3 +25,18 @@ dist-ssr
 *.png
 .playwright-mcp/
 .mcp.json
+
+# Private / sensitive — never commit
+# .claude/ holds local working notes and (historically) a personal contacts
+# export. Ignore the whole dir so nothing under it can be accidentally staged.
+# Already-tracked planning docs under .claude/ remain tracked; new files do not.
+.claude/
+# Belt-and-suspenders: contact exports are never allowed anywhere in the tree.
+*.abbu
+*.abbu/
+
+# Server runtime secrets / local SQLite
+apps/server/.env
+apps/server/*.sqlite
+apps/server/*.sqlite-journal
+apps/server/data/

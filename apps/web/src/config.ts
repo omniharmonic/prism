@@ -59,8 +59,149 @@ export function getConnection(): Connection {
   return active;
 }
 
-/** Base URL for the vault-scoped REST API. */
+// ---------------------------------------------------------------------------
+// Prism Server gateway (the secure path). The browser holds NO vault token;
+// it talks only to the gateway, authenticated by an httpOnly session cookie set
+// via magic-link sign-in. The gateway holds the vault token server-side. The
+// legacy Connection bits above remain only for the public ShareView and the
+// (being-rebuilt) collab route; the main app uses the gateway exclusively.
+// ---------------------------------------------------------------------------
+
+/** Gateway origin. Empty = same-origin (Prism Server serves this app). For dev,
+ *  set VITE_GATEWAY_URL=http://localhost:8787. */
+export const GATEWAY_ORIGIN =
+  (import.meta.env.VITE_GATEWAY_URL as string | undefined)?.replace(/\/+$/, "") ?? "";
+
+/** Base URL for the gateway REST API. */
 export function apiBase(): string {
-  const c = getConnection();
-  return `${c.vaultUrl}/vault/${c.vaultName}/api`;
+  return `${GATEWAY_ORIGIN}/api`;
+}
+
+export interface Me {
+  authenticated: boolean;
+  email?: string;
+  name?: string | null;
+  isOwner?: boolean;
+  hasPassword?: boolean;
+}
+
+/** Current identity per the session cookie. Never throws. */
+export async function fetchMe(): Promise<Me> {
+  try {
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, { credentials: "include" });
+    if (!r.ok) return { authenticated: false };
+    return (await r.json()) as Me;
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+async function postJson(path: string, body: unknown): Promise<Response> {
+  return fetch(`${GATEWAY_ORIGIN}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Password login. Throws with a generic message on failure. */
+export async function login(email: string, password: string): Promise<void> {
+  const r = await postJson("/auth/login", { email, password });
+  if (!r.ok) throw new Error("Incorrect email or password.");
+}
+
+export interface InviteInfo {
+  valid: boolean;
+  email?: string;
+  name?: string | null;
+}
+/** Look up an invite token so the register screen can show the email. */
+export async function fetchInvite(token: string): Promise<InviteInfo> {
+  try {
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/invite-info?token=${encodeURIComponent(token)}`);
+    if (!r.ok) return { valid: false };
+    return (await r.json()) as InviteInfo;
+  } catch {
+    return { valid: false };
+  }
+}
+
+/** Accept an invite: create the account (name + password) and start a session. */
+export async function register(token: string, name: string, password: string): Promise<void> {
+  const r = await postJson("/auth/register", { token, name, password });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}) as { error?: string });
+    throw new Error(body.error || "Could not create your account.");
+  }
+}
+
+/** Set/replace the signed-in user's password (and optionally name). */
+export async function setPassword(password: string, name?: string): Promise<void> {
+  const r = await postJson("/auth/set-password", { password, name });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}) as { error?: string });
+    throw new Error(body.error || "Could not set your password.");
+  }
+}
+
+/** Request a magic-link sign-in email. Resolves on 200 (the server never
+ *  reveals whether an address is known). */
+export async function requestMagicLink(email: string): Promise<void> {
+  const r = await fetch(`${GATEWAY_ORIGIN}/auth/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) throw new Error(`Sign-in request failed (${r.status}).`);
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${GATEWAY_ORIGIN}/auth/logout`, { method: "POST", credentials: "include" });
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capability mode. A share link is `${origin}/?t=<token>` — the recipient has
+// no session, so the token is sent on every gateway call (Authorization:
+// Capability <token>) and the gateway authorizes via the link's grants. The
+// token is held in sessionStorage so SPA navigation (which drops the query)
+// keeps working within the tab.
+// ---------------------------------------------------------------------------
+
+const CAP_KEY = "prism-cap";
+let capabilityToken: string | null = null;
+
+/** Read ?t= from the URL (fresh link) or restore from sessionStorage. Returns
+ *  the active capability token, if any. Call once at startup. */
+export function initCapability(): string | null {
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  if (fromUrl) {
+    capabilityToken = fromUrl;
+    try {
+      sessionStorage.setItem(CAP_KEY, fromUrl);
+    } catch {
+      /* private mode */
+    }
+  } else {
+    try {
+      capabilityToken = sessionStorage.getItem(CAP_KEY);
+    } catch {
+      capabilityToken = null;
+    }
+  }
+  return capabilityToken;
+}
+
+export function getCapabilityToken(): string | null {
+  return capabilityToken;
+}
+
+/** Authorization header for capability mode (empty for session users). */
+export function capabilityHeader(): Record<string, string> {
+  return capabilityToken ? { Authorization: `Capability ${capabilityToken}` } : {};
 }

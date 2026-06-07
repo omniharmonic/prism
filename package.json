@@ -12,7 +12,8 @@
     "build": "npm run build -w @prism/desktop",
     "preview": "npm run preview -w @prism/desktop",
     "tauri": "npm run tauri -w @prism/desktop --",
-    "typecheck": "npm run typecheck -w @prism/core && npm run typecheck -w @prism/desktop"
+    "typecheck": "npm run typecheck -w @prism/core && npm run typecheck -w @prism/desktop && npm run typecheck -w @prism/web && npm run typecheck -w @prism/server",
+    "test": "npm run test -w @prism/server"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

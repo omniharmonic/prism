@@ -1,23 +1,22 @@
 import { useCallback, useEffect } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import Link from "@tiptap/extension-link";
-import Typography from "@tiptap/extension-typography";
-import Highlight from "@tiptap/extension-highlight";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import * as Y from "yjs";
+import type { Editor } from "@tiptap/react";
+import { collabExtensions } from "../../editor/collabSchema";
+import { SuggestionMode } from "../../editor/suggestions";
+import { CommentOnly } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { CollabToolbar } from "./CollabToolbar";
 
 export interface CollabUser {
   name: string;
   color: string;
 }
 
-/** Minimal shape of a Yjs provider with awareness (e.g. y-webrtc WebrtcProvider). */
+/** Minimal shape of a Yjs provider with awareness (e.g. HocuspocusProvider). */
 export interface AwarenessProvider {
   awareness: unknown;
 }
@@ -38,12 +37,39 @@ export function CollabEditor({
   user,
   seedContent,
   onChange,
+  seedReady,
+  toolbar,
+  editable = true,
+  suggesting,
+  onSetSuggesting,
+  canReview,
+  commentOnly,
+  onEditor,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
   user: CollabUser;
   seedContent?: () => Promise<string | null>;
   onChange?: (html: string) => void;
+  /** Gate seeding until the doc is known-synced with the server (so a late
+   *  server sync can't be clobbered by a stale seed). When undefined, falls
+   *  back to a short delay (e.g. P2P with no sync signal). */
+  seedReady?: boolean;
+  /** Show the formatting toolbar (Google-Docs-style). */
+  toolbar?: boolean;
+  /** When false, the editor is read-only (view/comment grants). */
+  editable?: boolean;
+  /** Suggest-mode on: typing/deletes become tracked suggestions. */
+  suggesting?: boolean;
+  /** If provided, the toolbar shows an Editing/Suggesting toggle. Omit to lock
+   *  the mode (e.g. a suggest-level user can't switch to direct editing). */
+  onSetSuggesting?: (on: boolean) => void;
+  /** Show Accept all / Reject all (for edit/owner reviewers). */
+  canReview?: boolean;
+  /** Comment-only mode: selectable + commentable but content edits blocked. */
+  commentOnly?: boolean;
+  /** Receives the editor instance (for an external comments sidebar). */
+  onEditor?: (editor: Editor | null) => void;
 }) {
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
@@ -52,42 +78,68 @@ export function CollabEditor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ undoRedo: false }),
+      // Shared content schema (StarterKit + Link/Typography/Highlight/Tasks) —
+      // the SAME list the Prism Server uses to seed/persist the Yjs doc, so the
+      // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
+      ...collabExtensions(),
       Placeholder.configure({ placeholder: "Start writing together…" }),
-      Link.configure({ openOnClick: false, autolink: true }),
-      Typography,
-      Highlight.configure({ multicolor: true }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
       WikilinkExtension.configure({ onNavigate: () => {} }),
+      SuggestionMode.configure({ user }),
+      CommentOnly.configure({ active: !!commentOnly }),
       Collaboration.configure({ document: ydoc }),
       ...(provider
         ? [CollaborationCaret.configure({ provider: provider as never, user })]
         : []),
     ],
+    editable,
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });
 
-  // One-time seed from the backing store if no peer has populated the doc.
+  // Reflect editable changes (e.g. level resolved after connect) onto the editor.
   useEffect(() => {
-    if (!editor) return;
+    editor?.setEditable(editable);
+  }, [editor, editable]);
+
+  // Reflect suggest-mode onto the editor's suggestion plugin.
+  useEffect(() => {
+    editor?.commands.setSuggesting(!!suggesting);
+  }, [editor, suggesting]);
+
+  // Keep the comment-only guard in sync, and surface the editor to the parent.
+  useEffect(() => {
+    const store = editor?.storage as unknown as Record<string, { active: boolean }> | undefined;
+    if (store?.commentOnly) store.commentOnly.active = !!commentOnly;
+  }, [editor, commentOnly]);
+
+  useEffect(() => {
+    onEditor?.(editor);
+    return () => onEditor?.(null);
+  }, [editor, onEditor]);
+
+  // One-time seed from the backing store, but only once the doc is synced with
+  // the server (seedReady) — so a late server sync can't be overwritten by a
+  // stale seed. When no readiness signal is given, fall back to a short delay.
+  useEffect(() => {
+    if (!editor || seedReady === false) return;
     let cancelled = false;
-    const timer = setTimeout(async () => {
+    const run = async () => {
       if (cancelled) return;
-      const meta = ydoc.getMap<boolean>("meta");
-      if (meta.get("seeded")) return;
-      if (ydoc.getXmlFragment("default").length > 0) return; // a peer already has content
+      // If a peer/server already populated the shared doc, never overwrite it.
+      if (ydoc.getXmlFragment("default").length > 0) return;
       const content = seedContent ? await seedContent() : null;
+      // Re-check after the async fetch in case content synced in the meantime.
       if (cancelled || !content || editor.isDestroyed) return;
+      if (ydoc.getXmlFragment("default").length > 0) return;
       editor.commands.setContent(content);
-      ydoc.transact(() => meta.set("seeded", true));
-    }, 900);
+    };
+    const timer = seedReady === undefined ? setTimeout(run, 900) : undefined;
+    if (seedReady === true) void run();
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [editor, ydoc, seedContent]);
+  }, [editor, ydoc, seedContent, seedReady]);
 
   return (
     <>
@@ -100,6 +152,18 @@ export function CollabEditor({
           position: absolute; top: -1.4em; left: -1px; font-size: 11px; font-weight: 600;
           line-height: 1; color: #fff; padding: 1px 4px; border-radius: 4px 4px 4px 0; white-space: nowrap; user-select: none;
         }
+      `}</style>
+      {toolbar && editor && editable && !commentOnly && (
+        <CollabToolbar
+          editor={editor}
+          suggesting={!!suggesting}
+          onSetSuggesting={onSetSuggesting}
+          canReview={canReview}
+        />
+      )}
+      <style>{`
+        span[data-suggestion='insert'] { background: rgba(34,197,94,0.12); }
+        span[data-suggestion='delete'] { background: rgba(239,68,68,0.10); }
       `}</style>
       <EditorContent editor={editor} />
     </>
