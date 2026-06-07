@@ -36,7 +36,10 @@ export function createApp(): Hono {
   app.use("/auth/*", corsMw);
   app.use("/acl/*", corsMw);
 
-  // Rate-limit the abuse-prone auth surface (magic-link spam, token guessing).
+  // Rate-limit the abuse-prone auth surface (password guessing, magic-link spam,
+  // invite/token guessing).
+  app.use("/auth/login", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-login" }));
+  app.use("/auth/register", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-register" }));
   app.use("/auth/request", rateLimit({ max: 5, windowMs: 10 * 60_000, name: "auth-request" }));
   app.use("/auth/callback", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-callback" }));
 

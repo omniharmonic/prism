@@ -15,6 +15,7 @@ import { signCapability } from "../auth/capability";
 import { LEVELS, type Level } from "../permissions";
 import {
   ensureUser,
+  hasAccount,
   listUsers,
   upsertGrant,
   removeGrantBySubjectResource,
@@ -23,6 +24,25 @@ import {
   capabilitiesForResource,
   deleteCapability,
 } from "../db";
+import { createInvite } from "../auth/invite";
+
+/** Grant a person access to a resource, inviting them if they have no account
+ *  yet so the access binds to a real, authenticated identity. */
+async function grantAndInvite(
+  email: string,
+  level: Level,
+  resourceType: "note" | "tag",
+  resource: string,
+  owner: string,
+): Promise<{ invited: boolean }> {
+  ensureUser(email);
+  upsertGrant({ subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner });
+  if (!hasAccount(email)) {
+    await createInvite(email, null, owner);
+    return { invited: true };
+  }
+  return { invited: false };
+}
 
 export const acl = new Hono();
 
@@ -88,17 +108,8 @@ acl.get("/notes/:id", async (c) => {
 acl.put("/notes/:id/people", async (c) => {
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  ensureUser(normEmail(email));
-  return c.json(
-    upsertGrant({
-      subject_type: "user",
-      subject: normEmail(email),
-      resource_type: "note",
-      resource: c.req.param("id"),
-      level,
-      created_by: config.ownerEmail,
-    }),
-  );
+  const { invited } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited });
 });
 
 acl.delete("/notes/:id/people/:email", (c) => {
@@ -158,17 +169,8 @@ acl.put("/tags/:tag/people", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  ensureUser(normEmail(email));
-  return c.json(
-    upsertGrant({
-      subject_type: "user",
-      subject: normEmail(email),
-      resource_type: "tag",
-      resource: tag,
-      level,
-      created_by: config.ownerEmail,
-    }),
-  );
+  const { invited } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited });
 });
 
 acl.delete("/tags/:tag/people/:email", (c) => {

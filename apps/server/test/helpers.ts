@@ -189,7 +189,7 @@ export function installFakeVault(): FakeVault {
 
 export function resetDb(): void {
   db.exec(
-    "DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs;",
+    "DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM invites;",
   );
 }
 

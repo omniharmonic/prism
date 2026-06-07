@@ -6,8 +6,9 @@
  * a dev-only fallback so local sign-in works without sending mail.
  */
 import { randomBytes, createHash } from "node:crypto";
-import { config, emailEnabled } from "../config";
+import { config } from "../config";
 import { storeMagicLink, consumeMagicLink } from "../db";
+import { sendEmail } from "./email";
 
 const TTL_MS = 1000 * 60 * 15; // 15 minutes
 
@@ -18,29 +19,16 @@ export async function requestMagicLink(email: string): Promise<void> {
   const token = randomBytes(32).toString("base64url");
   storeMagicLink(hash(token), normalized, TTL_MS);
   const url = `${config.appOrigin}/auth/callback?token=${encodeURIComponent(token)}`;
-  if (emailEnabled()) {
-    await sendEmail(normalized, url);
-  } else {
-    console.log(`[magic-link] (dev: no RESEND_API_KEY) ${normalized} → ${url}`);
-  }
+  await sendEmail(
+    normalized,
+    "Your Prism sign-in link",
+    `<p>Click to sign in to Prism:</p><p><a href="${url}">${url}</a></p>` +
+      `<p>This link expires in 15 minutes and can be used once.</p>`,
+    url,
+  );
 }
 
 /** Redeem a token: returns the email if valid + unused + unexpired, else null. */
 export function redeemMagicLink(token: string): string | null {
   return consumeMagicLink(hash(token));
-}
-
-async function sendEmail(to: string, url: string): Promise<void> {
-  const { Resend } = await import("resend");
-  const resend = new Resend(config.resendApiKey);
-  const { error } = await resend.emails.send({
-    from: config.magicFrom,
-    to,
-    subject: "Your Prism sign-in link",
-    html:
-      `<p>Click to sign in to Prism:</p>` +
-      `<p><a href="${url}">${url}</a></p>` +
-      `<p>This link expires in 15 minutes and can be used once.</p>`,
-  });
-  if (error) throw new Error(`Resend failed: ${JSON.stringify(error)}`);
 }

@@ -5,6 +5,7 @@ import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { fetchMe, initCapability } from "./config";
 import { LoginScreen } from "./auth/LoginScreen";
+import { RegisterScreen } from "./auth/RegisterScreen";
 import { ShareView } from "./share/ShareView";
 import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
@@ -20,6 +21,17 @@ async function start() {
   // Capture a ?t= capability token early so every route (incl. /collab) can use
   // it — a share/collab link is the recipient's only credential.
   const capability = initCapability();
+
+  // Accept-invite route: create an account from an owner-issued invite link.
+  if (window.location.pathname === "/accept-invite") {
+    const token = new URLSearchParams(window.location.search).get("token") ?? "";
+    root.render(
+      <React.StrictMode>
+        <RegisterScreen token={token} />
+      </React.StrictMode>,
+    );
+    return;
+  }
 
   // Public, read-only share route: /share/:id (or /view/:id). No login.
   const share = window.location.pathname.match(/^\/(?:share|view)\/(.+)$/);

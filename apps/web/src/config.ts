@@ -80,7 +80,9 @@ export function apiBase(): string {
 export interface Me {
   authenticated: boolean;
   email?: string;
+  name?: string | null;
   isOwner?: boolean;
+  hasPassword?: boolean;
 }
 
 /** Current identity per the session cookie. Never throws. */
@@ -91,6 +93,46 @@ export async function fetchMe(): Promise<Me> {
     return (await r.json()) as Me;
   } catch {
     return { authenticated: false };
+  }
+}
+
+async function postJson(path: string, body: unknown): Promise<Response> {
+  return fetch(`${GATEWAY_ORIGIN}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Password login. Throws with a generic message on failure. */
+export async function login(email: string, password: string): Promise<void> {
+  const r = await postJson("/auth/login", { email, password });
+  if (!r.ok) throw new Error("Incorrect email or password.");
+}
+
+export interface InviteInfo {
+  valid: boolean;
+  email?: string;
+  name?: string | null;
+}
+/** Look up an invite token so the register screen can show the email. */
+export async function fetchInvite(token: string): Promise<InviteInfo> {
+  try {
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/invite-info?token=${encodeURIComponent(token)}`);
+    if (!r.ok) return { valid: false };
+    return (await r.json()) as InviteInfo;
+  } catch {
+    return { valid: false };
+  }
+}
+
+/** Accept an invite: create the account (name + password) and start a session. */
+export async function register(token: string, name: string, password: string): Promise<void> {
+  const r = await postJson("/auth/register", { token, name, password });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}) as { error?: string });
+    throw new Error(body.error || "Could not create your account.");
   }
 }
 

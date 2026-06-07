@@ -58,7 +58,26 @@ db.exec(`
     source_updated_at INTEGER,            -- Parachute updatedAt at last store (external-edit detection)
     updated_at        INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS invites (
+    token_hash  TEXT PRIMARY KEY,
+    email       TEXT NOT NULL,
+    name        TEXT,
+    created_by  TEXT,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    accepted_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS invites_email ON invites(email);
 `);
+
+// Migration: accounts now carry a password. Add the column if an older db
+// predates it (CREATE TABLE IF NOT EXISTS won't alter an existing table).
+{
+  const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "password_hash")) {
+    db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+  }
+}
 
 export type SubjectType = "user" | "link" | "anyone";
 export type ResourceType = "note" | "tag";
@@ -112,6 +131,79 @@ const upsertUserStmt = db.prepare(
 );
 export function ensureUser(email: string, name?: string): void {
   upsertUserStmt.run(email, name ?? null, now());
+}
+
+export interface UserRow {
+  email: string;
+  name: string | null;
+  password_hash: string | null;
+  created_at: number;
+}
+const selectUser = db.prepare("SELECT email, name, password_hash, created_at FROM users WHERE email = ?");
+export function getUser(email: string): UserRow | null {
+  return (selectUser.get(email) as UserRow | undefined) ?? null;
+}
+export function hasAccount(email: string): boolean {
+  const u = getUser(email);
+  return !!u && !!u.password_hash;
+}
+
+const insertAccount = db.prepare(
+  `INSERT INTO users (email, name, password_hash, created_at) VALUES (@email, @name, @password_hash, @created_at)
+   ON CONFLICT(email) DO UPDATE SET name = @name, password_hash = @password_hash`,
+);
+/** Create or update an account with a password (used by register + owner bootstrap). */
+export function setAccount(email: string, name: string, passwordHash: string): void {
+  insertAccount.run({ email, name, password_hash: passwordHash, created_at: now() });
+}
+
+const updatePassword = db.prepare("UPDATE users SET password_hash = ? WHERE email = ?");
+export function setUserPassword(email: string, passwordHash: string): void {
+  ensureUser(email);
+  updatePassword.run(passwordHash, email);
+}
+
+// ---- invites (owner-issued; gate registration to invited emails) ----
+export interface Invite {
+  token_hash: string;
+  email: string;
+  name: string | null;
+  created_by: string | null;
+  created_at: number;
+  expires_at: number;
+  accepted_at: number | null;
+}
+const insertInvite = db.prepare(
+  `INSERT INTO invites (token_hash, email, name, created_by, created_at, expires_at)
+   VALUES (@token_hash, @email, @name, @created_by, @created_at, @expires_at)`,
+);
+const selectInvite = db.prepare("SELECT * FROM invites WHERE token_hash = ?");
+const markInviteAccepted = db.prepare("UPDATE invites SET accepted_at = ? WHERE token_hash = ?");
+const selectPendingInviteByEmail = db.prepare(
+  "SELECT * FROM invites WHERE email = ? AND accepted_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+);
+
+export function storeInvite(tokenHash: string, email: string, name: string | null, createdBy: string, ttlMs: number): void {
+  insertInvite.run({
+    token_hash: tokenHash,
+    email,
+    name,
+    created_by: createdBy,
+    created_at: now(),
+    expires_at: now() + ttlMs,
+  });
+}
+/** Look up a still-valid invite by its token hash (does not consume it). */
+export function getValidInvite(tokenHash: string): Invite | null {
+  const row = selectInvite.get(tokenHash) as Invite | undefined;
+  if (!row || row.accepted_at || row.expires_at < now()) return null;
+  return row;
+}
+export function acceptInvite(tokenHash: string): void {
+  markInviteAccepted.run(now(), tokenHash);
+}
+export function pendingInviteForEmail(email: string): Invite | null {
+  return (selectPendingInviteByEmail.get(email, now()) as Invite | undefined) ?? null;
 }
 
 // ---- magic links ----
