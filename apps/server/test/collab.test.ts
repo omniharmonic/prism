@@ -85,6 +85,22 @@ test("a suggest-level connection may write (not read-only)", async () => {
   assert.equal(cc.readOnly, false);
 });
 
+test("the desktop app connects as owner by presenting the vault token", async () => {
+  const { config } = await import("../src/config");
+  fv.put({ id: "n1", content: "x", tags: ["private"] });
+  const cc = { readOnly: false };
+  // No cookie, no capability — just the shared vault token the desktop holds.
+  const level = await authorizeConnection("n1", config.parachuteToken, null, cc);
+  assert.equal(level, "own");
+  assert.equal(cc.readOnly, false);
+});
+
+test("a bogus token is NOT treated as the desktop owner", async () => {
+  fv.put({ id: "n1", content: "secret", tags: ["private"] });
+  const cc = { readOnly: false };
+  await assert.rejects(() => authorizeConnection("n1", "not-the-vault-token", null, cc), /Forbidden/);
+});
+
 test("the owner connects with full ('own') write access via the session cookie", async () => {
   fv.put({ id: "n1", content: "x", tags: [] });
   const cc = { readOnly: false };
