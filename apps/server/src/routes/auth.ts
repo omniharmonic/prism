@@ -94,7 +94,8 @@ auth.get("/callback", (c) => {
   if (!email || norm(email) !== config.ownerEmail) return c.redirect("/?login=expired");
   ensureUser(email);
   startSession(c, email);
-  return c.redirect("/");
+  // First-time owner (no password yet) → nudge them to set one for password login.
+  return c.redirect(getUser(email)?.password_hash ? "/" : "/set-password");
 });
 
 auth.post("/logout", (c) => {

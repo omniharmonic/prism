@@ -136,6 +136,15 @@ export async function register(token: string, name: string, password: string): P
   }
 }
 
+/** Set/replace the signed-in user's password (and optionally name). */
+export async function setPassword(password: string, name?: string): Promise<void> {
+  const r = await postJson("/auth/set-password", { password, name });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}) as { error?: string });
+    throw new Error(body.error || "Could not set your password.");
+  }
+}
+
 /** Request a magic-link sign-in email. Resolves on 200 (the server never
  *  reveals whether an address is known). */
 export async function requestMagicLink(email: string): Promise<void> {

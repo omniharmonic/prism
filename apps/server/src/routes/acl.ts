@@ -57,10 +57,12 @@ const isLevel = (x: unknown): x is Level =>
 const isEmail = (x: unknown): x is string => typeof x === "string" && /.+@.+\..+/.test(x);
 const normEmail = (x: string) => x.trim().toLowerCase();
 
-/** Capability-link URL: opens the web app in capability mode (?t=), deep-linking
- *  the shared note. The token is the only credential the recipient needs. */
+/** Capability-link URL: opens the FOCUSED collaborative document (Google-Docs
+ *  style) — just the doc, level-aware (read-only for viewers, comments sidebar,
+ *  suggest mode), live via Hocuspocus. NOT the full workspace. The token is the
+ *  only credential the recipient needs. */
 function linkUrl(noteId: string, token: string): string {
-  return `${config.appOrigin}/?t=${encodeURIComponent(token)}&note=${encodeURIComponent(noteId)}`;
+  return `${config.appOrigin}/collab/${encodeURIComponent(noteId)}?t=${encodeURIComponent(token)}`;
 }
 
 function deriveTitle(content: string): string {

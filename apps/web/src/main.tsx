@@ -6,6 +6,7 @@ import { webCollabSharing } from "./collab/grant";
 import { fetchMe, initCapability } from "./config";
 import { LoginScreen } from "./auth/LoginScreen";
 import { RegisterScreen } from "./auth/RegisterScreen";
+import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
 import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
@@ -28,6 +29,16 @@ async function start() {
     root.render(
       <React.StrictMode>
         <RegisterScreen token={token} />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Set/replace your password (owner bootstrap, or anyone wanting password login).
+  if (window.location.pathname === "/set-password") {
+    root.render(
+      <React.StrictMode>
+        <SetPasswordScreen />
       </React.StrictMode>,
     );
     return;
