@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
-import { CollabDocument, useIsShared } from "./collab/CollabDocument";
+import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability } from "./config";
 import { LoginScreen } from "./auth/LoginScreen";
 import { RegisterScreen } from "./auth/RegisterScreen";
@@ -95,7 +95,7 @@ async function start() {
     <React.StrictMode>
       <VaultClientProvider client={httpVaultClient}>
         <CollabSharingProvider value={capability ? null : webCollabSharing}>
-          <CollabDocumentProvider value={{ useIsShared, CollabDocument }}>
+          <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
             <App />
             <OfflineIndicator />
           </CollabDocumentProvider>
