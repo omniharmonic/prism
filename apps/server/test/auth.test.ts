@@ -15,6 +15,8 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { auth } from "../src/routes/auth";
 import { createInvite } from "../src/auth/invite";
+import { setAccount } from "../src/db";
+import { hashPassword } from "../src/auth/password";
 import { resetDb } from "./helpers";
 
 const OWNER = "owner@test.local";
@@ -50,7 +52,8 @@ test("owner magic link: request → callback → me → logout", async () => {
   const token = tokenFromLog();
 
   const cb = await auth.request(`/callback?token=${encodeURIComponent(token)}`);
-  assert.equal(cb.headers.get("location"), "/");
+  // First-time owner (no password yet) is nudged to set one.
+  assert.equal(cb.headers.get("location"), "/set-password");
   const sid = sessionFromSetCookie(cb.headers.get("set-cookie"));
   assert.ok(sid, "callback sets a session cookie");
 
@@ -83,9 +86,17 @@ test("magic-link tokens are single-use", async () => {
   await post("/request", { email: OWNER });
   const token = tokenFromLog();
   const first = await auth.request(`/callback?token=${encodeURIComponent(token)}`);
-  assert.equal(first.headers.get("location"), "/");
+  assert.equal(first.headers.get("location"), "/set-password"); // owner, no password yet
   const second = await auth.request(`/callback?token=${encodeURIComponent(token)}`);
   assert.equal(second.headers.get("location"), "/?login=expired");
+});
+
+test("owner WITH a password is sent straight to the app", async () => {
+  setAccount(OWNER, "Owner", hashPassword("a-strong-owner-password"));
+  await post("/request", { email: OWNER });
+  const token = tokenFromLog();
+  const cb = await auth.request(`/callback?token=${encodeURIComponent(token)}`);
+  assert.equal(cb.headers.get("location"), "/");
 });
 
 // ---- invite → register → login ----

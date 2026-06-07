@@ -17,12 +17,44 @@ export interface SuggestionUser {
 
 const suggestionKey = new PluginKey("suggestionMode");
 
+import type { EditorState } from "@tiptap/pm/state";
+
+/** The contiguous suggestion run (insertion or deletion) covering `pos`, or null.
+ *  Used for per-suggestion accept/reject and to show the inline bubble. */
+export function suggestionAt(
+  state: EditorState,
+  pos: number,
+): { type: "insertion" | "deletion"; from: number; to: number } | null {
+  const ins = state.schema.marks.insertion;
+  const del = state.schema.marks.deletion;
+  const size = state.doc.content.size;
+  const has = (a: number, b: number, t: typeof ins) =>
+    a >= 0 && b <= size && a < b && state.doc.rangeHasMark(a, b, t);
+  let mark: typeof ins | null = null;
+  let type: "insertion" | "deletion" | null = null;
+  if (ins && (has(pos, pos + 1, ins) || has(pos - 1, pos, ins))) {
+    mark = ins;
+    type = "insertion";
+  } else if (del && (has(pos, pos + 1, del) || has(pos - 1, pos, del))) {
+    mark = del;
+    type = "deletion";
+  }
+  if (!mark || !type) return null;
+  let from = pos;
+  while (from > 0 && state.doc.rangeHasMark(from - 1, from, mark)) from--;
+  let to = pos;
+  while (to < size && state.doc.rangeHasMark(to, to + 1, mark)) to++;
+  return { type, from, to };
+}
+
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     suggestions: {
       setSuggesting: (on: boolean) => ReturnType;
       acceptAllSuggestions: () => ReturnType;
       rejectAllSuggestions: () => ReturnType;
+      acceptSuggestion: () => ReturnType;
+      rejectSuggestion: () => ReturnType;
     };
   }
 }
@@ -90,6 +122,30 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
             }
           });
           for (const [from, to] of insRanges.reverse()) tr.delete(tr.mapping.map(from), tr.mapping.map(to));
+          if (dispatch) dispatch(tr);
+          return true;
+        },
+
+      // Accept just the suggestion at the cursor (Google-Docs per-change accept).
+      acceptSuggestion:
+        () =>
+        ({ state, tr, dispatch }) => {
+          const r = suggestionAt(state, state.selection.from);
+          if (!r) return false;
+          if (r.type === "deletion") tr.delete(r.from, r.to);
+          else tr.removeMark(r.from, r.to, state.schema.marks.insertion!);
+          if (dispatch) dispatch(tr);
+          return true;
+        },
+
+      // Reject just the suggestion at the cursor.
+      rejectSuggestion:
+        () =>
+        ({ state, tr, dispatch }) => {
+          const r = suggestionAt(state, state.selection.from);
+          if (!r) return false;
+          if (r.type === "insertion") tr.delete(r.from, r.to);
+          else tr.removeMark(r.from, r.to, state.schema.marks.deletion!);
           if (dispatch) dispatch(tr);
           return true;
         },

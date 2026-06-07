@@ -1,79 +1,35 @@
 import { useState } from "react";
-import type { Editor } from "@tiptap/react";
 import type * as Y from "yjs";
 import { MessageSquarePlus, Check } from "lucide-react";
-import { useThreads, addReply, setResolved, commentOnSelection, type Thread } from "../../editor/comments";
+import { useThreads, addReply, setResolved, type Thread } from "../../editor/comments";
 
 /**
- * Google-Docs-style comments sidebar. Threads come from the Yjs `comments` map
- * (live + persisted). Add a comment on the current selection; reply and resolve
- * threads. Available to anyone with at least comment access.
+ * Google-Docs-style comments sidebar: live thread list (Yjs `comments` map),
+ * reply + resolve. Adding a comment is done from the on-selection bubble in the
+ * editor (CollabEditor), so the sidebar shows threads + a hint.
  */
 export function CommentsSidebar({
   ydoc,
-  editor,
   user,
   canComment,
 }: {
   ydoc: Y.Doc;
-  editor: Editor | null;
   user: { name: string; color: string };
   canComment: boolean;
 }) {
   const threads = useThreads(ydoc);
-  const [draft, setDraft] = useState("");
-
-  function add() {
-    if (!editor || !draft.trim()) return;
-    const id = commentOnSelection(editor, ydoc, user, draft.trim());
-    if (id) setDraft("");
-  }
 
   const open = threads.filter((t) => !t.resolved);
   const resolved = threads.filter((t) => t.resolved);
 
   return (
-    <div
-      style={{
-        width: 300,
-        flexShrink: 0,
-        borderLeft: "1px solid var(--glass-border)",
-        paddingLeft: 16,
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-      }}
-    >
+    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Comments</div>
 
-      {canComment && (
-        <div className="glass" style={{ padding: 10, borderRadius: 10, border: "1px solid var(--glass-border)" }}>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Select text, then comment…"
-            rows={2}
-            style={{
-              width: "100%",
-              resize: "vertical",
-              background: "transparent",
-              border: "none",
-              outline: "none",
-              color: "var(--text-primary)",
-              fontSize: 13,
-            }}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button
-              onClick={add}
-              disabled={!draft.trim()}
-              className="px-2.5 py-1 rounded text-xs flex items-center gap-1"
-              style={{ background: "var(--color-accent)", color: "#fff", opacity: draft.trim() ? 1 : 0.5 }}
-            >
-              <MessageSquarePlus size={13} /> Comment
-            </button>
-          </div>
-        </div>
+      {canComment && (open.length === 0 && resolved.length === 0) && (
+        <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, display: "flex", alignItems: "center", gap: 6 }}>
+          <MessageSquarePlus size={14} /> Select text in the document, then click <strong>Comment</strong>.
+        </p>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, overflowY: "auto" }}>

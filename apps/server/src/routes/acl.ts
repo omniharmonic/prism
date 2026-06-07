@@ -66,8 +66,15 @@ function linkUrl(noteId: string, token: string): string {
 }
 
 function deriveTitle(content: string): string {
-  const line = (content ?? "").split("\n").find((l) => l.trim().length > 0) ?? "Untitled";
-  return line.replace(/^#+\s*/, "").trim().slice(0, 120) || "Untitled";
+  const c = content ?? "";
+  const h = c.match(/<h[1-3][^>]*>(.*?)<\/h[1-3]>/i);
+  if (h?.[1]) return h[1].replace(/<[^>]+>/g, "").trim().slice(0, 120) || "Untitled";
+  if (!c.includes("<")) {
+    const line = c.split("\n").find((l) => l.trim().length > 0);
+    if (line) return line.replace(/^#+\s*/, "").trim().slice(0, 120);
+  }
+  const text = c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return text.slice(0, 100) || "Untitled";
 }
 
 acl.get("/users", (c) => c.json(listUsers()));

@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
-import type { Editor } from "@tiptap/react";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { CollabEditor, CommentsSidebar } from "@prism/core";
+import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
+
+/** Track a CSS breakpoint without per-render layout thrash. */
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth <= 820);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 820px)");
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return narrow;
+}
 
 const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
 
@@ -15,6 +27,19 @@ function collabUrl(): string {
 interface PresenceUser {
   name: string;
   color: string;
+}
+
+/** A readable document title from either markdown or HTML content (collab
+ *  persists HTML, so the old "first line" heuristic would show raw tags). */
+function deriveTitle(content: string): string {
+  const h = content.match(/<h[1-3][^>]*>(.*?)<\/h[1-3]>/i);
+  if (h?.[1]) return h[1].replace(/<[^>]+>/g, "").trim().slice(0, 100) || "Shared document";
+  if (!content.includes("<")) {
+    const line = content.split("\n").find((l) => l.trim());
+    if (line) return line.replace(/^#+\s*/, "").trim().slice(0, 100);
+  }
+  const text = content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return text.slice(0, 80) || "Shared document";
 }
 
 /**
@@ -35,7 +60,9 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [title, setTitle] = useState("Shared document");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   const [suggesting, setSuggesting] = useState(false);
-  const [editor, setEditor] = useState<Editor | null>(null);
+  const narrow = useIsNarrow();
+  // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
+  const [commentsOpen, setCommentsOpen] = useState(() => (typeof window !== "undefined" ? window.innerWidth > 820 : true));
 
   useEffect(() => {
     (async () => {
@@ -47,8 +74,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         if (!r.ok) return;
         const note = await r.json();
         setLevel(note._level ?? "own");
-        const firstLine = (note.content || "").split("\n").find((l: string) => l.trim());
-        if (firstLine) setTitle(firstLine.replace(/^#+\s*/, "").slice(0, 100));
+        setTitle(deriveTitle(note.content || ""));
       } catch {
         /* level unknown → server still enforces */
       }
@@ -125,41 +151,68 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
     ? { padding: "0 16px" }
     : { minHeight: "100dvh", padding: "0 16px", background: "var(--bg-base, #0d0d0f)" };
 
+  const statusText = !connected
+    ? "Connecting…"
+    : level === "view"
+      ? "View only"
+      : commentOnly
+        ? "Commenting"
+        : effectiveSuggesting
+          ? "Suggesting"
+          : "Editing";
+
+  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} />;
+
   return (
     <div style={outer}>
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: "16px 0 96px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 96px" : "16px 20px 96px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div style={{ fontSize: narrow ? 16 : 18, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {title}
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2 }}>
-              {connected
-                ? level === "view"
-                  ? "Live · view only"
-                  : commentOnly
-                    ? "Live · commenting"
-                    : effectiveSuggesting
-                      ? "Live · suggesting"
-                      : "Live · editing"
-                : "Connecting…"}
+            <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : "#eab308" }} />
+              Live · {statusText}
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <PresenceAvatars users={presence} />
-            <span style={{ width: 8, height: 8, borderRadius: 999, background: connected ? "#22c55e" : "#eab308" }} />
+            <button
+              onClick={() => setCommentsOpen((o) => !o)}
+              title="Comments"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                height: 32,
+                padding: "0 10px",
+                borderRadius: 8,
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: "pointer",
+                color: commentsOpen ? "#fff" : "var(--text-secondary)",
+                background: commentsOpen ? "var(--color-accent)" : "transparent",
+                border: `1px solid ${commentsOpen ? "var(--color-accent)" : "var(--glass-border)"}`,
+              }}
+            >
+              <MessageSquare size={14} />
+              {!narrow && "Comments"}
+            </button>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        {/* Doc + (desktop) inline comments */}
+        <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
           <div
             style={{
               flex: 1,
               minWidth: 0,
               background: "var(--bg-surface, rgba(255,255,255,0.03))",
               border: "1px solid var(--glass-border)",
-              borderRadius: 14,
-              padding: "20px 28px 40px",
+              borderRadius: 16,
+              padding: narrow ? "16px 16px 36px" : "24px 32px 48px",
               minHeight: "60vh",
             }}
           >
@@ -174,12 +227,40 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
               canReview={canReview}
               commentOnly={commentOnly}
-              onEditor={setEditor}
+              canComment={canComment}
             />
           </div>
-          <CommentsSidebar ydoc={ydoc} editor={editor} user={user} canComment={canComment} />
+          {!narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}
         </div>
       </div>
+
+      {/* Mobile comments drawer */}
+      {narrow && commentsOpen && (
+        <>
+          <div onClick={() => setCommentsOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 40 }} />
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              right: 0,
+              bottom: 0,
+              width: "min(360px, 88vw)",
+              zIndex: 41,
+              background: "var(--bg-base, #0d0d0f)",
+              borderLeft: "1px solid var(--glass-border)",
+              padding: 16,
+              overflowY: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+              <button onClick={() => setCommentsOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
+                <X size={18} />
+              </button>
+            </div>
+            {sidebar}
+          </div>
+        </>
+      )}
     </div>
   );
 }
