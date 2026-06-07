@@ -27,6 +27,8 @@ export type {
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
+export { CollabDocumentProvider, useCollabDocumentSeam } from "./data/CollabDocumentContext";
+export type { CollabDocumentSeam } from "./data/CollabDocumentContext";
 
 // Shared data types host shells need to implement a VaultClient.
 export type {

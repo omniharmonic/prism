@@ -3,6 +3,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { getRenderer } from "../renderers/Registry";
+import { useCollabDocumentSeam } from "../../data/CollabDocumentContext";
 import { TagView } from "../navigation/TagView";
 import { TabBar } from "./TabBar";
 import { Skeleton } from "../ui/Skeleton";
@@ -66,6 +67,15 @@ export function Canvas() {
   const contentType = isVirtual ? (activeTab?.type ?? null) : (effectiveNote ? inferContentType(effectiveNote) : (activeTab?.type ?? null));
   const Renderer = contentType ? getRenderer(contentType) : null;
 
+  // Shared document notes render in the live collaborative editor (so the owner
+  // sees collaborators' edits in real time, no refresh). The seam's hook is
+  // called unconditionally; it returns false for non-document/empty ids and when
+  // no shell provides collab (desktop), so unshared notes keep the plain editor.
+  const collab = useCollabDocumentSeam();
+  const collabDocId =
+    !isVirtual && effectiveNote && contentType === "document" ? effectiveNote.id : "";
+  const isSharedDoc = collab.useIsShared(collabDocId) && collabDocId !== "";
+
   return (
     <div className="flex flex-col h-full">
       <TabBar />
@@ -77,6 +87,8 @@ export function Canvas() {
           <TagView tag={activeTab.noteId.replace("tag:", "")} />
         ) : !isVirtual && isLoading ? (
           <LoadingSkeleton />
+        ) : effectiveNote && isSharedDoc ? (
+          <collab.CollabDocument noteId={effectiveNote.id} note={effectiveNote} />
         ) : effectiveNote && Renderer ? (
           <Suspense fallback={<LoadingSkeleton />}>
             <Renderer
