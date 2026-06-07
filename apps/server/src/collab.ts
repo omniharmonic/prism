@@ -38,19 +38,19 @@ g.window ??= _win;
 g.document ??= _win.document;
 g.DOMParser ??= _win.DOMParser;
 
-const FIELD = "default"; // TipTap's default XML fragment name
+export const FIELD = "default"; // TipTap's default XML fragment name
 const exts = collabExtensions();
 const schema = getSchema(exts);
 
 /** Markdown/HTML → an empty Y.Doc's encoded state for the shared fragment. */
-function contentToYUpdate(content: string): Uint8Array {
+export function contentToYUpdate(content: string): Uint8Array {
   const src = content ?? "";
   const html = src.trim().startsWith("<") ? src : (marked.parse(src) as string);
   const json = generateJSON(html || "<p></p>", exts);
   return Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, FIELD));
 }
 
-function yDocToHtml(doc: Y.Doc): string {
+export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
 }
 
@@ -76,7 +76,7 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
 }
 
 /** Resolve the connection's effective level for a note (session wins over link). */
-async function resolveLevel(noteId: string, token: string, cookieHeader: string | null): Promise<Level | null> {
+export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null): Promise<Level | null> {
   const email = sessionEmailFromCookie(cookieHeader);
   let grants: Grant[] = [];
   let isOwner = false;
@@ -97,50 +97,78 @@ async function resolveLevel(noteId: string, token: string, cookieHeader: string 
   return effectiveLevel(grants, { id: noteId, tags }, isOwner);
 }
 
+/**
+ * Authorize a collab connection against a note. Throws "Forbidden" below
+ * "view"; marks the connection read-only below "suggest" (so view/comment
+ * peers can watch but their edits are dropped). Returns the effective level.
+ * Extracted from the Hocuspocus hook so it is directly testable.
+ */
+export async function authorizeConnection(
+  documentName: string,
+  token: string,
+  cookieHeader: string | null,
+  connectionConfig: { readOnly: boolean },
+): Promise<Level> {
+  const level = await resolveLevel(documentName, token, cookieHeader);
+  if (!atLeast(level, "view")) throw new Error("Forbidden");
+  if (!atLeast(level, "suggest")) connectionConfig.readOnly = true;
+  return level as Level;
+}
+
+/**
+ * Seed a Y.Doc for a note. Prefers persisted CRDT state for continuity, but if
+ * Parachute was edited externally since we last stored (its updatedAt is newer
+ * than our recorded source), the external edit wins and we re-seed from it.
+ * Leaves the doc empty if nothing is loadable. Mutates and returns `doc`.
+ */
+export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
+  if (doc.getXmlFragment(FIELD).length > 0) return doc; // already populated this run
+
+  let note: { content: string; updatedAt: string | null } | null = null;
+  try {
+    const n = await vault.getNote(documentName);
+    note = { content: n.content, updatedAt: n.updatedAt };
+  } catch {
+    /* note may not be readable; leave empty */
+  }
+
+  const stored = getDocState(documentName);
+  const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
+
+  if (stored && !externallyEdited) {
+    Y.applyUpdate(doc, stored.state); // live CRDT state is current
+  } else if (note) {
+    Y.applyUpdate(doc, contentToYUpdate(note.content)); // seed (or re-seed on external edit)
+  }
+  return doc;
+}
+
+/**
+ * Persist a Y.Doc: render to HTML and write back to Parachute, then store the
+ * Yjs binary in SQLite (with the resulting source updatedAt) for CRDT
+ * continuity. A vault write failure still persists local state so edits aren't
+ * lost. Extracted from the Hocuspocus hook so it is directly testable.
+ */
+export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
+  let sourceUpdatedAt: number | null = null;
+  try {
+    const html = yDocToHtml(doc);
+    const updated = await vault.updateNote(documentName, { content: html });
+    sourceUpdatedAt = toMs(updated.updatedAt);
+  } catch {
+    /* vault write failed — still persist CRDT state below */
+  }
+  saveDocState(documentName, Y.encodeStateAsUpdate(doc), sourceUpdatedAt);
+}
+
 export const hocuspocus = new Hocuspocus({
   async onAuthenticate(data) {
     const cookie = headerGet(data.requestHeaders, "cookie");
-    const level = await resolveLevel(data.documentName, data.token, cookie);
-    if (!atLeast(level, "view")) throw new Error("Forbidden");
-    // view/comment connections are read-only; suggest/edit/own may write.
-    if (!atLeast(level, "suggest")) data.connectionConfig.readOnly = true;
+    const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig);
     return { level };
   },
-
-  async onLoadDocument(data) {
-    const doc = data.document;
-    if (doc.getXmlFragment(FIELD).length > 0) return doc; // already populated this run
-
-    let note: { content: string; updatedAt: string | null } | null = null;
-    try {
-      const n = await vault.getNote(data.documentName);
-      note = { content: n.content, updatedAt: n.updatedAt };
-    } catch {
-      /* note may not be readable; leave empty */
-    }
-
-    const stored = getDocState(data.documentName);
-    const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
-
-    if (stored && !externallyEdited) {
-      Y.applyUpdate(doc, stored.state); // live CRDT state is current
-    } else if (note) {
-      Y.applyUpdate(doc, contentToYUpdate(note.content)); // seed (or re-seed on external edit)
-    }
-    return doc;
-  },
-
-  async onStoreDocument(data) {
-    let sourceUpdatedAt: number | null = null;
-    try {
-      const html = yDocToHtml(data.document);
-      const updated = await vault.updateNote(data.documentName, { content: html });
-      sourceUpdatedAt = toMs(updated.updatedAt);
-    } catch {
-      /* vault write failed — still persist CRDT state below */
-    }
-    saveDocState(data.documentName, Y.encodeStateAsUpdate(data.document), sourceUpdatedAt);
-  },
+  onLoadDocument: (data) => loadDocumentState(data.documentName, data.document),
+  onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),
 });
 
 /** Attach the collab WebSocket handler to the Node HTTP server at /collab. */
