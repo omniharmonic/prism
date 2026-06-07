@@ -75,15 +75,16 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
 export function inferContentType(note: NoteForTypeInference): ContentType {
   const meta = note.metadata;
 
+  // 0. Content ground truth FIRST: a note whose body is an Excalidraw scene IS a
+  // canvas — even if a stale tag or the desktop's Rust enrichment stamped a
+  // different prism_type on it (the enrichment defaults unrecognized notes to
+  // "document"). Content wins, so canvases render correctly everywhere.
+  if (looksLikeExcalidrawScene(note.content)) return "canvas";
+
   // 1a. Backend-enriched prism_type (set by Rust enrichment layer)
   if (meta && typeof meta.prism_type === "string" && KNOWN_TYPES.has(meta.prism_type)) {
     return meta.prism_type as ContentType;
   }
-
-  // 1a-bis. Content ground truth: a note whose body is an Excalidraw scene IS a
-  // canvas, regardless of (missing/stale) tags or metadata.type. This is what makes
-  // canvas rendering reliable — the previous gap rendered such notes as raw JSON text.
-  if (looksLikeExcalidrawScene(note.content)) return "canvas";
 
   // 1b. Explicit metadata.type — known renderer types pass through; unknown types
   // that clearly describe document-like content fall back to "document" rather than

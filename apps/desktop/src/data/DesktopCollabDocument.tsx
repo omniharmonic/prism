@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import {
   CollabEditor,
+  CommentsSidebar,
   CollabCodeEditor,
   CollabSpreadsheet,
   CollabCanvas,
@@ -11,6 +12,7 @@ import {
   inferContentType,
   type Note,
 } from "@prism/core";
+import { MessageSquare } from "lucide-react";
 
 /**
  * Desktop live-collaborative editor. The Tauri app joins the SAME Prism Server
@@ -64,6 +66,8 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [presenceCount, setPresenceCount] = useState(1);
+  const [suggesting, setSuggesting] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(true);
 
   useEffect(() => {
     loadCollabConfig().then(setCfg);
@@ -94,6 +98,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const user = useMemo(() => ({ name: "You", color: COLORS[0]! }), []);
 
   if (!cfg?.enabled || !provider) return null;
+  const isDoc = kind === "document";
 
   return (
     <div className="flex flex-col h-full">
@@ -103,6 +108,21 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
       >
         <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : "#eab308" }} />
         Live{presenceCount > 1 ? ` · ${presenceCount} editing` : ""}
+        {isDoc && (
+          <button
+            onClick={() => setCommentsOpen((o) => !o)}
+            className="ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded"
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: commentsOpen ? "#fff" : "var(--text-secondary)",
+              background: commentsOpen ? "var(--color-accent)" : "transparent",
+              border: `1px solid ${commentsOpen ? "var(--color-accent)" : "var(--glass-border)"}`,
+            }}
+          >
+            <MessageSquare size={13} /> Comments
+          </button>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-auto" style={{ position: kind === "canvas" ? "relative" : undefined }}>
         {kind === "canvas" ? (
@@ -112,8 +132,26 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
         ) : kind === "spreadsheet" ? (
           <CollabSpreadsheet ydoc={ydoc} editable />
         ) : (
-          <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 28px 64px" }}>
-            <CollabEditor ydoc={ydoc} provider={provider as never} user={user} seedReady={synced} toolbar editable />
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start", maxWidth: 1180, margin: "0 auto", padding: "20px 24px 64px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <CollabEditor
+                ydoc={ydoc}
+                provider={provider as never}
+                user={user}
+                seedReady={synced}
+                toolbar
+                editable
+                suggesting={suggesting}
+                onSetSuggesting={setSuggesting}
+                canReview
+                canComment
+              />
+            </div>
+            {commentsOpen && (
+              <div style={{ width: 300, flexShrink: 0 }}>
+                <CommentsSidebar ydoc={ydoc} user={user} canComment />
+              </div>
+            )}
           </div>
         )}
       </div>

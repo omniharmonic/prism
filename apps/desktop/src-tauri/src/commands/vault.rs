@@ -10,6 +10,14 @@ use crate::models::note::*;
 /// - Passes through all unknown fields for future renderers
 fn enrich_note(mut note: Note) -> Note {
     let tags = note.tags.clone().unwrap_or_default();
+    // Content ground truth: a body that is an Excalidraw scene IS a canvas, even
+    // if it carries no `canvas` tag. Captured before the mutable metadata borrow.
+    let looks_canvas = {
+        let c = note.content.trim_start();
+        c.starts_with('{')
+            && c.contains("\"elements\"")
+            && (c.contains("\"appState\"") || c.contains("excalidraw"))
+    };
     let meta = note.metadata.get_or_insert_with(|| serde_json::json!({}));
 
     if let Some(obj) = meta.as_object_mut() {
@@ -26,8 +34,13 @@ fn enrich_note(mut note: Note) -> Note {
         ];
 
         if !known_prism_types.contains(&current_type.as_str()) {
-            // Map structural tags to Prism content types (priority order)
+            // Map structural tags to Prism content types (priority order). The
+            // structural renderers (canvas/code/spreadsheet) come first — these
+            // were previously missing, so such notes got mis-stamped as documents.
             let tag_map: &[(&str, &str)] = &[
+                ("canvas", "canvas"),
+                ("code", "code"),
+                ("spreadsheet", "spreadsheet"),
                 ("task", "task"),
                 ("slides", "presentation"),
                 ("briefing", "briefing"),
@@ -52,16 +65,25 @@ fn enrich_note(mut note: Note) -> Note {
                 ("index", "document"),
             ];
 
-            let inferred = tag_map.iter()
-                .find(|(tag, _)| tags.contains(&tag.to_string()))
-                .map(|(_, prism_type)| *prism_type)
-                .unwrap_or("document");
+            // Content (canvas) wins over tags. If nothing matches we leave
+            // prism_type UNSET so the frontend can infer from the file extension
+            // or content — stamping "document" here defeated that (e.g. .py/.csv
+            // notes lost their code/spreadsheet detection).
+            let inferred: Option<&str> = if looks_canvas {
+                Some("canvas")
+            } else {
+                tag_map
+                    .iter()
+                    .find(|(tag, _)| tags.contains(&tag.to_string()))
+                    .map(|(_, prism_type)| *prism_type)
+            };
 
-            obj.insert("prism_type".to_string(), serde_json::json!(inferred));
-
-            // Preserve original vault type for display
-            if !current_type.is_empty() {
-                obj.insert("vault_type".to_string(), serde_json::json!(&current_type));
+            if let Some(prism_type) = inferred {
+                obj.insert("prism_type".to_string(), serde_json::json!(prism_type));
+                // Preserve original vault type for display
+                if !current_type.is_empty() {
+                    obj.insert("vault_type".to_string(), serde_json::json!(&current_type));
+                }
             }
         }
 
