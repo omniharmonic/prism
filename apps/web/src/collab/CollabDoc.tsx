@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, detectCodeLanguage } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, detectCodeLanguage } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 
@@ -29,7 +29,7 @@ interface PresenceUser {
   color: string;
 }
 
-type CollabKind = "document" | "code";
+type CollabKind = "document" | "code" | "spreadsheet";
 
 const CODE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
@@ -40,9 +40,12 @@ const CODE_EXTS = new Set([
 /** Client mirror of the server's noteKind — keep the two in sync so the editor
  *  matches how the server seeds/persists the Y.Doc. */
 function detectKind(note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null }): CollabKind {
-  if (note.metadata?.["prism_type"] === "code") return "code";
-  if ((note.tags ?? []).includes("code")) return "code";
+  const pt = note.metadata?.["prism_type"];
+  const tags = note.tags ?? [];
+  if (pt === "spreadsheet" || tags.includes("spreadsheet")) return "spreadsheet";
+  if (pt === "code" || tags.includes("code")) return "code";
   const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext === "csv" || ext === "tsv") return "spreadsheet";
   if (ext && CODE_EXTS.has(ext)) return "code";
   return "document";
 }
@@ -96,13 +99,10 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         setLevel(note._level ?? "own");
         const k = detectKind(note);
         setKind(k);
-        if (k === "code") {
-          setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
-          // Code notes have a path/filename title; fall back to derived text.
-          setTitle((note.path?.split("/").pop() as string) || deriveTitle(note.content || ""));
-        } else {
-          setTitle(deriveTitle(note.content || ""));
-        }
+        if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
+        // Code/spreadsheet notes are file-backed → use the filename; prose derives a title.
+        if (k === "document") setTitle(deriveTitle(note.content || ""));
+        else setTitle((note.path?.split("/").pop() as string) || deriveTitle(note.content || ""));
       } catch {
         /* level unknown → server still enforces */
       }
@@ -180,11 +180,13 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
     : { minHeight: "100dvh", padding: "0 16px", background: "var(--bg-base, #0d0d0f)" };
 
   const isCode = kind === "code";
+  const isSheet = kind === "spreadsheet";
+  const isDocument = kind === "document";
   const statusText = !connected
     ? "Connecting…"
     : level === "view"
       ? "View only"
-      : isCode
+      : !isDocument
         ? "Editing"
         : commentOnly
           ? "Commenting"
@@ -192,8 +194,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
             ? "Suggesting"
             : "Editing";
 
-  // Comments + suggestions are prose-only; code is pure collaborative text.
-  const showComments = !isCode;
+  // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
+  const showComments = isDocument;
   const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} />;
 
   return (
@@ -247,9 +249,10 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               background: "var(--bg-surface, rgba(255,255,255,0.03))",
               border: "1px solid var(--glass-border)",
               borderRadius: 16,
-              padding: isCode ? 0 : narrow ? "16px 16px 36px" : "24px 32px 48px",
+              padding: isDocument ? (narrow ? "16px 16px 36px" : "24px 32px 48px") : 0,
               minHeight: "60vh",
-              overflow: isCode ? "hidden" : undefined,
+              overflow: isDocument ? undefined : "hidden",
+              display: isSheet ? "flex" : undefined,
             }}
           >
             {isCode ? (
@@ -260,6 +263,10 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
                 language={language}
                 editable={editable}
               />
+            ) : isSheet ? (
+              <div style={{ flex: 1, minHeight: "60vh", display: "flex", flexDirection: "column" }}>
+                <CollabSpreadsheet ydoc={ydoc} editable={editable} />
+              </div>
             ) : (
               <CollabEditor
                 ydoc={ydoc}

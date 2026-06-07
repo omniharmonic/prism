@@ -58,8 +58,9 @@ export function yDocToHtml(doc: Y.Doc): string {
 // `document` → TipTap XML fragment (HTML). `code` → a Y.Text of raw source
 // (CodeMirror binds to it). Spreadsheet/canvas get their own kinds as their
 // collab editors land; until then they aren't routed to collab by the client.
-export type CollabKind = "document" | "code";
+export type CollabKind = "document" | "code" | "spreadsheet";
 export const CODE_TEXT_FIELD = "codemirror";
+export const SHEET_FIELD = "rows"; // Y.Array<Y.Array<string>>
 
 const CODE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
@@ -77,10 +78,13 @@ interface NoteMeta {
  *  client's inferContentType, simplified to the kinds collab supports. */
 export function noteKind(note: NoteMeta): CollabKind {
   const pt = note.metadata?.["prism_type"];
+  if (pt === "spreadsheet") return "spreadsheet";
   if (pt === "code") return "code";
   const tags = new Set(note.tags ?? []);
+  if (tags.has("spreadsheet")) return "spreadsheet";
   if (tags.has("code")) return "code";
   const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext === "csv" || ext === "tsv") return "spreadsheet";
   if (ext && CODE_EXTS.has(ext)) return "code";
   return "document";
 }
@@ -94,6 +98,37 @@ export function codeToYUpdate(content: string): Uint8Array {
 
 export function yDocToCode(doc: Y.Doc): string {
   return doc.getText(CODE_TEXT_FIELD).toString();
+}
+
+// ---- spreadsheet (CSV ⇄ Y.Array<Y.Array<string>>) ----
+// Cell-level CRDT: each row is a Y.Array of cell strings, so concurrent edits to
+// different cells/rows merge. Minimal CSV (no quoted-comma handling) to match the
+// existing SpreadsheetRenderer; fidelity is exact for simple comma/newline data.
+function parseCsv(content: string): string[][] {
+  if (!content.trim()) return [[""]];
+  return content.split("\n").map((row) => row.split(","));
+}
+
+function serializeCsv(rows: string[][]): string {
+  return rows.map((r) => r.join(",")).join("\n");
+}
+
+export function csvToYUpdate(content: string): Uint8Array {
+  const doc = new Y.Doc();
+  const rows = doc.getArray<Y.Array<string>>(SHEET_FIELD);
+  for (const r of parseCsv(content)) {
+    const yr = new Y.Array<string>();
+    yr.insert(0, r);
+    rows.push([yr]);
+  }
+  return Y.encodeStateAsUpdate(doc);
+}
+
+export function yDocToCsv(doc: Y.Doc): string {
+  const rows = doc.getArray<Y.Array<string>>(SHEET_FIELD);
+  const out: string[][] = [];
+  rows.forEach((yr) => out.push(yr.toArray()));
+  return serializeCsv(out);
 }
 
 // Kind is stable per note; cache it at load so store doesn't need to re-fetch.
@@ -178,9 +213,14 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
     /* note may not be readable; leave empty */
   }
 
-  // "Already populated this run" guard is kind-specific (document uses an XML
-  // fragment; code uses a Y.Text). Without this a reconnect re-seeds over live edits.
-  const populated = kind === "code" ? doc.getText(CODE_TEXT_FIELD).length > 0 : doc.getXmlFragment(FIELD).length > 0;
+  // "Already populated this run" guard is kind-specific (document → XML fragment,
+  // code → Y.Text, spreadsheet → Y.Array). Without it a reconnect re-seeds over live edits.
+  const populated =
+    kind === "code"
+      ? doc.getText(CODE_TEXT_FIELD).length > 0
+      : kind === "spreadsheet"
+        ? doc.getArray(SHEET_FIELD).length > 0
+        : doc.getXmlFragment(FIELD).length > 0;
   if (populated) return doc;
 
   const stored = getDocState(documentName);
@@ -189,7 +229,12 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   if (stored && !externallyEdited) {
     Y.applyUpdate(doc, stored.state); // live CRDT state is current
   } else if (note) {
-    const seed = kind === "code" ? codeToYUpdate(note.content) : contentToYUpdate(note.content);
+    const seed =
+      kind === "code"
+        ? codeToYUpdate(note.content)
+        : kind === "spreadsheet"
+          ? csvToYUpdate(note.content)
+          : contentToYUpdate(note.content);
     Y.applyUpdate(doc, seed); // seed (or re-seed on external edit)
   }
   return doc;
@@ -216,7 +261,8 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
     }
   }
   try {
-    const content = kind === "code" ? yDocToCode(doc) : yDocToHtml(doc);
+    const content =
+      kind === "code" ? yDocToCode(doc) : kind === "spreadsheet" ? yDocToCsv(doc) : yDocToHtml(doc);
     const updated = await vault.updateNote(documentName, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
   } catch {

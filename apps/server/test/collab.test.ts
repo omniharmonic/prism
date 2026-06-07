@@ -21,6 +21,8 @@ import {
   noteKind,
   codeToYUpdate,
   yDocToCode,
+  csvToYUpdate,
+  yDocToCsv,
 } from "../src/collab";
 import { getDocState, saveDocState } from "../src/db";
 import {
@@ -184,4 +186,38 @@ test("loadDocumentState seeds a code note as raw text, and storeDocumentState wr
   const written = fv.notes.get("code1")!.content;
   assert.equal(written, src + "\n// added", "vault got raw text, not HTML");
   assert.doesNotMatch(written, /<p>|<pre>|&lt;/, "no HTML wrapping/escaping");
+});
+
+// ------------------------------------------------ type-aware (spreadsheet) kind
+
+test("noteKind detects spreadsheet by tag, prism_type, and .csv extension", () => {
+  assert.equal(noteKind({ path: null, tags: ["spreadsheet"], metadata: null }), "spreadsheet");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "spreadsheet" } }), "spreadsheet");
+  assert.equal(noteKind({ path: "data/budget.csv", tags: null, metadata: null }), "spreadsheet");
+});
+
+test("CSV round-trips through the Y.Array<Y.Array> cell model", () => {
+  const csv = "name,score\nAda,99\nGrace,100";
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, csvToYUpdate(csv));
+  assert.equal(yDocToCsv(doc), csv);
+});
+
+test("loadDocumentState seeds a spreadsheet into rows, and a cell edit persists back as CSV", async () => {
+  const csv = "a,b,c\n1,2,3";
+  fv.put({ id: "sheet1", content: csv, tags: ["spreadsheet"], path: "t.csv" });
+
+  const doc = await loadDocumentState("sheet1", new Y.Doc());
+  assert.equal(yDocToCsv(doc), csv, "seeded as exact CSV");
+  assert.equal(doc.getXmlFragment("default").length, 0, "not seeded as a document");
+  assert.equal(doc.getArray("rows").length, 2, "two rows in the cell model");
+
+  // Edit cell (1,1): 2 → 20 (delete+insert at index, the CRDT cell update).
+  const rows = doc.getArray<Y.Array<string>>("rows");
+  const row1 = rows.get(1);
+  row1.delete(1, 1);
+  row1.insert(1, ["20"]);
+  await storeDocumentState("sheet1", doc);
+
+  assert.equal(fv.notes.get("sheet1")!.content, "a,b,c\n1,20,3", "vault got updated CSV");
 });
