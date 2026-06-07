@@ -12,6 +12,7 @@ export { CollabEditor } from "./components/renderers/CollabEditor";
 export type { CollabUser, AwarenessProvider } from "./components/renderers/CollabEditor";
 export { CollabCodeEditor, detectCodeLanguage } from "./components/renderers/CollabCodeEditor";
 export { CollabSpreadsheet } from "./components/renderers/CollabSpreadsheet";
+export { CollabCanvas } from "./components/renderers/CollabCanvas";
 
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";

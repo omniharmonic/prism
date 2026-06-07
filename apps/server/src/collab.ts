@@ -58,9 +58,10 @@ export function yDocToHtml(doc: Y.Doc): string {
 // `document` → TipTap XML fragment (HTML). `code` → a Y.Text of raw source
 // (CodeMirror binds to it). Spreadsheet/canvas get their own kinds as their
 // collab editors land; until then they aren't routed to collab by the client.
-export type CollabKind = "document" | "code" | "spreadsheet";
+export type CollabKind = "document" | "code" | "spreadsheet" | "canvas";
 export const CODE_TEXT_FIELD = "codemirror";
 export const SHEET_FIELD = "rows"; // Y.Array<Y.Array<string>>
+export const CANVAS_FIELD = "elements"; // Y.Map<string, ExcalidrawElement>
 
 const CODE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
@@ -78,12 +79,15 @@ interface NoteMeta {
  *  client's inferContentType, simplified to the kinds collab supports. */
 export function noteKind(note: NoteMeta): CollabKind {
   const pt = note.metadata?.["prism_type"];
+  if (pt === "canvas") return "canvas";
   if (pt === "spreadsheet") return "spreadsheet";
   if (pt === "code") return "code";
   const tags = new Set(note.tags ?? []);
+  if (tags.has("canvas")) return "canvas";
   if (tags.has("spreadsheet")) return "spreadsheet";
   if (tags.has("code")) return "code";
   const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext === "excalidraw") return "canvas";
   if (ext === "csv" || ext === "tsv") return "spreadsheet";
   if (ext && CODE_EXTS.has(ext)) return "code";
   return "document";
@@ -129,6 +133,43 @@ export function yDocToCsv(doc: Y.Doc): string {
   const out: string[][] = [];
   rows.forEach((yr) => out.push(yr.toArray()));
   return serializeCsv(out);
+}
+
+// ---- canvas (Excalidraw scene JSON ⇄ Y.Map<id, element>) ----
+// Each Excalidraw element is one Y.Map entry keyed by element id. Re-seeding is
+// idempotent (set by id overwrites — no duplication) and concurrent edits to
+// different elements merge. appState (zoom/scroll/cursor) is per-viewer and NOT
+// synced; only elements are shared. Persisted as the same scene JSON the
+// non-collab CanvasRenderer reads ({ elements, appState }).
+interface CanvasEl {
+  id?: string;
+  [k: string]: unknown;
+}
+
+function parseScene(content: string): { elements: CanvasEl[]; appState: Record<string, unknown> } {
+  if (!content || !content.trim()) return { elements: [], appState: {} };
+  try {
+    const d = JSON.parse(content);
+    return { elements: Array.isArray(d.elements) ? d.elements : [], appState: d.appState ?? {} };
+  } catch {
+    return { elements: [], appState: {} };
+  }
+}
+
+export function sceneToYUpdate(content: string): Uint8Array {
+  const doc = new Y.Doc();
+  const map = doc.getMap<CanvasEl>(CANVAS_FIELD);
+  for (const el of parseScene(content).elements) {
+    if (el && typeof el.id === "string") map.set(el.id, el);
+  }
+  return Y.encodeStateAsUpdate(doc);
+}
+
+export function yDocToScene(doc: Y.Doc): string {
+  const map = doc.getMap<CanvasEl>(CANVAS_FIELD);
+  const elements: CanvasEl[] = [];
+  map.forEach((el) => elements.push(el));
+  return JSON.stringify({ elements, appState: {} });
 }
 
 // Kind is stable per note; cache it at load so store doesn't need to re-fetch.
@@ -220,7 +261,9 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
       ? doc.getText(CODE_TEXT_FIELD).length > 0
       : kind === "spreadsheet"
         ? doc.getArray(SHEET_FIELD).length > 0
-        : doc.getXmlFragment(FIELD).length > 0;
+        : kind === "canvas"
+          ? doc.getMap(CANVAS_FIELD).size > 0
+          : doc.getXmlFragment(FIELD).length > 0;
   if (populated) return doc;
 
   const stored = getDocState(documentName);
@@ -234,7 +277,9 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
         ? codeToYUpdate(note.content)
         : kind === "spreadsheet"
           ? csvToYUpdate(note.content)
-          : contentToYUpdate(note.content);
+          : kind === "canvas"
+            ? sceneToYUpdate(note.content)
+            : contentToYUpdate(note.content);
     Y.applyUpdate(doc, seed); // seed (or re-seed on external edit)
   }
   return doc;
@@ -262,7 +307,13 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   }
   try {
     const content =
-      kind === "code" ? yDocToCode(doc) : kind === "spreadsheet" ? yDocToCsv(doc) : yDocToHtml(doc);
+      kind === "code"
+        ? yDocToCode(doc)
+        : kind === "spreadsheet"
+          ? yDocToCsv(doc)
+          : kind === "canvas"
+            ? yDocToScene(doc)
+            : yDocToHtml(doc);
     const updated = await vault.updateNote(documentName, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
   } catch {

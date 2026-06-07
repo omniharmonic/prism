@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, detectCodeLanguage } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 
@@ -29,7 +29,7 @@ interface PresenceUser {
   color: string;
 }
 
-type CollabKind = "document" | "code" | "spreadsheet";
+type CollabKind = "document" | "code" | "spreadsheet" | "canvas";
 
 const CODE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
@@ -42,9 +42,11 @@ const CODE_EXTS = new Set([
 function detectKind(note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null }): CollabKind {
   const pt = note.metadata?.["prism_type"];
   const tags = note.tags ?? [];
+  if (pt === "canvas" || tags.includes("canvas")) return "canvas";
   if (pt === "spreadsheet" || tags.includes("spreadsheet")) return "spreadsheet";
   if (pt === "code" || tags.includes("code")) return "code";
   const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext === "excalidraw") return "canvas";
   if (ext === "csv" || ext === "tsv") return "spreadsheet";
   if (ext && CODE_EXTS.has(ext)) return "code";
   return "document";
@@ -100,9 +102,11 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
-        // Code/spreadsheet notes are file-backed → use the filename; prose derives a title.
+        const filename = note.path?.split("/").pop() as string | undefined;
+        const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
         if (k === "document") setTitle(deriveTitle(note.content || ""));
-        else setTitle((note.path?.split("/").pop() as string) || deriveTitle(note.content || ""));
+        else if (k === "canvas") setTitle(titleMeta || filename || "Canvas");
+        else setTitle(filename || deriveTitle(note.content || ""));
       } catch {
         /* level unknown → server still enforces */
       }
@@ -181,6 +185,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
 
   const isCode = kind === "code";
   const isSheet = kind === "spreadsheet";
+  const isCanvas = kind === "canvas";
   const isDocument = kind === "document";
   const statusText = !connected
     ? "Connecting…"
@@ -250,12 +255,16 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               border: "1px solid var(--glass-border)",
               borderRadius: 16,
               padding: isDocument ? (narrow ? "16px 16px 36px" : "24px 32px 48px") : 0,
-              minHeight: "60vh",
+              minHeight: isCanvas ? undefined : "60vh",
+              height: isCanvas ? (narrow ? "78vh" : "80vh") : undefined,
+              position: isCanvas ? "relative" : undefined,
               overflow: isDocument ? undefined : "hidden",
               display: isSheet ? "flex" : undefined,
             }}
           >
-            {isCode ? (
+            {isCanvas ? (
+              <CollabCanvas ydoc={ydoc} provider={provider as never} user={user} editable={editable} />
+            ) : isCode ? (
               <CollabCodeEditor
                 ydoc={ydoc}
                 provider={provider as never}

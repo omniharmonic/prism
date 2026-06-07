@@ -23,6 +23,8 @@ import {
   yDocToCode,
   csvToYUpdate,
   yDocToCsv,
+  sceneToYUpdate,
+  yDocToScene,
 } from "../src/collab";
 import { getDocState, saveDocState } from "../src/db";
 import {
@@ -220,4 +222,59 @@ test("loadDocumentState seeds a spreadsheet into rows, and a cell edit persists 
   await storeDocumentState("sheet1", doc);
 
   assert.equal(fv.notes.get("sheet1")!.content, "a,b,c\n1,20,3", "vault got updated CSV");
+});
+
+// --------------------------------------------------- type-aware (canvas) kind
+
+test("noteKind detects canvas by tag, prism_type, and .excalidraw extension", () => {
+  assert.equal(noteKind({ path: null, tags: ["canvas"], metadata: null }), "canvas");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "canvas" } }), "canvas");
+  assert.equal(noteKind({ path: "board.excalidraw", tags: null, metadata: null }), "canvas");
+});
+
+test("canvas scene round-trips through the Y.Map<id, element> model", () => {
+  const scene = JSON.stringify({
+    elements: [
+      { id: "a1", type: "rectangle", x: 0, y: 0, version: 3 },
+      { id: "b2", type: "ellipse", x: 50, y: 60, version: 1 },
+    ],
+    appState: {},
+  });
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  assert.equal(doc.getMap("elements").size, 2);
+  const out = JSON.parse(yDocToScene(doc));
+  // Order-independent compare by id.
+  const byId = Object.fromEntries(out.elements.map((e: { id: string }) => [e.id, e]));
+  assert.equal(byId.a1.type, "rectangle");
+  assert.equal(byId.b2.x, 50);
+});
+
+test("re-seeding a canvas is idempotent (set-by-id overwrites, no duplicate elements)", () => {
+  const scene = JSON.stringify({ elements: [{ id: "x", type: "rectangle", version: 1 }], appState: {} });
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  // Apply the SAME seed again (simulates an external-edit re-seed merge).
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  assert.equal(doc.getMap("elements").size, 1, "still one element — no doubling");
+});
+
+test("loadDocumentState seeds a canvas into elements; an element edit persists back as scene JSON", async () => {
+  const scene = JSON.stringify({ elements: [{ id: "r1", type: "rectangle", x: 0, version: 1 }], appState: {} });
+  fv.put({ id: "canvas1", content: scene, tags: ["canvas"], metadata: { prism_type: "canvas" } });
+
+  const doc = await loadDocumentState("canvas1", new Y.Doc());
+  assert.equal(doc.getMap("elements").size, 1, "seeded one element");
+  assert.equal(doc.getXmlFragment("default").length, 0, "not seeded as a document");
+
+  // Move the element + add a new one (the collaborative edit).
+  const map = doc.getMap<{ id: string; x: number; version: number }>("elements");
+  map.set("r1", { id: "r1", x: 100, version: 2 } as never);
+  map.set("r2", { id: "r2", x: 200, version: 1 } as never);
+  await storeDocumentState("canvas1", doc);
+
+  const written = JSON.parse(fv.notes.get("canvas1")!.content);
+  assert.equal(written.elements.length, 2, "scene JSON has both elements");
+  const r1 = written.elements.find((e: { id: string }) => e.id === "r1");
+  assert.equal(r1.x, 100, "moved element persisted");
 });

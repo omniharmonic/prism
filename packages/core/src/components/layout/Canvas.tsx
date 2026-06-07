@@ -72,7 +72,7 @@ export function Canvas() {
   // auto-detects the note kind (document → prose editor, code → CodeMirror). The
   // hook is called unconditionally; it returns false for non-collab/empty ids and
   // when no shell provides collab (desktop), so unshared notes keep the plain editor.
-  const COLLAB_TYPES = new Set(["document", "code", "spreadsheet"]);
+  const COLLAB_TYPES = new Set(["document", "code", "spreadsheet", "canvas"]);
   const collab = useCollabDocumentSeam();
   const collabDocId =
     !isVirtual && effectiveNote && contentType && COLLAB_TYPES.has(contentType) ? effectiveNote.id : "";
