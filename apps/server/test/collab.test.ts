@@ -18,6 +18,9 @@ import {
   yDocToHtml,
   loadDocumentState,
   storeDocumentState,
+  noteKind,
+  codeToYUpdate,
+  yDocToCode,
 } from "../src/collab";
 import { getDocState, saveDocState } from "../src/db";
 import {
@@ -146,4 +149,39 @@ test("storeDocumentState still persists CRDT state if the vault write fails", as
   const saved = getDocState("ghost-note");
   assert.ok(saved, "CRDT state must still be persisted");
   assert.equal(saved!.sourceUpdatedAt, null); // no vault timestamp, since the write failed
+});
+
+// ----------------------------------------------------- type-aware (code) kind
+
+test("noteKind detects code by tag, prism_type, and extension; documents otherwise", () => {
+  assert.equal(noteKind({ path: null, tags: ["code"], metadata: null }), "code");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "code" } }), "code");
+  assert.equal(noteKind({ path: "src/foo.py", tags: null, metadata: null }), "code");
+  assert.equal(noteKind({ path: "notes/readme.md", tags: null, metadata: null }), "document");
+  assert.equal(noteKind({ path: null, tags: ["meeting"], metadata: null }), "document");
+});
+
+test("code round-trips EXACTLY as plain text (no HTML mangling — corruption guard)", () => {
+  // The text that broke the document path would be HTML-escaped/wrapped; code must not.
+  const src = "def f(x):\n    return x < 1 && x > 0  # <not html>\n\n\tnested";
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, codeToYUpdate(src));
+  assert.equal(yDocToCode(doc), src);
+});
+
+test("loadDocumentState seeds a code note as raw text, and storeDocumentState writes raw text back", async () => {
+  const src = "const a = 1;\nconsole.log(a > 0 ? '<ok>' : '<no>');";
+  fv.put({ id: "code1", content: src, tags: ["code"], path: "x.ts" });
+
+  const doc = await loadDocumentState("code1", new Y.Doc());
+  assert.equal(yDocToCode(doc), src, "seeded as exact raw text");
+  // It must NOT have been seeded into the document XML fragment.
+  assert.equal(doc.getXmlFragment("default").length, 0);
+
+  // Edit the code and persist.
+  doc.getText("codemirror").insert(doc.getText("codemirror").length, "\n// added");
+  await storeDocumentState("code1", doc);
+  const written = fv.notes.get("code1")!.content;
+  assert.equal(written, src + "\n// added", "vault got raw text, not HTML");
+  assert.doesNotMatch(written, /<p>|<pre>|&lt;/, "no HTML wrapping/escaping");
 });

@@ -46,7 +46,7 @@ export default defineConfig({
           "**/subset-shared*",
           "**/createText-*",
         ],
-        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Activate a new build immediately instead of waiting for every tab to
         // close — so users stop getting a stale app shell after a deploy.
         skipWaiting: true,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { CollabEditor, CommentsSidebar } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, detectCodeLanguage } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 
@@ -27,6 +27,24 @@ function collabUrl(): string {
 interface PresenceUser {
   name: string;
   color: string;
+}
+
+type CollabKind = "document" | "code";
+
+const CODE_EXTS = new Set([
+  "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
+  "css", "scss", "less", "json", "yaml", "yml", "toml", "sh", "bash", "zsh", "sql",
+  "php", "swift", "kt", "lua", "r", "jl", "ex", "exs", "clj", "html", "htm", "xml",
+]);
+
+/** Client mirror of the server's noteKind — keep the two in sync so the editor
+ *  matches how the server seeds/persists the Y.Doc. */
+function detectKind(note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null }): CollabKind {
+  if (note.metadata?.["prism_type"] === "code") return "code";
+  if ((note.tags ?? []).includes("code")) return "code";
+  const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext && CODE_EXTS.has(ext)) return "code";
+  return "document";
 }
 
 /** A readable document title from either markdown or HTML content (collab
@@ -58,6 +76,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [synced, setSynced] = useState(false);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
+  const [kind, setKind] = useState<CollabKind>("document");
+  const [language, setLanguage] = useState("plaintext");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   const [suggesting, setSuggesting] = useState(false);
   const narrow = useIsNarrow();
@@ -74,7 +94,15 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         if (!r.ok) return;
         const note = await r.json();
         setLevel(note._level ?? "own");
-        setTitle(deriveTitle(note.content || ""));
+        const k = detectKind(note);
+        setKind(k);
+        if (k === "code") {
+          setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
+          // Code notes have a path/filename title; fall back to derived text.
+          setTitle((note.path?.split("/").pop() as string) || deriveTitle(note.content || ""));
+        } else {
+          setTitle(deriveTitle(note.content || ""));
+        }
       } catch {
         /* level unknown → server still enforces */
       }
@@ -151,16 +179,21 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
     ? { padding: "0 16px" }
     : { minHeight: "100dvh", padding: "0 16px", background: "var(--bg-base, #0d0d0f)" };
 
+  const isCode = kind === "code";
   const statusText = !connected
     ? "Connecting…"
     : level === "view"
       ? "View only"
-      : commentOnly
-        ? "Commenting"
-        : effectiveSuggesting
-          ? "Suggesting"
-          : "Editing";
+      : isCode
+        ? "Editing"
+        : commentOnly
+          ? "Commenting"
+          : effectiveSuggesting
+            ? "Suggesting"
+            : "Editing";
 
+  // Comments + suggestions are prose-only; code is pure collaborative text.
+  const showComments = !isCode;
   const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} />;
 
   return (
@@ -179,6 +212,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <PresenceAvatars users={presence} />
+            {showComments && (
             <button
               onClick={() => setCommentsOpen((o) => !o)}
               title="Comments"
@@ -200,6 +234,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               <MessageSquare size={14} />
               {!narrow && "Comments"}
             </button>
+            )}
           </div>
         </div>
 
@@ -212,30 +247,41 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               background: "var(--bg-surface, rgba(255,255,255,0.03))",
               border: "1px solid var(--glass-border)",
               borderRadius: 16,
-              padding: narrow ? "16px 16px 36px" : "24px 32px 48px",
+              padding: isCode ? 0 : narrow ? "16px 16px 36px" : "24px 32px 48px",
               minHeight: "60vh",
+              overflow: isCode ? "hidden" : undefined,
             }}
           >
-            <CollabEditor
-              ydoc={ydoc}
-              provider={provider as never}
-              user={user}
-              seedReady={synced}
-              toolbar
-              editable={editable}
-              suggesting={effectiveSuggesting}
-              onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
-              canReview={canReview}
-              commentOnly={commentOnly}
-              canComment={canComment}
-            />
+            {isCode ? (
+              <CollabCodeEditor
+                ydoc={ydoc}
+                provider={provider as never}
+                user={user}
+                language={language}
+                editable={editable}
+              />
+            ) : (
+              <CollabEditor
+                ydoc={ydoc}
+                provider={provider as never}
+                user={user}
+                seedReady={synced}
+                toolbar
+                editable={editable}
+                suggesting={effectiveSuggesting}
+                onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
+                canReview={canReview}
+                commentOnly={commentOnly}
+                canComment={canComment}
+              />
+            )}
           </div>
-          {!narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}
+          {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}
         </div>
       </div>
 
       {/* Mobile comments drawer */}
-      {narrow && commentsOpen && (
+      {showComments && narrow && commentsOpen && (
         <>
           <div onClick={() => setCommentsOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 40 }} />
           <div

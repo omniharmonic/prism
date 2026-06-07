@@ -54,6 +54,51 @@ export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
 }
 
+// ---- collab kinds (type-aware seeding/persistence) ----
+// `document` → TipTap XML fragment (HTML). `code` → a Y.Text of raw source
+// (CodeMirror binds to it). Spreadsheet/canvas get their own kinds as their
+// collab editors land; until then they aren't routed to collab by the client.
+export type CollabKind = "document" | "code";
+export const CODE_TEXT_FIELD = "codemirror";
+
+const CODE_EXTS = new Set([
+  "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
+  "css", "scss", "less", "json", "yaml", "yml", "toml", "sh", "bash", "zsh", "sql",
+  "php", "swift", "kt", "lua", "r", "jl", "ex", "exs", "clj", "html", "htm", "xml",
+]);
+
+interface NoteMeta {
+  path: string | null;
+  tags: string[] | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Detect how a note should be seeded/persisted for collaboration. Mirrors the
+ *  client's inferContentType, simplified to the kinds collab supports. */
+export function noteKind(note: NoteMeta): CollabKind {
+  const pt = note.metadata?.["prism_type"];
+  if (pt === "code") return "code";
+  const tags = new Set(note.tags ?? []);
+  if (tags.has("code")) return "code";
+  const ext = note.path?.split(".").pop()?.toLowerCase();
+  if (ext && CODE_EXTS.has(ext)) return "code";
+  return "document";
+}
+
+/** Raw text → a fresh Y.Doc's encoded state with the code in a Y.Text. */
+export function codeToYUpdate(content: string): Uint8Array {
+  const doc = new Y.Doc();
+  doc.getText(CODE_TEXT_FIELD).insert(0, content ?? "");
+  return Y.encodeStateAsUpdate(doc);
+}
+
+export function yDocToCode(doc: Y.Doc): string {
+  return doc.getText(CODE_TEXT_FIELD).toString();
+}
+
+// Kind is stable per note; cache it at load so store doesn't need to re-fetch.
+const kindCache = new Map<string, CollabKind>();
+
 const toMs = (iso: string | null | undefined): number => (iso ? Date.parse(iso) || 0 : 0);
 
 /** Read a header whether `requestHeaders` is a Fetch Headers (typed) or a node
@@ -122,15 +167,21 @@ export async function authorizeConnection(
  * Leaves the doc empty if nothing is loadable. Mutates and returns `doc`.
  */
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
-  if (doc.getXmlFragment(FIELD).length > 0) return doc; // already populated this run
-
   let note: { content: string; updatedAt: string | null } | null = null;
+  let kind: CollabKind = kindCache.get(documentName) ?? "document";
   try {
     const n = await vault.getNote(documentName);
     note = { content: n.content, updatedAt: n.updatedAt };
+    kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata });
+    kindCache.set(documentName, kind);
   } catch {
     /* note may not be readable; leave empty */
   }
+
+  // "Already populated this run" guard is kind-specific (document uses an XML
+  // fragment; code uses a Y.Text). Without this a reconnect re-seeds over live edits.
+  const populated = kind === "code" ? doc.getText(CODE_TEXT_FIELD).length > 0 : doc.getXmlFragment(FIELD).length > 0;
+  if (populated) return doc;
 
   const stored = getDocState(documentName);
   const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
@@ -138,7 +189,8 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   if (stored && !externallyEdited) {
     Y.applyUpdate(doc, stored.state); // live CRDT state is current
   } else if (note) {
-    Y.applyUpdate(doc, contentToYUpdate(note.content)); // seed (or re-seed on external edit)
+    const seed = kind === "code" ? codeToYUpdate(note.content) : contentToYUpdate(note.content);
+    Y.applyUpdate(doc, seed); // seed (or re-seed on external edit)
   }
   return doc;
 }
@@ -151,9 +203,21 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
  */
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
   let sourceUpdatedAt: number | null = null;
+  // Determine kind from cache, or re-fetch — a wrong default would persist code
+  // as HTML and corrupt the note. Stores are debounced, so the extra read is cheap.
+  let kind = kindCache.get(documentName);
+  if (!kind) {
+    try {
+      const n = await vault.getNote(documentName);
+      kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata });
+      kindCache.set(documentName, kind);
+    } catch {
+      kind = "document";
+    }
+  }
   try {
-    const html = yDocToHtml(doc);
-    const updated = await vault.updateNote(documentName, { content: html });
+    const content = kind === "code" ? yDocToCode(doc) : yDocToHtml(doc);
+    const updated = await vault.updateNote(documentName, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
   } catch {
     /* vault write failed — still persist CRDT state below */
