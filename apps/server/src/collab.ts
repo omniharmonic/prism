@@ -27,6 +27,7 @@ import { marked } from "marked";
 import { config } from "./config";
 import { vault } from "./parachute";
 import { verifyCapability } from "./auth/capability";
+import { isLocalRequest } from "./auth/local";
 import { getSession, grantsForUser, grantsForCapability, getDocState, saveDocState, type Grant } from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
 
@@ -208,15 +209,16 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
   return s ? s.email : null;
 }
 
-/** Resolve the connection's effective level for a note (session wins over link). */
-export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null): Promise<Level | null> {
-  // Desktop owner path: the trusted Tauri app presents the dedicated COLLAB_TOKEN
-  // (shared between the server .env and the desktop config) to join live docs as
-  // the owner. Kept separate from the vault token so the powerful vault credential
-  // never enters the webview. The vault token is also accepted as a fallback (its
-  // holder already has full vault access, so it's no new exposure). Guarded against
-  // empty so an unset secret can't match a blank token.
-  if (token && ((config.collabToken && token === config.collabToken) || (config.parachuteToken && token === config.parachuteToken))) {
+/** Resolve the connection's effective level for a note (session wins over link).
+ *  `isLocal` = the connection came straight from loopback (the desktop app), not
+ *  the public tunnel; only then is the owner-token path honored. */
+export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
+  // Desktop owner path: the trusted Tauri app (on localhost) presents the dedicated
+  // COLLAB_TOKEN to join live docs as the owner — kept separate from the vault token
+  // so that powerful credential never enters the webview. LOCAL-ONLY: a token over
+  // the public tunnel is ignored, so a leaked token grants nothing from the internet.
+  // The vault token is accepted too (its holder already has full vault access).
+  if (isLocal && token && ((config.collabToken && token === config.collabToken) || (config.parachuteToken && token === config.parachuteToken))) {
     return "own";
   }
 
@@ -251,8 +253,9 @@ export async function authorizeConnection(
   token: string,
   cookieHeader: string | null,
   connectionConfig: { readOnly: boolean },
+  isLocal = false,
 ): Promise<Level> {
-  const level = await resolveLevel(documentName, token, cookieHeader);
+  const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
   if (!atLeast(level, "view")) throw new Error("Forbidden");
   if (!atLeast(level, "suggest")) connectionConfig.readOnly = true;
   return level as Level;
@@ -347,7 +350,10 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
 export const hocuspocus = new Hocuspocus({
   async onAuthenticate(data) {
     const cookie = headerGet(data.requestHeaders, "cookie");
-    const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig);
+    // Local (loopback) connections carry no proxy headers; the tunnel always does.
+    // Only local connections may use the owner-token path (see resolveLevel).
+    const isLocal = isLocalRequest((k) => headerGet(data.requestHeaders, k));
+    const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig, isLocal);
     return { level };
   },
   onLoadDocument: (data) => loadDocumentState(data.documentName, data.document),

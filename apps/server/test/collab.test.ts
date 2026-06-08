@@ -85,30 +85,38 @@ test("a suggest-level connection may write (not read-only)", async () => {
   assert.equal(cc.readOnly, false);
 });
 
-test("the desktop app connects as owner by presenting the vault token", async () => {
+test("the desktop app connects as owner by presenting the vault token (LOCAL only)", async () => {
   const { config } = await import("../src/config");
   fv.put({ id: "n1", content: "x", tags: ["private"] });
   const cc = { readOnly: false };
-  // No cookie, no capability — just the shared vault token the desktop holds.
-  const level = await authorizeConnection("n1", config.parachuteToken, null, cc);
+  // isLocal=true: a loopback connection from the desktop.
+  const level = await authorizeConnection("n1", config.parachuteToken, null, cc, true);
   assert.equal(level, "own");
   assert.equal(cc.readOnly, false);
 });
 
-test("the desktop app connects as owner with the dedicated COLLAB_TOKEN", async () => {
+test("the desktop app connects as owner with the dedicated COLLAB_TOKEN (LOCAL only)", async () => {
   const { config } = await import("../src/config");
   assert.ok(config.collabToken, "COLLAB_TOKEN must be set in .env.test");
   fv.put({ id: "n1", content: "x", tags: ["private"] });
   const cc = { readOnly: false };
-  const level = await authorizeConnection("n1", config.collabToken, null, cc);
+  const level = await authorizeConnection("n1", config.collabToken, null, cc, true);
   assert.equal(level, "own");
-  assert.equal(cc.readOnly, false);
+});
+
+test("the owner token over the PUBLIC tunnel (non-local) is REJECTED", async () => {
+  const { config } = await import("../src/config");
+  fv.put({ id: "n1", content: "secret", tags: ["private"] });
+  const cc = { readOnly: false };
+  // isLocal defaults to false → a token presented from the internet is inert.
+  await assert.rejects(() => authorizeConnection("n1", config.collabToken, null, cc), /Forbidden/);
+  await assert.rejects(() => authorizeConnection("n1", config.parachuteToken, null, cc), /Forbidden/);
 });
 
 test("a bogus token is NOT treated as the desktop owner", async () => {
   fv.put({ id: "n1", content: "secret", tags: ["private"] });
   const cc = { readOnly: false };
-  await assert.rejects(() => authorizeConnection("n1", "not-the-vault-token", null, cc), /Forbidden/);
+  await assert.rejects(() => authorizeConnection("n1", "not-the-vault-token", null, cc, true), /Forbidden/);
 });
 
 test("the owner connects with full ('own') write access via the session cookie", async () => {

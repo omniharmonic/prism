@@ -10,6 +10,7 @@ import type { Context } from "hono";
 import { config } from "../config";
 import { readSession } from "./session";
 import { verifyCapability } from "./capability";
+import { isLocalRequest } from "./local";
 import { grantsForUser, grantsForCapability, type Grant } from "../db";
 
 export type Actor =
@@ -29,12 +30,17 @@ export function resolveActor(c: Context): Actor {
     };
   }
 
-  // Desktop owner path: the trusted Tauri app presents the dedicated COLLAB_TOKEN
-  // (or the vault token) as a Bearer token. This authenticates it as the owner for
-  // HTTP routes (e.g. /acl share-link creation) the same way it joins /collab —
-  // no new exposure (the token-holder already has full vault access).
+  // Desktop owner path: the trusted Tauri app (talking to localhost) presents the
+  // dedicated COLLAB_TOKEN (or vault token) as a Bearer token to authenticate as
+  // the owner for HTTP routes (e.g. /acl share-link creation). LOCAL-ONLY: a token
+  // presented over the public tunnel is ignored, so even a leaked token can't grant
+  // owner access from the internet.
   const bearer = bearerToken(c);
-  if (bearer && ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))) {
+  if (
+    bearer &&
+    isLocalRequest((k) => c.req.header(k)) &&
+    ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))
+  ) {
     return { kind: "user", email: config.ownerEmail, isOwner: true, grants: grantsForUser(config.ownerEmail) };
   }
 
