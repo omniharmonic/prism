@@ -1,110 +1,118 @@
 # Deploying the Prism Server (home server)
 
 The Prism Server is the single trust boundary for the web/shared experience: it
-holds the vault token, enforces permissions, serves the web app, and runs collab.
-Run it on a machine that stays on (home server / always-on box), behind a
-Cloudflare tunnel so a sent link "just works" without your laptop open.
+holds the vault token, enforces permissions, serves the web app, and runs
+real-time collab. Run it on an always-on machine, behind a Cloudflare tunnel so a
+sent link "just works" without your laptop open.
 
-## 1. Build the web app (served by the server, same-origin)
+> Read **[SECURITY.md](../../SECURITY.md)** for the full threat model. The one
+> rule: the vault token never leaves this server.
+
+## 1. Configure (generates strong secrets for you)
+
+```bash
+cd apps/server
+npm run setup          # interactive: paste the vault token + owner email; secrets auto-generated
+```
+
+This writes `apps/server/.env` (chmod 600, gitignored). It mints
+`SESSION_SECRET`, `CAPABILITY_SECRET`, and `COLLAB_TOKEN` for you; you provide:
+- `APP_ORIGIN` — your public https hostname (e.g. `https://prism.your-domain`).
+- `OWNER_EMAIL` — the full-access admin.
+- `PARACHUTE_TOKEN` — mint with
+  `parachute auth mint-token --scope vault:default:write --expires-in 31536000`.
+- `RESEND_API_KEY` (optional but **required in prod** so magic links/invites are
+  emailed, not just logged) + `MAGIC_FROM` (a Resend-verified sender).
+
+(Prefer manual? Copy `.env.example` → `.env` and fill it in. Never commit `.env`.)
+
+## 2. Build the web app (served same-origin by the server)
 
 ```bash
 npm run build -w @prism/web        # → apps/web/dist
 ```
 
-## 2. Production `.env` (apps/server/.env — gitignored, never commit)
-
-```bash
-cd apps/server
-cat > .env <<EOF
-PORT=8787
-APP_ORIGIN=https://prism.<your-domain>        # the public https origin (drives Secure cookies + HSTS)
-PARACHUTE_URL=http://localhost:1940
-PARACHUTE_VAULT=default
-PARACHUTE_TOKEN=<hub JWT: parachute auth mint-token --scope vault:default:write --expires-in 31536000>
-SESSION_SECRET=$(openssl rand -base64 48)
-CAPABILITY_SECRET=$(openssl rand -base64 48)
-OWNER_EMAIL=benjamin@opencivics.co
-RESEND_API_KEY=<resend key — REQUIRED in prod so magic links are emailed, not logged>
-MAGIC_FROM=Prism <login@your-domain>
-DB_PATH=./prism-server.db
-WEB_ROOT=../web/dist
-EOF
-```
-
-Generate `SESSION_SECRET`/`CAPABILITY_SECRET` once and keep them stable (rotating
-them invalidates all sessions / capability links). The `PARACHUTE_TOKEN` stays
-**only** here — it is never sent to a browser.
-
 ## 3. Run it (keep it alive)
 
 ```bash
-cd apps/server && npm start          # node --env-file=.env src/index.ts (tsx)
+cd apps/server && npm start        # node --env-file=.env --import tsx src/index.ts
 ```
 
-For uptime use a process manager — e.g. pm2:
+For uptime, use a process manager — e.g. pm2:
 
 ```bash
 pm2 start "npm start" --name prism-server --cwd apps/server
 pm2 save && pm2 startup            # restart on boot
 ```
 
-(or a macOS `launchd` plist / systemd unit running the same command).
+> The server compiles via tsx on start and does **not** hot-reload. After any
+> code or `.env` change, `pm2 restart prism-server`.
 
 ## 4. Cloudflare tunnel → localhost:8787
 
-Use a **separate hostname** from the vault/MCP tunnel (`agent.omniharmonic.com`
-stays pointed at the hub). Add an ingress rule to your `cloudflared` config:
+Use a hostname dedicated to Prism. `~/.cloudflared/<config>.yml`:
 
 ```yaml
-# ~/.cloudflared/config.yml
 ingress:
-  - hostname: prism.<your-domain>
+  - hostname: prism.your-domain
     service: http://localhost:8787
-  # ...existing rules (agent.omniharmonic.com → hub) ...
   - service: http_status:404
 ```
 
 ```bash
-cloudflared tunnel route dns <tunnel-name> prism.<your-domain>
-cloudflared tunnel run <tunnel-name>        # (already running as a service in most setups)
+cloudflared tunnel route dns <tunnel-name> prism.your-domain
+cloudflared tunnel run <tunnel-name>     # (run as a service for uptime)
 ```
 
-Set `APP_ORIGIN=https://prism.<your-domain>` to match.
+Set `APP_ORIGIN=https://prism.your-domain` to match.
 
-## 5. Verify (from a device that is NOT the server)
+> **Do not** port-forward `8787` directly to the internet. Public access must go
+> through the tunnel (or another proxy that sets `X-Forwarded-For`), because the
+> local-only owner-token gate trusts the *absence* of a forwarding header to mean
+> "this is the local desktop." See SECURITY.md.
 
-- `https://prism.<your-domain>/` → Login screen (NOT the vault).
-- Sign in with `OWNER_EMAIL` → full app; `document.cookie` empty (httpOnly session).
-- Share a note → open the capability link in a private window → only that note.
-- `https://prism.<your-domain>/api/notes` unauthenticated → `[]` (never the vault).
+## 5. Connect the desktop app (optional, for desktop ⇄ web ⇄ phone live sync)
 
-## Security posture (built in)
+The Tauri desktop app joins the same real-time collab and can mint share links by
+talking to **this server on localhost** with the dedicated `COLLAB_TOKEN`. Add to
+the desktop config (macOS: `~/Library/Application Support/prism/prism-config.json`):
 
-- Browser holds **no vault token**; auth is an httpOnly, SameSite=Lax, Secure
-  (on https) session cookie, or an HMAC capability token.
-- **Invite-only accounts.** There is no open self-signup. The owner signs in via
-  an **owner-only** magic link (bootstrap/recovery). Everyone else is **invited**
-  by the owner → registers a **password account** (scrypt) → logs in with email +
-  password. Sharing by email auto-invites, binding the grant to a real account.
-  Generic 401s (no enumeration); `/auth/login`,`/auth/register`,`/auth/request`,
-  `/auth/callback` are rate-limited.
-- Gateway authorizes + tag-filters every read/write; non-owner non-allowlisted
-  paths → 403. `effectiveLevel` is the authoritative guard. **A signed-in
-  non-owner with no grants sees nothing** — authentication never implies
-  authorization; the graph/vault is 403 for everyone but the owner.
-- Invites/magic links: single-use, SHA-256-hashed at rest (invites 7-day,
-  magic links 15-min).
-- Security headers: `X-Content-Type-Options`, `Referrer-Policy`,
-  `X-Frame-Options`, HSTS on https.
-- Capability links are revocable instantly (delete the grant); vault-token
-  revocation lags ~60s (Parachute cache) — prefer gateway-level revocation.
+```json
+"collab_url": "ws://localhost:8787/collab",
+"collab_token": "<the COLLAB_TOKEN from apps/server/.env>"
+```
 
-### Known limitations / future hardening
-- The **suggest vs. edit** distinction is enforced client-side (suggest-level is
-  locked into suggest mode); the hard boundary (which notes you can touch) is
-  server-enforced by the grant. Server-side suggest-only enforcement is future work.
-- No CSP yet (the SPA uses inline element styles); add once with full testing.
-- Editing a shared note on the **desktop** app (direct Tauri→Parachute) while a
-  collab session is live can diverge; onLoadDocument re-seeds from Parachute when
-  it detects an external edit, but concurrent desktop+web editing of the same
-  note isn't fully reconciled.
+Restart the desktop app. (The token is local-only — it's rejected over the tunnel,
+so it's safe to keep in the local config. Keep it in sync with the server's value.)
+
+## 6. Verify (from a device that is NOT the server)
+
+```bash
+curl https://prism.your-domain/api/notes          # → []  (never the vault, when anon)
+curl -o /dev/null -w "%{http_code}\n" https://prism.your-domain/api/graph   # → 403
+```
+
+- `https://prism.your-domain/` → the app; signed out, `/auth/me` is 401.
+- Sign in as `OWNER_EMAIL` → full app; in devtools `document.cookie` is empty
+  (httpOnly session) and `localStorage` holds no token.
+- Share a note → open the link in a private window → only that one note loads.
+
+## Security posture (summary — full details in SECURITY.md)
+
+- Browser/phone hold **no vault token** (httpOnly session cookie or HMAC
+  capability link only). The desktop uses a dedicated, **local-only** token.
+- **Invite-only** accounts; owner-only magic link; generic 401s; rate-limited auth.
+- Gateway authorizes + tag-filters every read/write; deny-by-default 403; a
+  signed-in non-owner with no grants sees nothing.
+- Owner-token (COLLAB_TOKEN / vault token) is honored **only from localhost** —
+  inert over the public tunnel even if leaked.
+- Hardened headers incl. **Content-Security-Policy**, `X-Frame-Options: DENY`,
+  HSTS, `Permissions-Policy`. No secrets in git or client bundles (audited).
+- Capability links revoke instantly; vault-token revocation lags ~60s (Parachute
+  cache) — prefer gateway-level revocation.
+
+### Future hardening
+- Server-side enforcement of **suggest-only** (today suggest-level is locked into
+  suggest mode client-side; the hard "which notes" boundary is server-enforced).
+- Self-host Excalidraw's runtime fonts to drop the one third-party (`esm.sh`,
+  fonts only) request from the canvas.
