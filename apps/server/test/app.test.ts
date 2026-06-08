@@ -27,7 +27,13 @@ test("security headers are present on every response", async () => {
   const r = await app.request("/auth/me");
   assert.equal(r.headers.get("x-content-type-options"), "nosniff");
   assert.equal(r.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
-  assert.equal(r.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.equal(r.headers.get("x-frame-options"), "DENY");
+  assert.match(r.headers.get("permissions-policy") ?? "", /camera=\(\)/);
+  // CSP locks scripts to self (no inline-script) and forbids framing.
+  const csp = r.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /script-src 'self'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /object-src 'none'/);
   // appOrigin is http in the test env → HSTS must NOT be set (https-only).
   assert.equal(r.headers.get("strict-transport-security"), null);
 });
