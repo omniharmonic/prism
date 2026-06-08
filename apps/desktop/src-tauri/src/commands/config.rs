@@ -398,47 +398,49 @@ pub fn check_claude_cli() -> Result<serde_json::Value, PrismError> {
     }
 }
 
-/// Mint a collaboration share link for a note. The collab Worker validates this
-/// token against the vault before signing a per-note capability — so the vault
-/// token never leaves the desktop process, and only a note-scoped grant is
-/// embedded in the link.
+/// Mint a collaboration share link for a note via the Prism Server's /acl API —
+/// the same path the web app uses, so links live on the real domain and join the
+/// current real-time collab. Authenticates as the owner with the dedicated
+/// COLLAB_TOKEN (Bearer); the server signs a note-scoped capability and returns
+/// the full public link (built from its APP_ORIGIN).
 #[tauri::command]
 pub async fn create_collab_share_link(
     note_id: String,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<String, PrismError> {
-    const WORKER: &str = "https://prism-collab.benjamin-7c2.workers.dev";
-    const WEB_BASE: &str = "https://prism-5ko.pages.dev";
-
-    let token = config.parachute_api_key.clone();
-    if token.is_empty() {
-        return Err(PrismError::Config("No vault token configured".into()));
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+        ));
     }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
 
     let resp = reqwest::Client::new()
-        .post(format!("{WORKER}/grant"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "noteId": note_id }))
+        .post(format!("{http_base}/acl/notes/{}/links", urlencoding::encode(&note_id)))
+        .bearer_auth(&config.collab_token)
+        .json(&serde_json::json!({ "level": "edit", "expiresInDays": 30 }))
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| PrismError::Other(format!("collab grant request failed: {e}")))?;
+        .map_err(|e| PrismError::Other(format!("share-link request failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(PrismError::Other(format!("collab grant failed: {}", resp.status())));
+        return Err(PrismError::Other(format!("share-link failed: {}", resp.status())));
     }
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| PrismError::Other(format!("collab grant parse failed: {e}")))?;
-    let grant = body
-        .get("grant")
-        .and_then(|g| g.as_str())
-        .ok_or_else(|| PrismError::Other("collab grant missing in response".into()))?;
-
-    Ok(format!(
-        "{WEB_BASE}/collab/{}?t={}",
-        urlencoding::encode(&note_id),
-        urlencoding::encode(grant)
-    ))
+        .map_err(|e| PrismError::Other(format!("share-link parse failed: {e}")))?;
+    body.get("url")
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| PrismError::Other("share-link missing url in response".into()))
 }
 
 /// Get full config (for Settings UI to populate fields).

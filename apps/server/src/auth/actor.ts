@@ -29,6 +29,15 @@ export function resolveActor(c: Context): Actor {
     };
   }
 
+  // Desktop owner path: the trusted Tauri app presents the dedicated COLLAB_TOKEN
+  // (or the vault token) as a Bearer token. This authenticates it as the owner for
+  // HTTP routes (e.g. /acl share-link creation) the same way it joins /collab —
+  // no new exposure (the token-holder already has full vault access).
+  const bearer = bearerToken(c);
+  if (bearer && ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))) {
+    return { kind: "user", email: config.ownerEmail, isOwner: true, grants: grantsForUser(config.ownerEmail) };
+  }
+
   const token = c.req.query("t") ?? capabilityHeader(c);
   if (token) {
     const claims = verifyCapability(token);
@@ -48,4 +57,9 @@ export function resolveActor(c: Context): Actor {
 function capabilityHeader(c: Context): string | undefined {
   const h = c.req.header("authorization");
   return h?.startsWith("Capability ") ? h.slice("Capability ".length) : undefined;
+}
+
+function bearerToken(c: Context): string | undefined {
+  const h = c.req.header("authorization");
+  return h?.startsWith("Bearer ") ? h.slice("Bearer ".length) : undefined;
 }
