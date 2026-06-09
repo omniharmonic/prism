@@ -152,13 +152,34 @@ export function CollabEditor({
   return (
     <>
       <style>{`
-        .collaboration-caret__caret, .collaboration-cursor__caret {
-          border-left: 1px solid currentColor; border-right: 1px solid currentColor;
-          margin-left: -1px; margin-right: -1px; pointer-events: none; position: relative; word-break: normal;
+        /* Remote-collaborator caret + name tag (Google-Docs style). The active
+           class is collaboration-carets__* (plural) in @tiptap/extension-collaboration-caret
+           v3 — the older singular / y-prosemirror "cursor" names are kept too so a
+           version bump can't silently regress this back to a page-wide block. The
+           per-user color rides in on the element's inline border-color / background-color,
+           so the caret rule sets ONLY width+style (a "border-left" shorthand would
+           reset the color to currentColor and lose the tint). */
+        .collaboration-carets__caret, .collaboration-caret__caret, .ProseMirror-yjs-cursor {
+          border-left-width: 1.5px; border-left-style: solid;
+          border-right: none;
+          margin-left: -1px; margin-right: -1px;
+          box-sizing: border-box;
+          pointer-events: none; position: relative; word-break: normal;
         }
-        .collaboration-caret__label, .collaboration-cursor__label {
-          position: absolute; top: -1.4em; left: -1px; font-size: 11px; font-weight: 600;
-          line-height: 1; color: #fff; padding: 1px 4px; border-radius: 4px 4px 4px 0; white-space: nowrap; user-select: none;
+        .collaboration-carets__label, .collaboration-caret__label, .ProseMirror-yjs-cursor > div {
+          position: absolute; top: -1.35em; left: -1px;
+          display: inline-block; width: auto; max-width: 220px;
+          font-size: 11px; font-weight: 600; line-height: 1.4;
+          color: #fff; padding: 0 5px; border-radius: 4px 4px 4px 0;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          user-select: none; pointer-events: none;
+          /* Show the name on arrival/movement, then fade so it doesn't clutter —
+             the caret bar stays. Yjs rebuilds the element on each awareness
+             update, so the tag re-appears whenever the peer moves or types. */
+          opacity: 0; animation: prism-caret-label 2.6s ease-out forwards;
+        }
+        @keyframes prism-caret-label {
+          0%, 55% { opacity: 1; } 100% { opacity: 0; }
         }
       `}</style>
       {toolbar && editor && editable && !commentOnly && (
