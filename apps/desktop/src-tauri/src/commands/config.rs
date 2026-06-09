@@ -443,6 +443,58 @@ pub async fn create_collab_share_link(
         .ok_or_else(|| PrismError::Other("share-link missing url in response".into()))
 }
 
+/// Generic proxy to the Prism Server's owner-only `/acl` API, authenticated with
+/// the desktop COLLAB_TOKEN (Bearer). This is the single bridge that lets the
+/// desktop frontend drive the *full* Google-Docs-style share surface (people
+/// grants, capability links, tag-grants) without ever holding the token — the
+/// same ACL surface the web app reaches over its session cookie. The frontend
+/// builds `path` (e.g. `/notes/123/people`) and `method`; we return the parsed
+/// JSON body (null for an empty 2xx, e.g. a 204 on DELETE).
+#[tauri::command]
+pub async fn acl_request(
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+        ));
+    }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
+
+    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
+    let mut req = reqwest::Client::new()
+        .request(m, format!("{http_base}/acl{path}"))
+        .bearer_auth(&config.collab_token)
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("acl request failed: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(PrismError::Other(format!("acl {method} {path} → {status}")));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("acl parse failed: {e}")))
+}
+
 /// Get full config (for Settings UI to populate fields).
 /// Masks sensitive keys for display.
 #[tauri::command]

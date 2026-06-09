@@ -205,6 +205,7 @@ pub fn run() {
             config::check_google_cli,
             config::get_full_config,
             config::create_collab_share_link,
+            config::acl_request,
             config::update_config,
             config::discover_meetily_path,
             // Editor events
