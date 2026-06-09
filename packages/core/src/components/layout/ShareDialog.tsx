@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Check, Copy, X, Link2, Trash2, Loader2 } from "lucide-react";
-import type { CollabSharing, NoteAccess, ShareLevel } from "../../data/CollabSharing";
+import type { CollabSharing, NoteAccess, SetPersonResult, ShareLevel } from "../../data/CollabSharing";
 
 const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
 const LEVEL_LABEL: Record<ShareLevel, string> = {
@@ -33,6 +33,9 @@ export function ShareDialog({
   const [linkLevel, setLinkLevel] = useState<ShareLevel>("view");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  // Accept link for a freshly-invited person — shown so the owner can hand it
+  // over directly (email delivery may be unconfigured/unpaid).
+  const [invite, setInvite] = useState<{ email: string; url: string } | null>(null);
 
   const refresh = useCallback(async () => {
     if (!sharing.getAccess) return;
@@ -52,12 +55,25 @@ export function ShareDialog({
     void refresh();
   }, [refresh]);
 
+  // Surface the accept link when granting created an invite (the person had no
+  // account yet), and pre-copy it so the owner can paste it straight into a DM.
+  function onGranted(targetEmail: string, res?: SetPersonResult) {
+    if (res?.invited && res.inviteUrl) {
+      setInvite({ email: targetEmail, url: res.inviteUrl });
+      void navigator.clipboard.writeText(res.inviteUrl).catch(() => {});
+      setCopied("invite");
+      setTimeout(() => setCopied(null), 2000);
+    }
+  }
+
   async function addPerson() {
     if (!sharing.setPerson || !/.+@.+\..+/.test(email)) return;
     setBusy(true);
     try {
-      await sharing.setPerson(noteId, email.trim().toLowerCase(), addLevel);
+      const target = email.trim().toLowerCase();
+      const res = await sharing.setPerson(noteId, target, addLevel);
       setEmail("");
+      onGranted(target, res);
       await refresh();
     } catch {
       setError("Couldn't add that person.");
@@ -68,7 +84,8 @@ export function ShareDialog({
 
   async function changePerson(e: string, level: ShareLevel) {
     if (!sharing.setPerson) return;
-    await sharing.setPerson(noteId, e, level);
+    const res = await sharing.setPerson(noteId, e, level);
+    onGranted(e, res);
     await refresh();
   }
 
@@ -176,6 +193,44 @@ export function ShareDialog({
             Add
           </button>
         </div>
+
+        {/* Invite link for a freshly-invited person — hand it over directly when
+            email delivery isn't set up. */}
+        {invite && (
+          <div
+            className="mb-3 p-2.5 rounded-lg"
+            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+                Invite link for {invite.email}
+              </span>
+              <button onClick={() => setInvite(null)} className="p-0.5 rounded hover:bg-[var(--glass-hover)]">
+                <X size={12} style={{ color: "var(--text-muted)" }} />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                readOnly
+                value={invite.url}
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 text-xs px-2 py-1.5 rounded outline-none"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}
+              />
+              <button
+                onClick={() => copyLink(invite.url, "invite")}
+                className="px-2 py-1.5 rounded text-xs flex items-center gap-1"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                {copied === "invite" ? <Check size={13} /> : <Copy size={13} />}
+                {copied === "invite" ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <p className="text-[11px] mt-1.5" style={{ color: "var(--text-muted)" }}>
+              Send this so they can create their account. Expires in 7 days.
+            </p>
+          </div>
+        )}
 
         {/* People with access */}
         <div className="mb-1 text-[11px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>

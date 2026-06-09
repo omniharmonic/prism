@@ -25,6 +25,13 @@ export interface NoteAccess {
   links: ShareLink[];
   tagAccess: TagAccess[];
 }
+/** Result of granting a person: when they had no account yet, an invite is
+ *  issued and its accept URL is returned so the owner can hand it over directly
+ *  (email may be unconfigured/unpaid). Already-registered people → invited:false. */
+export interface SetPersonResult {
+  invited: boolean;
+  inviteUrl?: string;
+}
 
 /**
  * Seam for sharing. The web shell implements the full ACL surface against the
@@ -39,7 +46,7 @@ export interface CollabSharing {
 
   /** Full per-note access (people + links + tag-grants). Presence enables the rich dialog. */
   getAccess?(noteId: string): Promise<NoteAccess>;
-  setPerson?(noteId: string, email: string, level: ShareLevel): Promise<void>;
+  setPerson?(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
   removePerson?(noteId: string, email: string): Promise<void>;
   createLink?(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink>;
   revokeLink?(noteId: string, linkId: string): Promise<void>;

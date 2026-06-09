@@ -30,6 +30,7 @@ export type {
   SharePerson,
   TagAccess,
   NoteAccess,
+  SetPersonResult,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

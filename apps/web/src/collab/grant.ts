@@ -1,4 +1,4 @@
-import type { CollabSharing, NoteAccess, ShareLevel, ShareLink } from "@prism/core";
+import type { CollabSharing, NoteAccess, SetPersonResult, ShareLevel, ShareLink } from "@prism/core";
 import { GATEWAY_ORIGIN } from "../config";
 
 /**
@@ -34,8 +34,8 @@ export const webCollabSharing: CollabSharing = {
   async getAccess(noteId: string): Promise<NoteAccess> {
     return (await acl(`/notes/${enc(noteId)}`)).json();
   },
-  async setPerson(noteId: string, email: string, level: ShareLevel): Promise<void> {
-    await acl(`/notes/${enc(noteId)}/people`, { method: "PUT", body: JSON.stringify({ email, level }) });
+  async setPerson(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/notes/${enc(noteId)}/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
   },
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });

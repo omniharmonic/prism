@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CollabSharing, NoteAccess, ShareLevel, ShareLink } from "@prism/core";
+import type { CollabSharing, NoteAccess, SetPersonResult, ShareLevel, ShareLink } from "@prism/core";
 
 /**
  * Desktop implementation of the CollabSharing seam — full parity with the web
@@ -36,8 +36,8 @@ export const tauriCollabSharing: CollabSharing = {
   async getAccess(noteId: string): Promise<NoteAccess> {
     return acl<NoteAccess>("GET", `/notes/${enc(noteId)}`);
   },
-  async setPerson(noteId: string, email: string, level: ShareLevel): Promise<void> {
-    await acl("PUT", `/notes/${enc(noteId)}/people`, { email, level });
+  async setPerson(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return acl<SetPersonResult>("PUT", `/notes/${enc(noteId)}/people`, { email, level });
   },
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl("DELETE", `/notes/${enc(noteId)}/people/${enc(email)}`);
