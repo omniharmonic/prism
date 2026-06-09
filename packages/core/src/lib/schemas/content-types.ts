@@ -5,7 +5,22 @@ import type { ContentType, Note } from "../types";
  * Both `Note` and `NoteTreeEntry` satisfy it — accepting this lets the lean
  * tree-view payload share the same type-inference helpers as full notes.
  */
-type NoteForTypeInference = Pick<Note, "metadata" | "tags" | "path">;
+type NoteForTypeInference = Pick<Note, "metadata" | "tags" | "path"> & {
+  // Optional: when the full note body is available, content sniffing catches
+  // structural types (e.g. an Excalidraw canvas) even if tags/metadata are missing
+  // or wrong. Lean tree/tab payloads omit it and fall back to tag/ext inference.
+  content?: string | null;
+};
+
+/** A note body that is an Excalidraw scene (the canonical canvas format). This is
+ *  ground truth — a note containing this IS a canvas no matter what its tags say. */
+export function looksLikeExcalidrawScene(content: string | null | undefined): boolean {
+  if (!content) return false;
+  const c = content.trimStart();
+  if (!c.startsWith("{")) return false;
+  if (!c.includes('"elements"')) return false;
+  return c.includes('"appState"') || c.includes("excalidraw") || /"type"\s*:\s*"(rectangle|ellipse|diamond|arrow|line|freedraw|text|frame)"/.test(c);
+}
 
 // Known Prism renderer types
 const KNOWN_TYPES = new Set<string>([
@@ -21,7 +36,10 @@ const KNOWN_TYPES = new Set<string>([
 // tag is often used organizationally ("belongs to X project"), not structurally ("IS a
 // project definition"). Only use ProjectRenderer when no more specific type is present.
 const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
-  // High-priority: specific renderers
+  // High-priority: specific structural renderers
+  ["canvas", "canvas"],
+  ["code", "code"],
+  ["spreadsheet", "spreadsheet"],
   ["task", "task"],
   ["slides", "presentation"],
   ["briefing", "briefing"],
@@ -56,6 +74,12 @@ const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
 // Infer content type from note metadata, tags, or heuristics
 export function inferContentType(note: NoteForTypeInference): ContentType {
   const meta = note.metadata;
+
+  // 0. Content ground truth FIRST: a note whose body is an Excalidraw scene IS a
+  // canvas — even if a stale tag or the desktop's Rust enrichment stamped a
+  // different prism_type on it (the enrichment defaults unrecognized notes to
+  // "document"). Content wins, so canvases render correctly everywhere.
+  if (looksLikeExcalidrawScene(note.content)) return "canvas";
 
   // 1a. Backend-enriched prism_type (set by Rust enrichment layer)
   if (meta && typeof meta.prism_type === "string" && KNOWN_TYPES.has(meta.prism_type)) {
@@ -115,8 +139,11 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
       case "htm":
         return "website";
       case "csv":
+      case "tsv":
       case "xlsx":
         return "spreadsheet";
+      case "excalidraw":
+        return "canvas";
     }
   }
 

@@ -2,22 +2,26 @@ import { createContext, useContext, type ComponentType, type ReactNode } from "r
 import type { Note } from "../lib/types";
 
 /**
- * Seam that lets a shell make the main-app editor live-collaborative for SHARED
- * notes. The web shell provides a Hocuspocus-backed editor + a hook that reports
- * whether a note is shared; the Canvas swaps to it when so. The default never
- * triggers collab (so desktop / unprovided shells keep the plain editor), which
- * also keeps unshared notes on the offline-capable autosave path.
+ * Seam that lets a shell make the main-app editor live-collaborative. A shell that
+ * provides it routes editing through the real-time layer (Hocuspocus) so every
+ * session — this browser, another browser, a phone — sees edits instantly with no
+ * refresh. The web + desktop shells connect to the Prism Server and go live for ALL
+ * collab-capable notes (not just shared ones), which is what makes real-time a
+ * universal property. The default never triggers collab (unprovided shells keep the
+ * offline autosave editor).
  */
 export interface CollabDocumentSeam {
-  /** Hook: does this note have collaborators (grants/links) → render live editor?
+  /** Hook: should this note render in the live collaborative editor? Canvas only
+   *  passes ids for collab-capable kinds (document/code/spreadsheet/canvas), so a
+   *  shell can simply return true to make those notes always live.
    *  Must be a real hook (called unconditionally by Canvas). */
-  useIsShared: (noteId: string) => boolean;
+  useLiveCollab: (noteId: string) => boolean;
   /** The live collaborative document editor for a note. */
   CollabDocument: ComponentType<{ noteId: string; note: Note }>;
 }
 
 const DEFAULT: CollabDocumentSeam = {
-  useIsShared: () => false,
+  useLiveCollab: () => false,
   CollabDocument: () => null,
 };
 

@@ -13,5 +13,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "y-codemirror.next": "^0.3.5"
   }
 }

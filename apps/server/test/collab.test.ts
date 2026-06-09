@@ -18,6 +18,13 @@ import {
   yDocToHtml,
   loadDocumentState,
   storeDocumentState,
+  noteKind,
+  codeToYUpdate,
+  yDocToCode,
+  csvToYUpdate,
+  yDocToCsv,
+  sceneToYUpdate,
+  yDocToScene,
 } from "../src/collab";
 import { getDocState, saveDocState } from "../src/db";
 import {
@@ -76,6 +83,40 @@ test("a suggest-level connection may write (not read-only)", async () => {
   const level = await authorizeConnection("n1", makeCapability("tag", "team", "suggest"), null, cc);
   assert.equal(level, "suggest");
   assert.equal(cc.readOnly, false);
+});
+
+test("the desktop app connects as owner by presenting the vault token (LOCAL only)", async () => {
+  const { config } = await import("../src/config");
+  fv.put({ id: "n1", content: "x", tags: ["private"] });
+  const cc = { readOnly: false };
+  // isLocal=true: a loopback connection from the desktop.
+  const level = await authorizeConnection("n1", config.parachuteToken, null, cc, true);
+  assert.equal(level, "own");
+  assert.equal(cc.readOnly, false);
+});
+
+test("the desktop app connects as owner with the dedicated COLLAB_TOKEN (LOCAL only)", async () => {
+  const { config } = await import("../src/config");
+  assert.ok(config.collabToken, "COLLAB_TOKEN must be set in .env.test");
+  fv.put({ id: "n1", content: "x", tags: ["private"] });
+  const cc = { readOnly: false };
+  const level = await authorizeConnection("n1", config.collabToken, null, cc, true);
+  assert.equal(level, "own");
+});
+
+test("the owner token over the PUBLIC tunnel (non-local) is REJECTED", async () => {
+  const { config } = await import("../src/config");
+  fv.put({ id: "n1", content: "secret", tags: ["private"] });
+  const cc = { readOnly: false };
+  // isLocal defaults to false → a token presented from the internet is inert.
+  await assert.rejects(() => authorizeConnection("n1", config.collabToken, null, cc), /Forbidden/);
+  await assert.rejects(() => authorizeConnection("n1", config.parachuteToken, null, cc), /Forbidden/);
+});
+
+test("a bogus token is NOT treated as the desktop owner", async () => {
+  fv.put({ id: "n1", content: "secret", tags: ["private"] });
+  const cc = { readOnly: false };
+  await assert.rejects(() => authorizeConnection("n1", "not-the-vault-token", null, cc, true), /Forbidden/);
 });
 
 test("the owner connects with full ('own') write access via the session cookie", async () => {
@@ -146,4 +187,136 @@ test("storeDocumentState still persists CRDT state if the vault write fails", as
   const saved = getDocState("ghost-note");
   assert.ok(saved, "CRDT state must still be persisted");
   assert.equal(saved!.sourceUpdatedAt, null); // no vault timestamp, since the write failed
+});
+
+// ----------------------------------------------------- type-aware (code) kind
+
+test("noteKind detects code by tag, prism_type, and extension; documents otherwise", () => {
+  assert.equal(noteKind({ path: null, tags: ["code"], metadata: null }), "code");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "code" } }), "code");
+  assert.equal(noteKind({ path: "src/foo.py", tags: null, metadata: null }), "code");
+  assert.equal(noteKind({ path: "notes/readme.md", tags: null, metadata: null }), "document");
+  assert.equal(noteKind({ path: null, tags: ["meeting"], metadata: null }), "document");
+});
+
+test("code round-trips EXACTLY as plain text (no HTML mangling — corruption guard)", () => {
+  // The text that broke the document path would be HTML-escaped/wrapped; code must not.
+  const src = "def f(x):\n    return x < 1 && x > 0  # <not html>\n\n\tnested";
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, codeToYUpdate(src));
+  assert.equal(yDocToCode(doc), src);
+});
+
+test("loadDocumentState seeds a code note as raw text, and storeDocumentState writes raw text back", async () => {
+  const src = "const a = 1;\nconsole.log(a > 0 ? '<ok>' : '<no>');";
+  fv.put({ id: "code1", content: src, tags: ["code"], path: "x.ts" });
+
+  const doc = await loadDocumentState("code1", new Y.Doc());
+  assert.equal(yDocToCode(doc), src, "seeded as exact raw text");
+  // It must NOT have been seeded into the document XML fragment.
+  assert.equal(doc.getXmlFragment("default").length, 0);
+
+  // Edit the code and persist.
+  doc.getText("codemirror").insert(doc.getText("codemirror").length, "\n// added");
+  await storeDocumentState("code1", doc);
+  const written = fv.notes.get("code1")!.content;
+  assert.equal(written, src + "\n// added", "vault got raw text, not HTML");
+  assert.doesNotMatch(written, /<p>|<pre>|&lt;/, "no HTML wrapping/escaping");
+});
+
+// ------------------------------------------------ type-aware (spreadsheet) kind
+
+test("noteKind detects spreadsheet by tag, prism_type, and .csv extension", () => {
+  assert.equal(noteKind({ path: null, tags: ["spreadsheet"], metadata: null }), "spreadsheet");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "spreadsheet" } }), "spreadsheet");
+  assert.equal(noteKind({ path: "data/budget.csv", tags: null, metadata: null }), "spreadsheet");
+});
+
+test("CSV round-trips through the Y.Array<Y.Array> cell model", () => {
+  const csv = "name,score\nAda,99\nGrace,100";
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, csvToYUpdate(csv));
+  assert.equal(yDocToCsv(doc), csv);
+});
+
+test("loadDocumentState seeds a spreadsheet into rows, and a cell edit persists back as CSV", async () => {
+  const csv = "a,b,c\n1,2,3";
+  fv.put({ id: "sheet1", content: csv, tags: ["spreadsheet"], path: "t.csv" });
+
+  const doc = await loadDocumentState("sheet1", new Y.Doc());
+  assert.equal(yDocToCsv(doc), csv, "seeded as exact CSV");
+  assert.equal(doc.getXmlFragment("default").length, 0, "not seeded as a document");
+  assert.equal(doc.getArray("rows").length, 2, "two rows in the cell model");
+
+  // Edit cell (1,1): 2 → 20 (delete+insert at index, the CRDT cell update).
+  const rows = doc.getArray<Y.Array<string>>("rows");
+  const row1 = rows.get(1);
+  row1.delete(1, 1);
+  row1.insert(1, ["20"]);
+  await storeDocumentState("sheet1", doc);
+
+  assert.equal(fv.notes.get("sheet1")!.content, "a,b,c\n1,20,3", "vault got updated CSV");
+});
+
+// --------------------------------------------------- type-aware (canvas) kind
+
+test("noteKind detects canvas by tag, prism_type, and .excalidraw extension", () => {
+  assert.equal(noteKind({ path: null, tags: ["canvas"], metadata: null }), "canvas");
+  assert.equal(noteKind({ path: null, tags: null, metadata: { prism_type: "canvas" } }), "canvas");
+  assert.equal(noteKind({ path: "board.excalidraw", tags: null, metadata: null }), "canvas");
+});
+
+test("noteKind detects canvas by CONTENT even with no tag/metadata (the raw-text bug)", () => {
+  const scene = '{"elements":[{"id":"a","type":"rectangle","index":"a0"}],"appState":{}}';
+  // No tag, no prism_type, no extension — exactly the demo-canvas case.
+  assert.equal(noteKind({ path: "_test/demo-canvas", tags: [], metadata: null, content: scene }), "canvas");
+  // A real prose document must NOT be mis-detected as canvas.
+  assert.equal(noteKind({ path: "notes/essay.md", tags: [], metadata: null, content: "# Title\n\nProse about elements and appState." }), "document");
+});
+
+test("canvas scene round-trips through the Y.Map<id, element> model", () => {
+  const scene = JSON.stringify({
+    elements: [
+      { id: "a1", type: "rectangle", x: 0, y: 0, version: 3 },
+      { id: "b2", type: "ellipse", x: 50, y: 60, version: 1 },
+    ],
+    appState: {},
+  });
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  assert.equal(doc.getMap("elements").size, 2);
+  const out = JSON.parse(yDocToScene(doc));
+  // Order-independent compare by id.
+  const byId = Object.fromEntries(out.elements.map((e: { id: string }) => [e.id, e]));
+  assert.equal(byId.a1.type, "rectangle");
+  assert.equal(byId.b2.x, 50);
+});
+
+test("re-seeding a canvas is idempotent (set-by-id overwrites, no duplicate elements)", () => {
+  const scene = JSON.stringify({ elements: [{ id: "x", type: "rectangle", version: 1 }], appState: {} });
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  // Apply the SAME seed again (simulates an external-edit re-seed merge).
+  Y.applyUpdate(doc, sceneToYUpdate(scene));
+  assert.equal(doc.getMap("elements").size, 1, "still one element — no doubling");
+});
+
+test("loadDocumentState seeds a canvas into elements; an element edit persists back as scene JSON", async () => {
+  const scene = JSON.stringify({ elements: [{ id: "r1", type: "rectangle", x: 0, version: 1 }], appState: {} });
+  fv.put({ id: "canvas1", content: scene, tags: ["canvas"], metadata: { prism_type: "canvas" } });
+
+  const doc = await loadDocumentState("canvas1", new Y.Doc());
+  assert.equal(doc.getMap("elements").size, 1, "seeded one element");
+  assert.equal(doc.getXmlFragment("default").length, 0, "not seeded as a document");
+
+  // Move the element + add a new one (the collaborative edit).
+  const map = doc.getMap<{ id: string; x: number; version: number }>("elements");
+  map.set("r1", { id: "r1", x: 100, version: 2 } as never);
+  map.set("r2", { id: "r2", x: 200, version: 1 } as never);
+  await storeDocumentState("canvas1", doc);
+
+  const written = JSON.parse(fv.notes.get("canvas1")!.content);
+  assert.equal(written.elements.length, 2, "scene JSON has both elements");
+  const r1 = written.elements.find((e: { id: string }) => e.id === "r1");
+  assert.equal(r1.x, 100, "moved element persisted");
 });

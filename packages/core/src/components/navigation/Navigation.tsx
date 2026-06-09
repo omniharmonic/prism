@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
@@ -90,7 +91,7 @@ export function Navigation() {
           </div>
 
           {/* Projects / vault notes */}
-          <NavSection label={sidebarLabel} defaultOpen>
+          <NavSection label={sidebarLabel} defaultOpen action={<RefreshNavButton />}>
             <ProjectTree />
           </NavSection>
         </div>
@@ -118,25 +119,66 @@ export function Navigation() {
 function NavSection({
   label,
   defaultOpen = false,
+  action,
   children,
 }: {
   label: string;
   defaultOpen?: boolean;
+  /** Optional control rendered on the right of the section header (e.g. refresh). */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div>
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium uppercase tracking-wider hover:bg-[var(--glass-hover)] transition-colors"
-        style={{ color: "var(--text-muted)" }}
-      >
-        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
-        {label}
-      </button>
+      {/* Header row: the toggle takes the full width; the action sits beside it
+          (kept outside the toggle <button> so it's not a nested button). */}
+      <div className="flex items-center pr-1.5 group">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex-1 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium uppercase tracking-wider hover:bg-[var(--glass-hover)] transition-colors"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+          {label}
+        </button>
+        {action}
+      </div>
       {open && children}
     </div>
+  );
+}
+
+/**
+ * Refreshes the vault tree on demand. Notes created out-of-band (e.g. by the
+ * agent writing straight to Parachute) don't push an invalidation into the
+ * client, so the sidebar can lag until reload — this refetches it immediately.
+ * Refetches all *active* vault queries so the open note/graph update too, and
+ * spins the icon until the refetch settles.
+ */
+function RefreshNavButton() {
+  const queryClient = useQueryClient();
+  const [spinning, setSpinning] = useState(false);
+
+  const refresh = async () => {
+    if (spinning) return;
+    setSpinning(true);
+    try {
+      await queryClient.refetchQueries({ queryKey: ["vault"], type: "active" });
+    } finally {
+      setSpinning(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={refresh}
+      title="Refresh vault"
+      className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <RefreshCw size={12} className={spinning ? "animate-spin" : ""} />
+    </button>
   );
 }

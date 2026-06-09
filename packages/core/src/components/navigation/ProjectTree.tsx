@@ -946,7 +946,10 @@ function TreeNodeView({
   onToggleSelect: (noteId: string, shiftKey?: boolean) => void;
   onNodeClick: (e: React.MouseEvent, node: TreeNode) => boolean;
 }) {
-  const [open, setOpen] = useState(depth === 0);
+  // Start every folder collapsed (including roots) so the tree opens tidy and
+  // the user expands only what they need — they asked not to wade through all
+  // root directories being open on every launch/reload.
+  const [open, setOpen] = useState(false);
   const openTab = useUIStore((s) => s.openTab);
   const isFolder = !node.note && node.children.length > 0;
   const isRenaming = renamingNode?.fullPath === node.fullPath && renamingNode?.note?.id === node.note?.id;

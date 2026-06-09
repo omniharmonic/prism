@@ -34,12 +34,14 @@ async function grantAndInvite(
   resourceType: "note" | "tag",
   resource: string,
   owner: string,
-): Promise<{ invited: boolean }> {
+): Promise<{ invited: boolean; inviteUrl?: string }> {
   ensureUser(email);
   upsertGrant({ subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner });
   if (!hasAccount(email)) {
-    await createInvite(email, null, owner);
-    return { invited: true };
+    // Return the accept URL so the owner can hand it over directly — email may
+    // not be configured/paid, and even when it is, "copy invite link" is useful.
+    const inviteUrl = await createInvite(email, null, owner);
+    return { invited: true, inviteUrl };
   }
   return { invited: false };
 }
@@ -66,8 +68,15 @@ function linkUrl(noteId: string, token: string): string {
 }
 
 function deriveTitle(content: string): string {
-  const line = (content ?? "").split("\n").find((l) => l.trim().length > 0) ?? "Untitled";
-  return line.replace(/^#+\s*/, "").trim().slice(0, 120) || "Untitled";
+  const c = content ?? "";
+  const h = c.match(/<h[1-3][^>]*>(.*?)<\/h[1-3]>/i);
+  if (h?.[1]) return h[1].replace(/<[^>]+>/g, "").trim().slice(0, 120) || "Untitled";
+  if (!c.includes("<")) {
+    const line = c.split("\n").find((l) => l.trim().length > 0);
+    if (line) return line.replace(/^#+\s*/, "").trim().slice(0, 120);
+  }
+  const text = c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return text.slice(0, 100) || "Untitled";
 }
 
 acl.get("/users", (c) => c.json(listUsers()));
@@ -110,8 +119,8 @@ acl.get("/notes/:id", async (c) => {
 acl.put("/notes/:id/people", async (c) => {
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail);
-  return c.json({ ok: true, email: normEmail(email), level, invited });
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
 });
 
 acl.delete("/notes/:id/people/:email", (c) => {
@@ -171,8 +180,8 @@ acl.put("/tags/:tag/people", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail);
-  return c.json({ ok: true, email: normEmail(email), level, invited });
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
 });
 
 acl.delete("/tags/:tag/people/:email", (c) => {

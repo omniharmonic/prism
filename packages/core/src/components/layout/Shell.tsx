@@ -38,12 +38,24 @@ export function Shell() {
     prevTab.current = activeTabId;
   }, [activeTabId, isMobile]);
 
+  // Dynamic viewport height + safe-area insets so the top/bottom bars stay
+  // reachable in an installed PWA (under the iOS notch / home indicator); 100dvh
+  // matches the standalone viewport, which 100vh (h-screen) overshoots.
+  const rootStyle: React.CSSProperties = {
+    height: "100dvh",
+    width: "100%",
+    background: "var(--bg-base)",
+    color: "var(--text-primary)",
+    paddingTop: "env(safe-area-inset-top)",
+    paddingBottom: "env(safe-area-inset-bottom)",
+    paddingLeft: "env(safe-area-inset-left)",
+    paddingRight: "env(safe-area-inset-right)",
+    boxSizing: "border-box",
+  };
+
   if (isMobile) {
     return (
-      <div
-        className="h-screen w-screen flex flex-col overflow-hidden"
-        style={{ background: "var(--bg-base)", color: "var(--text-primary)" }}
-      >
+      <div className="flex flex-col overflow-hidden" style={rootStyle}>
         <div className="relative flex-1 min-h-0">
           {/* Canvas fills the screen */}
           <div className="absolute inset-0">
@@ -73,10 +85,7 @@ export function Shell() {
   }
 
   return (
-    <div
-      className="h-screen w-screen flex flex-col overflow-hidden"
-      style={{ background: "var(--bg-base)", color: "var(--text-primary)" }}
-    >
+    <div className="flex flex-col overflow-hidden" style={rootStyle}>
       {/* Main content area */}
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}

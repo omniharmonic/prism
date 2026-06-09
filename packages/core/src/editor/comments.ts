@@ -91,8 +91,21 @@ export function commentOnSelection(
   user: { name: string; color: string },
   text: string,
 ): string | null {
-  const { from, to, empty } = editor.state.selection;
-  if (empty || from === to) return null;
+  const { from, to } = editor.state.selection;
+  return commentOnRange(editor, ydoc, user, text, from, to);
+}
+
+/** Comment on an explicit range — used by the selection bubble, which captures
+ *  the range up front so moving focus to the composer can't lose it. */
+export function commentOnRange(
+  editor: Editor,
+  ydoc: Y.Doc,
+  user: { name: string; color: string },
+  text: string,
+  from: number,
+  to: number,
+): string | null {
+  if (from === to) return null;
   const id = `c-${Date.now().toString(36)}-${from}`;
   const quote = editor.state.doc.textBetween(from, to, " ").slice(0, 200);
   const markType = editor.schema.marks.comment;

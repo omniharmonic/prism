@@ -67,14 +67,17 @@ export function Canvas() {
   const contentType = isVirtual ? (activeTab?.type ?? null) : (effectiveNote ? inferContentType(effectiveNote) : (activeTab?.type ?? null));
   const Renderer = contentType ? getRenderer(contentType) : null;
 
-  // Shared document notes render in the live collaborative editor (so the owner
-  // sees collaborators' edits in real time, no refresh). The seam's hook is
-  // called unconditionally; it returns false for non-document/empty ids and when
-  // no shell provides collab (desktop), so unshared notes keep the plain editor.
+  // Collab-capable notes render in the live collaborative editor so every session
+  // (this one, another browser, a phone) sees edits in real time with no refresh.
+  // The seam's CollabDocument auto-detects the kind (document → prose, code →
+  // CodeMirror, spreadsheet → grid, canvas → Excalidraw). The hook is called
+  // unconditionally; shells that provide collab return true for these kinds, the
+  // default (offline shells) returns false → plain autosave editor.
+  const COLLAB_TYPES = new Set(["document", "code", "spreadsheet", "canvas"]);
   const collab = useCollabDocumentSeam();
   const collabDocId =
-    !isVirtual && effectiveNote && contentType === "document" ? effectiveNote.id : "";
-  const isSharedDoc = collab.useIsShared(collabDocId) && collabDocId !== "";
+    !isVirtual && effectiveNote && contentType && COLLAB_TYPES.has(contentType) ? effectiveNote.id : "";
+  const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "";
 
   return (
     <div className="flex flex-col h-full">
@@ -87,7 +90,7 @@ export function Canvas() {
           <TagView tag={activeTab.noteId.replace("tag:", "")} />
         ) : !isVirtual && isLoading ? (
           <LoadingSkeleton />
-        ) : effectiveNote && isSharedDoc ? (
+        ) : effectiveNote && isLiveDoc ? (
           <collab.CollabDocument noteId={effectiveNote.id} note={effectiveNote} />
         ) : effectiveNote && Renderer ? (
           <Suspense fallback={<LoadingSkeleton />}>

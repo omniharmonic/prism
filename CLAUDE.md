@@ -90,6 +90,25 @@ Browser ── session cookie OR capability link ──▶ PRISM SERVER (apps/se
 - Run config: `apps/server/.env` (gitignored) — `PARACHUTE_TOKEN`, `SESSION_SECRET`, `CAPABILITY_SECRET`, `OWNER_EMAIL`, optional `RESEND_API_KEY`/`MAGIC_FROM`, `APP_ORIGIN`, `WEB_ROOT` (default `../web/dist`). `assertConfig()` fails fast on missing required secrets.
 - Token rotation: `parachute auth revoke-token <jti>` has a **~60s cache TTL** before the vault enforces it. The macOS desktop config is `~/Library/Application Support/prism/prism-config.json` (NOT `~/.config/prism`).
 
+## Real-time Collaboration (type-aware Hocuspocus)
+
+`apps/server/src/collab.ts` runs a **Hocuspocus (Yjs) WebSocket** at `/collab`. It is **type-aware**: `noteKind(note)` → `document | code | spreadsheet | canvas` (by `metadata.prism_type` → tag → file extension), and `loadDocumentState`/`storeDocumentState` (plus the "already populated" guard) seed and persist the matching Yjs structure ⇄ the note's canonical content. The server self-seeds from Parachute, so a shared doc opens even with the owner offline. Per note, the live Yjs binary is cached in SQLite (`collab_docs`) for CRDT continuity; an external Parachute edit (vault `updatedAt` newer than our snapshot) wins and re-seeds.
+
+| Kind | Yjs structure (field) | Persisted as | Client editor (`@prism/core`) |
+|---|---|---|---|
+| document | `XmlFragment` ("default") | HTML | `CollabEditor` (TipTap) — + comments + suggestions |
+| code | `Y.Text` ("codemirror") | raw source | `CollabCodeEditor` (CodeMirror + y-codemirror.next) |
+| spreadsheet | `Y.Array<Y.Array<string>>` ("rows") | CSV | `CollabSpreadsheet` (grid) |
+| canvas | `Y.Map<id, element>` ("elements") | Excalidraw scene JSON | `CollabCanvas` (Excalidraw) |
+
+Connection auth (`authorizeConnection`) resolves the same `effectiveLevel`: below `view` → reject; below `suggest` → read-only. Comments + suggested edits are **document-only**; code/sheet/canvas are pure collaborative data. `apps/web/src/collab/CollabDoc.tsx` mirrors `detectKind` and routes to the right editor; `Canvas.tsx`'s `COLLAB_TYPES` set drives the **in-app** live-editor swap (the owner's main app shows the live collaborative editor for any shared note of these kinds). 98 server tests (`test/collab.test.ts`) cover kind detection + per-kind round-trip + corruption guards.
+
+**Collab gotchas (learned the hard way).**
+- **Restart pm2 `prism-server` after ANY server change** — it compiles via tsx on start but does NOT hot-reload. A stale server with an older `noteKind` will persist a note through the WRONG path and **corrupt it** (e.g. canvas scene JSON wrapped in `<p>`).
+- **Excalidraw**: paint RAW `Y.Map` values via `updateScene`; do NOT use `restoreElements` (it silently drops valid elements when reconciling fractional indices across a set). Loop-safety: `onChange` only writes elements whose monotonic `version` increased; the map observer ignores `LOCAL`-origin transactions. `appState` (zoom/scroll) is per-viewer, not synced.
+- The Y.Map (canvas) re-seeds **idempotently** (set-by-id); the Y.Array (spreadsheet) can **double** if re-seeded while a client holds rows — only happens if the SQLite docState is lost under a live client.
+- Test on throwaway `_test` notes; mint an edit capability against the running DB+secret (`createCapability` + `signCapability`) to drive `/collab/:id?t=` without owner login. Bust the PWA service worker (`getRegistrations().unregister()` + `caches.delete()`) or you test stale JS.
+
 ## Content Type & Renderer Pipeline
 
 The full chain from vault note → screen:

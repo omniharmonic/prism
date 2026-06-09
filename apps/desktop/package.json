@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@prism/core": "*"
+    "@prism/core": "*",
+    "@hocuspocus/provider": "^4.1.0",
+    "yjs": "^13.6.0"
   }
 }

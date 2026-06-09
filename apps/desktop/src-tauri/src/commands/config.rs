@@ -23,6 +23,11 @@ fn default_background_skill_provider() -> String {
     "claude".into()
 }
 
+/// Default Prism Server collab WebSocket endpoint (same machine, default port).
+fn default_collab_url() -> String {
+    "ws://localhost:8787/collab".into()
+}
+
 /// App configuration — loaded from prism-config.json, falling back to
 /// omniharmonic .env, falling back to defaults.
 /// Serializable so it can be persisted and updated at runtime.
@@ -74,6 +79,18 @@ pub struct AppConfig {
     /// `claude -p` fallback when the local server is unavailable).
     #[serde(default = "default_background_skill_provider")]
     pub background_skill_provider: String,
+
+    // ── Real-time collaboration (Prism Server /collab) ──
+    /// WebSocket URL of the Prism Server's Hocuspocus endpoint. The desktop app
+    /// connects here so its edits sync live with web/phone sessions. Defaults to
+    /// the local server; point elsewhere if the Prism Server runs on another host.
+    #[serde(default = "default_collab_url")]
+    pub collab_url: String,
+    /// Dedicated owner token presented to /collab (must match the Prism Server's
+    /// COLLAB_TOKEN). Kept separate from the vault token. Empty = collab disabled
+    /// on desktop (falls back to the offline autosave editor).
+    #[serde(default)]
+    pub collab_token: String,
 }
 
 impl Default for AppConfig {
@@ -98,6 +115,8 @@ impl Default for AppConfig {
             local_ai_base_url: default_local_ai_base_url(),
             local_ai_model: String::new(),
             background_skill_provider: default_background_skill_provider(),
+            collab_url: default_collab_url(),
+            collab_token: String::new(),
         }
     }
 }
@@ -151,6 +170,8 @@ impl AppConfig {
                 if let Some(v) = vars.get("PARACHUTE_VAULT") { config.parachute_vault = v.clone(); }
                 if let Some(v) = vars.get("FATHOM_API_KEY") { config.fathom_api_key = v.clone(); }
                 if let Some(v) = vars.get("MEETILY_DB_PATH") { config.meetily_db_path = v.clone(); }
+                if let Some(v) = vars.get("COLLAB_URL") { config.collab_url = v.clone(); }
+                if let Some(v) = vars.get("COLLAB_TOKEN") { config.collab_token = v.clone(); }
             }
         }
 
@@ -260,6 +281,22 @@ fn try_keychain_anthropic() -> Option<String> {
 
 // ─── Tauri Commands ──────────────────────────────────
 
+/// Real-time collab connection config for the webview: the Prism Server's
+/// WebSocket URL and the dedicated owner token. The token is intentionally
+/// surfaced to the (trusted) webview ONLY for the local collab connection — it is
+/// the dedicated COLLAB_TOKEN, never the vault token. `enabled` is false when no
+/// token is configured, so the UI stays on the offline editor.
+#[tauri::command]
+pub fn get_collab_config(
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    Ok(serde_json::json!({
+        "url": config.collab_url,
+        "token": config.collab_token,
+        "enabled": !config.collab_token.is_empty(),
+    }))
+}
+
 #[tauri::command]
 pub fn get_config_status(
     config: tauri::State<'_, AppConfig>,
@@ -361,47 +398,101 @@ pub fn check_claude_cli() -> Result<serde_json::Value, PrismError> {
     }
 }
 
-/// Mint a collaboration share link for a note. The collab Worker validates this
-/// token against the vault before signing a per-note capability — so the vault
-/// token never leaves the desktop process, and only a note-scoped grant is
-/// embedded in the link.
+/// Mint a collaboration share link for a note via the Prism Server's /acl API —
+/// the same path the web app uses, so links live on the real domain and join the
+/// current real-time collab. Authenticates as the owner with the dedicated
+/// COLLAB_TOKEN (Bearer); the server signs a note-scoped capability and returns
+/// the full public link (built from its APP_ORIGIN).
 #[tauri::command]
 pub async fn create_collab_share_link(
     note_id: String,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<String, PrismError> {
-    const WORKER: &str = "https://prism-collab.benjamin-7c2.workers.dev";
-    const WEB_BASE: &str = "https://prism-5ko.pages.dev";
-
-    let token = config.parachute_api_key.clone();
-    if token.is_empty() {
-        return Err(PrismError::Config("No vault token configured".into()));
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+        ));
     }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
 
     let resp = reqwest::Client::new()
-        .post(format!("{WORKER}/grant"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "noteId": note_id }))
+        .post(format!("{http_base}/acl/notes/{}/links", urlencoding::encode(&note_id)))
+        .bearer_auth(&config.collab_token)
+        .json(&serde_json::json!({ "level": "edit", "expiresInDays": 30 }))
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| PrismError::Other(format!("collab grant request failed: {e}")))?;
+        .map_err(|e| PrismError::Other(format!("share-link request failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(PrismError::Other(format!("collab grant failed: {}", resp.status())));
+        return Err(PrismError::Other(format!("share-link failed: {}", resp.status())));
     }
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| PrismError::Other(format!("collab grant parse failed: {e}")))?;
-    let grant = body
-        .get("grant")
-        .and_then(|g| g.as_str())
-        .ok_or_else(|| PrismError::Other("collab grant missing in response".into()))?;
+        .map_err(|e| PrismError::Other(format!("share-link parse failed: {e}")))?;
+    body.get("url")
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| PrismError::Other("share-link missing url in response".into()))
+}
 
-    Ok(format!(
-        "{WEB_BASE}/collab/{}?t={}",
-        urlencoding::encode(&note_id),
-        urlencoding::encode(grant)
-    ))
+/// Generic proxy to the Prism Server's owner-only `/acl` API, authenticated with
+/// the desktop COLLAB_TOKEN (Bearer). This is the single bridge that lets the
+/// desktop frontend drive the *full* Google-Docs-style share surface (people
+/// grants, capability links, tag-grants) without ever holding the token — the
+/// same ACL surface the web app reaches over its session cookie. The frontend
+/// builds `path` (e.g. `/notes/123/people`) and `method`; we return the parsed
+/// JSON body (null for an empty 2xx, e.g. a 204 on DELETE).
+#[tauri::command]
+pub async fn acl_request(
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+        ));
+    }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
+
+    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
+    let mut req = reqwest::Client::new()
+        .request(m, format!("{http_base}/acl{path}"))
+        .bearer_auth(&config.collab_token)
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("acl request failed: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(PrismError::Other(format!("acl {method} {path} → {status}")));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("acl parse failed: {e}")))
 }
 
 /// Get full config (for Settings UI to populate fields).

@@ -17,13 +17,34 @@ import { rateLimit } from "./middleware/ratelimit";
 export function createApp(): Hono {
   const app = new Hono();
 
-  // Conservative security headers (no CSP — the SPA uses inline element styles;
-  // a CSP would need careful tuning and is better added once with full testing).
+  // Content-Security-Policy. Scripts are external ES modules (no inline <script>),
+  // so script-src stays tight; 'wasm-unsafe-eval' covers editor deps (e.g.
+  // Excalidraw) without opening full eval. style-src allows inline styles (the
+  // FOUC <style> + runtime <style> injection) + Google Fonts; img/font/worker
+  // allow data:/blob: for the canvas; connect-src allows the same-origin collab WS.
+  const CSP = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    // esm.sh serves Excalidraw's bundled handwriting fonts at runtime (font files
+    // only — script-src stays tight, so no code can load from there). Self-hosting
+    // these would fully air-gap the canvas; for now this is font-only.
+    "font-src 'self' data: https://fonts.gstatic.com https://esm.sh",
+    "img-src 'self' data: blob:",
+    "worker-src 'self' blob:",
+    "connect-src 'self' ws: wss: https:",
+  ].join("; ");
+
   app.use("*", async (c, next) => {
     await next();
+    c.header("Content-Security-Policy", CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    c.header("X-Frame-Options", "SAMEORIGIN");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
     if (config.appOrigin.startsWith("https")) {
       c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     }

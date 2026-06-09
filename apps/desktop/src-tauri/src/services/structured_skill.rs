@@ -28,10 +28,24 @@ use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
 use crate::models::note::{ListNotesParams, Note};
 
-/// Per-note content cap (chars) so a long email can't blow the model's context.
-const MAX_NOTE_CHARS: usize = 6000;
+/// Per-note content cap (chars). Kept well under the model's token budget: a
+/// classification needs only the opening of a message, and an oversized note
+/// (e.g. a marketing email that is mostly long tracking URLs) used to tokenize
+/// past a 4096-ctx model's limit and fail with HTTP 400 — which, since a failed
+/// note never gets the exclude tag, recurred on every run. URLs are stripped
+/// first (see `strip_urls`), so this cap applies to readable text.
+const MAX_NOTE_CHARS: usize = 2500;
+/// Retry cap (chars): if the first attempt fails (e.g. an unusually long note
+/// still overflows a small context window), retry once with a much shorter body
+/// — the message opening alone is enough to classify.
+const RETRY_NOTE_CHARS: usize = 800;
 /// Per-note classification timeout (seconds).
 const PER_NOTE_TIMEOUT_SECS: u64 = 120;
+/// Tag applied to a note that fails classification even after a retry. It marks
+/// the note for human review and (via the exclusion check below) stops it from
+/// recurring as an error every run — without giving it a real importance label
+/// it didn't earn, so nothing is silently buried.
+const REVIEW_TAG: &str = "triage-failed";
 
 /// Parsed `structured` config block from an `agent-skill` note's metadata.
 #[derive(Debug, Clone)]
@@ -54,6 +68,13 @@ pub struct StructuredConfig {
     pub allowed_values: Vec<String>,
     /// Tags always added after a successful classification (e.g. `["triaged"]`).
     pub also_add_tags: Vec<String>,
+    /// Deterministic shortcuts: if a candidate's `metadata.labels` contains one
+    /// of these keys, assign the mapped value directly and skip the model call.
+    /// Lets the vault encode hard priors (e.g. Gmail's `CATEGORY_PROMOTIONS` →
+    /// `low`) without spending a model call — and dodges the worst tokenization
+    /// cases (promo emails full of tracking URLs). The value must still satisfy
+    /// `allowed_values`. Authored as `structured.shortcutLabels` in the note.
+    pub shortcut_labels: HashMap<String, String>,
 }
 
 impl StructuredConfig {
@@ -85,6 +106,15 @@ impl StructuredConfig {
             result_field,
             allowed_values: str_array("allowedValues"),
             also_add_tags: str_array("alsoAddTags"),
+            shortcut_labels: s
+                .get("shortcutLabels")
+                .and_then(|v| v.as_object())
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -118,10 +148,13 @@ pub async fn run(
         }
     }
 
-    // 2. Drop already-processed notes (carry an exclude tag).
+    // 2. Drop already-processed notes (carry an exclude tag) and notes already
+    //    flagged for review (a prior run couldn't classify them) — the latter
+    //    keeps a single unclassifiable note from erroring on every run forever.
     candidates.retain(|n| {
         let tags = n.tags.clone().unwrap_or_default();
-        !cfg.exclude_tags.iter().any(|ex| tags.contains(ex))
+        !tags.iter().any(|t| t == REVIEW_TAG)
+            && !cfg.exclude_tags.iter().any(|ex| tags.contains(ex))
     });
 
     let total = candidates.len();
@@ -131,48 +164,37 @@ pub async fn run(
     info!("structured skill: classifying {total} note(s) on model '{model}'");
 
     // 3. Classify each note with grammar-constrained structured output.
+    // `today` anchors the rubric's relative-time rules ("deadline today/tomorrow"):
+    // the model cannot judge urgency without knowing the current date.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut flagged = 0usize;
     let mut errors = 0usize;
 
     for note in &candidates {
-        let user_prompt = build_note_prompt(note);
-
-        let result = agent
-            .run_structured(
-                rubric,
-                &user_prompt,
-                "classification",
-                cfg.schema.clone(),
-                model,
-                PER_NOTE_TIMEOUT_SECS,
-            )
-            .await;
-
-        let json = match result {
-            Ok(j) => j,
-            Err(e) => {
-                warn!("structured skill: classify failed for {}: {e}", note.id);
-                errors += 1;
-                continue;
-            }
-        };
-
-        let value = json
-            .get(&cfg.result_field)
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-
-        let label = match value {
-            Some(v) if cfg.allowed_values.is_empty() || cfg.allowed_values.contains(&v) => v,
-            Some(v) => {
-                warn!("structured skill: value '{v}' not in allowed list; skipping {}", note.id);
-                errors += 1;
-                continue;
-            }
-            None => {
-                warn!("structured skill: result field '{}' missing for {}", cfg.result_field, note.id);
-                errors += 1;
-                continue;
+        // Deterministic shortcut: a hard label prior (e.g. Gmail
+        // CATEGORY_PROMOTIONS → low) skips the model entirely. Saves a call and
+        // sidesteps the pathological tokenization of URL-heavy promo mail.
+        let label = if let Some(v) = shortcut_label(note, cfg) {
+            v
+        } else {
+            match classify_one(agent, rubric, cfg, model, note, &today).await {
+                Ok(label) => label,
+                // Couldn't classify even after a retry: flag for review rather
+                // than erroring forever. The note gets no importance label, so
+                // it can't pass as handled; it's just removed from the queue and
+                // made queryable via REVIEW_TAG.
+                Err(reason) => {
+                    warn!("structured skill: flagging {} for review: {reason}", note.id);
+                    match parachute.add_tags(&note.id, &[REVIEW_TAG.to_string()]).await {
+                        Ok(()) => flagged += 1,
+                        Err(e) => {
+                            warn!("structured skill: failed to flag {}: {e}", note.id);
+                            errors += 1;
+                        }
+                    }
+                    continue;
+                }
             }
         };
 
@@ -193,22 +215,140 @@ pub async fn run(
     // 5. Summarize.
     let mut breakdown: Vec<String> = counts.iter().map(|(k, n)| format!("{k}: {n}")).collect();
     breakdown.sort();
-    Ok(format!(
-        "Structured tagging complete — {} of {} note(s) classified, {} error(s).\n{}",
-        total - errors,
-        total,
-        errors,
+    let classified = total - flagged - errors;
+    let mut summary = format!(
+        "Structured tagging complete — {classified} of {total} note(s) classified"
+    );
+    if flagged > 0 {
+        summary.push_str(&format!(", {flagged} flagged for review ({REVIEW_TAG})"));
+    }
+    if errors > 0 {
+        summary.push_str(&format!(", {errors} error(s)"));
+    }
+    summary.push_str(&format!(
+        ".\n{}",
         if breakdown.is_empty() { "(none)".into() } else { breakdown.join(", ") }
-    ))
+    ));
+    Ok(summary)
 }
 
-/// Build the per-note user prompt: a title line plus the (capped) note body.
-fn build_note_prompt(note: &Note) -> String {
+/// Classify one note, retrying once with a hard-truncated prompt if the first
+/// attempt fails at the transport/model layer (e.g. a still-too-long note). A
+/// model response that parses but yields a missing or disallowed value is not
+/// retried (grammar-constrained output makes that a real, non-transient issue).
+/// Returns the validated label or a human-readable failure reason.
+async fn classify_one(
+    agent: &LocalAgent,
+    rubric: &str,
+    cfg: &StructuredConfig,
+    model: &str,
+    note: &Note,
+    today: &str,
+) -> Result<String, String> {
+    let caps = [MAX_NOTE_CHARS, RETRY_NOTE_CHARS];
+    for (attempt, &cap) in caps.iter().enumerate() {
+        let user_prompt = build_note_prompt(note, today, cap);
+        match agent
+            .run_structured(rubric, &user_prompt, "classification", cfg.schema.clone(), model, PER_NOTE_TIMEOUT_SECS)
+            .await
+        {
+            Ok(json) => {
+                return match json.get(&cfg.result_field).and_then(|v| v.as_str()) {
+                    Some(v) if cfg.allowed_values.is_empty() || cfg.allowed_values.iter().any(|a| a == v) => {
+                        Ok(v.to_string())
+                    }
+                    Some(v) => Err(format!("value '{v}' not in allowed list")),
+                    None => Err(format!("result field '{}' missing", cfg.result_field)),
+                };
+            }
+            Err(e) => {
+                let last = attempt + 1 == caps.len();
+                if last {
+                    return Err(e.to_string());
+                }
+                warn!("structured skill: attempt {} failed for {} ({e}); retrying truncated", attempt + 1, note.id);
+            }
+        }
+    }
+    Err("classification failed".into())
+}
+
+/// Build the per-note user prompt. Beyond the title + body, this surfaces the
+/// signals the classifier needs but the raw content lacks: the current date (so
+/// "deadline today/tomorrow" rules are applicable), the sender, the message's
+/// own date, and the source's category labels (e.g. Gmail's CATEGORY_*). URLs
+/// are stripped so a link-heavy message can't crowd out its readable text.
+/// `cap` bounds the included body length (smaller on a retry).
+fn build_note_prompt(note: &Note, today: &str, cap: usize) -> String {
     let title = note
         .path
         .as_deref()
         .and_then(|p| p.rsplit('/').next())
         .unwrap_or("Untitled");
-    let body: String = note.content.chars().take(MAX_NOTE_CHARS).collect();
-    format!("Title: {title}\n\n{body}")
+
+    let meta = note.metadata.as_ref();
+    let meta_str = |key: &str| meta.and_then(|m| m.get(key)).and_then(|v| v.as_str());
+
+    let mut header = format!("Today's date: {today}\n");
+    if let Some(from) = meta_str("from") {
+        header.push_str(&format!("From: {from}\n"));
+    }
+    if let Some(date) = meta_str("date") {
+        header.push_str(&format!("Message date: {date}\n"));
+    }
+    let labels = gmail_labels(note);
+    if !labels.is_empty() {
+        header.push_str(&format!("Source labels: {}\n", labels.join(", ")));
+    }
+
+    let body: String = strip_urls(&note.content).chars().take(cap).collect();
+    format!("{header}Title: {title}\n\n{body}")
+}
+
+/// Read a note's source-category labels (e.g. Gmail `CATEGORY_PROMOTIONS`,
+/// `IMPORTANT`) from `metadata.labels`. Empty when absent.
+fn gmail_labels(note: &Note) -> Vec<String> {
+    note.metadata
+        .as_ref()
+        .and_then(|m| m.get("labels"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Resolve a deterministic label shortcut for a note, if one of its source
+/// labels maps to a value in `cfg.shortcut_labels` (and that value is allowed).
+fn shortcut_label(note: &Note, cfg: &StructuredConfig) -> Option<String> {
+    if cfg.shortcut_labels.is_empty() {
+        return None;
+    }
+    let labels = gmail_labels(note);
+    for label in &labels {
+        if let Some(value) = cfg.shortcut_labels.get(label) {
+            if cfg.allowed_values.is_empty() || cfg.allowed_values.contains(value) {
+                return Some(value.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Collapse URLs to a short placeholder. Marketing emails are mostly long
+/// tracking links (`https://l.engage.canva.com/ss/c/u001.Note3it1...`) whose
+/// high-entropy characters tokenize far worse than prose — left in, they can
+/// push even a short message past a small context window. Tokens containing
+/// `://` are replaced with `<link>`; readable text is untouched.
+fn strip_urls(content: &str) -> String {
+    content
+        .split_inclusive(char::is_whitespace)
+        .map(|tok| {
+            let trimmed = tok.trim_end();
+            if trimmed.contains("://") {
+                let ws = &tok[trimmed.len()..];
+                format!("<link>{ws}")
+            } else {
+                tok.to_string()
+            }
+        })
+        .collect()
 }

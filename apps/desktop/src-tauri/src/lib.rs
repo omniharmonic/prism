@@ -196,6 +196,7 @@ pub fn run() {
             message_index::index_messages,
             // Config + integration testing
             config::get_config_status,
+            config::get_collab_config,
             config::set_anthropic_key,
             config::test_parachute,
             config::test_matrix,
@@ -204,6 +205,7 @@ pub fn run() {
             config::check_google_cli,
             config::get_full_config,
             config::create_collab_share_link,
+            config::acl_request,
             config::update_config,
             config::discover_meetily_path,
             // Editor events

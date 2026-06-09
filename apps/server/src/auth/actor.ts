@@ -10,6 +10,7 @@ import type { Context } from "hono";
 import { config } from "../config";
 import { readSession } from "./session";
 import { verifyCapability } from "./capability";
+import { isLocalRequest } from "./local";
 import { grantsForUser, grantsForCapability, type Grant } from "../db";
 
 export type Actor =
@@ -27,6 +28,20 @@ export function resolveActor(c: Context): Actor {
       isOwner: email === config.ownerEmail,
       grants: grantsForUser(email),
     };
+  }
+
+  // Desktop owner path: the trusted Tauri app (talking to localhost) presents the
+  // dedicated COLLAB_TOKEN (or vault token) as a Bearer token to authenticate as
+  // the owner for HTTP routes (e.g. /acl share-link creation). LOCAL-ONLY: a token
+  // presented over the public tunnel is ignored, so even a leaked token can't grant
+  // owner access from the internet.
+  const bearer = bearerToken(c);
+  if (
+    bearer &&
+    isLocalRequest((k) => c.req.header(k)) &&
+    ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))
+  ) {
+    return { kind: "user", email: config.ownerEmail, isOwner: true, grants: grantsForUser(config.ownerEmail) };
   }
 
   const token = c.req.query("t") ?? capabilityHeader(c);
@@ -48,4 +63,9 @@ export function resolveActor(c: Context): Actor {
 function capabilityHeader(c: Context): string | undefined {
   const h = c.req.header("authorization");
   return h?.startsWith("Capability ") ? h.slice("Capability ".length) : undefined;
+}
+
+function bearerToken(c: Context): string | undefined {
+  const h = c.req.header("authorization");
+  return h?.startsWith("Bearer ") ? h.slice("Bearer ".length) : undefined;
 }

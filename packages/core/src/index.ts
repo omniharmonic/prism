@@ -10,6 +10,12 @@ export { default as App } from "./App";
 // Collaborative editor (CRDT) — host shells supply the Yjs doc + provider.
 export { CollabEditor } from "./components/renderers/CollabEditor";
 export type { CollabUser, AwarenessProvider } from "./components/renderers/CollabEditor";
+export { CollabCodeEditor, detectCodeLanguage } from "./components/renderers/CollabCodeEditor";
+export { CollabSpreadsheet } from "./components/renderers/CollabSpreadsheet";
+export { CollabCanvas } from "./components/renderers/CollabCanvas";
+
+// Content-type detection — shared so every shell + the collab layer agree.
+export { inferContentType, looksLikeExcalidrawScene } from "./lib/schemas/content-types";
 
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
@@ -24,6 +30,7 @@ export type {
   SharePerson,
   TagAccess,
   NoteAccess,
+  SetPersonResult,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

@@ -45,6 +45,29 @@ test("a signed-in NON-owner is also rejected", async () => {
   assert.equal((await acl.request("/users", { headers })).status, 403);
 });
 
+test("the desktop owner token (Bearer COLLAB_TOKEN) is accepted by /acl", async () => {
+  const { config } = await import("../src/config");
+  assert.ok(config.collabToken, "COLLAB_TOKEN must be set in .env.test");
+  const headers = new Headers();
+  headers.set("authorization", `Bearer ${config.collabToken}`);
+  assert.equal((await acl.request("/users", { headers })).status, 200);
+});
+
+test("a bogus Bearer token is NOT treated as the owner on /acl", async () => {
+  const headers = new Headers();
+  headers.set("authorization", "Bearer not-the-collab-token");
+  assert.equal((await acl.request("/users", { headers })).status, 403);
+});
+
+test("the owner token over the PUBLIC tunnel (proxy header present) is REJECTED on /acl", async () => {
+  const { config } = await import("../src/config");
+  const headers = new Headers();
+  headers.set("authorization", `Bearer ${config.collabToken}`);
+  // A real client IP header marks this as tunnel traffic → owner-token path is inert.
+  headers.set("cf-connecting-ip", "203.0.113.7");
+  assert.equal((await acl.request("/users", { headers })).status, 403);
+});
+
 test("owner can grant a person access to a note", async () => {
   const r = await ownerReq("/notes/n1/people", {
     method: "PUT",
