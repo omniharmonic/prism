@@ -12,6 +12,7 @@ import { config } from "./config";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
 import { acl } from "./routes/acl";
+import { rag } from "./routes/rag";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -65,6 +66,10 @@ export function createApp(): Hono {
   app.use("/auth/callback", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-callback" }));
 
   app.route("/auth", auth);
+  // RAG owns /api/search/semantic + /api/index/* and must be matched BEFORE the
+  // gateway, whose owner short-circuit would otherwise proxy these to the vault
+  // (which has no semantic endpoint). Other /api paths fall through to `api`.
+  app.route("/api", rag);
   app.route("/api", api);
   app.route("/acl", acl);
 
