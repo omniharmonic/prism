@@ -16,6 +16,7 @@ export { CollabCanvas } from "./components/renderers/CollabCanvas";
 
 // Content-type detection — shared so every shell + the collab layer agree.
 export { inferContentType, looksLikeExcalidrawScene } from "./lib/schemas/content-types";
+export { sanitizeHtml } from "./lib/html/sanitize";
 
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";

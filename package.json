@@ -64,6 +64,7 @@
     "autoprefixer": "^10.4.27",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "dompurify": "^3.4.8",
     "lowlight": "^3.3.0",
     "lucide-react": "^1.8.0",
     "matrix-js-sdk": "^41.3.0",

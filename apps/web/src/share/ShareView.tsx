@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { marked } from "marked";
+import { sanitizeHtml } from "@prism/core";
 import { loadConnection, DEFAULT_VAULT_URL, DEFAULT_VAULT_NAME } from "../config";
 
 /**
@@ -41,7 +42,9 @@ export function ShareView({ noteId }: { noteId: string }) {
             setState({
               status: "ok",
               title: deriveTitle(body),
-              html: ct.includes("html") ? body : renderMarkdown(body),
+              // Untrusted: the published view is public and the body may contain
+              // author/collaborator HTML. Sanitize before it hits the DOM.
+              html: sanitizeHtml(ct.includes("html") ? body : renderMarkdown(body)),
             });
           }
           return;
@@ -61,7 +64,7 @@ export function ShareView({ noteId }: { noteId: string }) {
             const note = await r.json();
             if (!cancelled) {
               const name = (note.path || "").split("/").pop() || noteId;
-              setState({ status: "ok", title: name, html: renderMarkdown(note.content || "") });
+              setState({ status: "ok", title: name, html: sanitizeHtml(renderMarkdown(note.content || "")) });
             }
             return;
           }
