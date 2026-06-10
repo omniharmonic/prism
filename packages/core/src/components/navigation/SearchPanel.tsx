@@ -46,7 +46,8 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
                 </div>
               )}
               <div className="text-xs mt-0.5 line-clamp-2" style={{ color: "var(--text-secondary)" }}>
-                {note.content.slice(0, 120)}
+                {/* Prefer the semantic-match passage when present, else a content preview. */}
+                {(note as { _snippet?: string })._snippet || note.content.slice(0, 120)}
               </div>
             </div>
           </button>

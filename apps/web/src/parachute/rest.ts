@@ -18,6 +18,7 @@ import type {
   VaultInfo,
   VaultLink,
   VaultGraph,
+  SemanticHit,
 } from "@prism/core";
 import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader } from "../config";
 import { enqueue } from "../offline/outbox";
@@ -178,6 +179,13 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
   const sp = new URLSearchParams({ search: query, limit: String(limit), include_content: "true" });
   for (const t of tags ?? []) sp.append("tag", t);
   return (await req(`/notes?${sp.toString()}`)).json();
+}
+
+/** Hybrid semantic search via the server's RAG service (dense + full-text,
+ *  fused). Returns notes enriched with `_score` and a `_snippet`. */
+export async function semanticSearch(query: string, limit = 20): Promise<SemanticHit[]> {
+  const sp = new URLSearchParams({ q: query, limit: String(limit) });
+  return (await req(`/search/semantic?${sp.toString()}`)).json();
 }
 
 // ---- tags -----------------------------------------------------------------

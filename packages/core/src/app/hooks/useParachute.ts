@@ -35,11 +35,27 @@ export function useNote(id: string | null) {
   });
 }
 
+/**
+ * Vault search. Prefers the host's hybrid semantic search (RAG: dense vectors +
+ * full-text, relevance-ranked with snippets) when available, and transparently
+ * falls back to plain full-text otherwise. Either way results are `Note`s, so
+ * every search surface benefits without changes; semantic results additionally
+ * carry `_score`/`_snippet`.
+ */
 export function useVaultSearch(query: string) {
   const client = useVaultClient();
   return useQuery({
     queryKey: queryKeys.vault.search(query),
-    queryFn: () => client.search(query),
+    queryFn: async () => {
+      if (client.semanticSearch) {
+        try {
+          return await client.semanticSearch(query);
+        } catch {
+          /* RAG unavailable (e.g. index empty / endpoint down) — fall back */
+        }
+      }
+      return client.search(query);
+    },
     enabled: query.length > 0,
   });
 }
