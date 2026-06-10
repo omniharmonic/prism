@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
+import { IndexeddbPersistence } from "y-indexeddb";
 import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
@@ -66,6 +67,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [denied, setDenied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
   const [kind, setKind] = useState<CollabKind>("document");
@@ -111,6 +113,29 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   useEffect(() => {
     if (isSuggestLevel) setSuggesting(true);
   }, [isSuggestLevel]);
+
+  // Local-first persistence: the Y.Doc is mirrored to IndexedDB, so edits made
+  // while offline (or before the server syncs) survive a reload and merge via
+  // CRDT on reconnect — nothing is lost if the network drops mid-edit.
+  useEffect(() => {
+    const persistence = new IndexeddbPersistence(`prism-collab-${noteId}`, ydoc);
+    return () => {
+      void persistence.destroy();
+    };
+  }, [noteId, ydoc]);
+
+  // Track browser connectivity to distinguish "offline (saved locally)" from
+  // "connecting" in the status line.
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
 
   useEffect(() => {
     const p = new HocuspocusProvider({
@@ -175,7 +200,9 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const isCanvas = kind === "canvas";
   const isDocument = kind === "document";
   const statusText = !connected
-    ? "Connecting…"
+    ? online
+      ? "Connecting…"
+      : "Offline · saved locally"
     : level === "view"
       ? "View only"
       : !isDocument
@@ -200,8 +227,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
               {title}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : "#eab308" }} />
-              Live · {statusText}
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
+              {connected ? "Live · " : ""}{statusText}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
