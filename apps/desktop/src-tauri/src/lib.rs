@@ -13,7 +13,7 @@ use clients::anthropic::ClaudeClient;
 use clients::mcp_client::PrismMcpClient;
 use clients::local_agent::LocalAgent;
 use clients::model_router::ModelRouter;
-use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds, ollama_cmds, github_cmds, notion_db_cmds};
+use commands::{vault, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds, ollama_cmds, github_cmds, notion_db_cmds, semantic};
 use commands::github_cmds::GitHubSyncState;
 use commands::notion_db_cmds::NotionDbSyncState;
 use commands::agent::AgentSessions;
@@ -156,6 +156,9 @@ pub fn run() {
             vault::vault_create_link,
             vault::vault_delete_link,
             vault::vault_get_graph,
+            // Semantic search (RAG via Prism Server)
+            semantic::vault_semantic_search,
+            semantic::embedding_reindex,
             // Markdown conversion
             convert::markdown_to_html,
             convert::html_to_markdown,

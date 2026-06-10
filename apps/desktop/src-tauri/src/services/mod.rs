@@ -7,6 +7,7 @@ pub mod skill_scheduler;
 pub mod structured_skill;
 pub mod transcript_sync;
 pub mod notion_task_sync;
+pub mod embedding_index;
 
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -42,6 +43,7 @@ pub struct ServiceManager {
     pub transcript_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub scheduler_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub notion_task_sync_status: Arc<std::sync::Mutex<ServiceStatus>>,
+    pub embedding_index_status: Arc<std::sync::Mutex<ServiceStatus>>,
 }
 
 impl ServiceManager {
@@ -174,6 +176,28 @@ impl ServiceManager {
             log::info!("Notion task sync disabled: no Notion API key configured");
         }
 
+        // Embedding index (vault → Prism Server semantic index) — every 5 minutes.
+        // Needs the server (COLLAB_TOKEN); embeddings are a server-provided service.
+        let embedding_index_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
+            name: "embedding-index".into(),
+            running: false,
+            last_run: None,
+            last_error: None,
+            items_processed: 0,
+        }));
+        if !config.collab_token.is_empty() {
+            let p = parachute.clone();
+            let rx = shutdown_rx.clone();
+            let status = embedding_index_status.clone();
+            let collab_url = config.collab_url.clone();
+            let token = config.collab_token.clone();
+            handles.push(tauri::async_runtime::spawn(async move {
+                embedding_index::run(p, collab_url, token, rx, status).await;
+            }));
+        } else {
+            log::info!("Embedding index disabled: no COLLAB_TOKEN (Prism Server) configured");
+        }
+
         log::info!("ServiceManager started {} background services", handles.len());
 
         Self {
@@ -189,6 +213,7 @@ impl ServiceManager {
             transcript_status,
             scheduler_status,
             notion_task_sync_status,
+            embedding_index_status,
         }
     }
 
@@ -212,6 +237,7 @@ impl ServiceManager {
             self.transcript_status.lock().unwrap().clone(),
             self.scheduler_status.lock().unwrap().clone(),
             self.notion_task_sync_status.lock().unwrap().clone(),
+            self.embedding_index_status.lock().unwrap().clone(),
         ]
     }
 

@@ -14,3 +14,4 @@ pub mod service_cmds;
 pub mod ollama_cmds;
 pub mod github_cmds;
 pub mod notion_db_cmds;
+pub mod semantic;
