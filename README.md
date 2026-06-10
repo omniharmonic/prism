@@ -172,8 +172,11 @@ cp -R src-tauri/target/release/bundle/macos/Prism.app /Applications/
 
 Prism loads configuration from a cascade:
 
-1. `~/.config/prism/prism-config.json` (primary)
-2. `omniharmonic_agent/.env` (fallback for API keys)
+1. The platform app-config dir (primary) — on **macOS** that is
+   `~/Library/Application Support/prism/prism-config.json` (Tauri app-data, via
+   `dirs::config_dir()`), **not** `~/.config/prism`. On Linux it is
+   `~/.config/prism/prism-config.json`.
+2. `omniharmonic_agent/.env` (legacy fallback for API keys, one-time migration)
 3. Built-in defaults
 
 Open **Settings** via the gear icon in the status bar. Configurable options include:

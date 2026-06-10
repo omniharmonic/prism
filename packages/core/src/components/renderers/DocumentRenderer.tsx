@@ -3,6 +3,7 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNotes } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
+import { sanitizeHtml } from "../../lib/html/sanitize";
 import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
@@ -388,7 +389,7 @@ function GhostTextOverlay({
       <div
         className="px-4 py-3 prose-editor max-h-64 overflow-auto"
         style={{ opacity: 0.7, color: "var(--text-secondary)" }}
-        dangerouslySetInnerHTML={{ __html: previewHtml }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml(previewHtml) }}
       />
     </div>
   );

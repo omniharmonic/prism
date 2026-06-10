@@ -16,10 +16,11 @@ export { CollabCanvas } from "./components/renderers/CollabCanvas";
 
 // Content-type detection — shared so every shell + the collab layer agree.
 export { inferContentType, looksLikeExcalidrawScene } from "./lib/schemas/content-types";
+export { sanitizeHtml } from "./lib/html/sanitize";
 
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
-export type { VaultClient, VaultLink, VaultGraph } from "./data/VaultClient";
+export type { VaultClient, VaultLink, VaultGraph, SemanticHit } from "./data/VaultClient";
 
 // Collab sharing seam — host shells inject how share links are minted.
 export { CollabSharingProvider, useCollabSharing } from "./data/CollabSharing";

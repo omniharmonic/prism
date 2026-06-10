@@ -13,7 +13,8 @@
     "@hocuspocus/provider": "^4.1.0",
     "@prism/core": "*",
     "marked": "^14.1.4",
-    "turndown": "^7.2.0"
+    "turndown": "^7.2.0",
+    "y-indexeddb": "^9.0.12"
   },
   "devDependencies": {
     "@types/turndown": "^5.0.5",

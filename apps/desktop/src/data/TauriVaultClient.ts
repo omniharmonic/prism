@@ -1,4 +1,5 @@
-import { vaultApi, type VaultClient } from "@prism/core";
+import { invoke } from "@tauri-apps/api/core";
+import { vaultApi, type VaultClient, type SemanticHit } from "@prism/core";
 
 /**
  * Desktop implementation of the {@link VaultClient} seam.
@@ -16,6 +17,10 @@ export const tauriVaultClient: VaultClient = {
   updateNote: (id, params) => vaultApi.updateNote(id, params),
   deleteNote: (id) => vaultApi.deleteNote(id),
   search: (query, tags, limit) => vaultApi.search(query, tags, limit),
+  // Proxies to the Prism Server's RAG service via the Rust backend. Throws when
+  // no server is configured; useVaultSearch then falls back to full-text search.
+  semanticSearch: (query, limit) =>
+    invoke<SemanticHit[]>("vault_semantic_search", { query, limit }),
   getTags: () => vaultApi.getTags(),
   addTags: (id, tags) => vaultApi.addTags(id, tags),
   removeTags: (id, tags) => vaultApi.removeTags(id, tags),

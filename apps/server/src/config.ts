@@ -26,7 +26,22 @@ export const config = {
   magicFrom: process.env.MAGIC_FROM ?? "Prism <login@example.com>",
 
   dbPath: process.env.DB_PATH ?? "./prism-server.db",
+
+  // Semantic search (RAG). Embeddings are model-deterministic, so the Rust
+  // backend's indexer and this server's query-time path can both call the same
+  // model and get comparable vectors. With no EMBED_ENDPOINT we fall back to a
+  // deterministic, dependency-free local embedder (lexical, offline) — the
+  // pipeline still runs and is testable; quality just isn't semantic.
+  embedEndpoint: (process.env.EMBED_ENDPOINT ?? "").replace(/\/+$/, ""), // e.g. http://localhost:11434/v1
+  embedModel: process.env.EMBED_MODEL ?? "nomic-embed-text",
+  embedApiKey: process.env.EMBED_API_KEY ?? "",
+  // Dimension of the offline fallback embedder (ignored for a real endpoint,
+  // whose dimension is whatever the model returns).
+  embedFallbackDim: Number(process.env.EMBED_FALLBACK_DIM ?? 384),
 } as const;
+
+/** Whether a real embedding endpoint is configured (else the offline fallback). */
+export const embeddingsConfigured = () => config.embedEndpoint.length > 0;
 
 /** Whether magic-link email sign-in is available (Resend configured). */
 export const emailEnabled = () => config.resendApiKey.length > 0;

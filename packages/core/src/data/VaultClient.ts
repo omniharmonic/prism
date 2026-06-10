@@ -22,6 +22,13 @@ export interface VaultGraph {
   edges: Array<{ source: string; target: string; relationship: string }>;
 }
 
+/** A note returned by semantic search, carrying its fused relevance score and a
+ *  matching passage snippet (both populated by the server's RAG service). */
+export interface SemanticHit extends Note {
+  _score?: number;
+  _snippet?: string;
+}
+
 /**
  * The data-source seam between the shared UI (`@prism/core`) and a host shell.
  *
@@ -41,6 +48,10 @@ export interface VaultClient {
   updateNote(id: string, params: UpdateNoteParams): Promise<Note>;
   deleteNote(id: string): Promise<void>;
   search(query: string, tags?: string[], limit?: number): Promise<Note[]>;
+  /** Hybrid semantic search (dense vectors + full-text), when the host provides
+   *  it. Optional: shells without a RAG backend omit it, and callers fall back
+   *  to {@link search}. Results are relevance-ranked with score + snippet. */
+  semanticSearch?(query: string, limit?: number): Promise<SemanticHit[]>;
   getTags(): Promise<TagCount[]>;
   addTags(id: string, tags: string[]): Promise<void>;
   removeTags(id: string, tags: string[]): Promise<void>;

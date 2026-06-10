@@ -6,6 +6,7 @@ import { getRenderer } from "../renderers/Registry";
 import { useCollabDocumentSeam } from "../../data/CollabDocumentContext";
 import { TagView } from "../navigation/TagView";
 import { TabBar } from "./TabBar";
+import { RendererBoundary } from "./RendererBoundary";
 import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
 
@@ -91,15 +92,20 @@ export function Canvas() {
         ) : !isVirtual && isLoading ? (
           <LoadingSkeleton />
         ) : effectiveNote && isLiveDoc ? (
-          <collab.CollabDocument noteId={effectiveNote.id} note={effectiveNote} />
+          // Keyed by note id so a crash on one note clears when you switch tabs.
+          <RendererBoundary key={effectiveNote.id}>
+            <collab.CollabDocument noteId={effectiveNote.id} note={effectiveNote} />
+          </RendererBoundary>
         ) : effectiveNote && Renderer ? (
-          <Suspense fallback={<LoadingSkeleton />}>
-            <Renderer
-              note={effectiveNote}
-              onSave={handleSave}
-              onMetadataChange={handleMetadataChange}
-            />
-          </Suspense>
+          <RendererBoundary key={effectiveNote.id}>
+            <Suspense fallback={<LoadingSkeleton />}>
+              <Renderer
+                note={effectiveNote}
+                onSave={handleSave}
+                onMetadataChange={handleMetadataChange}
+              />
+            </Suspense>
+          </RendererBoundary>
         ) : (
           <div className="text-center pt-20" style={{ color: "var(--text-muted)" }}>
             Note not found.
