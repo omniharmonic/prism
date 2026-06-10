@@ -70,7 +70,10 @@ export default function WebsiteRenderer({ note }: RendererProps) {
             <iframe
               srcDoc={content}
               title="Preview"
-              sandbox="allow-scripts allow-same-origin"
+              // Scripts run in a UNIQUE opaque origin. Dropping allow-same-origin
+              // is deliberate: with both flags a srcdoc frame can script the app
+              // origin and escape the sandbox. Previewed HTML stays isolated.
+              sandbox="allow-scripts"
               className="w-full h-full border-none"
               style={{ background: "white" }}
             />
