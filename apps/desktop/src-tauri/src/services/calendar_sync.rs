@@ -58,16 +58,25 @@ pub async fn run(
     log::info!("Calendar sync service stopped");
 }
 
-/// Sync upcoming events (background service uses this).
+/// Sync a rolling window of events (background service uses this).
+///
+/// We pull a fixed time range — a few days back through ~one month ahead —
+/// rather than "the next N events", so the vault always holds a predictable
+/// month of calendar coverage regardless of how densely the days are booked.
+/// This is what makes the web app's vault-backed calendar render a full month.
 async fn sync_upcoming(
     google: &GoogleClient,
     parachute: &ParachuteClient,
     account: &str,
 ) -> Result<u64, crate::error::PrismError> {
+    let now = chrono::Utc::now();
+    let from = (now - chrono::Duration::days(3)).format("%Y-%m-%d").to_string();
+    let to = (now + chrono::Duration::days(31)).format("%Y-%m-%d").to_string();
+
     let events_data = tokio::task::spawn_blocking({
         let google = google.clone();
         let account = account.to_string();
-        move || google.calendar_list_events(&account, 50)
+        move || google.calendar_list_events_range(&account, &from, &to, 250)
     }).await
         .map_err(|e| crate::error::PrismError::Google(format!("spawn error: {}", e)))??;
 

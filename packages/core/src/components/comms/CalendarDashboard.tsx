@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, ExternalLink, FileText, Trash2, Pencil, X, Video } from "lucide-react";
 import { calendarApi } from "../../lib/sync/client";
 import { vaultApi } from "../../lib/parachute/client";
+import { isDesktop } from "../../lib/platform";
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -96,7 +97,8 @@ export default function CalendarDashboard(_props: RendererProps) {
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["calendar", view, rangeStart.toISOString(), rangeEnd.toISOString()],
-    queryFn: () => calendarApi.listEvents(rangeStart.toISOString(), rangeEnd.toISOString()),
+    // Read from the vault (works on web + desktop), not live from Google.
+    queryFn: () => calendarApi.listEventsFromVault(rangeStart.toISOString(), rangeEnd.toISOString()),
     retry: 1,
   });
 
@@ -159,6 +161,9 @@ export default function CalendarDashboard(_props: RendererProps) {
   const [syncedRanges, setSyncedRanges] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    // Google → Parachute sync is desktop-only (the browser has no Google access);
+    // the web shell just reads whatever the desktop/background sync persisted.
+    if (!isDesktop) return;
     if (syncedRanges.has(rangeKey)) return;
     let cancelled = false;
     setSyncing(true);
@@ -170,6 +175,8 @@ export default function CalendarDashboard(_props: RendererProps) {
           setSyncedRanges((prev) => new Set(prev).add(rangeKey));
           if (result.synced > 0) {
             console.log("Calendar sync:", result.synced, "events synced for", fromStr, "to", toStr);
+            // Surface the newly-persisted meeting notes in the current view.
+            queryClient.invalidateQueries({ queryKey: ["calendar"] });
           }
         }
       })
@@ -180,7 +187,7 @@ export default function CalendarDashboard(_props: RendererProps) {
         if (!cancelled) setSyncing(false);
       });
     return () => { cancelled = true; };
-  }, [rangeKey]);
+  }, [rangeKey, queryClient]);
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalEvent[]>();
@@ -235,14 +242,16 @@ export default function CalendarDashboard(_props: RendererProps) {
               Syncing...
             </span>
           )}
-          <button
-            onClick={() => handleCreateClick()}
-            className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ color: "var(--color-accent)" }}
-            title="Create event"
-          >
-            <Plus size={16} />
-          </button>
+          {isDesktop && (
+            <button
+              onClick={() => handleCreateClick()}
+              className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+              style={{ color: "var(--color-accent)" }}
+              title="Create event"
+            >
+              <Plus size={16} />
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {(["month", "week", "day"] as ViewMode[]).map((v) => (
@@ -299,9 +308,11 @@ export default function CalendarDashboard(_props: RendererProps) {
                 <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                   {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
                 </div>
-                <button onClick={() => handleCreateClick(selectedDate)} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Add event">
-                  <Plus size={14} style={{ color: "var(--color-accent)" }} />
-                </button>
+                {isDesktop && (
+                  <button onClick={() => handleCreateClick(selectedDate)} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Add event">
+                    <Plus size={14} style={{ color: "var(--color-accent)" }} />
+                  </button>
+                )}
               </div>
               {selectedEvents.length === 0 ? (
                 <div className="text-xs" style={{ color: "var(--text-muted)" }}>No events</div>
@@ -637,12 +648,17 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         <button onClick={onOpenNotes} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
           <FileText size={12} /> Meeting Notes
         </button>
-        <button onClick={onEdit} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
-          <Pencil size={12} /> Edit
-        </button>
-        <button onClick={onDelete} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}>
-          <Trash2 size={12} />
-        </button>
+        {/* Editing/deleting an event mutates Google Calendar — desktop only. */}
+        {isDesktop && (
+          <>
+            <button onClick={onEdit} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+              <Pencil size={12} /> Edit
+            </button>
+            <button onClick={onDelete} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}>
+              <Trash2 size={12} />
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

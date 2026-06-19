@@ -14,7 +14,7 @@ export default function CalendarRenderer({ note: _note }: RendererProps) {
 
   const { data: events, isLoading, isError } = useQuery({
     queryKey: ["calendar", "events", weekStart.toISOString(), weekEnd.toISOString()],
-    queryFn: () => calendarApi.listEvents(weekStart.toISOString(), weekEnd.toISOString()),
+    queryFn: () => calendarApi.listEventsFromVault(weekStart.toISOString(), weekEnd.toISOString()),
     retry: 1,
   });
 
