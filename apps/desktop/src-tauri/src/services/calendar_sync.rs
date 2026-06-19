@@ -76,11 +76,22 @@ async fn sync_upcoming(
     let events_data = tokio::task::spawn_blocking({
         let google = google.clone();
         let account = account.to_string();
+        let from = from.clone();
+        let to = to.clone();
         move || google.calendar_list_events_range(&account, &from, &to, 250)
     }).await
         .map_err(|e| crate::error::PrismError::Google(format!("spawn error: {}", e)))??;
 
-    sync_events_data(parachute, &events_data).await
+    let processed = sync_events_data(parachute, &events_data).await?;
+
+    // Propagate deletions: events removed from Google must disappear from the
+    // vault too, or the (now vault-backed) calendar shows ghosts of meetings
+    // that no longer exist.
+    if let Err(e) = reconcile_deletions(parachute, &events_data, &from, &to, 250).await {
+        log::warn!("Calendar reconcile error: {}", e);
+    }
+
+    Ok(processed)
 }
 
 /// Sync a single event into Parachute. Called by both the background service
@@ -259,6 +270,165 @@ async fn sync_events_data(
     }
 
     Ok(processed)
+}
+
+/// Propagate Google Calendar deletions into the vault.
+///
+/// `gog calendar list` returns no deleted events (it has no `--show-deleted`),
+/// so an event removed from Google simply stops appearing — and the meeting note
+/// a prior sync created lingers forever. After syncing the window `[from, to]`
+/// (YYYY-MM-DD), this finds calendar-synced notes in that window whose
+/// `calendarEventId` was NOT in Google's response and reconciles them:
+///   - template-only notes (no transcript link, nothing the user wrote) are
+///     hard-deleted;
+///   - notes carrying real content are soft-cancelled (`event_status:
+///     "cancelled"`, hidden on the calendar) so no user content is ever lost.
+///
+/// Only touches notes with a `calendarEventId` — hand-made meeting notes are
+/// never reconciled. Returns `(deleted, cancelled)`.
+pub async fn reconcile_deletions(
+    parachute: &ParachuteClient,
+    events_data: &serde_json::Value,
+    from: &str,
+    to: &str,
+    max_results: usize,
+) -> Result<(u64, u64), crate::error::PrismError> {
+    let empty_arr = vec![];
+    let events = if let Some(arr) = events_data.as_array() {
+        arr
+    } else {
+        events_data.get("events")
+            .or_else(|| events_data.get("items"))
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty_arr)
+    };
+
+    // Truncation guard: a full page means we can't distinguish "deleted" from
+    // "didn't fit in the response" — skip the deletion pass rather than risk
+    // mass false-positives.
+    if events.len() >= max_results {
+        log::warn!(
+            "Calendar reconcile: {} events == max {}, response may be truncated; skipping deletion pass for {}..{}",
+            events.len(), max_results, from, to
+        );
+        return Ok((0, 0));
+    }
+
+    let seen: std::collections::HashSet<&str> = events.iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+        .collect();
+
+    let meetings = parachute.list_all_by_tag("meeting").await.unwrap_or_default();
+
+    let mut deleted = 0u64;
+    let mut cancelled = 0u64;
+
+    for note in &meetings {
+        let meta = match &note.metadata {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Only reconcile calendar-synced notes; never hand-made meeting notes.
+        let event_id = match meta.get("calendarEventId").and_then(|v| v.as_str()) {
+            Some(id) if !id.is_empty() => id,
+            _ => continue,
+        };
+
+        // Already cancelled — leave it.
+        if meta.get("event_status").and_then(|v| v.as_str()) == Some("cancelled") {
+            continue;
+        }
+
+        // Scope to the queried window (ISO YYYY-MM-DD sorts lexicographically).
+        let date_part = meta.get("date").and_then(|v| v.as_str())
+            .or_else(|| meta.get("start").and_then(|v| v.as_str())
+                .map(|s| if s.len() >= 10 { &s[..10] } else { s }))
+            .unwrap_or("");
+        if date_part.is_empty() || date_part < from || date_part > to {
+            continue;
+        }
+
+        // Still on the calendar → keep.
+        if seen.contains(event_id) {
+            continue;
+        }
+
+        // Orphan. A linked transcript always counts as real content.
+        let has_transcript = meta.get("transcriptNoteId").and_then(|v| v.as_str())
+            .map_or(false, |s| !s.is_empty());
+
+        let template_only = if has_transcript {
+            false
+        } else {
+            // list_all_by_tag omits content; fetch just this orphan to classify.
+            match parachute.get_note(&note.id).await {
+                Ok(full) => is_template_only(&full.content),
+                Err(_) => false, // can't confirm it's empty → don't delete
+            }
+        };
+
+        if template_only {
+            match parachute.delete_note(&note.id).await {
+                Ok(_) => {
+                    deleted += 1;
+                    log::info!("Calendar reconcile: deleted orphaned meeting note {} ({})", note.id, date_part);
+                }
+                Err(e) => log::debug!("Calendar reconcile: delete failed for {}: {}", note.id, e),
+            }
+        } else {
+            // Soft-cancel (metadata updates merge, so a partial is enough). The
+            // note + its transcript link / user notes are preserved; the calendar
+            // hides it via the event_status filter.
+            match parachute.update_note(&note.id, &UpdateNoteParams {
+                content: None,
+                path: None,
+                metadata: Some(serde_json::json!({ "event_status": "cancelled" })),
+                ..Default::default()
+            }).await {
+                Ok(_) => {
+                    cancelled += 1;
+                    log::info!("Calendar reconcile: cancelled orphaned meeting note {} ({})", note.id, date_part);
+                }
+                Err(e) => log::debug!("Calendar reconcile: cancel failed for {}: {}", note.id, e),
+            }
+        }
+    }
+
+    if deleted > 0 || cancelled > 0 {
+        log::info!("Calendar reconcile {}..{}: {} deleted, {} cancelled", from, to, deleted, cancelled);
+    }
+    Ok((deleted, cancelled))
+}
+
+/// True when a meeting note holds only the auto-generated template body — i.e.
+/// the user wrote nothing under the "Meeting Notes" heading — so it's safe to
+/// hard-delete. If the marker is absent (content was transformed in a way we
+/// don't recognize) we conservatively return false and let the caller cancel
+/// instead of delete.
+fn is_template_only(content: &str) -> bool {
+    match content.rsplit_once("Meeting Notes") {
+        Some((_, tail)) => strip_markup(tail).is_empty(),
+        None => false,
+    }
+}
+
+/// Reduce a fragment to its alphanumeric characters (dropping HTML tags, the
+/// template's `---` separators, and whitespace) so we can tell whether the user
+/// actually typed anything.
+fn strip_markup(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if in_tag => {}
+            _ if c.is_alphanumeric() => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Find an existing meeting note by calendarEventId or path.

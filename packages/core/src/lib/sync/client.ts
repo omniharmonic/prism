@@ -96,6 +96,9 @@ export const calendarApi = {
     const events: CalendarEvent[] = [];
     for (const note of notes) {
       const m = (note.metadata ?? {}) as Record<string, unknown>;
+      // Hide events the sync has reconciled as deleted-from-Google but kept
+      // (because they carry a transcript or user notes).
+      if (m.event_status === "cancelled") continue;
       const startRaw = (m.start as string) || (m.date as string) || null;
       if (!startRaw) continue;
       const endRaw = (m.end as string) || startRaw;
