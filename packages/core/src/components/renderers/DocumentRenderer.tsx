@@ -34,6 +34,55 @@ const lowlightInstance = createLowlight(common);
 type ContentFont = "sans" | "serif" | "mono";
 
 /**
+ * Notion-style page header above the editor body: a breadcrumb of the note's
+ * folder path plus a large page title derived from the filename. Display-only
+ * (the body remains the editable surface).
+ */
+function PageHeader({ note }: { note: Note }) {
+  const stripped = (note.path || "").replace(/^vault\//, "");
+  const parts = stripped.split("/").filter(Boolean);
+  const rawName = parts.length ? parts[parts.length - 1] : "Untitled";
+  const name = rawName.replace(/\.[^.]+$/, "");
+  const crumbs = parts.slice(0, -1);
+  return (
+    <header style={{ marginBottom: "var(--space-6)" }}>
+      {crumbs.length > 0 && (
+        <nav
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 4,
+            marginBottom: "var(--space-3)",
+            fontSize: "var(--text-xs)",
+            color: "var(--text-muted)",
+          }}
+        >
+          {crumbs.map((c, i) => (
+            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span className="truncate" style={{ maxWidth: 160 }}>{c}</span>
+              {i < crumbs.length - 1 && <span style={{ opacity: 0.6 }}>/</span>}
+            </span>
+          ))}
+        </nav>
+      )}
+      <h1
+        style={{
+          fontFamily: "var(--font-sans)",
+          fontSize: "var(--text-3xl)",
+          fontWeight: 700,
+          letterSpacing: "-0.022em",
+          lineHeight: 1.15,
+          color: "var(--text-primary)",
+        }}
+      >
+        {name}
+      </h1>
+    </header>
+  );
+}
+
+/**
  * Notion-style per-document font switch. Each option renders its own label in
  * its own typeface so the control is self-demonstrating.
  */
@@ -308,8 +357,9 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
       {editor && <EditorToolbar editor={editor} />}
 
       {/* Editor */}
-      <div className="flex-1 overflow-auto px-6 py-8 relative">
-        <div className="max-w-3xl mx-auto">
+      <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
+        <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
+          <PageHeader note={note} />
           <EditorContent editor={editor} />
         </div>
         {/* Wikilink / @mention autocomplete dropdown */}

@@ -998,13 +998,14 @@ function TreeNodeView({
       <button
         onClick={handleClick}
         onContextMenu={(e) => onContextMenu(e, node)}
-        className={cn(
-          "group w-full flex items-center gap-1.5 py-1 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate",
-          isSelected && "bg-white/10 ring-1 ring-white/20",
-        )}
+        data-selected={isSelected || undefined}
+        className="interactive focus-ring group w-full flex items-center gap-1.5 truncate"
         style={{
-          paddingLeft: `${12 + depth * 16}px`,
-          color: "var(--text-secondary)",
+          height: 28,
+          paddingLeft: `${8 + depth * 14}px`,
+          paddingRight: 8,
+          fontSize: "var(--text-base)",
+          color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
         }}
       >
         {/* Icon area: checkbox on hover (or always in selection mode) */}
@@ -1029,7 +1030,7 @@ function TreeNodeView({
                 onClick={handleCheckboxClick}
               >
                 {isSelected
-                  ? <CheckSquare2 size={14} style={{ color: "var(--accent, #60a5fa)" }} />
+                  ? <CheckSquare2 size={14} style={{ color: "var(--color-accent)" }} />
                   : <Square size={14} style={{ opacity: 0.5 }} />
                 }
               </span>
