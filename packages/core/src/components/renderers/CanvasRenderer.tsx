@@ -1,16 +1,17 @@
-import { useCallback, useRef, useState, useMemo } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
-import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, Filter, X, ExternalLink } from "lucide-react";
+import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useSettingsStore } from "../../app/stores/settings";
-import { useNotes, useTags } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { vaultApi } from "../../lib/parachute/client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Note } from "../../lib/types";
+import { NoteDrawer } from "./NoteDrawer";
+import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
 
 type ExcalidrawAPI = {
   getSceneElements: () => readonly any[];
@@ -29,80 +30,6 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
   } catch {
     return { elements: [] };
   }
-}
-
-/** Build a rich label for a note card */
-function buildCardLabel(note: Note, includeBody: boolean): string {
-  const meta = (note.metadata || {}) as Record<string, any>;
-  const title = note.path?.split("/").pop() || "Untitled";
-  const tags = note.tags || [];
-  const lines = [title];
-
-  // Tag-specific metadata
-  if (tags.includes("task")) {
-    const parts = [];
-    if (meta.status) parts.push(meta.status);
-    if (meta.priority) parts.push(`P: ${meta.priority}`);
-    if (meta.due) parts.push(`Due: ${meta.due}`);
-    if (parts.length) lines.push(parts.join(" · "));
-  } else if (tags.includes("person")) {
-    const channels: string[] = [];
-    if (meta.email) channels.push("Email");
-    if (meta.phone) channels.push("Phone");
-    if (meta.channels && typeof meta.channels === "object") {
-      channels.push(...Object.keys(meta.channels).filter(k => meta.channels[k]));
-    }
-    if (channels.length) lines.push(channels.join(" · "));
-  } else if (tags.includes("project")) {
-    if (meta.status) lines.push(meta.status);
-  } else if (tags.includes("meeting") || tags.includes("event")) {
-    if (meta.date) lines.push(meta.date);
-    if (meta.attendees) {
-      const att = Array.isArray(meta.attendees) ? meta.attendees.slice(0, 3).join(", ") : String(meta.attendees);
-      lines.push(att);
-    }
-  }
-
-  // Body content preview
-  if (includeBody && note.content && note.content.trim().length > 1) {
-    const plain = note.content.replace(/<[^>]+>/g, "").trim();
-    const preview = plain.length > 120 ? plain.slice(0, 120) + "…" : plain;
-    if (preview) {
-      lines.push("───");
-      lines.push(preview);
-    }
-  }
-
-  if (tags.length > 0) lines.push(`[${tags.slice(0, 3).join(", ")}]`);
-  return lines.join("\n");
-}
-
-function getCardColor(note: Note, isDark: boolean): { bg: string; stroke: string; text: string } {
-  const tags = note.tags || [];
-  const base = isDark
-    ? { bg: "#2a2a3e", stroke: "#4a4a6a", text: "#e0e0e0" }
-    : { bg: "#f0f0ff", stroke: "#b0b0d0", text: "#1e1e1e" };
-  if (tags.includes("task")) return isDark ? { bg: "#2a3e2a", stroke: "#4a6a4a", text: "#c0e0c0" } : { bg: "#eef7ee", stroke: "#a0c0a0", text: "#1e1e1e" };
-  if (tags.includes("person")) return isDark ? { bg: "#3e2a3e", stroke: "#6a4a6a", text: "#e0c0e0" } : { bg: "#f7eef7", stroke: "#c0a0c0", text: "#1e1e1e" };
-  if (tags.includes("project")) return isDark ? { bg: "#2a3e3e", stroke: "#4a6a6a", text: "#c0e0e0" } : { bg: "#eef7f7", stroke: "#a0c0c0", text: "#1e1e1e" };
-  if (tags.includes("meeting") || tags.includes("event")) return isDark ? { bg: "#3e3e2a", stroke: "#6a6a4a", text: "#e0e0c0" } : { bg: "#f7f7ee", stroke: "#c0c0a0", text: "#1e1e1e" };
-  return base;
-}
-
-function eid(): string {
-  return Math.random().toString(36).substring(2, 15);
-}
-
-function getCanvasNoteIds(elements: readonly any[]): Set<string> {
-  const ids = new Set<string>();
-  for (const el of elements) {
-    if (el.customData?.prismNoteId && el.type === "rectangle") ids.add(el.customData.prismNoteId);
-  }
-  return ids;
-}
-
-function findNoteElement(elements: readonly any[], noteId: string): any | null {
-  return elements.find((el: any) => el.type === "rectangle" && el.customData?.prismNoteId === noteId) || null;
 }
 
 // ─── Main Component ──────────────────────────────────────────
@@ -236,46 +163,12 @@ export default function CanvasRenderer({ note }: RendererProps) {
       }
     }
 
-    const label = buildCardLabel(fullNote, includeBody);
-    const colors = getCardColor(fullNote, isDark);
-    const lineCount = label.split("\n").length;
-
-    const x = 100 + (getCanvasNoteIds(elements).size % 5) * 250;
-    const y = 100 + Math.floor(getCanvasNoteIds(elements).size / 5) * 180;
-
-    const rectId = eid();
-    const cardHeight = Math.max(70, lineCount * 18 + 30);
-
-    const newElements = convertToExcalidrawElements([
-      {
-        type: "rectangle",
-        id: rectId,
-        x, y,
-        width: 240,
-        height: cardHeight,
-        strokeColor: colors.stroke,
-        backgroundColor: colors.bg,
-        fillStyle: "solid",
-        strokeWidth: 1,
-        roundness: { type: 3, value: 8 },
-        customData: { prismNoteId: fullNote.id, prismNotePath: fullNote.path, prismTags: fullNote.tags },
-        label: {
-          text: label,
-          fontSize: 12,
-          fontFamily: 1,
-          textAlign: "left",
-          verticalAlign: "top",
-          strokeColor: colors.text,
-        },
-      } as any,
-    ]);
-
-    // Tag text elements with note ID
-    for (const el of newElements) {
-      if ((el as any).type === "text" && (el as any).containerId === rectId) {
-        (el as any).customData = { prismNoteId: fullNote.id };
-      }
-    }
+    const newElements = buildNoteCardElements({
+      note: fullNote,
+      includeBody,
+      isDark,
+      existingCount: getCanvasNoteIds(elements).size,
+    });
 
     api.updateScene({
       elements: [...elements, ...newElements],
@@ -456,116 +349,6 @@ export default function CanvasRenderer({ note }: RendererProps) {
             theme={isDark ? "dark" : "light"}
           />
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Note Drawer ─────────────────────────────────────────────
-
-function NoteDrawer({
-  onAddNote,
-  canvasNoteIds,
-}: {
-  onAddNote: (note: Note) => void;
-  canvasNoteIds: Set<string>;
-}) {
-  const [query, setQuery] = useState("");
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const { data: allNotes } = useNotes();
-  const { data: allTags } = useTags();
-  const openTab = useUIStore((s) => s.openTab);
-
-  const filtered = useMemo(() => {
-    let notes = allNotes || [];
-    if (selectedTag) notes = notes.filter((n) => n.tags?.includes(selectedTag));
-    if (query) {
-      const q = query.toLowerCase();
-      notes = notes.filter((n) => (n.path?.split("/").pop()?.toLowerCase() || "").includes(q));
-    }
-    return notes.slice(0, 50);
-  }, [allNotes, selectedTag, query]);
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  const addSelected = () => {
-    for (const n of filtered) {
-      if (selectedIds.has(n.id)) onAddNote(n);
-    }
-    setSelectedIds(new Set());
-  };
-
-  return (
-    <div className="flex flex-col h-full" style={{ width: 260, borderRight: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
-      <div className="p-2 space-y-1.5">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search notes..."
-          className="w-full h-7 rounded-md px-2 text-xs outline-none"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-        />
-        <div className="flex items-center gap-1 flex-wrap">
-          <Filter size={11} style={{ color: "var(--text-muted)" }} />
-          {selectedTag ? (
-            <button onClick={() => setSelectedTag(null)} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px]" style={{ background: "var(--color-accent)", color: "white" }}>
-              {selectedTag} <X size={9} />
-            </button>
-          ) : (
-            <select value="" onChange={(e) => setSelectedTag(e.target.value || null)} className="h-5 rounded px-1 text-[10px] outline-none cursor-pointer" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}>
-              <option value="">All tags</option>
-              {(allTags || []).map((t) => (
-                <option key={t.tag} value={t.tag}>{t.tag} ({t.count})</option>
-              ))}
-            </select>
-          )}
-        </div>
-      </div>
-
-      {selectedIds.size > 0 && (
-        <div className="px-2 pb-1">
-          <button onClick={addSelected} className="w-full py-1 rounded-md text-xs font-medium" style={{ background: "var(--color-accent)", color: "white" }}>
-            Add {selectedIds.size} to canvas
-          </button>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-auto px-1">
-        {filtered.map((n) => {
-          const onCanvas = canvasNoteIds.has(n.id);
-          const isSelected = selectedIds.has(n.id);
-          const tags = n.tags || [];
-          const title = n.path?.split("/").pop() || "Untitled";
-
-          return (
-            <div key={n.id} className="flex items-start gap-1.5 px-2 py-1.5 rounded-md transition-colors hover:bg-[var(--glass-hover)]" style={{ opacity: onCanvas ? 0.5 : 1 }}>
-              <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(n.id)} disabled={onCanvas} className="mt-0.5 cursor-pointer" />
-              <button
-                onClick={() => onAddNote(n)}
-                onDoubleClick={() => openTab(n.id, title, inferContentType(n))}
-                disabled={onCanvas}
-                className="flex-1 text-left min-w-0"
-              >
-                <div className="text-xs truncate" style={{ color: "var(--text-primary)" }}>{title}</div>
-                {tags.length > 0 && (
-                  <div className="flex gap-1 mt-0.5 flex-wrap">
-                    {tags.slice(0, 3).map((t) => (
-                      <span key={t} className="text-[9px] px-1 rounded" style={{ background: "var(--glass)", color: "var(--text-muted)" }}>{t}</span>
-                    ))}
-                  </div>
-                )}
-              </button>
-            </div>
-          );
-        })}
-        {filtered.length === 0 && <div className="text-xs py-4 text-center" style={{ color: "var(--text-muted)" }}>No notes found</div>}
       </div>
     </div>
   );

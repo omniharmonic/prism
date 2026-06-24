@@ -63,9 +63,17 @@ pub async fn calendar_sync_range(
         }
     }
 
+    // Propagate deletions for this window too, so navigating the calendar prunes
+    // events that were removed from Google (matches the background sync).
+    let (deleted, cancelled) = crate::services::calendar_sync::reconcile_deletions(
+        &parachute, &events_data, &from, &to, 100,
+    ).await.unwrap_or((0, 0));
+
     Ok(serde_json::json!({
         "synced": synced,
         "errors": errors,
+        "deleted": deleted,
+        "cancelled": cancelled,
         "total": events.len(),
         "from": from,
         "to": to,

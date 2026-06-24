@@ -11,7 +11,7 @@ export function CalendarWidget() {
   const { data, isError, isLoading } = useQuery({
     queryKey: ["calendar", "today", format(now, "yyyy-MM-dd")],
     queryFn: () =>
-      calendarApi.listEvents(
+      calendarApi.listEventsFromVault(
         new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
         new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
       ),

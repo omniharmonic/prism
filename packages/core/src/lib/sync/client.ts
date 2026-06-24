@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { vaultApi } from "../parachute/client";
 
 export interface SyncConfig {
   adapter: string;
@@ -77,4 +78,57 @@ export const calendarApi = {
     invoke<{ synced: number; errors: number; total: number; from: string; to: string }>(
       "calendar_sync_range", { from, to }
     ),
+
+  /**
+   * Read events from the Parachute vault (the `meeting` notes the desktop
+   * calendar-sync service persists), NOT live from Google. This goes through the
+   * VaultClient seam, so it works in BOTH shells — including the web PWA, which
+   * has no Google access. Returns the same `CalendarEvent` shape as `listEvents`.
+   *
+   * `from`/`to` are ISO datetime strings; an event is included when it overlaps
+   * that window.
+   */
+  listEventsFromVault: async (from: string, to: string): Promise<CalendarEvent[]> => {
+    const fromMs = Date.parse(from);
+    const toMs = Date.parse(to);
+    const notes = await vaultApi.listNotes({ tag: "meeting", limit: 5000 });
+
+    const events: CalendarEvent[] = [];
+    for (const note of notes) {
+      const m = (note.metadata ?? {}) as Record<string, unknown>;
+      // Hide events the sync has reconciled as deleted-from-Google but kept
+      // (because they carry a transcript or user notes).
+      if (m.event_status === "cancelled") continue;
+      const startRaw = (m.start as string) || (m.date as string) || null;
+      if (!startRaw) continue;
+      const endRaw = (m.end as string) || startRaw;
+
+      const startMs = Date.parse(startRaw);
+      if (Number.isNaN(startMs)) continue;
+      const endMs = Date.parse(endRaw);
+      // Overlap test: event ends after the window starts AND starts before it ends.
+      if ((Number.isNaN(endMs) ? startMs : endMs) < fromMs || startMs > toMs) continue;
+
+      const hasTime = startRaw.includes("T");
+      const attendees = Array.isArray(m.attendees) ? (m.attendees as unknown[]) : [];
+
+      events.push({
+        id: (m.calendarEventId as string) || note.id,
+        summary: (m.title as string) || note.path?.split("/").pop() || "Untitled Event",
+        description: (m.description as string) ?? null,
+        start: { dateTime: hasTime ? startRaw : null, date: hasTime ? null : startRaw, timeZone: null },
+        end: { dateTime: hasTime ? endRaw : null, date: hasTime ? null : endRaw, timeZone: null },
+        location: (m.location as string) ?? null,
+        attendees: attendees.map((a) => {
+          const s = String(a);
+          return { email: s, displayName: s, responseStatus: null };
+        }),
+        meetUrl: (m.meetLink as string) ?? null,
+        calendarId: "primary",
+        status: (m.event_status as string) || "confirmed",
+        htmlLink: (m.htmlLink as string) ?? null,
+      });
+    }
+    return events;
+  },
 };

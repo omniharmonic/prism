@@ -1,9 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
-import { Excalidraw } from "@excalidraw/excalidraw";
+import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import { useSettingsStore } from "../../app/stores/settings";
+import { useUIStore } from "../../app/stores/ui";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { inferContentType } from "../../lib/schemas/content-types";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
+import type { Note } from "../../lib/types";
+import { NoteDrawer } from "./NoteDrawer";
+import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -13,6 +20,14 @@ import type { AwarenessProvider, CollabUser } from "./CollabEditor";
  * entry, so concurrent edits to different elements merge, and re-seeding is
  * idempotent (set-by-id, no duplication).
  *
+ * Beyond freeform drawing it embeds **Parachute notes as cards** (a rectangle
+ * carrying `customData.prismNoteId`), restoring the data-connected canvas from
+ * the offline `CanvasRenderer`: a note drawer to drop cards, "Open note" for a
+ * selected card, and arrow⇄Parachute-link sync. Embedded cards are ordinary
+ * Excalidraw elements, so they ride the existing Y.Map and sync to every peer
+ * with no protocol change. Vault access goes through the `useVaultClient` seam,
+ * so this works identically in the desktop and web shells.
+ *
  * Loop safety is two-layered:
  *  1. onChange only writes an element to the map when its Excalidraw `version`
  *     is newer than the stored one (versions are monotonic), so re-applying a
@@ -20,9 +35,10 @@ import type { AwarenessProvider, CollabUser } from "./CollabEditor";
  *  2. local writes use a LOCAL origin; the map observer ignores those and only
  *     repaints for remote transactions.
  *
- * appState (zoom/scroll/selection) is per-viewer and intentionally NOT synced;
- * only elements + live pointers are shared. Persisted as the scene JSON the
- * non-collab CanvasRenderer reads.
+ * Link-visualization arrows (drawn by "Show links") are a derived overlay: they
+ * carry `customData.prismLinkViz` and are deliberately NOT persisted to the map
+ * (so the canonical doc stays clean and they never re-create the links they
+ * depict). appState (zoom/scroll/selection) is per-viewer and NOT synced.
  */
 const LOCAL = Symbol("local-canvas-edit");
 
@@ -39,9 +55,24 @@ export function CollabCanvas({
 }) {
   const apiRef = useRef<any>(null);
   const theme = useSettingsStore((s) => s.theme);
+  const isDark = theme === "dark";
+  const client = useVaultClient();
+  const openTab = useUIStore((s) => s.openTab);
+
+  const [showDrawer, setShowDrawer] = useState(false);
+  const [showLinks, setShowLinks] = useState(false);
+  const [includeBody, setIncludeBody] = useState(false);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+
+  // In-session bookkeeping for the arrow⇄link bridge.
+  const linkArrowIds = useRef<Set<string>>(new Set()); // ids of derived "Show links" arrows
+  const syncedArrows = useRef<Map<string, { sourceId: string; targetId: string; relationship: string }>>(new Map());
+
+  const elementsMap = useCallback(() => ydoc.getMap<any>("elements"), [ydoc]);
+  const sceneElements = useCallback(() => Array.from(elementsMap().values()), [elementsMap]);
 
   useEffect(() => {
-    const map = ydoc.getMap<any>("elements");
+    const map = elementsMap();
     const awareness = provider.awareness as any;
 
     // Paint the raw map values. We deliberately do NOT run Excalidraw's
@@ -49,13 +80,10 @@ export function CollabCanvas({
     // fractional indices across a multi-element set. Excalidraw-authored elements
     // (every real canvas note) already carry the runtime props updateScene needs,
     // so raw values render correctly and completely.
-    const sceneElements = () => Array.from(map.values());
-
-    // Paint the current map into Excalidraw (remote → local).
     const repaint = () => {
       const api = apiRef.current;
       if (!api) return;
-      api.updateScene({ elements: sceneElements() });
+      api.updateScene({ elements: Array.from(map.values()) });
     };
 
     // Remote changes only (skip our own LOCAL-origin writes — already on screen).
@@ -104,22 +132,203 @@ export function CollabCanvas({
       map.unobserve(onMap);
       awareness?.off("change", onAwareness);
     };
-  }, [ydoc, provider]);
+  }, [elementsMap, provider]);
 
-  const onChange = (elements: readonly any[]) => {
-    if (!editable) return;
-    const map = ydoc.getMap<any>("elements");
-    ydoc.transact(() => {
-      for (const el of elements) {
-        if (!el?.id) continue;
-        const cur = map.get(el.id);
-        // Version-gate: only push genuinely newer elements (prevents echo loops).
-        if (!cur || (cur.version ?? 0) < (el.version ?? 0)) {
-          map.set(el.id, el);
+  // ─── Embed a vault note as a card ───────────────────────────
+  const handleAddNoteCard = useCallback(
+    async (noteToAdd: Note) => {
+      const map = elementsMap();
+      const elements = Array.from(map.values());
+      if (findNoteElement(elements, noteToAdd.id)) return; // already on canvas
+
+      // Fetch full content only when the preview toggle is on.
+      let fullNote = noteToAdd;
+      if (includeBody) {
+        try {
+          fullNote = await client.getNote(noteToAdd.id);
+        } catch {
+          fullNote = noteToAdd;
         }
       }
-    }, LOCAL);
-  };
+
+      const newElements = buildNoteCardElements({
+        note: fullNote,
+        includeBody,
+        isDark,
+        existingCount: getCanvasNoteIds(elements).size,
+      });
+
+      // Write to the CRDT so the card syncs + persists; LOCAL so our own observer
+      // skips it (we paint it directly below).
+      ydoc.transact(() => {
+        for (const el of newElements) if (el?.id) map.set(el.id, el);
+      }, LOCAL);
+      apiRef.current?.updateScene({ elements: Array.from(map.values()) });
+    },
+    [elementsMap, ydoc, client, includeBody, isDark],
+  );
+
+  // ─── Open the selected card's note in a tab ─────────────────
+  const handleOpenSelected = useCallback(() => {
+    if (!selectedNoteId) return;
+    const el = findNoteElement(sceneElements(), selectedNoteId);
+    const path = el?.customData?.prismNotePath || "";
+    const title = path.split("/").pop() || "Untitled";
+    client
+      .getNote(selectedNoteId)
+      .then((n) => openTab(selectedNoteId, title, inferContentType(n)))
+      .catch(() => openTab(selectedNoteId, title, "document"));
+  }, [selectedNoteId, sceneElements, client, openTab]);
+
+  // ─── Show / hide arrows for existing Parachute links ────────
+  const toggleLinks = useCallback(async () => {
+    const map = elementsMap();
+
+    if (showLinks) {
+      // Viz arrows are local-only (never in the map), so the map already holds
+      // the clean scene — repaint from it to drop them.
+      apiRef.current?.updateScene({ elements: Array.from(map.values()) });
+      linkArrowIds.current.clear();
+      setShowLinks(false);
+      return;
+    }
+
+    const elements = Array.from(map.values());
+    const noteIds = getCanvasNoteIds(elements);
+    if (noteIds.size === 0) {
+      setShowLinks(true);
+      return;
+    }
+
+    const allLinks: Array<{ sourceId: string; targetId: string; relationship: string }> = [];
+    for (const nid of noteIds) {
+      try {
+        const links = await client.getLinks(nid);
+        for (const link of links) {
+          if (noteIds.has(link.sourceId) && noteIds.has(link.targetId)) {
+            if (!allLinks.some((l) => l.sourceId === link.sourceId && l.targetId === link.targetId && l.relationship === link.relationship)) {
+              allLinks.push({ sourceId: link.sourceId, targetId: link.targetId, relationship: link.relationship });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch links for", nid, e);
+      }
+    }
+
+    const rawElements: any[] = [];
+    for (const link of allLinks) {
+      const sourceEl = findNoteElement(elements, link.sourceId);
+      const targetEl = findNoteElement(elements, link.targetId);
+      if (!sourceEl || !targetEl) continue;
+
+      const arrowId = eid();
+      const arrowDef: any = {
+        type: "arrow",
+        id: arrowId,
+        x: sourceEl.x + sourceEl.width,
+        y: sourceEl.y + sourceEl.height / 2,
+        strokeColor: isDark ? "#6a6aaa" : "#8080c0",
+        strokeWidth: 1.5,
+        startArrowhead: null,
+        endArrowhead: "arrow",
+        start: { id: sourceEl.id },
+        end: { id: targetEl.id },
+        customData: { prismLinkViz: true },
+      };
+      if (link.relationship !== "related") {
+        arrowDef.label = {
+          text: link.relationship,
+          fontSize: 11,
+          fontFamily: 1,
+          strokeColor: isDark ? "#8888cc" : "#6060a0",
+        };
+      }
+      linkArrowIds.current.add(arrowId);
+      rawElements.push(arrowDef);
+    }
+
+    if (rawElements.length > 0) {
+      const converted = convertToExcalidrawElements(rawElements);
+      // Tag every produced element (arrow + its label) as derived so onChange
+      // never persists them and the arrow-sync loop never re-creates links.
+      for (const el of converted) {
+        (el as any).customData = { ...(el as any).customData, prismLinkViz: true };
+        linkArrowIds.current.add((el as any).id);
+      }
+      apiRef.current?.updateScene({ elements: [...elements, ...converted] });
+    }
+    setShowLinks(true);
+  }, [showLinks, isDark, client, elementsMap]);
+
+  // ─── Scene change → persist, track selection, sync arrows ───
+  const onChange = useCallback(
+    (elements: readonly any[], appState?: any) => {
+      if (!editable) return;
+      const map = elementsMap();
+
+      // 1. Persist authored elements to the CRDT (version-gated; skip the
+      //    derived link-viz overlay so the canonical doc stays clean).
+      ydoc.transact(() => {
+        for (const el of elements) {
+          if (!el?.id || el.customData?.prismLinkViz) continue;
+          const cur = map.get(el.id);
+          if (!cur || (cur.version ?? 0) < (el.version ?? 0)) map.set(el.id, el);
+        }
+      }, LOCAL);
+
+      // 2. Track a selected note card for the "Open note" button.
+      const selectedIds = appState?.selectedElementIds || {};
+      let foundNoteId: string | null = null;
+      for (const elId of Object.keys(selectedIds)) {
+        if (!selectedIds[elId]) continue;
+        const el = elements.find((e: any) => e.id === elId);
+        if (el?.customData?.prismNoteId && el.type === "rectangle") {
+          foundNoteId = el.customData.prismNoteId;
+          break;
+        }
+      }
+      setSelectedNoteId(foundNoteId);
+
+      // 3. Arrow drawn between two cards → create the Parachute link.
+      for (const el of elements) {
+        if (el.type !== "arrow" || el.isDeleted) continue;
+        if (el.customData?.prismLinkViz) continue; // derived overlay — never authored
+        if (linkArrowIds.current.has(el.id)) continue;
+
+        const startBound = el.startBinding?.elementId;
+        const endBound = el.endBinding?.elementId;
+        if (!startBound || !endBound) continue;
+
+        const startEl = elements.find((e: any) => e.id === startBound);
+        const endEl = elements.find((e: any) => e.id === endBound);
+        if (!startEl?.customData?.prismNoteId || !endEl?.customData?.prismNoteId) continue;
+
+        const sourceId = startEl.customData.prismNoteId;
+        const targetId = endEl.customData.prismNoteId;
+        if (sourceId === targetId) continue;
+
+        const labelEl = elements.find((e: any) => e.type === "text" && e.containerId === el.id);
+        const relationship = labelEl?.text?.trim() || "related";
+
+        const existing = syncedArrows.current.get(el.id);
+        if (existing && existing.sourceId === sourceId && existing.targetId === targetId && existing.relationship === relationship) continue;
+        if (existing) client.deleteLink(existing.sourceId, existing.targetId, existing.relationship).catch(() => {});
+        client.createLink(sourceId, targetId, relationship).catch((err) => console.error("Failed to create link:", err));
+        syncedArrows.current.set(el.id, { sourceId, targetId, relationship });
+      }
+
+      // 4. An authored link-arrow deleted → remove the Parachute link.
+      for (const [arrowId, link] of syncedArrows.current) {
+        const el = elements.find((e: any) => e.id === arrowId);
+        if (!el || el.isDeleted) {
+          client.deleteLink(link.sourceId, link.targetId, link.relationship).catch(() => {});
+          syncedArrows.current.delete(arrowId);
+        }
+      }
+    },
+    [editable, elementsMap, ydoc, client],
+  );
 
   const onPointerUpdate = (payload: any) => {
     const awareness = provider.awareness as any;
@@ -132,15 +341,62 @@ export function CollabCanvas({
   return (
     // touch-action:none lets Excalidraw own pinch-zoom/two-finger-pan on mobile
     // instead of the browser zooming/scrolling the page behind the canvas.
-    <div style={{ position: "absolute", inset: 0, touchAction: "none" }}>
-      <Excalidraw
-        excalidrawAPI={(api: any) => (apiRef.current = api)}
-        onChange={onChange}
-        onPointerUpdate={onPointerUpdate}
-        viewModeEnabled={!editable}
-        theme={theme === "dark" ? "dark" : "light"}
-        initialData={{ elements: Array.from(ydoc.getMap<any>("elements").values()), scrollToContent: true }}
-      />
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none" }}>
+      {editable && (
+        <div
+          className="flex items-center gap-1.5 px-3 py-1 text-xs flex-shrink-0"
+          style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
+        >
+          <button
+            onClick={() => setShowDrawer((v) => !v)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
+            title="Note drawer"
+          >
+            {showDrawer ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+            Notes
+          </button>
+          <button
+            onClick={toggleLinks}
+            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
+            title={showLinks ? "Hide existing links" : "Show existing links"}
+          >
+            {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
+            {showLinks ? "Hide links" : "Show links"}
+          </button>
+          <label className="flex items-center gap-1 px-2 py-1 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+            <input type="checkbox" checked={includeBody} onChange={(e) => setIncludeBody(e.target.checked)} className="cursor-pointer" />
+            Preview
+          </label>
+          {selectedNoteId && (
+            <button
+              onClick={handleOpenSelected}
+              className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors"
+              style={{ background: "var(--color-accent)", color: "white" }}
+            >
+              <ExternalLink size={11} />
+              Open note
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="flex-1 flex min-h-0">
+        {editable && showDrawer && (
+          <NoteDrawer onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(sceneElements())} />
+        )}
+        <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+          <Excalidraw
+            excalidrawAPI={(api: any) => (apiRef.current = api)}
+            onChange={onChange as any}
+            onPointerUpdate={onPointerUpdate}
+            viewModeEnabled={!editable}
+            theme={isDark ? "dark" : "light"}
+            initialData={{ elements: sceneElements(), scrollToContent: true }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

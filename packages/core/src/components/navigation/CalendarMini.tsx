@@ -10,7 +10,7 @@ export function CalendarMini() {
   const now = new Date();
   const { data, isError } = useQuery({
     queryKey: ["calendar", "today", format(now, "yyyy-MM-dd")],
-    queryFn: () => calendarApi.listEvents(
+    queryFn: () => calendarApi.listEventsFromVault(
       new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
       new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
     ),
