@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -11,13 +11,28 @@ import { useUIStore } from "../../app/stores/ui";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import type { ContentType } from "../../lib/types";
 
+/** Virtual tab ids that aren't real notes (so they're excluded from Recent). */
+const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages"]);
+
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery] = useDebounce(searchQuery, 200);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
+  const recents = useSettingsStore((s) => s.recents);
+  const pushRecent = useSettingsStore((s) => s.pushRecent);
   const openTab = useUIStore((s) => s.openTab);
+  const activeTabId = useUIStore((s) => s.activeTabId);
+  const openTabs = useUIStore((s) => s.openTabs);
+
+  // Record the active note into Recent (skipping virtual dashboards/non-notes).
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = openTabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.noteId.includes(":") || VIRTUAL_TABS.has(tab.noteId)) return;
+    pushRecent({ id: tab.noteId, title: tab.title, type: tab.type });
+  }, [activeTabId, openTabs, pushRecent]);
 
   const handleOpenMessages = () => {
     openTab("vault-messages", "Messages", "vault-messages" as ContentType);
@@ -103,6 +118,20 @@ export function Navigation() {
             <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
             <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
           </div>
+
+          {/* Recently opened notes */}
+          {recents.length > 0 && (
+            <NavSection label="Recent" defaultOpen>
+              {recents.map((r) => (
+                <NavItem
+                  key={r.id}
+                  icon={<FileText size={15} />}
+                  label={r.title}
+                  onClick={() => openTab(r.id, r.title, r.type)}
+                />
+              ))}
+            </NavSection>
+          )}
 
           {/* Projects / vault notes */}
           <NavSection label={sidebarLabel} defaultOpen action={<RefreshNavButton />}>
