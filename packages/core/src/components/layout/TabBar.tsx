@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { X, PanelLeft, PanelRight, Bot } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { ShareButton } from "./ShareButton";
@@ -28,10 +29,14 @@ function IconButton({
 
 export function TabBar() {
   const {
-    openTabs, activeTabId, setActiveTab, closeTab,
+    openTabs, activeTabId, setActiveTab, closeTab, reorderTabs,
     sidebarOpen, toggleSidebar,
     contextPanelOpen, toggleContextPanel, setContextPanelTab,
   } = useUIStore();
+
+  // Drag-to-reorder state: the tab being dragged + the tab it's hovering over.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   return (
     <div
@@ -52,17 +57,41 @@ export function TabBar() {
       <div className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0" style={{ paddingLeft: 2 }}>
         {openTabs.map((tab) => {
           const active = activeTabId === tab.id;
+          const isOver = overId === tab.id && dragId !== null && dragId !== tab.id;
+          const isDragging = dragId === tab.id;
           return (
             <div
               key={tab.id}
               role="button"
               tabIndex={0}
+              draggable
               onClick={() => setActiveTab(tab.id)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   setActiveTab(tab.id);
                 }
+              }}
+              onDragStart={(e) => {
+                setDragId(tab.id);
+                e.dataTransfer.effectAllowed = "move";
+                // Some browsers require data to be set for a drag to begin.
+                e.dataTransfer.setData("text/plain", tab.id);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (overId !== tab.id) setOverId(tab.id);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragId && dragId !== tab.id) reorderTabs(dragId, tab.id);
+                setDragId(null);
+                setOverId(null);
+              }}
+              onDragEnd={() => {
+                setDragId(null);
+                setOverId(null);
               }}
               className="interactive group flex items-center gap-1.5 flex-shrink-0"
               style={{
@@ -72,6 +101,10 @@ export function TabBar() {
                 color: active ? "var(--text-primary)" : "var(--text-secondary)",
                 fontWeight: active ? 550 : 400,
                 background: active ? "var(--surface-active)" : undefined,
+                opacity: isDragging ? 0.4 : 1,
+                // Accent insertion marker on the side the dragged tab will land.
+                boxShadow: isOver ? "inset 2px 0 0 0 var(--color-accent)" : undefined,
+                cursor: "grab",
               }}
             >
               {tab.isDirty && (

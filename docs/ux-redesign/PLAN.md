@@ -77,6 +77,20 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
   - [ ] Full typecheck + build (both shells)
   - [ ] Manual run-through: no feature lost; visual parity with the baseline
 
+## Anytype-feel north star (deep dive on anyproto/anytype-ts)
+
+Concrete patterns to adopt, ranked by impact-for-effort:
+1. **Object icons** — every Anytype object has an emoji/image icon beside its title.
+   Add an icon affordance to the shared PageHeader (type icon by default; click to pick
+   an emoji, stored in metadata). Biggest single "feels like Anytype" win.
+2. **Command palette as quick-capture/search** — Anytype's ⌘K is object search + create-by-type.
+   Rebuild CommandBar: sectioned, icon-led, "search vault objects" + "create {type}".
+3. **Back/forward navigation** in the top bar (history of opened objects).
+4. **Sidebar widgets** — Favorites / Recent / Sets above the tree (Anytype's widget rail).
+5. **Cover images** on objects (optional banner above the page header).
+6. **Sets/Collections** ≈ our dashboards — align their chrome with the object aesthetic.
+7. Soft, light, rounded, generous whitespace everywhere (ongoing via tokens).
+
 ## Progress log
 
 - 2026-06-23: Branch created; merged branches pruned (local + remote). Recon agents

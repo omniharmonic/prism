@@ -51,6 +51,8 @@ interface UIStore {
   setActiveTab: (tabId: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
   renameTab: (noteId: string, newTitle: string) => void;
+  /** Reorder open tabs by moving the dragged tab to the target tab's position. */
+  reorderTabs: (fromId: string, toId: string) => void;
 
   openCommandBar: () => void;
   closeCommandBar: () => void;
@@ -154,6 +156,18 @@ export const useUIStore = create<UIStore>((set, get) => ({
         t.noteId === noteId ? { ...t, title: newTitle } : t,
       ),
     })),
+
+  reorderTabs: (fromId, toId) =>
+    set((s) => {
+      if (fromId === toId) return s;
+      const from = s.openTabs.findIndex((t) => t.id === fromId);
+      const to = s.openTabs.findIndex((t) => t.id === toId);
+      if (from === -1 || to === -1) return s;
+      const next = s.openTabs.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { openTabs: next };
+    }),
 
   openCommandBar: () => set({ commandBarOpen: true }),
   closeCommandBar: () => set({ commandBarOpen: false }),
