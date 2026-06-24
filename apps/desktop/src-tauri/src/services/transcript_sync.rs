@@ -9,6 +9,22 @@ use crate::error::PrismError;
 
 const SYNC_INTERVAL_SECS: u64 = 600; // 10 minutes
 
+// Fireflies rate-limits aggressively (the GraphQL API returns "too many requests"
+// errors), and our list→detail flow is one request per new transcript. Keep each
+// run small and spaced out: scan fewer transcripts, ingest a bounded number of
+// new ones per cycle, and pause between detail calls. The 10-minute loop catches
+// up over successive runs without tripping the limit.
+const FIREFLIES_LIST_LIMIT: i64 = 25;
+const FIREFLIES_MAX_NEW_PER_RUN: usize = 6;
+const FIREFLIES_THROTTLE_MS: u64 = 1200;
+
+/// Heuristic: does this error look like a Fireflies rate-limit (HTTP 429 or a
+/// "too many requests" GraphQL error)? Used to back off gracefully.
+fn is_rate_limited(err: &PrismError) -> bool {
+    let m = err.to_string().to_lowercase();
+    m.contains("429") || m.contains("too many requests") || m.contains("rate limit") || m.contains("ratelimit")
+}
+
 /// Transcript sync service: pulls transcripts from configured sources
 /// (Fathom API, Fireflies GraphQL, Meetily SQLite, etc.) into Parachute as
 /// tagged notes.
@@ -603,10 +619,19 @@ async fn sync_fireflies(
     // 1) List recent transcripts (metadata only — no sentences/summary).
     let list_query = serde_json::json!({
         "query": "query Transcripts($limit: Int) { transcripts(limit: $limit) { id title date duration transcript_url meeting_attendees { displayName email } } }",
-        "variables": { "limit": 50 },
+        "variables": { "limit": FIREFLIES_LIST_LIMIT },
     });
 
-    let list = fireflies_graphql(&client, api_key, &list_query).await?;
+    // If even the list call is rate-limited, skip this cycle quietly and retry
+    // next interval rather than surfacing an error.
+    let list = match fireflies_graphql(&client, api_key, &list_query).await {
+        Ok(v) => v,
+        Err(e) if is_rate_limited(&e) => {
+            log::info!("Fireflies rate-limited on list query; retrying next cycle");
+            return Ok(0);
+        }
+        Err(e) => return Err(e),
+    };
     let items = list.pointer("/data/transcripts")
         .and_then(|v| v.as_array())
         .cloned()
@@ -620,6 +645,7 @@ async fn sync_fireflies(
     }).await.unwrap_or_default();
 
     let mut ingested = 0u64;
+    let mut processed = 0usize; // new transcripts whose detail we've fetched this run
 
     for meeting in &items {
         let id = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -645,6 +671,16 @@ async fn sync_fireflies(
         });
         if already_exists { continue; }
 
+        // Bound new ingests per run + space out detail calls to respect the rate limit.
+        if processed >= FIREFLIES_MAX_NEW_PER_RUN {
+            log::info!("Fireflies: per-run cap ({}) reached; remaining transcripts sync next cycle", FIREFLIES_MAX_NEW_PER_RUN);
+            break;
+        }
+        if processed > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(FIREFLIES_THROTTLE_MS)).await;
+        }
+        processed += 1;
+
         // Attendees from the list payload.
         let attendees: Vec<String> = meeting.get("meeting_attendees")
             .and_then(|v| v.as_array())
@@ -662,7 +698,17 @@ async fn sync_fireflies(
             "variables": { "id": id },
         });
 
-        let detail = fireflies_graphql(&client, api_key, &detail_query).await.unwrap_or_default();
+        let detail = match fireflies_graphql(&client, api_key, &detail_query).await {
+            Ok(v) => v,
+            Err(e) if is_rate_limited(&e) => {
+                log::warn!("Fireflies rate-limited mid-sync; stopping this run, resuming next cycle");
+                break;
+            }
+            Err(e) => {
+                log::debug!("Fireflies detail fetch failed for '{}': {}", title, e);
+                continue;
+            }
+        };
         let t = detail.pointer("/data/transcript");
 
         let summary = t.and_then(|t| t.pointer("/summary/overview"))
