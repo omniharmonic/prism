@@ -8,6 +8,8 @@ import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
@@ -26,33 +28,45 @@ import Typography from "@tiptap/extension-typography";
 import { common, createLowlight } from "lowlight";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
+import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
+import { PageHeader, FontSwitch, renamePath, type ContentFont } from "./DocumentChrome";
+import { useUpdateNote } from "../../app/hooks/useParachute";
 
 const lowlightInstance = createLowlight(common);
 
-export default function DocumentRenderer({ note }: RendererProps) {
-  const openTab = useUIStore((s) => s.openTab);
+export default function DocumentRenderer({ note, onMetadataChange }: RendererProps) {
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
+  const [slashState, setSlashState] = useState<SlashCommandState | null>(null);
 
-  // Wikilink navigation: resolve target name → note ID → open tab
-  const handleWikilinkNavigate = useCallback((target: string) => {
-    if (!allNotes) return;
-    const matched = allNotes.find((n) => {
-      const path = n.path || "";
-      const name = path.split("/").pop() || "";
-      const stripped = path.startsWith("vault/") ? path.slice(6) : path;
-      return name.toLowerCase() === target.toLowerCase()
-        || path === target
-        || stripped === target
-        || stripped.split("/").pop()?.toLowerCase() === target.toLowerCase();
-    });
-    if (matched) {
-      const type = inferContentType(matched);
-      openTab(matched.id, matched.path?.split("/").pop() || matched.id, type);
-    }
-  }, [allNotes, openTab]);
+  // Per-document content font (Notion-style "Aa" switch). Defaults to sans;
+  // the choice is persisted in note metadata so it travels with the doc.
+  const [contentFont, setContentFont] = useState<ContentFont>(
+    (note.metadata?.contentFont as ContentFont) || "sans",
+  );
+  useEffect(() => {
+    setContentFont((note.metadata?.contentFont as ContentFont) || "sans");
+  }, [note.id]); // re-sync when switching documents
+  const changeFont = useCallback((f: ContentFont) => {
+    setContentFont(f);
+    onMetadataChange({ contentFont: f });
+  }, [onMetadataChange]);
+
+  // Rename the note by editing the title in the page header (preserves folder +
+  // extension; updates the open tab's label).
+  const updateNote = useUpdateNote();
+  const renameTab = useUIStore((s) => s.renameTab);
+  const handleRename = useCallback((newName: string) => {
+    const next = renamePath(note.path, newName);
+    if (!next) return;
+    updateNote.mutate({ id: note.id, path: next });
+    renameTab(note.id, newName.trim());
+  }, [note.path, note.id, updateNote, renameTab]);
+
+  // Wikilink navigation (shared with the collaborative editors).
+  const handleWikilinkNavigate = useWikilinkNavigate();
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
@@ -68,6 +82,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
+    SlashCommand.configure({ onStateChange: setSlashState }),
     SearchHighlight,
   ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
@@ -251,18 +266,28 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
       {/* Toolbar */}
       {editor && <EditorToolbar editor={editor} />}
 
       {/* Editor */}
-      <div className="flex-1 overflow-auto px-6 py-8 relative">
-        <div className="max-w-3xl mx-auto">
+      <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
+        <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
+          <PageHeader
+            path={note.path}
+            onRename={handleRename}
+            icon={note.metadata?.icon as string | undefined}
+            onIconChange={(emoji) => onMetadataChange({ icon: emoji })}
+          />
           <EditorContent editor={editor} />
         </div>
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
           <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+        )}
+        {/* `/` slash-command menu */}
+        {editor && slashState?.active && (
+          <SlashMenu editor={editor} state={slashState} onClose={() => setSlashState(null)} />
         )}
         {/* In-note find bar (Cmd+F / Ctrl+F) */}
         {editor && findOpen && (
@@ -270,15 +295,18 @@ export default function DocumentRenderer({ note }: RendererProps) {
         )}
       </div>
 
-      {/* Save status */}
+      {/* Footer: per-document font switch (left) + save status (right) */}
       <div
-        className="flex items-center justify-end px-4 py-1 text-xs gap-3"
+        className="flex items-center justify-between px-4 py-1 text-xs gap-3"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
-        {isSaving && <span>Saving...</span>}
-        {lastSaved && !isSaving && (
-          <span>Saved {lastSaved.toLocaleTimeString()}</span>
-        )}
+        <FontSwitch value={contentFont} onChange={changeFont} />
+        <div className="flex items-center gap-3">
+          {isSaving && <span>Saving...</span>}
+          {lastSaved && !isSaving && (
+            <span>Saved {lastSaved.toLocaleTimeString()}</span>
+          )}
+        </div>
       </div>
 
       {/* Ghost text: agent-generated content awaiting accept/reject */}

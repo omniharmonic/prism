@@ -95,5 +95,43 @@ export default defineConfig({
   },
   server: {
     port: 5180,
+    // Dev-only: when PRISM_DEV_SESSION is set, proxy the gateway routes to a
+    // locally-running Prism Server (:8787) and inject an owner session cookie
+    // server-side, so `localhost:5180` renders the real app with real vault data
+    // and hot-reloads the redesign — no login dance. Inert in prod (env unset)
+    // and never affects the static build (server.proxy is dev-server only).
+    proxy: devGatewayProxy(),
   },
 });
+
+function devGatewayProxy() {
+  const session = process.env.PRISM_DEV_SESSION;
+  if (!session) return undefined;
+  const cookie = `prism_session=${session}`;
+  // Inject the owner session on the outgoing request — both plain HTTP and the
+  // WebSocket upgrade (/collab), so the collab editor authenticates and notes
+  // actually open.
+  const setReqCookie = (req: { getHeader: (n: string) => unknown; setHeader: (n: string, v: string) => void }) => {
+    const existing = req.getHeader("cookie");
+    req.setHeader("cookie", existing ? `${existing}; ${cookie}` : cookie);
+  };
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const configure = (proxy: { on: (e: string, cb: (a: any) => void) => void }) => {
+    proxy.on("proxyReq", (proxyReq: any) => setReqCookie(proxyReq));
+    proxy.on("proxyReqWs", (proxyReq: any) => setReqCookie(proxyReq));
+    // Also hand the browser the cookie so it carries the session natively on
+    // every subsequent request (including the WS handshake from the client).
+    proxy.on("proxyRes", (proxyRes: any) => {
+      const sc = proxyRes.headers["set-cookie"];
+      const list = Array.isArray(sc) ? sc : sc ? [sc] : [];
+      proxyRes.headers["set-cookie"] = [...list, `${cookie}; Path=/; SameSite=Lax`];
+    });
+  };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const base = { target: "http://localhost:8787", changeOrigin: true, configure };
+  return {
+    "/api": base,
+    "/auth": base,
+    "/collab": { ...base, ws: true },
+  } as Record<string, unknown>;
+}

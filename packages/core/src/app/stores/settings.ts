@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { ContentType } from "../../lib/types";
 
 export type Theme = "dark" | "light";
+
+/** A recently-opened note, for the sidebar Recent widget. */
+export interface RecentItem {
+  id: string;
+  title: string;
+  type: ContentType;
+}
 
 export interface VaultConfig {
   name: string;
@@ -33,6 +41,11 @@ interface SettingsStore {
   defaultProvider: "claude" | "ollama";
   skillModels: Record<string, { provider: string; model: string }>;
 
+  // Recently-opened notes (sidebar widget)
+  recents: RecentItem[];
+  // Pinned/favorited notes (sidebar widget)
+  favorites: RecentItem[];
+
   // Actions
   setTheme: (theme: Theme) => void;
   setFontFamily: (font: string) => void;
@@ -48,6 +61,8 @@ interface SettingsStore {
   setOllamaUrl: (url: string) => void;
   setDefaultProvider: (provider: "claude" | "ollama") => void;
   setSkillModel: (skill: string, provider: string, model: string) => void;
+  pushRecent: (item: RecentItem) => void;
+  toggleFavorite: (item: RecentItem) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -73,6 +88,8 @@ export const useSettingsStore = create<SettingsStore>()(
       ollamaUrl: "http://localhost:11434",
       defaultProvider: "claude" as const,
       skillModels: {},
+      recents: [],
+      favorites: [],
 
       // Actions
       setTheme: (theme) => {
@@ -119,6 +136,16 @@ export const useSettingsStore = create<SettingsStore>()(
       setSkillModel: (skill, provider, model) =>
         set((s) => ({
           skillModels: { ...s.skillModels, [skill]: { provider, model } },
+        })),
+      pushRecent: (item) =>
+        set((s) => ({
+          recents: [item, ...s.recents.filter((r) => r.id !== item.id)].slice(0, 12),
+        })),
+      toggleFavorite: (item) =>
+        set((s) => ({
+          favorites: s.favorites.some((f) => f.id === item.id)
+            ? s.favorites.filter((f) => f.id !== item.id)
+            : [{ ...item }, ...s.favorites].slice(0, 30),
         })),
     }),
     {

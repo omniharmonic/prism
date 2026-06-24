@@ -1,4 +1,5 @@
 import { Suspense, useCallback, useMemo } from "react";
+import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -118,13 +119,27 @@ export function Canvas() {
 
 function EmptyState() {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-3">
-      <p className="text-lg font-medium" style={{ color: "var(--text-secondary)" }}>
-        Open a document from the sidebar
-      </p>
-      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-        Or press <kbd className="glass px-1.5 py-0.5 text-xs rounded">&#8984;K</kbd> to search
-      </p>
+    <div className="flex flex-col items-center justify-center h-full gap-4" style={{ background: "var(--bg-base)" }}>
+      <div
+        className="flex items-center justify-center"
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: "var(--radius-lg)",
+          background: "var(--surface-hover)",
+          color: "var(--text-muted)",
+        }}
+      >
+        <Compass size={26} strokeWidth={1.5} />
+      </div>
+      <div className="flex flex-col items-center" style={{ gap: 6 }}>
+        <p style={{ fontSize: "var(--text-xl)", fontWeight: 600, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>
+          Open a document
+        </p>
+        <p className="flex items-center" style={{ gap: 6, fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
+          Pick one from the sidebar, or press <kbd>&#8984;K</kbd> to search
+        </p>
+      </div>
     </div>
   );
 }

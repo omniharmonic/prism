@@ -162,8 +162,9 @@ export function CommandBar() {
   const vaultItems = useMemo(() => {
     return (searchResults || []).slice(0, 8).map((note) => ({
       id: `note-${note.id}`,
-      label: note.path?.split("/").pop() || note.id,
-      sublabel: note.path || "",
+      label: note.path?.split("/").pop()?.replace(/\.[^.]+$/, "") || note.id,
+      sublabel: (note.path || "").replace(/^vault\//, ""),
+      icon: typeof note.metadata?.icon === "string" ? (note.metadata.icon as string) : null,
       preview: note.content.slice(0, 80),
       action: () => {
         const type = inferContentType(note);
@@ -207,118 +208,151 @@ export function CommandBar() {
 
   if (!commandBarOpen) return null;
 
+  const askIdx = filteredCommands.length + vaultItems.length;
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
-      style={{ background: "rgba(0, 0, 0, 0.5)" }}
+      className="fixed inset-0 flex items-start justify-center"
+      style={{ background: "rgba(0,0,0,0.45)", zIndex: "var(--z-modal)", paddingTop: "14vh", paddingLeft: 16, paddingRight: 16 }}
       onClick={closeCommandBar}
     >
       <div
-        className="glass-elevated rounded-xl w-[560px] overflow-hidden shadow-2xl"
+        className="glass-elevated overflow-hidden"
+        style={{ width: "min(600px, 100%)", borderRadius: "var(--radius-lg)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-          <Search size={18} style={{ color: "var(--text-muted)" }} />
+        <div className="flex items-center gap-3" style={{ padding: "13px 16px", borderBottom: "1px solid var(--glass-border)" }}>
+          <Search size={18} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
             onKeyDown={handleKeyDown}
-            placeholder="Search, create, or ask Claude..."
-            className="flex-1 bg-transparent outline-none text-base"
-            style={{ color: "var(--text-primary)" }}
+            placeholder="Search notes, create, or ask Claude…"
+            className="flex-1 bg-transparent outline-none"
+            style={{ color: "var(--text-primary)", fontSize: "var(--text-lg)" }}
           />
-          <kbd className="text-xs px-1.5 py-0.5 rounded" style={{ background: "var(--glass)", color: "var(--text-muted)" }}>
-            esc
-          </kbd>
+          <kbd>esc</kbd>
         </div>
 
         {/* Results */}
-        <div className="max-h-[400px] overflow-auto py-1">
-          {/* Commands */}
+        <div style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>
           {filteredCommands.length > 0 && (
-            <div>
-              <div className="px-4 py-1 text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-                Commands
-              </div>
+            <div style={{ marginBottom: 2 }}>
+              <div className="text-label" style={{ padding: "6px 10px 4px" }}>Actions</div>
               {filteredCommands.map((cmd, i) => (
-                <button
+                <CmdRow
                   key={cmd.id}
+                  selected={selectedIndex === i}
                   onClick={cmd.action}
-                  onMouseEnter={() => setSelectedIndex(i)}
-                  className="w-full flex items-center gap-3 px-4 py-2 text-sm transition-colors"
-                  style={{
-                    background: selectedIndex === i ? "var(--glass-hover)" : "transparent",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  <span style={{ color: "var(--text-secondary)" }}>{cmd.icon}</span>
-                  {cmd.label}
-                </button>
+                  onHover={() => setSelectedIndex(i)}
+                  icon={cmd.icon}
+                  label={cmd.label}
+                />
               ))}
             </div>
           )}
 
-          {/* Vault search results */}
           {vaultItems.length > 0 && (
-            <div>
-              <div className="px-4 py-1 text-xs font-medium mt-1" style={{ color: "var(--text-muted)" }}>
-                Notes
-              </div>
+            <div style={{ marginBottom: 2 }}>
+              <div className="text-label" style={{ padding: "6px 10px 4px" }}>Notes</div>
               {vaultItems.map((item, i) => {
                 const idx = filteredCommands.length + i;
                 return (
-                  <button
+                  <CmdRow
                     key={item.id}
+                    selected={selectedIndex === idx}
                     onClick={item.action}
-                    onMouseEnter={() => setSelectedIndex(idx)}
-                    className="w-full flex items-start gap-3 px-4 py-2 text-sm transition-colors"
-                    style={{
-                      background: selectedIndex === idx ? "var(--glass-hover)" : "transparent",
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    <FileText size={15} className="mt-0.5 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-                    <div className="text-left min-w-0">
-                      <div className="truncate">{item.label}</div>
-                      <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-                        {item.sublabel}
-                      </div>
-                    </div>
-                  </button>
+                    onHover={() => setSelectedIndex(idx)}
+                    icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
+                    label={item.label}
+                    sublabel={item.sublabel}
+                  />
                 );
               })}
             </div>
           )}
 
-          {/* Ask Claude fallthrough */}
           {query.trim() && (
-            <div className="px-4 py-1 mt-1" style={{ borderTop: "1px solid var(--glass-border)" }}>
-              <button
-                onMouseEnter={() => setSelectedIndex(filteredCommands.length + vaultItems.length)}
-                className="w-full flex items-center gap-3 px-0 py-2 text-sm"
-                style={{
-                  background: selectedIndex === filteredCommands.length + vaultItems.length
-                    ? "var(--glass-hover)" : "transparent",
-                  color: "var(--color-accent)",
-                }}
-              >
-                <Bot size={15} />
-                Ask Claude: "{query}"
-                <ArrowRight size={13} className="ml-auto" />
-              </button>
-            </div>
+            <CmdRow
+              selected={selectedIndex === askIdx}
+              onHover={() => setSelectedIndex(askIdx)}
+              icon={<Bot size={15} />}
+              label={`Ask Claude: "${query}"`}
+              accent
+              trailing={<ArrowRight size={13} />}
+            />
           )}
 
-          {/* Empty state */}
           {filteredCommands.length === 0 && vaultItems.length === 0 && !query.trim() && (
-            <div className="px-4 py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
+            <div style={{ padding: "28px 16px", textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
               Type to search or create
             </div>
           )}
         </div>
+
+        {/* Footer keyboard hints */}
+        <div
+          className="flex items-center gap-4"
+          style={{ padding: "8px 14px", borderTop: "1px solid var(--glass-border)", fontSize: "var(--text-xs)", color: "var(--text-muted)" }}
+        >
+          <span className="flex items-center gap-1"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+          <span className="flex items-center gap-1"><kbd>↵</kbd> open</span>
+          <span className="flex items-center gap-1"><kbd>esc</kbd> close</span>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** A single command-palette row: quiet at rest, surface-fill when selected. */
+function CmdRow({
+  selected,
+  onClick,
+  onHover,
+  icon,
+  label,
+  sublabel,
+  accent,
+  trailing,
+}: {
+  selected: boolean;
+  onClick?: () => void;
+  onHover: () => void;
+  icon: React.ReactNode;
+  label: string;
+  sublabel?: string;
+  accent?: boolean;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={-1}
+      onClick={onClick}
+      onMouseEnter={onHover}
+      className="interactive flex items-center gap-3"
+      style={{
+        padding: "8px 10px",
+        minHeight: 40,
+        color: accent ? "var(--color-accent)" : "var(--text-primary)",
+        background: selected ? "var(--surface-active)" : undefined,
+      }}
+    >
+      <span
+        className="flex items-center justify-center flex-shrink-0"
+        style={{ width: 22, height: 22, color: accent ? "var(--color-accent)" : "var(--text-secondary)" }}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1 text-left">
+        <div className="truncate" style={{ fontSize: "var(--text-base)" }}>{label}</div>
+        {sublabel && (
+          <div className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{sublabel}</div>
+        )}
+      </div>
+      {trailing && <span style={{ marginLeft: "auto", color: "var(--text-muted)" }}>{trailing}</span>}
     </div>
   );
 }

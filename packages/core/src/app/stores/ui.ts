@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import type { ContentType, TabState } from "../../lib/types";
 
+/** Push a newly-active tab onto the nav history: truncate any forward entries,
+ *  skip consecutive duplicates, and cap length. Returns the new history slice. */
+function pushNav(history: string[], index: number, tabId: string): { navHistory: string[]; navIndex: number } {
+  const base = history.slice(0, index + 1);
+  if (base[base.length - 1] !== tabId) base.push(tabId);
+  const capped = base.slice(-100);
+  return { navHistory: capped, navIndex: capped.length - 1 };
+}
+
 export interface PendingEdit {
   noteId: string;
   content: string;
@@ -20,6 +29,9 @@ interface UIStore {
   // Tabs
   openTabs: TabState[];
   activeTabId: string | null;
+  /** Visit history of active tab ids (for back/forward navigation). */
+  navHistory: string[];
+  navIndex: number;
 
   // Command bar
   commandBarOpen: boolean;
@@ -51,6 +63,11 @@ interface UIStore {
   setActiveTab: (tabId: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
   renameTab: (noteId: string, newTitle: string) => void;
+  /** Reorder open tabs by moving the dragged tab to the target tab's position. */
+  reorderTabs: (fromId: string, toId: string) => void;
+  /** Step back/forward through the active-tab visit history. */
+  navBack: () => void;
+  navForward: () => void;
 
   openCommandBar: () => void;
   closeCommandBar: () => void;
@@ -75,6 +92,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   contextPanelWidth: 320,
   contextPanelTab: "metadata",
   openTabs: [],
+  navHistory: [],
+  navIndex: -1,
   activeTabId: null,
   commandBarOpen: false,
   inlinePromptOpen: false,
@@ -93,10 +112,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setGraphFullscreen: (open) => set({ graphFullscreen: open }),
 
   openTab: (noteId, title, type) => {
-    const { openTabs } = get();
-    const existing = openTabs.find((t) => t.noteId === noteId);
+    const s = get();
+    const existing = s.openTabs.find((t) => t.noteId === noteId);
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ activeTabId: existing.id, ...pushNav(s.navHistory, s.navIndex, existing.id) });
       return;
     }
     const newTab: TabState = {
@@ -107,8 +126,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
       isDirty: false,
     };
     set({
-      openTabs: [...openTabs, newTab],
+      openTabs: [...s.openTabs, newTab],
       activeTabId: newTab.id,
+      ...pushNav(s.navHistory, s.navIndex, newTab.id),
     });
   },
 
@@ -139,7 +159,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set({ openTabs: filtered, activeTabId: nextActive });
   },
 
-  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+  setActiveTab: (tabId) =>
+    set((s) => ({ activeTabId: tabId, ...pushNav(s.navHistory, s.navIndex, tabId) })),
 
   markTabDirty: (tabId, isDirty) =>
     set((s) => ({
@@ -154,6 +175,34 @@ export const useUIStore = create<UIStore>((set, get) => ({
         t.noteId === noteId ? { ...t, title: newTitle } : t,
       ),
     })),
+
+  reorderTabs: (fromId, toId) =>
+    set((s) => {
+      if (fromId === toId) return s;
+      const from = s.openTabs.findIndex((t) => t.id === fromId);
+      const to = s.openTabs.findIndex((t) => t.id === toId);
+      if (from === -1 || to === -1) return s;
+      const next = s.openTabs.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { openTabs: next };
+    }),
+
+  navBack: () =>
+    set((s) => {
+      let i = s.navIndex - 1;
+      while (i >= 0 && !s.openTabs.find((t) => t.id === s.navHistory[i])) i--;
+      if (i < 0) return s;
+      return { navIndex: i, activeTabId: s.navHistory[i] };
+    }),
+
+  navForward: () =>
+    set((s) => {
+      let i = s.navIndex + 1;
+      while (i < s.navHistory.length && !s.openTabs.find((t) => t.id === s.navHistory[i])) i++;
+      if (i >= s.navHistory.length) return s;
+      return { navIndex: i, activeTabId: s.navHistory[i] };
+    }),
 
   openCommandBar: () => set({ commandBarOpen: true }),
   closeCommandBar: () => set({ commandBarOpen: false }),

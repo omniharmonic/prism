@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -11,6 +11,11 @@ import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
 import { CommentOnly, commentOnRange } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { WikilinkDropdown } from "./WikilinkDropdown";
+import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { SlashMenu } from "./SlashMenu";
+import type { Note } from "../../lib/types";
 import { CollabToolbar } from "./CollabToolbar";
 
 export interface CollabUser {
@@ -48,6 +53,8 @@ export function CollabEditor({
   commentOnly,
   canComment,
   onEditor,
+  onWikilinkNavigate,
+  wikilinkNotes,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -75,14 +82,31 @@ export function CollabEditor({
   canComment?: boolean;
   /** Receives the editor instance (for an external comments sidebar). */
   onEditor?: (editor: Editor | null) => void;
+  /** Navigate when a [[wikilink]] is clicked. In-app this opens the target note
+   *  in a tab; on a share link it routes to the target's page (or request-access).
+   *  Omitted → links are inert (e.g. a viewer with no navigation context). */
+  onWikilinkNavigate?: (target: string) => void;
+  /** Vault notes for the `[[` autocomplete dropdown. Omitted → no suggestions
+   *  (e.g. a recipient on a share link with no notes list). */
+  wikilinkNotes?: Note[];
 }) {
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
+  // `[[` autocomplete state, surfaced by the WikilinkAutocomplete plugin.
+  const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
+  // `/` slash-command menu state.
+  const [slash, setSlash] = useState<SlashCommandState | null>(null);
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
     [onChange],
   );
+
+  // The editor (and its wikilink plugin) is created once on mount, so route
+  // navigation through a ref that always points at the latest handler — this
+  // survives the notes list loading after the editor mounts.
+  const navRef = useRef(onWikilinkNavigate);
+  useEffect(() => { navRef.current = onWikilinkNavigate; }, [onWikilinkNavigate]);
 
   const editor = useEditor({
     extensions: [
@@ -91,7 +115,9 @@ export function CollabEditor({
       // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
       ...collabExtensions(),
       Placeholder.configure({ placeholder: "Start writing together…" }),
-      WikilinkExtension.configure({ onNavigate: () => {} }),
+      WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
+      WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
+      SlashCommand.configure({ onStateChange: setSlash }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       Collaboration.configure({ document: ydoc }),
@@ -249,6 +275,16 @@ export function CollabEditor({
       )}
 
       <EditorContent editor={editor} />
+
+      {/* `[[` wikilink autocomplete dropdown */}
+      {editor && autocomplete?.active && (
+        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} />
+      )}
+
+      {/* `/` slash-command menu */}
+      {editor && slash?.active && (
+        <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
+      )}
 
       {/* Comment composer, anchored to the captured selection. */}
       {composer && editor && (

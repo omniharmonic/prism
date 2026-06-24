@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType } from "@prism/core";
-import { MessageSquare, X } from "lucide-react";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont, type Note } from "@prism/core";
+import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
+import { updateNote as restUpdateNote } from "../parachute/rest";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -61,7 +62,20 @@ function deriveTitle(content: string): string {
  *
  * `embedded` drops the full-viewport chrome so it fits inside the app canvas.
  */
-export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedded?: boolean }) {
+export function CollabDoc({
+  noteId,
+  embedded = false,
+  onWikilinkNavigate,
+  wikilinkNotes,
+}: {
+  noteId: string;
+  embedded?: boolean;
+  /** How to handle a clicked [[wikilink]] (in-app: open a tab; share route: route
+   *  to the target or request-access). */
+  onWikilinkNavigate?: (target: string) => void;
+  /** Vault notes for the `[[` autocomplete (in-app only). */
+  wikilinkNotes?: Note[];
+}) {
   const [ydoc] = useState(() => new Y.Doc());
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
   const [denied, setDenied] = useState(false);
@@ -70,6 +84,9 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
+  const [path, setPath] = useState<string | null>(null);
+  const [contentFont, setContentFont] = useState<ContentFont>("sans");
+  const [icon, setIcon] = useState<string | null>(null);
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
@@ -88,6 +105,9 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         if (!r.ok) return;
         const note = await r.json();
         setLevel(note._level ?? "own");
+        setPath(note.path ?? null);
+        if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
+        setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
@@ -101,6 +121,21 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
       }
     })();
   }, [noteId]);
+
+  // Rename via the editable page title (preserves folder + extension). Uses the
+  // REST client directly (no VaultClient provider on the full-page share route).
+  const handleRename = (newName: string) => {
+    const next = renamePath(path, newName);
+    if (!next) return;
+    void restUpdateNote(noteId, { path: next }).catch(() => {});
+    setPath(next);
+    try { useUIStore.getState().renameTab(noteId, newName.trim()); } catch { /* no tab (share route) */ }
+  };
+
+  const handleIconChange = (emoji: string | null) => {
+    setIcon(emoji);
+    void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
+  };
 
   const isSuggestLevel = level === "suggest";
   const isCommentLevel = level === "comment";
@@ -177,13 +212,37 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
 
   if (denied) {
     return (
-      <div style={{ minHeight: embedded ? "40vh" : "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
-        <div style={{ maxWidth: 420 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>This link isn’t valid</h1>
-          <p style={{ fontSize: 14, color: "var(--text-muted, #888)", marginTop: 8 }}>
-            Ask the document owner for a fresh share link, or sign in if this note was shared with
-            your account.
+      <div style={{ minHeight: embedded ? "40vh" : "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", background: "var(--bg-base)" }}>
+        <div style={{ maxWidth: 440 }}>
+          <div style={{ width: 56, height: 56, borderRadius: "var(--radius-lg)", background: "var(--surface-hover)", color: "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+            <Lock size={26} strokeWidth={1.5} />
+          </div>
+          <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 700, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+            Request access
+          </h1>
+          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+            You don’t have access to this document. Ask the owner to share it with your account, or
+            sign in if it was already shared with you.
           </p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 22 }}>
+            <a
+              href="/"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                height: 36,
+                padding: "0 18px",
+                borderRadius: "var(--radius-md)",
+                background: "var(--color-accent)",
+                color: "#fff",
+                fontSize: "var(--text-base)",
+                fontWeight: 550,
+                textDecoration: "none",
+              }}
+            >
+              Sign in
+            </a>
+          </div>
         </div>
       </div>
     );
@@ -220,55 +279,63 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   return (
     <div style={outer}>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 96px" : "16px 20px 96px" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: narrow ? 16 : 18, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {title}
+        {/* Header — shared page chrome, identical to the non-collab document view */}
+        <PageHeader
+          path={path}
+          fallbackName={title}
+          onRename={canReview ? handleRename : undefined}
+          icon={icon}
+          onIconChange={canReview ? handleIconChange : undefined}
+          right={
+            <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
+                {connected ? "Live · " : ""}{statusText}
+              </span>
+              {isDocument && <FontSwitch value={contentFont} onChange={setContentFont} />}
+              <PresenceAvatars users={presence} />
+              {showComments && (
+                <button
+                  onClick={() => setCommentsOpen((o) => !o)}
+                  title="Comments"
+                  className="interactive"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    height: 30,
+                    padding: "0 10px",
+                    borderRadius: "var(--radius-sm)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    color: commentsOpen ? "#fff" : "var(--text-secondary)",
+                    background: commentsOpen ? "var(--color-accent)" : "transparent",
+                    border: commentsOpen ? "1px solid var(--color-accent)" : "1px solid var(--glass-border)",
+                  }}
+                >
+                  <MessageSquare size={14} />
+                  {!narrow && "Comments"}
+                </button>
+              )}
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
-              {connected ? "Live · " : ""}{statusText}
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <PresenceAvatars users={presence} />
-            {showComments && (
-            <button
-              onClick={() => setCommentsOpen((o) => !o)}
-              title="Comments"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                height: 32,
-                padding: "0 10px",
-                borderRadius: 8,
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                color: commentsOpen ? "#fff" : "var(--text-secondary)",
-                background: commentsOpen ? "var(--color-accent)" : "transparent",
-                border: `1px solid ${commentsOpen ? "var(--color-accent)" : "var(--glass-border)"}`,
-              }}
-            >
-              <MessageSquare size={14} />
-              {!narrow && "Comments"}
-            </button>
-            )}
-          </div>
-        </div>
+          }
+        />
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
           <div
+            data-content-font={isDocument ? contentFont : undefined}
             style={{
               flex: 1,
               minWidth: 0,
-              background: "var(--bg-surface, rgba(255,255,255,0.03))",
-              border: "1px solid var(--glass-border)",
-              borderRadius: 16,
-              padding: isDocument ? (narrow ? "16px 16px 36px" : "24px 32px 48px") : 0,
+              // Documents are full-bleed (the prose body self-centers at
+              // --content-measure) to match the non-collab DocumentRenderer;
+              // code/sheet/canvas keep a contained card.
+              background: isDocument ? "transparent" : "var(--bg-surface, rgba(255,255,255,0.03))",
+              border: isDocument ? "none" : "1px solid var(--glass-border)",
+              borderRadius: isDocument ? 0 : 16,
+              padding: isDocument ? "4px 0 64px" : 0,
               minHeight: isCanvas ? undefined : "60vh",
               height: isCanvas ? (narrow ? "78vh" : "80vh") : undefined,
               position: isCanvas ? "relative" : undefined,
@@ -303,6 +370,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
                 canReview={canReview}
                 commentOnly={commentOnly}
                 canComment={canComment}
+                onWikilinkNavigate={onWikilinkNavigate}
+                wikilinkNotes={wikilinkNotes}
               />
             )}
           </div>

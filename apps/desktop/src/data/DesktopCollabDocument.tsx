@@ -10,6 +10,14 @@ import {
   CollabCanvas,
   detectCodeLanguage,
   inferContentType,
+  PageHeader,
+  FontSwitch,
+  renamePath,
+  useUpdateNote,
+  useUIStore,
+  useWikilinkNavigate,
+  useNotes,
+  type ContentFont,
   type Note,
 } from "@prism/core";
 import { MessageSquare } from "lucide-react";
@@ -97,43 +105,97 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const language = useMemo(() => detectCodeLanguage(note.path ?? null, note.metadata ?? null), [note]);
   const user = useMemo(() => ({ name: "You", color: COLORS[0]! }), []);
 
+  // Shared document-chrome state (matches DocumentRenderer + web CollabDoc).
+  const updateNote = useUpdateNote();
+  const renameTab = useUIStore((s) => s.renameTab);
+  const navigateWikilink = useWikilinkNavigate();
+  const { data: allNotes } = useNotes();
+  const [contentFont, setContentFont] = useState<ContentFont>((note.metadata?.contentFont as ContentFont) || "sans");
+  const [icon, setIcon] = useState<string | null>(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
+  useEffect(() => {
+    setContentFont((note.metadata?.contentFont as ContentFont) || "sans");
+    setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
+  }, [note.id, note.metadata]);
+
+  const handleRename = (newName: string) => {
+    const next = renamePath(note.path, newName);
+    if (!next) return;
+    updateNote.mutate({ id: noteId, path: next });
+    renameTab(noteId, newName.trim());
+  };
+  const handleIcon = (emoji: string | null) => {
+    setIcon(emoji);
+    updateNote.mutate({ id: noteId, metadata: { icon: emoji } });
+  };
+  const handleFont = (f: ContentFont) => {
+    setContentFont(f);
+    updateNote.mutate({ id: noteId, metadata: { contentFont: f } });
+  };
+
   if (!cfg?.enabled || !provider) return null;
   const isDoc = kind === "document";
 
-  return (
-    <div className="flex flex-col h-full">
-      <div
-        className="flex items-center gap-2 px-4 py-1.5 text-xs flex-shrink-0"
-        style={{ borderBottom: "1px solid var(--glass-border)", color: "var(--text-muted)" }}
-      >
+  const headerRight = (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+      <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
         <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : "#eab308" }} />
-        Live{presenceCount > 1 ? ` · ${presenceCount} editing` : ""}
-        {isDoc && (
-          <button
-            onClick={() => setCommentsOpen((o) => !o)}
-            className="ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded"
+        Live{presenceCount > 1 ? ` · ${presenceCount}` : ""}
+      </span>
+      {isDoc && <FontSwitch value={contentFont} onChange={handleFont} />}
+      {isDoc && (
+        <button
+          onClick={() => setCommentsOpen((o) => !o)}
+          className="interactive"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 30,
+            padding: "0 10px",
+            borderRadius: "var(--radius-sm)",
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: commentsOpen ? "#fff" : "var(--text-secondary)",
+            background: commentsOpen ? "var(--color-accent)" : "transparent",
+            border: commentsOpen ? "1px solid var(--color-accent)" : "1px solid var(--glass-border)",
+          }}
+        >
+          <MessageSquare size={13} /> Comments
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="h-full overflow-auto" style={{ padding: "0 16px" }}>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "16px 20px 96px" }}>
+        <PageHeader
+          path={note.path}
+          onRename={handleRename}
+          icon={icon}
+          onIconChange={handleIcon}
+          right={headerRight}
+        />
+        <div
+          data-content-font={isDoc ? contentFont : undefined}
+          style={{ display: "flex", gap: 20, alignItems: "flex-start" }}
+        >
+          <div
             style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: commentsOpen ? "#fff" : "var(--text-secondary)",
-              background: commentsOpen ? "var(--color-accent)" : "transparent",
-              border: `1px solid ${commentsOpen ? "var(--color-accent)" : "var(--glass-border)"}`,
+              flex: 1,
+              minWidth: 0,
+              position: kind === "canvas" ? "relative" : undefined,
+              height: kind === "canvas" ? "78vh" : undefined,
+              minHeight: kind === "canvas" ? undefined : "50vh",
             }}
           >
-            <MessageSquare size={13} /> Comments
-          </button>
-        )}
-      </div>
-      <div className="flex-1 min-h-0 overflow-auto" style={{ position: kind === "canvas" ? "relative" : undefined }}>
-        {kind === "canvas" ? (
-          <CollabCanvas ydoc={ydoc} provider={provider as never} user={user} editable />
-        ) : kind === "code" ? (
-          <CollabCodeEditor ydoc={ydoc} provider={provider as never} user={user} language={language} editable />
-        ) : kind === "spreadsheet" ? (
-          <CollabSpreadsheet ydoc={ydoc} editable />
-        ) : (
-          <div style={{ display: "flex", gap: 20, alignItems: "flex-start", maxWidth: 1180, margin: "0 auto", padding: "20px 24px 64px" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
+            {kind === "canvas" ? (
+              <CollabCanvas ydoc={ydoc} provider={provider as never} user={user} editable />
+            ) : kind === "code" ? (
+              <CollabCodeEditor ydoc={ydoc} provider={provider as never} user={user} language={language} editable />
+            ) : kind === "spreadsheet" ? (
+              <CollabSpreadsheet ydoc={ydoc} editable />
+            ) : (
               <CollabEditor
                 ydoc={ydoc}
                 provider={provider as never}
@@ -145,15 +207,17 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
                 onSetSuggesting={setSuggesting}
                 canReview
                 canComment
+                onWikilinkNavigate={navigateWikilink}
+                wikilinkNotes={allNotes ?? []}
               />
-            </div>
-            {commentsOpen && (
-              <div style={{ width: 300, flexShrink: 0 }}>
-                <CommentsSidebar ydoc={ydoc} user={user} canComment />
-              </div>
             )}
           </div>
-        )}
+          {isDoc && commentsOpen && (
+            <div style={{ width: 300, flexShrink: 0 }}>
+              <CommentsSidebar ydoc={ydoc} user={user} canComment />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
