@@ -54,7 +54,12 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
   - [ ] Map current styling system, layout architecture, build/PWA tooling (3 recon agents)
   - [ ] Decide token architecture against what exists (Tailwind vs CSS vars)
 - **Phase 1 — Design system foundation**
-  - [ ] Token layer (colors, type, space, radius, shadow, motion) + light/dark
+  - [x] Token layer retuned to "Blue Sky" (palette, glass, shadows, motion) + light/dark.
+        Kept every existing var **name** (zero breakage); added additive tokens:
+        `--surface-hover/active/selected`, `--focus-ring`, `--content-measure`,
+        4px `--space-*` scale, `--z-*` scale, `--radius-full`. Reduced-motion guard added.
+  - [x] Glass flattened to "frosted-lite": blur reserved for floating surfaces, quiet
+        `.interactive` row utility, hover utilities repointed to surface tokens, focus ring.
   - [ ] Primitive components (Button, Input, Menu/Dropdown, Tooltip, Modal, Tabs, etc.)
   - [ ] Document tokens + primitives (this folder)
 - **Phase 2 — App shell**
@@ -76,3 +81,7 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
 
 - 2026-06-23: Branch created; merged branches pruned (local + remote). Recon agents
   launched. Plan drafted.
+- 2026-06-23: Recon complete (design system, layout architecture, build/PWA tooling).
+  Confirmed: fully tokenized system (Tailwind v4 `@theme` + CSS vars), `@prism/core`
+  consumed as source so style edits hot-reload both shells. Phase 1 token + glass retune
+  landed; web build green. Next: primitives + app-shell surfaces.
