@@ -114,4 +114,15 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
   chevron section header, prominent accent-tinted "New" button. TabBar: rounded icon
   buttons + refined tab pills (active = surface-active, dirty dot, hover-reveal close).
   Canvas EmptyState: Compass icon tile + cleaner heading/hint. Core typecheck green.
-  Next: ProjectTree row styling, document editor chrome (page header), command palette.
+- 2026-06-23: **Shell redesign pass 2** — ProjectTree rows now use quiet `.interactive`
+  hover + rounding, theme-aware selected state (was hard-coded bg-white/10), 28px height,
+  tighter indent. DocumentRenderer gains a Notion-style page header (breadcrumb + large
+  sans title) with generous content padding. Verified on real app (:5180): tree rows +
+  selected highlight + tab pill all clean. Commits through 1bda0b1; core+web typecheck green.
+- **Finding:** shared/collab-capable notes render via `CollabEditor` (CollabDoc path), NOT
+  DocumentRenderer — so the page header + per-doc font switch must be mirrored there to be
+  universal. TODO list:
+  - [ ] Mirror PageHeader + FontSwitch in CollabEditor.tsx (and honor metadata.contentFont in ShareView).
+  - [ ] Command palette (CommandBar) visual refresh.
+  - [ ] Context panel (metadata/links/history/graph tabs) refresh.
+  - [ ] Mobile/PWA: drawer, bottom affordances, touch targets, safe-area.
