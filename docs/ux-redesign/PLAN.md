@@ -122,7 +122,18 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
 - **Finding:** shared/collab-capable notes render via `CollabEditor` (CollabDoc path), NOT
   DocumentRenderer — so the page header + per-doc font switch must be mirrored there to be
   universal. TODO list:
-  - [ ] Mirror PageHeader + FontSwitch in CollabEditor.tsx (and honor metadata.contentFont in ShareView).
+  - [x] **Unified editor chrome.** Extracted PageHeader + FontSwitch into a shared
+        `DocumentChrome` module (exported from @prism/core); used by BOTH DocumentRenderer
+        and the web collab host (CollabDoc). Collab documents now drop the bordered card
+        (full-bleed, self-centering at --content-measure) and show the same breadcrumb +
+        filename title + font switch + status/presence/comments in one header row. Verified
+        on real app (:5180): collab "demo" doc matches the plain document view. core+web
+        typecheck green.
+  - [x] **Dev access fixed.** Proxy now injects the owner session on the /collab WS upgrade
+        and Set-Cookies it, so collab-capable notes (most notes) open on localhost:5180.
+  - [ ] Desktop collab host (DesktopCollabDocument) — apply the same DocumentChrome (follow-up;
+        web verified first since that's what's being reviewed). Honor metadata.contentFont in ShareView.
+  - [ ] Persist collab FontSwitch choice to metadata (currently local-only in CollabDoc).
   - [ ] Command palette (CommandBar) visual refresh.
   - [ ] Context panel (metadata/links/history/graph tabs) refresh.
   - [ ] Mobile/PWA: drawer, bottom affordances, touch targets, safe-area.

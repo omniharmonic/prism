@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, type ContentFont } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 
@@ -70,6 +70,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
+  const [path, setPath] = useState<string | null>(null);
+  const [contentFont, setContentFont] = useState<ContentFont>("sans");
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
@@ -88,6 +90,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         if (!r.ok) return;
         const note = await r.json();
         setLevel(note._level ?? "own");
+        setPath(note.path ?? null);
+        if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
@@ -220,55 +224,60 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   return (
     <div style={outer}>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 96px" : "16px 20px 96px" }}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: narrow ? 16 : 18, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {title}
+        {/* Header — shared page chrome, identical to the non-collab document view */}
+        <PageHeader
+          path={path}
+          fallbackName={title}
+          right={
+            <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
+                {connected ? "Live · " : ""}{statusText}
+              </span>
+              {isDocument && <FontSwitch value={contentFont} onChange={setContentFont} />}
+              <PresenceAvatars users={presence} />
+              {showComments && (
+                <button
+                  onClick={() => setCommentsOpen((o) => !o)}
+                  title="Comments"
+                  className="interactive"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    height: 30,
+                    padding: "0 10px",
+                    borderRadius: "var(--radius-sm)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    color: commentsOpen ? "#fff" : "var(--text-secondary)",
+                    background: commentsOpen ? "var(--color-accent)" : "transparent",
+                    border: commentsOpen ? "1px solid var(--color-accent)" : "1px solid var(--glass-border)",
+                  }}
+                >
+                  <MessageSquare size={14} />
+                  {!narrow && "Comments"}
+                </button>
+              )}
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
-              {connected ? "Live · " : ""}{statusText}
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <PresenceAvatars users={presence} />
-            {showComments && (
-            <button
-              onClick={() => setCommentsOpen((o) => !o)}
-              title="Comments"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                height: 32,
-                padding: "0 10px",
-                borderRadius: 8,
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                color: commentsOpen ? "#fff" : "var(--text-secondary)",
-                background: commentsOpen ? "var(--color-accent)" : "transparent",
-                border: `1px solid ${commentsOpen ? "var(--color-accent)" : "var(--glass-border)"}`,
-              }}
-            >
-              <MessageSquare size={14} />
-              {!narrow && "Comments"}
-            </button>
-            )}
-          </div>
-        </div>
+          }
+        />
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
           <div
+            data-content-font={isDocument ? contentFont : undefined}
             style={{
               flex: 1,
               minWidth: 0,
-              background: "var(--bg-surface, rgba(255,255,255,0.03))",
-              border: "1px solid var(--glass-border)",
-              borderRadius: 16,
-              padding: isDocument ? (narrow ? "16px 16px 36px" : "24px 32px 48px") : 0,
+              // Documents are full-bleed (the prose body self-centers at
+              // --content-measure) to match the non-collab DocumentRenderer;
+              // code/sheet/canvas keep a contained card.
+              background: isDocument ? "transparent" : "var(--bg-surface, rgba(255,255,255,0.03))",
+              border: isDocument ? "none" : "1px solid var(--glass-border)",
+              borderRadius: isDocument ? 0 : 16,
+              padding: isDocument ? "4px 0 64px" : 0,
               minHeight: isCanvas ? undefined : "60vh",
               height: isCanvas ? (narrow ? "78vh" : "80vh") : undefined,
               position: isCanvas ? "relative" : undefined,

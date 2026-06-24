@@ -35,6 +35,8 @@ export type {
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
+export { PageHeader, FontSwitch } from "./components/renderers/DocumentChrome";
+export type { ContentFont } from "./components/renderers/DocumentChrome";
 export { CollabDocumentProvider, useCollabDocumentSeam } from "./data/CollabDocumentContext";
 export type { CollabDocumentSeam } from "./data/CollabDocumentContext";
 
