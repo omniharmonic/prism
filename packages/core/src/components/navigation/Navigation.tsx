@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -22,6 +22,8 @@ export function Navigation() {
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const recents = useSettingsStore((s) => s.recents);
   const pushRecent = useSettingsStore((s) => s.pushRecent);
+  const favorites = useSettingsStore((s) => s.favorites);
+  const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
   const openTab = useUIStore((s) => s.openTab);
   const activeTabId = useUIStore((s) => s.activeTabId);
   const openTabs = useUIStore((s) => s.openTabs);
@@ -118,6 +120,21 @@ export function Navigation() {
             <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
             <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
           </div>
+
+          {/* Favorites (pinned notes) */}
+          {favorites.length > 0 && (
+            <NavSection label="Favorites" defaultOpen>
+              {favorites.map((f) => (
+                <NavItem
+                  key={f.id}
+                  icon={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />}
+                  label={f.title}
+                  onClick={() => openTab(f.id, f.title, f.type)}
+                  trailing={<RowAction title="Remove from Favorites" onClick={() => toggleFavorite(f)} icon={<X size={12} />} />}
+                />
+              ))}
+            </NavSection>
+          )}
 
           {/* Recently opened notes */}
           {recents.length > 0 && (

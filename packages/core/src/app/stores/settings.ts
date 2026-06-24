@@ -43,6 +43,8 @@ interface SettingsStore {
 
   // Recently-opened notes (sidebar widget)
   recents: RecentItem[];
+  // Pinned/favorited notes (sidebar widget)
+  favorites: RecentItem[];
 
   // Actions
   setTheme: (theme: Theme) => void;
@@ -60,6 +62,7 @@ interface SettingsStore {
   setDefaultProvider: (provider: "claude" | "ollama") => void;
   setSkillModel: (skill: string, provider: string, model: string) => void;
   pushRecent: (item: RecentItem) => void;
+  toggleFavorite: (item: RecentItem) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -86,6 +89,7 @@ export const useSettingsStore = create<SettingsStore>()(
       defaultProvider: "claude" as const,
       skillModels: {},
       recents: [],
+      favorites: [],
 
       // Actions
       setTheme: (theme) => {
@@ -136,6 +140,12 @@ export const useSettingsStore = create<SettingsStore>()(
       pushRecent: (item) =>
         set((s) => ({
           recents: [item, ...s.recents.filter((r) => r.id !== item.id)].slice(0, 12),
+        })),
+      toggleFavorite: (item) =>
+        set((s) => ({
+          favorites: s.favorites.some((f) => f.id === item.id)
+            ? s.favorites.filter((f) => f.id !== item.id)
+            : [{ ...item }, ...s.favorites].slice(0, 30),
         })),
     }),
     {

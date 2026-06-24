@@ -180,9 +180,10 @@ Concrete patterns to adopt, ranked by impact-for-effort:
         shared SlashMenu (Text, H1/H2/H3, bullet/numbered/to-do lists, quote, code, divider)
         with query filter + keyboard nav. Added to BOTH editors. Verified: `/` opens, `/head`
         filters to headings, Enter applies. core+web+desktop typecheck green.
-  - [x] **Recent sidebar widget.** Persisted recents in useSettingsStore (pushRecent, dedupe,
-        cap 12); Navigation records the active note (skipping virtual dashboards) and renders a
-        collapsible "Recent" section above Projects. Verified on the real app.
+  - [x] **Recent + Favorites sidebar widgets.** Persisted in useSettingsStore (pushRecent
+        dedupe/cap 12; toggleFavorite cap 30). Navigation records the active note into Recent
+        (skipping virtual dashboards) and renders collapsible "Favorites" + "Recent" sections
+        above Projects. A Star toggle in the TabBar pins the active note. Verified on the real app.
   - [x] **Security: wikilink suggest is owner-only.** See the "Editor parity" entries — the
         `[[` suggest dropdown is gated to the owner (isOwner()), and the gateway independently
         filters /api/notes to a non-owner's granted notes (verified: anon → []).

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight } from "lucide-react";
+import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
+import { useSettingsStore } from "../../app/stores/settings";
 import { ShareButton } from "./ShareButton";
 
 /** A square, quiet icon button for the top bar (rounded hover via .interactive). */
@@ -52,6 +53,13 @@ export function TabBar() {
   const tabIds = new Set(openTabs.map((t) => t.id));
   const canBack = navHistory.slice(0, Math.max(0, navIndex)).some((id) => tabIds.has(id));
   const canForward = navHistory.slice(navIndex + 1).some((id) => tabIds.has(id));
+
+  // Favorite (pin) the active note.
+  const favorites = useSettingsStore((s) => s.favorites);
+  const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
+  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
+  const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
 
   return (
     <div
@@ -149,6 +157,15 @@ export function TabBar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-0.5 flex-shrink-0">
+        {isRealNote && (
+          <IconButton
+            onClick={() => toggleFavorite({ id: activeTab!.noteId, title: activeTab!.title, type: activeTab!.type })}
+            title={isFav ? "Remove from Favorites" : "Add to Favorites"}
+            active={isFav}
+          >
+            <Star size={16} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
+          </IconButton>
+        )}
         <ShareButton />
         {/* Bot = opens Agent specifically */}
         <IconButton
