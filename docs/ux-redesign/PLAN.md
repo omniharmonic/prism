@@ -151,9 +151,16 @@ Concrete patterns to adopt, ranked by impact-for-effort:
         folder + extension); DocumentRenderer commits via useUpdateNote + renameTab, CollabDoc
         via REST updateNote (provider-free, also works on the share route) + renameTab. Gated to
         editors (canReview). Verified on :5180. core+web typecheck green.
-  - [ ] Desktop collab host (DesktopCollabDocument) — apply the same DocumentChrome (follow-up;
-        web verified first since that's what's being reviewed). Honor metadata.contentFont in ShareView.
-  - [ ] Persist collab FontSwitch choice to metadata (currently local-only in CollabDoc).
+  - [x] Desktop collab host (DesktopCollabDocument) — now uses the shared DocumentChrome
+        (PageHeader + breadcrumb/title, editable rename, emoji icon, FontSwitch, status +
+        comments in header). Desktop typecheck green. Honor metadata.contentFont in ShareView (TODO).
+  - [x] Persist collab FontSwitch choice to metadata (web CollabDoc REST + desktop useUpdateNote).
+  - [x] Command palette (⌘K) Anytype refresh — .interactive rows, object emoji icons, section
+        labels, keyboard-hint footer, responsive width.
+  - [x] Mobile reviewed (phone viewport): drawer + redesigned sidebar + empty state + top bar all
+        translate cleanly with generous touch targets. Minor: empty-state ⌘K hint is desktop-centric.
+  - [ ] Sidebar widgets (Favorites / Recent) above the tree.
+  - [ ] Back/forward object navigation in the top bar.
   - [ ] Command palette (CommandBar) visual refresh.
   - [ ] Context panel (metadata/links/history/graph tabs) refresh.
   - [ ] Mobile/PWA: drawer, bottom affordances, touch targets, safe-area.
