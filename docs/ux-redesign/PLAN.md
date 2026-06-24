@@ -1,0 +1,78 @@
+# Prism UX Redesign — "Blue Sky"
+
+Branch: `design/notion-anytype-ux`
+Status: **in progress** (started 2026-06-23)
+
+A radical-but-non-destructive UX overhaul of Prism (desktop + web/PWA). The goal is a
+clean, contemporary, professional feel — closer to **Notion** and **Anytype**
+(github.com/anyproto/anytype-ts) — **without losing any existing functionality**.
+
+## Hard constraints (non-negotiable)
+
+1. **No functionality regressions.** Every renderer, command, store action, VaultClient
+   call, collab feature, and Tauri/web transport must keep working. The redesign is a
+   *skin + interaction* layer over the existing component graph, not a rewrite of data flow.
+2. **Both shells.** Changes live in `packages/core` so desktop (Tauri) and web (PWA) both
+   get them through the shared UI core. Shell-specific work (mobile drawer, safe-area
+   insets) is additive.
+3. **Incremental + reversible.** Land in small commits. The app must build and run after
+   every commit. `main` is never touched.
+4. **Mobile-responsive.** The web PWA must be genuinely usable on a phone (collapsible
+   nav, touch targets ≥44px, safe-area aware, no horizontal scroll).
+
+## Aesthetic direction — "Blue Sky"
+
+A calm, airy, content-first surface. Restrained translucency (not heavy glass everywhere),
+generous whitespace, refined typography, monochrome chrome with a single sky-blue accent.
+
+- **Palette:** near-white / near-black neutrals with a cool undertone; one sky-blue accent
+  (`--accent`) for active/interactive states. Everything else is grayscale. Dark mode is a
+  true peer, not an afterthought.
+- **Translucency ("frosted-lite"):** subtle `backdrop-blur` + low-opacity fills on *floating*
+  surfaces only — sidebar, right panel, command palette, popovers, menus. Content surfaces
+  are solid for readability. Keep the existing "glass" identity but lighter and more precise.
+- **Typography-first:** Inter (or system stack) with a deliberate type scale, generous
+  line-height, and a comfortable content measure (max-width) like Notion.
+- **Spacing & rhythm:** 4px base grid; consistent radii (6 / 8 / 12 / full); soft, low shadows.
+- **Hover-reveal affordances:** Notion-style — drag handles, `+` add buttons, row actions
+  appear on hover; quiet by default.
+- **Motion:** fast and subtle (120–200ms, ease-out); always honor `prefers-reduced-motion`.
+
+## Design tokens (single source of truth)
+
+All visual decisions flow from CSS custom properties defined once in `packages/core` and
+themed by `[data-theme]`. No hard-coded colors in components. (Exact token file path TBD
+after recon — see Phase 0.)
+
+Token groups: color (bg/surface/overlay/border/text/accent + semantic), space scale,
+radius scale, shadow scale, typography (family/size/weight/leading), blur, z-index, motion.
+
+## Phases
+
+- **Phase 0 — Recon & foundation** (in progress)
+  - [x] Branch + cleanup
+  - [ ] Map current styling system, layout architecture, build/PWA tooling (3 recon agents)
+  - [ ] Decide token architecture against what exists (Tailwind vs CSS vars)
+- **Phase 1 — Design system foundation**
+  - [ ] Token layer (colors, type, space, radius, shadow, motion) + light/dark
+  - [ ] Primitive components (Button, Input, Menu/Dropdown, Tooltip, Modal, Tabs, etc.)
+  - [ ] Document tokens + primitives (this folder)
+- **Phase 2 — App shell**
+  - [ ] Sidebar / navigation (collapsible; Notion/Anytype information density)
+  - [ ] Top bar / tab strip
+  - [ ] Right/context panel
+  - [ ] Command palette polish
+- **Phase 3 — Surfaces & renderers**
+  - [ ] Document editor chrome (Notion-like page header, content measure)
+  - [ ] Dashboard widgets
+  - [ ] Other renderers (task, calendar, messages, graph, etc.)
+- **Phase 4 — Mobile / PWA responsiveness**
+  - [ ] Responsive shell (drawer nav, bottom bar), safe-area insets, touch targets
+- **Phase 5 — Verification**
+  - [ ] Full typecheck + build (both shells)
+  - [ ] Manual run-through: no feature lost; visual parity with the baseline
+
+## Progress log
+
+- 2026-06-23: Branch created; merged branches pruned (local + remote). Recon agents
+  launched. Plan drafted.
