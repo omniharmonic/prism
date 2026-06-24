@@ -37,7 +37,7 @@ export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
 export { PageHeader, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
-export { useUpdateNote } from "./app/hooks/useParachute";
+export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
 export { useWikilinkNavigate } from "./app/hooks/useWikilinkNavigate";
 export { CollabDocumentProvider, useCollabDocumentSeam } from "./data/CollabDocumentContext";

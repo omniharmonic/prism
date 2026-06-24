@@ -16,6 +16,7 @@ import {
   useUpdateNote,
   useUIStore,
   useWikilinkNavigate,
+  useNotes,
   type ContentFont,
   type Note,
 } from "@prism/core";
@@ -108,6 +109,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const updateNote = useUpdateNote();
   const renameTab = useUIStore((s) => s.renameTab);
   const navigateWikilink = useWikilinkNavigate();
+  const { data: allNotes } = useNotes();
   const [contentFont, setContentFont] = useState<ContentFont>((note.metadata?.contentFont as ContentFont) || "sans");
   const [icon, setIcon] = useState<string | null>(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
   useEffect(() => {
@@ -206,6 +208,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
                 canReview
                 canComment
                 onWikilinkNavigate={navigateWikilink}
+                wikilinkNotes={allNotes ?? []}
               />
             )}
           </div>

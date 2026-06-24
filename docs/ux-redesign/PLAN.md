@@ -171,6 +171,13 @@ Concrete patterns to adopt, ranked by impact-for-effort:
   - [x] Back/forward object navigation in the top bar — useUIStore nav history (push on
         openTab/setActiveTab, skip closed tabs), ChevronLeft/Right buttons with disabled states.
         Verified: A→B→C, Back→B, Back→A, Forward→B.
+  - [x] **Editor parity audit + wikilink autocomplete in collab.** The collab editor was
+        built with a subset of the document editor's extensions and was missing
+        WikilinkAutocomplete (the `[[` suggest dropdown). Extracted WikilinkDropdown to a
+        shared component; added WikilinkAutocomplete to CollabEditor; in-app hosts (web seam
+        + desktop) feed it the notes list via useNotes. Verified: `[[spirit` shows matches.
+  - [ ] **Slash commands** (Notion/Anytype `/` menu) — new SlashCommand extension + menu,
+        added to both editors. (in progress)
   - [ ] Sidebar widgets (Favorites / Recent) above the tree.
   - [ ] Command palette (CommandBar) visual refresh.
   - [ ] Context panel (metadata/links/history/graph tabs) refresh.

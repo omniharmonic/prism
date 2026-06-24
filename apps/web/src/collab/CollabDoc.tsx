@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont, type Note } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 import { updateNote as restUpdateNote } from "../parachute/rest";
@@ -66,12 +66,15 @@ export function CollabDoc({
   noteId,
   embedded = false,
   onWikilinkNavigate,
+  wikilinkNotes,
 }: {
   noteId: string;
   embedded?: boolean;
   /** How to handle a clicked [[wikilink]] (in-app: open a tab; share route: route
    *  to the target or request-access). */
   onWikilinkNavigate?: (target: string) => void;
+  /** Vault notes for the `[[` autocomplete (in-app only). */
+  wikilinkNotes?: Note[];
 }) {
   const [ydoc] = useState(() => new Y.Doc());
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
@@ -368,6 +371,7 @@ export function CollabDoc({
                 commentOnly={commentOnly}
                 canComment={canComment}
                 onWikilinkNavigate={onWikilinkNavigate}
+                wikilinkNotes={wikilinkNotes}
               />
             )}
           </div>

@@ -11,6 +11,9 @@ import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
 import { CommentOnly, commentOnRange } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
+import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { WikilinkDropdown } from "./WikilinkDropdown";
+import type { Note } from "../../lib/types";
 import { CollabToolbar } from "./CollabToolbar";
 
 export interface CollabUser {
@@ -49,6 +52,7 @@ export function CollabEditor({
   canComment,
   onEditor,
   onWikilinkNavigate,
+  wikilinkNotes,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -80,10 +84,15 @@ export function CollabEditor({
    *  in a tab; on a share link it routes to the target's page (or request-access).
    *  Omitted → links are inert (e.g. a viewer with no navigation context). */
   onWikilinkNavigate?: (target: string) => void;
+  /** Vault notes for the `[[` autocomplete dropdown. Omitted → no suggestions
+   *  (e.g. a recipient on a share link with no notes list). */
+  wikilinkNotes?: Note[];
 }) {
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
+  // `[[` autocomplete state, surfaced by the WikilinkAutocomplete plugin.
+  const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
     [onChange],
@@ -103,6 +112,7 @@ export function CollabEditor({
       ...collabExtensions(),
       Placeholder.configure({ placeholder: "Start writing together…" }),
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
+      WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       Collaboration.configure({ document: ydoc }),
@@ -260,6 +270,11 @@ export function CollabEditor({
       )}
 
       <EditorContent editor={editor} />
+
+      {/* `[[` wikilink autocomplete dropdown */}
+      {editor && autocomplete?.active && (
+        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} />
+      )}
 
       {/* Comment composer, anchored to the captured selection. */}
       {composer && editor && (
