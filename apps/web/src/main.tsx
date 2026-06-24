@@ -24,18 +24,6 @@ async function start() {
   // it — a share/collab link is the recipient's only credential.
   const capability = initCapability();
 
-  // Dev-only design lab: a backend-free visual harness for the design system.
-  // Guarded by import.meta.env.DEV so it never ships in the production bundle.
-  if (import.meta.env.DEV && window.location.pathname === "/design-lab") {
-    const { DesignLab } = await import("./design-lab/DesignLab");
-    root.render(
-      <React.StrictMode>
-        <DesignLab />
-      </React.StrictMode>,
-    );
-    return;
-  }
-
   // Accept-invite route: create an account from an owner-issued invite link.
   if (window.location.pathname === "/accept-invite") {
     const token = new URLSearchParams(window.location.search).get("token") ?? "";
