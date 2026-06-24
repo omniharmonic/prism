@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont } from "@prism/core";
-import { MessageSquare, X } from "lucide-react";
+import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 import { updateNote as restUpdateNote } from "../parachute/rest";
 
@@ -62,7 +62,17 @@ function deriveTitle(content: string): string {
  *
  * `embedded` drops the full-viewport chrome so it fits inside the app canvas.
  */
-export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedded?: boolean }) {
+export function CollabDoc({
+  noteId,
+  embedded = false,
+  onWikilinkNavigate,
+}: {
+  noteId: string;
+  embedded?: boolean;
+  /** How to handle a clicked [[wikilink]] (in-app: open a tab; share route: route
+   *  to the target or request-access). */
+  onWikilinkNavigate?: (target: string) => void;
+}) {
   const [ydoc] = useState(() => new Y.Doc());
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
   const [denied, setDenied] = useState(false);
@@ -199,13 +209,37 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
 
   if (denied) {
     return (
-      <div style={{ minHeight: embedded ? "40vh" : "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
-        <div style={{ maxWidth: 420 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>This link isn’t valid</h1>
-          <p style={{ fontSize: 14, color: "var(--text-muted, #888)", marginTop: 8 }}>
-            Ask the document owner for a fresh share link, or sign in if this note was shared with
-            your account.
+      <div style={{ minHeight: embedded ? "40vh" : "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", background: "var(--bg-base)" }}>
+        <div style={{ maxWidth: 440 }}>
+          <div style={{ width: 56, height: 56, borderRadius: "var(--radius-lg)", background: "var(--surface-hover)", color: "var(--text-muted)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+            <Lock size={26} strokeWidth={1.5} />
+          </div>
+          <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 700, margin: 0, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+            Request access
+          </h1>
+          <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginTop: 10, lineHeight: 1.6 }}>
+            You don’t have access to this document. Ask the owner to share it with your account, or
+            sign in if it was already shared with you.
           </p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 22 }}>
+            <a
+              href="/"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                height: 36,
+                padding: "0 18px",
+                borderRadius: "var(--radius-md)",
+                background: "var(--color-accent)",
+                color: "#fff",
+                fontSize: "var(--text-base)",
+                fontWeight: 550,
+                textDecoration: "none",
+              }}
+            >
+              Sign in
+            </a>
+          </div>
         </div>
       </div>
     );
@@ -333,6 +367,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
                 canReview={canReview}
                 commentOnly={commentOnly}
                 canComment={canComment}
+                onWikilinkNavigate={onWikilinkNavigate}
               />
             )}
           </div>

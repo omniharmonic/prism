@@ -159,6 +159,15 @@ Concrete patterns to adopt, ranked by impact-for-effort:
         labels, keyboard-hint footer, responsive width.
   - [x] Mobile reviewed (phone viewport): drawer + redesigned sidebar + empty state + top bar all
         translate cleanly with generous touch targets. Minor: empty-state ⌘K hint is desktop-centric.
+  - [x] **Wikilink navigation fix.** The collab editor wired `onNavigate` to a no-op, so
+        clicking `[[links]]` did nothing (most docs are collab). Added a shared
+        `useWikilinkNavigate()` hook (also fixes a `vault/`-prefix resolution gap), exposed
+        `onWikilinkNavigate` on CollabEditor, and wired it in the in-app seam (web + desktop)
+        and DocumentRenderer. Verified: clicking a link opens the target in a tab.
+  - [x] **Share-link access flow.** Recipients can click between linked docs (CollabPage routes
+        to the target's page carrying the capability token); a clean "Request access" page shows
+        when the gateway denies access. (Caveat: recipient path→id resolution is best-effort —
+        a granted target opens; otherwise request-access. Owner in-app navigation is solid.)
   - [ ] Sidebar widgets (Favorites / Recent) above the tree.
   - [ ] Back/forward object navigation in the top bar.
   - [ ] Command palette (CommandBar) visual refresh.

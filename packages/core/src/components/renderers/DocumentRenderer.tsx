@@ -26,6 +26,7 @@ import Typography from "@tiptap/extension-typography";
 import { common, createLowlight } from "lowlight";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
+import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
 import { PageHeader, FontSwitch, renamePath, type ContentFont } from "./DocumentChrome";
@@ -34,7 +35,6 @@ import { useUpdateNote } from "../../app/hooks/useParachute";
 const lowlightInstance = createLowlight(common);
 
 export default function DocumentRenderer({ note, onMetadataChange }: RendererProps) {
-  const openTab = useUIStore((s) => s.openTab);
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
 
@@ -62,23 +62,8 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
     renameTab(note.id, newName.trim());
   }, [note.path, note.id, updateNote, renameTab]);
 
-  // Wikilink navigation: resolve target name → note ID → open tab
-  const handleWikilinkNavigate = useCallback((target: string) => {
-    if (!allNotes) return;
-    const matched = allNotes.find((n) => {
-      const path = n.path || "";
-      const name = path.split("/").pop() || "";
-      const stripped = path.startsWith("vault/") ? path.slice(6) : path;
-      return name.toLowerCase() === target.toLowerCase()
-        || path === target
-        || stripped === target
-        || stripped.split("/").pop()?.toLowerCase() === target.toLowerCase();
-    });
-    if (matched) {
-      const type = inferContentType(matched);
-      openTab(matched.id, matched.path?.split("/").pop() || matched.id, type);
-    }
-  }, [allNotes, openTab]);
+  // Wikilink navigation (shared with the collaborative editors).
+  const handleWikilinkNavigate = useWikilinkNavigate();
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),

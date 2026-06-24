@@ -1,4 +1,4 @@
-import type { Note } from "@prism/core";
+import { type Note, useWikilinkNavigate } from "@prism/core";
 import { CollabDoc } from "./CollabDoc";
 
 /**
@@ -8,7 +8,9 @@ import { CollabDoc } from "./CollabDoc";
  * browser, another browser, a phone — with no refresh.
  */
 export function CollabDocument({ noteId }: { noteId: string; note: Note }) {
-  return <CollabDoc noteId={noteId} embedded />;
+  // In-app: clicking a [[wikilink]] opens the target note in a tab.
+  const navigate = useWikilinkNavigate();
+  return <CollabDoc noteId={noteId} embedded onWikilinkNavigate={navigate} />;
 }
 
 /**
