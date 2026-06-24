@@ -131,6 +131,11 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
         typecheck green.
   - [x] **Dev access fixed.** Proxy now injects the owner session on the /collab WS upgrade
         and Set-Cookies it, so collab-capable notes (most notes) open on localhost:5180.
+  - [x] **Editable title → rename.** PageHeader title is now click-to-edit (Enter/blur commits,
+        Esc cancels), shared by both editors. `renamePath()` swaps the filename base (preserves
+        folder + extension); DocumentRenderer commits via useUpdateNote + renameTab, CollabDoc
+        via REST updateNote (provider-free, also works on the share route) + renameTab. Gated to
+        editors (canReview). Verified on :5180. core+web typecheck green.
   - [ ] Desktop collab host (DesktopCollabDocument) — apply the same DocumentChrome (follow-up;
         web verified first since that's what's being reviewed). Honor metadata.contentFont in ShareView.
   - [ ] Persist collab FontSwitch choice to metadata (currently local-only in CollabDoc).

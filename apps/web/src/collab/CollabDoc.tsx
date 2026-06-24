@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, type ContentFont } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont } from "@prism/core";
 import { MessageSquare, X } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
+import { updateNote as restUpdateNote } from "../parachute/rest";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -105,6 +106,16 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
       }
     })();
   }, [noteId]);
+
+  // Rename via the editable page title (preserves folder + extension). Uses the
+  // REST client directly (no VaultClient provider on the full-page share route).
+  const handleRename = (newName: string) => {
+    const next = renamePath(path, newName);
+    if (!next) return;
+    void restUpdateNote(noteId, { path: next }).catch(() => {});
+    setPath(next);
+    try { useUIStore.getState().renameTab(noteId, newName.trim()); } catch { /* no tab (share route) */ }
+  };
 
   const isSuggestLevel = level === "suggest";
   const isCommentLevel = level === "comment";
@@ -228,6 +239,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         <PageHeader
           path={path}
           fallbackName={title}
+          onRename={canReview ? handleRename : undefined}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>

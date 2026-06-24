@@ -28,7 +28,8 @@ import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
-import { PageHeader, FontSwitch, type ContentFont } from "./DocumentChrome";
+import { PageHeader, FontSwitch, renamePath, type ContentFont } from "./DocumentChrome";
+import { useUpdateNote } from "../../app/hooks/useParachute";
 
 const lowlightInstance = createLowlight(common);
 
@@ -49,6 +50,17 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
     setContentFont(f);
     onMetadataChange({ contentFont: f });
   }, [onMetadataChange]);
+
+  // Rename the note by editing the title in the page header (preserves folder +
+  // extension; updates the open tab's label).
+  const updateNote = useUpdateNote();
+  const renameTab = useUIStore((s) => s.renameTab);
+  const handleRename = useCallback((newName: string) => {
+    const next = renamePath(note.path, newName);
+    if (!next) return;
+    updateNote.mutate({ id: note.id, path: next });
+    renameTab(note.id, newName.trim());
+  }, [note.path, note.id, updateNote, renameTab]);
 
   // Wikilink navigation: resolve target name → note ID → open tab
   const handleWikilinkNavigate = useCallback((target: string) => {
@@ -272,7 +284,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
       {/* Editor */}
       <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
         <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
-          <PageHeader path={note.path} />
+          <PageHeader path={note.path} onRename={handleRename} />
           <EditorContent editor={editor} />
         </div>
         {/* Wikilink / @mention autocomplete dropdown */}
