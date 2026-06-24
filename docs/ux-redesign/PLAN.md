@@ -80,9 +80,10 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
 ## Anytype-feel north star (deep dive on anyproto/anytype-ts)
 
 Concrete patterns to adopt, ranked by impact-for-effort:
-1. **Object icons** — every Anytype object has an emoji/image icon beside its title.
-   Add an icon affordance to the shared PageHeader (type icon by default; click to pick
-   an emoji, stored in metadata). Biggest single "feels like Anytype" win.
+1. **Object icons** — [DONE] full emoji picker (emoji-picker-react, lazy-loaded, native
+   style, theme-matched) in the shared PageHeader: "Add icon" → pick → large emoji above
+   the title; persists to metadata.icon. Works in both editors (DocumentRenderer +
+   CollabDoc). Verified on :5180.
 2. **Command palette as quick-capture/search** — Anytype's ⌘K is object search + create-by-type.
    Rebuild CommandBar: sectioned, icon-led, "search vault objects" + "create {type}".
 3. **Back/forward navigation** in the top bar (history of opened objects).

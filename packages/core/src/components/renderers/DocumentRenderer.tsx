@@ -284,7 +284,12 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
       {/* Editor */}
       <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
         <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
-          <PageHeader path={note.path} onRename={handleRename} />
+          <PageHeader
+            path={note.path}
+            onRename={handleRename}
+            icon={note.metadata?.icon as string | undefined}
+            onIconChange={(emoji) => onMetadataChange({ icon: emoji })}
+          />
           <EditorContent editor={editor} />
         </div>
         {/* Wikilink / @mention autocomplete dropdown */}

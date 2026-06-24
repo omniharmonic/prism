@@ -73,6 +73,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
   const [title, setTitle] = useState("Shared document");
   const [path, setPath] = useState<string | null>(null);
   const [contentFont, setContentFont] = useState<ContentFont>("sans");
+  const [icon, setIcon] = useState<string | null>(null);
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [presence, setPresence] = useState<PresenceUser[]>([]);
@@ -93,6 +94,7 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
         setLevel(note._level ?? "own");
         setPath(note.path ?? null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
+        setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
@@ -115,6 +117,11 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
     void restUpdateNote(noteId, { path: next }).catch(() => {});
     setPath(next);
     try { useUIStore.getState().renameTab(noteId, newName.trim()); } catch { /* no tab (share route) */ }
+  };
+
+  const handleIconChange = (emoji: string | null) => {
+    setIcon(emoji);
+    void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
   };
 
   const isSuggestLevel = level === "suggest";
@@ -240,6 +247,8 @@ export function CollabDoc({ noteId, embedded = false }: { noteId: string; embedd
           path={path}
           fallbackName={title}
           onRename={canReview ? handleRename : undefined}
+          icon={icon}
+          onIconChange={canReview ? handleIconChange : undefined}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
