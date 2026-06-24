@@ -105,3 +105,13 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
   the redesign to the live tunnel — :8787 serves production.
 - Next: deep polish, in order — (1) sidebar/nav density + hover-reveal, (2) tabs/palette/
   panels, (3) editor chrome (page header, block handles), (4) mobile/PWA drawer + touch.
+- 2026-06-23: User feedback — "almost no difference, go MUCH deeper." Switched from
+  token-only tweaks to **structural component redesign**. Also: 1420 (desktop vite in a
+  browser) has no Tauri runtime → no vault data; added a dev-only web proxy
+  (PRISM_DEV_SESSION) so `localhost:5180` serves the REAL app with live data + HMR.
+- 2026-06-23: **Shell redesign pass 1** — Navigation: workspace header (gradient "P" brand
+  mark), icon-led nav rows via `.interactive`, hover-revealed row/section actions, rotating
+  chevron section header, prominent accent-tinted "New" button. TabBar: rounded icon
+  buttons + refined tab pills (active = surface-active, dirty dot, hover-reveal close).
+  Canvas EmptyState: Compass icon tile + cleaner heading/hint. Core typecheck green.
+  Next: ProjectTree row styling, document editor chrome (page header), command palette.

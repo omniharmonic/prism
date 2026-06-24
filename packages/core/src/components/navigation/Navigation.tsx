@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -39,8 +39,40 @@ export function Navigation() {
         borderRight: "1px solid var(--glass-border)",
       }}
     >
+      {/* Workspace header — brand mark + name (Notion/Anytype space header) */}
+      <div
+        className="flex items-center gap-2.5 flex-shrink-0"
+        style={{ height: 52, padding: "0 14px" }}
+      >
+        <div
+          className="flex items-center justify-center flex-shrink-0"
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 7,
+            background: "linear-gradient(140deg, var(--color-accent), var(--color-accent-hover))",
+            color: "#fff",
+            fontSize: 13,
+            fontWeight: 700,
+            boxShadow: "0 1px 3px var(--color-accent-dim)",
+          }}
+        >
+          P
+        </div>
+        <span
+          style={{
+            fontSize: "var(--text-md)",
+            fontWeight: 650,
+            letterSpacing: "-0.015em",
+            color: "var(--text-primary)",
+          }}
+        >
+          Prism
+        </span>
+      </div>
+
       {/* Search */}
-      <div className="p-2">
+      <div style={{ padding: "0 10px 8px" }}>
         <Input
           icon={<Search size={14} />}
           placeholder="Search... (&#8984;K)"
@@ -53,41 +85,23 @@ export function Navigation() {
       {debouncedQuery.length > 0 ? (
         <SearchPanel query={debouncedQuery} onClose={() => setSearchQuery("")} />
       ) : (
-        <div className="flex-1 overflow-auto">
-          {/* Quick-access tabs */}
-          <div className="px-2 py-1.5 space-y-0.5">
-            <button
+        <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }}>
+          {/* Quick-access items */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
+            <NavItem
+              icon={<MessageSquare size={15} />}
+              label="Messages"
               onClick={handleOpenMessages}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <MessageSquare size={14} />
-              <span className="flex-1 text-left">Messages</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowCompose(true); }}
-                className="p-0.5 rounded hover:bg-[var(--glass-active)] transition-colors"
-                style={{ color: "var(--text-muted)" }}
-                title="Compose message"
-              >
-                <PenSquare size={11} />
-              </button>
-            </button>
-            <button
-              onClick={handleOpenCalendar}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <Calendar size={14} />
-              <span>Calendar</span>
-            </button>
-            <button
-              onClick={handleOpenAgentActivity}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)] transition-colors"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <Bot size={14} />
-              <span>Agent</span>
-            </button>
+              trailing={
+                <RowAction
+                  title="Compose message"
+                  onClick={() => setShowCompose(true)}
+                  icon={<PenSquare size={13} />}
+                />
+              }
+            />
+            <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
+            <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
           </div>
 
           {/* Projects / vault notes */}
@@ -97,15 +111,24 @@ export function Navigation() {
         </div>
       )}
 
-      {/* New button */}
-      <div className="p-2 relative" style={{ borderTop: "1px solid var(--glass-border)" }}>
+      {/* New button — prominent accent-tinted action */}
+      <div style={{ padding: 10, position: "relative", borderTop: "1px solid var(--glass-border)" }}>
         <button
           onClick={() => setShowNewMenu(!showNewMenu)}
-          className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
-          style={{ color: "var(--text-secondary)" }}
+          className="focus-ring w-full flex items-center justify-center gap-2 transition-colors"
+          style={{
+            height: 34,
+            borderRadius: "var(--radius-md)",
+            fontSize: "var(--text-base)",
+            fontWeight: 550,
+            color: "var(--color-accent)",
+            background: "var(--color-accent-dim)",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.08)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "")}
         >
-          <Plus size={14} />
-          New...
+          <Plus size={15} />
+          New
         </button>
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
       </div>
@@ -113,6 +136,60 @@ export function Navigation() {
       {/* Compose message modal */}
       {showCompose && <ComposeMessage onClose={() => setShowCompose(false)} />}
     </div>
+  );
+}
+
+/** A primary sidebar row: quiet at rest, gentle tint on hover (Notion-style).
+ *  Rendered as a div so optional trailing actions can be real buttons without
+ *  nesting <button> elements. */
+function NavItem({
+  icon,
+  label,
+  onClick,
+  trailing,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className="interactive focus-ring group flex items-center gap-2.5"
+      style={{ height: 32, padding: "0 8px", color: "var(--text-secondary)", fontSize: "var(--text-base)" }}
+    >
+      <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}>
+        {icon}
+      </span>
+      <span className="flex-1 text-left truncate">{label}</span>
+      {trailing}
+    </div>
+  );
+}
+
+/** Small hover-revealed action button on the right edge of a nav row. */
+function RowAction({ icon, title, onClick }: { icon: React.ReactNode; title: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={title}
+      className="interactive flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+      style={{ width: 22, height: 22, color: "var(--text-muted)" }}
+    >
+      {icon}
+    </button>
   );
 }
 
@@ -131,21 +208,32 @@ function NavSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div>
+    <div style={{ marginTop: 6 }}>
       {/* Header row: the toggle takes the full width; the action sits beside it
           (kept outside the toggle <button> so it's not a nested button). */}
-      <div className="flex items-center pr-1.5 group">
+      <div className="flex items-center group" style={{ paddingRight: 4 }}>
         <button
           onClick={() => setOpen(!open)}
-          className="flex-1 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium uppercase tracking-wider hover:bg-[var(--glass-hover)] transition-colors"
-          style={{ color: "var(--text-muted)" }}
+          className="interactive flex-1 flex items-center gap-1"
+          style={{
+            height: 26,
+            padding: "0 6px",
+            fontSize: "var(--text-xs)",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            color: "var(--text-muted)",
+          }}
         >
-          <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+          <ChevronRight
+            size={12}
+            style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform var(--transition-fast)" }}
+          />
           {label}
         </button>
-        {action}
+        <span className="opacity-0 group-hover:opacity-100 transition-opacity">{action}</span>
       </div>
-      {open && children}
+      {open && <div style={{ marginTop: 1 }}>{children}</div>}
     </div>
   );
 }
@@ -175,8 +263,8 @@ function RefreshNavButton() {
     <button
       onClick={refresh}
       title="Refresh vault"
-      className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-      style={{ color: "var(--text-muted)" }}
+      className="interactive flex items-center justify-center"
+      style={{ width: 22, height: 22, color: "var(--text-muted)" }}
     >
       <RefreshCw size={12} className={spinning ? "animate-spin" : ""} />
     </button>
