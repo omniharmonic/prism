@@ -95,5 +95,29 @@ export default defineConfig({
   },
   server: {
     port: 5180,
+    // Dev-only: when PRISM_DEV_SESSION is set, proxy the gateway routes to a
+    // locally-running Prism Server (:8787) and inject an owner session cookie
+    // server-side, so `localhost:5180` renders the real app with real vault data
+    // and hot-reloads the redesign — no login dance. Inert in prod (env unset)
+    // and never affects the static build (server.proxy is dev-server only).
+    proxy: devGatewayProxy(),
   },
 });
+
+function devGatewayProxy() {
+  const session = process.env.PRISM_DEV_SESSION;
+  if (!session) return undefined;
+  const injectCookie = (proxy: { on: (e: string, cb: (req: { getHeader: (n: string) => unknown; setHeader: (n: string, v: string) => void }) => void) => void }) => {
+    proxy.on("proxyReq", (proxyReq) => {
+      const existing = proxyReq.getHeader("cookie");
+      const inject = `prism_session=${session}`;
+      proxyReq.setHeader("cookie", existing ? `${existing}; ${inject}` : inject);
+    });
+  };
+  const base = { target: "http://localhost:8787", changeOrigin: true, configure: injectCookie };
+  return {
+    "/api": base,
+    "/auth": base,
+    "/collab": { ...base, ws: true },
+  } as Record<string, unknown>;
+}
