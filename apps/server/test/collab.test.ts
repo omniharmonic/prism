@@ -25,6 +25,9 @@ import {
   yDocToCsv,
   sceneToYUpdate,
   yDocToScene,
+  applyExternalContent,
+  reconcileLoadedDocs,
+  resetReconcileState,
 } from "../src/collab";
 import { getDocState, saveDocState } from "../src/db";
 import {
@@ -41,6 +44,7 @@ const OWNER = "owner@test.local";
 let fv: FakeVault;
 beforeEach(() => {
   resetDb();
+  resetReconcileState();
   fv = installFakeVault();
 });
 afterEach(() => fv.restore());
@@ -319,4 +323,115 @@ test("loadDocumentState seeds a canvas into elements; an element edit persists b
   assert.equal(written.elements.length, 2, "scene JSON has both elements");
   const r1 = written.elements.find((e: { id: string }) => e.id === "r1");
   assert.equal(r1.x, 100, "moved element persisted");
+});
+
+// ------------------------------------- external-edit reconciliation (the root)
+// An MCP agent (or any external writer) edits a note in Parachute while it is
+// open in a live collab session. These tests pin the behavior that makes the
+// agent a real collaborator: the edit is FOLDED INTO the live doc (so every
+// connected editor updates), and a subsequent store never clobbers it.
+
+// Mint a fake Hocuspocus `.documents` registry from id→doc pairs.
+const liveDocs = (entries: Array<[string, Y.Doc]>) => ({ documents: new Map(entries) });
+
+test("applyExternalContent replaces a live document in place (minimal diff, no duplication)", () => {
+  const doc = docFrom("hello world");
+  applyExternalContent(doc, "document", "<p>hello brave world</p>");
+  const html = yDocToHtml(doc);
+  assert.match(html, /hello brave world/);
+  // The old text is gone, not appended — exactly one paragraph.
+  assert.equal((html.match(/<p>/g) ?? []).length, 1, "no duplicated content");
+  assert.doesNotMatch(html, /hello world<\/p>\s*<p>/);
+});
+
+test("reconcileLoadedDocs folds an external Parachute edit into a live document", async () => {
+  // Seeded + loaded → its updatedAt is recorded as the reconcile baseline.
+  fv.put({ id: "live1", content: "original text", tags: [], updatedAt: "2026-05-01T00:00:00.000Z" });
+  const doc = await loadDocumentState("live1", new Y.Doc());
+  assert.match(yDocToHtml(doc), /original text/);
+
+  // An external writer (MCP agent) edits the note in Parachute, bumping updatedAt.
+  const note = fv.notes.get("live1")!;
+  note.content = "<p>agent-edited text</p>";
+  note.updatedAt = "2026-05-02T00:00:00.000Z";
+
+  await reconcileLoadedDocs(liveDocs([["live1", doc]]));
+
+  const html = yDocToHtml(doc);
+  assert.match(html, /agent-edited text/, "live doc now shows the external edit");
+  assert.doesNotMatch(html, /original text/, "stale content replaced");
+});
+
+test("reconcileLoadedDocs is a no-op when Parachute is not newer than what we've absorbed", async () => {
+  fv.put({ id: "live2", content: "stable text", tags: [], updatedAt: "2026-05-01T00:00:00.000Z" });
+  const doc = await loadDocumentState("live2", new Y.Doc());
+  // Same updatedAt, different content — must NOT be pulled in (no real new edit).
+  fv.notes.get("live2")!.content = "<p>should be ignored</p>";
+
+  await reconcileLoadedDocs(liveDocs([["live2", doc]]));
+
+  const html = yDocToHtml(doc);
+  assert.match(html, /stable text/);
+  assert.doesNotMatch(html, /should be ignored/);
+});
+
+test("reconcileLoadedDocs skips a doc that has no connections (about to unload)", async () => {
+  fv.put({ id: "live3", content: "watched", tags: [], updatedAt: "2026-05-01T00:00:00.000Z" });
+  const doc = (await loadDocumentState("live3", new Y.Doc())) as Y.Doc & { getConnectionsCount: () => number };
+  doc.getConnectionsCount = () => 0; // nobody is watching
+  const note = fv.notes.get("live3")!;
+  note.content = "<p>nobody home</p>";
+  note.updatedAt = "2026-05-02T00:00:00.000Z";
+
+  await reconcileLoadedDocs(liveDocs([["live3", doc]]));
+
+  assert.doesNotMatch(yDocToHtml(doc), /nobody home/, "unwatched doc is left for the next load to re-seed");
+});
+
+test("reconcileLoadedDocs folds an external CODE edit in as raw text (no HTML mangling)", async () => {
+  fv.put({ id: "code-live", content: "const a = 1;", tags: ["code"], path: "x.ts", updatedAt: "2026-05-01T00:00:00.000Z" });
+  const doc = await loadDocumentState("code-live", new Y.Doc());
+
+  const note = fv.notes.get("code-live")!;
+  note.content = "const a = 1;\nconst b = a < 2 ? '<ok>' : '<no>';";
+  note.updatedAt = "2026-05-02T00:00:00.000Z";
+
+  await reconcileLoadedDocs(liveDocs([["code-live", doc]]));
+
+  assert.equal(yDocToCode(doc), note.content, "raw code applied verbatim");
+  assert.equal(doc.getXmlFragment("default").length, 0, "never routed through the document path");
+});
+
+test("reconcileLoadedDocs folds an external CANVAS edit in (add/move/remove by id)", async () => {
+  const scene = JSON.stringify({ elements: [{ id: "a", type: "rectangle", x: 0, version: 1 }], appState: {} });
+  fv.put({ id: "canvas-live", content: scene, tags: ["canvas"], updatedAt: "2026-05-01T00:00:00.000Z" });
+  const doc = await loadDocumentState("canvas-live", new Y.Doc());
+
+  // Element "a" moves, "b" is added — "a" must update in place, "b" appear.
+  const note = fv.notes.get("canvas-live")!;
+  note.content = JSON.stringify({ elements: [{ id: "a", x: 50, version: 2 }, { id: "b", x: 9, version: 1 }], appState: {} });
+  note.updatedAt = "2026-05-02T00:00:00.000Z";
+
+  await reconcileLoadedDocs(liveDocs([["canvas-live", doc]]));
+
+  const map = doc.getMap<{ id: string; x: number }>("elements");
+  assert.equal(map.size, 2, "both elements present");
+  assert.equal((map.get("a") as { x: number }).x, 50, "moved element updated in place");
+  assert.ok(map.get("b"), "new element added");
+});
+
+test("storeDocumentState folds a newer external edit in instead of clobbering it", async () => {
+  // The exact bug: live doc holds OLD content; Parachute has a NEWER agent edit;
+  // a store must not render the stale doc over it.
+  saveDocState("clobber1", contentToYUpdate("v1 live"), Date.parse("2026-05-01T00:00:00.000Z"));
+  fv.put({ id: "clobber1", content: "<p>v2 agent edit</p>", tags: [], updatedAt: "2026-05-02T00:00:00.000Z" });
+
+  const doc = docFrom("v1 live"); // the stale in-memory session
+  await storeDocumentState("clobber1", doc);
+
+  const written = fv.notes.get("clobber1")!.content;
+  assert.match(written, /v2 agent edit/, "external edit preserved");
+  assert.doesNotMatch(written, /v1 live/, "stale doc did NOT overwrite the vault");
+  // And the live doc itself now reflects the external edit (clients would see it).
+  assert.match(yDocToHtml(doc), /v2 agent edit/);
 });

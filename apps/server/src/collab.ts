@@ -21,7 +21,7 @@ import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
-import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from "@tiptap/y-tiptap";
+import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
 import { collabExtensions } from "@prism/core/editor-schema";
 import { marked } from "marked";
 import { config } from "./config";
@@ -190,6 +190,147 @@ const kindCache = new Map<string, CollabKind>();
 
 const toMs = (iso: string | null | undefined): number => (iso ? Date.parse(iso) || 0 : 0);
 
+// ---- external-edit reconciliation (live docs ⇄ Parachute) -------------------
+// We seed a doc from Parachute only at load time. While a doc is live, an
+// external writer editing the same note in Parachute (an MCP agent, the desktop
+// app, a script) is invisible to connected editors — and worse, the next store
+// would render the stale Yjs state over it. These helpers fold an external edit
+// INTO the live Y.Doc: mutating it makes Hocuspocus broadcast to every client,
+// and the store then preserves it instead of clobbering it.
+
+/** Origin tag for server-applied external edits (distinct from client edits). */
+export const EXTERNAL_ORIGIN = "external-parachute";
+
+/** Per-doc high-water mark of the Parachute updatedAt we've already folded in,
+ *  so we don't re-apply the same external edit on every tick. */
+const lastReconciled = new Map<string, number>();
+
+/** Test-only: drop the reconcile high-water marks (module state survives resetDb). */
+export function resetReconcileState(): void {
+  lastReconciled.clear();
+}
+
+/** Minimal in-place replace of a Y.Text: keep the common prefix/suffix so a
+ *  viewer's cursor outside the changed span is preserved. */
+function replaceYText(ytext: Y.Text, next: string): void {
+  const cur = ytext.toString();
+  if (cur === next) return;
+  let start = 0;
+  const min = Math.min(cur.length, next.length);
+  while (start < min && cur.charCodeAt(start) === next.charCodeAt(start)) start++;
+  let ec = cur.length;
+  let en = next.length;
+  while (ec > start && en > start && cur.charCodeAt(ec - 1) === next.charCodeAt(en - 1)) {
+    ec--;
+    en--;
+  }
+  if (ec > start) ytext.delete(start, ec - start);
+  if (en > start) ytext.insert(start, next.slice(start, en));
+}
+
+/** Rebuild a spreadsheet's rows in place (delete-then-insert within the caller's
+ *  transaction — never push onto live rows, which would double them). */
+function rebuildRows(rows: Y.Array<Y.Array<string>>, parsed: string[][]): void {
+  if (rows.length) rows.delete(0, rows.length);
+  rows.insert(
+    0,
+    parsed.map((r) => {
+      const yr = new Y.Array<string>();
+      yr.insert(0, r);
+      return yr;
+    }),
+  );
+}
+
+/** Canvas: set elements by id (idempotent) and drop ids no longer present. */
+function applyCanvasMap(map: Y.Map<CanvasEl>, content: string): void {
+  const ids = new Set<string>();
+  for (const el of parseScene(content).elements) {
+    if (el && typeof el.id === "string") {
+      map.set(el.id, el);
+      ids.add(el.id);
+    }
+  }
+  for (const k of Array.from(map.keys())) if (!ids.has(k)) map.delete(k);
+}
+
+/**
+ * Fold Parachute's current content into a LIVE Y.Doc, in place. For a document
+ * this is a minimal CRDT diff via updateYFragment — the same path TipTap's sync
+ * plugin uses — so only changed nodes update and cursors are largely preserved.
+ * On conflict with a concurrent in-flight client edit, Parachute's content wins
+ * for the overlapping region (mirrors loadDocumentState's "external edit wins").
+ */
+export function applyExternalContent(doc: Y.Doc, kind: CollabKind, content: string): void {
+  doc.transact(() => {
+    if (kind === "code") {
+      replaceYText(doc.getText(CODE_TEXT_FIELD), content ?? "");
+    } else if (kind === "spreadsheet") {
+      rebuildRows(doc.getArray<Y.Array<string>>(SHEET_FIELD), parseCsv(content ?? ""));
+    } else if (kind === "canvas") {
+      applyCanvasMap(doc.getMap<CanvasEl>(CANVAS_FIELD), content ?? "");
+    } else {
+      const src = content ?? "";
+      const html = src.trim().startsWith("<") ? src : (marked.parse(src) as string);
+      const json = generateJSON(html || "<p></p>", exts);
+      const pmNode = schema.nodeFromJSON(json);
+      updateYFragment(doc, doc.getXmlFragment(FIELD), pmNode, { mapping: new Map(), isOMark: new Map() });
+    }
+  }, EXTERNAL_ORIGIN);
+}
+
+/** A loaded-document registry — structurally what Hocuspocus exposes as
+ *  `.documents`. Kept minimal so tests can pass a plain map of Y.Docs. */
+export interface LiveDocs {
+  documents: Map<string, Y.Doc>;
+}
+
+/** The Parachute updatedAt we've absorbed for a doc, beyond which a newer note
+ *  is an unseen external edit. Max of our persisted snapshot and last apply. */
+function reconcileBaseline(name: string): number {
+  return Math.max(getDocState(name)?.sourceUpdatedAt ?? 0, lastReconciled.get(name) ?? 0);
+}
+
+/**
+ * One reconciliation tick: for every loaded, connected doc whose Parachute copy
+ * is newer than what we've persisted/applied, fold the external content in. This
+ * is what makes an MCP-agent edit appear in open editors within one interval.
+ */
+export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
+  for (const [name, doc] of server.documents) {
+    const d = doc as Y.Doc & { isLoading?: boolean; getConnectionsCount?: () => number };
+    if (d.isLoading) continue; // mid-load — onLoadDocument owns seeding
+    if (typeof d.getConnectionsCount === "function" && d.getConnectionsCount() === 0) continue; // about to unload
+    let note;
+    try {
+      note = await vault.getNote(name);
+    } catch {
+      continue; // unreadable/deleted — the load/store lifecycle handles it
+    }
+    const noteMs = toMs(note.updatedAt);
+    if (noteMs === 0 || noteMs <= reconcileBaseline(name)) continue;
+    const kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+    kindCache.set(name, kind);
+    applyExternalContent(doc, kind, note.content);
+    lastReconciled.set(name, noteMs);
+  }
+}
+
+/** Start the periodic reconciler; returns a stop fn. The timer is unref'd so it
+ *  never keeps the process alive, and overlapping ticks are skipped. */
+export function startReconciler(server: LiveDocs, intervalMs = 2000): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    void reconcileLoadedDocs(server).finally(() => {
+      running = false;
+    });
+  }, intervalMs);
+  (timer as { unref?: () => void }).unref?.();
+  return () => clearInterval(timer);
+}
+
 /** Read a header whether `requestHeaders` is a Fetch Headers (typed) or a node
  *  IncomingMessage's plain object (what `ws` actually provides at runtime). */
 function headerGet(h: unknown, key: string): string | null {
@@ -307,6 +448,9 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
             : contentToYUpdate(note.content);
     Y.applyUpdate(doc, seed); // seed (or re-seed on external edit)
   }
+  // The doc now reflects Parachute as of note.updatedAt — record it so the
+  // reconciler doesn't immediately re-apply the very content we just loaded.
+  if (note) lastReconciled.set(documentName, toMs(note.updatedAt));
   return doc;
 }
 
@@ -318,18 +462,37 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
  */
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
   let sourceUpdatedAt: number | null = null;
-  // Determine kind from cache, or re-fetch — a wrong default would persist code
-  // as HTML and corrupt the note. Stores are debounced, so the extra read is cheap.
+  // Fetch the current note up front: it resolves the kind (a wrong default would
+  // persist e.g. code as HTML and corrupt the note) AND lets us detect an
+  // external edit we haven't folded in yet. Stores are debounced, so the read is
+  // cheap; on failure we fall back to the cached kind.
   let kind = kindCache.get(documentName);
-  if (!kind) {
-    try {
-      const n = await vault.getNote(documentName);
-      kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
-      kindCache.set(documentName, kind);
-    } catch {
-      kind = "document";
+  let current: { content: string; updatedAt: string | null } | null = null;
+  try {
+    const n = await vault.getNote(documentName);
+    current = { content: n.content, updatedAt: n.updatedAt };
+    if (!kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
+  } catch {
+    /* note unreadable — keep cached kind (or default below) */
+  }
+  if (!kind) kind = "document";
+  kindCache.set(documentName, kind);
+
+  // Clobber guard: if Parachute is newer than what we've absorbed, fold that
+  // external edit into the live doc BEFORE rendering, so the write below merges
+  // it in instead of overwriting it (and connected clients see it too).
+  // A zero baseline means we have no prior knowledge of this note (e.g. a store
+  // with no preceding load) — the live doc is authoritative, so don't fold. In
+  // the real Hocuspocus flow onLoadDocument always runs first and sets it.
+  if (current) {
+    const noteMs = toMs(current.updatedAt);
+    const baseline = reconcileBaseline(documentName);
+    if (baseline > 0 && noteMs > baseline) {
+      applyExternalContent(doc, kind, current.content);
+      lastReconciled.set(documentName, noteMs);
     }
   }
+
   try {
     const content =
       kind === "code"
@@ -380,4 +543,9 @@ export function attachCollab(server: Server): void {
       });
     });
   });
+
+  // Watch loaded docs for external Parachute edits (MCP agent, desktop, scripts)
+  // and fold them into the live Y.Doc so every open editor updates within a tick.
+  const stopReconciler = startReconciler(hocuspocus as unknown as LiveDocs);
+  server.on("close", stopReconciler);
 }
