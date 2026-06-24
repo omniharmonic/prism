@@ -84,4 +84,14 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
 - 2026-06-23: Recon complete (design system, layout architecture, build/PWA tooling).
   Confirmed: fully tokenized system (Tailwind v4 `@theme` + CSS vars), `@prism/core`
   consumed as source so style edits hot-reload both shells. Phase 1 token + glass retune
-  landed; web build green. Next: primitives + app-shell surfaces.
+  landed; web build green.
+- 2026-06-23: Visual harness online — Playwright/chromium (scratch) + dev-only `/design-lab`
+  route screenshotted in both themes. Foundation looks clean/airy in dark + light.
+- 2026-06-23: **Decisions** (user): content font default = **sans** with a Notion-style
+  in-editor **Sans/Serif/Mono** switch; deep-polish priorities = sidebar/nav, editor
+  chrome, mobile/PWA, tabs+palette+panels (all four).
+- 2026-06-23: Typography — content now defaults to sans via `--content-font` indirection
+  (`[data-content-font]` override); added per-document FontSwitch in DocumentRenderer,
+  persisted to `metadata.contentFont`. Core+web typecheck green. (TODO: mirror switch in
+  CollabEditor + honor metadata.contentFont in ShareView.)
+  Next surface: sidebar & navigation.

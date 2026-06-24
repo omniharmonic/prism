@@ -31,10 +31,62 @@ import { EditorToolbar } from "./EditorToolbar";
 
 const lowlightInstance = createLowlight(common);
 
-export default function DocumentRenderer({ note }: RendererProps) {
+type ContentFont = "sans" | "serif" | "mono";
+
+/**
+ * Notion-style per-document font switch. Each option renders its own label in
+ * its own typeface so the control is self-demonstrating.
+ */
+function FontSwitch({ value, onChange }: { value: ContentFont; onChange: (f: ContentFont) => void }) {
+  const opts: { key: ContentFont; label: string; family: string }[] = [
+    { key: "sans", label: "Sans", family: "var(--font-sans)" },
+    { key: "serif", label: "Serif", family: "var(--font-serif)" },
+    { key: "mono", label: "Mono", family: "var(--font-mono)" },
+  ];
+  return (
+    <div className="flex items-center gap-0.5" role="group" aria-label="Document font">
+      {opts.map((o) => {
+        const selected = value === o.key;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => onChange(o.key)}
+            className="interactive focus-ring"
+            data-selected={selected || undefined}
+            title={`${o.label} font`}
+            style={{
+              padding: "2px 8px",
+              fontFamily: o.family,
+              fontSize: "var(--text-xs)",
+              color: selected ? "var(--text-primary)" : "var(--text-muted)",
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function DocumentRenderer({ note, onMetadataChange }: RendererProps) {
   const openTab = useUIStore((s) => s.openTab);
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
+
+  // Per-document content font (Notion-style "Aa" switch). Defaults to sans;
+  // the choice is persisted in note metadata so it travels with the doc.
+  const [contentFont, setContentFont] = useState<ContentFont>(
+    (note.metadata?.contentFont as ContentFont) || "sans",
+  );
+  useEffect(() => {
+    setContentFont((note.metadata?.contentFont as ContentFont) || "sans");
+  }, [note.id]); // re-sync when switching documents
+  const changeFont = useCallback((f: ContentFont) => {
+    setContentFont(f);
+    onMetadataChange({ contentFont: f });
+  }, [onMetadataChange]);
 
   // Wikilink navigation: resolve target name → note ID → open tab
   const handleWikilinkNavigate = useCallback((target: string) => {
@@ -251,7 +303,7 @@ export default function DocumentRenderer({ note }: RendererProps) {
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
       {/* Toolbar */}
       {editor && <EditorToolbar editor={editor} />}
 
@@ -270,15 +322,18 @@ export default function DocumentRenderer({ note }: RendererProps) {
         )}
       </div>
 
-      {/* Save status */}
+      {/* Footer: per-document font switch (left) + save status (right) */}
       <div
-        className="flex items-center justify-end px-4 py-1 text-xs gap-3"
+        className="flex items-center justify-between px-4 py-1 text-xs gap-3"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
-        {isSaving && <span>Saving...</span>}
-        {lastSaved && !isSaving && (
-          <span>Saved {lastSaved.toLocaleTimeString()}</span>
-        )}
+        <FontSwitch value={contentFont} onChange={changeFont} />
+        <div className="flex items-center gap-3">
+          {isSaving && <span>Saving...</span>}
+          {lastSaved && !isSaving && (
+            <span>Saved {lastSaved.toLocaleTimeString()}</span>
+          )}
+        </div>
       </div>
 
       {/* Ghost text: agent-generated content awaiting accept/reject */}

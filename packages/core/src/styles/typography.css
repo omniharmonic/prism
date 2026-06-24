@@ -14,16 +14,25 @@ body {
   letter-spacing: -0.01em;
 }
 
-/* ─── Prose Editor (documents, articles, notes) ─── */
+/* ─── Prose Editor (documents, articles, notes) ───
+   Content font defaults to the clean UI sans (Notion/Anytype-like). A document
+   can opt into serif or mono via a [data-content-font] wrapper (the in-editor
+   "Aa" switch), which only remaps the --content-font variable. */
 .prose-editor {
-  font-family: var(--font-serif);
+  font-family: var(--content-font, var(--font-sans));
   font-size: var(--text-lg);
-  line-height: 1.75;
+  line-height: 1.7;
   color: var(--text-primary);
-  max-width: 720px;
+  max-width: var(--content-measure);
   margin: 0 auto;
-  letter-spacing: 0;
+  letter-spacing: -0.005em;
 }
+
+[data-content-font="sans"]  { --content-font: var(--font-sans); }
+[data-content-font="serif"] { --content-font: var(--font-serif); letter-spacing: 0; }
+[data-content-font="mono"]  { --content-font: var(--font-mono); }
+/* Serif wants a touch more line-height for its larger x-height. */
+[data-content-font="serif"] .prose-editor { line-height: 1.75; }
 
 .prose-editor h1,
 .prose-editor h2,
