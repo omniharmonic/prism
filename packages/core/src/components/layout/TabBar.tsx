@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, PanelLeft, PanelRight, Bot } from "lucide-react";
+import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { ShareButton } from "./ShareButton";
 
@@ -8,19 +8,28 @@ function IconButton({
   onClick,
   title,
   active,
+  disabled,
   children,
 }: {
   onClick: () => void;
   title: string;
   active?: boolean;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
       title={title}
+      disabled={disabled}
       className="interactive focus-ring flex items-center justify-center flex-shrink-0"
-      style={{ width: 30, height: 30, color: active ? "var(--text-secondary)" : "var(--text-muted)" }}
+      style={{
+        width: 30,
+        height: 30,
+        color: active ? "var(--text-secondary)" : "var(--text-muted)",
+        opacity: disabled ? 0.35 : 1,
+        cursor: disabled ? "default" : "pointer",
+      }}
     >
       {children}
     </button>
@@ -30,6 +39,7 @@ function IconButton({
 export function TabBar() {
   const {
     openTabs, activeTabId, setActiveTab, closeTab, reorderTabs,
+    navHistory, navIndex, navBack, navForward,
     sidebarOpen, toggleSidebar,
     contextPanelOpen, toggleContextPanel, setContextPanelTab,
   } = useUIStore();
@@ -37,6 +47,11 @@ export function TabBar() {
   // Drag-to-reorder state: the tab being dragged + the tab it's hovering over.
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+
+  // Back/forward enabled only when a still-open tab exists in that direction.
+  const tabIds = new Set(openTabs.map((t) => t.id));
+  const canBack = navHistory.slice(0, Math.max(0, navIndex)).some((id) => tabIds.has(id));
+  const canForward = navHistory.slice(navIndex + 1).some((id) => tabIds.has(id));
 
   return (
     <div
@@ -51,6 +66,14 @@ export function TabBar() {
       {/* Sidebar toggle */}
       <IconButton onClick={toggleSidebar} title="Toggle sidebar (⌘B)" active={sidebarOpen}>
         <PanelLeft size={16} />
+      </IconButton>
+
+      {/* Back / forward through visited notes */}
+      <IconButton onClick={navBack} title="Back" disabled={!canBack}>
+        <ChevronLeft size={17} />
+      </IconButton>
+      <IconButton onClick={navForward} title="Forward" disabled={!canForward}>
+        <ChevronRight size={17} />
       </IconButton>
 
       {/* Tabs */}

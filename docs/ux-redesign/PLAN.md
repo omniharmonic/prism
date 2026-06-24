@@ -168,8 +168,10 @@ Concrete patterns to adopt, ranked by impact-for-effort:
         to the target's page carrying the capability token); a clean "Request access" page shows
         when the gateway denies access. (Caveat: recipient path→id resolution is best-effort —
         a granted target opens; otherwise request-access. Owner in-app navigation is solid.)
+  - [x] Back/forward object navigation in the top bar — useUIStore nav history (push on
+        openTab/setActiveTab, skip closed tabs), ChevronLeft/Right buttons with disabled states.
+        Verified: A→B→C, Back→B, Back→A, Forward→B.
   - [ ] Sidebar widgets (Favorites / Recent) above the tree.
-  - [ ] Back/forward object navigation in the top bar.
   - [ ] Command palette (CommandBar) visual refresh.
   - [ ] Context panel (metadata/links/history/graph tabs) refresh.
   - [ ] Mobile/PWA: drawer, bottom affordances, touch targets, safe-area.
