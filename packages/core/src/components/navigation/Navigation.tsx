@@ -61,21 +61,18 @@ export function Navigation() {
         className="flex items-center gap-2.5 flex-shrink-0"
         style={{ height: 52, padding: "0 14px" }}
       >
-        <div
-          className="flex items-center justify-center flex-shrink-0"
+        <img
+          src="/prism-logo-nav.png"
+          alt="Prism"
+          width={26}
+          height={26}
+          className="flex-shrink-0"
           style={{
-            width: 24,
-            height: 24,
             borderRadius: 7,
-            background: "linear-gradient(140deg, var(--color-accent), var(--color-accent-hover))",
-            color: "#fff",
-            fontSize: 13,
-            fontWeight: 700,
-            boxShadow: "0 1px 3px var(--color-accent-dim)",
+            objectFit: "cover",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
           }}
-        >
-          P
-        </div>
+        />
         <span
           style={{
             fontSize: "var(--text-md)",
