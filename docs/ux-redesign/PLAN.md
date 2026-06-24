@@ -95,3 +95,13 @@ radius scale, shadow scale, typography (family/size/weight/leading), blur, z-ind
   persisted to `metadata.contentFont`. Core+web typecheck green. (TODO: mirror switch in
   CollabEditor + honor metadata.contentFont in ShareView.)
   Next surface: sidebar & navigation.
+- 2026-06-23: **Real-app verification harness online.** Mint an owner session row in
+  `apps/server/prism-server.db` → drive Playwright against the live gateway (:8787) with
+  `prism_session` cookie + `localStorage["prism:onboarded"]=true` to skip onboarding →
+  screenshot the real Shell with live vault data, both themes. (Scratch: `shotkit/shot-app.mjs`.)
+  Confirmed the Blue Sky foundation is applied and looks clean/airy in the real app.
+  NOTE: dev session id is prefixed `redesign-shot-`; delete it from the sessions table when
+  the redesign work wraps. Do NOT rebuild apps/web/dist until the user approves deploying
+  the redesign to the live tunnel — :8787 serves production.
+- Next: deep polish, in order — (1) sidebar/nav density + hover-reveal, (2) tabs/palette/
+  panels, (3) editor chrome (page header, block handles), (4) mobile/PWA drawer + touch.
