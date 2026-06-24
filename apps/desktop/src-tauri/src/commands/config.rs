@@ -301,6 +301,8 @@ pub fn get_collab_config(
 pub fn get_config_status(
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
+    // Read fresh from disk so just-saved keys report accurately (see get_full_config).
+    let config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
     Ok(serde_json::json!({
         "matrix": {
             "configured": !config.matrix_access_token.is_empty(),
@@ -501,6 +503,12 @@ pub async fn acl_request(
 pub fn get_full_config(
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
+    // Read fresh from disk: `update_config` persists to disk but does NOT mutate
+    // the in-memory managed state, so the launch-time `config` would otherwise
+    // show stale "not set" for any key saved during this session (the app process
+    // outlives a closed window on macOS). Fall back to managed state on read error.
+    let config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
+
     fn mask(s: &str) -> String {
         if s.is_empty() { return String::new(); }
         if s.len() <= 8 { return "*".repeat(s.len()); }

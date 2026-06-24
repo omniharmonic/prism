@@ -125,7 +125,7 @@ impl ServiceManager {
             log::info!("Email sync disabled: no Google account configured");
         }
 
-        // Transcript sync (Fathom + Meetily → Parachute) — every 10 minutes
+        // Transcript sync (Fathom + Fireflies + Meetily → Parachute) — every 10 minutes
         let transcript_status = Arc::new(std::sync::Mutex::new(ServiceStatus {
             name: "transcript-sync".into(),
             running: false,
@@ -134,7 +134,9 @@ impl ServiceManager {
             items_processed: 0,
         }));
 
-        let has_transcript_sources = !config.fathom_api_key.is_empty() || !config.meetily_db_path.is_empty();
+        let has_transcript_sources = !config.fathom_api_key.is_empty()
+            || !config.fireflies_api_key.is_empty()
+            || !config.meetily_db_path.is_empty();
         if has_transcript_sources {
             let p = parachute.clone();
             let rx = shutdown_rx.clone();
@@ -144,7 +146,7 @@ impl ServiceManager {
                 transcript_sync::run(p, cfg, rx, status).await;
             }));
         } else {
-            log::info!("Transcript sync disabled: no Fathom or Meetily configured");
+            log::info!("Transcript sync disabled: no Fathom, Fireflies, or Meetily configured");
         }
 
         let scheduler_status = Arc::new(std::sync::Mutex::new(ServiceStatus {

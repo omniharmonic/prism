@@ -10,7 +10,8 @@ use crate::error::PrismError;
 const SYNC_INTERVAL_SECS: u64 = 600; // 10 minutes
 
 /// Transcript sync service: pulls transcripts from configured sources
-/// (Fathom API, Meetily SQLite, etc.) into Parachute as tagged notes.
+/// (Fathom API, Fireflies GraphQL, Meetily SQLite, etc.) into Parachute as
+/// tagged notes.
 pub async fn run(
     parachute: Arc<ParachuteClient>,
     config: AppConfig,
@@ -53,6 +54,17 @@ pub async fn run(
                 Err(e) => {
                     log::warn!("Fathom sync error: {}", e);
                     errors_str.push(format!("Fathom: {}", e));
+                }
+            }
+        }
+
+        // Fireflies (GraphQL API)
+        if !config.fireflies_api_key.is_empty() {
+            match sync_fireflies(&parachute, &config.fireflies_api_key).await {
+                Ok(count) => total += count,
+                Err(e) => {
+                    log::warn!("Fireflies sync error: {}", e);
+                    errors_str.push(format!("Fireflies: {}", e));
                 }
             }
         }
@@ -574,6 +586,200 @@ async fn fetch_fathom_transcript(
     }).collect();
 
     Ok(lines.join("\n\n"))
+}
+
+/// Sync transcripts from the Fireflies.ai GraphQL API.
+///
+/// Fireflies exposes a single GraphQL endpoint (`https://api.fireflies.ai/graphql`,
+/// Bearer auth). We list recent transcripts (id + metadata only), then fetch the
+/// heavy body (sentences + summary) per *new* transcript — mirroring the Fathom
+/// list-then-detail pattern so already-synced meetings cost just one cheap list call.
+async fn sync_fireflies(
+    parachute: &ParachuteClient,
+    api_key: &str,
+) -> Result<u64, PrismError> {
+    let client = reqwest::Client::new();
+
+    // 1) List recent transcripts (metadata only — no sentences/summary).
+    let list_query = serde_json::json!({
+        "query": "query Transcripts($limit: Int) { transcripts(limit: $limit) { id title date duration transcript_url meeting_attendees { displayName email } } }",
+        "variables": { "limit": 50 },
+    });
+
+    let list = fireflies_graphql(&client, api_key, &list_query).await?;
+    let items = list.pointer("/data/transcripts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Load existing transcript notes to avoid duplicates.
+    let existing = parachute.list_notes(&ListNotesParams {
+        tag: Some("transcript".into()),
+        limit: Some(500),
+        ..Default::default()
+    }).await.unwrap_or_default();
+
+    let mut ingested = 0u64;
+
+    for meeting in &items {
+        let id = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+
+        let title = meeting.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled Meeting");
+
+        // Fireflies `date` is epoch milliseconds (a JSON number).
+        let date = meeting.get("date")
+            .and_then(|v| v.as_f64())
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        let share_url = meeting.get("transcript_url").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Skip if already ingested (match on source_id like Fathom/Meetily).
+        let already_exists = existing.iter().any(|n| {
+            n.metadata.as_ref()
+                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
+                .and_then(|v| v.as_str())
+                == Some(id.as_str())
+        });
+        if already_exists { continue; }
+
+        // Attendees from the list payload.
+        let attendees: Vec<String> = meeting.get("meeting_attendees")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|a| {
+                a.get("displayName").or_else(|| a.get("email"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            }).collect())
+            .unwrap_or_default();
+
+        // 2) Fetch the heavy detail (summary + sentences) for this new transcript.
+        let detail_query = serde_json::json!({
+            "query": "query Transcript($id: String!) { transcript(id: $id) { summary { overview } sentences { speaker_name text } } }",
+            "variables": { "id": id },
+        });
+
+        let detail = fireflies_graphql(&client, api_key, &detail_query).await.unwrap_or_default();
+        let t = detail.pointer("/data/transcript");
+
+        let summary = t.and_then(|t| t.pointer("/summary/overview"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let transcript = t.and_then(|t| t.get("sentences"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|s| {
+                let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.is_empty() { return None; }
+                let speaker = s.get("speaker_name").and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Speaker");
+                Some(format!("**{}**: {}", speaker, text))
+            }).collect::<Vec<_>>().join("\n\n"))
+            .unwrap_or_default();
+
+        if summary.is_empty() && transcript.is_empty() { continue; }
+
+        let slug = sanitize_path(title);
+        let path = format!("vault/_inbox/transcripts/fireflies/{}-{}", date, slug);
+
+        let mut content = format!(
+            "---\ntitle: \"{}\"\ndate: {}\nsource: fireflies\ntranscript_id: \"{}\"\nfireflies_url: \"{}\"\nattendees:\n",
+            title, date, id, share_url,
+        );
+        for att in &attendees {
+            content.push_str(&format!("  - {}\n", att));
+        }
+        content.push_str("---\n\n");
+
+        if !summary.is_empty() {
+            content.push_str(&format!("## Summary\n\n{}\n\n", summary));
+        }
+        if !transcript.is_empty() {
+            content.push_str(&format!("## Transcript\n\n{}\n", transcript));
+        }
+
+        // Schema-declared transcript fields: source, source_id, date, synced_at.
+        let metadata = serde_json::json!({
+            "type": "transcript",
+            "source": "fireflies",
+            "source_id": id,
+            "synced_at": chrono::Utc::now().to_rfc3339(),
+            "title": title,
+            "date": date,
+            "attendees": attendees,
+            "fireflies_url": share_url,
+        });
+
+        match parachute.create_note(&CreateNoteParams {
+            content,
+            path: Some(path),
+            metadata: Some(metadata),
+            tags: Some(vec!["transcript".into(), "fireflies".into()]),
+        }).await {
+            Ok(note) => {
+                ingested += 1;
+                // Link to attendee person notes.
+                for name in &attendees {
+                    if let Ok(person_id) = person_linker::find_or_create_person(
+                        parachute, name, None, None, None,
+                    ).await {
+                        let _ = person_linker::link_to_person(
+                            parachute, &note.id, &person_id, "transcript-of",
+                        ).await;
+                    }
+                }
+                // Link transcript to matching meeting note.
+                link_transcript_to_meeting(
+                    parachute, &note.id, title, &date, &attendees,
+                ).await;
+            }
+            Err(e) => log::debug!("Fireflies: failed to create note for '{}': {}", title, e),
+        }
+    }
+
+    Ok(ingested)
+}
+
+/// POST a GraphQL query to the Fireflies API and return the parsed JSON body.
+/// Surfaces a top-level GraphQL `errors` array as a `PrismError` so the sync
+/// loop logs a useful message instead of silently reading a null `data`.
+async fn fireflies_graphql(
+    client: &reqwest::Client,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, PrismError> {
+    let resp = client.post("https://api.fireflies.ai/graphql")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(body)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("Fireflies API error: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(PrismError::Other(format!("Fireflies API returned {}", resp.status())));
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| PrismError::Other(format!("Fireflies parse error: {}", e)))?;
+
+    if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
+        if !errors.is_empty() {
+            let msg = errors.iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PrismError::Other(format!("Fireflies GraphQL error: {}", msg)));
+        }
+    }
+
+    Ok(data)
 }
 
 /// After creating a transcript note, find matching meeting notes and create
