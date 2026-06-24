@@ -8,6 +8,8 @@ import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
+import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
@@ -37,6 +39,7 @@ const lowlightInstance = createLowlight(common);
 export default function DocumentRenderer({ note, onMetadataChange }: RendererProps) {
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
+  const [slashState, setSlashState] = useState<SlashCommandState | null>(null);
 
   // Per-document content font (Notion-style "Aa" switch). Defaults to sans;
   // the choice is persisted in note metadata so it travels with the doc.
@@ -79,6 +82,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
+    SlashCommand.configure({ onStateChange: setSlashState }),
     SearchHighlight,
   ], [handleWikilinkNavigate]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
@@ -280,6 +284,10 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
           <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+        )}
+        {/* `/` slash-command menu */}
+        {editor && slashState?.active && (
+          <SlashMenu editor={editor} state={slashState} onClose={() => setSlashState(null)} />
         )}
         {/* In-note find bar (Cmd+F / Ctrl+F) */}
         {editor && findOpen && (

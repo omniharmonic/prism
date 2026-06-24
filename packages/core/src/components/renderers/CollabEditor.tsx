@@ -13,6 +13,8 @@ import { CommentOnly, commentOnRange } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import { WikilinkDropdown } from "./WikilinkDropdown";
+import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
+import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
 import { CollabToolbar } from "./CollabToolbar";
 
@@ -93,6 +95,8 @@ export function CollabEditor({
   const [draft, setDraft] = useState("");
   // `[[` autocomplete state, surfaced by the WikilinkAutocomplete plugin.
   const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
+  // `/` slash-command menu state.
+  const [slash, setSlash] = useState<SlashCommandState | null>(null);
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
     [onChange],
@@ -113,6 +117,7 @@ export function CollabEditor({
       Placeholder.configure({ placeholder: "Start writing together…" }),
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
+      SlashCommand.configure({ onStateChange: setSlash }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       Collaboration.configure({ document: ydoc }),
@@ -274,6 +279,11 @@ export function CollabEditor({
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (
         <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} />
+      )}
+
+      {/* `/` slash-command menu */}
+      {editor && slash?.active && (
+        <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
       )}
 
       {/* Comment composer, anchored to the captured selection. */}

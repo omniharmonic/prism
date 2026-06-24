@@ -176,8 +176,10 @@ Concrete patterns to adopt, ranked by impact-for-effort:
         WikilinkAutocomplete (the `[[` suggest dropdown). Extracted WikilinkDropdown to a
         shared component; added WikilinkAutocomplete to CollabEditor; in-app hosts (web seam
         + desktop) feed it the notes list via useNotes. Verified: `[[spirit` shows matches.
-  - [ ] **Slash commands** (Notion/Anytype `/` menu) — new SlashCommand extension + menu,
-        added to both editors. (in progress)
+  - [x] **Slash commands** (Notion/Anytype `/` menu). New SlashCommand trigger extension +
+        shared SlashMenu (Text, H1/H2/H3, bullet/numbered/to-do lists, quote, code, divider)
+        with query filter + keyboard nav. Added to BOTH editors. Verified: `/` opens, `/head`
+        filters to headings, Enter applies. core+web+desktop typecheck green.
   - [ ] Sidebar widgets (Favorites / Recent) above the tree.
   - [ ] Command palette (CommandBar) visual refresh.
   - [ ] Context panel (metadata/links/history/graph tabs) refresh.
