@@ -93,7 +93,7 @@ export function CollabDoc({
   const [suggesting, setSuggesting] = useState(false);
   const narrow = useIsNarrow();
   // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
-  const [commentsOpen, setCommentsOpen] = useState(() => (typeof window !== "undefined" ? window.innerWidth > 820 : true));
+  const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
 
   useEffect(() => {
     (async () => {

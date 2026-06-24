@@ -75,7 +75,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const [synced, setSynced] = useState(false);
   const [presenceCount, setPresenceCount] = useState(1);
   const [suggesting, setSuggesting] = useState(false);
-  const [commentsOpen, setCommentsOpen] = useState(true);
+  const [commentsOpen, setCommentsOpen] = useState(false); // closed by default
 
   useEffect(() => {
     loadCollabConfig().then(setCfg);
