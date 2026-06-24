@@ -85,15 +85,29 @@ export interface Me {
   hasPassword?: boolean;
 }
 
-/** Current identity per the session cookie. Never throws. */
+let cachedMe: Me | null = null;
+
+/** Current identity per the session cookie. Never throws. Caches the result so
+ *  synchronous owner checks (e.g. gating owner-only UI) don't need a refetch. */
 export async function fetchMe(): Promise<Me> {
   try {
     const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, { credentials: "include" });
-    if (!r.ok) return { authenticated: false };
-    return (await r.json()) as Me;
+    if (!r.ok) { cachedMe = { authenticated: false }; return cachedMe; }
+    cachedMe = (await r.json()) as Me;
+    return cachedMe;
   } catch {
-    return { authenticated: false };
+    cachedMe = { authenticated: false };
+    return cachedMe;
   }
+}
+
+/** True only for the signed-in vault owner with no capability token in play.
+ *  Owner-only features (e.g. the wikilink suggest dropdown, which surfaces vault
+ *  note names) gate on this so collaborators/share-link recipients never get it.
+ *  This is a UX/defense-in-depth gate — the gateway is the real boundary and
+ *  already filters /api/notes to a non-owner's granted notes. */
+export function isOwner(): boolean {
+  return !!cachedMe?.isOwner && !getCapabilityToken();
 }
 
 async function postJson(path: string, body: unknown): Promise<Response> {
