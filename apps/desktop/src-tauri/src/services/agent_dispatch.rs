@@ -256,12 +256,12 @@ impl DispatchManager {
         let (use_local, model) = self.effective_routing(provider_override, model_override);
         if use_local {
             let cfg = match crate::services::structured_skill::StructuredConfig::from_metadata(&structured_meta) {
-                Some(c) => c,
-                None => {
+                Ok(c) => c,
+                Err(reason) => {
                     finalize_dispatch(
                         &self.dispatches, &self.parachute, &id,
                         DispatchStatus::Failed, None,
-                        Some("invalid or missing 'structured' config in skill metadata".into()),
+                        Some(format!("structured skill misconfigured: {reason}")),
                         0,
                     ).await;
                     return Ok(id);

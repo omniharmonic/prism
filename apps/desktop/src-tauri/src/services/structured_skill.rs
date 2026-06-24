@@ -79,9 +79,13 @@ pub struct StructuredConfig {
 
 impl StructuredConfig {
     /// Parse the `structured` object out of a skill note's metadata. Returns
-    /// `None` (with a logged reason) when required fields are missing.
-    pub fn from_metadata(meta: &Value) -> Option<Self> {
-        let s = meta.get("structured")?;
+    /// `Err(reason)` naming the specific missing/invalid field, so a
+    /// misconfigured skill surfaces an actionable error instead of a generic one.
+    pub fn from_metadata(meta: &Value) -> Result<Self, String> {
+        let s = meta.get("structured").ok_or(
+            "missing 'structured' config block (executionMode is 'structured' but no \
+             'structured' object is set in the skill note's metadata)",
+        )?;
 
         let str_array = |key: &str| -> Vec<String> {
             s.get(key)
@@ -92,13 +96,16 @@ impl StructuredConfig {
 
         let source_tags = str_array("sourceTags");
         if source_tags.is_empty() {
-            warn!("structured skill: 'sourceTags' missing or empty");
-            return None;
+            return Err("'structured.sourceTags' is missing or empty".into());
         }
-        let schema = s.get("schema").cloned()?;
-        let result_field = s.get("resultField").and_then(|v| v.as_str())?.to_string();
+        let schema = s.get("schema").cloned().ok_or("'structured.schema' is missing")?;
+        let result_field = s
+            .get("resultField")
+            .and_then(|v| v.as_str())
+            .ok_or("'structured.resultField' is missing")?
+            .to_string();
 
-        Some(Self {
+        Ok(Self {
             source_tags,
             exclude_tags: str_array("excludeTags"),
             limit: s.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32,
