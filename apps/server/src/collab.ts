@@ -23,6 +23,7 @@ import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
 import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
 import { collabExtensions } from "@prism/core/editor-schema";
+import { inferContentType } from "@prism/core/content-types";
 import { marked } from "marked";
 import { config } from "./config";
 import { vault } from "./parachute";
@@ -64,12 +65,6 @@ export const CODE_TEXT_FIELD = "codemirror";
 export const SHEET_FIELD = "rows"; // Y.Array<Y.Array<string>>
 export const CANVAS_FIELD = "elements"; // Y.Map<string, ExcalidrawElement>
 
-const CODE_EXTS = new Set([
-  "ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "rb", "c", "cpp", "h", "hpp",
-  "css", "scss", "less", "json", "yaml", "yml", "toml", "sh", "bash", "zsh", "sql",
-  "php", "swift", "kt", "lua", "r", "jl", "ex", "exs", "clj", "html", "htm", "xml",
-]);
-
 interface NoteMeta {
   path: string | null;
   tags: string[] | null;
@@ -86,32 +81,15 @@ function looksLikeExcalidrawScene(content: string | null | undefined): boolean {
   return c.includes('"appState"') || c.includes("excalidraw") || /"type"\s*:\s*"(rectangle|ellipse|diamond|arrow|line|freedraw|text|frame)"/.test(c);
 }
 
-/** Detect how a note should be seeded/persisted for collaboration. Mirrors the
- *  client's inferContentType, simplified to the kinds collab supports. */
+/** Detect how a note should be seeded/persisted for collaboration. Delegates to
+ *  the SHARED client `inferContentType` (collapsed to the four collab kinds) so
+ *  server and client can never disagree — a divergence here means one side seeds
+ *  a structure the other never reads, corrupting the note (e.g. a `.html` note
+ *  the client renders as a document but the server once persisted as raw code,
+ *  or a canvas the server saved as `<p></p>`). This IS the client's detectKind. */
 export function noteKind(note: NoteMeta): CollabKind {
-  const pt = note.metadata?.["prism_type"];
-  if (pt === "canvas") return "canvas";
-  // Content ground truth: an Excalidraw scene is a canvas even without tag/metadata.
-  if (looksLikeExcalidrawScene(note.content)) return "canvas";
-  if (pt === "spreadsheet") return "spreadsheet";
-  if (pt === "code") return "code";
-  // metadata.type is the client's inferContentType axis (KNOWN_TYPES) — the
-  // server MUST honor it too, or a note the client renders as a canvas gets
-  // persisted here as a document (its elements never reach Parachute, so a
-  // share link opened while the owner is offline shows an empty canvas).
-  const mt = note.metadata?.["type"];
-  if (mt === "canvas") return "canvas";
-  if (mt === "spreadsheet") return "spreadsheet";
-  if (mt === "code") return "code";
-  const tags = new Set(note.tags ?? []);
-  if (tags.has("canvas")) return "canvas";
-  if (tags.has("spreadsheet")) return "spreadsheet";
-  if (tags.has("code")) return "code";
-  const ext = note.path?.split(".").pop()?.toLowerCase();
-  if (ext === "excalidraw") return "canvas";
-  if (ext === "csv" || ext === "tsv") return "spreadsheet";
-  if (ext && CODE_EXTS.has(ext)) return "code";
-  return "document";
+  const t = inferContentType({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  return t === "canvas" || t === "code" || t === "spreadsheet" ? t : "document";
 }
 
 /** Raw text → a fresh Y.Doc's encoded state with the code in a Y.Text. */
