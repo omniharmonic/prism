@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
-import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import { Excalidraw, convertToExcalidrawElements, reconcileElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import { useSettingsStore } from "../../app/stores/settings";
@@ -67,6 +67,12 @@ export function CollabCanvas({
   // In-session bookkeeping for the arrow⇄link bridge.
   const linkArrowIds = useRef<Set<string>>(new Set()); // ids of derived "Show links" arrows
   const syncedArrows = useRef<Map<string, { sourceId: string; targetId: string; relationship: string }>>(new Map());
+  // Per-element version we've already reconciled with the CRDT (Excalidraw's collab
+  // pattern). Updated both when we APPLY a remote element and when we PERSIST a
+  // local one — so a repaint's echo onChange is a no-op instead of re-writing the
+  // element with a bumped version, which is what inflated versions and made remote
+  // moves/updates get dropped by updateScene's version reconciliation.
+  const syncedVersions = useRef<Map<string, number>>(new Map());
 
   const elementsMap = useCallback(() => ydoc.getMap<any>("elements"), [ydoc]);
   const sceneElements = useCallback(() => Array.from(elementsMap().values()), [elementsMap]);
@@ -75,15 +81,30 @@ export function CollabCanvas({
     const map = elementsMap();
     const awareness = provider.awareness as any;
 
-    // Paint the raw map values. We deliberately do NOT run Excalidraw's
-    // restoreElements here: it silently DROPS valid elements when reconciling
-    // fractional indices across a multi-element set. Excalidraw-authored elements
-    // (every real canvas note) already carry the runtime props updateScene needs,
-    // so raw values render correctly and completely.
+    // Merge remote CRDT state into the live scene via Excalidraw's own collab
+    // reconciliation (handles version/versionNonce so a remote update wins unless
+    // we're actively editing that element). Raw updateScene alone dropped remote
+    // moves once per-client version counters drifted. We still guard against the
+    // fractional-index drop the old raw path avoided: if reconcile returns fewer
+    // elements than the local∪remote id set, fall back to the raw map values.
     const repaint = () => {
       const api = apiRef.current;
       if (!api) return;
-      api.updateScene({ elements: Array.from(map.values()) });
+      const remote = Array.from(map.values());
+      const local = api.getSceneElementsIncludingDeleted();
+      let next: any[];
+      try {
+        next = reconcileElements(local, remote as any, api.getAppState());
+      } catch {
+        next = remote;
+      }
+      const unionIds = new Set<string>([...local.map((e: any) => e.id), ...remote.map((e: any) => e.id)]);
+      if (next.length < unionIds.size) next = remote;
+      api.updateScene({ elements: next });
+      // Record the versions Excalidraw actually holds now, so the onChange this
+      // repaint triggers recognizes these as already-synced and doesn't re-write
+      // them (which would inflate versions and break the next remote update).
+      for (const el of api.getSceneElementsIncludingDeleted()) syncedVersions.current.set(el.id, el.version ?? 0);
     };
 
     // Remote changes only (skip our own LOCAL-origin writes — already on screen).
@@ -267,13 +288,18 @@ export function CollabCanvas({
       if (!editable) return;
       const map = elementsMap();
 
-      // 1. Persist authored elements to the CRDT (version-gated; skip the
-      //    derived link-viz overlay so the canonical doc stays clean).
+      // 1. Persist authored elements to the CRDT (skip the derived link-viz
+      //    overlay so the canonical doc stays clean). Gate on syncedVersions, not
+      //    the map's stored version: a repaint echo arrives with the version we
+      //    just recorded, so it's skipped, while a genuine local edit bumps the
+      //    version past it and writes through. This is what stops the inflation
+      //    ping-pong that was dropping remote moves.
       ydoc.transact(() => {
         for (const el of elements) {
           if (!el?.id || el.customData?.prismLinkViz) continue;
-          const cur = map.get(el.id);
-          if (!cur || (cur.version ?? 0) < (el.version ?? 0)) map.set(el.id, el);
+          if ((syncedVersions.current.get(el.id) ?? -1) >= (el.version ?? 0)) continue;
+          map.set(el.id, el);
+          syncedVersions.current.set(el.id, el.version ?? 0);
         }
       }, LOCAL);
 

@@ -82,9 +82,14 @@ async function start() {
   // in ?t= carries access — no session required.
   const collab = window.location.pathname.match(/^\/collab\/(.+)$/);
   if (collab) {
+    // CollabCanvas (and the note-card drawer) use the VaultClient seam, so the
+    // share route must provide it too — without this the canvas editor throws on
+    // mount and the page goes blank (document/code/sheet don't hit the seam).
     root.render(
       <React.StrictMode>
-        <CollabPage noteId={decodeURIComponent(collab[1])} />
+        <VaultClientProvider client={httpVaultClient}>
+          <CollabPage noteId={decodeURIComponent(collab[1])} />
+        </VaultClientProvider>
       </React.StrictMode>,
     );
     return;

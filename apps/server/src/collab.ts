@@ -95,6 +95,14 @@ export function noteKind(note: NoteMeta): CollabKind {
   if (looksLikeExcalidrawScene(note.content)) return "canvas";
   if (pt === "spreadsheet") return "spreadsheet";
   if (pt === "code") return "code";
+  // metadata.type is the client's inferContentType axis (KNOWN_TYPES) — the
+  // server MUST honor it too, or a note the client renders as a canvas gets
+  // persisted here as a document (its elements never reach Parachute, so a
+  // share link opened while the owner is offline shows an empty canvas).
+  const mt = note.metadata?.["type"];
+  if (mt === "canvas") return "canvas";
+  if (mt === "spreadsheet") return "spreadsheet";
+  if (mt === "code") return "code";
   const tags = new Set(note.tags ?? []);
   if (tags.has("canvas")) return "canvas";
   if (tags.has("spreadsheet")) return "spreadsheet";
@@ -268,7 +276,11 @@ export function applyExternalContent(doc: Y.Doc, kind: CollabKind, content: stri
     } else if (kind === "spreadsheet") {
       rebuildRows(doc.getArray<Y.Array<string>>(SHEET_FIELD), parseCsv(content ?? ""));
     } else if (kind === "canvas") {
-      applyCanvasMap(doc.getMap<CanvasEl>(CANVAS_FIELD), content ?? "");
+      // Guard the transition: a legacy note mis-persisted as a document (`<p></p>`)
+      // must NOT be folded into a live canvas — parseScene would yield zero
+      // elements and applyCanvasMap would delete the real ones. Only apply when
+      // the external content is actually a scene.
+      if (looksLikeExcalidrawScene(content)) applyCanvasMap(doc.getMap<CanvasEl>(CANVAS_FIELD), content ?? "");
     } else {
       const src = content ?? "";
       const html = src.trim().startsWith("<") ? src : (marked.parse(src) as string);
