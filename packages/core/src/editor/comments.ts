@@ -77,9 +77,63 @@ export function addReply(ydoc: Y.Doc, id: string, c: CommentItem): void {
   (t.get("comments") as Y.Array<CommentItem>).push([c]);
 }
 
-export function setResolved(ydoc: Y.Doc, id: string, resolved: boolean): void {
+/** Walk every text node carrying this thread's `comment` mark. Mark steps don't
+ *  shift positions, so the from/to read off the current doc stay valid across a
+ *  single batched transaction. */
+function eachCommentRange(
+  editor: Editor,
+  id: string,
+  fn: (from: number, to: number, attrs: Record<string, unknown>) => void,
+): void {
+  editor.state.doc.descendants((node, pos) => {
+    if (!node.isText) return;
+    for (const mk of node.marks) {
+      if (mk.type.name === "comment" && mk.attrs.id === id) fn(pos, pos + node.nodeSize, mk.attrs);
+    }
+  });
+}
+
+/** Re-stamp the `comment` mark over a thread's range with new attrs (e.g. the
+ *  resolved flag, which the mark's renderHTML uses to drop the highlight). Runs
+ *  even on a read-only editor (programmatic dispatch). Off the undo stack. */
+function restampCommentMark(editor: Editor, id: string, attrs: Record<string, unknown>): void {
+  const markType = editor.schema.marks.comment;
+  if (!markType) return;
+  const tr = editor.state.tr;
+  let changed = false;
+  eachCommentRange(editor, id, (from, to, prev) => {
+    tr.removeMark(from, to, markType);
+    tr.addMark(from, to, markType.create({ ...prev, ...attrs }));
+    changed = true;
+  });
+  if (changed) editor.view.dispatch(tr.setMeta("addToHistory", false));
+}
+
+/** Resolve / reopen a thread. Updates the Yjs thread AND the doc mark, so the
+ *  highlight clears for every connected client (the mark lives in the shared
+ *  Y.Doc). `editor` is optional only so non-doc callers don't break. */
+export function setResolved(ydoc: Y.Doc, id: string, resolved: boolean, editor?: Editor | null): void {
   const t = root(ydoc).get(id);
   if (t) t.set("resolved", resolved);
+  if (editor) restampCommentMark(editor, id, { resolved });
+}
+
+/** Delete a thread outright: strip the `comment` mark from the text (so the
+ *  anchor/highlight is gone) and remove the Yjs thread. Distinct from resolve. */
+export function deleteThread(ydoc: Y.Doc, id: string, editor?: Editor | null): void {
+  if (editor) {
+    const markType = editor.schema.marks.comment;
+    if (markType) {
+      const tr = editor.state.tr;
+      let changed = false;
+      eachCommentRange(editor, id, (from, to) => {
+        tr.removeMark(from, to, markType);
+        changed = true;
+      });
+      if (changed) editor.view.dispatch(tr.setMeta("addToHistory", false));
+    }
+  }
+  root(ydoc).delete(id);
 }
 
 /** Apply a comment mark to the current selection + open a thread. Works even
@@ -121,6 +175,35 @@ let counter = 0;
 function stamp(): number {
   return Date.now() + counter++;
 }
+
+/**
+ * Click-to-open: clicking commented text fires `onActivate(id)` so the host can
+ * open the sidebar and focus that thread. Reads the id straight off the rendered
+ * span's data-comment-id, so it's robust to selection/mark-boundary quirks.
+ * Configure with a stable callback (e.g. one that reads a ref) — the option is
+ * captured once at editor creation.
+ */
+export const CommentInteraction = Extension.create<{ onActivate?: (id: string) => void }>({
+  name: "commentInteraction",
+  addOptions() {
+    return { onActivate: undefined };
+  },
+  addProseMirrorPlugins() {
+    const opts = this.options;
+    return [
+      new Plugin({
+        props: {
+          handleClick(_view, _pos, event) {
+            const el = (event.target as HTMLElement | null)?.closest?.("[data-comment-id]") as HTMLElement | null;
+            const id = el?.getAttribute("data-comment-id");
+            if (id && opts.onActivate) opts.onActivate(id);
+            return false; // don't swallow the click (cursor placement still works)
+          },
+        },
+      }),
+    ];
+  },
+});
 
 /**
  * Comment-only guard: lets a reader select text and add comments, but blocks any

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont, type Note } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 import { updateNote as restUpdateNote } from "../parachute/rest";
@@ -94,6 +94,8 @@ export function CollabDoc({
   const narrow = useIsNarrow();
   // Comments shown by default on desktop, collapsed on mobile (doc gets full width).
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [focusedThread, setFocusedThread] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -274,7 +276,7 @@ export function CollabDoc({
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
-  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} />;
+  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} />;
 
   return (
     <div style={outer}>
@@ -370,6 +372,11 @@ export function CollabDoc({
                 canReview={canReview}
                 commentOnly={commentOnly}
                 canComment={canComment}
+                onEditor={setEditor}
+                onCommentActivate={(id) => {
+                  setCommentsOpen(true);
+                  setFocusedThread(id);
+                }}
                 onWikilinkNavigate={onWikilinkNavigate}
                 wikilinkNotes={wikilinkNotes}
               />

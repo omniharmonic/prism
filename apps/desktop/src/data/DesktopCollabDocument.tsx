@@ -19,6 +19,7 @@ import {
   useNotes,
   type ContentFont,
   type Note,
+  type Editor,
 } from "@prism/core";
 import { MessageSquare } from "lucide-react";
 
@@ -76,6 +77,8 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
   const [presenceCount, setPresenceCount] = useState(1);
   const [suggesting, setSuggesting] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [focusedThread, setFocusedThread] = useState<string | null>(null);
 
   useEffect(() => {
     loadCollabConfig().then(setCfg);
@@ -207,6 +210,11 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
                 onSetSuggesting={setSuggesting}
                 canReview
                 canComment
+                onEditor={setEditor}
+                onCommentActivate={(id) => {
+                  setCommentsOpen(true);
+                  setFocusedThread(id);
+                }}
                 onWikilinkNavigate={navigateWikilink}
                 wikilinkNotes={allNotes ?? []}
               />
@@ -214,7 +222,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
           </div>
           {isDoc && commentsOpen && (
             <div style={{ width: 300, flexShrink: 0 }}>
-              <CommentsSidebar ydoc={ydoc} user={user} canComment />
+              <CommentsSidebar ydoc={ydoc} user={user} canComment editor={editor} focusedThreadId={focusedThread} />
             </div>
           )}
         </div>

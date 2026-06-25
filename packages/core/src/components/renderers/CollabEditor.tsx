@@ -9,7 +9,7 @@ import type { Editor } from "@tiptap/react";
 import { Check, X, MessageSquarePlus } from "lucide-react";
 import { collabExtensions } from "../../editor/collabSchema";
 import { SuggestionMode, suggestionAt } from "../../editor/suggestions";
-import { CommentOnly, commentOnRange } from "../../editor/comments";
+import { CommentOnly, commentOnRange, CommentInteraction } from "../../editor/comments";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import { WikilinkDropdown } from "./WikilinkDropdown";
@@ -53,6 +53,7 @@ export function CollabEditor({
   commentOnly,
   canComment,
   onEditor,
+  onCommentActivate,
   onWikilinkNavigate,
   wikilinkNotes,
 }: {
@@ -82,6 +83,9 @@ export function CollabEditor({
   canComment?: boolean;
   /** Receives the editor instance (for an external comments sidebar). */
   onEditor?: (editor: Editor | null) => void;
+  /** Clicking commented text fires this with the thread id, so the host can
+   *  open the sidebar and focus that thread. */
+  onCommentActivate?: (id: string) => void;
   /** Navigate when a [[wikilink]] is clicked. In-app this opens the target note
    *  in a tab; on a share link it routes to the target's page (or request-access).
    *  Omitted → links are inert (e.g. a viewer with no navigation context). */
@@ -107,6 +111,8 @@ export function CollabEditor({
   // survives the notes list loading after the editor mounts.
   const navRef = useRef(onWikilinkNavigate);
   useEffect(() => { navRef.current = onWikilinkNavigate; }, [onWikilinkNavigate]);
+  const commentActivateRef = useRef(onCommentActivate);
+  useEffect(() => { commentActivateRef.current = onCommentActivate; }, [onCommentActivate]);
 
   const editor = useEditor({
     extensions: [
@@ -120,6 +126,7 @@ export function CollabEditor({
       SlashCommand.configure({ onStateChange: setSlash }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
+      CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
       Collaboration.configure({ document: ydoc }),
       ...(provider
         ? [CollaborationCaret.configure({ provider: provider as never, user })]
