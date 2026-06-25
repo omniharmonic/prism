@@ -177,37 +177,9 @@ export function CollabEditor({
 
   return (
     <>
-      <style>{`
-        /* Remote-collaborator caret + name tag (Google-Docs style). The active
-           class is collaboration-carets__* (plural) in @tiptap/extension-collaboration-caret
-           v3 — the older singular / y-prosemirror "cursor" names are kept too so a
-           version bump can't silently regress this back to a page-wide block. The
-           per-user color rides in on the element's inline border-color / background-color,
-           so the caret rule sets ONLY width+style (a "border-left" shorthand would
-           reset the color to currentColor and lose the tint). */
-        .collaboration-carets__caret, .collaboration-caret__caret, .ProseMirror-yjs-cursor {
-          border-left-width: 1.5px; border-left-style: solid;
-          border-right: none;
-          margin-left: -1px; margin-right: -1px;
-          box-sizing: border-box;
-          pointer-events: none; position: relative; word-break: normal;
-        }
-        .collaboration-carets__label, .collaboration-caret__label, .ProseMirror-yjs-cursor > div {
-          position: absolute; top: -1.35em; left: -1px;
-          display: inline-block; width: auto; max-width: 220px;
-          font-size: 11px; font-weight: 600; line-height: 1.4;
-          color: #fff; padding: 0 5px; border-radius: 4px 4px 4px 0;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-          user-select: none; pointer-events: none;
-          /* Show the name on arrival/movement, then fade so it doesn't clutter —
-             the caret bar stays. Yjs rebuilds the element on each awareness
-             update, so the tag re-appears whenever the peer moves or types. */
-          opacity: 0; animation: prism-caret-label 2.6s ease-out forwards;
-        }
-        @keyframes prism-caret-label {
-          0%, 55% { opacity: 1; } 100% { opacity: 0; }
-        }
-      `}</style>
+      {/* Collab caret/suggestion/bubble CSS lives in @prism/core styles/collab.css
+          (bundled stylesheet) — a runtime React <style> here silently fails to
+          register in the desktop production webview. */}
       {toolbar && editor && editable && !commentOnly && (
         <CollabToolbar
           editor={editor}
@@ -216,14 +188,6 @@ export function CollabEditor({
           canReview={canReview}
         />
       )}
-      <style>{`
-        span[data-suggestion='insert'] { background: rgba(34,197,94,0.12); }
-        span[data-suggestion='delete'] { background: rgba(239,68,68,0.10); }
-        .cd-bubble { display:flex; gap:2px; padding:4px; border-radius:9px; border:1px solid var(--glass-border); background: var(--bg-surface,#1a1a1f); box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
-        .cd-bubble button { display:inline-flex; align-items:center; gap:5px; height:30px; padding:0 10px; border:none; border-radius:6px; background:transparent; color:var(--text-secondary); font-size:12.5px; font-weight:600; cursor:pointer; }
-        .cd-bubble button:hover { background: var(--glass-hover); }
-      `}</style>
-
       {/* On-selection "Comment" bubble (Google-Docs style). */}
       {editor && canComment && (
         <BubbleMenu

@@ -3,6 +3,7 @@
 import "./styles/tokens.css";
 import "./styles/glass.css";
 import "./styles/typography.css";
+import "./styles/collab.css";
 
 // App shell
 export { default as App } from "./App";
