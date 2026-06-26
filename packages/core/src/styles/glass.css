@@ -145,3 +145,110 @@ html.light ::-webkit-scrollbar-thumb:hover {
   background: var(--color-accent-dim);
   color: var(--text-primary);
 }
+
+/* ─── Hidden scrollbar (single-row toolbars, pills, horizontal scrollers) ───
+   Keeps the row scrollable by touch while removing the chrome that would
+   otherwise wrap or clutter a compact mobile surface. */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* ─── Bottom sheet — thumb-zone action surface (mobile) ───
+   Slides up from the bottom edge, frosted to match floating glass. The grabber
+   reads as "drag me down to dismiss"; rows below are quiet until pressed. */
+@keyframes sheet-rise {
+  from { transform: translateY(101%); }
+  to { transform: translateY(0); }
+}
+@keyframes sheet-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.sheet-backdrop {
+  animation: sheet-fade 240ms ease-out;
+}
+.sheet-panel {
+  animation: sheet-rise 360ms var(--ease-out-soft);
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet-backdrop,
+  .sheet-panel { animation: none; }
+}
+
+/* ─── Floating command pill (mobile bottom bar) ───
+   The signature surface: one frosted row of high-frequency actions, lifted off
+   the canvas so content scrolls beneath it. */
+.command-pill {
+  background: var(--glass-hover);
+  backdrop-filter: blur(28px) saturate(1.3);
+  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow-elevated);
+  animation: pill-in 440ms var(--ease-out-soft);
+}
+@keyframes pill-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .command-pill { animation: none; }
+}
+
+/* ─── iOS no-zoom: form controls must be ≥16px or Safari zooms on focus,
+   stranding the user at the wrong scale after typing a comment/search. The
+   prose editor (contentEditable) is unaffected, so its type scale is preserved. */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* ─── Tactile press: floating controls dip slightly when pressed ─── */
+.press {
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+.press:active {
+  transform: scale(0.94);
+}
+@media (prefers-reduced-motion: reduce) {
+  .press:active { transform: none; }
+}
+
+/* ─── Modal/popover entrance — a soft lift + fade, not a hard pop ─── */
+@keyframes modal-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-rise {
+  animation: modal-rise 280ms var(--ease-out-soft);
+  will-change: transform, opacity;
+}
+
+/* ─── Drawer slide (mobile sidebar / context panel) ─── */
+@keyframes drawer-in-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@keyframes drawer-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.drawer-left { animation: drawer-in-left 340ms var(--ease-out-soft); will-change: transform; }
+.drawer-right { animation: drawer-in-right 340ms var(--ease-out-soft); will-change: transform; }
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-rise,
+  .drawer-left,
+  .drawer-right { animation: none; }
+}

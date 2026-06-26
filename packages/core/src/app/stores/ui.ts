@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ContentType, TabState } from "../../lib/types";
+import type { ContentFont } from "../../components/renderers/DocumentChrome";
 
 /** Push a newly-active tab onto the nav history: truncate any forward entries,
  *  skip consecutive duplicates, and cap length. Returns the new history slice. */
@@ -47,6 +48,12 @@ interface UIStore {
   // Graph fullscreen
   graphFullscreen: boolean;
 
+  // Active document's reading font — mirrored here so the control can live in the
+  // bottom bar (desktop) / More sheet (mobile) instead of the cluttered top bar.
+  // The open document stays the source of truth and registers its setter.
+  docFont: ContentFont;
+  docFontSetter: ((f: ContentFont) => void) | null;
+
   // Ghost text: agent-generated content waiting for accept/reject
   ghostText: { noteId: string; content: string; position: "cursor" | "end" } | null;
 
@@ -77,6 +84,10 @@ interface UIStore {
 
   setGraphFullscreen: (open: boolean) => void;
 
+  /** The active document registers its current font + setter (null = no document
+   *  with a font control is open, so the bottom-bar/sheet control hides). */
+  registerDocFont: (value: ContentFont | null, setter: ((f: ContentFont) => void) | null) => void;
+
   setPendingEdit: (edit: PendingEdit) => void;
   clearPendingEdit: () => void;
 
@@ -100,6 +111,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   inlinePromptPosition: null,
   inlinePromptSelection: "",
   graphFullscreen: false,
+  docFont: "sans",
+  docFontSetter: null,
   pendingEdit: null,
   ghostText: null,
 
@@ -110,6 +123,9 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
   setContextPanelTab: (tab) => set({ contextPanelTab: tab }),
   setGraphFullscreen: (open) => set({ graphFullscreen: open }),
+
+  registerDocFont: (value, setter) =>
+    set({ docFont: value ?? "sans", docFontSetter: setter }),
 
   openTab: (noteId, title, type) => {
     const s = get();

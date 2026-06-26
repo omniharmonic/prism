@@ -171,7 +171,8 @@ function ThreadCard({
               }
             }}
             placeholder="Reply…"
-            style={{ flex: 1, fontSize: 12, padding: "4px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
+            /* 16px so iOS doesn't zoom the viewport when this field is focused */
+            style={{ flex: 1, fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none" }}
           />
           <button onClick={() => setResolved(ydoc, thread.id, true, editor)} title="Resolve" className="p-1 rounded" style={{ color: "#22c55e" }}>
             <Check size={14} />

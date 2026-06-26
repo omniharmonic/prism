@@ -161,10 +161,15 @@ export function useUpdateNote() {
   return useMutation({
     mutationFn: ({ id, ...params }: { id: string } & UpdateNoteParams) => {
       // Optimistic concurrency (vault 0.4.0+): forward the `updatedAt` we last
-      // read for this note (from the query cache) so a stale write fails with a
-      // 409 rather than clobbering a newer revision. If the cache has no
-      // updatedAt, the backend falls back to force:true.
-      if (params.ifUpdatedAt === undefined) {
+      // read for this note (from the query cache) so a stale CONTENT write fails
+      // with a 409 rather than clobbering a newer revision. Only guard content —
+      // that's the contended field. A rename (`path`) or icon/font (`metadata`)
+      // carries no content, and for a note open in the collaborative editor the
+      // server rewrites content (bumping updatedAt) every few seconds, so a
+      // cached `updatedAt` is almost always stale: guarding those non-content
+      // writes would 409 every rename of a collab note. They fall back to
+      // force:true (path is last-writer-wins; metadata merges) — both safe.
+      if (params.ifUpdatedAt === undefined && params.content !== undefined) {
         const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
         if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
       }

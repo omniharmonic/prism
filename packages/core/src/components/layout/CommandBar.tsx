@@ -4,6 +4,7 @@ import {
   CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useDebounce } from "use-debounce";
@@ -25,6 +26,7 @@ export function CommandBar() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const createNote = useCreateNote();
+  const isMobile = useIsMobile();
 
   const { data: searchResults } = useVaultSearch(debouncedQuery);
 
@@ -32,7 +34,9 @@ export function CommandBar() {
     if (commandBarOpen) {
       setQuery("");
       setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      // Focus on the next frame (not a delayed timeout) so the tap that opened
+      // the bar still counts as the gesture iOS needs to raise the keyboard.
+      requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [commandBarOpen]);
 
@@ -210,6 +214,117 @@ export function CommandBar() {
 
   const askIdx = filteredCommands.length + vaultItems.length;
 
+  const inputRow = (
+    <div
+      className="flex items-center gap-3 flex-shrink-0"
+      style={{
+        padding: "13px 16px",
+        borderBottom: isMobile ? undefined : "1px solid var(--glass-border)",
+        borderTop: isMobile ? "1px solid var(--glass-border)" : undefined,
+      }}
+    >
+      <Search size={18} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+      <input
+        ref={inputRef}
+        autoFocus
+        inputMode="search"
+        enterKeyHint="search"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
+        onKeyDown={handleKeyDown}
+        placeholder="Search notes, create, or ask Claude…"
+        className="flex-1 min-w-0 bg-transparent outline-none"
+        style={{ color: "var(--text-primary)", fontSize: "var(--text-lg)" }}
+      />
+      {!isMobile && <kbd>esc</kbd>}
+    </div>
+  );
+
+  const body = (
+    <>
+      {filteredCommands.length > 0 && (
+        <div style={{ marginBottom: 2 }}>
+          <div className="text-label" style={{ padding: "6px 10px 4px" }}>Actions</div>
+          {filteredCommands.map((cmd, i) => (
+            <CmdRow
+              key={cmd.id}
+              selected={selectedIndex === i}
+              onClick={cmd.action}
+              onHover={() => setSelectedIndex(i)}
+              icon={cmd.icon}
+              label={cmd.label}
+            />
+          ))}
+        </div>
+      )}
+
+      {vaultItems.length > 0 && (
+        <div style={{ marginBottom: 2 }}>
+          <div className="text-label" style={{ padding: "6px 10px 4px" }}>Notes</div>
+          {vaultItems.map((item, i) => {
+            const idx = filteredCommands.length + i;
+            return (
+              <CmdRow
+                key={item.id}
+                selected={selectedIndex === idx}
+                onClick={item.action}
+                onHover={() => setSelectedIndex(idx)}
+                icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
+                label={item.label}
+                sublabel={item.sublabel}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {query.trim() && (
+        <CmdRow
+          selected={selectedIndex === askIdx}
+          onHover={() => setSelectedIndex(askIdx)}
+          icon={<Bot size={15} />}
+          label={`Ask Claude: "${query}"`}
+          accent
+          trailing={<ArrowRight size={13} />}
+        />
+      )}
+
+      {filteredCommands.length === 0 && vaultItems.length === 0 && !query.trim() && (
+        <div style={{ padding: "28px 16px", textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
+          Type to search or create
+        </div>
+      )}
+    </>
+  );
+
+  // Mobile: a floating sheet with the field docked at the bottom (just above the
+  // keyboard, Obsidian-style) and results scrolling above it.
+  if (isMobile) {
+    return (
+      <div
+        className="fixed inset-0 flex flex-col justify-end"
+        style={{ zIndex: "var(--z-modal)" as unknown as number }}
+        onClick={closeCommandBar}
+      >
+        <div className="sheet-backdrop absolute inset-0" style={{ background: "rgba(0,0,0,0.45)" }} />
+        <div
+          className="sheet-panel glass-elevated relative flex flex-col"
+          style={{
+            margin: "0 8px",
+            marginBottom: "calc(env(safe-area-inset-bottom) + 8px)",
+            borderRadius: "var(--radius-lg)",
+            maxHeight: "78dvh",
+            overflow: "hidden",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
+          {inputRow}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 flex items-start justify-center"
@@ -217,80 +332,12 @@ export function CommandBar() {
       onClick={closeCommandBar}
     >
       <div
-        className="glass-elevated overflow-hidden"
+        className="glass-elevated modal-rise overflow-hidden"
         style={{ width: "min(600px, 100%)", borderRadius: "var(--radius-lg)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Search input */}
-        <div className="flex items-center gap-3" style={{ padding: "13px 16px", borderBottom: "1px solid var(--glass-border)" }}>
-          <Search size={18} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
-            onKeyDown={handleKeyDown}
-            placeholder="Search notes, create, or ask Claude…"
-            className="flex-1 bg-transparent outline-none"
-            style={{ color: "var(--text-primary)", fontSize: "var(--text-lg)" }}
-          />
-          <kbd>esc</kbd>
-        </div>
-
-        {/* Results */}
-        <div style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>
-          {filteredCommands.length > 0 && (
-            <div style={{ marginBottom: 2 }}>
-              <div className="text-label" style={{ padding: "6px 10px 4px" }}>Actions</div>
-              {filteredCommands.map((cmd, i) => (
-                <CmdRow
-                  key={cmd.id}
-                  selected={selectedIndex === i}
-                  onClick={cmd.action}
-                  onHover={() => setSelectedIndex(i)}
-                  icon={cmd.icon}
-                  label={cmd.label}
-                />
-              ))}
-            </div>
-          )}
-
-          {vaultItems.length > 0 && (
-            <div style={{ marginBottom: 2 }}>
-              <div className="text-label" style={{ padding: "6px 10px 4px" }}>Notes</div>
-              {vaultItems.map((item, i) => {
-                const idx = filteredCommands.length + i;
-                return (
-                  <CmdRow
-                    key={item.id}
-                    selected={selectedIndex === idx}
-                    onClick={item.action}
-                    onHover={() => setSelectedIndex(idx)}
-                    icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
-                    label={item.label}
-                    sublabel={item.sublabel}
-                  />
-                );
-              })}
-            </div>
-          )}
-
-          {query.trim() && (
-            <CmdRow
-              selected={selectedIndex === askIdx}
-              onHover={() => setSelectedIndex(askIdx)}
-              icon={<Bot size={15} />}
-              label={`Ask Claude: "${query}"`}
-              accent
-              trailing={<ArrowRight size={13} />}
-            />
-          )}
-
-          {filteredCommands.length === 0 && vaultItems.length === 0 && !query.trim() && (
-            <div style={{ padding: "28px 16px", textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
-              Type to search or create
-            </div>
-          )}
-        </div>
+        {inputRow}
+        <div style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
 
         {/* Footer keyboard hints */}
         <div

@@ -154,8 +154,15 @@ export function ShareDialog({
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="glass-elevated rounded-2xl"
-        style={{ width: "100%", maxWidth: 520, padding: 22, border: "1px solid var(--glass-border)" }}
+        className="glass-elevated modal-rise rounded-2xl"
+        style={{
+          width: "100%",
+          maxWidth: 520,
+          padding: 22,
+          border: "1px solid var(--glass-border)",
+          maxHeight: "calc(100dvh - 48px)",
+          overflowY: "auto",
+        }}
       >
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
@@ -172,26 +179,30 @@ export function ShareDialog({
           </p>
         )}
 
-        {/* Add people */}
-        <div className="flex items-center gap-2 mb-3">
+        {/* Add people — field on its own line, then access-level + Add on a tidy
+            right-aligned row so nothing crowds or spills on narrow widths. */}
+        <div className="mb-3 flex flex-col gap-2">
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addPerson()}
             placeholder="Add people by email"
             type="email"
-            className="flex-1 text-sm px-3 py-2 rounded-lg outline-none"
+            className="w-full text-sm px-3 py-2 rounded-lg outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           />
-          {levelSelect(addLevel, setAddLevel)}
-          <button
-            onClick={addPerson}
-            disabled={busy || !/.+@.+\..+/.test(email)}
-            className="px-3 py-2 rounded-lg text-sm font-medium"
-            style={{ background: "var(--color-accent)", color: "white", opacity: busy || !/.+@.+\..+/.test(email) ? 0.5 : 1 }}
-          >
-            Add
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>as</span>
+            {levelSelect(addLevel, setAddLevel)}
+            <button
+              onClick={addPerson}
+              disabled={busy || !/.+@.+\..+/.test(email)}
+              className="ml-auto px-4 py-2 rounded-lg text-sm font-medium"
+              style={{ background: "var(--color-accent)", color: "white", opacity: busy || !/.+@.+\..+/.test(email) ? 0.5 : 1 }}
+            >
+              Add person
+            </button>
+          </div>
         </div>
 
         {/* Invite link for a freshly-invited person — hand it over directly when
@@ -250,7 +261,7 @@ export function ShareDialog({
               )}
               {access.people.map((p) => (
                 <div key={p.email} className="flex items-center gap-2">
-                  <span className="flex-1 text-sm truncate" style={{ color: "var(--text-secondary)" }}>
+                  <span className="flex-1 min-w-0 text-sm truncate" style={{ color: "var(--text-secondary)" }}>
                     {p.email}
                   </span>
                   {levelSelect(p.level, (l) => changePerson(p.email, l))}
@@ -282,7 +293,7 @@ export function ShareDialog({
         <div className="flex flex-col gap-1.5">
           {access?.links.map((l) => (
             <div key={l.id} className="flex items-center gap-2">
-              <span className="text-xs flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
+              <span className="text-xs flex-1 min-w-0 truncate" style={{ color: "var(--text-secondary)" }}>
                 {LEVEL_LABEL[l.level]} link · expires {new Date(l.expiresAt).toLocaleDateString()}
               </span>
               <button

@@ -291,7 +291,8 @@ export function CollabEditor({
               borderRadius: 8,
               outline: "none",
               color: "var(--text-primary)",
-              fontSize: 13,
+              // 16px so iOS doesn't zoom the viewport when composing a comment
+              fontSize: 16,
               padding: "8px 10px",
               boxSizing: "border-box",
             }}

@@ -13,9 +13,11 @@ import {
 import { useCreateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { useVaultPaths } from "../../app/hooks/useParachute";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
 import { ComposeMessage } from "../comms/ComposeMessage";
+import { BottomSheet } from "../ui/BottomSheet";
 
 const CONTENT_TYPE_OPTIONS = [
   { type: "document" as ContentType, label: "Document", icon: FileText },
@@ -35,6 +37,7 @@ interface NewContentMenuProps {
 
 export function NewContentMenu({ onClose }: NewContentMenuProps) {
   const createNote = useCreateNote();
+  const isMobile = useIsMobile();
   const openTab = useUIStore((s) => s.openTab);
   const { data: allPaths } = useVaultPaths();
   const [showTaskDialog, setShowTaskDialog] = useState(false);
@@ -106,6 +109,66 @@ export function NewContentMenu({ onClose }: NewContentMenuProps) {
 
   // Step 2: path picker for the selected type
   if (selectedType) {
+    if (isMobile) {
+      return (
+        <BottomSheet open onClose={onClose} title={`New ${selectedType} — choose a folder`}>
+          <div className="px-4 pb-3">
+            <div className="relative mb-3">
+              <input
+                value={pathInput}
+                onChange={(e) => { setPathInput(e.target.value); setShowPathSuggestions(true); }}
+                onFocus={() => setShowPathSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowPathSuggestions(false), 150)}
+                placeholder="Vault root (or type a path)"
+                autoFocus
+                className="w-full rounded-lg px-3 outline-none"
+                style={{
+                  height: 44,
+                  fontSize: 16,
+                  background: "var(--glass)",
+                  border: "1px solid var(--glass-border)",
+                  color: "var(--text-primary)",
+                }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setSelectedType(null); }}
+              />
+              {showPathSuggestions && filteredPaths.length > 0 && (
+                <div
+                  className="absolute bottom-full left-0 right-0 mb-1 py-1 rounded-lg overflow-hidden max-h-48 overflow-y-auto"
+                  style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)", boxShadow: "var(--glass-shadow-elevated)" }}
+                >
+                  {filteredPaths.map((p) => (
+                    <button
+                      key={p}
+                      onMouseDown={() => { setPathInput(p); setShowPathSuggestions(false); }}
+                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      {p.startsWith("vault/") ? p.slice(6) : p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2.5">
+              <button
+                onClick={() => setSelectedType(null)}
+                className="flex-1 rounded-lg text-sm font-medium"
+                style={{ height: 46, color: "var(--text-secondary)", background: "var(--glass)", border: "1px solid var(--glass-border)" }}
+              >
+                Back
+              </button>
+              <button
+                onClick={handleCreate}
+                className="flex-1 rounded-lg text-sm font-semibold"
+                style={{ height: 46, background: "var(--color-accent)", color: "white" }}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </BottomSheet>
+      );
+    }
     return (
       <div className="fixed inset-0 z-50" onClick={onClose}>
         <div
@@ -172,6 +235,21 @@ export function NewContentMenu({ onClose }: NewContentMenuProps) {
   }
 
   // Step 1: type selector
+  if (isMobile) {
+    return (
+      <BottomSheet
+        open
+        onClose={onClose}
+        title="Create new"
+        items={CONTENT_TYPE_OPTIONS.map(({ type, label, icon: Icon }) => ({
+          icon: <Icon size={19} />,
+          label,
+          onClick: () => handleTypeClick(type),
+        }))}
+      />
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 z-50"

@@ -8,6 +8,7 @@ import { ContextPanel } from "./ContextPanel";
 import { StatusBar } from "./StatusBar";
 import { CommandBar } from "./CommandBar";
 import { GraphFullscreen } from "./GraphFullscreen";
+import { MobileActionBar } from "./MobileActionBar";
 
 export function Shell() {
   const {
@@ -57,7 +58,8 @@ export function Shell() {
     return (
       <div className="flex flex-col overflow-hidden" style={rootStyle}>
         <div className="relative flex-1 min-h-0">
-          {/* Canvas fills the screen */}
+          {/* Canvas fills the screen; the pill floats over it and content scrolls
+              beneath (renderers add bottom clearance so the last line clears). */}
           <div className="absolute inset-0">
             <Canvas />
           </div>
@@ -75,9 +77,12 @@ export function Shell() {
               <ContextPanel />
             </MobileDrawer>
           )}
+
+          {/* Floating command pill — the mobile navigation/action surface.
+              Replaces the bottom StatusBar; Settings + sync live in its More sheet. */}
+          <MobileActionBar />
         </div>
 
-        <StatusBar />
         <CommandBar />
         <GraphFullscreen />
       </div>
@@ -140,12 +145,12 @@ function MobileDrawer({
   return (
     <>
       <div
-        className="absolute inset-0 z-40"
+        className="sheet-backdrop absolute inset-0 z-40"
         style={{ background: "rgba(0,0,0,0.5)" }}
         onClick={onClose}
       />
       <div
-        className="absolute top-0 bottom-0 z-50 shadow-2xl"
+        className={`${side === "left" ? "drawer-left" : "drawer-right"} absolute top-0 bottom-0 z-50 shadow-2xl`}
         style={{
           width: "min(85vw, 320px)",
           background: "var(--bg-base)",

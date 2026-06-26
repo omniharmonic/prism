@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore } from "../../app/stores/settings";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { ShareButton } from "./ShareButton";
 
 /** A square, quiet icon button for the top bar (rounded hover via .interactive). */
@@ -60,6 +61,52 @@ export function TabBar() {
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
   const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
+
+  const isMobile = useIsMobile();
+
+  // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,
+  // creation, sidebar, and note actions all live in the floating command pill,
+  // so the top bar stays a single uncluttered line.
+  if (isMobile) {
+    return (
+      <div
+        className="flex items-center gap-1"
+        style={{
+          height: 46,
+          borderBottom: "1px solid var(--glass-border)",
+          background: "var(--bg-surface)",
+          padding: "0 6px",
+        }}
+      >
+        <IconButton onClick={navBack} title="Back" disabled={!canBack}>
+          <ChevronLeft size={20} />
+        </IconButton>
+        <IconButton onClick={navForward} title="Forward" disabled={!canForward}>
+          <ChevronRight size={20} />
+        </IconButton>
+
+        <div className="flex-1 min-w-0 flex items-center justify-center px-1">
+          <span
+            className="truncate text-center"
+            style={{ fontSize: "var(--text-sm)", fontWeight: 550, color: "var(--text-primary)", maxWidth: "100%" }}
+          >
+            {activeTab?.title ?? "Prism"}
+          </span>
+        </div>
+
+        {isRealNote && (
+          <IconButton
+            onClick={() => toggleFavorite({ id: activeTab!.noteId, title: activeTab!.title, type: activeTab!.type })}
+            title={isFav ? "Remove from Favorites" : "Add to Favorites"}
+            active={isFav}
+          >
+            <Star size={18} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
+          </IconButton>
+        )}
+        <ShareButton />
+      </div>
+    );
+  }
 
   return (
     <div

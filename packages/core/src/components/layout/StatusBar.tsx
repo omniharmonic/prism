@@ -3,6 +3,7 @@ import { Settings as SettingsIcon, RefreshCw } from "lucide-react";
 import { useVaultStats, useServiceStatus } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { Settings } from "./Settings";
+import { FontSwitch } from "../renderers/DocumentChrome";
 import { useQuery } from "@tanstack/react-query";
 import { serviceApi, type BackgroundServiceStatus } from "../../lib/parachute/client";
 
@@ -10,6 +11,8 @@ export function StatusBar() {
   const { data: stats } = useVaultStats();
   const { data: services } = useServiceStatus();
   const { openTabs, activeTabId } = useUIStore();
+  const docFont = useUIStore((s) => s.docFont);
+  const docFontSetter = useUIStore((s) => s.docFontSetter);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
@@ -40,6 +43,8 @@ export function StatusBar() {
 
         {/* Right */}
         <div className="flex items-center gap-3">
+          {/* Reading font for the active document (relocated off the doc header) */}
+          {docFontSetter && <FontSwitch value={docFont} onChange={docFontSetter} />}
           {/* Background sync status */}
           {bgServices && bgServices.length > 0 && (
             <SyncIndicator services={bgServices} />

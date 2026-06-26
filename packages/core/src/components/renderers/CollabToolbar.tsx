@@ -16,6 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 
 /**
  * Slim formatting toolbar for the collaborative editor. Two groups —
@@ -36,6 +37,7 @@ export function CollabToolbar({
   canReview?: boolean;
 }) {
   const c = () => editor.chain().focus();
+  const isMobile = useIsMobile();
 
   const Btn = ({
     on,
@@ -82,12 +84,16 @@ export function CollabToolbar({
 
   return (
     <div
+      className={isMobile ? "no-scrollbar" : undefined}
       style={{
         position: "sticky",
         top: 0,
         zIndex: 5,
         display: "flex",
-        flexWrap: "wrap",
+        // Mobile: one non-wrapping row that scrolls horizontally — never the
+        // 3-line stack. Desktop: wrap as coherent groups when space is tight.
+        flexWrap: isMobile ? "nowrap" : "wrap",
+        overflowX: isMobile ? "auto" : undefined,
         alignItems: "center",
         justifyContent: "space-between",
         gap: 8,
@@ -100,7 +106,15 @@ export function CollabToolbar({
       }}
     >
       {/* Left: formatting */}
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 2 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: isMobile ? "nowrap" : "wrap",
+          alignItems: "center",
+          gap: 2,
+          flexShrink: 0,
+        }}
+      >
         <Btn label="Bold" on={() => c().toggleBold().run()} active={editor.isActive("bold")}><Bold size={16} /></Btn>
         <Btn label="Italic" on={() => c().toggleItalic().run()} active={editor.isActive("italic")}><Italic size={16} /></Btn>
         <Btn label="Strikethrough" on={() => c().toggleStrike().run()} active={editor.isActive("strike")}><Strikethrough size={16} /></Btn>
@@ -131,7 +145,7 @@ export function CollabToolbar({
 
       {/* Right: mode + bulk review */}
       {(onSetSuggesting || canReview || suggesting) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
           {onSetSuggesting ? (
             <button
               type="button"

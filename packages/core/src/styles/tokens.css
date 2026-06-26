@@ -186,6 +186,9 @@ input:focus, textarea:focus, select:focus, button:hover {
   --transition-fast: 100ms ease-out;
   --transition-base: 150ms ease-out;
   --transition-slow: 250ms ease-out;
+  /* Soft decelerating curve (easeOutQuint) for floating-surface motion —
+     fast to start, gently settling, so sheets/drawers feel buttery not abrupt. */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* 4px-based spacing scale — for consistent rhythm as surfaces migrate. */
   --space-1: 4px;

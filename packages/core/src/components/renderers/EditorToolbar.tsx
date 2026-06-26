@@ -28,7 +28,7 @@ interface EditorToolbarProps {
 export function EditorToolbar({ editor }: EditorToolbarProps) {
   return (
     <div
-      className="flex items-center gap-0.5 px-3 py-1 overflow-x-auto flex-shrink-0"
+      className="no-scrollbar flex items-center gap-0.5 px-3 py-1 overflow-x-auto flex-shrink-0"
       style={{
         borderBottom: "1px solid var(--glass-border)",
         background: "var(--bg-surface)",

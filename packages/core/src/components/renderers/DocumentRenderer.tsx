@@ -31,7 +31,7 @@ import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
-import { PageHeader, FontSwitch, renamePath, type ContentFont } from "./DocumentChrome";
+import { PageHeader, renamePath, type ContentFont } from "./DocumentChrome";
 import { useUpdateNote } from "../../app/hooks/useParachute";
 
 const lowlightInstance = createLowlight(common);
@@ -53,6 +53,14 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
     setContentFont(f);
     onMetadataChange({ contentFont: f });
   }, [onMetadataChange]);
+
+  // Surface the reading-font control to the shell (bottom bar / More sheet)
+  // instead of the document header — keeps the top chrome uncluttered.
+  const registerDocFont = useUIStore((s) => s.registerDocFont);
+  useEffect(() => {
+    registerDocFont(contentFont, changeFont);
+    return () => registerDocFont(null, null);
+  }, [contentFont, changeFont, registerDocFont]);
 
   // Rename the note by editing the title in the page header (preserves folder +
   // extension; updates the open tab's label).
@@ -295,12 +303,12 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
         )}
       </div>
 
-      {/* Footer: per-document font switch (left) + save status (right) */}
+      {/* Footer: save status (the font switch now lives in the shell bottom bar /
+          More sheet, registered via the store). */}
       <div
-        className="flex items-center justify-between px-4 py-1 text-xs gap-3"
+        className="flex items-center justify-end px-4 py-1 text-xs gap-3"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
-        <FontSwitch value={contentFont} onChange={changeFont} />
         <div className="flex items-center gap-3">
           {isSaving && <span>Saving...</span>}
           {lastSaved && !isSaving && (

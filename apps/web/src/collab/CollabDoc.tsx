@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, FontSwitch, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
 import { updateNote as restUpdateNote } from "../parachute/rest";
@@ -123,6 +123,16 @@ export function CollabDoc({
       }
     })();
   }, [noteId]);
+
+  // Expose the reading-font control to the shell (bottom bar on desktop, More
+  // sheet on mobile) for documents only. Declared above the early returns below
+  // so the hook order is stable regardless of load/lock state.
+  const registerDocFont = useUIStore((s) => s.registerDocFont);
+  useEffect(() => {
+    const isDoc = kind === "document";
+    registerDocFont(isDoc ? contentFont : null, isDoc ? setContentFont : null);
+    return () => registerDocFont(null, null);
+  }, [kind, contentFont, registerDocFont]);
 
   // Rename via the editable page title (preserves folder + extension). Uses the
   // REST client directly (no VaultClient provider on the full-page share route).
@@ -280,7 +290,8 @@ export function CollabDoc({
 
   return (
     <div style={outer}>
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 96px" : "16px 20px 96px" }}>
+      {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}
@@ -294,7 +305,6 @@ export function CollabDoc({
                 <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
                 {connected ? "Live · " : ""}{statusText}
               </span>
-              {isDocument && <FontSwitch value={contentFont} onChange={setContentFont} />}
               <PresenceAvatars users={presence} />
               {showComments && (
                 <button
