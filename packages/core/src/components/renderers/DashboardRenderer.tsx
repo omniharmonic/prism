@@ -85,7 +85,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
 
   const updateWidgets = useCallback(
     (newWidgets: DashboardWidgetConfig[]) => {
-      onMetadataChange({
+      onMetadataChange?.({
         ...((meta || {}) as Record<string, unknown>),
         layout: { columns, widgets: newWidgets },
       });

@@ -43,8 +43,11 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-function App() {
-  // Show onboarding for first-time users, skip for returning users
+function App({ skipOnboarding }: { skipOnboarding?: boolean } = {}) {
+  // Show onboarding for first-time users, skip for returning users.
+  // `skipOnboarding` lets a shell force-skip the (Tauri-only) wizard — the web
+  // shell passes it for capability-link viewers and invited non-owners, who must
+  // never see the desktop owner setup flow. Desktop passes nothing → unchanged.
   const [onboarded, setOnboarded] = useState(() => {
     try {
       return localStorage.getItem("prism:onboarded") === "true";
@@ -63,7 +66,7 @@ function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        {onboarded ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
+        {(onboarded || skipOnboarding) ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
       </QueryClientProvider>
     </ErrorBoundary>
   );

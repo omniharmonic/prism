@@ -51,7 +51,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
   }, [note.id]); // re-sync when switching documents
   const changeFont = useCallback((f: ContentFont) => {
     setContentFont(f);
-    onMetadataChange({ contentFont: f });
+    onMetadataChange?.({ contentFont: f });
   }, [onMetadataChange]);
 
   // Surface the reading-font control to the shell (bottom bar / More sheet)
@@ -285,7 +285,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
             path={note.path}
             onRename={handleRename}
             icon={note.metadata?.icon as string | undefined}
-            onIconChange={(emoji) => onMetadataChange({ icon: emoji })}
+            onIconChange={(emoji) => onMetadataChange?.({ icon: emoji })}
           />
           <EditorContent editor={editor} />
         </div>

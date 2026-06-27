@@ -32,10 +32,10 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS grants (
     id            TEXT PRIMARY KEY,
-    subject_type  TEXT NOT NULL,   -- 'user' | 'link' | 'anyone'
-    subject       TEXT NOT NULL,   -- email | capability id | '*'
-    resource_type TEXT NOT NULL,   -- 'note' | 'tag'
-    resource      TEXT NOT NULL,   -- note id | tag name
+    subject_type  TEXT NOT NULL,   -- 'user' | 'link' | 'anyone' | 'peer'
+    subject       TEXT NOT NULL,   -- email | capability id | '*' | peer pubkey
+    resource_type TEXT NOT NULL,   -- 'note' | 'tag' | 'space'
+    resource      TEXT NOT NULL,   -- note id | tag name | space id
     level         TEXT NOT NULL,   -- Level
     created_by    TEXT,
     created_at    INTEGER NOT NULL
@@ -68,6 +68,83 @@ db.exec(`
     accepted_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS invites_email ON invites(email);
+
+  -- ── Publishing (Horizon B) ─────────────────────────────────────────────
+  -- A publication is the CONFIG for a public read-only site (slug, template,
+  -- optional password). ACCESS is a separate 'anyone' grant in the grants
+  -- table — config and authorization stay decoupled (effectiveLevel is still
+  -- the only guard). Publish = insert this row + an anyone grant in one txn.
+  CREATE TABLE IF NOT EXISTS publications (
+    id            TEXT PRIMARY KEY,   -- slug (also the public URL segment)
+    resource_type TEXT NOT NULL,      -- 'tag' (v1; 'note' reserved)
+    resource      TEXT NOT NULL,      -- tag name
+    template      TEXT NOT NULL,      -- 'wiki' (template registry key)
+    title         TEXT,
+    home_note_id  TEXT,               -- landing note; null → derive at read time
+    password_hash TEXT,               -- scrypt (auth/password.ts); null → open
+    theme         TEXT,               -- JSON blob
+    expires_at    INTEGER,            -- null → no expiry
+    created_by    TEXT,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS publications_resource ON publications(resource_type, resource);
+
+  -- ── Parachute-to-Parachute collaboration (Horizon C) ───────────────────
+  -- A paired peer hub, identified by its Ed25519 public key (base64url). We
+  -- store only the PUBLIC key; no vault token ever crosses the boundary.
+  CREATE TABLE IF NOT EXISTS peers (
+    pubkey     TEXT PRIMARY KEY,   -- Ed25519 public key, base64url
+    email      TEXT,
+    label      TEXT,
+    created_at INTEGER NOT NULL,
+    paired_at  INTEGER             -- when the handshake completed; null = pending
+  );
+  -- One-time pairing codes (invite.ts analog: single-use, hashed, TTL'd).
+  CREATE TABLE IF NOT EXISTS peer_pairings (
+    code_hash  TEXT PRIMARY KEY,
+    label      TEXT,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER
+  );
+  -- A shared space: a named, bidirectionally-synced collection scoped by
+  -- tags/path. Peer membership is a grant (subject_type='peer', resource_type
+  -- ='space', resource=space id).
+  CREATE TABLE IF NOT EXISTS spaces (
+    id                 TEXT PRIMARY KEY,
+    title              TEXT,
+    scope_include_tags TEXT,   -- JSON string[] (any-of)
+    scope_exclude_tags TEXT,   -- JSON string[]
+    path_prefix        TEXT,
+    created_by         TEXT,
+    created_at         INTEGER NOT NULL
+  );
+  -- Bidirectional note-identity map. space_note_key is a content-independent
+  -- UUID minted when a note first enters a space; it is the Yjs documentName
+  -- for federation so both hubs address the same CRDT despite differing local
+  -- ids. kind is PINNED at join (mismatched inbound updates are rejected).
+  CREATE TABLE IF NOT EXISTS federated_notes (
+    space_note_key    TEXT PRIMARY KEY,
+    space_id          TEXT NOT NULL,
+    local_id          TEXT NOT NULL,   -- this hub's note id
+    kind              TEXT NOT NULL,   -- document|code|spreadsheet|canvas
+    peer_synced_at    INTEGER,
+    source_updated_at INTEGER,         -- Parachute updatedAt high-water mark
+    created_at        INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS federated_notes_space ON federated_notes(space_id);
+  CREATE INDEX IF NOT EXISTS federated_notes_local ON federated_notes(local_id);
+  -- Durable outbound buffer: Yjs updates queued while a peer WS is down, flushed
+  -- on reconnect (Yjs is idempotent under replay).
+  CREATE TABLE IF NOT EXISTS federation_outbox (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    space_note_key TEXT NOT NULL,
+    peer_pubkey    TEXT NOT NULL,
+    update_blob    BLOB NOT NULL,
+    queued_at      INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS federation_outbox_peer ON federation_outbox(peer_pubkey);
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -79,8 +156,8 @@ db.exec(`
   }
 }
 
-export type SubjectType = "user" | "link" | "anyone";
-export type ResourceType = "note" | "tag";
+export type SubjectType = "user" | "link" | "anyone" | "peer";
+export type ResourceType = "note" | "tag" | "space";
 
 export interface Grant {
   id: string;
@@ -354,4 +431,247 @@ export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: n
     source_updated_at: sourceUpdatedAt,
     updated_at: now(),
   });
+}
+
+// ---- grants (peer subject) ----
+const selectGrantsByPeer = db.prepare(
+  "SELECT * FROM grants WHERE subject_type = 'peer' AND subject = ?",
+);
+/** Grants attached to a paired peer (matched by its pubkey). */
+export function grantsForPeer(pubkey: string): Grant[] {
+  return selectGrantsByPeer.all(pubkey) as Grant[];
+}
+
+// ---- publications (Horizon B) ----
+export interface Publication {
+  id: string;
+  resource_type: ResourceType;
+  resource: string;
+  template: string;
+  title: string | null;
+  home_note_id: string | null;
+  password_hash: string | null;
+  theme: string | null;
+  expires_at: number | null;
+  created_by: string | null;
+  created_at: number;
+}
+const insertPublication = db.prepare(
+  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, password_hash, theme, expires_at, created_by, created_at)
+   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
+);
+const selectPublication = db.prepare("SELECT * FROM publications WHERE id = ?");
+const selectPublicationByResource = db.prepare(
+  "SELECT * FROM publications WHERE resource_type = ? AND resource = ? LIMIT 1",
+);
+const selectPublications = db.prepare("SELECT * FROM publications ORDER BY created_at DESC");
+const deletePublicationStmt = db.prepare("DELETE FROM publications WHERE id = ?");
+const updatePublicationStmt = db.prepare(
+  `UPDATE publications SET title=@title, home_note_id=@home_note_id, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
+);
+
+export function createPublication(p: Omit<Publication, "created_at">): Publication {
+  const row: Publication = { ...p, created_at: now() };
+  insertPublication.run(row);
+  return row;
+}
+export function getPublicationBySlug(slug: string): Publication | null {
+  return (selectPublication.get(slug) as Publication | undefined) ?? null;
+}
+export function getPublicationByResource(type: ResourceType, resource: string): Publication | null {
+  return (selectPublicationByResource.get(type, resource) as Publication | undefined) ?? null;
+}
+export function listPublications(): Publication[] {
+  return selectPublications.all() as Publication[];
+}
+export function deletePublication(slug: string): void {
+  deletePublicationStmt.run(slug);
+}
+/** Patch the mutable fields of a publication (title/home/password/theme/expiry). */
+export function updatePublication(
+  slug: string,
+  patch: Partial<Pick<Publication, "title" | "home_note_id" | "password_hash" | "theme" | "expires_at">>,
+): Publication | null {
+  const existing = getPublicationBySlug(slug);
+  if (!existing) return null;
+  const merged: Publication = { ...existing, ...patch };
+  updatePublicationStmt.run({
+    id: slug,
+    title: merged.title,
+    home_note_id: merged.home_note_id,
+    password_hash: merged.password_hash,
+    theme: merged.theme,
+    expires_at: merged.expires_at,
+  });
+  return merged;
+}
+
+// ---- peers (Horizon C) ----
+export interface Peer {
+  pubkey: string;
+  email: string | null;
+  label: string | null;
+  created_at: number;
+  paired_at: number | null;
+}
+const insertPeer = db.prepare(
+  `INSERT INTO peers (pubkey, email, label, created_at, paired_at)
+   VALUES (@pubkey, @email, @label, @created_at, @paired_at)
+   ON CONFLICT(pubkey) DO UPDATE SET email=@email, label=@label, paired_at=@paired_at`,
+);
+const selectPeer = db.prepare("SELECT * FROM peers WHERE pubkey = ?");
+const selectPeers = db.prepare("SELECT * FROM peers ORDER BY created_at DESC");
+const deletePeerStmt = db.prepare("DELETE FROM peers WHERE pubkey = ?");
+
+export function upsertPeer(p: { pubkey: string; email?: string | null; label?: string | null; paired_at?: number | null }): Peer {
+  const row: Peer = {
+    pubkey: p.pubkey,
+    email: p.email ?? null,
+    label: p.label ?? null,
+    created_at: now(),
+    paired_at: p.paired_at ?? null,
+  };
+  insertPeer.run(row);
+  return (selectPeer.get(p.pubkey) as Peer);
+}
+export function getPeer(pubkey: string): Peer | null {
+  return (selectPeer.get(pubkey) as Peer | undefined) ?? null;
+}
+export function listPeers(): Peer[] {
+  return selectPeers.all() as Peer[];
+}
+export function removePeer(pubkey: string): void {
+  deletePeerStmt.run(pubkey);
+}
+
+// ---- peer pairing codes (single-use, hashed, TTL'd) ----
+const insertPairing = db.prepare(
+  `INSERT INTO peer_pairings (code_hash, label, created_by, created_at, expires_at)
+   VALUES (?, ?, ?, ?, ?)`,
+);
+const selectPairing = db.prepare("SELECT * FROM peer_pairings WHERE code_hash = ?");
+const markPairingUsed = db.prepare("UPDATE peer_pairings SET used_at = ? WHERE code_hash = ?");
+
+export interface Pairing {
+  code_hash: string;
+  label: string | null;
+  created_by: string | null;
+  created_at: number;
+  expires_at: number;
+  used_at: number | null;
+}
+export function storePairing(codeHash: string, label: string | null, createdBy: string, ttlMs: number): void {
+  insertPairing.run(codeHash, label, createdBy, now(), now() + ttlMs);
+}
+/** Consume a pairing code (single-use). Returns the row if still valid, else null. */
+export function consumePairing(codeHash: string): Pairing | null {
+  const row = selectPairing.get(codeHash) as Pairing | undefined;
+  if (!row || row.used_at || row.expires_at < now()) return null;
+  markPairingUsed.run(now(), codeHash);
+  return row;
+}
+
+// ---- spaces ----
+export interface Space {
+  id: string;
+  title: string | null;
+  scope_include_tags: string | null; // JSON string[]
+  scope_exclude_tags: string | null; // JSON string[]
+  path_prefix: string | null;
+  created_by: string | null;
+  created_at: number;
+}
+const insertSpace = db.prepare(
+  `INSERT INTO spaces (id, title, scope_include_tags, scope_exclude_tags, path_prefix, created_by, created_at)
+   VALUES (@id, @title, @scope_include_tags, @scope_exclude_tags, @path_prefix, @created_by, @created_at)`,
+);
+const selectSpace = db.prepare("SELECT * FROM spaces WHERE id = ?");
+const selectSpaces = db.prepare("SELECT * FROM spaces ORDER BY created_at DESC");
+const deleteSpaceStmt = db.prepare("DELETE FROM spaces WHERE id = ?");
+
+export function createSpace(s: Omit<Space, "created_at">): Space {
+  const row: Space = { ...s, created_at: now() };
+  insertSpace.run(row);
+  return row;
+}
+export function getSpace(id: string): Space | null {
+  return (selectSpace.get(id) as Space | undefined) ?? null;
+}
+export function listSpaces(): Space[] {
+  return selectSpaces.all() as Space[];
+}
+export function deleteSpace(id: string): void {
+  deleteSpaceStmt.run(id);
+}
+
+// ---- federated notes (cross-vault identity map) ----
+export interface FederatedNote {
+  space_note_key: string;
+  space_id: string;
+  local_id: string;
+  kind: string;
+  peer_synced_at: number | null;
+  source_updated_at: number | null;
+  created_at: number;
+}
+const insertFederatedNote = db.prepare(
+  `INSERT INTO federated_notes (space_note_key, space_id, local_id, kind, peer_synced_at, source_updated_at, created_at)
+   VALUES (@space_note_key, @space_id, @local_id, @kind, @peer_synced_at, @source_updated_at, @created_at)
+   ON CONFLICT(space_note_key) DO UPDATE SET local_id=@local_id, kind=@kind, peer_synced_at=@peer_synced_at, source_updated_at=@source_updated_at`,
+);
+const selectFederatedByKey = db.prepare("SELECT * FROM federated_notes WHERE space_note_key = ?");
+const selectFederatedByLocal = db.prepare("SELECT * FROM federated_notes WHERE local_id = ?");
+const selectFederatedBySpace = db.prepare("SELECT * FROM federated_notes WHERE space_id = ?");
+const deleteFederatedStmt = db.prepare("DELETE FROM federated_notes WHERE space_note_key = ?");
+
+export function upsertFederatedNote(f: Omit<FederatedNote, "created_at"> & { created_at?: number }): FederatedNote {
+  const row: FederatedNote = { ...f, created_at: f.created_at ?? now() };
+  insertFederatedNote.run(row);
+  return row;
+}
+export function getFederatedByKey(key: string): FederatedNote | null {
+  return (selectFederatedByKey.get(key) as FederatedNote | undefined) ?? null;
+}
+export function getFederatedByLocal(localId: string): FederatedNote | null {
+  return (selectFederatedByLocal.get(localId) as FederatedNote | undefined) ?? null;
+}
+export function federatedNotesForSpace(spaceId: string): FederatedNote[] {
+  return selectFederatedBySpace.all(spaceId) as FederatedNote[];
+}
+/** The space ids a local note participates in (for permissions.NoteRef.spaceIds). */
+export function spaceIdsForLocalNote(localId: string): string[] {
+  return [...new Set((selectFederatedByLocal.all(localId) as FederatedNote[]).map((f) => f.space_id))];
+}
+export function deleteFederatedNote(key: string): void {
+  deleteFederatedStmt.run(key);
+}
+
+// ---- federation outbox (queued Yjs updates for offline peers) ----
+const insertOutbox = db.prepare(
+  `INSERT INTO federation_outbox (space_note_key, peer_pubkey, update_blob, queued_at)
+   VALUES (?, ?, ?, ?)`,
+);
+const selectOutboxByPeer = db.prepare(
+  "SELECT * FROM federation_outbox WHERE peer_pubkey = ? ORDER BY id ASC",
+);
+const deleteOutboxStmt = db.prepare("DELETE FROM federation_outbox WHERE id = ?");
+
+export interface OutboxItem {
+  id: number;
+  space_note_key: string;
+  peer_pubkey: string;
+  update_blob: Uint8Array;
+  queued_at: number;
+}
+export function queueOutbox(spaceNoteKey: string, peerPubkey: string, update: Uint8Array): void {
+  insertOutbox.run(spaceNoteKey, peerPubkey, Buffer.from(update), now());
+}
+export function outboxForPeer(pubkey: string): OutboxItem[] {
+  const rows = selectOutboxByPeer.all(pubkey) as Array<{
+    id: number; space_note_key: string; peer_pubkey: string; update_blob: Buffer; queued_at: number;
+  }>;
+  return rows.map((r) => ({ ...r, update_blob: new Uint8Array(r.update_blob) }));
+}
+export function clearOutboxItem(id: number): void {
+  deleteOutboxStmt.run(id);
 }
