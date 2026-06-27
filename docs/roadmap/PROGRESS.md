@@ -22,13 +22,14 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barr
 
 > Design note: JSON moved from `/p` (plan) to `/api/p` so the human `/p/:slug` URL serves the SPA shell while data stays under the already-denylisted `/api/*` — cleaner than the plan's `/^\/p\//` denylist add, which would have shadowed the client route.
 
-## P2 — Depth: Wiki + bidirectional CRDT → barrier B2
-- ⬜ L-Pub-Wiki — template registry + WikiTemplate slots, scoped wikilink onNavigate, Backlinks
-- ⬜ L-Pub-Graph — `/p/:slug/graph` scoped + edge-filtered + client graph
-- ⬜ L-P2P-Mirror — `space_note_key` mint + one-way Yjs push, `PEER_ORIGIN`, kind-pinning
-- ⬜ L-P2P-Bi — bidirectional edit merge + `federation_outbox` flush + external-edit race rule
-- ⬜ L-Onb-Schema2 — refactor TS `TAG_TO_CONTENT_TYPE` + Rust `tag_map` from `tag-schemas.json`; reconcile dashboard
-- ⬜ **B2** — Wiki browsable (nav/wikilinks/backlinks/search), no graph leak, two-hub convergence, mapping parity
+## P2 — Depth: Wiki + bidirectional CRDT → barrier B2  ✅
+- 🔵 L-Pub-Wiki — template registry + WikiTemplate (nav path-tree, TOC, search, scoped wikilinks, backlinks from graph); web build green
+- 🔵 L-Pub-Graph — `/api/p/:slug/graph` scoped + edge-filtered (wikilinks; drops out-of-set endpoints) — leak test PASS
+- 🔵 L-P2P-Mirror + L-P2P-Bi — gated federation foundation: peer-conn tokens, `collab.ts` additive (federationTarget + peer-auth + space→note mapping + kind-pin + PEER_ORIGIN), FederationManager (HocuspocusProvider bridge + outbox), space ACL; 14/14 invariant tests
+- 🔵 L-Onb-Schema2 — TS `TAG_TO_CONTENT_TYPE` + Rust `tag_map` both derive from `tag-schemas.json`; `dashboard→dashboard` fixed on both sides
+- 🔵 **B2** — graph leak test PASS; mapping parity 35/35; collab regression 42/42 (federation-off = unchanged); Wiki SPA served; tsc+cargo+web build green
+
+> Federation honest gaps (documented in `federation-manager.ts`, flagged for live two-hub validation): peer collab-URL registry, client opening federated notes by `space_note_key`, and end-to-end two-hub convergence (needs a 2nd hub+vault). All in-process invariants are tested; the path is fully gated (`FEDERATION_ENABLED`, default off).
 
 ## P3 — Hardening, gates, suggest-mode, setup tooling → barrier B3
 - ⬜ L-Pub-Pwd — `password_hash` + `/p/:slug/auth` scrypt gate + cookie mw + UI

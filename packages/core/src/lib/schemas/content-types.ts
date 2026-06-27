@@ -1,4 +1,14 @@
 import type { ContentType, Note } from "../types";
+import tagSchemas from "./tag-schemas.json";
+
+/** Shape of a single tag entry in the canonical tag-schemas.json. */
+type TagSchemaEntry = {
+  description?: string;
+  contentType: string;
+  precedence: number;
+  fields?: Record<string, unknown>;
+  rustContentType?: string;
+};
 
 /**
  * Structural subset that `inferContentType` / `getStructuralTag` actually read.
@@ -30,46 +40,20 @@ const KNOWN_TYPES = new Set<string>([
   "dashboard", "messages-dashboard",
 ]);
 
-// Tag → ContentType mapping, ordered by priority (first match wins)
-// When a note has multiple structural tags, higher-priority mappings take precedence.
-// NOTE: "project" is intentionally lower-priority than document subtypes — the "project"
-// tag is often used organizationally ("belongs to X project"), not structurally ("IS a
-// project definition"). Only use ProjectRenderer when no more specific type is present.
-const TAG_TO_CONTENT_TYPE: [string, ContentType][] = [
-  // High-priority: specific structural renderers
-  ["canvas", "canvas"],
-  ["code", "code"],
-  ["spreadsheet", "spreadsheet"],
-  ["task", "task"],
-  ["slides", "presentation"],
-  ["briefing", "briefing"],
-  ["dashboard", "dashboard"],
-  ["project-page", "website"],
-
-  // Medium-priority: document subtypes (all render as documents)
-  ["meeting", "document"],
-  ["transcript", "document"],
-  ["concept", "document"],
-  ["writing", "document"],
-  ["research", "document"],
-  ["proposal", "document"],
-  ["questionnaire", "document"],
-  ["discovery", "document"],
-  ["scoping", "document"],
-  ["spec", "document"],
-  ["script", "document"],
-  ["person", "document"],
-  ["organization", "document"],
-  ["decision-record", "document"],
-  ["grant-application", "document"],
-  ["project-update", "document"],
-  ["report", "document"],
-  ["page", "document"],
-  ["index", "document"],
-
-  // Low-priority: project renderer only when no document subtype tag present
-  ["project", "project"],
-];
+// Tag → ContentType mapping, ordered by priority (first match wins).
+// DERIVED from the canonical tag-schemas.json (the single source of truth shared
+// with the Rust `enrich_note` mapping) — do NOT hardcode entries here. The order
+// reproduces the original hand-authored priority via each tag's ascending
+// `precedence` (lower = higher priority).
+// NOTE: "project" is intentionally lower-priority than document subtypes — the
+// "project" tag is often used organizationally ("belongs to X project"), not
+// structurally ("IS a project definition"). Only use ProjectRenderer when no more
+// specific type is present. This is encoded as a high `precedence` in the JSON.
+const TAG_TO_CONTENT_TYPE: [string, ContentType][] = Object.entries(
+  (tagSchemas as unknown as { tags: Record<string, TagSchemaEntry> }).tags
+)
+  .sort(([, a], [, b]) => a.precedence - b.precedence)
+  .map(([tag, entry]): [string, ContentType] => [tag, entry.contentType as ContentType]);
 
 // Infer content type from note metadata, tags, or heuristics
 export function inferContentType(note: NoteForTypeInference): ContentType {
@@ -149,6 +133,25 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
 
   // 4. Default to document
   return "document";
+}
+
+// Dev-time self-check (cheap; runs once at module load): confirm the mapping
+// derived from tag-schemas.json resolves every canonical tag to its declared
+// contentType under first-match-wins. This guards against the JSON drifting from
+// the renderer pipeline. Logs (never throws) so it can never break production.
+{
+  const canonicalTags = (tagSchemas as unknown as {
+    tags: Record<string, TagSchemaEntry>;
+  }).tags;
+  for (const [tag, entry] of Object.entries(canonicalTags)) {
+    const resolved = inferContentType({ tags: [tag], metadata: null, path: null, content: null });
+    if (resolved !== entry.contentType) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[content-types] tag-schema drift: "${tag}" resolved to "${resolved}" but tag-schemas.json declares "${entry.contentType}"`
+      );
+    }
+  }
 }
 
 // The original vault tag for a note (the structural tag that determined its type)

@@ -1,7 +1,41 @@
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, State};
 use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
 use crate::models::note::*;
+
+/// Canonical tag → Prism contentType mapping, DERIVED at load from the single
+/// source of truth (`packages/core/src/lib/schemas/tag-schemas.json`) shared with
+/// the TypeScript `TAG_TO_CONTENT_TYPE`. Entries are ordered by ascending
+/// `precedence` so first-match-wins matches the frontend exactly. We use each
+/// tag's `contentType` (NOT the legacy `rustContentType`), which reconciles the
+/// historical `dashboard → project` bug to `dashboard → dashboard`.
+fn tag_content_type_map() -> &'static [(String, String)] {
+    static MAP: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        const RAW: &str =
+            include_str!("../../../../../packages/core/src/lib/schemas/tag-schemas.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(RAW).expect("tag-schemas.json must be valid JSON");
+        let tags = parsed
+            .get("tags")
+            .and_then(|t| t.as_object())
+            .expect("tag-schemas.json must have a `tags` object");
+        let mut entries: Vec<(String, String, i64)> = tags
+            .iter()
+            .filter_map(|(tag, entry)| {
+                let content_type = entry.get("contentType")?.as_str()?.to_string();
+                let precedence = entry.get("precedence")?.as_i64()?;
+                Some((tag.clone(), content_type, precedence))
+            })
+            .collect();
+        entries.sort_by_key(|(_, _, precedence)| *precedence);
+        entries
+            .into_iter()
+            .map(|(tag, content_type, _)| (tag, content_type))
+            .collect()
+    })
+}
 
 /// Enrich a note's metadata with Prism-specific fields derived from tags and tag schema data.
 /// This implements the "backend enrichment" strategy from the alignment plan:
@@ -34,36 +68,10 @@ fn enrich_note(mut note: Note) -> Note {
         ];
 
         if !known_prism_types.contains(&current_type.as_str()) {
-            // Map structural tags to Prism content types (priority order). The
-            // structural renderers (canvas/code/spreadsheet) come first — these
-            // were previously missing, so such notes got mis-stamped as documents.
-            let tag_map: &[(&str, &str)] = &[
-                ("canvas", "canvas"),
-                ("code", "code"),
-                ("spreadsheet", "spreadsheet"),
-                ("task", "task"),
-                ("slides", "presentation"),
-                ("briefing", "briefing"),
-                ("dashboard", "project"),
-                ("project", "project"),
-                ("project-page", "website"),
-                ("meeting", "document"),
-                ("transcript", "document"),
-                ("concept", "document"),
-                ("writing", "document"),
-                ("research", "document"),
-                ("proposal", "document"),
-                ("spec", "document"),
-                ("script", "document"),
-                ("person", "document"),
-                ("organization", "document"),
-                ("decision-record", "document"),
-                ("grant-application", "document"),
-                ("project-update", "document"),
-                ("report", "document"),
-                ("page", "document"),
-                ("index", "document"),
-            ];
+            // Tag → content-type mapping, derived from the canonical
+            // tag-schemas.json (shared with the TS frontend), ordered by
+            // precedence so first-match-wins is identical on both sides.
+            let tag_map = tag_content_type_map();
 
             // Content (canvas) wins over tags. If nothing matches we leave
             // prism_type UNSET so the frontend can infer from the file extension
@@ -74,8 +82,8 @@ fn enrich_note(mut note: Note) -> Note {
             } else {
                 tag_map
                     .iter()
-                    .find(|(tag, _)| tags.contains(&tag.to_string()))
-                    .map(|(_, prism_type)| *prism_type)
+                    .find(|(tag, _)| tags.contains(tag))
+                    .map(|(_, prism_type)| prism_type.as_str())
             };
 
             if let Some(prism_type) = inferred {

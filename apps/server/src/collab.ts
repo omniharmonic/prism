@@ -28,8 +28,19 @@ import { marked } from "marked";
 import { config } from "./config";
 import { vault } from "./parachute";
 import { verifyCapability } from "./auth/capability";
+import { verifyPeerConnToken } from "./auth/peer-conn";
 import { isLocalRequest } from "./auth/local";
-import { getSession, grantsForUser, grantsForCapability, getDocState, saveDocState, type Grant } from "./db";
+import {
+  getSession,
+  grantsForUser,
+  grantsForCapability,
+  getDocState,
+  saveDocState,
+  getFederatedByKey,
+  getPeer,
+  grantsForPeer,
+  type Grant,
+} from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
@@ -90,6 +101,32 @@ function looksLikeExcalidrawScene(content: string | null | undefined): boolean {
 export function noteKind(note: NoteMeta): CollabKind {
   const t = inferContentType({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
   return t === "canvas" || t === "code" || t === "spreadsheet" ? t : "document";
+}
+
+// ---- federation (Parachute-to-Parachute) ------------------------------------
+// GATED behind config.federationEnabled. When OFF, federationTarget below always
+// returns { noteId: documentName } with no kind, so loadDocumentState /
+// storeDocumentState / resolveLevel behave byte-for-byte as they do today.
+
+/** Origin tag for federation-applied (peer) edits — distinct from client and
+ *  external-Parachute edits so loop-guards can ignore our own re-applies. */
+export const PEER_ORIGIN = "peer-federation";
+
+/**
+ * Resolve a collab documentName to the local vault note it maps to. For a
+ * FEDERATED doc the wire documentName is the content-independent `space_note_key`
+ * (shared by both hubs); we translate it to this hub's `local_id` for all vault
+ * I/O and PIN the kind recorded at join (so an inbound update can never reseed a
+ * note as the wrong structure). For every NON-federated doc — and whenever
+ * federation is disabled — this returns `{ noteId: documentName }` with no kind,
+ * i.e. exactly the documentName the caller already used (no behavior change).
+ */
+export function federationTarget(documentName: string): { noteId: string; kind?: CollabKind } {
+  if (config.federationEnabled) {
+    const fed = getFederatedByKey(documentName);
+    if (fed) return { noteId: fed.local_id, kind: fed.kind as CollabKind };
+  }
+  return { noteId: documentName };
 }
 
 /** Raw text → a fresh Y.Doc's encoded state with the code in a Y.Text. */
@@ -344,6 +381,29 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
  *  `isLocal` = the connection came straight from loopback (the desktop app), not
  *  the public tunnel; only then is the owner-token path honored. */
 export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
+  // Federation path (GATED): a documentName that is a known `space_note_key` is a
+  // peer-hub connection, NOT a browser. The token is a peer-conn assertion: we
+  // authenticate the signing pubkey, require it to be a PAIRED peer scoped to this
+  // doc's space, then authorize via effectiveLevel over its space grants. Anything
+  // wrong → reject (null). When federation is off, getFederatedByKey is never
+  // consulted, so this branch is inert and the path below is byte-for-byte today's.
+  if (config.federationEnabled) {
+    const fed = getFederatedByKey(noteId);
+    if (fed) {
+      const claims = verifyPeerConnToken(token);
+      if (!claims || claims.spaceId !== fed.space_id) return null;
+      const peer = getPeer(claims.pubkey);
+      if (!peer || !peer.paired_at) return null;
+      let tags: string[] = [];
+      try {
+        tags = (await vault.getNote(fed.local_id)).tags ?? [];
+      } catch {
+        /* unreadable note — match on id/space only */
+      }
+      return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, false);
+    }
+  }
+
   // Desktop owner path: the trusted Tauri app (on localhost) presents the dedicated
   // COLLAB_TOKEN to join live docs as the owner — kept separate from the vault token
   // so that powerful credential never enters the webview. LOCAL-ONLY: a token over
@@ -399,12 +459,13 @@ export async function authorizeConnection(
  * Leaves the doc empty if nothing is loadable. Mutates and returns `doc`.
  */
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
+  const target = federationTarget(documentName); // non-federated → { noteId: documentName }
   let note: { content: string; updatedAt: string | null } | null = null;
-  let kind: CollabKind = kindCache.get(documentName) ?? "document";
+  let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
-    const n = await vault.getNote(documentName);
+    const n = await vault.getNote(target.noteId);
     note = { content: n.content, updatedAt: n.updatedAt };
-    kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
+    if (!target.kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
     kindCache.set(documentName, kind);
   } catch {
     /* note may not be readable; leave empty */
@@ -451,15 +512,16 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
  * lost. Extracted from the Hocuspocus hook so it is directly testable.
  */
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
+  const target = federationTarget(documentName); // non-federated → { noteId: documentName }
   let sourceUpdatedAt: number | null = null;
   // Fetch the current note up front: it resolves the kind (a wrong default would
   // persist e.g. code as HTML and corrupt the note) AND lets us detect an
   // external edit we haven't folded in yet. Stores are debounced, so the read is
   // cheap; on failure we fall back to the cached kind.
-  let kind = kindCache.get(documentName);
+  let kind = target.kind ?? kindCache.get(documentName);
   let current: { content: string; updatedAt: string | null } | null = null;
   try {
-    const n = await vault.getNote(documentName);
+    const n = await vault.getNote(target.noteId);
     current = { content: n.content, updatedAt: n.updatedAt };
     if (!kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
   } catch {
@@ -492,7 +554,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           : kind === "canvas"
             ? yDocToScene(doc)
             : yDocToHtml(doc);
-    const updated = await vault.updateNote(documentName, { content });
+    const updated = await vault.updateNote(target.noteId, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
   } catch {
     /* vault write failed — still persist CRDT state below */
@@ -538,4 +600,18 @@ export function attachCollab(server: Server): void {
   // and fold them into the live Y.Doc so every open editor updates within a tick.
   const stopReconciler = startReconciler(hocuspocus as unknown as LiveDocs);
   server.on("close", stopReconciler);
+
+  // Federation (GATED): bring up the peer-bridge once collab is live. A no-op
+  // unless config.federationEnabled — and the module is imported LAZILY so the
+  // @hocuspocus/provider client (and the whole federation path) never loads on
+  // the default, non-federation deployment. Dynamic import also sidesteps the
+  // collab ⇄ federation-manager import cycle (collab is fully loaded by now).
+  if (config.federationEnabled) {
+    void import("./federation-manager")
+      .then(({ federationManager }) => {
+        federationManager.start();
+        server.on("close", () => federationManager.stop());
+      })
+      .catch((e) => console.error("[federation] failed to start manager:", e));
+  }
 }
