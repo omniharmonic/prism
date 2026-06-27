@@ -34,6 +34,7 @@ export type {
   TagAccess,
   NoteAccess,
   SetPersonResult,
+  PublicationInfo,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

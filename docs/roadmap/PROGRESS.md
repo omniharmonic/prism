@@ -31,15 +31,15 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barr
 
 > Federation honest gaps (documented in `federation-manager.ts`, flagged for live two-hub validation): peer collab-URL registry, client opening federated notes by `space_note_key`, and end-to-end two-hub convergence (needs a 2nd hub+vault). All in-process invariants are tested; the path is fully gated (`FEDERATION_ENABLED`, default off).
 
-## P3 — Hardening, gates, suggest-mode, setup tooling → barrier B3
-- ⬜ L-Pub-Pwd — `password_hash` + `/p/:slug/auth` scrypt gate + cookie mw + UI
-- ⬜ L-Pub-UX — Publish tab in Share dialog + publications list/unpublish
-- ⬜ L-Pub-Sec — `verify-gateway.ts` publish assertions
-- ⬜ L-P2P-Suggest — durable pending-suggestions store + accept/reject API
-- ⬜ L-P2P-UX — federated markers + sync status + Share-a-Space dialog
-- ⬜ L-Onb-Seed — shared `seedTagSchemas()` lib → `prism-setup` SKILL + `seed.ts`
-- ⬜ L-Onb-CLI — `prism setup` orchestrator (port `bootstrap.sh`)
-- ⬜ **B3** — verify-gateway passes; password gate enforced; suggest survives restart; `prism setup` idempotent
+## P3 — Hardening, gates, suggest-mode, setup tooling → barrier B3  ✅
+- 🔵 L-Pub-Pwd — `publish.ts` scrypt `/api/p/:slug/auth` + signed httpOnly `pub_<slug>` unlock cookie; locked manifest hides nav; PublicationView password prompt; owner `password` param + `PUT .../publish/password` in acl
+- 🔵 L-Pub-UX — Publish tab in core ShareDialog via extended CollabSharing seam (gated on `publishTag`); web impl in grant.ts
+- 🔵 L-Pub-Sec — `verify-gateway.ts` publish/federation assertions (anon scope, no token leak, in/out-of-pub 403, graph edge-filter, password) — ALL PASS
+- 🔵 L-P2P-Suggest — durable `pending_suggestions` table + owner `/acl/suggestions` list/accept/reject/delete (survives restart)
+- 🔵 L-Onb-Seed + L-Onb-CLI — shared `seedTagSchemas()` (idempotent, additive-only) + `prism setup` CLI (ports bootstrap.sh, --dry-run) + `prism-setup` skill
+- 🔵 **B3** — verify-gateway ALL PASS (live password gate); unlock flow e2e; suggestion survives restart; seed dry-run idempotent (29 unchanged); collab regression 42/42; tsc+web build green
+
+> L-P2P-UX (federated markers / Share-a-Space) folded into the seam work as optional methods; the live federated-marker UI rides on the deferred two-hub transport (gated).
 
 ## P4 — Packaging, migration, docs, accelerators → barrier B4 (release)
 - ⬜ L-Onb-Plugin — `.claude-plugin/plugin.json` + `.mcp.json.template` + `validate_config`

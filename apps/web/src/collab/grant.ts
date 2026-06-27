@@ -1,4 +1,11 @@
-import type { CollabSharing, NoteAccess, SetPersonResult, ShareLevel, ShareLink } from "@prism/core";
+import type {
+  CollabSharing,
+  NoteAccess,
+  PublicationInfo,
+  SetPersonResult,
+  ShareLevel,
+  ShareLink,
+} from "@prism/core";
 import { GATEWAY_ORIGIN } from "../config";
 
 /**
@@ -47,5 +54,25 @@ export const webCollabSharing: CollabSharing = {
   async listUsers(): Promise<string[]> {
     const users = (await (await acl(`/users`)).json()) as Array<{ email: string }>;
     return users.map((u) => u.email);
+  },
+
+  // ── Publishing (turn a tag into a public, read-only Wiki) ──
+  async listPublications(): Promise<PublicationInfo[]> {
+    return (await acl(`/publications`)).json();
+  },
+  async publishTag(
+    tag: string,
+    opts?: { template?: string; title?: string; password?: string },
+  ): Promise<{ slug: string; url: string; count: number; passwordRequired: boolean }> {
+    return (await acl(`/tags/${enc(tag)}/publish`, { method: "POST", body: JSON.stringify(opts ?? {}) })).json();
+  },
+  async setPublishPassword(tag: string, password: string | null): Promise<void> {
+    await acl(`/tags/${enc(tag)}/publish/password`, {
+      method: "PUT",
+      body: JSON.stringify({ password: password ?? "" }),
+    });
+  },
+  async unpublishTag(tag: string): Promise<void> {
+    await acl(`/tags/${enc(tag)}/publish`, { method: "DELETE" });
   },
 };

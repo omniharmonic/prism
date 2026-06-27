@@ -145,6 +145,26 @@ db.exec(`
     queued_at      INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS federation_outbox_peer ON federation_outbox(peer_pubkey);
+
+  -- Durable pending suggestions (Horizon C, suggest-level). A suggest-level peer
+  -- (or capability) does NOT merge into the live doc; its proposed change lands
+  -- here for the owner to accept/reject, and MUST survive a server restart (the
+  -- live collab path keeps suggestions only in memory). note_id is this hub's
+  -- local note; space_note_key records the federation origin when applicable.
+  CREATE TABLE IF NOT EXISTS pending_suggestions (
+    id             TEXT PRIMARY KEY,
+    space_note_key TEXT,
+    note_id        TEXT NOT NULL,
+    author         TEXT,            -- peer pubkey | email | capability id
+    author_kind    TEXT,            -- 'peer' | 'user' | 'link'
+    summary        TEXT,            -- short human description
+    payload        TEXT NOT NULL,   -- the proposed change (Yjs update b64, or text/html)
+    status         TEXT NOT NULL,   -- 'pending' | 'accepted' | 'rejected'
+    created_at     INTEGER NOT NULL,
+    resolved_at    INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS pending_suggestions_note   ON pending_suggestions(note_id);
+  CREATE INDEX IF NOT EXISTS pending_suggestions_status ON pending_suggestions(status);
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -674,4 +694,57 @@ export function outboxForPeer(pubkey: string): OutboxItem[] {
 }
 export function clearOutboxItem(id: number): void {
   deleteOutboxStmt.run(id);
+}
+
+// ---- pending suggestions (durable; survive restart) ----
+export interface Suggestion {
+  id: string;
+  space_note_key: string | null;
+  note_id: string;
+  author: string | null;
+  author_kind: string | null;
+  summary: string | null;
+  payload: string;
+  status: "pending" | "accepted" | "rejected";
+  created_at: number;
+  resolved_at: number | null;
+}
+const insertSuggestion = db.prepare(
+  `INSERT INTO pending_suggestions (id, space_note_key, note_id, author, author_kind, summary, payload, status, created_at, resolved_at)
+   VALUES (@id, @space_note_key, @note_id, @author, @author_kind, @summary, @payload, @status, @created_at, @resolved_at)`,
+);
+const selectSuggestion = db.prepare("SELECT * FROM pending_suggestions WHERE id = ?");
+const selectSuggestionsByStatus = db.prepare(
+  "SELECT * FROM pending_suggestions WHERE status = ? ORDER BY created_at DESC",
+);
+const selectAllSuggestions = db.prepare("SELECT * FROM pending_suggestions ORDER BY created_at DESC");
+const selectSuggestionsByNote = db.prepare(
+  "SELECT * FROM pending_suggestions WHERE note_id = ? ORDER BY created_at DESC",
+);
+const updateSuggestionStatus = db.prepare(
+  "UPDATE pending_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
+);
+const deleteSuggestionStmt = db.prepare("DELETE FROM pending_suggestions WHERE id = ?");
+
+export function createSuggestion(
+  s: Omit<Suggestion, "created_at" | "resolved_at" | "status"> & { status?: Suggestion["status"] },
+): Suggestion {
+  const row: Suggestion = { ...s, status: s.status ?? "pending", created_at: now(), resolved_at: null };
+  insertSuggestion.run(row);
+  return row;
+}
+export function getSuggestion(id: string): Suggestion | null {
+  return (selectSuggestion.get(id) as Suggestion | undefined) ?? null;
+}
+export function listSuggestions(status?: Suggestion["status"]): Suggestion[] {
+  return (status ? selectSuggestionsByStatus.all(status) : selectAllSuggestions.all()) as Suggestion[];
+}
+export function suggestionsForNote(noteId: string): Suggestion[] {
+  return selectSuggestionsByNote.all(noteId) as Suggestion[];
+}
+export function setSuggestionStatus(id: string, status: Suggestion["status"]): void {
+  updateSuggestionStatus.run(status, now(), id);
+}
+export function deleteSuggestion(id: string): void {
+  deleteSuggestionStmt.run(id);
 }

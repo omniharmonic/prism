@@ -42,9 +42,15 @@ import {
   upsertFederatedNote,
   federatedNotesForSpace,
   deleteFederatedNote,
+  updatePublication,
+  listSuggestions,
+  getSuggestion,
+  setSuggestionStatus,
+  deleteSuggestion,
   type Space,
 } from "../db";
 import { noteKind } from "../collab";
+import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -239,8 +245,11 @@ acl.get("/publications", (c) =>
 acl.post("/tags/:tag/publish", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
   const body = await c.req
-    .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string }>()
-    .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string });
+    .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string }>()
+    .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string });
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
 
   // One publication per tag (v1) → idempotent: reuse the existing slug if present.
   const existing = getPublicationByResource("tag", tag);
@@ -255,11 +264,14 @@ acl.post("/tags/:tag/publish", async (c) => {
       template: body.template || "wiki",
       title: body.title ?? null,
       home_note_id: body.homeNoteId ?? null,
-      password_hash: null,
+      password_hash: passwordHash,
       theme: null,
       expires_at: null,
       created_by: config.ownerEmail,
     });
+  } else if (body.password !== undefined) {
+    // Re-publishing with a password field present updates the gate (set or clear).
+    updatePublication(existing.id, { password_hash: passwordHash });
   }
   // The publication primitive: an `anyone-with-the-link` grant scoped to the tag.
   upsertGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
@@ -267,7 +279,17 @@ acl.post("/tags/:tag/publish", async (c) => {
   // Live count for the UI warning ("this will publish N notes" — and is dynamic).
   let count = 0;
   try { count = (await vault.listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
-  return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count });
+  return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+/** Set or clear a publication's password (clear by sending an empty/omitted password). */
+acl.put("/tags/:tag/publish/password", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const pub = getPublicationByResource("tag", tag);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
 });
 
 acl.delete("/tags/:tag/publish", (c) => {
@@ -275,6 +297,47 @@ acl.delete("/tags/:tag/publish", (c) => {
   const pub = getPublicationByResource("tag", tag);
   if (pub) deletePublication(pub.id);
   removeGrantBySubjectResource("anyone", "*", "tag", tag);
+  return c.json({ ok: true });
+});
+
+// ── Suggestions review (Horizon C, suggest-level): durable owner inbox ──
+// A suggest-level peer/collaborator's proposed change is stored (survives
+// restart) for the owner to accept or reject. Accept/reject is a status
+// transition; applying an accepted suggestion to the live doc is handled by the
+// collab/federation layer when that note next loads (gated path).
+acl.get("/suggestions", (c) => {
+  const status = c.req.query("status") as "pending" | "accepted" | "rejected" | undefined;
+  return c.json(
+    listSuggestions(status).map((s) => ({
+      id: s.id,
+      noteId: s.note_id,
+      spaceNoteKey: s.space_note_key,
+      author: s.author,
+      authorKind: s.author_kind,
+      summary: s.summary,
+      status: s.status,
+      createdAt: s.created_at,
+      resolvedAt: s.resolved_at,
+    })),
+  );
+});
+
+acl.post("/suggestions/:id/accept", (c) => {
+  const s = getSuggestion(c.req.param("id"));
+  if (!s) return c.json({ error: "not_found" }, 404);
+  setSuggestionStatus(s.id, "accepted");
+  return c.json({ ok: true, status: "accepted" });
+});
+
+acl.post("/suggestions/:id/reject", (c) => {
+  const s = getSuggestion(c.req.param("id"));
+  if (!s) return c.json({ error: "not_found" }, 404);
+  setSuggestionStatus(s.id, "rejected");
+  return c.json({ ok: true, status: "rejected" });
+});
+
+acl.delete("/suggestions/:id", (c) => {
+  deleteSuggestion(c.req.param("id"));
   return c.json({ ok: true });
 });
 

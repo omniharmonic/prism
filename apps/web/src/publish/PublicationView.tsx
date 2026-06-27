@@ -27,13 +27,19 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   const [note, setNote] = useState<PubNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [graph, setGraph] = useState<PubGraph | null>(null);
+  // Password gate: the server marks `passwordRequired` and, while locked,
+  // withholds the nav (notes: []) and 401s the note/graph reads. We surface a
+  // prompt; a successful unlock sets an httpOnly cookie, after which we bump
+  // `reloadKey` to re-fetch everything. `locked` drives whether to show it.
+  const [locked, setLocked] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // Load the manifest once per slug.
+  // Load the manifest once per slug (and after a successful unlock).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}`));
+        const r = await fetch(api(`/${encodeURIComponent(slug)}`), { credentials: "include" });
         if (!r.ok) {
           if (!cancelled)
             setError(
@@ -46,7 +52,10 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
         const m = (await r.json()) as PublicationManifest;
         if (cancelled) return;
         setManifest(m);
-        setActiveId((cur) => cur ?? m.homeNoteId ?? m.notes[0]?.id ?? null);
+        // Locked when password-gated and the server withheld the nav.
+        const isLocked = m.passwordRequired && m.notes.length === 0;
+        setLocked(isLocked);
+        if (!isLocked) setActiveId((cur) => cur ?? m.homeNoteId ?? m.notes[0]?.id ?? null);
       } catch {
         if (!cancelled) setError("Couldn’t reach the server.");
       }
@@ -54,15 +63,16 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, reloadKey]);
 
   // Load the publication-scoped graph once per slug (drives backlinks). Best
   // effort — a missing graph just means no backlinks.
   useEffect(() => {
+    if (locked) return;
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}/graph`));
+        const r = await fetch(api(`/${encodeURIComponent(slug)}/graph`), { credentials: "include" });
         if (!r.ok) return;
         const g = (await r.json()) as PubGraph;
         if (!cancelled) setGraph(g);
@@ -73,7 +83,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, locked, reloadKey]);
 
   // Load the active note's content whenever it changes.
   useEffect(() => {
@@ -87,9 +97,15 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
       try {
         const r = await fetch(
           api(`/${encodeURIComponent(slug)}/notes/${encodeURIComponent(activeId)}`),
+          { credentials: "include" },
         );
         if (!r.ok) {
-          if (!cancelled) setNote(null);
+          // A 401 on a password-gated publication means the unlock lapsed —
+          // fall back to the prompt rather than showing an empty article.
+          if (!cancelled) {
+            setNote(null);
+            if (r.status === 401) setLocked(true);
+          }
           return;
         }
         const n = (await r.json()) as PubNote;
@@ -103,7 +119,29 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     return () => {
       cancelled = true;
     };
-  }, [slug, activeId]);
+  }, [slug, activeId, reloadKey]);
+
+  // Submit the publication password; on success the server sets the unlock
+  // cookie and we re-fetch everything via `reloadKey`.
+  const onUnlock = useCallback(
+    async (password: string): Promise<boolean> => {
+      try {
+        const r = await fetch(api(`/${encodeURIComponent(slug)}/auth`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ password }),
+        });
+        if (!r.ok) return false;
+        setLocked(false);
+        setReloadKey((k) => k + 1);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [slug],
+  );
 
   // Navigate within the publication without a full reload (keeps the URL honest
   // so links/back work).
@@ -158,10 +196,11 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     );
   }
 
-  // Placeholder for password-gated publications: the gateway already enforces
-  // access, but a future UI can prompt here when `manifest.passwordRequired`.
-  // TODO(L-Pub-Wiki): render a password prompt screen when the server adds the
-  // unlock endpoint.
+  // Password-gated and still locked: show the unlock prompt instead of the
+  // (withheld) publication. A correct password sets the cookie + re-fetches.
+  if (locked) {
+    return <PasswordGate title={manifest.title} onUnlock={onUnlock} />;
+  }
 
   const Template = getTemplate(manifest.template);
 
@@ -185,5 +224,92 @@ function Centered({ children }: { children: React.ReactNode }) {
     <div style={{ minHeight: "100dvh", display: "grid", placeItems: "center", padding: 24 }}>
       {children}
     </div>
+  );
+}
+
+/** Centered unlock prompt for a password-gated publication. */
+function PasswordGate({
+  title,
+  onUnlock,
+}: {
+  title: string;
+  onUnlock: (password: string) => Promise<boolean>;
+}) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [wrong, setWrong] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy || !password) return;
+    setBusy(true);
+    setWrong(false);
+    const ok = await onUnlock(password);
+    if (!ok) {
+      setWrong(true);
+      setBusy(false);
+    }
+    // On success the parent re-fetches and unmounts this component.
+  };
+
+  return (
+    <Centered>
+      <form
+        onSubmit={submit}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          width: "min(320px, 100%)",
+          textAlign: "center",
+        }}
+      >
+        <h1 style={{ fontSize: 18, fontWeight: 600, color: "var(--text-primary, #eee)", margin: 0 }}>
+          {title}
+        </h1>
+        <p style={{ fontSize: 13, color: "var(--text-secondary, #aaa)", margin: 0 }}>
+          This publication is password protected.
+        </p>
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          aria-label="Password"
+          style={{
+            padding: "10px 12px",
+            fontSize: 16,
+            borderRadius: 8,
+            border: "1px solid var(--border, #333)",
+            background: "var(--bg-input, var(--bg-secondary, #1a1a1a))",
+            color: "var(--text-primary, #eee)",
+            outline: "none",
+          }}
+        />
+        {wrong && (
+          <p style={{ fontSize: 13, color: "var(--accent-danger, #e5484d)", margin: 0 }}>
+            Incorrect password.
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={busy || !password}
+          style={{
+            padding: "10px 12px",
+            fontSize: 14,
+            fontWeight: 600,
+            borderRadius: 8,
+            border: "none",
+            cursor: busy || !password ? "default" : "pointer",
+            opacity: busy || !password ? 0.6 : 1,
+            background: "var(--accent, #4f8cff)",
+            color: "var(--accent-fg, #fff)",
+          }}
+        >
+          {busy ? "Unlocking…" : "Unlock"}
+        </button>
+      </form>
+    </Centered>
   );
 }
