@@ -17,12 +17,15 @@ function serializeCSV(data: string[][]): string {
   return data.map((row) => row.join(",")).join("\n");
 }
 
-export default function SpreadsheetRenderer({ note }: RendererProps) {
+export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
   const initialData = useMemo(() => parseCSV(note.content), [note.id]);
   const [data, setData] = useState<string[][]>(initialData);
 
   const getContent = useCallback(() => serializeCSV(data), [data]);
-  const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, scheduleSave: rawScheduleSave } = useAutoSave(note.id, getContent);
+  // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
+  // scheduleSave keeps the cell/row handlers unchanged while blocking mutation.
+  const scheduleSave = useCallback(() => { if (!readOnly) rawScheduleSave(); }, [readOnly, rawScheduleSave]);
 
   const updateCell = useCallback((row: number, col: number, value: string) => {
     setData((prev) => {
@@ -62,10 +65,12 @@ export default function SpreadsheetRenderer({ note }: RendererProps) {
         <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
           {data.length} rows × {colCount} cols
         </span>
-        <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={addRow}>+ Row</Button>
-          <Button size="sm" variant="ghost" onClick={addColumn}>+ Column</Button>
-        </div>
+        {!readOnly && (
+          <div className="flex gap-2">
+            <Button size="sm" variant="ghost" onClick={addRow}>+ Row</Button>
+            <Button size="sm" variant="ghost" onClick={addColumn}>+ Column</Button>
+          </div>
+        )}
       </div>
 
       {/* Table */}
@@ -98,6 +103,7 @@ export default function SpreadsheetRenderer({ note }: RendererProps) {
                     <input
                       value={cell}
                       onChange={(e) => updateCell(ri, ci, e.target.value)}
+                      readOnly={readOnly}
                       className="w-full px-2 py-1 text-sm outline-none bg-transparent"
                       style={{
                         color: "var(--text-primary)",
@@ -108,16 +114,18 @@ export default function SpreadsheetRenderer({ note }: RendererProps) {
                     />
                   </td>
                 ))}
-                {/* Delete row button */}
-                <td className="w-6" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-                  <button
-                    onClick={() => deleteRow(ri)}
-                    className="p-0.5 opacity-0 hover:opacity-100 transition-opacity"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <Trash2 size={10} />
-                  </button>
-                </td>
+                {/* Delete row button (hidden on read-only surfaces) */}
+                {!readOnly && (
+                  <td className="w-6" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+                    <button
+                      onClick={() => deleteRow(ri)}
+                      className="p-0.5 opacity-0 hover:opacity-100 transition-opacity"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

@@ -9,6 +9,7 @@ import { LoginScreen } from "./auth/LoginScreen";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
+import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
@@ -78,6 +79,19 @@ async function start() {
     return;
   }
 
+  // Public published-site route: /p/:slug[/notes/:id]. Anonymous, read-only; no
+  // session and no capability token — the gateway authorizes each /api/p read
+  // server-side. Must be checked before the session/capability logic below.
+  const pub = window.location.pathname.match(/^\/p\/([^/]+)(?:\/notes\/(.+))?$/);
+  if (pub) {
+    root.render(
+      <React.StrictMode>
+        <PublicationView slug={decodeURIComponent(pub[1])} noteId={pub[2] ? decodeURIComponent(pub[2]) : null} />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
   // Real-time collaborative editing route: /collab/:id (CRDT). Capability link
   // in ?t= carries access — no session required.
   const collab = window.location.pathname.match(/^\/collab\/(.+)$/);
@@ -95,8 +109,16 @@ async function start() {
     return;
   }
 
+  // The owner setup wizard is Tauri-only (its steps call `invoke()`), so the web
+  // shell skips it by DEFAULT for everyone — a capability viewer, an invited
+  // non-owner, and even the owner (web setup is the desktop/CLI's job). The only
+  // exception is an explicit opt-in for a future web-native owner flow.
+  const allowOwnerOnboarding = import.meta.env.VITE_WEB_OWNER_ONBOARDING === "true";
+  let isViewer = true;
+
   // Capability link (?t=): a recipient with no session. The token authorizes
   // gateway calls; they see only the shared notes. Share UI is hidden for them.
+  // Capability viewers skip fetchMe entirely, so isViewer must stay true here.
   if (!capability) {
     // Otherwise a session is required. Ask the gateway who we are.
     const me = await fetchMe();
@@ -115,6 +137,8 @@ async function start() {
       );
       return;
     }
+    // Only a genuine owner, and only when explicitly opted in, sees onboarding.
+    isViewer = !(allowOwnerOnboarding && me.isOwner);
   }
 
   startOutboxSync();
@@ -123,7 +147,7 @@ async function start() {
       <VaultClientProvider client={httpVaultClient}>
         <CollabSharingProvider value={capability ? null : webCollabSharing}>
           <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-            <App />
+            <App skipOnboarding={isViewer} />
             <OfflineIndicator />
           </CollabDocumentProvider>
         </CollabSharingProvider>

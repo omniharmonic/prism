@@ -22,6 +22,17 @@ export const config = {
   // the webview. Shared between this .env and the desktop's prism-config.json.
   collabToken: process.env.COLLAB_TOKEN ?? "",
 
+  // ── Parachute-to-Parachute federation (Horizon C) ──
+  // This server's Ed25519 PRIVATE signing key as a base64url-encoded 32-byte
+  // seed. Used to sign federation requests/connections to peer hubs; only the
+  // PUBLIC key is ever shared. Empty → auth/peer.ts generates an ephemeral
+  // in-memory keypair and warns (federation works within the process but the
+  // identity is not stable across restarts).
+  peerSigningKey: process.env.PEER_SIGNING_KEY ?? "",
+  // Master switch for the federation transport/routes. Trust pairing can be
+  // exercised independently; this gates the live sync (Phase 2+).
+  federationEnabled: process.env.FEDERATION_ENABLED === "true",
+
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   magicFrom: process.env.MAGIC_FROM ?? "Prism <login@example.com>",
 

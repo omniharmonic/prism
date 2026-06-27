@@ -7,22 +7,33 @@
  * content itself is still enforced by the /api gateway via these grants.
  */
 import { Hono } from "hono";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
 import { vault, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
+import { serverKeyPair, fingerprint } from "../auth/peer";
 import { LEVELS, type Level } from "../permissions";
 import {
   ensureUser,
   hasAccount,
   listUsers,
   upsertGrant,
+  removeGrant,
   removeGrantBySubjectResource,
   grantsForResource,
+  grantsForPeer,
   createCapability,
   capabilitiesForResource,
   deleteCapability,
+  createPublication,
+  getPublicationBySlug,
+  getPublicationByResource,
+  listPublications,
+  deletePublication,
+  storePairing,
+  listPeers,
+  removePeer,
 } from "../db";
 import { createInvite } from "../auth/invite";
 
@@ -191,5 +202,109 @@ acl.delete("/tags/:tag/people/:email", (c) => {
     "tag",
     decodeURIComponent(c.req.param("tag")),
   );
+  return c.json({ ok: true });
+});
+
+// ── Publishing (Horizon B): turn a tag into a public, read-only site ──
+// Config (the publications row) and access (an `anyone` grant) are decoupled;
+// effectiveLevel in the /api/p gateway stays the only authoritative guard.
+const slugify = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "site";
+
+acl.get("/publications", (c) =>
+  c.json(
+    listPublications().map((p) => ({
+      slug: p.id,
+      tag: p.resource,
+      template: p.template,
+      title: p.title,
+      passwordRequired: !!p.password_hash,
+      expiresAt: p.expires_at,
+      url: `${config.appOrigin}/p/${p.id}`,
+      createdAt: p.created_at,
+    })),
+  ),
+);
+
+acl.post("/tags/:tag/publish", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const body = await c.req
+    .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string }>()
+    .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string });
+
+  // One publication per tag (v1) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("tag", tag);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(tag);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      resource_type: "tag",
+      resource: tag,
+      template: body.template || "wiki",
+      title: body.title ?? null,
+      home_note_id: body.homeNoteId ?? null,
+      password_hash: null,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  }
+  // The publication primitive: an `anyone-with-the-link` grant scoped to the tag.
+  upsertGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
+
+  // Live count for the UI warning ("this will publish N notes" — and is dynamic).
+  let count = 0;
+  try { count = (await vault.listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
+  return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count });
+});
+
+acl.delete("/tags/:tag/publish", (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const pub = getPublicationByResource("tag", tag);
+  if (pub) deletePublication(pub.id);
+  removeGrantBySubjectResource("anyone", "*", "tag", tag);
+  return c.json({ ok: true });
+});
+
+// ── Peer federation (Horizon C): identity + one-time pairing (owner setup) ──
+acl.get("/peers/identity", (c) => {
+  const kp = serverKeyPair();
+  return c.json({ publicKey: kp.publicKeyB64url, fingerprint: fingerprint(kp.publicKeyB64url) });
+});
+
+acl.post("/peers/pair", async (c) => {
+  const { label } = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
+  // The raw code is shown to the owner ONCE to hand to the peer out-of-band; only
+  // its hash is stored (invite.ts pattern). 7-day single-use TTL.
+  const code = randomBytes(18).toString("base64url");
+  storePairing(createHash("sha256").update(code).digest("hex"), label ?? null, config.ownerEmail, 7 * 86_400_000);
+  const kp = serverKeyPair();
+  return c.json({
+    code,
+    expiresInDays: 7,
+    serverPublicKey: kp.publicKeyB64url,
+    fingerprint: fingerprint(kp.publicKeyB64url),
+  });
+});
+
+acl.get("/peers", (c) =>
+  c.json(
+    listPeers().map((p) => ({
+      pubkey: p.pubkey,
+      email: p.email,
+      label: p.label,
+      fingerprint: fingerprint(p.pubkey),
+      pairedAt: p.paired_at,
+      createdAt: p.created_at,
+    })),
+  ),
+);
+
+acl.delete("/peers/:pubkey", (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  for (const g of grantsForPeer(pubkey)) removeGrant(g.id);
+  removePeer(pubkey);
   return c.json({ ok: true });
 });

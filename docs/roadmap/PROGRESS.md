@@ -12,13 +12,15 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barr
 - 🔵 L-Perm — `effectiveLevel` space-membership extension (`NoteRef.spaceIds`)
 - 🔵 **B0** — core/web/server tsc clean; cargo check clean; desktop onboarding unchanged; migrations idempotent on 180MB dev DB
 
-## P1 — First end-to-end wins → barrier B1
-- ⬜ L-Onb-A2 — web `main.tsx` `isViewer` wiring + `VITE_WEB_OWNER_ONBOARDING`
-- ⬜ L-Pub-Spine — `publish.ts` manifest + single note, `/p` mount, vite denylist, `/p` route, minimal `PublicationView`
-- ⬜ L-Pub-ACL — `POST/DELETE /tags/:tag/publish` + `GET /publications`
-- ⬜ L-Core-RO-impl — honor `readOnly` in Document/Code/Spreadsheet/Canvas renderers
-- ⬜ L-P2P-Trust — `auth/peer.ts` Ed25519 + pairing handshake + `peers` wiring + fingerprint
-- ⬜ **B1** — viewer lands in Shell; `/p/:slug/notes/:id` sanitized + 403 out-of-pub; pairing establishes verified peer
+## P1 — First end-to-end wins → barrier B1  ✅
+- 🔵 L-Onb-A2 — web `main.tsx` `isViewer` wiring + `VITE_WEB_OWNER_ONBOARDING` (web skips wizard by default; browser confirm in final QA)
+- 🔵 L-Pub-Spine — `publish.ts` manifest + single note; JSON mounted at **`/api/p`** (not `/p`, to avoid SPA-shadow), `/p` client route + `PublicationView`
+- 🔵 L-Pub-ACL — `POST/DELETE /acl/tags/:tag/publish` + `GET /acl/publications` (idempotent; anyone-grant primitive)
+- 🔵 L-Core-RO-impl — `readOnly` honored in Document/Code/Spreadsheet/Canvas (editable default unchanged)
+- 🔵 L-P2P-Trust — `auth/peer.ts` Ed25519 + `routes/federation.ts` pairing + `acl` owner pairing/identity/list
+- 🔵 **B1** — publish→manifest→note 200, out-of-pub 403; SPA at /p, JSON at /api/p; pairing valid/reuse-403/bad-key-400/listed; core+web+server tsc clean; web prod build green
+
+> Design note: JSON moved from `/p` (plan) to `/api/p` so the human `/p/:slug` URL serves the SPA shell while data stays under the already-denylisted `/api/*` — cleaner than the plan's `/^\/p\//` denylist add, which would have shadowed the client route.
 
 ## P2 — Depth: Wiki + bidirectional CRDT → barrier B2
 - ⬜ L-Pub-Wiki — template registry + WikiTemplate slots, scoped wikilink onNavigate, Backlinks

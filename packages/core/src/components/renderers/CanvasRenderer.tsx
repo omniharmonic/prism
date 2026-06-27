@@ -34,7 +34,7 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
 
 // ─── Main Component ──────────────────────────────────────────
 
-export default function CanvasRenderer({ note }: RendererProps) {
+export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const theme = useSettingsStore((s) => s.theme);
   const isDark = theme === "dark";
   const contentRef = useRef(note.content || "");
@@ -60,6 +60,9 @@ export default function CanvasRenderer({ note }: RendererProps) {
   const syncedArrows = useRef<Map<string, { sourceId: string; targetId: string; relationship: string }>>(new Map());
 
   const handleChange = useCallback((elements: readonly any[], appState: any, files: any) => {
+    // Read-only surfaces (published Wiki / anonymous): never serialize, save, or
+    // sync links. Excalidraw still fires onChange for pan/zoom in view mode.
+    if (readOnly) return;
     // Serialize canvas state
     const serialized = JSON.stringify({
       elements,
@@ -141,7 +144,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
         syncedArrows.current.delete(arrowId);
       }
     }
-  }, []);
+  }, [readOnly]);
 
   // ─── Add note card ──────────────────────────────────────
 
@@ -288,6 +291,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
           <span style={{ color: "var(--text-secondary)" }}>
             {note.path?.split("/").pop() || "Canvas"}
           </span>
+          {!readOnly && <>
           <div style={{ width: 1, height: 16, background: "var(--glass-border)" }} />
           <button
             onClick={() => setShowDrawer(!showDrawer)}
@@ -327,6 +331,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
               Open note
             </button>
           )}
+          </>}
         </div>
         <span style={{ color: "var(--text-muted)" }}>
           {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
@@ -347,6 +352,7 @@ export default function CanvasRenderer({ note }: RendererProps) {
             }}
             onChange={handleChange as any}
             theme={isDark ? "dark" : "light"}
+            viewModeEnabled={readOnly}
           />
         </div>
       </div>
