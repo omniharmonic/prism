@@ -70,3 +70,19 @@ test("@live owner opens Network → Publish, publishes a collection, sees a live
   const pubs = await acl.publications();
   expect(pubs.some((p) => p.tag === TAG)).toBe(true);
 });
+
+test("@live owner opens Network → Federate: node identity + all four sections render", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await page.getByRole("button", { name: "Federate" }).click();
+
+  // The node identity card + the four management sections render for the owner.
+  await expect(page.getByText("This node", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Peers", { exact: true })).toBeVisible();
+  await expect(page.getByText("Spaces", { exact: true })).toBeVisible();
+  await expect(page.getByText("Inbox", { exact: true })).toBeVisible();
+  // The pairing flow is reachable (invite/join).
+  await expect(page.getByRole("button", { name: /Invite a peer/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /New space/i })).toBeVisible();
+});
