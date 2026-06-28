@@ -142,6 +142,11 @@ export const acl = {
     const r = await aclReq("/publications");
     return Array.isArray(r.body) ? r.body : [];
   },
+  /** Runtime federation transport state (owner view). */
+  async federationStatus(): Promise<{ enabled: boolean }> {
+    const r = await aclReq("/federation/status");
+    return { enabled: !!r.body?.enabled };
+  },
   /** Mint a capability link for a note; returns the bare `?t=` token + its cap id. */
   async createLink(noteId: string, level: string): Promise<{ token: string; capId: string }> {
     const r = await aclReq(`/notes/${encodeURIComponent(noteId)}/links`, { method: "POST", body: JSON.stringify({ level }) });

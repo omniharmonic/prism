@@ -184,6 +184,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS federation_mirror_status ON federation_mirror_requests(status);
   CREATE INDEX IF NOT EXISTS federation_mirror_peer   ON federation_mirror_requests(peer_pubkey, space_id);
+
+  -- Owner-mutable runtime settings (kv). Currently: federation_enabled, so the
+  -- owner can toggle the federation bridge from the UI without a restart. Each
+  -- key falls back to its config/env default when unset.
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -203,6 +211,35 @@ db.exec(`
   if (cols.length && !cols.some((c) => c.name === "collab_url")) {
     db.exec("ALTER TABLE peers ADD COLUMN collab_url TEXT");
   }
+}
+
+// ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
+const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
+const upsertSetting = db.prepare(
+  "INSERT INTO settings (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value=@value",
+);
+function getSetting(key: string): string | null {
+  return (selectSetting.get(key) as { value: string } | undefined)?.value ?? null;
+}
+function setSetting(key: string, value: string): void {
+  upsertSetting.run({ key, value });
+}
+
+/**
+ * Federation enablement is runtime-mutable so the owner can flip the bridge from
+ * the UI (no .env edit / restart). Persisted in `settings`, defaulting to the
+ * `FEDERATION_ENABLED` env flag when never set. Read straight from the row each
+ * call (a 1-row prepared SELECT — the gate is per connection/action, not a hot
+ * loop), so a toggle takes effect immediately and tests stay isolated (resetDb
+ * clears the row → the env default returns). All the old `config.federationEnabled`
+ * gates now call `getFederationEnabled()`.
+ */
+export function getFederationEnabled(): boolean {
+  const stored = getSetting("federation_enabled");
+  return stored === null ? config.federationEnabled : stored === "true";
+}
+export function setFederationEnabled(enabled: boolean): void {
+  setSetting("federation_enabled", enabled ? "true" : "false");
 }
 
 export type SubjectType = "user" | "link" | "anyone" | "peer";

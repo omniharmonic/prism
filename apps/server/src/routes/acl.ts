@@ -52,6 +52,8 @@ import {
   getSuggestion,
   setSuggestionStatus,
   deleteSuggestion,
+  getFederationEnabled,
+  setFederationEnabled,
   type Space,
 } from "../db";
 import { noteKind } from "../collab";
@@ -96,7 +98,7 @@ const normEmail = (x: string) => x.trim().toLowerCase();
  *  + lazy so the @hocuspocus/provider client never loads on a non-federation
  *  deployment; failures are swallowed (best-effort — never block the ACL write). */
 function kickFederationSync(): void {
-  if (!config.federationEnabled) return;
+  if (!getFederationEnabled()) return;
   void import("../federation-manager")
     .then(({ federationManager }) => federationManager.syncSpaces())
     .catch((e) => console.error("[federation] syncSpaces after ACL change failed:", e));
@@ -365,8 +367,32 @@ acl.get("/peers/identity", (c) => {
 
 /** Whether the live federation transport is enabled on this node. The pairing /
  *  space / mirror endpoints work either way (they only mutate the local store),
- *  but actual sync requires the flag — the UI shows status + how to enable. */
-acl.get("/federation/status", (c) => c.json({ enabled: config.federationEnabled }));
+ *  but actual sync requires the flag — the UI shows status + a toggle. Reads the
+ *  runtime value (persisted; defaults to the FEDERATION_ENABLED env). */
+acl.get("/federation/status", (c) => c.json({ enabled: getFederationEnabled() }));
+
+/** Toggle the live federation transport at runtime (owner-only; persisted, no
+ *  restart). Enabling starts the FederationManager and binds known spaces;
+ *  disabling tears every binding down. The module is imported LAZILY so a node
+ *  that never enables federation never loads @hocuspocus/provider. */
+acl.post("/federation/enabled", async (c) => {
+  const { enabled } = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as { enabled?: boolean });
+  if (typeof enabled !== "boolean") return c.json({ error: "bad_request" }, 400);
+  setFederationEnabled(enabled); // set first — start()/syncSpaces() gate on this flag
+  try {
+    const { federationManager } = await import("../federation-manager");
+    if (enabled) {
+      federationManager.start();
+      await federationManager.syncSpaces();
+    } else {
+      await federationManager.stop();
+    }
+  } catch (e) {
+    console.error("[federation] toggle lifecycle failed:", e);
+    // The flag is persisted regardless; a restart will reconcile the manager.
+  }
+  return c.json({ enabled });
+});
 
 acl.post("/peers/pair", async (c) => {
   const { label } = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });

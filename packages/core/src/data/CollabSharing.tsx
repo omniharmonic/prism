@@ -145,6 +145,9 @@ export interface CollabSharing {
    *  surface is hidden (desktop / capability-viewer safe). `federationEnabled`
    *  reports whether the node has the FEDERATION_ENABLED flag on. */
   federationEnabled?(): Promise<boolean>;
+  /** Toggle the live federation transport at runtime (owner-only; persisted, no
+   *  restart). Enabling starts the bridge + binds known spaces; disabling stops it. */
+  setFederationEnabled?(enabled: boolean): Promise<void>;
   getNodeIdentity?(): Promise<NodeIdentity>;
   /** Mint a one-time code to hand a peer (they redeem it against THIS node). */
   createPairingCode?(label?: string): Promise<PairingCode>;

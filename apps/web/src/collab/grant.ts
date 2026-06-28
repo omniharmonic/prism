@@ -93,6 +93,9 @@ export const webCollabSharing: CollabSharing = {
     const { enabled } = (await (await acl(`/federation/status`)).json()) as { enabled: boolean };
     return enabled;
   },
+  async setFederationEnabled(enabled: boolean): Promise<void> {
+    await acl(`/federation/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
+  },
   async getNodeIdentity(): Promise<NodeIdentity> {
     return (await acl(`/peers/identity`)).json();
   },

@@ -265,7 +265,26 @@ function LevelSelect({ value, onChange }: { value: ShareLevel; onChange: (l: Sha
 }
 
 // ── 1. This node (identity) ───────────────────────────────────────────────────
-function IdentityCard({ identity, enabled }: { identity: NodeIdentity; enabled: boolean }) {
+function IdentityCard({
+  identity,
+  enabled,
+  sharing,
+  onToggled,
+}: {
+  identity: NodeIdentity;
+  enabled: boolean;
+  sharing: CollabSharing;
+  onToggled: () => void;
+}) {
+  const toggle = useAction();
+  const canToggle = !!sharing.setFederationEnabled;
+
+  const flip = () =>
+    toggle.run(async () => {
+      await sharing.setFederationEnabled!(!enabled);
+      onToggled();
+    });
+
   return (
     <section style={card}>
       <SectionHeader
@@ -273,7 +292,9 @@ function IdentityCard({ identity, enabled }: { identity: NodeIdentity; enabled: 
         title="This node"
         hint="Your vault's identity in the federation."
         right={
-          enabled ? (
+          canToggle ? (
+            <FederationToggle enabled={enabled} busy={toggle.busy} onClick={flip} />
+          ) : enabled ? (
             <Badge variant="success">
               <ShieldCheck size={11} /> Federation on
             </Badge>
@@ -295,15 +316,83 @@ function IdentityCard({ identity, enabled }: { identity: NodeIdentity; enabled: 
         <CopyButton value={identity.publicKey} label="Copy key" />
       </div>
 
+      {toggle.error && (
+        <div style={{ marginTop: 12 }}>
+          <FieldError error={toggle.error} />
+        </div>
+      )}
+
       {!enabled && (
         <div style={{ marginTop: 14 }}>
           <Banner tone="warn">
-            Federation transport is off on this node. Pairing and spaces still configure, but live sync
-            needs <code style={mono}>FEDERATION_ENABLED=true</code> plus a server restart.
+            Federation transport is off, so pairing and spaces configure but don't sync yet.{" "}
+            {canToggle ? "Flip the switch above to turn it on — no restart needed." : (
+              <>Live sync needs <code style={mono}>FEDERATION_ENABLED=true</code> plus a server restart.</>
+            )}
           </Banner>
         </div>
       )}
     </section>
+  );
+}
+
+/** A labeled on/off switch for the federation transport (owner-only). */
+function FederationToggle({ enabled, busy, onClick }: { enabled: boolean; busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label="Federation transport"
+      disabled={busy}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        background: "transparent",
+        border: "none",
+        cursor: busy ? "default" : "pointer",
+        opacity: busy ? 0.6 : 1,
+        padding: 0,
+        font: "inherit",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: enabled ? "var(--color-success)" : "var(--text-muted)",
+        }}
+      >
+        Federation {enabled ? "on" : "off"}
+      </span>
+      <span
+        style={{
+          position: "relative",
+          width: 38,
+          height: 22,
+          borderRadius: 999,
+          flexShrink: 0,
+          transition: "background 120ms ease",
+          background: enabled ? "var(--color-success)" : "var(--glass-border)",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            left: enabled ? 18 : 2,
+            width: 18,
+            height: 18,
+            borderRadius: "50%",
+            background: "white",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+            transition: "left 120ms ease",
+          }}
+        />
+      </span>
+    </button>
   );
 }
 
@@ -1197,7 +1286,7 @@ export function FederatePanel() {
         </div>
       )}
 
-      {identity && <IdentityCard identity={identity} enabled={enabled} />}
+      {identity && <IdentityCard identity={identity} enabled={enabled} sharing={sharing} onToggled={load} />}
 
       {sharing.createPairingCode && identity && (
         <PeersCard sharing={sharing} identity={identity} peers={peers} onChanged={load} />

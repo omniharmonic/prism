@@ -87,6 +87,29 @@ test("@live owner opens Network → Federate: node identity + all four sections 
   await expect(page.getByRole("button", { name: /New space/i })).toBeVisible();
 });
 
+test("@live Federate: owner can toggle the federation transport on and back off from the UI", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await page.getByRole("button", { name: "Federate" }).click();
+
+  const toggle = page.getByRole("switch", { name: /Federation transport/i });
+  await expect(toggle).toBeVisible({ timeout: 10_000 });
+
+  // Capture the starting state so we leave the live node exactly as we found it.
+  const startedOn = (await toggle.getAttribute("aria-checked")) === "true";
+
+  // Flip it and assert the server-reported state changes (status reflects the runtime flag).
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", String(!startedOn), { timeout: 10_000 });
+  expect((await acl.federationStatus()).enabled).toBe(!startedOn);
+
+  // Flip back — restore the original state.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", String(startedOn), { timeout: 10_000 });
+  expect((await acl.federationStatus()).enabled).toBe(startedOn);
+});
+
 test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {
   await authedContext(context);
   await page.goto("/");
