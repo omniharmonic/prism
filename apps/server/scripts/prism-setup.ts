@@ -18,6 +18,7 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { seedTagSchemas } from "./lib/seed-tag-schemas";
+import { renderMcp } from "./lib/render-mcp";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = resolve(__dirname, "../.env");
@@ -162,6 +163,14 @@ async function main() {
     } catch (e) {
       console.error(`\n✗ Tag-schema seed failed: ${(e as Error).message}`);
       console.error("  (Secrets were written; re-run the seed once the vault is reachable.)");
+    }
+
+    // Render the project-local .mcp.json so Claude Code gets vault MCP access.
+    try {
+      const r = renderMcp({ url: PARACHUTE_URL, vault: PARACHUTE_VAULT, token: PARACHUTE_TOKEN, dryRun: DRY_RUN });
+      console.log(`${DRY_RUN ? "[dry-run] would render" : "✓ Rendered"} ${r.outPath} (project-local MCP).`);
+    } catch (e) {
+      console.error(`✗ .mcp.json render failed: ${(e as Error).message}`);
     }
 
     // Next steps.

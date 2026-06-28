@@ -183,20 +183,15 @@ cd apps/server && node --env-file=.env --import tsx scripts/<name>.ts
 
 These close the gaps the live agent is uniquely positioned to fix.
 
-### 4.1 Generalize `verify-gateway.ts` to self-provision throwaway notes (REQUIRED)
+### 4.1 Generalize `verify-gateway.ts` to self-provision throwaway notes  ✅ DONE (branch `claude/roadmap-test-coverage`)
 
-**Problem:** hardcoded `TAG`/`GRANTED_NOTE`/`FORBIDDEN_NOTE` break when the owner's vault changes; `verify-invite-flow.ts` inherits the same dependency.
+**Was:** hardcoded `TAG`/`GRANTED_NOTE`/`FORBIDDEN_NOTE` (lines 13–15) broke when the owner's vault changed.
 
-**Do:**
-1. At the top of the script's async body, create throwaway fixtures via the vault client instead of hardcoding:
-   - a unique tag, e.g. `const TAG = \`_test-gw-${Date.now()}\`;`
-   - `GRANTED_NOTE` = `await vault.createNote(...)` under path `_test/gateway/granted-*` carrying `TAG`.
-   - `FORBIDDEN_NOTE` = `await vault.createNote(...)` under `_test/gateway/forbidden-*` with **no** tags.
-   - Use `vault` from `../src/parachute` (already imported, line 9).
-2. Register cleanup in a `finally` that deletes both notes (and the tag if created) regardless of pass/fail.
-3. Export a small `provisionGatewayFixtures()` from a shared `scripts/lib/` helper and have `verify-invite-flow.ts` import it, so both scripts share one self-provisioning source (kills the cross-file fixture coupling).
+**Now done:** the gateway section provisions throwaway `_secgate` fixtures via `vault.createNote` + `vault.addTags` at the top of the async body, derives `GRANTED_NOTE`/`FORBIDDEN_NOTE` at runtime, asserts against `GATE_NOTE_COUNT` (not a magic `5`), and tears everything down (notes + the cap grant via `removeGrant`) in an outer `finally`, mirroring the publishing section. Typechecks clean; no hardcoded IDs remain.
 
-**Acceptance:** run `verify-gateway.ts` and `verify-invite-flow.ts` on a **fresh** vault with none of the old IDs present → both PASS; after each run, `_test/gateway/*` notes and the `_test-gw-*` tag are gone (verify via `query-notes`).
+**Acceptance (run it):** on **any** vault, `node --env-file=.env --import tsx scripts/verify-gateway.ts` → `ALL GATEWAY CHECKS PASSED`, and afterward no `_secgate`/`_sec*` notes remain (the script's own teardown checks assert this).
+
+**Still TODO (smaller):** `verify-invite-flow.ts` may carry its own fixture assumptions — run it and, if it depends on specific vault state, give it the same self-provisioning treatment (optionally factor a shared `scripts/lib/` fixture helper).
 
 ### 4.2 npm aliases for the verify layer (RECOMMENDED, low-risk)
 

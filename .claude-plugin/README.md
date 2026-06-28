@@ -5,8 +5,13 @@ and wires the Parachute vault MCP server.
 
 ## Contents
 
-- **Skills** (`.claude/skills/`): `classify`, `extract-entities`, `reconcile`,
-  `schema-bridge`, `wikilinks`, `prism-setup`.
+- **Data skills** (`.claude/skills/`): `classify`, `extract-entities`,
+  `reconcile`, `schema-bridge`, `wikilinks`.
+- **Setup skills** (`.claude/skills/`): `prism-setup` (orchestrator) +
+  `prism-setup-vault`, `prism-setup-server`, `prism-setup-schema`,
+  `prism-setup-desktop`, `prism-setup-integrations` — walk a user through
+  setting up every part of a Prism (vault, server, schemas, desktop config,
+  and the Matrix/Google/Notion/Anthropic/transcript integrations).
 - **MCP server**: `parachute-vault` — the vault-scoped HTTP MCP at
   `${PARACHUTE_URL}/vault/${PARACHUTE_VAULT}/mcp`, Bearer-authed with the
   hub-issued JWT (`${PARACHUTE_TOKEN}`).

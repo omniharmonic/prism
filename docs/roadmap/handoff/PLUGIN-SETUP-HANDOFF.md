@@ -10,6 +10,22 @@
 
 ---
 
+> ## ⬆ STATUS UPDATE (branch `claude/roadmap-test-coverage`)
+> Part of this handoff is **already built**. What shipped:
+> - ✅ **The `prism-setup` skill family exists** — `.claude/skills/prism-setup{,-vault,-server,-schema,-desktop,-integrations}/SKILL.md` (6 skills, the §2 architecture). G1 + G2 (scaffolding) resolved.
+> - ✅ **`.mcp.json` renderer (G3)** — `apps/server/scripts/lib/render-mcp.ts` + CLI `scripts/render-mcp.ts`, **wired into `prism-setup.ts`** so the full flow renders it. Unit-verified (substitutes all `${...}`, validates JSON, rejects missing inputs).
+> - ✅ **Root `setup` script (G4)** — `npm run setup` (→ `setup:full -w @prism/server`).
+> - ✅ **Standalone seed entrypoint (G5 helper)** — `npm run seed` (`scripts/seed.ts` → `seedTagSchemas` from env, `--dry-run`).
+> - ✅ **Manifest + README fixed** — `plugin.json` v0.2.0, README lists the real skill set.
+>
+> **Still BUILD / to verify against a live vault:**
+> - The skills are **authored but unrun** — execute each against a live vault/desktop and confirm its verify (§5).
+> - **G5 (desktop config writer):** `prism-setup-desktop` currently *instructs* writing `prism-config.json`; there is still no automated writer command — build one or do it by hand per the skill.
+> - **G6** (strengthen `validate_config` with an auth/MCP check) and **G8** (expose `seedTagSchemas` as a Tauri command + wizard verify) remain **optional, unbuilt**.
+> - Integration provisioning (Matrix/Google/etc.) is collect-and-verify only, as designed.
+>
+> The gap table in §1.3 and the build plan in §4 are the **original** assessment; treat the items above as their current status.
+
 ## 0. TL;DR — what you're doing
 
 The setup *machinery* (the `prism-setup.ts` Node script + `seedTagSchemas()` library + the desktop wizard) mostly exists and works. What's **missing** is the **plugin packaging**: there is **no `prism-setup` Claude skill** even though `plugin.json`'s README and `PROGRESS.md` claim one exists. The product goal — "a plugin of skills that walks a user through setting up every part of Prism" — is essentially **unbuilt at the plugin layer**.
