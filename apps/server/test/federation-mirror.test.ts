@@ -23,6 +23,7 @@ import {
   getSpace,
   grantsForResource,
   getFederatedByKey,
+  upsertFederatedNote,
   listMirrorRequests,
   type Grant,
 } from "../src/db";
@@ -193,6 +194,46 @@ test("accepting an already-mapped key is idempotent (reuses the local id, no dup
   assert.equal(r2.mapped[0]!.localId, localId1, "reuses the existing local id");
   assert.equal(createCallsAfterSecond, createCallsAfterFirst, "no second vault note created");
   assert.equal(getFederatedByKey("snk-x")!.local_id, localId1);
+});
+
+// ── 3. GET /acl/spaces serializes peers + sync status (the Federate-panel readback) ──
+test("GET /acl/spaces returns granted peers, noteCount, and lastSyncedAt", async () => {
+  const spaceId = "space-view";
+  const { pubkey, token } = pairedPeer(spaceId);
+  const posted = (await (await mirror(token, {
+    spaceId,
+    spaceTitle: "Viewable",
+    notes: [{ spaceNoteKey: "view-k1", kind: "document", title: "Doc" }],
+  })).json()) as { requestId: string };
+  await ownerReq(`/federation/mirrors/${posted.requestId}/accept`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ level: "suggest" }),
+  });
+
+  type SpaceView = {
+    id: string;
+    peers: Array<{ pubkey: string; fingerprint: string; label: string | null; level: string }>;
+    noteCount: number;
+    lastSyncedAt: number | null;
+  };
+  const list1 = (await (await ownerReq("/spaces")).json()) as SpaceView[];
+  const sv = list1.find((s) => s.id === spaceId);
+  assert.ok(sv, "space present in /acl/spaces");
+  assert.equal(sv!.noteCount, 1, "one federated note mapped");
+  assert.equal(sv!.peers.length, 1, "one granted peer");
+  assert.equal(sv!.peers[0]!.pubkey, pubkey);
+  assert.equal(sv!.peers[0]!.level, "suggest");
+  assert.ok(sv!.peers[0]!.fingerprint, "peer fingerprint surfaced");
+  assert.equal(sv!.lastSyncedAt, null, "never synced → null");
+
+  // Once a note records a peer pull, lastSyncedAt reflects the newest clock.
+  const fed = getFederatedByKey("view-k1")!;
+  const syncedAt = Date.now();
+  upsertFederatedNote({ ...fed, peer_synced_at: syncedAt });
+  const list2 = (await (await ownerReq("/spaces")).json()) as SpaceView[];
+  const sv2 = list2.find((s) => s.id === spaceId)!;
+  assert.equal(sv2.lastSyncedAt, syncedAt, "lastSyncedAt = newest peer_synced_at");
 });
 
 test("owner can reject a mirror request → marked rejected, no space materialized", async () => {
