@@ -15,7 +15,8 @@ export type ContentType =
   | "canvas"
   | "briefing"
   | "dashboard"
-  | "messages-dashboard";
+  | "messages-dashboard"
+  | "network";
 
 // Parachute Note — the canonical data model
 export interface Note {
@@ -265,4 +266,6 @@ export const CONTENT_DEFAULTS: Record<ContentType, { content: string; metadata: 
   briefing: { content: "", metadata: { type: "briefing" } },
   dashboard: { content: "", metadata: { type: "dashboard", layout: { columns: 2, widgets: [] } } },
   "messages-dashboard": { content: "", metadata: { type: "messages-dashboard" } },
+  // Virtual surface — never created as a note; present only to satisfy the map.
+  network: { content: "", metadata: { type: "network" } },
 };

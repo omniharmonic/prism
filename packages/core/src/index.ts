@@ -35,6 +35,11 @@ export type {
   NoteAccess,
   SetPersonResult,
   PublicationInfo,
+  NodeIdentity,
+  PeerInfo,
+  SpaceInfo,
+  PairingCode,
+  MirrorRequestInfo,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

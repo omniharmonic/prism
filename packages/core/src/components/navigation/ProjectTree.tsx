@@ -21,6 +21,7 @@ import {
   GitFork,
   Square,
   CheckSquare2,
+  Radio,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useVaultTree, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
@@ -51,6 +52,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   briefing: FileText,
   dashboard: LayoutDashboard,
   "messages-dashboard": MessageSquare,
+  network: Radio,
 };
 
 // Build a tree from flat notes list

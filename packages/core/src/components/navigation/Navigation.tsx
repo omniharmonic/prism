@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X } from "lucide-react";
+import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -12,7 +12,7 @@ import { ComposeMessage } from "../comms/ComposeMessage";
 import type { ContentType } from "../../lib/types";
 
 /** Virtual tab ids that aren't real notes (so they're excluded from Recent). */
-const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages"]);
+const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network"]);
 
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -46,6 +46,10 @@ export function Navigation() {
 
   const handleOpenAgentActivity = () => {
     openTab("agent-activity", "Agent", "agent-activity" as ContentType);
+  };
+
+  const handleOpenNetwork = () => {
+    openTab("network", "Network", "network" as ContentType);
   };
 
   return (
@@ -116,6 +120,7 @@ export function Navigation() {
             />
             <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
             <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
+            <NavItem icon={<Radio size={15} />} label="Network" onClick={handleOpenNetwork} />
           </div>
 
           {/* Favorites (pinned notes) */}

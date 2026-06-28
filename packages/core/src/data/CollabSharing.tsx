@@ -44,6 +44,52 @@ export interface PublicationInfo {
   createdAt: number;
 }
 
+// ── Federation (peer-to-peer vault sync) ──────────────────────────────────────
+/** This node's federation identity. The fingerprint is the human-verifiable
+ *  hash two operators read aloud to confirm they paired the right node. */
+export interface NodeIdentity {
+  publicKey: string;
+  fingerprint: string;
+}
+/** A paired peer hub. */
+export interface PeerInfo {
+  pubkey: string;
+  email: string | null;
+  label: string | null;
+  fingerprint: string;
+  pairedAt: number | null;
+  createdAt: number;
+}
+/** A shared space = a slice of the vault synced with peers. */
+export interface SpaceInfo {
+  id: string;
+  title: string | null;
+  includeTags: string[];
+  excludeTags: string[];
+  pathPrefix: string | null;
+  createdAt: number;
+}
+/** A one-time pairing code to hand to a peer, plus our identity for them to verify. */
+export interface PairingCode {
+  code: string;
+  expiresInDays: number;
+  serverPublicKey: string;
+  fingerprint: string;
+}
+/** An inbound mirror request: a peer wants this node to mirror a shared slice.
+ *  Owner-reviewed — a peer never writes to the vault without an accept. */
+export interface MirrorRequestInfo {
+  id: string;
+  peer: string;
+  fingerprint: string;
+  spaceId: string;
+  spaceTitle: string | null;
+  notes: Array<{ spaceNoteKey: string; kind: string; title?: string }>;
+  status: "pending" | "accepted" | "rejected";
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
 /**
  * Seam for sharing. The web shell implements the full ACL surface against the
  * Prism Server gateway (/acl); the desktop shell may provide only the legacy
@@ -72,6 +118,33 @@ export interface CollabSharing {
   ): Promise<{ slug: string; url: string; count: number; passwordRequired: boolean }>;
   setPublishPassword?(tag: string, password: string | null): Promise<void>;
   unpublishTag?(tag: string): Promise<void>;
+
+  /** Federation — peer-to-peer vault sync. All optional; absent → the Federate
+   *  surface is hidden (desktop / capability-viewer safe). `federationEnabled`
+   *  reports whether the node has the FEDERATION_ENABLED flag on. */
+  federationEnabled?(): Promise<boolean>;
+  getNodeIdentity?(): Promise<NodeIdentity>;
+  /** Mint a one-time code to hand a peer (they redeem it against THIS node). */
+  createPairingCode?(label?: string): Promise<PairingCode>;
+  /** Redeem a peer's code: registers THIS node as their peer (and exchanges
+   *  identity). `peerServerUrl` is the peer's Prism origin (e.g. https://…). */
+  redeemPairingCode?(args: { code: string; peerServerUrl: string; label?: string }): Promise<{ ok: boolean; fingerprint: string }>;
+  listPeers?(): Promise<PeerInfo[]>;
+  setPeerUrl?(pubkey: string, collabUrl: string): Promise<void>;
+  removePeer?(pubkey: string): Promise<void>;
+
+  listSpaces?(): Promise<SpaceInfo[]>;
+  createSpace?(args: { title?: string; includeTags?: string[]; excludeTags?: string[]; pathPrefix?: string }): Promise<SpaceInfo>;
+  deleteSpace?(spaceId: string): Promise<void>;
+  /** Add a note to a space → mints its space_note_key + pins the collab kind. */
+  addNoteToSpace?(spaceId: string, noteId: string): Promise<{ space_note_key: string; kind: string }>;
+  grantSpacePeer?(spaceId: string, pubkey: string, level: ShareLevel): Promise<void>;
+  revokeSpacePeer?(spaceId: string, pubkey: string): Promise<void>;
+
+  /** Inbound mirror requests this node has received (owner-reviewed). */
+  listMirrorRequests?(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]>;
+  acceptMirror?(id: string, level?: ShareLevel): Promise<void>;
+  rejectMirror?(id: string): Promise<void>;
 }
 
 const CollabSharingContext = createContext<CollabSharing | null>(null);

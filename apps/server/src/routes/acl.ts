@@ -363,6 +363,11 @@ acl.get("/peers/identity", (c) => {
   return c.json({ publicKey: kp.publicKeyB64url, fingerprint: fingerprint(kp.publicKeyB64url) });
 });
 
+/** Whether the live federation transport is enabled on this node. The pairing /
+ *  space / mirror endpoints work either way (they only mutate the local store),
+ *  but actual sync requires the flag — the UI shows status + how to enable. */
+acl.get("/federation/status", (c) => c.json({ enabled: config.federationEnabled }));
+
 acl.post("/peers/pair", async (c) => {
   const { label } = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
   // The raw code is shown to the owner ONCE to hand to the peer out-of-band; only
