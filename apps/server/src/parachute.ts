@@ -6,7 +6,8 @@
  * Mirrors the shapes in apps/web/src/parachute/rest.ts (Parachute 0.5.x returns
  * camelCase notes; PATCH needs if_updated_at or force).
  */
-import { resolveVaultEntry, type VaultEntry } from "./config";
+import { type VaultEntry } from "./config";
+import { resolveVaultEntry } from "./db";
 
 export interface Note {
   id: string;

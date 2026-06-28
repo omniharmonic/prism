@@ -11,6 +11,12 @@ export const config = {
   parachuteVault: process.env.PARACHUTE_VAULT ?? "default",
   parachuteToken: process.env.PARACHUTE_TOKEN ?? "",
 
+  // Whether the owner may CREATE a brand-new vault from the UI (shells out to
+  // `parachute-vault create`, which needs the host operator token). Defaults ON
+  // so a normal single-host deploy works; set ALLOW_VAULT_CREATE=false to allow
+  // only LINKING existing vaults (e.g. a hardened host with no operator token).
+  allowVaultCreate: process.env.ALLOW_VAULT_CREATE !== "false",
+
   sessionSecret: process.env.SESSION_SECRET ?? "",
   capabilitySecret: process.env.CAPABILITY_SECRET ?? process.env.SESSION_SECRET ?? "",
 
@@ -108,18 +114,10 @@ function buildVaultRegistry(): VaultEntry[] {
 
 export const vaultRegistry: VaultEntry[] = buildVaultRegistry();
 
-/**
- * Resolve a vault id to its registry entry. Unknown/absent id → the
- * primary/first entry, so a stale or bogus `X-Prism-Vault` header degrades to
- * the default vault rather than erroring.
- */
-export function resolveVaultEntry(id?: string | null): VaultEntry {
-  if (id) {
-    const found = vaultRegistry.find((v) => v.id === id);
-    if (found) return found;
-  }
-  return vaultRegistry[0]!;
-}
+// NOTE: `resolveVaultEntry()` lives in db.ts (not here), because the runtime
+// registry is the ENV base (this `vaultRegistry`) MERGED with owner-added vaults
+// stored in SQLite. db.ts already imports config, so the merge/resolve goes there
+// to avoid a config↔db import cycle. Import it from "./db".
 
 /** Whether a real embedding endpoint is configured (else the offline fallback). */
 export const embeddingsConfigured = () => config.embedEndpoint.length > 0;

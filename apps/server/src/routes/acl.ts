@@ -54,8 +54,13 @@ import {
   deleteSuggestion,
   getFederationEnabled,
   setFederationEnabled,
+  addVaultEntry,
+  getVaultRegistry,
+  removeVaultEntry,
   type Space,
 } from "../db";
+import { vaultRegistry } from "../config";
+import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
@@ -126,6 +131,98 @@ function deriveTitle(content: string): string {
 }
 
 acl.get("/users", (c) => c.json(listUsers()));
+
+// ── Vault registry management (multi-vault: in-app create / link) ────────────
+// Owner-only (the whole /acl group is). Tokens are written to SQLite server-side
+// and NEVER returned — the response is the same token-free summary as GET
+// /api/vaults: { id, label, vault, active:false } (added vaults are never the
+// primary/active one, which stays the env entry[0]).
+const vaultSlug = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+
+/** A registry-unique id derived from the label (random suffix on collision). */
+function uniqueVaultId(label: string): string {
+  let id = vaultSlug(label) || randomUUID().slice(0, 8);
+  const taken = new Set(getVaultRegistry().map((v) => v.id));
+  while (taken.has(id)) id = `${vaultSlug(label) || "vault"}-${Math.floor(Math.random() * 10000)}`;
+  return id;
+}
+
+/** Probe a linked vault is reachable with the given token (GET /tags). Returns
+ *  true on a 2xx, false on any error/non-2xx — best-effort guard, not auth. */
+async function probeVault(url: string, vault: string, token: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${url}/vault/${encodeURIComponent(vault)}/api/tags`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+acl.post("/vaults", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const mode = body.mode;
+
+  if (mode === "link") {
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const url = typeof body.url === "string" ? body.url.trim().replace(/\/+$/, "") : "";
+    const vault = typeof body.vault === "string" ? body.vault.trim() : "";
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    if (!label || !vault || !token) return c.json({ error: "bad_request", detail: "label, vault and token are required" }, 400);
+    if (!/^https?:\/\//i.test(url)) return c.json({ error: "bad_request", detail: "url must be http(s)" }, 400);
+    if (!(await probeVault(url, vault, token))) return c.json({ error: "unreachable" }, 400);
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault, token });
+    return c.json({ id, label, vault, active: false });
+  }
+
+  if (mode === "create") {
+    if (!config.allowVaultCreate) return c.json({ error: "disabled", detail: "vault creation is disabled on this server" }, 403);
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!label || !name) return c.json({ error: "bad_request", detail: "label and name are required" }, 400);
+    if (!/^[a-z0-9_-]+$/.test(name)) return c.json({ error: "bad_request", detail: "name must match ^[a-z0-9_-]+$" }, 400);
+
+    let created: { name: string; token: string };
+    try {
+      created = await createVaultViaCli(name);
+    } catch (e) {
+      // The failure happens BEFORE any token is minted (creation failed), so the
+      // message can't carry a token; still, log server-side and keep detail terse.
+      console.error("[vaults] parachute-vault create failed:", e);
+      return c.json({ error: "create_failed", detail: (e as Error).message }, 500);
+    }
+
+    const url = config.parachuteUrl;
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault: name, token: created.token });
+
+    if (body.seedSchemas !== false) {
+      try {
+        await seedVault({ vaultUrl: url, vault: name, token: created.token });
+      } catch (e) {
+        console.error("[vaults] seedTagSchemas failed (non-fatal):", e);
+      }
+    }
+    return c.json({ id, label, vault: name, active: false });
+  }
+
+  return c.json({ error: "bad_request", detail: "mode must be 'link' or 'create'" }, 400);
+});
+
+// Remove an owner-ADDED vault. Env-configured vaults (e.g. "primary") are not in
+// the prism_vaults table, so removeVaultEntry no-ops on them and the merged
+// registry keeps the env entry — i.e. an env vault can never be deleted here.
+acl.delete("/vaults/:id", (c) => {
+  const id = c.req.param("id");
+  if (vaultRegistry.some((v) => v.id === id)) {
+    return c.json({ error: "forbidden", detail: "cannot remove an env-configured vault" }, 400);
+  }
+  removeVaultEntry(id);
+  return c.json({ ok: true });
+});
 
 /** Full sharing picture for a note: direct people, links, and tag-grants that
  *  currently reach it (because the note carries a granted tag). */

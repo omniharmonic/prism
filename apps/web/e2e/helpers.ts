@@ -153,6 +153,17 @@ export const acl = {
     const r = await aclReq("/federation/status");
     return { enabled: !!r.body?.enabled };
   },
+  /** The configured vault registry (owner view; GET /api/vaults, no tokens). */
+  async vaults(): Promise<Array<{ id: string; label: string; vault: string; active: boolean }>> {
+    requireToken();
+    const r = await fetch(`${BASE_URL}/api/vaults`, { headers: { Authorization: `Bearer ${OWNER_TOKEN}` } });
+    const body = await r.json().catch(() => []);
+    return Array.isArray(body) ? body : [];
+  },
+  /** Remove an added vault from the registry (best-effort cleanup). */
+  async removeVault(id: string): Promise<void> {
+    await aclReq(`/vaults/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
   /** Mint a capability link for a note; returns the bare `?t=` token + its cap id. */
   async createLink(noteId: string, level: string): Promise<{ token: string; capId: string }> {
     const r = await aclReq(`/notes/${encodeURIComponent(noteId)}/links`, { method: "POST", body: JSON.stringify({ level }) });

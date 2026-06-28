@@ -11,7 +11,7 @@
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { resolveVaultEntry } from "../config";
+import { resolveVaultEntry } from "../db";
 import { vault, VaultError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";

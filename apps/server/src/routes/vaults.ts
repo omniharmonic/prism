@@ -9,17 +9,18 @@
  * no such route).
  */
 import { Hono } from "hono";
-import { vaultRegistry } from "../config";
+import { getVaultRegistry } from "../db";
 import { resolveActor } from "../auth/actor";
 
 export const vaults = new Hono();
 
 vaults.get("/vaults", (c) => {
   if (!resolveActor(c).isOwner) return c.json({ error: "forbidden" }, 403);
-  // active = the primary/default (first registry entry), which every non-owner
-  // route and the legacy vault client bind to. NEVER include token or url.
+  // The merged registry: env base (primary first) + owner-added vaults. active =
+  // the primary/default (first entry), which every non-owner route and the legacy
+  // vault client bind to. NEVER include token or url.
   return c.json(
-    vaultRegistry.map((v, i) => ({
+    getVaultRegistry().map((v, i) => ({
       id: v.id,
       label: v.label,
       vault: v.vault,

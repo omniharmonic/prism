@@ -193,6 +193,13 @@ export interface CollabSharing {
   listVaults?(): Promise<VaultSummary[]>;
   getActiveVault?(): string | null;
   setActiveVault?(id: string): void;
+  /** Create a brand-new Parachute vault and register it (owner; server shells out
+   *  to the hub CLI + mints a token, then optionally seeds tag schemas). */
+  createVault?(args: { label: string; name: string; seedSchemas?: boolean }): Promise<VaultSummary>;
+  /** Link an existing (possibly remote) vault by url + name + token. */
+  linkVault?(args: { label: string; url: string; vault: string; token: string }): Promise<VaultSummary>;
+  /** Remove an added vault from the registry (never the env primary). */
+  removeVault?(id: string): Promise<void>;
 }
 
 const CollabSharingContext = createContext<CollabSharing | null>(null);

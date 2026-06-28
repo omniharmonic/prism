@@ -5,11 +5,25 @@
  */
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { config } from "./config";
+import { chmodSync } from "node:fs";
+import { config, vaultRegistry, type VaultEntry } from "./config";
 import type { Level } from "./permissions";
 
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
+
+// This db holds added-vault TOKENS (plus sessions + grants). SQLite creates the
+// file world-readable by default; tighten it and its WAL/SHM siblings to 0600.
+// Best-effort (skips the in-memory test db; siblings may not exist yet).
+if (config.dbPath !== ":memory:" && !config.dbPath.startsWith(":")) {
+  for (const p of [config.dbPath, `${config.dbPath}-wal`, `${config.dbPath}-shm`]) {
+    try {
+      chmodSync(p, 0o600);
+    } catch {
+      /* sibling absent or not ours — best effort */
+    }
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -192,6 +206,19 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- Owner-added vaults (multi-vault: in-app create/link). The ENV-configured
+  -- vaults live in config.ts (PRISM_VAULTS / PARACHUTE_*); these rows are the
+  -- vaults added at runtime from the UI. Their TOKEN lives here, server-side
+  -- ONLY — it is never returned to a client (GET /api/vaults omits token+url).
+  CREATE TABLE IF NOT EXISTS prism_vaults (
+    id         TEXT PRIMARY KEY,
+    label      TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    vault      TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -240,6 +267,72 @@ export function getFederationEnabled(): boolean {
 }
 export function setFederationEnabled(enabled: boolean): void {
   setSetting("federation_enabled", enabled ? "true" : "false");
+}
+
+// ── Added vaults (runtime registry; owner-managed via /acl/vaults) ───────────
+// The ENV base (config.vaultRegistry) is immutable boot config; these rows are
+// vaults the owner created/linked from the UI. Tokens are stored here and NEVER
+// serialized to a client.
+const insertVaultEntry = db.prepare(
+  `INSERT INTO prism_vaults (id, label, url, vault, token, created_at)
+   VALUES (@id, @label, @url, @vault, @token, @created_at)`,
+);
+const selectVaultEntries = db.prepare("SELECT * FROM prism_vaults ORDER BY created_at ASC");
+const selectVaultEntry = db.prepare("SELECT * FROM prism_vaults WHERE id = ?");
+const deleteVaultEntryStmt = db.prepare("DELETE FROM prism_vaults WHERE id = ?");
+
+const stripVaultRow = (r: VaultEntry & { created_at?: number }): VaultEntry => ({
+  id: r.id,
+  label: r.label,
+  url: r.url,
+  vault: r.vault,
+  token: r.token,
+});
+
+export function addVaultEntry(e: VaultEntry): VaultEntry {
+  insertVaultEntry.run({ ...e, created_at: Date.now() });
+  return e;
+}
+export function listVaultEntries(): VaultEntry[] {
+  return (selectVaultEntries.all() as Array<VaultEntry & { created_at: number }>).map(stripVaultRow);
+}
+export function getVaultEntry(id: string): VaultEntry | null {
+  const row = selectVaultEntry.get(id) as (VaultEntry & { created_at: number }) | undefined;
+  return row ? stripVaultRow(row) : null;
+}
+export function removeVaultEntry(id: string): void {
+  deleteVaultEntryStmt.run(id);
+}
+
+/**
+ * The full vault registry: the ENV base (config.vaultRegistry) followed by the
+ * owner-added vaults from SQLite, deduped by id with the ENV entries WINNING
+ * (so the env primary[0] always stays primary/active). This is the authoritative
+ * registry read by GET /api/vaults and the owner passthrough.
+ */
+export function getVaultRegistry(): VaultEntry[] {
+  const merged: VaultEntry[] = [...vaultRegistry];
+  const seen = new Set(merged.map((v) => v.id));
+  for (const e of listVaultEntries()) {
+    if (seen.has(e.id)) continue; // env wins
+    seen.add(e.id);
+    merged.push(e);
+  }
+  return merged;
+}
+
+/**
+ * Resolve a vault id against the MERGED registry. Unknown/absent id → the
+ * primary (first env entry), so a stale/bogus `X-Prism-Vault` header degrades to
+ * the default vault rather than erroring. Lives here (not config.ts) so it can
+ * see db-added vaults without a config↔db import cycle.
+ */
+export function resolveVaultEntry(id?: string | null): VaultEntry {
+  if (id) {
+    const found = getVaultRegistry().find((v) => v.id === id);
+    if (found) return found;
+  }
+  return vaultRegistry[0]!;
 }
 
 export type SubjectType = "user" | "link" | "anyone" | "peer";

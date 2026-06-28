@@ -208,4 +208,13 @@ export const webCollabSharing: CollabSharing = {
     setActiveVault(id);
     location.reload();
   },
+  async createVault(args: { label: string; name: string; seedSchemas?: boolean }): Promise<VaultSummary> {
+    return (await acl(`/vaults`, { method: "POST", body: JSON.stringify({ mode: "create", ...args }) })).json();
+  },
+  async linkVault(args: { label: string; url: string; vault: string; token: string }): Promise<VaultSummary> {
+    return (await acl(`/vaults`, { method: "POST", body: JSON.stringify({ mode: "link", ...args }) })).json();
+  },
+  async removeVault(id: string): Promise<void> {
+    await acl(`/vaults/${enc(id)}`, { method: "DELETE" });
+  },
 };

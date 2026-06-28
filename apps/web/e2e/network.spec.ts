@@ -1,7 +1,7 @@
 import { test, expect, type BrowserContext } from "@playwright/test";
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
-import { vault, acl, BASE_URL } from "./helpers";
+import { vault, acl, BASE_URL, PARACHUTE_URL, PARACHUTE_VAULT, PARACHUTE_TOKEN } from "./helpers";
 
 // Playwright runs from the @prism/web workspace dir → apps/server is a sibling.
 const SERVER_DIR = resolve(process.cwd(), "../server");
@@ -149,6 +149,37 @@ test("@live side nav shows an Obsidian-style vault switcher that opens", async (
   await expect(page.getByText(/Create or link a vault/i)).toBeVisible();
 });
 
+test("@live Vaults: owner can link an existing vault, then remove it", async ({ context, page }) => {
+  const LABEL = "E2E Linked Vault";
+  // Pre-clean any leftover from a prior failed run.
+  for (const v of await acl.vaults()) if (v.label === LABEL) await acl.removeVault(v.id);
+
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await page.getByRole("button", { name: "Vaults" }).click();
+  await page.getByRole("button", { name: "Create or link a vault" }).click();
+  await page.getByRole("button", { name: /Link existing/i }).click();
+
+  await page.getByPlaceholder("Shared research vault").fill(LABEL);
+  await page.getByPlaceholder("http://localhost:1940").fill(PARACHUTE_URL);
+  await page.getByPlaceholder("default").fill(PARACHUTE_VAULT);
+  await page.getByPlaceholder(/eyJ/).fill(PARACHUTE_TOKEN);
+  await page.getByRole("button", { name: "Link vault" }).click();
+
+  // The mini-onboarding confirms the vault is connected.
+  await expect(page.getByText("Added", { exact: true })).toBeVisible({ timeout: 15_000 });
+
+  // The server registry now lists it (no token exposed).
+  const vs = await acl.vaults();
+  const linked = vs.find((v) => v.label === LABEL);
+  expect(linked).toBeTruthy();
+
+  // Cleanup — remove the link (env primary is untouched).
+  if (linked) await acl.removeVault(linked.id);
+  expect((await acl.vaults()).some((v) => v.label === LABEL)).toBe(false);
+});
+
 test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {
   await authedContext(context);
   await page.goto("/");
@@ -158,5 +189,5 @@ test("@live owner opens Network → Vaults: the configured vault is listed as ac
   // The single configured vault (primary) renders and is marked Active.
   await expect(page.getByText("Connected vaults", { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("Active", { exact: true })).toBeVisible();
-  await expect(page.getByText("Connect another vault", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create or link a vault" })).toBeVisible();
 });
