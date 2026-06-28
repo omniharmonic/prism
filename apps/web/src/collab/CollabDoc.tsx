@@ -185,18 +185,42 @@ export function CollabDoc({
   }, []);
 
   useEffect(() => {
-    const p = new HocuspocusProvider({
-      url: collabUrl(),
-      name: noteId,
-      token: getCapabilityToken() ?? "session",
-      document: ydoc,
-      onStatus: ({ status }) => setConnected(status === "connected"),
-      onSynced: () => setSynced(true),
-      onAuthenticationFailed: () => setDenied(true),
-    });
-    setProvider(p);
+    let p: HocuspocusProvider | null = null;
+    let cancelled = false;
+    // A FEDERATED note must open under its `space_note_key` (the doc the peer
+    // bridge serves), not its local id — else this hub's edits never federate
+    // (federation gap #2). /api/federated returns 204 for non-federated notes (and
+    // whenever federation is off), so the default stays `noteId` with no behavior
+    // change for the normal path.
+    void (async () => {
+      let name = noteId;
+      try {
+        const r = await fetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, {
+          headers: { ...capabilityHeader() },
+          credentials: "include",
+        });
+        if (r.ok) {
+          const j = (await r.json().catch(() => null)) as { spaceNoteKey?: string } | null;
+          if (j?.spaceNoteKey) name = j.spaceNoteKey;
+        }
+      } catch {
+        /* not federated / offline → open by local id */
+      }
+      if (cancelled) return;
+      p = new HocuspocusProvider({
+        url: collabUrl(),
+        name,
+        token: getCapabilityToken() ?? "session",
+        document: ydoc,
+        onStatus: ({ status }) => setConnected(status === "connected"),
+        onSynced: () => setSynced(true),
+        onAuthenticationFailed: () => setDenied(true),
+      });
+      setProvider(p);
+    })();
     return () => {
-      p.destroy();
+      cancelled = true;
+      p?.destroy();
       ydoc.destroy();
     };
   }, [noteId, ydoc]);

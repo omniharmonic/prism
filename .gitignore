@@ -26,6 +26,11 @@ dist-ssr
 .playwright-mcp/
 .mcp.json
 
+# Playwright e2e artifacts (apps/web)
+test-results/
+playwright-report/
+.playwright/
+
 # Private / sensitive — never commit
 # .claude/ holds local working notes and (historically) a personal contacts
 # export. Ignore the whole dir so nothing under it can be accidentally staged.

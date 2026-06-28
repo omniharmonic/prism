@@ -610,6 +610,10 @@ export function attachCollab(server: Server): void {
     void import("./federation-manager")
       .then(({ federationManager }) => {
         federationManager.start();
+        // Bind every already-known space×peer whose collab URL we have on record
+        // (peers.collab_url, gap #1). No endpoints arg → self-discovers from the
+        // peer registry. Re-run on demand from the ACL mutation hooks.
+        void federationManager.syncSpaces();
         server.on("close", () => federationManager.stop());
       })
       .catch((e) => console.error("[federation] failed to start manager:", e));

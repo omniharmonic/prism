@@ -34,6 +34,7 @@ import {
   storePairing,
   listPeers,
   removePeer,
+  setPeerCollabUrl,
   getPeer,
   createSpace,
   getSpace,
@@ -85,6 +86,17 @@ const isLevel = (x: unknown): x is Level =>
   typeof x === "string" && (LEVELS as readonly string[]).includes(x);
 const isEmail = (x: unknown): x is string => typeof x === "string" && /.+@.+\..+/.test(x);
 const normEmail = (x: string) => x.trim().toLowerCase();
+
+/** After any federation-relevant mutation, re-reconcile the live bridge so new
+ *  bindings come up (and revoked ones tear down) without a server restart. Gated
+ *  + lazy so the @hocuspocus/provider client never loads on a non-federation
+ *  deployment; failures are swallowed (best-effort — never block the ACL write). */
+function kickFederationSync(): void {
+  if (!config.federationEnabled) return;
+  void import("../federation-manager")
+    .then(({ federationManager }) => federationManager.syncSpaces())
+    .catch((e) => console.error("[federation] syncSpaces after ACL change failed:", e));
+}
 
 /** Capability-link URL: opens the FOCUSED collaborative document (Google-Docs
  *  style) — just the doc, level-aware (read-only for viewers, comments sidebar,
@@ -379,6 +391,21 @@ acl.delete("/peers/:pubkey", (c) => {
   const pubkey = decodeURIComponent(c.req.param("pubkey"));
   for (const g of grantsForPeer(pubkey)) removeGrant(g.id);
   removePeer(pubkey);
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+/** Set (or clear) a paired peer's /collab WS URL so the FederationManager can
+ *  open the outbound binding without an out-of-band step (federation gap #1). */
+acl.post("/peers/:pubkey/url", async (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const { collabUrl } = await c.req.json<{ collabUrl?: string | null }>().catch(() => ({}) as { collabUrl?: string });
+  if (collabUrl !== undefined && collabUrl !== null && !/^wss?:\/\//.test(collabUrl)) {
+    return c.json({ error: "bad_url" }, 400);
+  }
+  setPeerCollabUrl(pubkey, collabUrl ?? null);
+  kickFederationSync();
   return c.json({ ok: true });
 });
 
@@ -425,6 +452,7 @@ acl.delete("/spaces/:id", (c) => {
   for (const fed of federatedNotesForSpace(id)) deleteFederatedNote(fed.space_note_key);
   for (const g of grantsForResource("space", id)) removeGrant(g.id);
   deleteSpace(id);
+  kickFederationSync();
   return c.json({ ok: true });
 });
 
@@ -451,6 +479,7 @@ acl.post("/spaces/:id/notes", async (c) => {
     peer_synced_at: null,
     source_updated_at: null,
   });
+  kickFederationSync();
   return c.json(row);
 });
 
@@ -469,10 +498,12 @@ acl.post("/spaces/:id/peers", async (c) => {
     level,
     created_by: config.ownerEmail,
   });
+  kickFederationSync();
   return c.json({ ok: true, grant });
 });
 
 acl.delete("/spaces/:id/peers/:pubkey", (c) => {
   removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "space", c.req.param("id"));
+  kickFederationSync();
   return c.json({ ok: true });
 });

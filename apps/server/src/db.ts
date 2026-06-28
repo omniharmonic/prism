@@ -97,7 +97,8 @@ db.exec(`
     email      TEXT,
     label      TEXT,
     created_at INTEGER NOT NULL,
-    paired_at  INTEGER             -- when the handshake completed; null = pending
+    paired_at  INTEGER,            -- when the handshake completed; null = pending
+    collab_url TEXT                -- peer hub's /collab WS URL (for FederationManager.syncSpaces)
   );
   -- One-time pairing codes (invite.ts analog: single-use, hashed, TTL'd).
   CREATE TABLE IF NOT EXISTS peer_pairings (
@@ -173,6 +174,16 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "password_hash")) {
     db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+  }
+}
+
+// Migration: peers gained a collab_url (the peer hub's /collab WS URL) so the
+// FederationManager can self-discover endpoints instead of taking them from the
+// caller. Add the column to an older db.
+{
+  const cols = db.prepare("PRAGMA table_info(peers)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "collab_url")) {
+    db.exec("ALTER TABLE peers ADD COLUMN collab_url TEXT");
   }
 }
 
@@ -533,26 +544,34 @@ export interface Peer {
   label: string | null;
   created_at: number;
   paired_at: number | null;
+  collab_url: string | null;
 }
 const insertPeer = db.prepare(
-  `INSERT INTO peers (pubkey, email, label, created_at, paired_at)
-   VALUES (@pubkey, @email, @label, @created_at, @paired_at)
-   ON CONFLICT(pubkey) DO UPDATE SET email=@email, label=@label, paired_at=@paired_at`,
+  `INSERT INTO peers (pubkey, email, label, created_at, paired_at, collab_url)
+   VALUES (@pubkey, @email, @label, @created_at, @paired_at, @collab_url)
+   ON CONFLICT(pubkey) DO UPDATE SET email=@email, label=@label, paired_at=@paired_at,
+     collab_url=COALESCE(@collab_url, collab_url)`,
 );
 const selectPeer = db.prepare("SELECT * FROM peers WHERE pubkey = ?");
 const selectPeers = db.prepare("SELECT * FROM peers ORDER BY created_at DESC");
 const deletePeerStmt = db.prepare("DELETE FROM peers WHERE pubkey = ?");
+const updatePeerCollabUrl = db.prepare("UPDATE peers SET collab_url = ? WHERE pubkey = ?");
 
-export function upsertPeer(p: { pubkey: string; email?: string | null; label?: string | null; paired_at?: number | null }): Peer {
+export function upsertPeer(p: { pubkey: string; email?: string | null; label?: string | null; paired_at?: number | null; collab_url?: string | null }): Peer {
   const row: Peer = {
     pubkey: p.pubkey,
     email: p.email ?? null,
     label: p.label ?? null,
     created_at: now(),
     paired_at: p.paired_at ?? null,
+    // COALESCE in the upsert preserves an existing URL when this call omits one.
+    collab_url: p.collab_url ?? null,
   };
   insertPeer.run(row);
   return (selectPeer.get(p.pubkey) as Peer);
+}
+export function setPeerCollabUrl(pubkey: string, url: string | null): void {
+  updatePeerCollabUrl.run(url, pubkey);
 }
 export function getPeer(pubkey: string): Peer | null {
   return (selectPeer.get(pubkey) as Peer | undefined) ?? null;

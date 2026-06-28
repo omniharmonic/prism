@@ -27,6 +27,36 @@ jobs:
         run: npm run test -w @prism/server
       - name: Build web PWA
         run: npm run build -w @prism/web
+      - name: Service-worker denylist guard
+        run: npm run check:sw -w @prism/web
+
+  e2e:
+    # Playwright e2e for the browser-only web paths. The actual specs
+    # (publish/wikilinks/password/onboarding) are all tagged `@live` because they
+    # require a running Prism Server + the real Parachute hub+vault, which CI does
+    # NOT provision — so they run locally against pm2 `prism-server`, never here.
+    #
+    # This job exists to keep the e2e TOOLCHAIN green: it typechecks the specs,
+    # installs the chromium browser, and runs `--grep-invert @live` (currently
+    # zero tests → `--pass-with-no-tests`). It is the drop-in home for any future
+    # NO-vault specs, and proves the Playwright config + browser install stay
+    # healthy. No CI job depends on the real hub+vault (Layer B stays local).
+    name: e2e toolchain (no vault)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck e2e specs
+        run: npm run typecheck:e2e -w @prism/web
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Run non-live e2e specs
+        run: npm run test:e2e -w @prism/web -- --grep-invert @live --pass-with-no-tests
 
   rust:
     name: cargo check · test

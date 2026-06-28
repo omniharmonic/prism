@@ -26,18 +26,23 @@ federation.get("/identity", (c) => {
  * store the peer and hand back OUR identity so the handshake is mutual.
  */
 federation.post("/pair", async (c) => {
-  let body: { code?: unknown; pubkey?: unknown; label?: unknown; email?: unknown };
+  let body: { code?: unknown; pubkey?: unknown; label?: unknown; email?: unknown; collabUrl?: unknown };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
 
-  const { code, pubkey, label, email } = body;
+  const { code, pubkey, label, email, collabUrl } = body;
   if (typeof code !== "string" || code.length === 0) return c.json({ error: "bad_request" }, 400);
   if (!isValidPeerPublicKey(typeof pubkey === "string" ? pubkey : "")) {
     return c.json({ error: "bad_pubkey" }, 400);
   }
+  // Optional: the redeeming peer advertises its own /collab WS URL so this hub's
+  // FederationManager can later open the outbound binding without an out-of-band
+  // step (gap #1). Accept only a ws(s):// URL; ignore anything else.
+  const peerCollabUrl =
+    typeof collabUrl === "string" && /^wss?:\/\//.test(collabUrl) ? collabUrl : undefined;
 
   const codeHash = createHash("sha256").update(code).digest("hex");
   const pairing = consumePairing(codeHash);
@@ -48,6 +53,7 @@ federation.post("/pair", async (c) => {
     label: typeof label === "string" ? label : pairing.label,
     email: typeof email === "string" ? email : undefined,
     paired_at: Date.now(),
+    collab_url: peerCollabUrl,
   });
 
   const { publicKeyB64url } = serverKeyPair();

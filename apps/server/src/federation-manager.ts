@@ -224,8 +224,10 @@ export class FederationManager {
         for (const g of peerGrants) {
           const peer = getPeer(g.subject);
           if (!peer || !peer.paired_at) continue;
-          const url = urlByPubkey.get(g.subject);
-          if (!url) continue; // no URL known for this peer yet (caller must supply)
+          // Prefer a caller-supplied endpoint (tests/overrides); otherwise
+          // self-discover from the peer registry (peers.collab_url, gap #1 fix).
+          const url = urlByPubkey.get(g.subject) ?? peer.collab_url ?? undefined;
+          if (!url) continue; // still no URL known for this peer — skip until set
           const key = bindKey(fed.space_note_key, g.subject);
           wanted.add(key);
           if (!this.bindings.has(key)) {

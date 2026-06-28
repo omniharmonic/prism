@@ -86,21 +86,45 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
 
   useEffect(() => {
     if (!cfg?.enabled || !noteId) return;
-    const p = new HocuspocusProvider({
-      url: cfg.url,
-      name: noteId,
-      token: cfg.token,
-      document: ydoc,
-      onStatus: ({ status }) => setConnected(status === "connected"),
-      onSynced: () => setSynced(true),
-    });
-    setProvider(p);
-    const aw = p.awareness;
-    const onAw = () => setPresenceCount(Math.max(1, aw?.getStates().size ?? 1));
-    aw?.on("change", onAw);
+    let p: HocuspocusProvider | null = null;
+    let onAw: (() => void) | null = null;
+    let cancelled = false;
+    // A FEDERATED note must open under its `space_note_key` (the doc the peer
+    // bridge serves) so the owner's edits federate (gap #2). /api/federated
+    // returns 204 for non-federated notes (and whenever federation is off), so
+    // the default stays the local note id — no change for the normal path.
+    void (async () => {
+      let name = noteId;
+      try {
+        const httpBase = cfg.url.replace(/^ws/, "http").replace(/\/collab$/, "");
+        const r = await fetch(`${httpBase}/api/federated/${encodeURIComponent(noteId)}`, {
+          headers: { Authorization: `Bearer ${cfg.token}` },
+        });
+        if (r.ok) {
+          const j = (await r.json().catch(() => null)) as { spaceNoteKey?: string } | null;
+          if (j?.spaceNoteKey) name = j.spaceNoteKey;
+        }
+      } catch {
+        /* not federated / unreachable → open by local id */
+      }
+      if (cancelled) return;
+      p = new HocuspocusProvider({
+        url: cfg.url,
+        name,
+        token: cfg.token,
+        document: ydoc,
+        onStatus: ({ status }) => setConnected(status === "connected"),
+        onSynced: () => setSynced(true),
+      });
+      setProvider(p);
+      const aw = p.awareness;
+      onAw = () => setPresenceCount(Math.max(1, aw?.getStates().size ?? 1));
+      aw?.on("change", onAw);
+    })();
     return () => {
-      aw?.off("change", onAw);
-      p.destroy();
+      cancelled = true;
+      if (p && onAw) p.awareness?.off("change", onAw);
+      p?.destroy();
     };
   }, [cfg, noteId, ydoc]);
 
