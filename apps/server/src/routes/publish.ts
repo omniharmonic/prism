@@ -20,6 +20,7 @@ import { vault, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
 import { getPublicationBySlug, grantsForResource, type Publication } from "../db";
 import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
+import { pathInPrefix } from "../paths";
 import { config } from "../config";
 import { verifyPassword } from "../auth/password";
 
@@ -113,12 +114,24 @@ function publicationActor(pub: Publication): Actor {
 }
 
 /**
- * The note set this publication exposes: notes under the publication's tag,
- * filtered to effectiveLevel >= "view" against the anon actor's grants. Mirrors
- * `visibleNotes` in api.ts — tag scoping only narrows; effectiveLevel is the
- * authoritative guard.
+ * The note set this publication exposes.
+ *
+ * - `tag` pubs: notes under the publication's tag, filtered to
+ *   effectiveLevel >= "view" against the anon actor's grants. Mirrors
+ *   `visibleNotes` in api.ts — tag scoping only narrows; effectiveLevel is the
+ *   authoritative guard.
+ * - `path` pubs: notes whose `path` is inside the publication's prefix. The
+ *   path-membership predicate (evaluated on the vault's OWN `path` field) is the
+ *   authoritative, read-only, view-level guard — grants/effectiveLevel play no
+ *   part. We fetch all notes and filter in-process because Parachute's `?path=`
+ *   is an exact match, not a prefix filter; publish.ts must guarantee prefix
+ *   membership itself regardless.
  */
 async function publicationNotes(pub: Publication, includeContent: boolean): Promise<Note[]> {
+  if (pub.resource_type === "path") {
+    const notes = await vault.listNotes({ includeContent });
+    return notes.filter((n) => pathInPrefix(n.path, pub.resource));
+  }
   const actor = publicationActor(pub);
   const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
   return notes.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
@@ -295,7 +308,9 @@ publish.get("/:slug/graph", async (c) => {
 });
 
 // 2. Single note (read-only). Served only if it is part of the publication set:
-//    effectiveLevel >= "view" AND it carries the publication's tag.
+//    - tag pubs: effectiveLevel >= "view" AND it carries the publication's tag;
+//    - path pubs: its `path` is inside the publication's prefix.
+//    Either way an out-of-set id is forbidden (no id-guessing into private notes).
 publish.get("/:slug/notes/:id", async (c) => {
   const pub = getPublicationBySlug(c.req.param("slug"));
   if (!pub || isExpired(pub)) return c.json({ error: "not_found" }, 404);
@@ -308,11 +323,12 @@ publish.get("/:slug/notes/:id", async (c) => {
     return vaultErr(c, e);
   }
 
-  const actor = publicationActor(pub);
   const tags = note.tags ?? [];
-  const inPublication =
-    pub.resource_type === "tag" && tags.includes(pub.resource);
-  const allowed = inPublication && atLeast(effectiveLevel(actor.grants, ref(note), false), "view");
+  const allowed =
+    pub.resource_type === "path"
+      ? pathInPrefix(note.path, pub.resource)
+      : tags.includes(pub.resource) &&
+        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view");
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({

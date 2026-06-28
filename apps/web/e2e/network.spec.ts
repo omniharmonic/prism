@@ -43,6 +43,13 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   try { await acl.unpublishTag(TAG); } catch { /* */ }
+  // Remove any path publication left by the path-publish test (slug-based).
+  try {
+    const pubs = await acl.publications();
+    for (const p of pubs) {
+      if (p.kind === "path" && p.pathPrefix === TAG) await acl.unpublishSlug(p.slug);
+    }
+  } catch { /* */ }
   for (const id of NOTE_IDS) { try { await vault.deleteNote(id); } catch { /* */ } }
 });
 
@@ -108,6 +115,38 @@ test("@live Federate: owner can toggle the federation transport on and back off 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", String(startedOn), { timeout: 10_000 });
   expect((await acl.federationStatus()).enabled).toBe(startedOn);
+});
+
+test("@live Publish: owner can publish a folder (path prefix) and see a live URL", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await expect(page.getByRole("heading", { name: "Network" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Publish a collection" }).click();
+  // Switch to the path/folder mode and publish the test notes' directory.
+  await page.getByRole("button", { name: /By folder/i }).click();
+  await page.getByPlaceholder("e.g. projects/commons").fill(TAG);
+  await page.getByRole("button", { name: "Publish folder" }).click();
+
+  await expect(page.getByText("Live", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("input[readonly]").first()).toHaveValue(/\/p\//);
+
+  // The server records a PATH publication for our prefix.
+  const pubs = await acl.publications();
+  expect(pubs.some((p) => p.kind === "path" && p.pathPrefix === TAG)).toBe(true);
+});
+
+test("@live side nav shows an Obsidian-style vault switcher that opens", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+
+  const switcher = page.getByRole("button", { name: "Switch vault" });
+  await expect(switcher).toBeVisible({ timeout: 10_000 });
+  await switcher.click();
+  // The popover lists the vaults + the create/link entry.
+  await expect(page.getByText("Vaults", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Create or link a vault/i)).toBeVisible();
 });
 
 test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {

@@ -76,8 +76,8 @@ db.exec(`
   -- the only guard). Publish = insert this row + an anyone grant in one txn.
   CREATE TABLE IF NOT EXISTS publications (
     id            TEXT PRIMARY KEY,   -- slug (also the public URL segment)
-    resource_type TEXT NOT NULL,      -- 'tag' (v1; 'note' reserved)
-    resource      TEXT NOT NULL,      -- tag name
+    resource_type TEXT NOT NULL,      -- 'tag' | 'path' ('note' reserved)
+    resource      TEXT NOT NULL,      -- tag name OR normalized path prefix
     template      TEXT NOT NULL,      -- 'wiki' (template registry key)
     title         TEXT,
     home_note_id  TEXT,               -- landing note; null → derive at read time
@@ -243,7 +243,10 @@ export function setFederationEnabled(enabled: boolean): void {
 }
 
 export type SubjectType = "user" | "link" | "anyone" | "peer";
-export type ResourceType = "note" | "tag" | "space";
+// "path" is used ONLY as a publication's resource_type (publish-by-directory);
+// it is never a grant resource_type (path publications are guarded by the
+// path-membership predicate, not by grants — see routes/publish.ts).
+export type ResourceType = "note" | "tag" | "space" | "path";
 
 export interface Grant {
   id: string;

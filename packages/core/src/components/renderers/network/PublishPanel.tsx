@@ -17,7 +17,8 @@ import {
   Plus,
   ExternalLink,
   Settings2,
-  Search,
+  Hash,
+  FolderTree,
   X,
 } from "lucide-react";
 import { Button } from "../../ui/Button";
@@ -26,6 +27,12 @@ import { Input } from "../../ui/Input";
 import { useCollabSharing, type PublicationInfo } from "../../../data/CollabSharing";
 import { useVaultClient } from "../../../data/VaultClientContext";
 import type { TagCount } from "../../../lib/types";
+import { TagPicker } from "./TagPicker";
+
+/** Human label for a publication's slice: `#tag` or the path prefix. */
+function pubSlice(pub: PublicationInfo): string {
+  return pub.kind === "path" ? pub.pathPrefix ?? "" : `#${pub.tag}`;
+}
 
 export function PublishPanel() {
   const sharing = useCollabSharing();
@@ -119,7 +126,10 @@ export function PublishPanel() {
     [counts, tags],
   );
 
-  const publishedTags = useMemo(() => new Set(pubs.map((p) => p.tag)), [pubs]);
+  const publishedTags = useMemo(
+    () => new Set(pubs.filter((p) => p.kind !== "path").map((p) => p.tag)),
+    [pubs],
+  );
 
   // Guard: parent only renders us when publishTag exists, but be defensive.
   // (All hooks run above this point — no early-return-before-hooks.)
@@ -197,9 +207,10 @@ export function PublishPanel() {
         tags={tags}
         publishedTags={publishedTags}
         sharing={sharing}
-        onPublished={async (tag) => {
+        onPublished={async () => {
           const list = await refresh();
-          void loadCounts(list ? list.map((x) => x.tag) : [tag]);
+          // Live counts only apply to tag pubs (path pubs report their own count).
+          if (list) void loadCounts(list.filter((p) => p.kind !== "path").map((x) => x.tag));
         }}
       />
     </div>
@@ -258,10 +269,12 @@ function PublicationRow({
   const [busy, setBusy] = useState(false);
 
   const unpublish = async () => {
-    if (!sharing.unpublishTag) return;
+    // Prefer the slug-based unpublish (works for tag + path); fall back to tag.
+    if (!sharing.unpublish && !sharing.unpublishTag) return;
     setBusy(true);
     try {
-      await sharing.unpublishTag(pub.tag);
+      if (sharing.unpublish) await sharing.unpublish(pub.slug);
+      else await sharing.unpublishTag!(pub.tag);
       await onChanged();
     } finally {
       setBusy(false);
@@ -270,7 +283,8 @@ function PublicationRow({
   };
 
   const copyKey = `pub-${pub.slug}`;
-  const title = pub.title?.trim() || `#${pub.tag}`;
+  const slice = pubSlice(pub);
+  const title = pub.title?.trim() || slice;
 
   return (
     <div
@@ -321,7 +335,7 @@ function PublicationRow({
             )}
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3 }}>
-            <span style={{ color: "var(--text-secondary)" }}>#{pub.tag}</span>
+            <span style={{ color: "var(--text-secondary)" }}>{slice}</span>
             {" · "}
             {count !== undefined ? `${count} ${count === 1 ? "note" : "notes"}` : "live"}
           </div>
@@ -384,8 +398,9 @@ function PublicationRow({
         }}
       >
         Publishing {count !== undefined ? <strong>{count}</strong> : "all"}{" "}
-        {count === 1 ? "note" : "notes"} — dynamic: future notes tagged{" "}
-        <span style={{ color: "var(--text-secondary)" }}>#{pub.tag}</span> are included too.
+        {count === 1 ? "note" : "notes"} — dynamic: future notes{" "}
+        {pub.kind === "path" ? "under" : "tagged"}{" "}
+        <span style={{ color: "var(--text-secondary)" }}>{slice}</span> are included too.
       </div>
 
       {/* Expandable per-publication settings. */}
@@ -407,7 +422,7 @@ function PublicationRow({
         {confirming ? (
           <>
             <span style={{ fontSize: 12, color: "var(--text-secondary)", marginRight: "auto" }}>
-              Unpublish #{pub.tag}? The public link stops working immediately.
+              Unpublish {slice}? The public link stops working immediately.
             </span>
             <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={busy}>
               Cancel
@@ -460,12 +475,14 @@ function PublicationSettings({
   const titleDirty = (title.trim() || null) !== (pub.title?.trim() || null);
 
   const saveTitle = async () => {
-    if (!sharing.publishTag || !titleDirty) return;
+    if (!titleDirty) return;
     setSavingTitle(true);
     setTitleError(null);
     try {
       // Re-publishing is idempotent — used here to update the title.
-      await sharing.publishTag(pub.tag, { template: pub.template || "wiki", title: title.trim() });
+      const opts = { template: pub.template || "wiki", title: title.trim() };
+      if (pub.kind === "path") await sharing.publishPath?.(pub.pathPrefix ?? "", opts);
+      else await sharing.publishTag?.(pub.tag, opts);
       await onChanged();
     } catch (e) {
       setTitleError(e instanceof Error ? e.message : "Couldn't save the title.");
@@ -475,11 +492,12 @@ function PublicationSettings({
   };
 
   const setPw = async (value: string | null) => {
-    if (!sharing.setPublishPassword) return;
     setSavingPw(true);
     setPwError(null);
     try {
-      await sharing.setPublishPassword(pub.tag, value);
+      // Prefer the slug-based setter (tag + path); fall back to the tag setter.
+      if (sharing.setPublicationPassword) await sharing.setPublicationPassword(pub.slug, value);
+      else await sharing.setPublishPassword?.(pub.tag, value);
       setPassword("");
       await onChanged();
     } catch (e) {
@@ -596,44 +614,50 @@ function NewPublication({
   tags: TagCount[];
   publishedTags: Set<string>;
   sharing: NonNullable<ReturnType<typeof useCollabSharing>>;
-  onPublished: (tag: string) => void | Promise<void>;
+  onPublished: () => void | Promise<void>;
 }) {
+  const canPath = !!sharing.publishPath;
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<TagCount | null>(null);
+  const [mode, setMode] = useState<"tag" | "path">("tag");
+  const [selectedTag, setSelectedTag] = useState<string[]>([]); // single-select via TagPicker
+  const [pathPrefix, setPathPrefix] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ url: string; tag: string; count: number } | null>(null);
+  const [result, setResult] = useState<{ url: string; label: string; kind: "tag" | "path"; count: number } | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const available = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return tags
-      .filter((t) => !publishedTags.has(t.tag))
-      .filter((t) => (q ? t.tag.toLowerCase().includes(q) : true))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 40);
-  }, [tags, publishedTags, query]);
+  const tag = selectedTag[0];
+  const selectedCount = useMemo(() => tags.find((t) => t.tag === tag)?.count, [tags, tag]);
+  const excluded = useMemo(() => publishedTags, [publishedTags]);
 
   const reset = () => {
     setOpen(false);
-    setQuery("");
-    setSelected(null);
+    setMode("tag");
+    setSelectedTag([]);
+    setPathPrefix("");
     setError(null);
     setResult(null);
     setCopied(false);
   };
 
+  const canPublish = mode === "tag" ? !!tag : pathPrefix.trim().length > 0;
+
   const publish = async () => {
-    if (!selected || !sharing.publishTag) return;
+    if (!canPublish) return;
     setPublishing(true);
     setError(null);
     try {
-      const r = await sharing.publishTag(selected.tag, { template: "wiki" });
-      setResult({ url: r.url, tag: selected.tag, count: r.count });
-      await onPublished(selected.tag);
+      if (mode === "path") {
+        const prefix = pathPrefix.trim().replace(/^\/+/, "");
+        const r = await sharing.publishPath!(prefix, { template: "wiki" });
+        setResult({ url: r.url, label: r.pathPrefix || prefix, kind: "path", count: r.count });
+      } else {
+        const r = await sharing.publishTag!(tag!, { template: "wiki" });
+        setResult({ url: r.url, label: `#${tag}`, kind: "tag", count: r.count });
+      }
+      await onPublished();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't publish this tag.");
+      setError(e instanceof Error ? e.message : "Couldn't publish this slice.");
     } finally {
       setPublishing(false);
     }
@@ -669,9 +693,7 @@ function NewPublication({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <SectionLabel>
-          {result ? "Published" : "Publish a collection"}
-        </SectionLabel>
+        <SectionLabel>{result ? "Published" : "Publish a collection"}</SectionLabel>
         <Button variant="ghost" size="sm" icon={<X size={14} />} onClick={reset}>
           {result ? "Done" : "Cancel"}
         </Button>
@@ -685,8 +707,7 @@ function NewPublication({
               <Check size={11} /> Live
             </Badge>
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-              <span style={{ color: "var(--text-primary)" }}>#{result.tag}</span> is now a public
-              Wiki.
+              <span style={{ color: "var(--text-primary)" }}>{result.label}</span> is now a public Wiki.
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -723,86 +744,54 @@ function NewPublication({
           </div>
           <p style={{ fontSize: 11.5, color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
             Publishing <strong>{result.count}</strong> {result.count === 1 ? "note" : "notes"} —
-            dynamic: future notes tagged{" "}
-            <span style={{ color: "var(--text-secondary)" }}>#{result.tag}</span> are included too.
+            dynamic: future notes {result.kind === "path" ? "under" : "tagged"}{" "}
+            <span style={{ color: "var(--text-secondary)" }}>{result.label}</span> are included too.
             Find it in the list above to set a title or password.
           </p>
         </div>
       ) : (
         <>
+          {/* Tag | Path mode toggle. */}
+          {canPath && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <ModeTab active={mode === "tag"} onClick={() => setMode("tag")} icon={<Hash size={13} />} label="By tag" />
+              <ModeTab active={mode === "path"} onClick={() => setMode("path")} icon={<FolderTree size={13} />} label="By folder" />
+            </div>
+          )}
+
           <p style={{ fontSize: 12.5, color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
-            Pick a tag to publish as a public, read-only Wiki. Nothing is shared until you press
-            Publish.
+            {mode === "tag"
+              ? "Pick a tag to publish as a public, read-only Wiki."
+              : "Publish every note under a folder (path prefix) as a public, read-only Wiki."}{" "}
+            Nothing is shared until you press Publish.
           </p>
 
-          {/* Searchable tag picker. */}
-          <Input
-            icon={<Search size={14} />}
-            placeholder="Search tags…"
-            value={query}
-            autoFocus
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setSelected(null);
-            }}
-          />
-
-          <div
-            style={{
-              maxHeight: 220,
-              overflowY: "auto",
-              border: "1px solid var(--glass-border)",
-              borderRadius: 10,
-              background: "var(--bg-surface, var(--glass))",
-            }}
-          >
-            {available.length === 0 ? (
-              <div style={{ padding: "16px 12px", fontSize: 12.5, color: "var(--text-muted)" }}>
-                {query ? "No matching tags." : "No tags available to publish."}
-              </div>
-            ) : (
-              available.map((t) => {
-                const active = selected?.tag === t.tag;
-                return (
-                  <button
-                    key={t.tag}
-                    onClick={() => setSelected(t)}
-                    style={{
-                      width: "100%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      padding: "9px 12px",
-                      background: active ? "var(--glass-hover)" : "transparent",
-                      border: "none",
-                      borderLeft: active
-                        ? "2px solid var(--color-accent)"
-                        : "2px solid transparent",
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 13,
-                        color: active ? "var(--text-primary)" : "var(--text-secondary)",
-                        fontWeight: active ? 600 : 400,
-                      }}
-                    >
-                      #{t.tag}
-                    </span>
-                    <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
-                      {t.count} {t.count === 1 ? "note" : "notes"}
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
+          {mode === "tag" ? (
+            <TagPicker
+              tags={tags}
+              selected={selectedTag}
+              onChange={setSelectedTag}
+              multiple={false}
+              exclude={excluded}
+              maxHeight={220}
+              autoFocus
+              placeholder="Search tags…"
+            />
+          ) : (
+            <Input
+              icon={<FolderTree size={14} />}
+              placeholder="e.g. projects/commons"
+              value={pathPrefix}
+              autoFocus
+              onChange={(e) => setPathPrefix(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canPublish) void publish();
+              }}
+            />
+          )}
 
           {/* Dynamic-count honesty for the pending selection. */}
-          {selected && (
+          {mode === "tag" && tag && (
             <p
               style={{
                 fontSize: 11.5,
@@ -814,10 +803,27 @@ function NewPublication({
                 borderRadius: 8,
               }}
             >
-              Publishing <strong>{selected.count}</strong>{" "}
-              {selected.count === 1 ? "note" : "notes"} — dynamic: future notes tagged{" "}
-              <span style={{ color: "var(--text-secondary)" }}>#{selected.tag}</span> are included
-              too.
+              Publishing{" "}
+              {selectedCount !== undefined ? <strong>{selectedCount}</strong> : "all"}{" "}
+              {selectedCount === 1 ? "note" : "notes"} — dynamic: future notes tagged{" "}
+              <span style={{ color: "var(--text-secondary)" }}>#{tag}</span> are included too.
+            </p>
+          )}
+          {mode === "path" && pathPrefix.trim() && (
+            <p
+              style={{
+                fontSize: 11.5,
+                color: "var(--text-muted)",
+                margin: 0,
+                lineHeight: 1.5,
+                padding: "8px 10px",
+                background: "var(--glass-hover)",
+                borderRadius: 8,
+              }}
+            >
+              Publishing every note under{" "}
+              <span style={{ color: "var(--text-secondary)" }}>{pathPrefix.trim().replace(/^\/+/, "")}</span>{" "}
+              — dynamic: future notes under that folder are included too.
             </p>
           )}
 
@@ -828,15 +834,51 @@ function NewPublication({
               variant="primary"
               icon={<Globe size={15} />}
               loading={publishing}
-              disabled={!selected}
+              disabled={!canPublish}
               onClick={publish}
             >
-              {selected ? `Publish #${selected.tag}` : "Publish"}
+              {mode === "tag" ? (tag ? `Publish #${tag}` : "Publish") : "Publish folder"}
             </Button>
           </div>
         </>
       )}
     </section>
+  );
+}
+
+/** Small segmented-control tab for the Tag/Path publish modes. */
+function ModeTab({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 12.5,
+        fontWeight: 550,
+        padding: "6px 12px",
+        borderRadius: 8,
+        cursor: "pointer",
+        border: `1px solid ${active ? "var(--color-accent)" : "var(--glass-border)"}`,
+        background: active ? "var(--color-accent-dim, var(--glass-hover))" : "transparent",
+        color: active ? "var(--color-accent)" : "var(--text-secondary)",
+      }}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 

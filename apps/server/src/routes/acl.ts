@@ -57,6 +57,7 @@ import {
   type Space,
 } from "../db";
 import { noteKind } from "../collab";
+import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 
@@ -247,16 +248,24 @@ const slugify = (s: string): string =>
 
 acl.get("/publications", (c) =>
   c.json(
-    listPublications().map((p) => ({
-      slug: p.id,
-      tag: p.resource,
-      template: p.template,
-      title: p.title,
-      passwordRequired: !!p.password_hash,
-      expiresAt: p.expires_at,
-      url: `${config.appOrigin}/p/${p.id}`,
-      createdAt: p.created_at,
-    })),
+    listPublications().map((p) => {
+      const kind = p.resource_type === "path" ? "path" : "tag";
+      return {
+        slug: p.id,
+        kind,
+        // Keep `tag` populated for tag pubs (existing UI/e2e), add `pathPrefix`
+        // for path pubs. Both echo `resource` for their respective kind; the
+        // other is empty/null to match core's PublicationInfo contract.
+        tag: kind === "tag" ? p.resource : "",
+        pathPrefix: kind === "path" ? p.resource : null,
+        template: p.template,
+        title: p.title,
+        passwordRequired: !!p.password_hash,
+        expiresAt: p.expires_at,
+        url: `${config.appOrigin}/p/${p.id}`,
+        createdAt: p.created_at,
+      };
+    }),
   ),
 );
 
@@ -315,6 +324,76 @@ acl.delete("/tags/:tag/publish", (c) => {
   const pub = getPublicationByResource("tag", tag);
   if (pub) deletePublication(pub.id);
   removeGrantBySubjectResource("anyone", "*", "tag", tag);
+  return c.json({ ok: true });
+});
+
+// ── Publish-by-path-prefix: a public, read-only site rooted at a directory ──
+// Unlike tag pubs, a path publication uses NO `anyone` grant — the public read
+// path (routes/publish.ts) guards it purely by the path-membership predicate on
+// the vault's own `path` field. So this only writes the `publications` row.
+acl.post("/publish/path", async (c) => {
+  const body = await c.req
+    .json<{ pathPrefix?: string; title?: string; slug?: string; password?: string }>()
+    .catch(() => ({}) as { pathPrefix?: string; title?: string; slug?: string; password?: string });
+
+  const prefix = typeof body.pathPrefix === "string" ? normalizePathPrefix(body.pathPrefix) : null;
+  if (!prefix) return c.json({ error: "bad_request", message: "invalid path prefix" }, 400);
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
+
+  // One publication per prefix → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("path", prefix);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(prefix);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      resource_type: "path",
+      resource: prefix,
+      template: "wiki",
+      title: body.title ?? null,
+      home_note_id: null,
+      password_hash: passwordHash,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  } else if (body.password !== undefined) {
+    updatePublication(existing.id, { password_hash: passwordHash });
+  }
+
+  // Live count (and dynamic): notes whose path is inside the prefix. The same
+  // membership predicate the public read path uses — never trust a vault query.
+  let count = 0;
+  try {
+    count = (await vault.listNotes({})).filter((n) => pathInPrefix(n.path, prefix)).length;
+  } catch {
+    /* best-effort */
+  }
+  return c.json({ slug, pathPrefix: prefix, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+// ── Slug-based publication management (works for BOTH tag and path pubs) ──
+/** Set or clear a publication's password by slug (clear by omitting/empty password). */
+acl.put("/publications/:slug/password", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
+});
+
+/** Unpublish by slug. Removes the row; for a tag pub it also drops the backing
+ *  `anyone/tag/view` grant. (Path pubs have no grant to remove.) */
+acl.delete("/publications/:slug", (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  deletePublication(pub.id);
+  if (pub.resource_type === "tag") {
+    removeGrantBySubjectResource("anyone", "*", "tag", pub.resource);
+  }
   return c.json({ ok: true });
 });
 

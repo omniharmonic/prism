@@ -31,6 +31,7 @@ import {
   addGrant,
   createPublication,
   getPublicationByResource,
+  getPublicationBySlug,
   grantsForResource,
 } from "../src/db";
 
@@ -235,4 +236,144 @@ test("owner can set a password then unpublish, which clears the anyone-grant", a
   assert.equal(del.status, 200);
   assert.equal(getPublicationByResource("tag", "wiki"), null);
   assert.equal(grantsForResource("tag", "wiki").filter((g) => g.subject_type === "anyone").length, 0);
+});
+
+// ── publish-by-path-prefix ────────────────────────────────────────────────────
+/** Notes that exercise prefix membership: two inside `docs/guide`, a sibling
+ *  `docs/guidance/...` that must NOT match `docs/guide`, and an out-of-prefix
+ *  note. The in-set notes wikilink each other and an out-of-set note. */
+function seedPaths() {
+  fv.put({ id: "g1", path: "docs/guide/intro.md", tags: ["anything"], content: "# Intro\n\nsee [[Setup]] and [[Other]]" });
+  fv.put({ id: "g2", path: "docs/guide/setup.md", tags: [], content: "# Setup\n\nback to [[Intro]]" });
+  fv.put({ id: "sibling", path: "docs/guidance/oops.md", tags: [], content: "# Sibling\n\nnot in docs/guide" });
+  fv.put({ id: "other", path: "blog/post.md", tags: [], content: "# Other\n\nelsewhere" });
+}
+
+test("path publish: manifest lists ONLY in-prefix notes (sibling prefix excluded)", async () => {
+  seedPaths();
+  const res = await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide", title: "Guide" }),
+  });
+  assert.equal(res.status, 200);
+  const body = await readJson(res);
+  assert.equal(body.pathPrefix, "docs/guide");
+  assert.equal(body.count, 2, "only the two docs/guide notes count");
+  assert.equal(body.passwordRequired, false);
+  assert.match(body.url, /\/p\//);
+
+  const man = await readJson(await publish.request(`/${body.slug}`));
+  const ids = man.notes.map((n: { id: string }) => n.id).sort();
+  assert.deepEqual(ids, ["g1", "g2"], "sibling docs/guidance and blog/post excluded");
+});
+
+test("path publish: out-of-prefix + sibling notes 403 on the single-note route", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  assert.equal((await publish.request(`/${slug}/notes/g1`)).status, 200, "in-prefix note served");
+  // guessable ids that are out of the prefix must never be pulled.
+  assert.equal((await publish.request(`/${slug}/notes/sibling`)).status, 403, "docs/guidance is NOT under docs/guide");
+  assert.equal((await publish.request(`/${slug}/notes/other`)).status, 403, "blog/post is out of prefix");
+});
+
+test("path publish: graph is in-set only; out-of-prefix wikilink dropped", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  const { nodes, edges } = await readJson(await publish.request(`/${slug}/graph`));
+  assert.deepEqual(nodes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+  // g1→[[Setup]] resolves (g2); g2→[[Intro]] resolves (g1); g1→[[Other]] is
+  // out-of-set and MUST NOT appear.
+  const pairs = edges.map((e: { source: string; target: string }) => `${e.source}->${e.target}`).sort();
+  assert.deepEqual(pairs, ["g1->g2", "g2->g1"]);
+  for (const e of edges) assert.ok(e.target !== "other" && e.source !== "other");
+});
+
+test("path publish rejects traversal/empty prefixes", async () => {
+  seedPaths();
+  for (const pathPrefix of ["../etc", "docs/../secret", "..", "/", "   ", ""]) {
+    const res = await ownerReq("/publish/path", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pathPrefix }),
+    });
+    assert.equal(res.status, 400, `prefix ${JSON.stringify(pathPrefix)} must be rejected`);
+  }
+});
+
+test("path publish normalizes the prefix and is idempotent per prefix", async () => {
+  seedPaths();
+  // leading/trailing slashes + double slash all normalize to "docs/guide".
+  const a = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "/docs//guide/" }),
+  }));
+  assert.equal(a.pathPrefix, "docs/guide");
+  const b = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+  assert.equal(b.slug, a.slug, "same normalized prefix → same slug, no duplicate row");
+  // a path publication creates NO anyone-grant (guarded by path membership only).
+  assert.equal(grantsForResource("path", "docs/guide").length, 0);
+  assert.equal(grantsForResource("tag", "docs/guide").filter((g) => g.subject_type === "anyone").length, 0);
+});
+
+test("slug-based unpublish removes a path publication", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+  assert.ok(getPublicationBySlug(slug), "publication exists after publish");
+
+  const del = await ownerReq(`/publications/${slug}`, { method: "DELETE" });
+  assert.equal(del.status, 200);
+  assert.equal(getPublicationBySlug(slug), null, "row removed");
+  assert.equal((await publish.request(`/${slug}`)).status, 404, "manifest 404s after unpublish");
+});
+
+test("slug-based password set/clear gates a path publication", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  // set a password by slug → manifest withholds nav.
+  await ownerReq(`/publications/${slug}/password`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "open-sesame" }),
+  });
+  const locked = await readJson(await publish.request(`/${slug}`));
+  assert.equal(locked.passwordRequired, true);
+  assert.deepEqual(locked.notes, []);
+
+  // clear it → nav returns.
+  await ownerReq(`/publications/${slug}/password`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+  });
+  const open = await readJson(await publish.request(`/${slug}`));
+  assert.equal(open.passwordRequired, false);
+  assert.deepEqual(open.notes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+});
+
+test("GET /publications reports kind + pathPrefix/tag for both kinds", async () => {
+  seedWiki();
+  seedPaths();
+  await ownerReq("/tags/wiki/publish", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const tagRow = rows.find((r) => r.kind === "tag");
+  const pathRow = rows.find((r) => r.kind === "path");
+  assert.ok(tagRow && tagRow.tag === "wiki" && (tagRow.pathPrefix ?? null) === null);
+  assert.ok(pathRow && pathRow.pathPrefix === "docs/guide" && !pathRow.tag);
 });

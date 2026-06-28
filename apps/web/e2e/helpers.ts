@@ -137,8 +137,14 @@ export const acl = {
   async unpublishTag(tag: string): Promise<void> {
     await aclReq(`/tags/${encodeURIComponent(tag)}/publish`, { method: "DELETE" });
   },
+  /** Unpublish by slug (tag or path publication). Best-effort. */
+  async unpublishSlug(slug: string): Promise<void> {
+    await aclReq(`/publications/${encodeURIComponent(slug)}`, { method: "DELETE" });
+  },
   /** List publications (owner view). */
-  async publications(): Promise<Array<{ slug: string; tag: string; passwordRequired: boolean }>> {
+  async publications(): Promise<
+    Array<{ slug: string; kind: "tag" | "path"; tag: string; pathPrefix: string | null; passwordRequired: boolean }>
+  > {
     const r = await aclReq("/publications");
     return Array.isArray(r.body) ? r.body : [];
   },

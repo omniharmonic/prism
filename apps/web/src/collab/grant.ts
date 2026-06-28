@@ -78,6 +78,12 @@ export const webCollabSharing: CollabSharing = {
   ): Promise<{ slug: string; url: string; count: number; passwordRequired: boolean }> {
     return (await acl(`/tags/${enc(tag)}/publish`, { method: "POST", body: JSON.stringify(opts ?? {}) })).json();
   },
+  async publishPath(
+    pathPrefix: string,
+    opts?: { template?: string; title?: string; password?: string },
+  ): Promise<{ slug: string; pathPrefix: string; url: string; count: number; passwordRequired: boolean }> {
+    return (await acl(`/publish/path`, { method: "POST", body: JSON.stringify({ pathPrefix, ...(opts ?? {}) }) })).json();
+  },
   async setPublishPassword(tag: string, password: string | null): Promise<void> {
     await acl(`/tags/${enc(tag)}/publish/password`, {
       method: "PUT",
@@ -86,6 +92,15 @@ export const webCollabSharing: CollabSharing = {
   },
   async unpublishTag(tag: string): Promise<void> {
     await acl(`/tags/${enc(tag)}/publish`, { method: "DELETE" });
+  },
+  async unpublish(slug: string): Promise<void> {
+    await acl(`/publications/${enc(slug)}`, { method: "DELETE" });
+  },
+  async setPublicationPassword(slug: string, password: string | null): Promise<void> {
+    await acl(`/publications/${enc(slug)}/password`, {
+      method: "PUT",
+      body: JSON.stringify({ password: password ?? "" }),
+    });
   },
 
   // ── Federation (peer-to-peer vault sync) ──

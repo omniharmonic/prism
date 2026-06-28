@@ -36,7 +36,12 @@ export interface SetPersonResult {
  *  carries the tag — dynamic, so future notes with the tag are included too. */
 export interface PublicationInfo {
   slug: string;
+  /** What slice is published: a tag, or a path/directory prefix. */
+  kind: "tag" | "path";
+  /** The published tag (when kind === "tag"). Empty for path publications. */
   tag: string;
+  /** The published path prefix (when kind === "path"). */
+  pathPrefix?: string | null;
   template: string;
   title: string | null;
   passwordRequired: boolean;
@@ -138,8 +143,18 @@ export interface CollabSharing {
     tag: string,
     opts?: { template?: string; title?: string; password?: string },
   ): Promise<{ slug: string; url: string; count: number; passwordRequired: boolean }>;
+  /** Publish a path/directory prefix as a public read-only site (the slice is the
+   *  notes under that prefix; membership is path-evaluated server-side). */
+  publishPath?(
+    pathPrefix: string,
+    opts?: { template?: string; title?: string; password?: string },
+  ): Promise<{ slug: string; pathPrefix: string; url: string; count: number; passwordRequired: boolean }>;
   setPublishPassword?(tag: string, password: string | null): Promise<void>;
+  /** Set/clear a publication's password by slug — works for tag + path publications. */
+  setPublicationPassword?(slug: string, password: string | null): Promise<void>;
   unpublishTag?(tag: string): Promise<void>;
+  /** Unpublish by slug — works for both tag and path publications. */
+  unpublish?(slug: string): Promise<void>;
 
   /** Federation — peer-to-peer vault sync. All optional; absent → the Federate
    *  surface is hidden (desktop / capability-viewer safe). `federationEnabled`
