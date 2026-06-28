@@ -7,23 +7,50 @@
  * content itself is still enforced by the /api gateway via these grants.
  */
 import { Hono } from "hono";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
 import { vault, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
+import { serverKeyPair, fingerprint } from "../auth/peer";
 import { LEVELS, type Level } from "../permissions";
 import {
   ensureUser,
   hasAccount,
   listUsers,
   upsertGrant,
+  removeGrant,
   removeGrantBySubjectResource,
   grantsForResource,
+  grantsForPeer,
   createCapability,
   capabilitiesForResource,
   deleteCapability,
+  createPublication,
+  getPublicationBySlug,
+  getPublicationByResource,
+  listPublications,
+  deletePublication,
+  storePairing,
+  listPeers,
+  removePeer,
+  getPeer,
+  createSpace,
+  getSpace,
+  listSpaces,
+  deleteSpace,
+  upsertFederatedNote,
+  federatedNotesForSpace,
+  deleteFederatedNote,
+  updatePublication,
+  listSuggestions,
+  getSuggestion,
+  setSuggestionStatus,
+  deleteSuggestion,
+  type Space,
 } from "../db";
+import { noteKind } from "../collab";
+import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -191,5 +218,261 @@ acl.delete("/tags/:tag/people/:email", (c) => {
     "tag",
     decodeURIComponent(c.req.param("tag")),
   );
+  return c.json({ ok: true });
+});
+
+// ── Publishing (Horizon B): turn a tag into a public, read-only site ──
+// Config (the publications row) and access (an `anyone` grant) are decoupled;
+// effectiveLevel in the /api/p gateway stays the only authoritative guard.
+const slugify = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "site";
+
+acl.get("/publications", (c) =>
+  c.json(
+    listPublications().map((p) => ({
+      slug: p.id,
+      tag: p.resource,
+      template: p.template,
+      title: p.title,
+      passwordRequired: !!p.password_hash,
+      expiresAt: p.expires_at,
+      url: `${config.appOrigin}/p/${p.id}`,
+      createdAt: p.created_at,
+    })),
+  ),
+);
+
+acl.post("/tags/:tag/publish", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const body = await c.req
+    .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string }>()
+    .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string });
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
+
+  // One publication per tag (v1) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("tag", tag);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(tag);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      resource_type: "tag",
+      resource: tag,
+      template: body.template || "wiki",
+      title: body.title ?? null,
+      home_note_id: body.homeNoteId ?? null,
+      password_hash: passwordHash,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  } else if (body.password !== undefined) {
+    // Re-publishing with a password field present updates the gate (set or clear).
+    updatePublication(existing.id, { password_hash: passwordHash });
+  }
+  // The publication primitive: an `anyone-with-the-link` grant scoped to the tag.
+  upsertGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
+
+  // Live count for the UI warning ("this will publish N notes" — and is dynamic).
+  let count = 0;
+  try { count = (await vault.listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
+  return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+/** Set or clear a publication's password (clear by sending an empty/omitted password). */
+acl.put("/tags/:tag/publish/password", async (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const pub = getPublicationByResource("tag", tag);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
+});
+
+acl.delete("/tags/:tag/publish", (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  const pub = getPublicationByResource("tag", tag);
+  if (pub) deletePublication(pub.id);
+  removeGrantBySubjectResource("anyone", "*", "tag", tag);
+  return c.json({ ok: true });
+});
+
+// ── Suggestions review (Horizon C, suggest-level): durable owner inbox ──
+// A suggest-level peer/collaborator's proposed change is stored (survives
+// restart) for the owner to accept or reject. Accept/reject is a status
+// transition; applying an accepted suggestion to the live doc is handled by the
+// collab/federation layer when that note next loads (gated path).
+acl.get("/suggestions", (c) => {
+  const status = c.req.query("status") as "pending" | "accepted" | "rejected" | undefined;
+  return c.json(
+    listSuggestions(status).map((s) => ({
+      id: s.id,
+      noteId: s.note_id,
+      spaceNoteKey: s.space_note_key,
+      author: s.author,
+      authorKind: s.author_kind,
+      summary: s.summary,
+      status: s.status,
+      createdAt: s.created_at,
+      resolvedAt: s.resolved_at,
+    })),
+  );
+});
+
+acl.post("/suggestions/:id/accept", (c) => {
+  const s = getSuggestion(c.req.param("id"));
+  if (!s) return c.json({ error: "not_found" }, 404);
+  setSuggestionStatus(s.id, "accepted");
+  return c.json({ ok: true, status: "accepted" });
+});
+
+acl.post("/suggestions/:id/reject", (c) => {
+  const s = getSuggestion(c.req.param("id"));
+  if (!s) return c.json({ error: "not_found" }, 404);
+  setSuggestionStatus(s.id, "rejected");
+  return c.json({ ok: true, status: "rejected" });
+});
+
+acl.delete("/suggestions/:id", (c) => {
+  deleteSuggestion(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+// ── Peer federation (Horizon C): identity + one-time pairing (owner setup) ──
+acl.get("/peers/identity", (c) => {
+  const kp = serverKeyPair();
+  return c.json({ publicKey: kp.publicKeyB64url, fingerprint: fingerprint(kp.publicKeyB64url) });
+});
+
+acl.post("/peers/pair", async (c) => {
+  const { label } = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
+  // The raw code is shown to the owner ONCE to hand to the peer out-of-band; only
+  // its hash is stored (invite.ts pattern). 7-day single-use TTL.
+  const code = randomBytes(18).toString("base64url");
+  storePairing(createHash("sha256").update(code).digest("hex"), label ?? null, config.ownerEmail, 7 * 86_400_000);
+  const kp = serverKeyPair();
+  return c.json({
+    code,
+    expiresInDays: 7,
+    serverPublicKey: kp.publicKeyB64url,
+    fingerprint: fingerprint(kp.publicKeyB64url),
+  });
+});
+
+acl.get("/peers", (c) =>
+  c.json(
+    listPeers().map((p) => ({
+      pubkey: p.pubkey,
+      email: p.email,
+      label: p.label,
+      fingerprint: fingerprint(p.pubkey),
+      pairedAt: p.paired_at,
+      createdAt: p.created_at,
+    })),
+  ),
+);
+
+acl.delete("/peers/:pubkey", (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  for (const g of grantsForPeer(pubkey)) removeGrant(g.id);
+  removePeer(pubkey);
+  return c.json({ ok: true });
+});
+
+// ── Shared spaces (Horizon C): owner-managed federation collections ──
+// A space groups notes (each assigned a content-independent space_note_key) and
+// is shared with peers via grants (subject_type='peer', resource_type='space').
+// The live bridge (federation-manager.ts) is GATED behind config.federationEnabled;
+// these management endpoints only mutate the local ACL/identity store.
+const asStringArray = (x: unknown): string[] =>
+  Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : [];
+
+/** Serialize a Space row for the API (parse the JSON tag scopes). */
+function spaceView(s: Space) {
+  return {
+    id: s.id,
+    title: s.title,
+    includeTags: s.scope_include_tags ? (JSON.parse(s.scope_include_tags) as string[]) : [],
+    excludeTags: s.scope_exclude_tags ? (JSON.parse(s.scope_exclude_tags) as string[]) : [],
+    pathPrefix: s.path_prefix,
+    createdAt: s.created_at,
+  };
+}
+
+acl.get("/spaces", (c) => c.json(listSpaces().map(spaceView)));
+
+acl.post("/spaces", async (c) => {
+  const body = await c.req
+    .json<{ title?: string; includeTags?: string[]; excludeTags?: string[]; pathPrefix?: string }>()
+    .catch(() => ({}) as Record<string, never>);
+  const space = createSpace({
+    id: randomUUID(),
+    title: typeof body.title === "string" ? body.title : null,
+    scope_include_tags: JSON.stringify(asStringArray(body.includeTags)),
+    scope_exclude_tags: JSON.stringify(asStringArray(body.excludeTags)),
+    path_prefix: typeof body.pathPrefix === "string" ? body.pathPrefix : null,
+    created_by: config.ownerEmail,
+  });
+  return c.json(spaceView(space));
+});
+
+acl.delete("/spaces/:id", (c) => {
+  const id = c.req.param("id");
+  // Drop the space's federated-note identities and any peer grants on it.
+  for (const fed of federatedNotesForSpace(id)) deleteFederatedNote(fed.space_note_key);
+  for (const g of grantsForResource("space", id)) removeGrant(g.id);
+  deleteSpace(id);
+  return c.json({ ok: true });
+});
+
+// Add a note to a space: mint its content-independent space_note_key and PIN the
+// collab kind (so an inbound peer update can never reseed it as the wrong shape).
+acl.post("/spaces/:id/notes", async (c) => {
+  const id = c.req.param("id");
+  if (!getSpace(id)) return c.json({ error: "not_found" }, 404);
+  const { noteId } = await c.req.json<{ noteId?: string }>().catch(() => ({}) as { noteId?: string });
+  if (typeof noteId !== "string" || !noteId) return c.json({ error: "bad_request" }, 400);
+  let kind: string;
+  try {
+    const note = await vault.getNote(noteId);
+    kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "note_not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+  const row = upsertFederatedNote({
+    space_note_key: randomUUID(),
+    space_id: id,
+    local_id: noteId,
+    kind,
+    peer_synced_at: null,
+    source_updated_at: null,
+  });
+  return c.json(row);
+});
+
+// Grant / revoke a paired peer's access to a space.
+acl.post("/spaces/:id/peers", async (c) => {
+  const id = c.req.param("id");
+  if (!getSpace(id)) return c.json({ error: "not_found" }, 404);
+  const { pubkey, level } = await c.req.json<{ pubkey?: string; level?: string }>().catch(() => ({}) as { pubkey?: string; level?: string });
+  if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const grant = upsertGrant({
+    subject_type: "peer",
+    subject: pubkey,
+    resource_type: "space",
+    resource: id,
+    level,
+    created_by: config.ownerEmail,
+  });
+  return c.json({ ok: true, grant });
+});
+
+acl.delete("/spaces/:id/peers/:pubkey", (c) => {
+  removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "space", c.req.param("id"));
   return c.json({ ok: true });
 });

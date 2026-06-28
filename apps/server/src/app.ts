@@ -13,6 +13,8 @@ import { auth } from "./routes/auth";
 import { api } from "./routes/api";
 import { acl } from "./routes/acl";
 import { rag } from "./routes/rag";
+import { publish } from "./routes/publish";
+import { federation } from "./routes/federation";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -64,8 +66,22 @@ export function createApp(): Hono {
   app.use("/auth/register", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-register" }));
   app.use("/auth/request", rateLimit({ max: 5, windowMs: 10 * 60_000, name: "auth-request" }));
   app.use("/auth/callback", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-callback" }));
+  // The peer-pairing endpoint is anon-reachable and consumes a single-use code;
+  // the 144-bit code already makes guessing infeasible, but rate-limit it too as
+  // defense-in-depth against code-guessing / pairing spam.
+  app.use("/api/federation/pair", rateLimit({ max: 20, windowMs: 10 * 60_000, name: "federation-pair" }));
 
   app.route("/auth", auth);
+  // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon
+  // C) are mounted under /api but BEFORE the gateway `api` group — like `rag` —
+  // so they are handled here and never reach the owner short-circuit / 403
+  // catch-all inside `api`. Both are intentionally open to non-owners:
+  //   /api/p/*          → read-only published content, guarded by effectiveLevel
+  //   /api/federation/* → peer-signed federation surface (pairing, identity)
+  // The human-facing published URL /p/:slug is a CLIENT route (SPA fallback);
+  // it fetches /api/p/:slug from here.
+  app.route("/api/p", publish);
+  app.route("/api/federation", federation);
   // RAG owns /api/search/semantic + /api/index/* and must be matched BEFORE the
   // gateway, whose owner short-circuit would otherwise proxy these to the vault
   // (which has no semantic endpoint). Other /api paths fall through to `api`.

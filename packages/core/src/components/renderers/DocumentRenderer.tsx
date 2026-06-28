@@ -36,7 +36,7 @@ import { useUpdateNote } from "../../app/hooks/useParachute";
 
 const lowlightInstance = createLowlight(common);
 
-export default function DocumentRenderer({ note, onMetadataChange }: RendererProps) {
+export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
   const [slashState, setSlashState] = useState<SlashCommandState | null>(null);
@@ -51,7 +51,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
   }, [note.id]); // re-sync when switching documents
   const changeFont = useCallback((f: ContentFont) => {
     setContentFont(f);
-    onMetadataChange({ contentFont: f });
+    onMetadataChange?.({ contentFont: f });
   }, [onMetadataChange]);
 
   // Surface the reading-font control to the shell (bottom bar / More sheet)
@@ -67,11 +67,12 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
   const updateNote = useUpdateNote();
   const renameTab = useUIStore((s) => s.renameTab);
   const handleRename = useCallback((newName: string) => {
+    if (readOnly) return; // read-only surface: never rename/persist
     const next = renamePath(note.path, newName);
     if (!next) return;
     updateNote.mutate({ id: note.id, path: next });
     renameTab(note.id, newName.trim());
-  }, [note.path, note.id, updateNote, renameTab]);
+  }, [note.path, note.id, updateNote, renameTab, readOnly]);
 
   // Wikilink navigation (shared with the collaborative editors).
   const handleWikilinkNavigate = useWikilinkNavigate();
@@ -147,11 +148,17 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
   const onSaved = useCallback((content: string) => {
     lastUserSavedContent.current = content;
   }, []);
-  const { isSaving, lastSaved, scheduleSave, saveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
+  const { isSaving, lastSaved, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
+  // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
+  // the autosave triggers keeps every downstream call site unchanged while
+  // guaranteeing no vault mutation when readOnly is set.
+  const scheduleSave = useCallback(() => { if (!readOnly) rawScheduleSave(); }, [readOnly, rawScheduleSave]);
+  const saveNow = useCallback(() => { if (!readOnly) rawSaveNow(); }, [readOnly, rawSaveNow]);
 
   const editor = useEditor({
     extensions,
     content: initialHtml || "",
+    editable: !readOnly,
     editorProps: {
       attributes: {
         class: "prose-editor outline-none min-h-[200px]",
@@ -164,6 +171,11 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
   }, [initialHtml]); // Re-create editor when initialHtml changes
 
   editorRef.current = editor;
+
+  // Keep the editor's editable state in sync if readOnly flips after creation.
+  useEffect(() => {
+    if (editor) editor.setEditable(!readOnly);
+  }, [editor, readOnly]);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
   const pendingEdit = useUIStore((s) => s.pendingEdit);
@@ -275,8 +287,8 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
 
   return (
     <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
-      {/* Toolbar */}
-      {editor && <EditorToolbar editor={editor} />}
+      {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
+      {editor && !readOnly && <EditorToolbar editor={editor} />}
 
       {/* Editor */}
       <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
@@ -285,7 +297,7 @@ export default function DocumentRenderer({ note, onMetadataChange }: RendererPro
             path={note.path}
             onRename={handleRename}
             icon={note.metadata?.icon as string | undefined}
-            onIconChange={(emoji) => onMetadataChange({ icon: emoji })}
+            onIconChange={(emoji) => onMetadataChange?.({ icon: emoji })}
           />
           <EditorContent editor={editor} />
         </div>

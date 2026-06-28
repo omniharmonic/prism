@@ -55,7 +55,10 @@ export default defineConfig({
         navigateFallback: "index.html",
         // Let server-handled routes reach the network instead of being shadowed
         // by the SPA shell: /auth/* (magic-link callback sets the session cookie
-        // + redirects — must hit the server) and /api/* (the gateway).
+        // + redirects — must hit the server) and /api/* (the gateway, which
+        // includes the public publication JSON at /api/p/*). The human-facing
+        // published Wiki URL /p/:slug is a CLIENT route — it intentionally FALLS
+        // BACK to index.html (the SPA), which then fetches /api/p/:slug.
         navigateFallbackDenylist: [/^\/auth\//, /^\/api\//],
         runtimeCaching: [
           {

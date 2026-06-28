@@ -73,7 +73,7 @@ const prismLightTheme = EditorView.theme({
   ".cm-foldGutter": { color: "var(--text-muted)" },
 }, { dark: false });
 
-export default function CodeRenderer({ note }: RendererProps) {
+export default function CodeRenderer({ note, readOnly }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
   const language = detectLanguage(note.path, meta);
   const contentRef = useRef(note.content || "");
@@ -110,7 +110,7 @@ export default function CodeRenderer({ note }: RendererProps) {
         indentWithTab,
       ]),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
+        if (update.docChanged && !readOnly) {
           contentRef.current = update.state.doc.toString();
           scheduleSaveRef.current();
         }
@@ -121,6 +121,9 @@ export default function CodeRenderer({ note }: RendererProps) {
         ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
       }),
     ];
+
+    // Read-only surfaces (published Wiki / anonymous): disable all editing.
+    if (readOnly) extensions.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
 
     if (langExt) extensions.push(langExt);
 
@@ -136,8 +139,8 @@ export default function CodeRenderer({ note }: RendererProps) {
 
     viewRef.current = view;
     return () => { view.destroy(); viewRef.current = null; };
-    // Re-create editor when theme or language changes
-  }, [language, isDark, note.id]);
+    // Re-create editor when theme, language, note, or read-only state changes
+  }, [language, isDark, note.id, readOnly]);
 
   return (
     <div className="flex flex-col h-full">

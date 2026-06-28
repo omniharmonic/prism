@@ -202,6 +202,7 @@ pub fn run() {
             config::get_collab_config,
             config::set_anthropic_key,
             config::test_parachute,
+            config::validate_config,
             config::test_matrix,
             config::test_notion,
             config::check_claude_cli,

@@ -32,6 +32,17 @@ export interface SetPersonResult {
   invited: boolean;
   inviteUrl?: string;
 }
+/** A published tag: a public, read-only site ("Wiki") covering every note that
+ *  carries the tag — dynamic, so future notes with the tag are included too. */
+export interface PublicationInfo {
+  slug: string;
+  tag: string;
+  template: string;
+  title: string | null;
+  passwordRequired: boolean;
+  url: string;
+  createdAt: number;
+}
 
 /**
  * Seam for sharing. The web shell implements the full ACL surface against the
@@ -51,6 +62,16 @@ export interface CollabSharing {
   createLink?(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink>;
   revokeLink?(noteId: string, linkId: string): Promise<void>;
   listUsers?(): Promise<string[]>;
+
+  /** Publishing — turn a tag into a public, read-only site. Optional so shells
+   *  without it (desktop no-op, capability viewers) simply never show the tab. */
+  listPublications?(): Promise<PublicationInfo[]>;
+  publishTag?(
+    tag: string,
+    opts?: { template?: string; title?: string; password?: string },
+  ): Promise<{ slug: string; url: string; count: number; passwordRequired: boolean }>;
+  setPublishPassword?(tag: string, password: string | null): Promise<void>;
+  unpublishTag?(tag: string): Promise<void>;
 }
 
 const CollabSharingContext = createContext<CollabSharing | null>(null);
