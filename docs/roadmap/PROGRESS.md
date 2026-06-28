@@ -49,5 +49,11 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barr
 - ⏭ L-P2P-Accel — SKIPPED (Parachute-core changes; out of scope per plan, never blocks 1–3)
 - 🔵 **B4** — core+server tsc clean; cargo clean (validate_config); check:sw passes; plugin.json + .mcp.json.template valid; migrate dry-run correct
 
-## Final
-- ⬜ Final QA e2e pass across all 3 horizons → merge to `main`
+## Final  ✅
+- 🔵 Final QA across all 3 horizons: core+web+server tsc clean · cargo clean · web build green · `check:sw` pass · verify-gateway ALL PASS · verify-collab-share 42/42 · verify-federation 14/14 · publishing+password+suggestion+federation-pairing e2e · mapping parity 35/35 · seed idempotency · adversarial security review (no critical/high; 2 fixes applied)
+- 🔵 **Merged to `main`** (`e541f77`) and pushed to origin. Branch `claude/prism-roadmap-exploration-u90og6` pushed.
+
+### Deferred (documented, non-blocking)
+- Live two-hub federation convergence (gated off; needs a 2nd hub+vault; transport bridge + invariants built & tested) — see `docs/federation.md`, `apps/server/src/federation-manager.ts`.
+- L-P2P-Accel (Parachute-core change-feed / scoped peer-MCP / push revocation) — out of scope per plan.
+- suggest≈edit at the CRDT layer (existing in-doc suggestion design) — see `docs/security-review-notes.md`.
