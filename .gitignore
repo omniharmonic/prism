@@ -45,3 +45,13 @@ apps/server/.env
 apps/server/*.sqlite
 apps/server/*.sqlite-journal
 apps/server/data/
+
+# Never commit env files or their backups (only *.example templates) — secrets.
+apps/server/.env*
+!apps/server/.env*.example
+!apps/server/.env.test
+*.bak
+*.bak.*
+# Hub B federation sandbox (test stack)
+apps/server/prism-b.db
+apps/server/prism-b.log

@@ -23,9 +23,28 @@ Prism Server (:8788), both with `FEDERATION_ENABLED=true` and stable
 
 Teardown removed all test data and the `fed-b` sandbox; Hub A was reverted to
 `FEDERATION_ENABLED=false` (the live server's default), with its stable
-`PEER_SIGNING_KEY` kept so re-enabling is a one-flag flip. The only remaining
-follow-up is productionization: a `/api/federation/mirror` endpoint to replace the
-harness's manual B-side SQLite insert, and AC-10 suggest-mode over a real client.
+`PEER_SIGNING_KEY` kept so re-enabling is a one-flag flip.
+
+### ✅ `/api/federation/mirror` BUILT + live-validated (2026-06-28)
+
+The B-side mirror is no longer a manual SQLite insert. A paired peer calls
+`POST /api/federation/mirror` (peer-conn token; body `{spaceId, spaceTitle?,
+notes:[{spaceNoteKey,kind,title?}]}`) → a **pending** `federation_mirror_requests`
+row (a peer can't silently write to your vault). The owner reviews via
+`GET /acl/federation/mirrors` and `POST /acl/federation/mirrors/:id/accept
+{level?}`, which creates the local shared space (same id) + the peer grant + a
+placeholder note per `space_note_key` (empty, kind pinned via
+`metadata.prism_type`) + the `federated_notes` mapping, then kicks `syncSpaces`.
+`reject` marks it rejected. 10 Layer A tests; `verify-two-hub.ts` now drives this
+flow (no SQLite insert), re-run live: **AC-3 mirror-via-endpoint PASS + A↔B
+convergence PASS** (11 PASS / 0 FAIL).
+
+> Vault gotcha for the live run: the single running `parachute-vault` process
+> hot-loads a NEW vault name on first `create`, but a `remove`+recreate of the
+> same name leaves a poisoned ghost (500s) until the vault server restarts — use a
+> FRESH vault name each run (the live test used `fed-c`).
+
+Remaining follow-up: AC-10 suggest-mode over a real client.
 
 ## STATUS (2026-06) — GAP 1 + GAP 2 DONE; GAP 3 harness + bring-up now exist
 

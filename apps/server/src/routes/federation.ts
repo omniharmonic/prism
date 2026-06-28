@@ -8,11 +8,19 @@
  * out-of-band. The integrator mounts this at /api/federation.
  */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { createHash } from "node:crypto";
-import { consumePairing, upsertPeer } from "../db";
+import { consumePairing, upsertPeer, getPeer, upsertMirrorRequest } from "../db";
 import { serverKeyPair, fingerprint, isValidPeerPublicKey } from "../auth/peer";
+import { verifyPeerConnToken } from "../auth/peer-conn";
 
 export const federation = new Hono();
+
+const COLLAB_KINDS = new Set(["document", "code", "spreadsheet", "canvas"]);
+function bearer(c: Context): string | undefined {
+  const h = c.req.header("authorization");
+  return h?.startsWith("Bearer ") ? h.slice("Bearer ".length) : undefined;
+}
 
 /** Our public identity, so a pairing peer can record + human-verify our key. */
 federation.get("/identity", (c) => {
@@ -58,4 +66,50 @@ federation.post("/pair", async (c) => {
 
   const { publicKeyB64url } = serverKeyPair();
   return c.json({ ok: true, serverPublicKey: publicKeyB64url, fingerprint: fingerprint(publicKeyB64url) });
+});
+
+/**
+ * Mirror a shared space's notes onto THIS hub. A paired peer pushes the space id
+ * + the note manifest (space_note_key + kind per note) it wants both hubs to hold
+ * under the same keys. Authenticated by a peer-conn token (the caller's Ed25519
+ * pubkey + the space). We do NOT apply it here — a peer must not silently write
+ * into our vault — it lands as a PENDING request for the owner to accept/reject
+ * (`/acl/federation/mirrors`). Idempotent per (peer, space): re-pushing refreshes
+ * the manifest. This replaces the manual B-side SQLite insert the harness used.
+ */
+federation.post("/mirror", async (c) => {
+  const token = c.req.query("t") ?? bearer(c);
+  const claims = token ? verifyPeerConnToken(token) : null;
+  if (!claims) return c.json({ error: "unauthorized" }, 401);
+  const peer = getPeer(claims.pubkey);
+  if (!peer || !peer.paired_at) return c.json({ error: "unknown_peer" }, 403);
+
+  let body: { spaceId?: unknown; spaceTitle?: unknown; notes?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+  // The token is bound to a space; it must match the body so a token for space X
+  // can't be replayed to mirror into space Y.
+  if (!spaceId || spaceId !== claims.spaceId) return c.json({ error: "space_mismatch" }, 400);
+
+  const notes = (Array.isArray(body.notes) ? body.notes : [])
+    .filter(
+      (n): n is { spaceNoteKey: string; kind: string; title?: string } =>
+        !!n && typeof (n as { spaceNoteKey?: unknown }).spaceNoteKey === "string" &&
+        typeof (n as { kind?: unknown }).kind === "string" &&
+        COLLAB_KINDS.has((n as { kind: string }).kind),
+    )
+    .map((n) => ({ spaceNoteKey: n.spaceNoteKey, kind: n.kind, title: typeof n.title === "string" ? n.title : undefined }));
+  if (notes.length === 0) return c.json({ error: "no_valid_notes" }, 400);
+
+  const req = upsertMirrorRequest({
+    peer_pubkey: claims.pubkey,
+    space_id: spaceId,
+    space_title: typeof body.spaceTitle === "string" ? body.spaceTitle : null,
+    payload: JSON.stringify(notes),
+  });
+  return c.json({ ok: true, requestId: req.id, status: req.status, noteCount: notes.length });
 });

@@ -22,7 +22,7 @@
  * ── Acceptance criteria coverage (see the handoff doc §5) ────────────────────
  *   AC-1  reachability + distinct stacks            (HTTP)
  *   AC-2  identity fingerprints + bidirectional pair (HTTP)
- *   AC-3  space_note_key minted on A, mirrored on B  (HTTP + B-side SQLite)
+ *   AC-3  space_note_key minted on A, mirrored on B  (HTTP: /api/federation/mirror + accept)
  *   AC-4  peer grants >= edit on both hubs           (HTTP)
  *   AC-5  binding live                               (INDIRECT — implied by AC-7)
  *   AC-6  client routes by key (/api/federated)      (HTTP)
@@ -33,11 +33,12 @@
  *   AC-11 revocation stops sync                       (HTTP + external edit)
  *   AC-12 no regression                              (run verify-federation.ts)
  *
- * The ONE manual-ish step is the B-side mirror: there is no /api/federation/mirror
- * endpoint yet, so the harness writes B's `spaces` + `federated_notes` rows
- * DIRECTLY into B's SQLite (same space id + same space_note_key as A), then drives
- * the peer grant over HTTP so B's FederationManager.syncSpaces re-binds. This is
- * the productionization follow-up called out in the handoff (§4.3 / open Q3).
+ * The B-side mirror now runs the REAL endpoint flow (the productionization of the
+ * old manual SQLite insert, handoff §4.3 / open Q3): A signs a peer-conn token and
+ * POSTs the space manifest to B's /api/federation/mirror (peer→pending), then B's
+ * owner POSTs /acl/federation/mirrors/:id/accept — which materializes B's space +
+ * the A→space peer grant + a placeholder note per space_note_key + the
+ * federated_notes mapping, so B's FederationManager.syncSpaces re-binds.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -234,26 +235,8 @@ async function editDocument(collabUrl: string, snk: string, token: string, marke
   }
 }
 
-// ── B-side mirror: insert spaces + federated_notes rows directly into B's DB ──
-function mirrorOnB(b: Hub, spaceId: string, snk: string, bLocalId: string, ownerEmail: string): void {
-  const bdb = new Database(b.dbPath);
-  try {
-    bdb.pragma("busy_timeout = 5000");
-    const now = Date.now();
-    bdb.prepare(
-      `INSERT INTO spaces (id, title, scope_include_tags, scope_exclude_tags, path_prefix, created_by, created_at)
-       VALUES (?, ?, '[]', '[]', NULL, ?, ?)
-       ON CONFLICT(id) DO NOTHING`,
-    ).run(spaceId, "TwoHubTest (mirror)", ownerEmail, now);
-    bdb.prepare(
-      `INSERT INTO federated_notes (space_note_key, space_id, local_id, kind, peer_synced_at, source_updated_at, created_at)
-       VALUES (?, ?, ?, 'document', NULL, NULL, ?)
-       ON CONFLICT(space_note_key) DO UPDATE SET space_id=excluded.space_id, local_id=excluded.local_id, kind=excluded.kind`,
-    ).run(snk, spaceId, bLocalId, now);
-  } finally {
-    bdb.close();
-  }
-}
+// ── B-side cleanup: drop any spaces + federated_notes rows the mirror created ──
+// (belt-and-braces: teardown also deletes B's space over HTTP, which cascades.)
 function unmirrorOnB(b: Hub, snk: string, spaceId: string): void {
   try {
     const bdb = new Database(b.dbPath);
@@ -295,8 +278,6 @@ async function main(): Promise<void> {
     console.error(`\n❌ Hub A not running at ${hubA.httpUrl} — start it: cd apps/server && npm run dev (or pm2 prism-server).`);
     process.exit(2);
   }
-
-  const ownerEmailB = parseEnv(process.env.HUB_B_ENV ?? path.resolve(SERVER_DIR, ".env.b")).OWNER_EMAIL ?? "ownerB@example.com";
 
   // ── AC-1: two independent stacks ───────────────────────────────────────────
   log("AC-1  two independent stacks");
@@ -352,29 +333,46 @@ async function main(): Promise<void> {
   snk = fed.space_note_key;
   rec("AC-3", snk && fed.kind === "document" ? "PASS" : "FAIL", `snk=${snk} kind=${fed.kind}`);
 
-  // B-side mirror: same space id + same space_note_key → its own local note.
-  const noteB = await createNote(hubB, { content: "<p></p>", path: `_test/twohub/${rnd}-b.md`, metadata: { type: "document" } });
-  bNoteId = noteB.id;
-  mirrorOnB(hubB, aSpaceId, snk, bNoteId, ownerEmailB);
+  // B-side mirror via the REAL endpoint: A pushes the space manifest to B's
+  // /api/federation/mirror (peer-conn token signed with A's key — B verifies it
+  // against A's pubkey, which B holds from pairing), then B's owner accepts it.
+  // Accept materializes B's space + the A→space peer grant + a placeholder note
+  // per shared key + the federated_notes mapping (snk → B's local id). This is
+  // exactly what the old manual SQLite insert (mirrorOnB) faked.
+  const tokenAtoB = mkPeerConnToken(hubA.peerPriv, idA.publicKey, aSpaceId);
+  const mirrorRes = await fetch(`${hubB.httpUrl}/api/federation/mirror`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tokenAtoB}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ spaceId: aSpaceId, spaceTitle: "TwoHubTest", notes: [{ spaceNoteKey: snk, kind: "document" }] }),
+  });
+  if (!mirrorRes.ok) throw new Error(`B /api/federation/mirror → ${mirrorRes.status} ${await mirrorRes.text().catch(() => "")}`);
+  const mirrorBody = (await mirrorRes.json()) as { requestId: string };
+  const accept = await ownerJson<{ mapped: Array<{ spaceNoteKey: string; localId: string }> }>(
+    hubB,
+    `/acl/federation/mirrors/${mirrorBody.requestId}/accept`,
+    { method: "POST", body: JSON.stringify({ level: "edit" }) },
+  );
+  bNoteId = accept.mapped[0]?.localId ?? "";
 
-  // Grants ≥ edit on BOTH hubs (the B grant also triggers B's syncSpaces).
+  // Grant on A (B already has its A→space grant from the accept above). The A
+  // grant triggers A's syncSpaces; B's accept already kicked B's.
   const grantB = await ownerJson<{ grant: { level: string } }>(hubA, `/acl/spaces/${aSpaceId}/peers`, {
     method: "POST",
     body: JSON.stringify({ pubkey: idB.publicKey, level: "edit" }),
   });
+  // Verify B mirrored the SAME snk → its own local id, via the accept response
+  // and B's /api/federated read-back (no direct SQLite peek needed).
+  let bMirrorOk = accept.mapped[0]?.spaceNoteKey === snk && !!bNoteId;
+  try {
+    const mapB0 = await ownerJson<{ spaceNoteKey?: string; spaceId?: string }>(hubB, `/api/federated/${encodeURIComponent(bNoteId)}`);
+    bMirrorOk = bMirrorOk && mapB0.spaceNoteKey === snk && mapB0.spaceId === aSpaceId;
+  } catch { /* /api/federated is gated off unless FEDERATION_ENABLED — accept-response check still stands */ }
+  // The B-side peer grant for A now exists from the accept (idempotently re-asserted).
   const grantA = await ownerJson<{ grant: { level: string } }>(hubB, `/acl/spaces/${aSpaceId}/peers`, {
     method: "POST",
     body: JSON.stringify({ pubkey: idA.publicKey, level: "edit" }),
   });
-  // Verify B mirrored the SAME snk → its own local id.
-  let bMirrorOk = false;
-  try {
-    const bdb = new Database(hubB.dbPath, { readonly: true });
-    const row = bdb.prepare("SELECT local_id, space_id FROM federated_notes WHERE space_note_key = ?").get(snk) as { local_id: string; space_id: string } | undefined;
-    bMirrorOk = row?.local_id === bNoteId && row?.space_id === aSpaceId;
-    bdb.close();
-  } catch { /* */ }
-  rec("AC-3", bMirrorOk ? "PASS" : "FAIL", `B mirror: snk→${bNoteId} in space ${aSpaceId} (${bMirrorOk})`);
+  rec("AC-3", bMirrorOk ? "PASS" : "FAIL", `B mirror via /mirror+accept: snk→${bNoteId} in space ${aSpaceId} (${bMirrorOk})`);
   rec("AC-4", grantB.grant.level === "edit" && grantA.grant.level === "edit" ? "PASS" : "FAIL", `A→B=${grantB.grant.level}, B→A=${grantA.grant.level}`);
 
   // Give both FederationManagers a beat to (re)bind after the grant hooks fired.
