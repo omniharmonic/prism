@@ -50,6 +50,9 @@ export const configApi = {
       parachute_vault: string;
       api_key_present: boolean;
       reachable: boolean;
+      /** Whether the API key actually authorizes (authed read). Omitted when no
+       *  key is set or the vault was unreachable. */
+      token_valid?: boolean;
       detail?: string;
     }>("validate_config"),
 

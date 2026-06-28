@@ -353,6 +353,11 @@ pub struct ConfigHealth {
     pub api_key_present: bool,
     /// Whether `${parachute_url}/health` responded with a success status.
     pub reachable: bool,
+    /// Whether the configured API key actually AUTHORIZES against the scoped
+    /// vault (an authed read, not just presence). `None` when no key is set or
+    /// the vault was unreachable so we couldn't check. (G6: real auth check.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_valid: Option<bool>,
     /// Human-readable detail (error string or status) when not reachable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -368,7 +373,8 @@ pub async fn validate_config(
 ) -> Result<ConfigHealth, PrismError> {
     let config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
 
-    let (reachable, detail) = match reqwest::Client::new()
+    let http = reqwest::Client::new();
+    let (reachable, mut detail) = match http
         .get(format!("{}/health", config.parachute_url))
         .timeout(std::time::Duration::from_secs(5))
         .send()
@@ -379,11 +385,47 @@ pub async fn validate_config(
         Err(e) => (false, Some(format!("unreachable: {e}"))),
     };
 
+    // G6 — real auth check: only meaningful if the vault is reachable AND a key
+    // is set. Hit the scoped vault API with the Bearer key; a 2xx means the token
+    // authorizes, a 401/403 means it's present-but-invalid (e.g. expired JWT or a
+    // rejected legacy pvt_* token), which `api_key_present` alone can't catch.
+    let api_key_present = !config.parachute_api_key.is_empty();
+    let token_valid: Option<bool> = if reachable && api_key_present {
+        let url = format!(
+            "{}/vault/{}/api/notes?limit=1",
+            config.parachute_url, config.parachute_vault
+        );
+        match http
+            .get(&url)
+            .bearer_auth(&config.parachute_api_key)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => Some(true),
+            Ok(resp) => {
+                if detail.is_none() {
+                    detail = Some(format!("token rejected ({})", resp.status()));
+                }
+                Some(false)
+            }
+            Err(e) => {
+                if detail.is_none() {
+                    detail = Some(format!("auth check failed: {e}"));
+                }
+                Some(false)
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(ConfigHealth {
         parachute_url: config.parachute_url,
         parachute_vault: config.parachute_vault,
-        api_key_present: !config.parachute_api_key.is_empty(),
+        api_key_present,
         reachable,
+        token_valid,
         detail,
     })
 }
