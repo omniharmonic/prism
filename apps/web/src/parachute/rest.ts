@@ -20,13 +20,18 @@ import type {
   VaultGraph,
   SemanticHit,
 } from "@prism/core";
-import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader } from "../config";
+import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, vaultHeader } from "../config";
 import { enqueue } from "../offline/outbox";
 
 // Auth rides the httpOnly session cookie (credentials: "include"); the browser
 // holds no vault token. Capability-link recipients (no session) additionally
 // send Authorization: Capability <token>; the gateway authorizes either way.
-const jsonHeaders = (): Record<string, string> => ({ "Content-Type": "application/json", ...capabilityHeader() });
+// vaultHeader() names the active vault (multi-vault owner switch; empty = default).
+const jsonHeaders = (): Record<string, string> => ({
+  "Content-Type": "application/json",
+  ...capabilityHeader(),
+  ...vaultHeader(),
+});
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
   const resp = await fetch(`${apiBase()}${path}`, {

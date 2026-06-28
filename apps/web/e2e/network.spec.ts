@@ -86,3 +86,15 @@ test("@live owner opens Network → Federate: node identity + all four sections 
   await expect(page.getByRole("button", { name: /Invite a peer/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /New space/i })).toBeVisible();
 });
+
+test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await page.getByRole("button", { name: "Vaults" }).click();
+
+  // The single configured vault (primary) renders and is marked Active.
+  await expect(page.getByText("Connected vaults", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Active", { exact: true })).toBeVisible();
+  await expect(page.getByText("Connect another vault", { exact: true })).toBeVisible();
+});

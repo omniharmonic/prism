@@ -51,6 +51,76 @@ export const config = {
   embedFallbackDim: Number(process.env.EMBED_FALLBACK_DIM ?? 384),
 } as const;
 
+/**
+ * A single Parachute vault the server can bind a request to. Tokens live ONLY
+ * here, server-side — they are never serialized to a client (see the
+ * `GET /api/vaults` response in routes/vaults.ts, which omits `token`/`url`).
+ */
+export interface VaultEntry {
+  id: string;
+  label: string;
+  url: string;
+  vault: string;
+  token: string;
+}
+
+/**
+ * The vault registry (multi-vault Phase 1). Optional `PRISM_VAULTS` env is a
+ * JSON array `[{id,label,url,vault,token}]`. When unset/empty we synthesize ONE
+ * entry, "primary", from the existing single-vault config — so the default
+ * behavior with one configured vault is byte-for-byte unchanged. The first
+ * entry is always the primary/default (what `resolveVaultEntry()` returns with
+ * no id, and what every non-owner route + the legacy `vault` client use).
+ */
+function buildVaultRegistry(): VaultEntry[] {
+  const raw = process.env.PRISM_VAULTS?.trim();
+  if (raw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`PRISM_VAULTS is not valid JSON: ${(e as Error).message}`);
+    }
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((e, i) => {
+        const o = (e ?? {}) as Record<string, unknown>;
+        const id = String(o.id ?? `vault-${i}`);
+        return {
+          id,
+          label: String(o.label ?? o.vault ?? id),
+          url: String(o.url ?? config.parachuteUrl).replace(/\/+$/, ""),
+          vault: String(o.vault ?? config.parachuteVault),
+          token: String(o.token ?? ""),
+        };
+      });
+    }
+  }
+  return [
+    {
+      id: "primary",
+      label: config.parachuteVault,
+      url: config.parachuteUrl,
+      vault: config.parachuteVault,
+      token: config.parachuteToken,
+    },
+  ];
+}
+
+export const vaultRegistry: VaultEntry[] = buildVaultRegistry();
+
+/**
+ * Resolve a vault id to its registry entry. Unknown/absent id → the
+ * primary/first entry, so a stale or bogus `X-Prism-Vault` header degrades to
+ * the default vault rather than erroring.
+ */
+export function resolveVaultEntry(id?: string | null): VaultEntry {
+  if (id) {
+    const found = vaultRegistry.find((v) => v.id === id);
+    if (found) return found;
+  }
+  return vaultRegistry[0]!;
+}
+
 /** Whether a real embedding endpoint is configured (else the offline fallback). */
 export const embeddingsConfigured = () => config.embedEndpoint.length > 0;
 
@@ -63,7 +133,15 @@ export function assertConfig(): void {
   if (!config.parachuteToken) missing.push("PARACHUTE_TOKEN");
   if (!config.sessionSecret) missing.push("SESSION_SECRET");
   if (!config.ownerEmail) missing.push("OWNER_EMAIL");
-  if (missing.length) {
-    throw new Error(`Prism Server misconfigured — missing env: ${missing.join(", ")}`);
+  // Each vault in the registry needs a url + vault name + token to be usable.
+  // (For the default single-vault case this mirrors the PARACHUTE_* check above;
+  // explicit PRISM_VAULTS entries are validated individually.)
+  for (const v of vaultRegistry) {
+    const bad = [!v.url && "url", !v.vault && "vault", !v.token && "token"].filter(Boolean);
+    if (bad.length) missing.push(`PRISM_VAULTS["${v.id}"] (${bad.join("+")})`);
+  }
+  const unique = [...new Set(missing)];
+  if (unique.length) {
+    throw new Error(`Prism Server misconfigured — missing env: ${unique.join(", ")}`);
   }
 }

@@ -90,6 +90,15 @@ export interface MirrorRequestInfo {
   resolvedAt: number | null;
 }
 
+/** One configured vault the owner can switch between (multi-vault Phase 1).
+ *  Tokens never reach the client — only the id/label/vault name + which is active. */
+export interface VaultSummary {
+  id: string;
+  label: string;
+  vault: string;
+  active: boolean;
+}
+
 /**
  * Seam for sharing. The web shell implements the full ACL surface against the
  * Prism Server gateway (/acl); the desktop shell may provide only the legacy
@@ -145,6 +154,14 @@ export interface CollabSharing {
   listMirrorRequests?(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]>;
   acceptMirror?(id: string, level?: ShareLevel): Promise<void>;
   rejectMirror?(id: string): Promise<void>;
+
+  /** Multi-vault (Phase 1). The owner can front several Parachute vaults from one
+   *  Prism Server and switch which one the app talks to. `listVaults` enumerates
+   *  the configured vaults; `setActiveVault` repoints the client (persisted) and
+   *  `getActiveVault` reads the current choice. Absent → single-vault, no switcher. */
+  listVaults?(): Promise<VaultSummary[]>;
+  getActiveVault?(): string | null;
+  setActiveVault?(id: string): void;
 }
 
 const CollabSharingContext = createContext<CollabSharing | null>(null);

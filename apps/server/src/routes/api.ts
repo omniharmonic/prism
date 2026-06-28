@@ -11,7 +11,7 @@
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { config } from "../config";
+import { resolveVaultEntry } from "../config";
 import { vault, VaultError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
@@ -30,9 +30,14 @@ const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
 async function proxyToVault(c: Context) {
   const url = new URL(c.req.url);
   const path = url.pathname.replace(/^\/api/, "");
-  const target = `${config.parachuteUrl}/vault/${config.parachuteVault}/api${path}${url.search}`;
+  // Phase-1 multi-vault: the owner may bind a request to a specific vault via the
+  // `X-Prism-Vault` header (an id from the registry). No header → the primary
+  // entry → byte-for-byte the previous single-vault behavior. Only the owner
+  // passthrough is vault-aware; non-owner routes stay on the primary (Phase 2).
+  const entry = resolveVaultEntry(c.req.header("x-prism-vault"));
+  const target = `${entry.url}/vault/${entry.vault}/api${path}${url.search}`;
   const method = c.req.method;
-  const headers: Record<string, string> = { Authorization: `Bearer ${config.parachuteToken}` };
+  const headers: Record<string, string> = { Authorization: `Bearer ${entry.token}` };
   const init: RequestInit = { method, headers };
   if (method !== "GET" && method !== "HEAD") {
     headers["Content-Type"] = "application/json";

@@ -219,3 +219,37 @@ export function getCapabilityToken(): string | null {
 export function capabilityHeader(): Record<string, string> {
   return capabilityToken ? { Authorization: `Capability ${capabilityToken}` } : {};
 }
+
+// ---------------------------------------------------------------------------
+// Active vault (multi-vault, Phase 1). The owner can switch which configured
+// vault the gateway proxies to. We send the chosen vault id on every gateway
+// call as `X-Prism-Vault`; no header (or "primary") = the default vault, so a
+// single-vault deployment is unaffected. Held in localStorage so the choice
+// survives reloads. This is an owner-only switch — the gateway only honors the
+// header on the owner passthrough.
+// ---------------------------------------------------------------------------
+
+const ACTIVE_VAULT_KEY = "prism-active-vault";
+
+export function getActiveVault(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_VAULT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveVault(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_VAULT_KEY, id);
+    else localStorage.removeItem(ACTIVE_VAULT_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Header naming the active vault for the gateway (empty = default vault). */
+export function vaultHeader(): Record<string, string> {
+  const id = getActiveVault();
+  return id ? { "X-Prism-Vault": id } : {};
+}

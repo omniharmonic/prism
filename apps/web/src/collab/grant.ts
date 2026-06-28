@@ -10,8 +10,9 @@ import type {
   ShareLevel,
   ShareLink,
   SpaceInfo,
+  VaultSummary,
 } from "@prism/core";
-import { GATEWAY_ORIGIN } from "../config";
+import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
 
 /**
  * Web sharing impl, backed by the Prism Server ACL API (/acl, owner-only). The
@@ -168,5 +169,25 @@ export const webCollabSharing: CollabSharing = {
   },
   async rejectMirror(id: string): Promise<void> {
     await acl(`/federation/mirrors/${enc(id)}/reject`, { method: "POST" });
+  },
+
+  // ── Multi-vault (Phase 1 owner switcher) ──
+  async listVaults(): Promise<VaultSummary[]> {
+    // Owner-only gateway route (not under /acl); rides the session cookie.
+    const r = await fetch(`${GATEWAY_ORIGIN}/api/vaults`, { credentials: "include" });
+    if (!r.ok) throw new Error(`GET /api/vaults → ${r.status}`);
+    const rows: VaultSummary[] = await r.json();
+    // The active flag from the server marks the DEFAULT vault; overlay the
+    // client's current choice so the UI reflects what we're actually sending.
+    const chosen = getActiveVault();
+    return chosen ? rows.map((v) => ({ ...v, active: v.id === chosen })) : rows;
+  },
+  getActiveVault(): string | null {
+    return getActiveVault();
+  },
+  setActiveVault(id: string): void {
+    // Persist + reload so every cache/query refetches against the new vault.
+    setActiveVault(id);
+    location.reload();
   },
 };

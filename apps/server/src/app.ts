@@ -11,6 +11,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
+import { vaults } from "./routes/vaults";
 import { acl } from "./routes/acl";
 import { rag } from "./routes/rag";
 import { publish } from "./routes/publish";
@@ -91,6 +92,9 @@ export function createApp(): Hono {
   // gateway, whose owner short-circuit would otherwise proxy these to the vault
   // (which has no semantic endpoint). Other /api paths fall through to `api`.
   app.route("/api", rag);
+  // Owner-only vault registry — mounted BEFORE the gateway so /api/vaults is not
+  // proxied to the vault by the owner short-circuit inside `api`.
+  app.route("/api", vaults);
   app.route("/api", api);
   app.route("/acl", acl);
 

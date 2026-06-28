@@ -6,7 +6,7 @@
  * Mirrors the shapes in apps/web/src/parachute/rest.ts (Parachute 0.5.x returns
  * camelCase notes; PATCH needs if_updated_at or force).
  */
-import { config } from "./config";
+import { resolveVaultEntry, type VaultEntry } from "./config";
 
 export interface Note {
   id: string;
@@ -16,24 +16,6 @@ export interface Note {
   createdAt: string;
   updatedAt: string | null;
   tags: string[] | null;
-}
-
-const apiBase = () => `${config.parachuteUrl}/vault/${config.parachuteVault}/api`;
-const authHeaders = () => ({
-  Authorization: `Bearer ${config.parachuteToken}`,
-  "Content-Type": "application/json",
-});
-
-async function req(path: string, init?: RequestInit): Promise<Response> {
-  const resp = await fetch(`${apiBase()}${path}`, {
-    ...init,
-    headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${body}`);
-  }
-  return resp;
 }
 
 export class VaultError extends Error {
@@ -52,7 +34,37 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return s ? `?${s}` : "";
 }
 
-export const vault = {
+export type VaultHelper = ReturnType<typeof vaultClient>;
+
+/**
+ * Build a vault-shaped helper bound to a specific registry entry's url/vault/
+ * token. `vaultClient()` (no id) resolves the primary entry — which is exactly
+ * the single configured vault in the default (no-PRISM_VAULTS) case — so the
+ * exported `vault` singleton below is byte-for-byte the old behavior, and every
+ * existing call site (`vault.*`) is unchanged. Pass a vault id (Phase 1, owner
+ * passthrough only) to bind a request to a different vault.
+ */
+export function vaultClient(vaultId?: string) {
+  const entry: VaultEntry = resolveVaultEntry(vaultId);
+  const apiBase = () => `${entry.url}/vault/${entry.vault}/api`;
+  const authHeaders = () => ({
+    Authorization: `Bearer ${entry.token}`,
+    "Content-Type": "application/json",
+  });
+
+  async function req(path: string, init?: RequestInit): Promise<Response> {
+    const resp = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${body}`);
+    }
+    return resp;
+  }
+
+  return {
   async listNotes(opts: { tags?: string[]; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
     if (opts.includeContent) sp.set("include_content", "true");
@@ -117,7 +129,7 @@ export const vault = {
 
   async health(): Promise<boolean> {
     try {
-      const r = await fetch(`${config.parachuteUrl}/health`);
+      const r = await fetch(`${entry.url}/health`);
       return r.ok;
     } catch {
       return false;
@@ -125,4 +137,12 @@ export const vault = {
   },
 
   qs,
-};
+  };
+}
+
+/**
+ * The default vault client, bound to the primary registry entry. Unchanged
+ * behavior vs. the pre-multi-vault server; the canonical import for all
+ * existing call sites.
+ */
+export const vault = vaultClient();

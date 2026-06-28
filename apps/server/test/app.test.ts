@@ -8,7 +8,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app";
-import { installFakeVault, resetDb, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
 const realLog = console.log;
@@ -65,4 +65,23 @@ test("the auth-request rate limit blocks the 6th magic-link request", async () =
     });
   for (let i = 1; i <= 5; i++) assert.equal((await send()).status, 200, `request ${i}`);
   assert.equal((await send()).status, 429, "6th request should be rate-limited");
+});
+
+test("GET /api/vaults: owner sees the single primary vault (no token); anon denied", async () => {
+  const app = createApp();
+
+  // anon → denied (registry not enumerable)
+  assert.equal((await app.request("/api/vaults")).status, 403);
+
+  // owner (session cookie for OWNER_EMAIL=owner@test.local) → the primary vault
+  const r = await app.request("/api/vaults", {
+    headers: { cookie: sessionCookie(makeSession("owner@test.local")) },
+  });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as Array<Record<string, unknown>>;
+  assert.equal(body.length, 1);
+  assert.deepEqual(body[0], { id: "primary", label: "default", vault: "default", active: true });
+  // tokens / upstream urls must never be serialized
+  assert.equal("token" in body[0]!, false);
+  assert.equal("url" in body[0]!, false);
 });
