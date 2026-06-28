@@ -5,6 +5,7 @@ import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
 import { NewContentMenu } from "./NewContentMenu";
+import { VaultSwitcher } from "./VaultSwitcher";
 import { useDebounce } from "use-debounce";
 import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
@@ -159,24 +160,34 @@ export function Navigation() {
         </div>
       )}
 
-      {/* New button — prominent accent-tinted action */}
-      <div style={{ padding: 10, position: "relative", borderTop: "1px solid var(--glass-border)" }}>
+      {/* Footer: vault switcher (Obsidian-style) + compact New action */}
+      <div
+        style={{
+          padding: 10,
+          position: "relative",
+          borderTop: "1px solid var(--glass-border)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <VaultSwitcher onManage={handleOpenNetwork} />
         <button
           onClick={() => setShowNewMenu(!showNewMenu)}
-          className="focus-ring w-full flex items-center justify-center gap-2 transition-colors"
+          title="New"
+          aria-label="New"
+          className="focus-ring flex items-center justify-center transition-colors flex-shrink-0"
           style={{
+            width: 34,
             height: 34,
             borderRadius: "var(--radius-md)",
-            fontSize: "var(--text-base)",
-            fontWeight: 550,
             color: "var(--color-accent)",
             background: "var(--color-accent-dim)",
           }}
           onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.08)")}
           onMouseLeave={(e) => (e.currentTarget.style.filter = "")}
         >
-          <Plus size={15} />
-          New
+          <Plus size={16} />
         </button>
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
       </div>
