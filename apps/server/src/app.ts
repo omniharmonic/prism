@@ -71,6 +71,9 @@ export function createApp(): Hono {
   // the 144-bit code already makes guessing infeasible, but rate-limit it too as
   // defense-in-depth against code-guessing / pairing spam.
   app.use("/api/federation/pair", rateLimit({ max: 20, windowMs: 10 * 60_000, name: "federation-pair" }));
+  // /mirror is anon-reachable (peer-token authed in-handler) and writes a pending
+  // row; rate-limit it as defense-in-depth against a paired peer flooding requests.
+  app.use("/api/federation/mirror", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "federation-mirror" }));
 
   app.route("/auth", auth);
   // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon

@@ -534,10 +534,16 @@ acl.get("/federation/mirrors", (c) => {
   );
 });
 
+// UUID-shaped ids only — defense-in-depth so a stored mirror payload can never
+// escape the `shared/<space>/<key>.md` note path (the /mirror route validates
+// too, but accept must not trust the row blindly).
+const FED_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 acl.post("/federation/mirrors/:id/accept", async (c) => {
   const req = getMirrorRequest(c.req.param("id"));
   if (!req || req.status !== "pending") return c.json({ error: "not_found" }, 404);
   if (!getPeer(req.peer_pubkey)?.paired_at) return c.json({ error: "unknown_peer" }, 400);
+  if (!FED_ID_RE.test(req.space_id)) return c.json({ error: "bad_space_id" }, 400);
   const { level } = await c.req.json<{ level?: string }>().catch(() => ({}) as { level?: string });
   const lvl: Level = isLevel(level) ? level : "edit";
 
@@ -559,7 +565,9 @@ acl.post("/federation/mirrors/:id/accept", async (c) => {
   // federated row and the bridge won't skip on a kind mismatch). Idempotent.
   const notes = JSON.parse(req.payload) as Array<{ spaceNoteKey: string; kind: string; title?: string }>;
   const mapped: Array<{ spaceNoteKey: string; localId: string; kind: string }> = [];
+  const skipped: string[] = [];
   for (const n of notes) {
+    if (!FED_ID_RE.test(n.spaceNoteKey)) { skipped.push(n.spaceNoteKey); continue; } // anti-traversal
     const existing = getFederatedByKey(n.spaceNoteKey);
     if (existing) {
       mapped.push({ spaceNoteKey: n.spaceNoteKey, localId: existing.local_id, kind: existing.kind });
@@ -581,7 +589,7 @@ acl.post("/federation/mirrors/:id/accept", async (c) => {
   }
   setMirrorRequestStatus(req.id, "accepted");
   kickFederationSync();
-  return c.json({ ok: true, spaceId: req.space_id, level: lvl, mapped });
+  return c.json({ ok: true, spaceId: req.space_id, level: lvl, mapped, skipped });
 });
 
 acl.post("/federation/mirrors/:id/reject", (c) => {

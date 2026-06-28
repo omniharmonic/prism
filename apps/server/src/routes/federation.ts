@@ -17,6 +17,10 @@ import { verifyPeerConnToken } from "../auth/peer-conn";
 export const federation = new Hono();
 
 const COLLAB_KINDS = new Set(["document", "code", "spreadsheet", "canvas"]);
+// space ids + space_note_keys are UUIDs; constrain them so a peer can never push a
+// value that escapes the `shared/<space>/<key>.md` note path on accept (traversal).
+const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_MIRROR_NOTES = 500;
 function bearer(c: Context): string | undefined {
   const h = c.req.header("authorization");
   return h?.startsWith("Bearer ") ? h.slice("Bearer ".length) : undefined;
@@ -94,15 +98,19 @@ federation.post("/mirror", async (c) => {
   // The token is bound to a space; it must match the body so a token for space X
   // can't be replayed to mirror into space Y.
   if (!spaceId || spaceId !== claims.spaceId) return c.json({ error: "space_mismatch" }, 400);
+  if (!ID_RE.test(spaceId)) return c.json({ error: "bad_space_id" }, 400);
 
-  const notes = (Array.isArray(body.notes) ? body.notes : [])
+  const raw = Array.isArray(body.notes) ? body.notes : [];
+  if (raw.length > MAX_MIRROR_NOTES) return c.json({ error: "too_many_notes" }, 400);
+  const notes = raw
     .filter(
       (n): n is { spaceNoteKey: string; kind: string; title?: string } =>
         !!n && typeof (n as { spaceNoteKey?: unknown }).spaceNoteKey === "string" &&
+        ID_RE.test((n as { spaceNoteKey: string }).spaceNoteKey) && // anti-traversal
         typeof (n as { kind?: unknown }).kind === "string" &&
         COLLAB_KINDS.has((n as { kind: string }).kind),
     )
-    .map((n) => ({ spaceNoteKey: n.spaceNoteKey, kind: n.kind, title: typeof n.title === "string" ? n.title : undefined }));
+    .map((n) => ({ spaceNoteKey: n.spaceNoteKey, kind: n.kind, title: typeof n.title === "string" ? n.title.slice(0, 200) : undefined }));
   if (notes.length === 0) return c.json({ error: "no_valid_notes" }, 400);
 
   const req = upsertMirrorRequest({

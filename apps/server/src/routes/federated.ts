@@ -15,11 +15,15 @@
 import { Hono } from "hono";
 import { config } from "../config";
 import { getFederatedByLocal } from "../db";
+import { resolveActor } from "../auth/actor";
 
 export const federated = new Hono();
 
 federated.get("/:noteId", (c) => {
   if (!config.federationEnabled) return c.body(null, 204);
+  // Only THIS hub's own clients need this mapping (owner/session/capability).
+  // Anonymous callers get 204 — no federation-membership enumeration oracle.
+  if (resolveActor(c).kind === "anon") return c.body(null, 204);
   const fed = getFederatedByLocal(decodeURIComponent(c.req.param("noteId")));
   if (!fed) return c.body(null, 204);
   return c.json({ spaceNoteKey: fed.space_note_key, spaceId: fed.space_id, kind: fed.kind });

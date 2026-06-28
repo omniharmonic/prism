@@ -381,26 +381,33 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
  *  `isLocal` = the connection came straight from loopback (the desktop app), not
  *  the public tunnel; only then is the owner-token path honored. */
 export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
-  // Federation path (GATED): a documentName that is a known `space_note_key` is a
-  // peer-hub connection, NOT a browser. The token is a peer-conn assertion: we
-  // authenticate the signing pubkey, require it to be a PAIRED peer scoped to this
-  // doc's space, then authorize via effectiveLevel over its space grants. Anything
-  // wrong → reject (null). When federation is off, getFederatedByKey is never
-  // consulted, so this branch is inert and the path below is byte-for-byte today's.
+  // Federation path (GATED): a documentName that is a known `space_note_key` is
+  // opened EITHER by a peer hub (peer-conn token) OR by THIS hub's own client
+  // (owner/session/capability) — both now connect under the space_note_key (gap
+  // #2). When federation is off, getFederatedByKey is never consulted, so this
+  // branch is inert and the path below is byte-for-byte today's.
   if (config.federationEnabled) {
     const fed = getFederatedByKey(noteId);
     if (fed) {
       const claims = verifyPeerConnToken(token);
-      if (!claims || claims.spaceId !== fed.space_id) return null;
-      const peer = getPeer(claims.pubkey);
-      if (!peer || !peer.paired_at) return null;
-      let tags: string[] = [];
-      try {
-        tags = (await vault.getNote(fed.local_id)).tags ?? [];
-      } catch {
-        /* unreadable note — match on id/space only */
+      if (claims) {
+        // A PEER hub: authenticate the signing pubkey, require a paired peer
+        // scoped to this doc's space, authorize via its space grants.
+        if (claims.spaceId !== fed.space_id) return null;
+        const peer = getPeer(claims.pubkey);
+        if (!peer || !peer.paired_at) return null;
+        let tags: string[] = [];
+        try {
+          tags = (await vault.getNote(fed.local_id)).tags ?? [];
+        } catch {
+          /* unreadable note — match on id/space only */
+        }
+        return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, false);
       }
-      return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, false);
+      // Not a peer-conn token → it's our OWN client opening the federated note by
+      // its space_note_key. Authorize exactly like a normal note, against the
+      // LOCAL id (a real note id, never a space_note_key → no recursion).
+      return resolveLevel(fed.local_id, token, cookieHeader, isLocal);
     }
   }
 

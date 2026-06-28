@@ -403,17 +403,28 @@ pub async fn validate_config(
             .await
         {
             Ok(resp) if resp.status().is_success() => Some(true),
-            Ok(resp) => {
+            // Only 401/403 prove the token itself is bad. A 5xx (or any other
+            // status) means the vault is flaky, not that the credential is wrong —
+            // report inconclusive (None) so we never falsely flag a good token.
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN =>
+            {
                 if detail.is_none() {
                     detail = Some(format!("token rejected ({})", resp.status()));
                 }
                 Some(false)
             }
+            Ok(resp) => {
+                if detail.is_none() {
+                    detail = Some(format!("auth check inconclusive ({})", resp.status()));
+                }
+                None
+            }
             Err(e) => {
                 if detail.is_none() {
-                    detail = Some(format!("auth check failed: {e}"));
+                    detail = Some(format!("auth check inconclusive: {e}"));
                 }
-                Some(false)
+                None
             }
         }
     } else {
