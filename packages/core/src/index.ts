@@ -38,6 +38,7 @@ export type {
   NodeIdentity,
   PeerInfo,
   SpaceInfo,
+  SpacePeerGrant,
   PairingCode,
   MirrorRequestInfo,
   VaultSummary,

@@ -61,6 +61,13 @@ export interface PeerInfo {
   createdAt: number;
 }
 /** A shared space = a slice of the vault synced with peers. */
+/** A peer granted access to a space, with its level + the vault's last-synced clock. */
+export interface SpacePeerGrant {
+  pubkey: string;
+  fingerprint: string;
+  label: string | null;
+  level: ShareLevel;
+}
 export interface SpaceInfo {
   id: string;
   title: string | null;
@@ -68,6 +75,12 @@ export interface SpaceInfo {
   excludeTags: string[];
   pathPrefix: string | null;
   createdAt: number;
+  /** Peers this space is shared with (real grants, server-authoritative). */
+  peers: SpacePeerGrant[];
+  /** How many notes are mapped into the space (federated_notes count). */
+  noteCount: number;
+  /** Newest peer_synced_at across the space's notes, or null if never synced. */
+  lastSyncedAt: number | null;
 }
 /** A one-time pairing code to hand to a peer, plus our identity for them to verify. */
 export interface PairingCode {

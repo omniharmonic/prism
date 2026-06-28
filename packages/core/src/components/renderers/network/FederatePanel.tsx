@@ -102,6 +102,16 @@ function fmtDate(ts: number | null | undefined): string {
   const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or millis
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function timeAgo(ts: number): string {
+  const ms = ts < 1e12 ? ts * 1000 : ts; // tolerate seconds or millis
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (sec < 45) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
+}
 function noteTitle(n: Note): string {
   return (
     n.path?.split("/").pop() ||
@@ -768,15 +778,16 @@ function SpaceCard({
   }, [loadNotes]);
 
   const peerCount = Object.keys(grants).length;
-  // HONEST status: there is no live per-space sync endpoint yet, so we never
-  // claim "Synced". We derive from federation state + grants made this session.
-  // TODO(network): replace with a real two-word status once a status endpoint
-  // exists (Synced / Syncing / Offline).
-  const status: { label: string; variant: "warning" | "info" | "default" } = !enabled
+  // Status from real federation state: the space carries `lastSyncedAt` (newest
+  // peer_synced_at across its notes), so once a peer has actually pulled we can
+  // honestly show "Synced <ago>" instead of just a grant count.
+  const status: { label: string; variant: "warning" | "info" | "success" | "default" } = !enabled
     ? { label: "Federation off", variant: "warning" }
-    : peerCount > 0
-      ? { label: `Shared with ${peerCount} ${peerCount === 1 ? "peer" : "peers"}`, variant: "info" }
-      : { label: "No peers yet", variant: "default" };
+    : space.lastSyncedAt != null
+      ? { label: `Synced ${timeAgo(space.lastSyncedAt)}`, variant: "success" }
+      : peerCount > 0
+        ? { label: `Shared with ${peerCount} ${peerCount === 1 ? "peer" : "peers"}`, variant: "info" }
+        : { label: "No peers yet", variant: "default" };
 
   const peerLabel = (pubkey: string) => {
     const p = peers.find((x) => x.pubkey === pubkey);
@@ -1106,9 +1117,9 @@ export function FederatePanel() {
   const [spaces, setSpaces] = useState<SpaceInfo[]>([]);
   const [mirrors, setMirrors] = useState<MirrorRequestInfo[]>([]);
   const [tags, setTags] = useState<TagCount[]>([]);
-  // Local, session-scoped record of space→peer grants. The seam has no
-  // grants-readback / per-space status endpoint, so we reflect grants made this
-  // session optimistically rather than fake a loaded state. TODO(network).
+  // space→peer→level. Seeded from each space's server-authoritative `peers` on
+  // load (so a reload/refresh reflects real grants), with optimistic updates in
+  // between for immediate feedback; `onChanged` reloads to reconcile.
   const [grants, setGrants] = useState<GrantMap>({});
 
   const [loading, setLoading] = useState(true);
@@ -1133,6 +1144,12 @@ export function FederatePanel() {
       setPeers(prs);
       setSpaces(sps);
       setMirrors(mrs);
+      // Reconcile the grant map with server truth (each space carries its peers).
+      setGrants(
+        Object.fromEntries(
+          sps.map((s) => [s.id, Object.fromEntries((s.peers ?? []).map((p) => [p.pubkey, p.level]))]),
+        ),
+      );
     } catch (e) {
       setError(msg(e));
     } finally {

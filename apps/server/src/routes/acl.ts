@@ -426,8 +426,23 @@ acl.post("/peers/:pubkey/url", async (c) => {
 const asStringArray = (x: unknown): string[] =>
   Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : [];
 
-/** Serialize a Space row for the API (parse the JSON tag scopes). */
+/** Serialize a Space row for the API (parse the JSON tag scopes). Includes the
+ *  granted peers (so the UI reflects real grants, not optimistic state) and a
+ *  sync summary derived from the space's federated-note mappings. */
 function spaceView(s: Space) {
+  const peers = grantsForResource("space", s.id)
+    .filter((g) => g.subject_type === "peer")
+    .map((g) => {
+      const peer = getPeer(g.subject);
+      return {
+        pubkey: g.subject,
+        fingerprint: fingerprint(g.subject),
+        label: peer?.label ?? null,
+        level: g.level,
+      };
+    });
+  const fed = federatedNotesForSpace(s.id);
+  const syncedAts = fed.map((f) => f.peer_synced_at).filter((t): t is number => t != null);
   return {
     id: s.id,
     title: s.title,
@@ -435,6 +450,9 @@ function spaceView(s: Space) {
     excludeTags: s.scope_exclude_tags ? (JSON.parse(s.scope_exclude_tags) as string[]) : [],
     pathPrefix: s.path_prefix,
     createdAt: s.created_at,
+    peers,
+    noteCount: fed.length,
+    lastSyncedAt: syncedAts.length ? Math.max(...syncedAts) : null,
   };
 }
 
