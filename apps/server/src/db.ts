@@ -97,7 +97,8 @@ db.exec(`
     email      TEXT,
     label      TEXT,
     created_at INTEGER NOT NULL,
-    paired_at  INTEGER             -- when the handshake completed; null = pending
+    paired_at  INTEGER,            -- when the handshake completed; null = pending
+    collab_url TEXT                -- peer hub's /collab WS URL (for FederationManager.syncSpaces)
   );
   -- One-time pairing codes (invite.ts analog: single-use, hashed, TTL'd).
   CREATE TABLE IF NOT EXISTS peer_pairings (
@@ -165,6 +166,24 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS pending_suggestions_note   ON pending_suggestions(note_id);
   CREATE INDEX IF NOT EXISTS pending_suggestions_status ON pending_suggestions(status);
+
+  -- Inbound federation mirror requests (Horizon C). A paired PEER asks this hub to
+  -- mirror a shared space's notes (so both hubs hold the same space_note_keys). A
+  -- peer must NOT silently write into our vault, so the request lands here for the
+  -- OWNER to accept/reject — accepting creates the local space + peer grant +
+  -- placeholder notes + federated_notes rows. One pending row per (peer, space).
+  CREATE TABLE IF NOT EXISTS federation_mirror_requests (
+    id          TEXT PRIMARY KEY,
+    peer_pubkey TEXT NOT NULL,
+    space_id    TEXT NOT NULL,    -- the shared space id (same UUID on both hubs)
+    space_title TEXT,
+    payload     TEXT NOT NULL,    -- JSON [{ spaceNoteKey, kind, title? }]
+    status      TEXT NOT NULL,    -- 'pending' | 'accepted' | 'rejected'
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS federation_mirror_status ON federation_mirror_requests(status);
+  CREATE INDEX IF NOT EXISTS federation_mirror_peer   ON federation_mirror_requests(peer_pubkey, space_id);
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -173,6 +192,16 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "password_hash")) {
     db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+  }
+}
+
+// Migration: peers gained a collab_url (the peer hub's /collab WS URL) so the
+// FederationManager can self-discover endpoints instead of taking them from the
+// caller. Add the column to an older db.
+{
+  const cols = db.prepare("PRAGMA table_info(peers)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "collab_url")) {
+    db.exec("ALTER TABLE peers ADD COLUMN collab_url TEXT");
   }
 }
 
@@ -533,26 +562,34 @@ export interface Peer {
   label: string | null;
   created_at: number;
   paired_at: number | null;
+  collab_url: string | null;
 }
 const insertPeer = db.prepare(
-  `INSERT INTO peers (pubkey, email, label, created_at, paired_at)
-   VALUES (@pubkey, @email, @label, @created_at, @paired_at)
-   ON CONFLICT(pubkey) DO UPDATE SET email=@email, label=@label, paired_at=@paired_at`,
+  `INSERT INTO peers (pubkey, email, label, created_at, paired_at, collab_url)
+   VALUES (@pubkey, @email, @label, @created_at, @paired_at, @collab_url)
+   ON CONFLICT(pubkey) DO UPDATE SET email=@email, label=@label, paired_at=@paired_at,
+     collab_url=COALESCE(@collab_url, collab_url)`,
 );
 const selectPeer = db.prepare("SELECT * FROM peers WHERE pubkey = ?");
 const selectPeers = db.prepare("SELECT * FROM peers ORDER BY created_at DESC");
 const deletePeerStmt = db.prepare("DELETE FROM peers WHERE pubkey = ?");
+const updatePeerCollabUrl = db.prepare("UPDATE peers SET collab_url = ? WHERE pubkey = ?");
 
-export function upsertPeer(p: { pubkey: string; email?: string | null; label?: string | null; paired_at?: number | null }): Peer {
+export function upsertPeer(p: { pubkey: string; email?: string | null; label?: string | null; paired_at?: number | null; collab_url?: string | null }): Peer {
   const row: Peer = {
     pubkey: p.pubkey,
     email: p.email ?? null,
     label: p.label ?? null,
     created_at: now(),
     paired_at: p.paired_at ?? null,
+    // COALESCE in the upsert preserves an existing URL when this call omits one.
+    collab_url: p.collab_url ?? null,
   };
   insertPeer.run(row);
   return (selectPeer.get(p.pubkey) as Peer);
+}
+export function setPeerCollabUrl(pubkey: string, url: string | null): void {
+  updatePeerCollabUrl.run(url, pubkey);
 }
 export function getPeer(pubkey: string): Peer | null {
   return (selectPeer.get(pubkey) as Peer | undefined) ?? null;
@@ -747,4 +784,69 @@ export function setSuggestionStatus(id: string, status: Suggestion["status"]): v
 }
 export function deleteSuggestion(id: string): void {
   deleteSuggestionStmt.run(id);
+}
+
+// ---- federation mirror requests (inbound space-share, owner-reviewed) ----
+export interface MirrorRequest {
+  id: string;
+  peer_pubkey: string;
+  space_id: string;
+  space_title: string | null;
+  payload: string; // JSON [{ spaceNoteKey, kind, title? }]
+  status: "pending" | "accepted" | "rejected";
+  created_at: number;
+  resolved_at: number | null;
+}
+const insertMirrorReq = db.prepare(
+  `INSERT INTO federation_mirror_requests (id, peer_pubkey, space_id, space_title, payload, status, created_at, resolved_at)
+   VALUES (@id, @peer_pubkey, @space_id, @space_title, @payload, 'pending', @created_at, NULL)`,
+);
+const selectMirrorReq = db.prepare("SELECT * FROM federation_mirror_requests WHERE id = ?");
+const selectPendingMirrorByPeerSpace = db.prepare(
+  "SELECT * FROM federation_mirror_requests WHERE peer_pubkey = ? AND space_id = ? AND status = 'pending' LIMIT 1",
+);
+const selectMirrorByStatus = db.prepare("SELECT * FROM federation_mirror_requests WHERE status = ? ORDER BY created_at DESC");
+const selectAllMirror = db.prepare("SELECT * FROM federation_mirror_requests ORDER BY created_at DESC");
+const updateMirrorPayload = db.prepare("UPDATE federation_mirror_requests SET payload = ?, space_title = ? WHERE id = ?");
+const updateMirrorStatus = db.prepare("UPDATE federation_mirror_requests SET status = ?, resolved_at = ? WHERE id = ?");
+const deleteMirrorReqStmt = db.prepare("DELETE FROM federation_mirror_requests WHERE id = ?");
+
+/** Create (or, if one is already pending for this peer+space, refresh) a mirror
+ *  request. Idempotent so a peer re-pushing the same space updates the manifest
+ *  instead of piling up duplicates. */
+export function upsertMirrorRequest(r: {
+  peer_pubkey: string;
+  space_id: string;
+  space_title?: string | null;
+  payload: string;
+}): MirrorRequest {
+  const existing = selectPendingMirrorByPeerSpace.get(r.peer_pubkey, r.space_id) as MirrorRequest | undefined;
+  if (existing) {
+    updateMirrorPayload.run(r.payload, r.space_title ?? existing.space_title, existing.id);
+    return { ...existing, payload: r.payload, space_title: r.space_title ?? existing.space_title };
+  }
+  const row: MirrorRequest = {
+    id: randomUUID(),
+    peer_pubkey: r.peer_pubkey,
+    space_id: r.space_id,
+    space_title: r.space_title ?? null,
+    payload: r.payload,
+    status: "pending",
+    created_at: now(),
+    resolved_at: null,
+  };
+  insertMirrorReq.run(row);
+  return row;
+}
+export function getMirrorRequest(id: string): MirrorRequest | null {
+  return (selectMirrorReq.get(id) as MirrorRequest | undefined) ?? null;
+}
+export function listMirrorRequests(status?: MirrorRequest["status"]): MirrorRequest[] {
+  return (status ? selectMirrorByStatus.all(status) : selectAllMirror.all()) as MirrorRequest[];
+}
+export function setMirrorRequestStatus(id: string, status: MirrorRequest["status"]): void {
+  updateMirrorStatus.run(status, now(), id);
+}
+export function deleteMirrorRequest(id: string): void {
+  deleteMirrorReqStmt.run(id);
 }

@@ -6,6 +6,59 @@
 
 ---
 
+## ✅ STATUS (2026-06-28) — LIVE TWO-HUB CONVERGENCE PASSED (12 PASS / 0 FAIL / 2 SKIP)
+
+The harness was run live against two real stacks on one box: Hub A = the running
+prism-server (:8787, default vault), Hub B = an isolated `fed-b` vault + a second
+Prism Server (:8788), both with `FEDERATION_ENABLED=true` and stable
+`PEER_SIGNING_KEY`s. Result:
+
+- **AC-1/2** two independent stacks, distinct fingerprints (`3a:c7…` vs `d9:e7…`), bidirectional pairing ✓
+- **AC-3/4** space + `space_note_key` mint, B-side mirror, peer edit grants both ways ✓
+- **AC-6** clients route by `space_note_key` (GAP 2) — `/api/federated/:id` returns the key on both, 204 for non-federated ✓
+- **AC-7 A→B** and **AC-8 B→A** — a live `/collab` edit converged into the FAR hub's vault within 15s, both directions ✓
+- **AC-9** offline outbox flush — edited A while B was down, restarted B, the edit **replayed to B on reconnect** ✓
+- **AC-11** revocation stops sync — after `DELETE /acl/spaces/:id/peers/:pubkey`, an A edit did NOT reach B ✓
+- **AC-5** binding live (implied by AC-7); **AC-10/AC-12** skipped (covered by `verify-federation.ts` 14/14 + `test/federation.test.ts`).
+
+Teardown removed all test data and the `fed-b` sandbox; Hub A was reverted to
+`FEDERATION_ENABLED=false` (the live server's default), with its stable
+`PEER_SIGNING_KEY` kept so re-enabling is a one-flag flip.
+
+### ✅ `/api/federation/mirror` BUILT + live-validated (2026-06-28)
+
+The B-side mirror is no longer a manual SQLite insert. A paired peer calls
+`POST /api/federation/mirror` (peer-conn token; body `{spaceId, spaceTitle?,
+notes:[{spaceNoteKey,kind,title?}]}`) → a **pending** `federation_mirror_requests`
+row (a peer can't silently write to your vault). The owner reviews via
+`GET /acl/federation/mirrors` and `POST /acl/federation/mirrors/:id/accept
+{level?}`, which creates the local shared space (same id) + the peer grant + a
+placeholder note per `space_note_key` (empty, kind pinned via
+`metadata.prism_type`) + the `federated_notes` mapping, then kicks `syncSpaces`.
+`reject` marks it rejected. 10 Layer A tests; `verify-two-hub.ts` now drives this
+flow (no SQLite insert), re-run live: **AC-3 mirror-via-endpoint PASS + A↔B
+convergence PASS** (11 PASS / 0 FAIL).
+
+> Vault gotcha for the live run: the single running `parachute-vault` process
+> hot-loads a NEW vault name on first `create`, but a `remove`+recreate of the
+> same name leaves a poisoned ghost (500s) until the vault server restarts — use a
+> FRESH vault name each run (the live test used `fed-c`).
+
+Remaining follow-up: AC-10 suggest-mode over a real client.
+
+## STATUS (2026-06) — GAP 1 + GAP 2 DONE; GAP 3 harness + bring-up now exist
+
+- **GAP 1 — peer collab-URL registry + auto-`syncSpaces`: DONE in-repo.** `peers.collab_url` exists (`db.ts`, with a migration), `/api/federation/pair` accepts a `collabUrl`, and there is an owner-only `POST /acl/peers/:pubkey/url` to set it after the fact. `FederationManager.syncSpaces()` self-discovers endpoints from `peers.collab_url` and is invoked **automatically** on startup (`collab.ts` `attachCollab`) and after every federation-relevant ACL mutation (`kickFederationSync` in `routes/acl.ts`). No manual `syncSpaces([...])` call is needed once a peer's `collab_url` is set.
+- **GAP 2 — clients open federated notes by `space_note_key`: DONE in-repo.** `GET /api/federated/:noteId` (`routes/federated.ts`, mounted before the `/api` gateway) maps a local note id → `{ spaceNoteKey, spaceId, kind }` (204 when federation is off or the note isn't federated). Web `CollabDoc.tsx` and desktop `DesktopCollabDocument.tsx` resolve the doc name to that key before connecting.
+- **GAP 3 — live two-hub convergence: harness + isolated bring-up now exist.**
+  - `apps/server/scripts/verify-two-hub.ts` — the live A⇄B convergence harness (`node --import tsx scripts/verify-two-hub.ts`). Hub-agnostic: reads both stacks' `.env`/`.env.b`, talks to each gateway with the owner Bearer, signs peer-conn tokens locally from each `PEER_SIGNING_KEY`, and drives the live `/collab` as a Yjs client under the shared `space_note_key`. Maps to AC-1..AC-12 (AC-5 implied by AC-7; AC-9 is operator-gated via `TWO_HUB_AC9=1`; AC-10/AC-12 deferred to the in-process suites).
+  - `apps/server/scripts/two-hub-up.sh` (+ `.env.b.example`) — idempotent, ISOLATED bring-up of Hub B (a **separate `fed-b` vault**, its own token, `prism-b.db`, port `8788`, generated secrets incl. a stable `PEER_SIGNING_KEY`). It does **not** touch the live default vault.
+  - The remaining work is the **live run** against two running stacks, plus the productionization follow-ups (a `/api/federation/mirror` endpoint to replace the harness's B-side SQLite insert; AC-10 suggest-mode over a real client).
+
+> The repo no longer has client-routing or auto-bind gaps. What's left is operational: stand up Hub B (`two-hub-up.sh`), then run `verify-two-hub.ts`.
+
+---
+
 ## 0. TL;DR — what is real vs. what you must build
 
 | Layer | Status | Notes |

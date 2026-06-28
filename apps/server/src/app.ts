@@ -15,6 +15,7 @@ import { acl } from "./routes/acl";
 import { rag } from "./routes/rag";
 import { publish } from "./routes/publish";
 import { federation } from "./routes/federation";
+import { federated } from "./routes/federated";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -70,6 +71,9 @@ export function createApp(): Hono {
   // the 144-bit code already makes guessing infeasible, but rate-limit it too as
   // defense-in-depth against code-guessing / pairing spam.
   app.use("/api/federation/pair", rateLimit({ max: 20, windowMs: 10 * 60_000, name: "federation-pair" }));
+  // /mirror is anon-reachable (peer-token authed in-handler) and writes a pending
+  // row; rate-limit it as defense-in-depth against a paired peer flooding requests.
+  app.use("/api/federation/mirror", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "federation-mirror" }));
 
   app.route("/auth", auth);
   // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon
@@ -82,6 +86,7 @@ export function createApp(): Hono {
   // it fetches /api/p/:slug from here.
   app.route("/api/p", publish);
   app.route("/api/federation", federation);
+  app.route("/api/federated", federated);
   // RAG owns /api/search/semantic + /api/index/* and must be matched BEFORE the
   // gateway, whose owner short-circuit would otherwise proxy these to the vault
   // (which has no semantic endpoint). Other /api paths fall through to `api`.

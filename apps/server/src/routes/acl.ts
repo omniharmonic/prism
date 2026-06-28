@@ -34,6 +34,7 @@ import {
   storePairing,
   listPeers,
   removePeer,
+  setPeerCollabUrl,
   getPeer,
   createSpace,
   getSpace,
@@ -42,6 +43,10 @@ import {
   upsertFederatedNote,
   federatedNotesForSpace,
   deleteFederatedNote,
+  getFederatedByKey,
+  listMirrorRequests,
+  getMirrorRequest,
+  setMirrorRequestStatus,
   updatePublication,
   listSuggestions,
   getSuggestion,
@@ -85,6 +90,17 @@ const isLevel = (x: unknown): x is Level =>
   typeof x === "string" && (LEVELS as readonly string[]).includes(x);
 const isEmail = (x: unknown): x is string => typeof x === "string" && /.+@.+\..+/.test(x);
 const normEmail = (x: string) => x.trim().toLowerCase();
+
+/** After any federation-relevant mutation, re-reconcile the live bridge so new
+ *  bindings come up (and revoked ones tear down) without a server restart. Gated
+ *  + lazy so the @hocuspocus/provider client never loads on a non-federation
+ *  deployment; failures are swallowed (best-effort — never block the ACL write). */
+function kickFederationSync(): void {
+  if (!config.federationEnabled) return;
+  void import("../federation-manager")
+    .then(({ federationManager }) => federationManager.syncSpaces())
+    .catch((e) => console.error("[federation] syncSpaces after ACL change failed:", e));
+}
 
 /** Capability-link URL: opens the FOCUSED collaborative document (Google-Docs
  *  style) — just the doc, level-aware (read-only for viewers, comments sidebar,
@@ -379,6 +395,21 @@ acl.delete("/peers/:pubkey", (c) => {
   const pubkey = decodeURIComponent(c.req.param("pubkey"));
   for (const g of grantsForPeer(pubkey)) removeGrant(g.id);
   removePeer(pubkey);
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+/** Set (or clear) a paired peer's /collab WS URL so the FederationManager can
+ *  open the outbound binding without an out-of-band step (federation gap #1). */
+acl.post("/peers/:pubkey/url", async (c) => {
+  const pubkey = decodeURIComponent(c.req.param("pubkey"));
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const { collabUrl } = await c.req.json<{ collabUrl?: string | null }>().catch(() => ({}) as { collabUrl?: string });
+  if (collabUrl !== undefined && collabUrl !== null && !/^wss?:\/\//.test(collabUrl)) {
+    return c.json({ error: "bad_url" }, 400);
+  }
+  setPeerCollabUrl(pubkey, collabUrl ?? null);
+  kickFederationSync();
   return c.json({ ok: true });
 });
 
@@ -425,6 +456,7 @@ acl.delete("/spaces/:id", (c) => {
   for (const fed of federatedNotesForSpace(id)) deleteFederatedNote(fed.space_note_key);
   for (const g of grantsForResource("space", id)) removeGrant(g.id);
   deleteSpace(id);
+  kickFederationSync();
   return c.json({ ok: true });
 });
 
@@ -451,6 +483,7 @@ acl.post("/spaces/:id/notes", async (c) => {
     peer_synced_at: null,
     source_updated_at: null,
   });
+  kickFederationSync();
   return c.json(row);
 });
 
@@ -469,10 +502,99 @@ acl.post("/spaces/:id/peers", async (c) => {
     level,
     created_by: config.ownerEmail,
   });
+  kickFederationSync();
   return c.json({ ok: true, grant });
 });
 
 acl.delete("/spaces/:id/peers/:pubkey", (c) => {
   removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "space", c.req.param("id"));
+  kickFederationSync();
   return c.json({ ok: true });
+});
+
+// ── Inbound federation mirror requests (owner-reviewed) ──────────────────────
+// A paired peer's POST /api/federation/mirror lands here as 'pending'. Accepting
+// creates the local shared space (same id) + a peer grant + a placeholder note
+// per shared space_note_key + the federated_notes mapping — productionizing what
+// the two-hub harness used to insert into SQLite by hand.
+acl.get("/federation/mirrors", (c) => {
+  const status = c.req.query("status") as "pending" | "accepted" | "rejected" | undefined;
+  return c.json(
+    listMirrorRequests(status).map((r) => ({
+      id: r.id,
+      peer: r.peer_pubkey,
+      fingerprint: fingerprint(r.peer_pubkey),
+      spaceId: r.space_id,
+      spaceTitle: r.space_title,
+      notes: JSON.parse(r.payload) as Array<{ spaceNoteKey: string; kind: string; title?: string }>,
+      status: r.status,
+      createdAt: r.created_at,
+      resolvedAt: r.resolved_at,
+    })),
+  );
+});
+
+// UUID-shaped ids only — defense-in-depth so a stored mirror payload can never
+// escape the `shared/<space>/<key>.md` note path (the /mirror route validates
+// too, but accept must not trust the row blindly).
+const FED_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+acl.post("/federation/mirrors/:id/accept", async (c) => {
+  const req = getMirrorRequest(c.req.param("id"));
+  if (!req || req.status !== "pending") return c.json({ error: "not_found" }, 404);
+  if (!getPeer(req.peer_pubkey)?.paired_at) return c.json({ error: "unknown_peer" }, 400);
+  if (!FED_ID_RE.test(req.space_id)) return c.json({ error: "bad_space_id" }, 400);
+  const { level } = await c.req.json<{ level?: string }>().catch(() => ({}) as { level?: string });
+  const lvl: Level = isLevel(level) ? level : "edit";
+
+  // Local shared space (same id as the peer's) + the peer's grant on it.
+  if (!getSpace(req.space_id)) {
+    createSpace({
+      id: req.space_id,
+      title: req.space_title,
+      scope_include_tags: null,
+      scope_exclude_tags: null,
+      path_prefix: `shared/${req.space_id}`,
+      created_by: config.ownerEmail,
+    });
+  }
+  upsertGrant({ subject_type: "peer", subject: req.peer_pubkey, resource_type: "space", resource: req.space_id, level: lvl, created_by: config.ownerEmail });
+
+  // One placeholder note per shared key (empty so the first peer sync is the
+  // unambiguous seed; kind PINNED via metadata.prism_type so noteKind matches the
+  // federated row and the bridge won't skip on a kind mismatch). Idempotent.
+  const notes = JSON.parse(req.payload) as Array<{ spaceNoteKey: string; kind: string; title?: string }>;
+  const mapped: Array<{ spaceNoteKey: string; localId: string; kind: string }> = [];
+  const skipped: string[] = [];
+  for (const n of notes) {
+    if (!FED_ID_RE.test(n.spaceNoteKey)) { skipped.push(n.spaceNoteKey); continue; } // anti-traversal
+    const existing = getFederatedByKey(n.spaceNoteKey);
+    if (existing) {
+      mapped.push({ spaceNoteKey: n.spaceNoteKey, localId: existing.local_id, kind: existing.kind });
+      continue;
+    }
+    let localId: string;
+    try {
+      const note = await vault.createNote({
+        content: "",
+        path: `shared/${req.space_id}/${n.spaceNoteKey}.md`,
+        metadata: { prism_type: n.kind, ...(n.title ? { title: n.title } : {}) },
+      });
+      localId = note.id;
+    } catch {
+      return c.json({ error: "vault_error" }, 502);
+    }
+    upsertFederatedNote({ space_note_key: n.spaceNoteKey, space_id: req.space_id, local_id: localId, kind: n.kind, peer_synced_at: null, source_updated_at: null });
+    mapped.push({ spaceNoteKey: n.spaceNoteKey, localId, kind: n.kind });
+  }
+  setMirrorRequestStatus(req.id, "accepted");
+  kickFederationSync();
+  return c.json({ ok: true, spaceId: req.space_id, level: lvl, mapped, skipped });
+});
+
+acl.post("/federation/mirrors/:id/reject", (c) => {
+  const req = getMirrorRequest(c.req.param("id"));
+  if (!req) return c.json({ error: "not_found" }, 404);
+  setMirrorRequestStatus(req.id, "rejected");
+  return c.json({ ok: true, status: "rejected" });
 });

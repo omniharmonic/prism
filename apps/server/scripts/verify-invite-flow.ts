@@ -22,12 +22,14 @@
 import { config } from "../src/config";
 import { authorizeConnection } from "../src/collab";
 import { db } from "../src/db";
+import { vault } from "../src/parachute";
 
 const BASE = "http://localhost:8787";
-// Reuse the two known fixtures from verify-gateway.ts: one real note we'll share,
-// one that carries no grant for our test user (must stay forbidden).
-const SHARED_NOTE = "2026-04-23-21-21-05-047018";
-const FORBIDDEN_NOTE = "2026-04-10-21-08-52-167001";
+// Self-provisioned throwaway fixtures (no hardcoded vault IDs — runs on any vault):
+// one note we share with the test user, one that carries no grant (must stay
+// forbidden). Both are created at startup and deleted in the finally block.
+let SHARED_NOTE = "";
+let FORBIDDEN_NOTE = "";
 
 const TEST_EMAIL = "invite-e2e@prism.test";
 const TEST_NAME = "Invite E2E";
@@ -77,6 +79,18 @@ const check = (name: string, pass: boolean, detail = "") => checks.push({ name, 
   }
 
   purge(TEST_EMAIL); // start clean
+
+  // Provision throwaway fixtures: a note to share + an unshared "forbidden" note.
+  const shared = await vault.createNote({
+    content: "# Invite E2E — Shared\n\nThis note is shared with the test user.",
+    path: "_test/invite/shared.md",
+  });
+  const forbidden = await vault.createNote({
+    content: "# Invite E2E — Forbidden\n\nThis note is NOT shared and must 403.",
+    path: "_test/invite/forbidden.md",
+  });
+  SHARED_NOTE = shared.id;
+  FORBIDDEN_NOTE = forbidden.id;
 
   try {
     // 1. Owner shares the note by email → should auto-invite (no account yet).
@@ -203,6 +217,10 @@ const check = (name: string, pass: boolean, detail = "") => checks.push({ name, 
     check("collab on a non-shared doc → rejected", forbiddenThrew);
   } finally {
     purge(TEST_EMAIL); // leave the DB as we found it
+    // Delete the throwaway fixtures so the vault is left exactly as found.
+    for (const id of [SHARED_NOTE, FORBIDDEN_NOTE]) {
+      if (id) { try { await vault.deleteNote(id); } catch { /* best-effort */ } }
+    }
   }
 
   let ok = true;

@@ -24,6 +24,28 @@
 > - **G6** (strengthen `validate_config` with an auth/MCP check) and **G8** (expose `seedTagSchemas` as a Tauri command + wizard verify) remain **optional, unbuilt**.
 > - Integration provisioning (Matrix/Google/etc.) is collect-and-verify only, as designed.
 >
+> ## ⬆ STATUS UPDATE 2 (branch `claude/roadmap-handoff`)
+> - ✅ **G6 DONE** — `validate_config` now performs a real auth check: after `/health`
+>   it does an authed `GET /vault/:vault/api/notes?limit=1` with the configured
+>   Bearer and reports `token_valid` (true / false-with-detail / omitted when no
+>   key or unreachable). Catches expired JWTs / rejected legacy `pvt_*` tokens that
+>   `api_key_present` can't. Frontend `configApi.validate` type updated. `cargo check`
+>   + core typecheck clean.
+> - ✅ **G5 ADDRESSED** — an automated desktop config writer already exists:
+>   `update_config` (`commands/config.rs`) persists `prism-config.json` field-by-field.
+>   The `prism-setup-desktop` skill should drive it (+ verify via `validate_config`'s
+>   new `token_valid` and `mcp__parachute-vault__vault-info`).
+> - ⏭ **G8 DEFERRED (deliberate)** — a Rust port of `seedTagSchemas` would duplicate
+>   the TS additive-merge logic and risk drift from the single source
+>   (`tag-schemas.json`). Provisioning is already covered by the server-side
+>   `seedTagSchemas` (`npm run seed` / `prism setup`) and the `prism-setup-schema`
+>   skill; the desktop wizard should call those rather than a parallel Rust seeder.
+> - **Live skill runs** (vault/desktop/integrations) still need real credentials +
+>   the desktop app and are left for an operator: they collect Matrix/Google/Notion/
+>   transcript secrets and write them into `prism-config.json`. The server + schema
+>   skills are exercised by Layer B (`prism-setup.ts` seeding ran; `verify-gateway`
+>   green).
+>
 > The gap table in §1.3 and the build plan in §4 are the **original** assessment; treat the items above as their current status.
 
 ## 0. TL;DR — what you're doing

@@ -13,7 +13,12 @@
     "setup": "bash scripts/bootstrap.sh",
     "setup:full": "node --env-file-if-exists=.env --import tsx scripts/prism-setup.ts",
     "seed": "node --env-file-if-exists=.env --import tsx scripts/seed.ts",
-    "render:mcp": "node --env-file-if-exists=.env --import tsx scripts/render-mcp.ts"
+    "render:mcp": "node --env-file-if-exists=.env --import tsx scripts/render-mcp.ts",
+    "verify:gateway": "node --env-file=.env --import tsx scripts/verify-gateway.ts",
+    "verify:collab": "node --env-file=.env --import tsx scripts/verify-collab-share.ts",
+    "verify:federation": "node --env-file=.env --import tsx scripts/verify-federation.ts",
+    "verify:invite": "node --env-file=.env --import tsx scripts/verify-invite-flow.ts",
+    "verify:live": "npm run verify:gateway && npm run verify:collab && npm run verify:federation && npm run verify:invite"
   },
   "dependencies": {
     "@hocuspocus/server": "^4.1.0",
