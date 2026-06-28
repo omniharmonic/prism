@@ -60,10 +60,17 @@ export const BASE_URL = process.env.E2E_BASE_URL || `http://localhost:${env("POR
  *  assertion (a `secure` cookie may not stick on a plain-http origin). */
 export const E2E_HTTPS = process.env.E2E_HTTPS === "1" || APP_ORIGIN.startsWith("https");
 
-if (!PARACHUTE_TOKEN) {
-  throw new Error(
-    "e2e: PARACHUTE_TOKEN missing — could not read apps/server/.env (run from a configured server, or set PARACHUTE_TOKEN).",
-  );
+/** Assert a vault token is present — called LAZILY by the live helpers, not at
+ *  module load. Playwright collects (imports) every spec before `--grep-invert
+ *  @live` filters, so a top-level throw would break the no-vault CI job even
+ *  though all specs are @live. The @live tests that actually hit the vault call
+ *  this; the no-vault CI run never does. */
+function requireToken(): void {
+  if (!PARACHUTE_TOKEN) {
+    throw new Error(
+      "e2e: PARACHUTE_TOKEN missing — could not read apps/server/.env (run from a configured server, or set PARACHUTE_TOKEN).",
+    );
+  }
 }
 
 interface Note {
@@ -74,6 +81,7 @@ interface Note {
 }
 
 async function vaultReq(path: string, init?: RequestInit): Promise<Response> {
+  requireToken();
   const r = await fetch(`${PARACHUTE_URL}/vault/${PARACHUTE_VAULT}/api${path}`, {
     ...init,
     headers: {
@@ -105,6 +113,7 @@ export const vault = {
 };
 
 async function aclReq(path: string, init?: RequestInit): Promise<{ status: number; body: any }> {
+  requireToken();
   const r = await fetch(`${BASE_URL}/acl${path}`, {
     ...init,
     headers: {
