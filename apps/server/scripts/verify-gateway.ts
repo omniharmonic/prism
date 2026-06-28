@@ -4,18 +4,21 @@
  * sees only its tag's notes, a forbidden note 403s, and a write is denied at
  * "view". Run with the SAME env as the server: node --env-file=.env --import tsx.
  */
-import { addGrant } from "../src/db";
+import { addGrant, removeGrant } from "../src/db";
 import { signCapability } from "../src/auth/capability";
 import { vault } from "../src/parachute";
 import { config } from "../src/config";
 
 const BASE = "http://localhost:8787";
-const TAG = "19c-philosophy";
-const GRANTED_NOTE = "2026-04-23-21-21-05-047018"; // carries TAG
-const FORBIDDEN_NOTE = "2026-04-10-21-08-52-167001"; // carries no tags
+// Self-provisioned throwaway fixtures — NO hardcoded vault note IDs, so this
+// runs against ANY vault. The gateway section creates GATE_NOTE_COUNT notes
+// under TAG plus one untagged note, asserts the capability gateway, then tears
+// them all down (along with the cap grant) in the outer finally.
+const TAG = "_secgate";
+const GATE_NOTE_COUNT = 3;
 
 const capId = `verify-${Date.now()}`;
-addGrant({ subject_type: "link", subject: capId, resource_type: "tag", resource: TAG, level: "view", created_by: "verify" });
+const capGrant = addGrant({ subject_type: "link", subject: capId, resource_type: "tag", resource: TAG, level: "view", created_by: "verify" });
 const cap = signCapability({ id: capId, exp: Date.now() + 3_600_000 });
 const t = `?t=${encodeURIComponent(cap)}`;
 
@@ -35,6 +38,21 @@ const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
 const check = (name: string, pass: boolean, detail: string) => checks.push({ name, pass, detail });
 
 (async () => {
+  // --- provision gateway fixtures (throwaway, torn down in the outer finally) ---
+  const gateNotes: string[] = [];
+  let GRANTED_NOTE = "";
+  let FORBIDDEN_NOTE = "";
+  try {
+    for (let i = 0; i < GATE_NOTE_COUNT; i++) {
+      const n = await vault.createNote({ content: `# Gate ${i}\n\ntagged gateway fixture`, path: `_test/secgate/g${i}.md` });
+      gateNotes.push(n.id);
+      await vault.addTags(n.id, [TAG]);
+    }
+    GRANTED_NOTE = gateNotes[0]!;
+    const forbidden = await vault.createNote({ content: "# Forbidden\n\nuntagged gateway fixture", path: "_test/secgate/forbidden.md" });
+    gateNotes.push(forbidden.id);
+    FORBIDDEN_NOTE = forbidden.id;
+
   // --- anonymous (no session, no capability) ---
   const anonNotes = await j("/api/notes");
   check("anon /api/notes → empty (NOT the vault)", anonNotes.status === 200 && Array.isArray(anonNotes.body) && anonNotes.body.length === 0, `status=${anonNotes.status} len=${anonNotes.body?.length}`);
@@ -48,7 +66,8 @@ const check = (name: string, pass: boolean, detail: string) => checks.push({ nam
   // --- capability: view on tag ---
   const capNotes = await j(`/api/notes${t}`);
   const allTagged = Array.isArray(capNotes.body) && capNotes.body.every((n: any) => (n.tags ?? []).includes(TAG));
-  check("cap /api/notes → only tagged notes", capNotes.status === 200 && allTagged && capNotes.body.length === 5, `status=${capNotes.status} len=${capNotes.body?.length} allTagged=${allTagged}`);
+  const allOursPresent = Array.isArray(capNotes.body) && gateNotes.slice(0, GATE_NOTE_COUNT).every((id) => capNotes.body.some((n: any) => n.id === id));
+  check("cap /api/notes → only tagged notes", capNotes.status === 200 && allTagged && allOursPresent && capNotes.body.length === GATE_NOTE_COUNT, `status=${capNotes.status} len=${capNotes.body?.length} want=${GATE_NOTE_COUNT} allTagged=${allTagged}`);
 
   const capGet = await j(`/api/notes/${GRANTED_NOTE}${t}`);
   check("cap GET granted note → 200 + _level=view", capGet.status === 200 && capGet.body?._level === "view", `status=${capGet.status} level=${capGet.body?._level}`);
@@ -228,6 +247,15 @@ const check = (name: string, pass: boolean, detail: string) => checks.push({ nam
       notesLeft = a.length + b.length + cc.length;
     } catch { /* */ }
     check("teardown: no _sec* notes remain in the vault", notesLeft === 0, `remaining=${notesLeft}`);
+  }
+
+  } finally {
+    // --- gateway teardown: remove the cap grant + delete every _secgate note ---
+    try { removeGrant(capGrant.id); } catch { /* */ }
+    for (const id of gateNotes) try { await vault.deleteNote(id); } catch { /* */ }
+    let gateLeft = -1;
+    try { gateLeft = (await vault.listNotes({ tags: [TAG] })).length; } catch { /* */ }
+    check("teardown: no _secgate notes remain in the vault", gateLeft === 0, `remaining=${gateLeft}`);
   }
 
   // --- report ---

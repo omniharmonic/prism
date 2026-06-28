@@ -11,7 +11,9 @@
     "test": "node --import tsx --test --env-file=.env.test test/*.test.ts",
     "test:watch": "node --import tsx --test --watch --env-file=.env.test test/*.test.ts",
     "setup": "bash scripts/bootstrap.sh",
-    "setup:full": "node --env-file-if-exists=.env --import tsx scripts/prism-setup.ts"
+    "setup:full": "node --env-file-if-exists=.env --import tsx scripts/prism-setup.ts",
+    "seed": "node --env-file-if-exists=.env --import tsx scripts/seed.ts",
+    "render:mcp": "node --env-file-if-exists=.env --import tsx scripts/render-mcp.ts"
   },
   "dependencies": {
     "@hocuspocus/server": "^4.1.0",
