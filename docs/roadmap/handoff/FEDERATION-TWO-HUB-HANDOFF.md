@@ -6,6 +6,27 @@
 
 ---
 
+## ✅ STATUS (2026-06-28) — LIVE TWO-HUB CONVERGENCE PASSED (12 PASS / 0 FAIL / 2 SKIP)
+
+The harness was run live against two real stacks on one box: Hub A = the running
+prism-server (:8787, default vault), Hub B = an isolated `fed-b` vault + a second
+Prism Server (:8788), both with `FEDERATION_ENABLED=true` and stable
+`PEER_SIGNING_KEY`s. Result:
+
+- **AC-1/2** two independent stacks, distinct fingerprints (`3a:c7…` vs `d9:e7…`), bidirectional pairing ✓
+- **AC-3/4** space + `space_note_key` mint, B-side mirror, peer edit grants both ways ✓
+- **AC-6** clients route by `space_note_key` (GAP 2) — `/api/federated/:id` returns the key on both, 204 for non-federated ✓
+- **AC-7 A→B** and **AC-8 B→A** — a live `/collab` edit converged into the FAR hub's vault within 15s, both directions ✓
+- **AC-9** offline outbox flush — edited A while B was down, restarted B, the edit **replayed to B on reconnect** ✓
+- **AC-11** revocation stops sync — after `DELETE /acl/spaces/:id/peers/:pubkey`, an A edit did NOT reach B ✓
+- **AC-5** binding live (implied by AC-7); **AC-10/AC-12** skipped (covered by `verify-federation.ts` 14/14 + `test/federation.test.ts`).
+
+Teardown removed all test data and the `fed-b` sandbox; Hub A was reverted to
+`FEDERATION_ENABLED=false` (the live server's default), with its stable
+`PEER_SIGNING_KEY` kept so re-enabling is a one-flag flip. The only remaining
+follow-up is productionization: a `/api/federation/mirror` endpoint to replace the
+harness's manual B-side SQLite insert, and AC-10 suggest-mode over a real client.
+
 ## STATUS (2026-06) — GAP 1 + GAP 2 DONE; GAP 3 harness + bring-up now exist
 
 - **GAP 1 — peer collab-URL registry + auto-`syncSpaces`: DONE in-repo.** `peers.collab_url` exists (`db.ts`, with a migration), `/api/federation/pair` accepts a `collabUrl`, and there is an owner-only `POST /acl/peers/:pubkey/url` to set it after the fact. `FederationManager.syncSpaces()` self-discovers endpoints from `peers.collab_url` and is invoked **automatically** on startup (`collab.ts` `attachCollab`) and after every federation-relevant ACL mutation (`kickFederationSync` in `routes/acl.ts`). No manual `syncSpaces([...])` call is needed once a peer's `collab_url` is set.
