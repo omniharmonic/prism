@@ -66,6 +66,10 @@ export function createApp(): Hono {
   app.use("/auth/register", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-register" }));
   app.use("/auth/request", rateLimit({ max: 5, windowMs: 10 * 60_000, name: "auth-request" }));
   app.use("/auth/callback", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-callback" }));
+  // The peer-pairing endpoint is anon-reachable and consumes a single-use code;
+  // the 144-bit code already makes guessing infeasible, but rate-limit it too as
+  // defense-in-depth against code-guessing / pairing spam.
+  app.use("/api/federation/pair", rateLimit({ max: 20, windowMs: 10 * 60_000, name: "federation-pair" }));
 
   app.route("/auth", auth);
   // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon

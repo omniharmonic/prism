@@ -96,15 +96,19 @@ function unlocked(c: Context, pub: Publication): boolean {
 }
 
 /**
- * Synthetic anon actor for a publication. Its grants are the "anyone" grant(s)
- * (subject_type='anyone', resource_type='tag', resource=tag, level='view') the
- * owner created for this publication's resource — these authorize the tag.
+ * Synthetic anon actor for a publication. Its grants are ONLY the "anyone"
+ * grant(s) (subject_type='anyone', resource_type='tag', resource=tag,
+ * level='view') the owner created at publish time. We deliberately FILTER OUT
+ * any user-/link-/peer-scoped grants that also happen to sit on the same tag —
+ * an anonymous visitor must never inherit a specific person's higher (edit/own)
+ * grant. (Defense-in-depth: today every /api/p route only needs `view`, but this
+ * keeps the anon actor from ever computing a level above what `anyone` allows.)
  */
 function publicationActor(pub: Publication): Actor {
   return {
     kind: "anon",
     isOwner: false,
-    grants: grantsForResource(pub.resource_type, pub.resource),
+    grants: grantsForResource(pub.resource_type, pub.resource).filter((g) => g.subject_type === "anyone"),
   };
 }
 
