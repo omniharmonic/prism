@@ -157,6 +157,51 @@ its vault.
 - **P5 — Two-hub e2e:** drive every flow through the browser with two real vaults
   (SC-7), then PR.
 
+## 7b. v1 design decisions (locked from research)
+
+**8 north-star principles** (from comparable-tool research): (1) default to
+nothing-shared; (2) bake the permission INTO the artifact (a link/QR *is* "view"
+or "edit"); (3) always show what's exposed + make it reversibly auditable;
+(4) deliver a working URL BEFORE any config; (5) status = two words + a color
+(Synced/Syncing/Offline, Public/Private); (6) never expose the plumbing (no git
+verbs, device-ids, conflict files, build pipeline); (7) scope + identity
+unmistakable (loud active-vault, "shared with" faces, level badges); (8) be
+honest about retraction limits + dangling links.
+
+**Placement (from UX inventory):** Network is a **virtual tab** (`"network"`,
+like the existing dashboards) — not a Settings section, not a per-note dialog —
+mounted via `ContentType` + `Registry` + `VIRTUAL_TAB_IDS` (Canvas + Navigation)
++ a sidebar nav row. Sub-tabs via the existing `ui/Tabs`. Reuse glass tokens +
+`ui/` primitives (`Badge` status pills, `Button`, `Input`) + lucide + the inline
+copy pattern. Web-owner-only (hidden when seam methods are absent — exactly how
+the Publish tab gates today).
+
+**Seam:** extend `CollabSharing` with optional federation methods (identity /
+pair / peers / spaces / mirrors). Renderer consumes `useCollabSharing()`; hides
+any section whose backing methods are absent → desktop + capability-viewer safe.
+
+**Publish tab UX:** a list of live publications (auditable + reversible) + "New
+publication": pick a tag → **instant public URL** + a live "publishing N notes
+(dynamic — future notes with this tag included)" count → a progressive **Site
+Settings** panel (title · home-note picker *constrained to in-publication notes*
+so you can't leak a private home · password · visibility). v1 visibility ladder:
+Public / Password (Unlisted + custom domain are later). Warn on dangling
+wikilinks to unpublished notes (differentiator; v1.1 if time-boxed).
+
+**Federate tab UX:** (a) **This node** identity card — fingerprint shown loudly
+for human verification + "Pair a peer". (b) **Peers** — generate a pairing
+code/link to hand over + redeem a peer's; verify fingerprints side-by-side; list
+paired peers with health. (c) **Spaces** — pick a slice → share with a paired
+peer AT a level (permission baked in) → two-word live status; revoke. (d)
+**Inbox** — pending inbound mirror requests (peer · slice · N notes) → Accept
+(at a chosen level) / Reject. Lean into CRDT auto-merge: **no conflict UI** ever.
+
+**Vaults tab UX:** active-vault pill (loud) + recents + "Connect existing" +
+"Create new"; per-value scope badges. v1 = multi-vault Phase 1 (owner switcher,
+per-request `X-Prism-Vault` header, no schema migration). Cross-vault *sharing*
+(the `vault_id` migration across 6 tables + `effectiveLevel` vault-scoping) is
+the security-critical, gated **Phase 2** — specced, not rushed.
+
 ## 7. Non-goals (v1)
 - Custom DNS/domain management for publications (URL = Prism origin + slug).
 - Real-time presence/cursors across federated peers (CRDT data sync only).
