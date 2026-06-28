@@ -43,6 +43,16 @@ export const configApi = {
   testParachute: (url: string) =>
     invoke<{ status: string }>("test_parachute", { url }),
 
+  /** Validate the live config: ping the configured vault and report effective settings. */
+  validate: () =>
+    invoke<{
+      parachute_url: string;
+      parachute_vault: string;
+      api_key_present: boolean;
+      reachable: boolean;
+      detail?: string;
+    }>("validate_config"),
+
   testMatrix: (homeserver: string, accessToken: string) =>
     invoke<{ ok: boolean; rooms: number }>("test_matrix", { homeserver, accessToken }),
 

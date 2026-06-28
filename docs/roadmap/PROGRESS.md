@@ -41,13 +41,13 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · 🔵 verified at barr
 
 > L-P2P-UX (federated markers / Share-a-Space) folded into the seam work as optional methods; the live federated-marker UI rides on the deferred two-hub transport (gated).
 
-## P4 — Packaging, migration, docs, accelerators → barrier B4 (release)
-- ⬜ L-Onb-Plugin — `.claude-plugin/plugin.json` + `.mcp.json.template` + `validate_config`
-- ⬜ L-Onb-Docs — `docs/onboarding.md` + CLAUDE.md update
-- ⬜ L-P2P-Migrate — GitHub `id_map` → `space_note_key` importer
-- ⬜ L-Pub-Docs — HTTPS/password docs + SW-denylist automated check
-- ⬜ L-P2P-Accel — optional Parachute-core accelerators (only if reachable)
-- ⬜ **B4** — full gates green; plugin installs; migrated binding syncs p2p
+## P4 — Packaging, migration, docs, accelerators → barrier B4 (release)  ✅
+- 🔵 L-Onb-Plugin — `.claude-plugin/plugin.json` (schema VERIFIED via claude-code-guide: `skills`=dir, `author`=object, inline `mcpServers`+`${VAR}` ok) + `.claude-plugin/README.md` + `.mcp.json.template` + `validate_config` Tauri cmd + core wrapper
+- 🔵 L-Onb-Docs — `docs/onboarding.md` + CLAUDE.md Onboarding/setup subsection
+- 🔵 L-P2P-Migrate — `scripts/migrate-github-space.ts` (idempotent, dry-run; reuse space by path_prefix, durable space_note_key) — verified on synthetic id-map + cleaned up
+- 🔵 L-Pub-Docs — `docs/publishing.md` + `docs/federation.md` + CLAUDE.md; `apps/web/scripts/check-sw-denylist.mjs` (`npm run check:sw`) guard
+- ⏭ L-P2P-Accel — SKIPPED (Parachute-core changes; out of scope per plan, never blocks 1–3)
+- 🔵 **B4** — core+server tsc clean; cargo clean (validate_config); check:sw passes; plugin.json + .mcp.json.template valid; migrate dry-run correct
 
 ## Final
 - ⬜ Final QA e2e pass across all 3 horizons → merge to `main`

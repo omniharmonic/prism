@@ -1,0 +1,20 @@
+{
+  "name": "prism",
+  "version": "0.1.0",
+  "description": "Prism's Parachute-vault skills for Claude Code: classify, extract entities, reconcile, schema-bridge, manage wikilinks, and provision a vault — backed by the Parachute vault MCP server.",
+  "author": {
+    "name": "Benjamin Life"
+  },
+  "skills": [
+    "./.claude/skills/"
+  ],
+  "mcpServers": {
+    "parachute-vault": {
+      "type": "http",
+      "url": "${PARACHUTE_URL}/vault/${PARACHUTE_VAULT}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PARACHUTE_TOKEN}"
+      }
+    }
+  }
+}

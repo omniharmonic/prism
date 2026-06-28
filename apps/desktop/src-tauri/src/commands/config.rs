@@ -338,6 +338,56 @@ pub fn set_anthropic_key(key: String) -> Result<(), PrismError> {
     Ok(())
 }
 
+/// Health snapshot of the *effective* (currently configured) Parachute vault.
+/// Unlike `test_parachute` (which probes an arbitrary URL the Settings form is
+/// editing), this validates the config the app would actually use: it reports
+/// the resolved `parachute_url` / `parachute_vault`, whether an API key is
+/// present (never the key itself), and whether the vault answered `/health`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConfigHealth {
+    /// Effective Parachute server root the app is configured to use.
+    pub parachute_url: String,
+    /// Effective vault name for the scoped REST/MCP URLs.
+    pub parachute_vault: String,
+    /// Whether a Parachute API key (Bearer hub JWT) is configured. Never the key.
+    pub api_key_present: bool,
+    /// Whether `${parachute_url}/health` responded with a success status.
+    pub reachable: bool,
+    /// Human-readable detail (error string or status) when not reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Validate the live config: ping the configured vault's `/health` and surface
+/// the effective connection settings. Reads fresh from disk (like
+/// `get_full_config`) so a key saved this session reports accurately, falling
+/// back to the launch-time managed state on read error.
+#[tauri::command]
+pub async fn validate_config(
+    config: tauri::State<'_, AppConfig>,
+) -> Result<ConfigHealth, PrismError> {
+    let config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
+
+    let (reachable, detail) = match reqwest::Client::new()
+        .get(format!("{}/health", config.parachute_url))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => (true, None),
+        Ok(resp) => (false, Some(format!("vault returned {}", resp.status()))),
+        Err(e) => (false, Some(format!("unreachable: {e}"))),
+    };
+
+    Ok(ConfigHealth {
+        parachute_url: config.parachute_url,
+        parachute_vault: config.parachute_vault,
+        api_key_present: !config.parachute_api_key.is_empty(),
+        reachable,
+        detail,
+    })
+}
+
 /// Test if Parachute is reachable at a given URL
 #[tauri::command]
 pub async fn test_parachute(url: String) -> Result<serde_json::Value, PrismError> {
