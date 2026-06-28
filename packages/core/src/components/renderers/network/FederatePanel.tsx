@@ -52,6 +52,7 @@ import {
 import { useVaultClient } from "../../../data/VaultClientContext";
 import type { VaultClient } from "../../../data/VaultClient";
 import type { Note, TagCount } from "../../../lib/types";
+import { TagPicker } from "./TagPicker";
 
 // Spaces are coarser than per-note sharing: view / suggest / edit only.
 const SPACE_LEVELS: ShareLevel[] = ["view", "suggest", "edit"];
@@ -703,9 +704,6 @@ function SpacesCard({
   const [pathPrefix, setPathPrefix] = useState("");
   const create = useAction();
 
-  const toggleTag = (t: string) =>
-    setIncludeTags((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
-
   return (
     <section style={card}>
       <SectionHeader
@@ -727,36 +725,14 @@ function SpacesCard({
           </div>
           <div>
             <div style={{ ...labelText, marginBottom: 6 }}>Include tags (the slice)</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 132, overflow: "auto" }}>
-              {tags.length === 0 ? (
-                <span style={helpText}>No tags found.</span>
-              ) : (
-                tags.map((t) => {
-                  const on = includeTags.includes(t.tag);
-                  return (
-                    <button
-                      key={t.tag}
-                      onClick={() => toggleTag(t.tag)}
-                      style={{
-                        fontSize: 12,
-                        padding: "3px 9px",
-                        borderRadius: 999,
-                        cursor: "pointer",
-                        border: `1px solid ${on ? "var(--accent)" : "var(--glass-border)"}`,
-                        background: on ? "var(--accent-dim)" : "var(--glass)",
-                        color: on ? "var(--accent)" : "var(--text-secondary)",
-                      }}
-                    >
-                      #{t.tag} <span style={{ opacity: 0.6 }}>{t.count}</span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
+            <TagPicker tags={tags} selected={includeTags} onChange={setIncludeTags} />
           </div>
           <div>
             <div style={{ ...labelText, marginBottom: 6 }}>Path prefix (optional)</div>
             <Input placeholder="e.g. commons/" value={pathPrefix} onChange={(e) => setPathPrefix(e.target.value)} />
+            <div style={{ ...helpText, marginTop: 5 }}>
+              Narrow the slice to notes under a folder. Combine with tags, or use either alone.
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Button
