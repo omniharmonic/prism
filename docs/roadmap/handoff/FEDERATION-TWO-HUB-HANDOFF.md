@@ -6,6 +6,19 @@
 
 ---
 
+## STATUS (2026-06) — GAP 1 + GAP 2 DONE; GAP 3 harness + bring-up now exist
+
+- **GAP 1 — peer collab-URL registry + auto-`syncSpaces`: DONE in-repo.** `peers.collab_url` exists (`db.ts`, with a migration), `/api/federation/pair` accepts a `collabUrl`, and there is an owner-only `POST /acl/peers/:pubkey/url` to set it after the fact. `FederationManager.syncSpaces()` self-discovers endpoints from `peers.collab_url` and is invoked **automatically** on startup (`collab.ts` `attachCollab`) and after every federation-relevant ACL mutation (`kickFederationSync` in `routes/acl.ts`). No manual `syncSpaces([...])` call is needed once a peer's `collab_url` is set.
+- **GAP 2 — clients open federated notes by `space_note_key`: DONE in-repo.** `GET /api/federated/:noteId` (`routes/federated.ts`, mounted before the `/api` gateway) maps a local note id → `{ spaceNoteKey, spaceId, kind }` (204 when federation is off or the note isn't federated). Web `CollabDoc.tsx` and desktop `DesktopCollabDocument.tsx` resolve the doc name to that key before connecting.
+- **GAP 3 — live two-hub convergence: harness + isolated bring-up now exist.**
+  - `apps/server/scripts/verify-two-hub.ts` — the live A⇄B convergence harness (`node --import tsx scripts/verify-two-hub.ts`). Hub-agnostic: reads both stacks' `.env`/`.env.b`, talks to each gateway with the owner Bearer, signs peer-conn tokens locally from each `PEER_SIGNING_KEY`, and drives the live `/collab` as a Yjs client under the shared `space_note_key`. Maps to AC-1..AC-12 (AC-5 implied by AC-7; AC-9 is operator-gated via `TWO_HUB_AC9=1`; AC-10/AC-12 deferred to the in-process suites).
+  - `apps/server/scripts/two-hub-up.sh` (+ `.env.b.example`) — idempotent, ISOLATED bring-up of Hub B (a **separate `fed-b` vault**, its own token, `prism-b.db`, port `8788`, generated secrets incl. a stable `PEER_SIGNING_KEY`). It does **not** touch the live default vault.
+  - The remaining work is the **live run** against two running stacks, plus the productionization follow-ups (a `/api/federation/mirror` endpoint to replace the harness's B-side SQLite insert; AC-10 suggest-mode over a real client).
+
+> The repo no longer has client-routing or auto-bind gaps. What's left is operational: stand up Hub B (`two-hub-up.sh`), then run `verify-two-hub.ts`.
+
+---
+
 ## 0. TL;DR — what is real vs. what you must build
 
 | Layer | Status | Notes |
