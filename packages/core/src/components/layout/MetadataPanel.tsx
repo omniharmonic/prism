@@ -9,6 +9,8 @@ import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { syncApi, type SyncStatus } from "../../lib/sync/client";
 import { githubSyncApi } from "../../lib/parachute/client";
 import { GitHubSyncModal } from "./GitHubSyncModal";
+import { useIsWeb } from "../../data/Platform";
+import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 import { cn } from "../../lib/cn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -618,6 +620,7 @@ const SYNC_ADAPTERS = [
 ];
 
 function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata: Record<string, unknown> | null; notePath: string | null }) {
+  const isWeb = useIsWeb();
   const [showAdd, setShowAdd] = useState(false);
   const queryClient = useQueryClient();
 
@@ -625,6 +628,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
     queryKey: ["sync", "status", noteId],
     queryFn: () => syncApi.status(noteId),
     retry: false,
+    enabled: !isWeb,
   });
 
   const syncConfigs = ((metadata as Record<string, unknown>)?.sync as Array<Record<string, unknown>>) || [];
@@ -637,13 +641,14 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
   // Check if this note is in a directory with an active GitHub sync
   const [githubConfig, setGithubConfig] = useState<{ id: string; vaultPath: string } | null>(null);
   useEffect(() => {
+    if (isWeb) return;
     try {
       githubSyncApi.status().then((configs) => {
         const match = configs.find((c) => notePath?.startsWith(c.vaultPath));
         setGithubConfig(match ? { id: match.id, vaultPath: match.vaultPath } : null);
       }).catch(() => {});
     } catch { /* not in Tauri */ }
-  }, [notePath]);
+  }, [notePath, isWeb]);
 
   const handleAddSync = async (adapter: string) => {
     setSyncError(null);
@@ -694,6 +699,18 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
     queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
     queryClient.invalidateQueries({ queryKey: ["vault"] });
   };
+
+  // The sync engine (Google Docs / Notion / GitHub adapters) and the Notion page
+  // picker all back onto host-only Tauri commands, so in the web shell we show a
+  // notice instead of dead controls.
+  if (isWeb) {
+    return (
+      <DesktopOnlyNotice
+        feature="Note sync"
+        detail="Syncing this note to Google Docs, Notion, or GitHub runs adapters and CLIs on the machine hosting your vault, so it's managed in the desktop app."
+      />
+    );
+  }
 
   return (
     <div className="space-y-2">

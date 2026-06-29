@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, initializeSettings } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
@@ -144,14 +144,16 @@ async function start() {
   startOutboxSync();
   root.render(
     <React.StrictMode>
-      <VaultClientProvider client={httpVaultClient}>
-        <CollabSharingProvider value={capability ? null : webCollabSharing}>
-          <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-            <App skipOnboarding={isViewer} />
-            <OfflineIndicator />
-          </CollabDocumentProvider>
-        </CollabSharingProvider>
-      </VaultClientProvider>
+      <PlatformProvider value="web">
+        <VaultClientProvider client={httpVaultClient}>
+          <CollabSharingProvider value={capability ? null : webCollabSharing}>
+            <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
+              <App skipOnboarding={isViewer} />
+              <OfflineIndicator />
+            </CollabDocumentProvider>
+          </CollabSharingProvider>
+        </VaultClientProvider>
+      </PlatformProvider>
     </React.StrictMode>,
   );
 }

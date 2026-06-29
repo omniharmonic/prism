@@ -9,6 +9,8 @@ import {
   Search,
 } from "lucide-react";
 import { notionDbSyncApi } from "../../lib/parachute/client";
+import { useIsWeb } from "../../data/Platform";
+import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface NotionDbSyncModalProps {
   isOpen: boolean;
@@ -68,6 +70,7 @@ function slugify(text: string): string {
 }
 
 export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
+  const isWeb = useIsWeb();
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<NotionDatabase[]>([]);
   const [loading, setLoading] = useState(false);
@@ -85,14 +88,14 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
 
   // Fetch databases on mount
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || isWeb) return;
     setLoading(true);
     notionDbSyncApi
       .listDatabases()
       .then(setDatabases)
       .catch(() => setDatabases([]))
       .finally(() => setLoading(false));
-  }, [isOpen]);
+  }, [isOpen, isWeb]);
 
   // Reset state when modal closes
   useEffect(() => {
@@ -178,6 +181,31 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
   );
 
   if (!isOpen) return null;
+
+  if (isWeb) {
+    return (
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="bg-[#1a1a2e]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <Database className="w-5 h-5 text-purple-400" />
+              <h2 className="text-lg font-semibold text-white">Notion Database Sync</h2>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <DesktopOnlyNotice
+            feature="Notion database sync"
+            detail="Mapping a Notion database to your vault uses the Notion key stored on the machine hosting your vault, so it's configured in the desktop app."
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">

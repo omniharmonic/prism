@@ -210,6 +210,20 @@ test("@live switching vaults is a soft repoint — no full page reload, tabs res
   }
 });
 
+test("@live web Agent tab is a vault-backed monitor with triggering gated to desktop", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Agent", exact: true }).click();
+
+  // The Agent surface renders (heading + Skills section sourced from agent-skill notes).
+  await expect(page.getByRole("heading", { name: "Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Skills", { exact: true })).toBeVisible();
+
+  // Running on demand spawns a host process → gated with a desktop-only notice (no run box).
+  await expect(page.getByText(/Running the agent on demand/i)).toBeVisible();
+  await expect(page.getByText(/managed in the Prism desktop app/i)).toBeVisible();
+});
+
 test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {
   await authedContext(context);
   await page.goto("/");

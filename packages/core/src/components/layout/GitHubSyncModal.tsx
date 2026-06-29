@@ -10,6 +10,8 @@ import {
   Circle,
 } from "lucide-react";
 import { githubSyncApi } from "../../lib/parachute/client";
+import { useIsWeb } from "../../data/Platform";
+import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface GitHubSyncModalProps {
   isOpen: boolean;
@@ -29,6 +31,7 @@ export function GitHubSyncModal({
   onClose,
   vaultPath,
 }: GitHubSyncModalProps) {
+  const isWeb = useIsWeb();
   const [step, setStep] = useState(0);
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
@@ -51,7 +54,7 @@ export function GitHubSyncModal({
 
   // Check gh auth status when the modal opens
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || isWeb) return;
     let cancelled = false;
 
     async function checkAuth() {
@@ -73,9 +76,34 @@ export function GitHubSyncModal({
 
     checkAuth();
     return () => { cancelled = true; };
-  }, [isOpen]);
+  }, [isOpen, isWeb]);
 
   if (!isOpen) return null;
+
+  if (isWeb) {
+    return (
+      <div
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      >
+        <div className="bg-[#1a1a2e]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full mx-4 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2 text-white">
+              <GitFork className="w-5 h-5" />
+              <span className="text-sm font-medium">Sync to GitHub</span>
+            </div>
+            <button onClick={onClose} className="text-white/40 hover:text-white/80 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <DesktopOnlyNotice
+            feature="GitHub sync"
+            detail="Pushing your vault to GitHub needs the gh CLI and a local git working tree on the machine hosting your vault, so it's set up in the desktop app."
+          />
+        </div>
+      </div>
+    );
+  }
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget && !loading) onClose();
