@@ -117,6 +117,22 @@ test("single note: in-publication note 200, out-of-publication note 403", async 
   assert.equal(forbidden.status, 403);
 });
 
+test("single-line HTML note → title is the heading, not the whole body", async () => {
+  // TipTap notes are stored as ONE line of HTML (no newlines). deriveTitle must
+  // not return the entire document as the title — that's what dumped raw HTML
+  // into the published wiki's title heading.
+  const body =
+    "<h1>Accelerationism</h1><p>A long body with [[wetiko]] and lots more text that must never become the title heading.</p><h2>Further Reading</h2><ul><li><p>x</p></li></ul>";
+  fv.put({ id: "html1", path: "wiki/concept.md", tags: ["wiki"], content: body });
+  publishTag("htmlsite", "wiki");
+
+  const r = await publish.request("/htmlsite/notes/html1");
+  assert.equal(r.status, 200);
+  const note = await readJson(r);
+  assert.equal(note.title, "Accelerationism");
+  assert.ok(note.title.length < 40, `title must be short, got ${note.title.length} chars`);
+});
+
 // ── graph leak-prevention ────────────────────────────────────────────────────
 test("graph exposes only in-set nodes/edges; out-of-set wikilinks are dropped", async () => {
   seedWiki();

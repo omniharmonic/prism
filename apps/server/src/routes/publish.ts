@@ -143,12 +143,25 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
 }
 
-/** First non-empty heading/line of the content → text; fallback "Untitled". */
+/** A short display title derived from a note's content. Handles BOTH shapes the
+ *  vault stores: markdown (first non-empty line, leading `#` stripped) AND
+ *  TipTap HTML — which is often a SINGLE LINE with no `\n`, so a naive
+ *  split("\n")[0] returns the ENTIRE document. Always strip tags and cap the
+ *  length so the title can never become the whole note body. */
 function deriveTitle(content: string | null | undefined): string {
-  for (const raw of (content ?? "").split("\n")) {
+  const c = (content ?? "").trim();
+  if (!c) return "Untitled";
+  // HTML body: prefer the first heading's text; else strip all tags.
+  if (/^<|<[a-z][^>]*>/i.test(c)) {
+    const h = c.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
+    const text = (h?.[1] ?? c).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    return text.slice(0, 120) || "Untitled";
+  }
+  // Markdown / plain text: first non-empty line, leading markdown markers off.
+  for (const raw of c.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
-    return line.replace(/^#+\s*/, "").trim() || "Untitled";
+    return line.replace(/^#+\s*/, "").trim().slice(0, 120) || "Untitled";
   }
   return "Untitled";
 }
