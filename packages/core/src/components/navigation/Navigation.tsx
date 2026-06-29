@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Calendar, Plus, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio } from "lucide-react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, FolderPlus, ChevronsDownUp } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -9,6 +9,7 @@ import { VaultSwitcher } from "./VaultSwitcher";
 import { useDebounce } from "use-debounce";
 import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
+import { useCreateNote } from "../../app/hooks/useParachute";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import type { ContentType } from "../../lib/types";
 
@@ -20,6 +21,10 @@ export function Navigation() {
   const [debouncedQuery] = useDebounce(searchQuery, 200);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const createNote = useCreateNote();
+  const collapseNav = useUIStore((s) => s.collapseNav);
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const recents = useSettingsStore((s) => s.recents);
   const pushRecent = useSettingsStore((s) => s.pushRecent);
@@ -51,6 +56,31 @@ export function Navigation() {
 
   const handleOpenNetwork = () => {
     openTab("network", "Network", "network" as ContentType);
+  };
+
+  // "New folder" for a path-based vault. Parachute has no empty-folder entity —
+  // a folder exists only because notes carry that path prefix. So we materialize
+  // the folder by seeding a first note (`<folder>/Untitled`) inside it, then open
+  // it. (useCreateNote already invalidates the vault query, refreshing the tree.)
+  const handleCreateFolder = async () => {
+    const raw = newFolderName.trim();
+    setNewFolderOpen(false);
+    setNewFolderName("");
+    if (!raw) return;
+    // Sanitize: no leading/trailing slashes, drop "." / ".." traversal segments.
+    const folder = raw
+      .split("/")
+      .map((s) => s.trim())
+      .filter((s) => s && s !== "." && s !== "..")
+      .join("/");
+    if (!folder) return;
+    try {
+      const note = await createNote.mutateAsync({ path: `${folder}/Untitled`, content: "# Untitled" });
+      openTab(note.id, "Untitled", "document");
+    } catch (e) {
+      console.error("Failed to create folder:", e);
+      alert(`Failed to create folder: ${e}`);
+    }
   };
 
   return (
@@ -160,36 +190,78 @@ export function Navigation() {
         </div>
       )}
 
-      {/* Footer: vault switcher (Obsidian-style) + compact New action */}
+      {/* Footer: Obsidian-style action-button row, then the vault switcher
+          full-width beneath it. (VaultSwitcher returns null on desktop where the
+          multi-vault seam is absent, so desktop shows just the button row.) */}
       <div
         style={{
-          padding: 10,
+          padding: 8,
           position: "relative",
           borderTop: "1px solid var(--glass-border)",
           display: "flex",
-          alignItems: "center",
+          flexDirection: "column",
           gap: 8,
         }}
       >
-        <VaultSwitcher onManage={handleOpenNetwork} />
-        <button
-          onClick={() => setShowNewMenu(!showNewMenu)}
-          title="New"
-          aria-label="New"
-          className="focus-ring flex items-center justify-center transition-colors flex-shrink-0"
-          style={{
-            width: 34,
-            height: 34,
-            borderRadius: "var(--radius-md)",
-            color: "var(--color-accent)",
-            background: "var(--color-accent-dim)",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.08)")}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = "")}
-        >
-          <Plus size={16} />
-        </button>
+        {/* New-folder inline input (path-based vault: an empty folder can't
+            persist, so confirming seeds an Untitled note inside it). */}
+        {newFolderOpen && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleCreateFolder();
+            }}
+            className="flex items-center gap-1.5"
+          >
+            <FolderPlus size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+            <input
+              autoFocus
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onBlur={handleCreateFolder}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setNewFolderOpen(false);
+                  setNewFolderName("");
+                }
+              }}
+              placeholder="Folder name"
+              className="flex-1 h-7 px-2 text-sm rounded outline-none"
+              style={{
+                background: "var(--glass)",
+                border: "1px solid var(--color-accent)",
+                color: "var(--text-primary)",
+              }}
+            />
+          </form>
+        )}
+
+        {/* Action-button row */}
+        <div className="flex items-center" style={{ gap: 2 }}>
+          <NavActionButton
+            title="New note"
+            icon={<PenSquare size={16} />}
+            onClick={() => setShowNewMenu((v) => !v)}
+          />
+          <NavActionButton
+            title="New folder"
+            icon={<FolderPlus size={16} />}
+            onClick={() => {
+              setNewFolderName("");
+              setNewFolderOpen(true);
+            }}
+          />
+          <NavActionButton
+            title="Collapse all"
+            icon={<ChevronsDownUp size={16} />}
+            onClick={collapseNav}
+          />
+        </div>
+
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
+
+        {/* Vault switcher (full-width; renders null on desktop) */}
+        <VaultSwitcher onManage={handleOpenNetwork} />
       </div>
 
       {/* Compose message modal */}
@@ -232,6 +304,36 @@ function NavItem({
       <span className="flex-1 text-left truncate">{label}</span>
       {trailing}
     </div>
+  );
+}
+
+/** A square icon button for the Obsidian-style footer action row: quiet at rest,
+ *  gentle tint + brighter icon on hover. */
+function NavActionButton({ icon, title, onClick }: { icon: React.ReactNode; title: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="focus-ring flex items-center justify-center transition-colors flex-shrink-0"
+      style={{
+        width: 30,
+        height: 30,
+        borderRadius: "var(--radius-md)",
+        color: "var(--text-muted)",
+        background: "transparent",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "var(--glass-hover)";
+        e.currentTarget.style.color = "var(--text-secondary)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+        e.currentTarget.style.color = "var(--text-muted)";
+      }}
+    >
+      {icon}
+    </button>
   );
 }
 

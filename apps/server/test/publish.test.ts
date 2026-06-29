@@ -461,6 +461,45 @@ test("settings endpoint is owner-only and 404s an unknown slug", async () => {
   assert.equal(bad.status, 400);
 });
 
+test("settings endpoint persists a valid theme and rejects bad shapes/oversize", async () => {
+  seedThree();
+  publishTag("site-theme", "wiki");
+
+  // Valid theme → 200, echoed back (parsed) by GET /publications and the manifest.
+  const theme = { logoUrl: "https://ex.com/l.png", accent: "#ff0066", font: "serif" };
+  const ok = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme }),
+  });
+  assert.equal(ok.status, 200);
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "site-theme");
+  assert.deepEqual(row.theme, theme);
+
+  const man = await readJson<any>(await publish.request("/site-theme"));
+  assert.deepEqual(man.theme, theme);
+
+  // Non-object theme → 400.
+  const badShape = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: "blue" }),
+  });
+  assert.equal(badShape.status, 400);
+
+  // Oversize theme (>4KB) → 400.
+  const huge = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: { logoUrl: "x".repeat(5000) } }),
+  });
+  assert.equal(huge.status, 400);
+
+  // null theme → 200, clears it.
+  const cleared = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: null }),
+  });
+  assert.equal(cleared.status, 200);
+  const rows2 = await readJson<Array<any>>(await ownerReq("/publications"));
+  assert.equal(rows2.find((r) => r.slug === "site-theme").theme, null);
+});
+
 test("migration: a pre-column publications row reads excludeNoteIds as []", async () => {
   seedThree();
   // Insert a row directly WITHOUT excluded_note_ids (simulates a row created

@@ -6,6 +6,7 @@ import type {
   PairingCode,
   PeerInfo,
   PublicationInfo,
+  PublicationTheme,
   SetPersonResult,
   ShareLevel,
   ShareLink,
@@ -104,7 +105,12 @@ export const webCollabSharing: CollabSharing = {
   },
   async updatePublicationSettings(
     slug: string,
-    settings: { homeNoteId?: string | null; excludeNoteIds?: string[] },
+    settings: {
+      title?: string | null;
+      homeNoteId?: string | null;
+      excludeNoteIds?: string[];
+      theme?: PublicationTheme | null;
+    },
   ): Promise<void> {
     await acl(`/publications/${enc(slug)}/settings`, { method: "PUT", body: JSON.stringify(settings) });
   },

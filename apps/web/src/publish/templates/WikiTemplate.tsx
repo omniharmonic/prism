@@ -1,6 +1,8 @@
-import { useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { sanitizeHtml } from "@prism/core";
 import type { PublicationTemplateProps } from "./types";
+import { resolveTheme } from "../theme";
+import { WikiGraph } from "./WikiGraph";
 import {
   buildLinkIndex,
   renderWikiBody,
@@ -28,7 +30,12 @@ export default function WikiTemplate({
   graph,
 }: PublicationTemplateProps) {
   const [query, setQuery] = useState("");
+  const [graphOpen, setGraphOpen] = useState(false);
   const articleRef = useRef<HTMLDivElement>(null);
+
+  // Owner-set theme, re-validated here before it touches the page (untrusted on a
+  // public site). Applied as CSS custom properties + a body font on the wiki root.
+  const safeTheme = useMemo(() => resolveTheme(manifest.theme), [manifest.theme]);
 
   const linkIndex = useMemo(() => buildLinkIndex(manifest.notes), [manifest.notes]);
 
@@ -84,43 +91,43 @@ export default function WikiTemplate({
     el?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
+  // Theme: CSS custom properties + (optional) font on the wiki root. Falls back
+  // to the app defaults when no theme is set.
+  const rootStyle: CSSProperties = {
+    minHeight: "100dvh",
+    display: "flex",
+    flexDirection: "column",
+    ...safeTheme.vars,
+    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily } : null),
+    ...(safeTheme.vars["--bg"] ? { background: safeTheme.vars["--bg"] } : null),
+  };
+
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column" }}>
-      {/* Header: title + search */}
+    <div style={rootStyle}>
+      {/* Header: optional logo + title */}
       <header
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 16,
+          gap: 12,
           padding: "12px 20px",
           borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
         }}
       >
+        {safeTheme.logoUrl && (
+          <img
+            src={safeTheme.logoUrl}
+            alt=""
+            style={{ height: 24, width: "auto", maxWidth: 160, objectFit: "contain", display: "block" }}
+          />
+        )}
         <span style={{ fontWeight: 600, fontSize: 15, color: "var(--text-primary, #fff)" }}>
           {manifest.title}
         </span>
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search this site…"
-          style={{
-            marginLeft: "auto",
-            width: 220,
-            maxWidth: "40vw",
-            padding: "6px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
-            background: "var(--glass-bg, rgba(255,255,255,0.04))",
-            color: "var(--text-primary, #fff)",
-            fontSize: 13,
-            outline: "none",
-          }}
-        />
       </header>
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Left nav: path tree (or search results) */}
+        {/* Left column: search (above) + path tree nav */}
         <nav
           style={{
             width: 260,
@@ -130,6 +137,24 @@ export default function WikiTemplate({
             padding: "12px 8px",
           }}
         >
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search this site…"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              marginBottom: 10,
+              padding: "7px 10px",
+              borderRadius: 8,
+              border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
+              background: "var(--glass-bg, rgba(255,255,255,0.04))",
+              color: "var(--text-primary, #fff)",
+              fontSize: 13,
+              outline: "none",
+            }}
+          />
           {searchResults ? (
             searchResults.length > 0 ? (
               searchResults.map((n) => (
@@ -260,10 +285,49 @@ export default function WikiTemplate({
             ) : (
               <p style={{ color: "var(--text-muted, #777)", margin: 0 }}>No backlinks.</p>
             )}
-            {/* TODO (nice-to-have): an optional in-rail graph view rendered from
-                /api/p/:slug/graph. Skipped to avoid heavy graph deps; backlinks
-                already surface the same edges as a list. */}
           </section>
+
+          {/* Graph: a collapsible, in-rail force graph built ONLY from the
+              publication-scoped (leak-proof) /api/p/:slug/graph endpoint. Click a
+              node to navigate (same routing as the nav tree). */}
+          {graph && graph.nodes.length > 0 && (
+            <section style={{ marginTop: 28 }}>
+              <button
+                onClick={() => setGraphOpen((o) => !o)}
+                aria-expanded={graphOpen}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "100%",
+                  padding: 0,
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: "var(--text-muted, #888)",
+                  marginBottom: 8,
+                }}
+              >
+                <span style={{ fontSize: 9 }}>{graphOpen ? "▾" : "▸"}</span> Graph
+              </button>
+              {graphOpen && (
+                <div
+                  style={{
+                    border: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    background: "var(--glass-bg, rgba(255,255,255,0.02))",
+                  }}
+                >
+                  <WikiGraph graph={graph} activeId={activeId} onNavigate={onNavigate} />
+                </div>
+              )}
+            </section>
+          )}
         </aside>
       </div>
     </div>

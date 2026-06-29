@@ -953,6 +953,12 @@ function TreeNodeView({
   // root directories being open on every launch/reload.
   const [open, setOpen] = useState(false);
   const openTab = useUIStore((s) => s.openTab);
+  // "Collapse all" (nav button) bumps this counter; close on every change.
+  // Setting false when already-closed is a no-op, so the initial mount is free.
+  const collapseSignal = useUIStore((s) => s.navCollapseSignal);
+  useEffect(() => {
+    setOpen(false);
+  }, [collapseSignal]);
   const isFolder = !node.note && node.children.length > 0;
   const isRenaming = renamingNode?.fullPath === node.fullPath && renamingNode?.note?.id === node.note?.id;
   const showNewFolderInput = newFolder?.parentPath === node.rawPath && isFolder;

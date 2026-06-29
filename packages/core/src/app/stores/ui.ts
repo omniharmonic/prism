@@ -48,6 +48,12 @@ interface UIStore {
   // Graph fullscreen
   graphFullscreen: boolean;
 
+  // Project-tree "collapse all" signal — a monotonic counter the nav button
+  // bumps; ProjectTree's folder rows watch it and reset to closed. (The open
+  // state is local to each tree row, so a shared signal is the simplest way to
+  // collapse the whole tree at once — mirrors the prism:vault-changed pattern.)
+  navCollapseSignal: number;
+
   // Active document's reading font — mirrored here so the control can live in the
   // bottom bar (desktop) / More sheet (mobile) instead of the cluttered top bar.
   // The open document stays the source of truth and registers its setter.
@@ -85,6 +91,9 @@ interface UIStore {
 
   setGraphFullscreen: (open: boolean) => void;
 
+  /** Bump the collapse signal so every project-tree folder closes. */
+  collapseNav: () => void;
+
   /** The active document registers its current font + setter (null = no document
    *  with a font control is open, so the bottom-bar/sheet control hides). */
   registerDocFont: (value: ContentFont | null, setter: ((f: ContentFont) => void) | null) => void;
@@ -112,6 +121,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   inlinePromptPosition: null,
   inlinePromptSelection: "",
   graphFullscreen: false,
+  navCollapseSignal: 0,
   docFont: "sans",
   docFontSetter: null,
   pendingEdit: null,
@@ -124,6 +134,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setContextPanelWidth: (width) => set({ contextPanelWidth: Math.max(260, Math.min(480, width)) }),
   setContextPanelTab: (tab) => set({ contextPanelTab: tab }),
   setGraphFullscreen: (open) => set({ graphFullscreen: open }),
+  collapseNav: () => set((s) => ({ navCollapseSignal: s.navCollapseSignal + 1 })),
 
   registerDocFont: (value, setter) =>
     set({ docFont: value ?? "sans", docFontSetter: setter }),

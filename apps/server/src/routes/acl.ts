@@ -344,6 +344,39 @@ acl.delete("/tags/:tag/people/:email", (c) => {
 const slugify = (s: string): string =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "site";
 
+/** Parse a stored theme JSON blob back into an object for the settings UI.
+ *  Tolerates null/malformed → null (never throws into the list response). */
+function parsePublicationTheme(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Max serialized size for a per-publication theme blob (renders on a PUBLIC
+ *  page, so it stays small + bounded). */
+const MAX_THEME_BYTES = 4096;
+
+/** Validate an owner-supplied theme: a plain JSON object under the size cap (or
+ *  null to clear). Returns the serialized string to persist, `null` to clear, or
+ *  an `{ error }` describing why it was rejected. The publinc site additionally
+ *  re-validates every value at render (http(s) logo, color/url patterns) — this
+ *  is the size/shape gate, not the injection gate. */
+function validateTheme(value: unknown): { json: string | null } | { error: string } {
+  if (value === null || value === undefined) return { json: null };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { error: "theme must be a plain object or null" };
+  }
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json, "utf8") > MAX_THEME_BYTES) {
+    return { error: `theme must be under ${MAX_THEME_BYTES} bytes` };
+  }
+  return { json };
+}
+
 acl.get("/publications", (c) =>
   c.json(
     listPublications().map((p) => {
@@ -359,6 +392,7 @@ acl.get("/publications", (c) =>
         template: p.template,
         title: p.title,
         passwordRequired: !!p.password_hash,
+        theme: parsePublicationTheme(p.theme),
         homeNoteId: p.home_note_id,
         excludeNoteIds: excludedNoteIds(p),
         expiresAt: p.expires_at,
@@ -489,15 +523,23 @@ acl.put("/publications/:slug/password", async (c) => {
  *  - homeNoteId: which note loads first (string, or null to clear → derive at read).
  *  - excludeNoteIds: note ids to DROP from the public set even though they match
  *    the tag/path (string[]; empty clears all exclusions).
+ *  - theme: a small plain object of presentation overrides (logo/colors/font),
+ *    persisted as JSON (≤4KB; null clears). Re-validated at render on the public
+ *    site (http(s) logo, color patterns) — never trusted as raw HTML.
  *  Only the provided fields are patched. Returns 404 for an unknown slug. */
 acl.put("/publications/:slug/settings", async (c) => {
   const pub = getPublicationBySlug(c.req.param("slug"));
   if (!pub) return c.json({ error: "not_found" }, 404);
   const body = await c.req
-    .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown }>()
-    .catch(() => ({}) as { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown });
+    .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown }>()
+    .catch(() => ({}) as { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown });
 
-  const patch: { title?: string | null; home_note_id?: string | null; excluded_note_ids?: string | null } = {};
+  const patch: {
+    title?: string | null;
+    home_note_id?: string | null;
+    excluded_note_ids?: string | null;
+    theme?: string | null;
+  } = {};
 
   if ("title" in body) {
     if (body.title !== null && typeof body.title !== "string") {
@@ -520,6 +562,12 @@ acl.put("/publications/:slug/settings", async (c) => {
       return c.json({ error: "bad_request", detail: "excludeNoteIds must be an array of strings" }, 400);
     }
     patch.excluded_note_ids = JSON.stringify(ids);
+  }
+
+  if ("theme" in body) {
+    const t = validateTheme(body.theme);
+    if ("error" in t) return c.json({ error: "bad_request", detail: t.error }, 400);
+    patch.theme = t.json;
   }
 
   updatePublication(pub.id, patch);

@@ -45,6 +45,23 @@ export interface SetPersonResult {
   invited: boolean;
   inviteUrl?: string;
 }
+/** Per-publication presentation overrides for the public site. All optional;
+ *  absent fields fall back to the default theme. `logoUrl` must be an http(s)
+ *  URL and colors are applied as CSS values (validated again at render — these
+ *  are owner-set but shown on a PUBLIC page, so never injected as raw HTML). */
+export interface PublicationTheme {
+  /** http(s) URL of a logo shown in the public site header. */
+  logoUrl?: string;
+  /** Accent color (links, active states) — any valid CSS color. */
+  accent?: string;
+  /** Page background color. */
+  bg?: string;
+  /** Body text color. */
+  text?: string;
+  /** Body font family. */
+  font?: "sans" | "serif" | "mono";
+}
+
 /** A published tag: a public, read-only site ("Wiki") covering every note that
  *  carries the tag — dynamic, so future notes with the tag are included too. */
 export interface PublicationInfo {
@@ -64,6 +81,9 @@ export interface PublicationInfo {
   homeNoteId?: string | null;
   /** Note ids hand-excluded from the public set even though they match the slice. */
   excludeNoteIds?: string[];
+  /** Presentation overrides for the public site (logo/colors/font); null/absent
+   *  → the default theme. */
+  theme?: PublicationTheme | null;
 }
 
 // ── Federation (peer-to-peer vault sync) ──────────────────────────────────────
@@ -172,7 +192,12 @@ export interface CollabSharing {
   /** Per-publication tending: rename, choose the home note, and/or hand-exclude notes. */
   updatePublicationSettings?(
     slug: string,
-    settings: { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: string[] },
+    settings: {
+      title?: string | null;
+      homeNoteId?: string | null;
+      excludeNoteIds?: string[];
+      theme?: PublicationTheme | null;
+    },
   ): Promise<void>;
   unpublishTag?(tag: string): Promise<void>;
   /** Unpublish by slug — works for both tag and path publications. */

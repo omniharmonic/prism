@@ -37,6 +37,7 @@ export type {
   NoteAccess,
   SetPersonResult,
   PublicationInfo,
+  PublicationTheme,
   NodeIdentity,
   PeerInfo,
   SpaceInfo,
