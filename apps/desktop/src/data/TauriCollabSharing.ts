@@ -12,6 +12,7 @@ import type {
   ShareLevel,
   ShareLink,
   SpaceInfo,
+  VaultSummary,
 } from "@prism/core";
 
 /**
@@ -163,5 +164,28 @@ export const tauriCollabSharing: CollabSharing = {
   },
   async rejectMirror(id: string): Promise<void> {
     await acl("POST", `/federation/mirrors/${enc(id)}/reject`);
+  },
+
+  // ── Multi-vault (DESKTOP-NATIVE — talks to the local Parachute hub, not the
+  // cloud Prism Server). Registry + switching live in the Rust backend; create
+  // shells out to `parachute-vault create` on the host. ──
+  async listVaults(): Promise<VaultSummary[]> {
+    return invoke<VaultSummary[]>("vault_list");
+  },
+  setActiveVault(id: string): void {
+    // Repoint the live Rust ParachuteClient, THEN soft-switch the UI (clear the
+    // query cache + close tabs, no reload) — same event the web shell fires.
+    void invoke("vault_set_active", { id })
+      .then(() => window.dispatchEvent(new CustomEvent("prism:vault-changed", { detail: id })))
+      .catch((e) => console.error("vault_set_active failed:", e));
+  },
+  async createVault(args: { label: string; name: string; seedSchemas?: boolean }): Promise<VaultSummary> {
+    return invoke<VaultSummary>("vault_create", { label: args.label, name: args.name, seedSchemas: args.seedSchemas ?? true });
+  },
+  async linkVault(args: { label: string; url: string; vault: string; token: string }): Promise<VaultSummary> {
+    return invoke<VaultSummary>("vault_link", args);
+  },
+  async removeVault(id: string): Promise<void> {
+    await invoke("vault_remove", { id });
   },
 };

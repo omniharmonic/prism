@@ -8,6 +8,24 @@ fn default_vault_name() -> String {
     "default".into()
 }
 
+/// One vault the desktop app knows how to talk to. The registry (`AppConfig.vaults`)
+/// is the desktop-native equivalent of the web/server multi-vault registry: each
+/// entry is a fully self-contained connection (its own hub URL, vault name, and
+/// write token). The `token` is NEVER surfaced to the frontend (see `VaultSummary`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VaultEntry {
+    /// Registry-unique id (slug derived from the label). Stable handle the UI uses.
+    pub id: String,
+    /// Human label shown in the vault switcher.
+    pub label: String,
+    /// Parachute server root, e.g. `http://localhost:1940`.
+    pub url: String,
+    /// Vault name for the scoped REST/MCP path (`/vault/{vault}/api`).
+    pub vault: String,
+    /// Bearer token (hub-issued JWT) for this vault. Secret — never returned.
+    pub token: String,
+}
+
 /// Default base URL for the local OpenAI-compatible AI server.
 /// LM Studio serves its OpenAI-compatible API at port 1234 under `/v1`.
 /// (Ollama's equivalent is `http://localhost:11434/v1`.)
@@ -91,6 +109,18 @@ pub struct AppConfig {
     /// on desktop (falls back to the offline autosave editor).
     #[serde(default)]
     pub collab_token: String,
+
+    // ── Multi-vault registry (desktop-native) ──
+    /// All vaults this install knows about. Empty in a legacy single-vault config;
+    /// `normalize_vaults()` synthesizes a "primary" entry from the legacy
+    /// `parachute_*` fields so old configs keep working byte-for-byte.
+    #[serde(default)]
+    pub vaults: Vec<VaultEntry>,
+    /// Id of the active vault in `vaults`. Empty/invalid → resolved to the first
+    /// entry by `normalize_vaults()`. The active entry is mirrored back into the
+    /// legacy `parachute_url`/`parachute_vault`/`parachute_api_key` fields.
+    #[serde(default)]
+    pub active_vault_id: String,
 }
 
 impl Default for AppConfig {
@@ -117,11 +147,63 @@ impl Default for AppConfig {
             background_skill_provider: default_background_skill_provider(),
             collab_url: default_collab_url(),
             collab_token: String::new(),
+            vaults: Vec::new(),
+            active_vault_id: String::new(),
         }
     }
 }
 
 impl AppConfig {
+    /// Migrate/normalize the vault registry. Backward-compatible and idempotent —
+    /// safe to call on every load:
+    /// 1. If `vaults` is empty (legacy single-vault config), synthesize a single
+    ///    "primary" entry from the legacy `parachute_*` fields.
+    /// 2. If `active_vault_id` is empty or names a missing entry, point it at the
+    ///    first entry.
+    /// 3. Mirror the active entry back into the legacy `parachute_url` /
+    ///    `parachute_vault` / `parachute_api_key` fields so everything that still
+    ///    reads those (background services, MCP wiring, etc.) keeps working.
+    pub fn normalize_vaults(&mut self) {
+        if self.vaults.is_empty() {
+            let label = if self.parachute_vault.is_empty() {
+                "default".to_string()
+            } else {
+                self.parachute_vault.clone()
+            };
+            self.vaults.push(VaultEntry {
+                id: "primary".into(),
+                label,
+                url: self.parachute_url.clone(),
+                vault: self.parachute_vault.clone(),
+                token: self.parachute_api_key.clone(),
+            });
+        }
+        if self.active_vault_id.is_empty()
+            || !self.vaults.iter().any(|v| v.id == self.active_vault_id)
+        {
+            self.active_vault_id = self.vaults[0].id.clone();
+        }
+        if let Some(active) = self
+            .vaults
+            .iter()
+            .find(|v| v.id == self.active_vault_id)
+            .cloned()
+        {
+            self.parachute_url = active.url;
+            self.parachute_vault = active.vault;
+            self.parachute_api_key = active.token;
+        }
+    }
+
+    /// The currently active vault entry. `normalize_vaults()` (always run on load)
+    /// guarantees a non-empty registry with a valid `active_vault_id`.
+    pub fn active_entry(&self) -> &VaultEntry {
+        self.vaults
+            .iter()
+            .find(|v| v.id == self.active_vault_id)
+            .unwrap_or(&self.vaults[0])
+    }
+
     /// Load config from prism-config.json, falling back to defaults.
     ///
     /// On first launch the config file won't exist — we create it with defaults
@@ -145,6 +227,9 @@ impl AppConfig {
                     if config.meetily_db_path.is_empty() {
                         config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
                     }
+                    // Migrate/normalize the vault registry (synthesizes "primary"
+                    // for legacy single-vault configs; mirrors the active entry).
+                    config.normalize_vaults();
                     return Ok(config);
                 }
             }
@@ -186,6 +271,9 @@ impl AppConfig {
         if config.meetily_db_path.is_empty() {
             config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
         }
+
+        // Migrate/normalize the vault registry before first save.
+        config.normalize_vaults();
 
         // Always persist so the file exists for future launches
         match config.save() {
@@ -667,8 +755,8 @@ pub fn update_config(
         if let Some(v) = obj.get("google_account_primary").and_then(|v| v.as_str()) { new_config.google_account_primary = v.to_string(); }
         if let Some(v) = obj.get("anthropic_api_key").and_then(|v| v.as_str()) { new_config.anthropic_api_key = v.to_string(); }
         if let Some(v) = obj.get("parachute_url").and_then(|v| v.as_str()) { new_config.parachute_url = v.to_string(); }
-        // Note: changing the vault name requires an app restart — the scoped
-        // base URL is baked into ParachuteClient at construction.
+        // Vault url/name/key edits from Settings flow into the ACTIVE registry
+        // entry below (and repoint the live client) — no restart needed.
         if let Some(v) = obj.get("parachute_vault").and_then(|v| v.as_str()) { new_config.parachute_vault = v.to_string(); }
         if let Some(v) = obj.get("parachute_api_key").and_then(|v| v.as_str()) { new_config.parachute_api_key = v.to_string(); }
         if let Some(v) = obj.get("fathom_api_key").and_then(|v| v.as_str()) { new_config.fathom_api_key = v.to_string(); }
@@ -683,12 +771,30 @@ pub fn update_config(
         if let Some(v) = obj.get("background_skill_provider").and_then(|v| v.as_str()) { new_config.background_skill_provider = v.to_string(); }
     }
 
-    // Hot-reload Parachute API key into the running client
+    // Keep the ACTIVE vault registry entry in lock-step with any legacy
+    // parachute_* edits from the Settings form. Without this, `normalize_vaults()`
+    // would mirror the (stale) active entry back over the just-saved Settings
+    // values on the next load, silently reverting them.
+    new_config.normalize_vaults();
+    let active_id = new_config.active_vault_id.clone();
+    let (u, vlt, tok) = (
+        new_config.parachute_url.clone(),
+        new_config.parachute_vault.clone(),
+        new_config.parachute_api_key.clone(),
+    );
+    if let Some(entry) = new_config.vaults.iter_mut().find(|e| e.id == active_id) {
+        entry.url = u;
+        entry.vault = vlt;
+        entry.token = tok;
+    }
+
+    // Hot-reload the running client to the (possibly new) url/vault/key so edits
+    // take effect immediately without restarting the app.
     let new_key = if new_config.parachute_api_key.is_empty() { None } else { Some(new_config.parachute_api_key.clone()) };
-    parachute.set_api_key(new_key);
+    parachute.set_vault(&new_config.parachute_url, &new_config.parachute_vault, new_key);
 
     new_config.save()?;
-    log::info!("Config updated and saved (parachute api_key hot-reloaded)");
+    log::info!("Config updated and saved (parachute connection hot-reloaded)");
     Ok(())
 }
 

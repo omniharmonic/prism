@@ -17,37 +17,73 @@ use crate::models::link::*;
 /// unauthenticated `GET /health` liveness probe hits the server root rather
 /// than the vault-scoped path.
 ///
-/// The `api_key` is wrapped in `RwLock` so it can be updated at runtime
-/// (e.g. when the user changes it in Settings) without restarting the app.
-pub struct ParachuteClient {
+/// The `api_key` AND the connection target (`server_root` / `base_url`) are wrapped
+/// in `RwLock` so they can be updated at runtime — both when the user changes the
+/// key in Settings (`set_api_key`) and when the active vault is switched in the
+/// multi-vault registry (`set_vault`) — without restarting the app. Every request
+/// reads the current values through the lock.
+struct VaultConn {
     /// e.g. `http://localhost:1940` — used for the root `/health` probe.
     server_root: String,
     /// e.g. `http://localhost:1940/vault/default/api` — the REST base.
     base_url: String,
+}
+
+pub struct ParachuteClient {
+    conn: RwLock<VaultConn>,
     api_key: RwLock<Option<String>>,
     client: Client,
 }
 
 impl ParachuteClient {
     pub fn new(base_url: &str, vault: &str, api_key: Option<String>) -> Self {
-        // Normalize to the bare server root. Tolerate a configured URL that
-        // still carries a legacy `/api` suffix or a trailing slash.
+        let (server_root, api_url) = Self::compute_urls(base_url, vault);
+        Self {
+            conn: RwLock::new(VaultConn { server_root, base_url: api_url }),
+            api_key: RwLock::new(api_key),
+            client: Client::new(),
+        }
+    }
+
+    /// Derive `(server_root, base_url)` from a configured URL + vault name.
+    /// Normalizes to the bare server root, tolerating a configured URL that still
+    /// carries a legacy `/api` suffix or a trailing slash.
+    fn compute_urls(base_url: &str, vault: &str) -> (String, String) {
         let root = base_url.trim_end_matches('/');
         let root = root.strip_suffix("/api").unwrap_or(root);
         let server_root = root.to_string();
         let api_url = format!("{}/vault/{}/api", server_root, vault);
-        Self {
-            server_root,
-            base_url: api_url,
-            api_key: RwLock::new(api_key),
-            client: Client::new(),
-        }
+        (server_root, api_url)
+    }
+
+    /// Current vault-scoped REST base, read through the lock.
+    fn base_url(&self) -> String {
+        self.conn.read().map(|c| c.base_url.clone()).unwrap_or_default()
+    }
+
+    /// Current server root (for the `/health` probe), read through the lock.
+    fn server_root(&self) -> String {
+        self.conn.read().map(|c| c.server_root.clone()).unwrap_or_default()
     }
 
     /// Update the API key at runtime (called when user changes config).
     pub fn set_api_key(&self, key: Option<String>) {
         if let Ok(mut guard) = self.api_key.write() {
             *guard = key;
+        }
+    }
+
+    /// Repoint the live client at a different vault with NO app restart. Recomputes
+    /// `server_root`/`base_url` from `url` + `vault` and swaps in `token`. Used by
+    /// the multi-vault switcher (`vault_set_active`) and by Settings edits.
+    pub fn set_vault(&self, url: &str, vault: &str, token: Option<String>) {
+        let (server_root, api_url) = Self::compute_urls(url, vault);
+        if let Ok(mut c) = self.conn.write() {
+            c.server_root = server_root;
+            c.base_url = api_url;
+        }
+        if let Ok(mut g) = self.api_key.write() {
+            *g = token;
         }
     }
 
@@ -64,7 +100,7 @@ impl ParachuteClient {
     pub async fn health(&self) -> Result<serde_json::Value, PrismError> {
         // /health is a cross-vault, unauthenticated liveness probe at the
         // server root — never under the vault-scoped /vault/{name}/api path.
-        let url = format!("{}/health", self.server_root);
+        let url = format!("{}/health", self.server_root());
         let resp = self.client.get(&url).send().await?.json().await?;
         Ok(resp)
     }
@@ -75,7 +111,7 @@ impl ParachuteClient {
     /// without this, parachute defaults to ascending and any cap on `limit`
     /// silently hides the most recent content as the vault grows.
     pub async fn list_notes(&self, params: &ListNotesParams) -> Result<Vec<Note>, PrismError> {
-        let url = format!("{}/notes", self.base_url);
+        let url = format!("{}/notes", self.base_url());
         let limit = params.limit.unwrap_or(50000);
         let mut qp: Vec<(&str, String)> = vec![
             ("limit", limit.to_string()),
@@ -146,7 +182,7 @@ impl ParachuteClient {
     /// Rust→JS payload skips content/timestamps/preview/byteSize. Used by
     /// ProjectTree, which renders ~13k+ entries on app start.
     pub async fn list_tree(&self) -> Result<Vec<NoteTreeEntry>, PrismError> {
-        let url = format!("{}/notes", self.base_url);
+        let url = format!("{}/notes", self.base_url());
         let qp: Vec<(&str, String)> = vec![
             ("limit", "50000".into()),
             ("sort", "desc".into()),
@@ -166,7 +202,7 @@ impl ParachuteClient {
 
     /// Get a single note by ID or path. v2: `GET /api/notes/:id`.
     pub async fn get_note(&self, id: &str) -> Result<Note, PrismError> {
-        let resp = self.authed(self.client.get(format!("{}/notes/{}", self.base_url, id)))
+        let resp = self.authed(self.client.get(format!("{}/notes/{}", self.base_url(), id)))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_note failed: {}", resp.status())));
@@ -193,7 +229,7 @@ impl ParachuteClient {
             params.content.len(),
             params.tags,
         );
-        let resp = self.authed(self.client.post(format!("{}/notes", self.base_url)).json(params))
+        let resp = self.authed(self.client.post(format!("{}/notes", self.base_url())).json(params))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("create_note failed: {}", resp.status())));
@@ -215,7 +251,7 @@ impl ParachuteClient {
                 obj.insert("force".into(), serde_json::Value::Bool(true));
             }
         }
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -228,7 +264,7 @@ impl ParachuteClient {
     }
 
     pub async fn delete_note(&self, id: &str) -> Result<(), PrismError> {
-        let resp = self.authed(self.client.delete(format!("{}/notes/{}", self.base_url, id)))
+        let resp = self.authed(self.client.delete(format!("{}/notes/{}", self.base_url(), id)))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("delete_note failed: {}", resp.status())));
@@ -238,7 +274,7 @@ impl ParachuteClient {
 
     /// Search notes. v2: absorbed into `GET /api/notes?search=...`.
     pub async fn search(&self, query: &str, tags: &[String], limit: u32) -> Result<Vec<Note>, PrismError> {
-        let url = format!("{}/notes", self.base_url);
+        let url = format!("{}/notes", self.base_url());
         let mut qp: Vec<(&str, String)> = vec![
             ("search", query.into()),
             ("limit", limit.to_string()),
@@ -256,7 +292,7 @@ impl ParachuteClient {
 
     /// List all tags. v2: `GET /api/tags` (unchanged).
     pub async fn get_tags(&self) -> Result<Vec<TagCount>, PrismError> {
-        let resp = self.authed(self.client.get(format!("{}/tags", self.base_url)))
+        let resp = self.authed(self.client.get(format!("{}/tags", self.base_url())))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("get_tags failed: {}", resp.status())));
@@ -269,7 +305,7 @@ impl ParachuteClient {
     /// contended `updatedAt`; without it the mandatory concurrency check 428s.
     pub async fn add_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
         let body = serde_json::json!({ "tags": { "add": tags }, "force": true });
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("add_tags failed: {}", resp.status())));
@@ -280,7 +316,7 @@ impl ParachuteClient {
     /// Remove tags from a note. `PATCH .../notes/:id` with `tags.remove`.
     pub async fn remove_tags(&self, id: &str, tags: &[String]) -> Result<(), PrismError> {
         let body = serde_json::json!({ "tags": { "remove": tags }, "force": true });
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, id)).json(&body))
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("remove_tags failed: {}", resp.status())));
@@ -293,7 +329,7 @@ impl ParachuteClient {
     pub async fn get_links(&self, params: &GetLinksParams) -> Result<Vec<Link>, PrismError> {
         let note_id = params.note_id.as_ref()
             .ok_or_else(|| PrismError::Parachute("get_links requires note_id".into()))?;
-        let url = format!("{}/notes/{}", self.base_url, note_id);
+        let url = format!("{}/notes/{}", self.base_url(), note_id);
         let resp = self.authed(self.client.get(&url))
             .query(&[("include_links", "true")])
             .send().await?;
@@ -325,7 +361,7 @@ impl ParachuteClient {
             },
             "force": true
         });
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, params.source_id)).json(&body))
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), params.source_id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
             let err = resp.text().await.unwrap_or_default();
@@ -352,7 +388,7 @@ impl ParachuteClient {
             },
             "force": true
         });
-        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url, params.source_id)).json(&body))
+        let resp = self.authed(self.client.patch(format!("{}/notes/{}", self.base_url(), params.source_id)).json(&body))
             .send().await?;
         if !resp.status().is_success() {
             return Err(PrismError::Parachute(format!("delete_link failed: {}", resp.status())));
@@ -367,7 +403,7 @@ impl ParachuteClient {
     /// bracket-style `near[note_id]` / `near[depth]` params (depth default 2,
     /// capped at 5). Without `center_id`, the response is the full graph.
     pub async fn get_graph(&self, params: &GetGraphParams) -> Result<Graph, PrismError> {
-        let url = format!("{}/notes", self.base_url);
+        let url = format!("{}/notes", self.base_url());
         let mut qp: Vec<(&str, String)> = vec![
             ("format", "graph".into()),
             ("include_links", "true".into()),
@@ -390,7 +426,7 @@ impl ParachuteClient {
 
     /// Get vault stats. v2: `GET /api/vault?include_stats=true`.
     pub async fn get_stats(&self) -> Result<VaultStats, PrismError> {
-        let url = format!("{}/vault", self.base_url);
+        let url = format!("{}/vault", self.base_url());
         let resp = self.authed(self.client.get(&url))
             .query(&[("include_stats", "true")])
             .send().await?;
@@ -406,7 +442,7 @@ impl ParachuteClient {
 
     /// Get vault info including description. v2: `GET /api/vault`.
     pub async fn get_vault_info(&self) -> Result<VaultInfo, PrismError> {
-        let url = format!("{}/vault", self.base_url);
+        let url = format!("{}/vault", self.base_url());
         let resp = self.authed(self.client.get(&url))
             .send().await?;
         if !resp.status().is_success() {
@@ -417,7 +453,7 @@ impl ParachuteClient {
 
     /// Update vault description. v2: `PATCH /api/vault`.
     pub async fn update_vault_description(&self, description: &str) -> Result<VaultInfo, PrismError> {
-        let url = format!("{}/vault", self.base_url);
+        let url = format!("{}/vault", self.base_url());
         let body = serde_json::json!({ "description": description });
         let resp = self.authed(self.client.patch(&url).json(&body))
             .send().await?;

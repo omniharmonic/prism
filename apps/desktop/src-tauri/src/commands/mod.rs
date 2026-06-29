@@ -6,6 +6,7 @@ pub mod google;
 pub mod sync_cmds;
 pub mod agent;
 pub mod config;
+pub mod vaults;
 pub mod editor;
 pub mod wikilinks;
 pub mod notion_pages;
