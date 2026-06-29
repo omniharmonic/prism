@@ -278,12 +278,16 @@ function PasswordGate({
           placeholder="Password"
           aria-label="Password"
           style={{
+            // Explicit, theme-independent colors: the unlock gate renders over the
+            // publication's OWN theme (often light), where the inherited
+            // --text-primary/--bg-input could be dark-on-dark and hide the dots.
             padding: "10px 12px",
             fontSize: 16,
             borderRadius: 8,
-            border: "1px solid var(--border, #333)",
-            background: "var(--bg-input, var(--bg-secondary, #1a1a1a))",
-            color: "var(--text-primary, #eee)",
+            border: "1px solid rgba(0,0,0,0.25)",
+            background: "#ffffff",
+            color: "#111111",
+            caretColor: "#111111",
             outline: "none",
           }}
         />

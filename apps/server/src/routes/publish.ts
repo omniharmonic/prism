@@ -18,8 +18,9 @@ import { getCookie, setCookie } from "hono/cookie";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { vault, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
-import { getPublicationBySlug, grantsForResource, type Publication } from "../db";
+import { getPublicationBySlug, grantsForResource, excludedNoteIds, type Publication } from "../db";
 import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
+import { pathInPrefix } from "../paths";
 import { config } from "../config";
 import { verifyPassword } from "../auth/password";
 
@@ -113,23 +114,54 @@ function publicationActor(pub: Publication): Actor {
 }
 
 /**
- * The note set this publication exposes: notes under the publication's tag,
- * filtered to effectiveLevel >= "view" against the anon actor's grants. Mirrors
- * `visibleNotes` in api.ts — tag scoping only narrows; effectiveLevel is the
- * authoritative guard.
+ * The note set this publication exposes.
+ *
+ * - `tag` pubs: notes under the publication's tag, filtered to
+ *   effectiveLevel >= "view" against the anon actor's grants. Mirrors
+ *   `visibleNotes` in api.ts — tag scoping only narrows; effectiveLevel is the
+ *   authoritative guard.
+ * - `path` pubs: notes whose `path` is inside the publication's prefix. The
+ *   path-membership predicate (evaluated on the vault's OWN `path` field) is the
+ *   authoritative, read-only, view-level guard — grants/effectiveLevel play no
+ *   part. We fetch all notes and filter in-process because Parachute's `?path=`
+ *   is an exact match, not a prefix filter; publish.ts must guarantee prefix
+ *   membership itself regardless.
  */
 async function publicationNotes(pub: Publication, includeContent: boolean): Promise<Note[]> {
+  // Per-publication "tending": note ids the owner explicitly dropped from the
+  // public set even though they match the tag/path. Excluding here makes the
+  // exclusion authoritative for EVERY reader path (manifest nav, graph, and —
+  // because the single-note route re-checks membership against this same set —
+  // direct id access too).
+  const excluded = new Set(excludedNoteIds(pub));
+  if (pub.resource_type === "path") {
+    const notes = await vault.listNotes({ includeContent });
+    return notes.filter((n) => !excluded.has(n.id) && pathInPrefix(n.path, pub.resource));
+  }
   const actor = publicationActor(pub);
   const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
+  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
 }
 
-/** First non-empty heading/line of the content → text; fallback "Untitled". */
+/** A short display title derived from a note's content. Handles BOTH shapes the
+ *  vault stores: markdown (first non-empty line, leading `#` stripped) AND
+ *  TipTap HTML — which is often a SINGLE LINE with no `\n`, so a naive
+ *  split("\n")[0] returns the ENTIRE document. Always strip tags and cap the
+ *  length so the title can never become the whole note body. */
 function deriveTitle(content: string | null | undefined): string {
-  for (const raw of (content ?? "").split("\n")) {
+  const c = (content ?? "").trim();
+  if (!c) return "Untitled";
+  // HTML body: prefer the first heading's text; else strip all tags.
+  if (/^<|<[a-z][^>]*>/i.test(c)) {
+    const h = c.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
+    const text = (h?.[1] ?? c).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    return text.slice(0, 120) || "Untitled";
+  }
+  // Markdown / plain text: first non-empty line, leading markdown markers off.
+  for (const raw of c.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
-    return line.replace(/^#+\s*/, "").trim() || "Untitled";
+    return line.replace(/^#+\s*/, "").trim().slice(0, 120) || "Untitled";
   }
   return "Untitled";
 }
@@ -209,7 +241,10 @@ publish.get("/:slug", async (c) => {
       tags: n.tags ?? [],
     }));
 
-    homeNoteId = pub.home_note_id ?? nav[0]?.id ?? null;
+    // Home must be an in-set note. An unset home — or one pointing at a note
+    // that's been excluded / fallen out of the set — degrades to nav[0].
+    const homeInSet = pub.home_note_id && nav.some((n) => n.id === pub.home_note_id);
+    homeNoteId = (homeInSet ? pub.home_note_id : nav[0]?.id) ?? null;
     homeTitle = homeNoteId ? nav.find((n) => n.id === homeNoteId)?.title : undefined;
   }
 
@@ -295,7 +330,9 @@ publish.get("/:slug/graph", async (c) => {
 });
 
 // 2. Single note (read-only). Served only if it is part of the publication set:
-//    effectiveLevel >= "view" AND it carries the publication's tag.
+//    - tag pubs: effectiveLevel >= "view" AND it carries the publication's tag;
+//    - path pubs: its `path` is inside the publication's prefix.
+//    Either way an out-of-set id is forbidden (no id-guessing into private notes).
 publish.get("/:slug/notes/:id", async (c) => {
   const pub = getPublicationBySlug(c.req.param("slug"));
   if (!pub || isExpired(pub)) return c.json({ error: "not_found" }, 404);
@@ -308,11 +345,16 @@ publish.get("/:slug/notes/:id", async (c) => {
     return vaultErr(c, e);
   }
 
-  const actor = publicationActor(pub);
   const tags = note.tags ?? [];
-  const inPublication =
-    pub.resource_type === "tag" && tags.includes(pub.resource);
-  const allowed = inPublication && atLeast(effectiveLevel(actor.grants, ref(note), false), "view");
+  // An explicitly-excluded id is treated exactly like an out-of-set id (403) —
+  // same leak-proofing: no id-guessing into a note the owner tended away.
+  const excluded = new Set(excludedNoteIds(pub));
+  const allowed =
+    !excluded.has(note.id) &&
+    (pub.resource_type === "path"
+      ? pathInPrefix(note.path, pub.resource)
+      : tags.includes(pub.resource) &&
+        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view"));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({

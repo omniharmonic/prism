@@ -1,6 +1,6 @@
 /**
  * FederationManager — the Parachute-to-Parachute sync bridge. GATED: it does
- * nothing unless config.federationEnabled, and this whole module is imported
+ * nothing unless getFederationEnabled(), and this whole module is imported
  * LAZILY from attachCollab so the @hocuspocus/provider client never loads on the
  * default, non-federation deployment.
  *
@@ -45,7 +45,6 @@
 import * as Y from "yjs";
 import { HocuspocusProvider, WebSocketStatus } from "@hocuspocus/provider";
 import WebSocket from "ws";
-import { config } from "./config";
 import { hocuspocus, noteKind, PEER_ORIGIN, type CollabKind } from "./collab";
 import { signPeerConnToken } from "./auth/peer-conn";
 import { vault } from "./parachute";
@@ -58,6 +57,7 @@ import {
   queueOutbox,
   outboxForPeer,
   clearOutboxItem,
+  getFederationEnabled,
   type FederatedNote,
 } from "./db";
 
@@ -191,7 +191,7 @@ export class FederationManager {
    *  driven by syncSpaces(endpoints) — start() alone binds nothing live until a
    *  peer-URL registry exists (gap #1). */
   start(): void {
-    if (!config.federationEnabled) return;
+    if (!getFederationEnabled()) return;
     this.started = true;
   }
 
@@ -209,7 +209,7 @@ export class FederationManager {
    * collab URLs until a registry lands (gap #1); peers without a URL are skipped.
    */
   async syncSpaces(endpoints: PeerEndpoint[] = []): Promise<void> {
-    if (!config.federationEnabled) return;
+    if (!getFederationEnabled()) return;
     if (!this.started) this.started = true;
     const urlByPubkey = new Map(endpoints.map((e) => [e.pubkey, e.url]));
     const wanted = new Set<string>();

@@ -3,6 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Square, Loader2, CheckCircle2, XCircle, Bot, Send, ChevronDown, ChevronRight, Settings2, Clock, ToggleLeft, ToggleRight, PlusCircle, X, Trash2 } from "lucide-react";
 import { agentApi, ollamaApi, vaultApi, type AgentDispatch, type AgentSkill } from "../../lib/parachute/client";
 import { Spinner } from "../ui/Spinner";
+import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
+import { useIsWeb } from "../../data/Platform";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useUIStore } from "../../app/stores/ui";
+import { webGetSkills, webGetDispatches } from "../../lib/agent/web-monitor";
 import type { RendererProps } from "../renderers/RendererProps";
 
 function formatDuration(secs: number | null): string {
@@ -48,6 +53,9 @@ function formatInterval(secs: number, runAtHour?: number | null): string {
 
 export default function AgentActivity(_props: RendererProps) {
   const queryClient = useQueryClient();
+  const isWeb = useIsWeb();
+  const vaultClient = useVaultClient();
+  const openTab = useUIStore((s) => s.openTab);
   const [customPrompt, setCustomPrompt] = useState("");
   const customSkill = "custom";
   const [showSkillConfig, setShowSkillConfig] = useState(false);
@@ -55,22 +63,30 @@ export default function AgentActivity(_props: RendererProps) {
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
 
   useEffect(() => {
+    if (isWeb) return; // Ollama is a host process — desktop only.
     try {
       ollamaApi.listModels().then(setAvailableModels).catch(() => {});
     } catch { /* not in Tauri */ }
-  }, []);
+  }, [isWeb]);
 
+  // Web: source skills + run history straight from the vault (owner passthrough),
+  // since triggering/live-status isn't available in the browser. Desktop: the
+  // Tauri agent API (in-memory dispatch manager + skill registry).
   const { data: skills } = useQuery({
-    queryKey: ["agent", "skills"],
-    queryFn: agentApi.getSkills,
+    queryKey: ["agent", "skills", isWeb ? "web" : "desktop"],
+    queryFn: () => (isWeb ? webGetSkills(vaultClient) : agentApi.getSkills()),
     refetchInterval: 30_000,
   });
 
   const { data: dispatches, isLoading } = useQuery({
-    queryKey: ["agent", "dispatches"],
-    queryFn: agentApi.getDispatches,
-    refetchInterval: 5_000,
+    queryKey: ["agent", "dispatches", isWeb ? "web" : "desktop"],
+    queryFn: () => (isWeb ? webGetDispatches(vaultClient) : agentApi.getDispatches()),
+    refetchInterval: isWeb ? 20_000 : 5_000,
   });
+
+  /** Open a skill or dispatch report as a normal note tab (the web monitor's
+   *  "view / edit" affordance, since skills + runs are just vault notes). */
+  const openNote = (id: string, title: string) => openTab(id, title, "document");
 
   const active = dispatches?.filter((d) => d.status === "running") || [];
   const completed = dispatches?.filter((d) => d.status === "completed") || [];
@@ -124,22 +140,25 @@ export default function AgentActivity(_props: RendererProps) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skills</h3>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => { setShowSkillBuilder(true); setShowSkillConfig(true); }}
-                className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-                title="Create new skill"
-              >
-                <PlusCircle size={12} style={{ color: "var(--color-accent)" }} />
-              </button>
-              <button
-                onClick={() => { setShowSkillConfig(!showSkillConfig); setShowSkillBuilder(false); }}
-                className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-                title="Configure skills"
-              >
-                <Settings2 size={12} style={{ color: showSkillConfig ? "var(--color-accent)" : "var(--text-muted)" }} />
-              </button>
-            </div>
+            {/* Create/configure spawn or edit skills via the host backend — desktop only. */}
+            {!isWeb && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => { setShowSkillBuilder(true); setShowSkillConfig(true); }}
+                  className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                  title="Create new skill"
+                >
+                  <PlusCircle size={12} style={{ color: "var(--color-accent)" }} />
+                </button>
+                <button
+                  onClick={() => { setShowSkillConfig(!showSkillConfig); setShowSkillBuilder(false); }}
+                  className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+                  title="Configure skills"
+                >
+                  <Settings2 size={12} style={{ color: showSkillConfig ? "var(--color-accent)" : "var(--text-muted)" }} />
+                </button>
+              </div>
+            )}
           </div>
 
           {showSkillConfig ? (
@@ -159,11 +178,18 @@ export default function AgentActivity(_props: RendererProps) {
               {(skills || []).map((skill) => (
                 <button
                   key={skill.id}
-                  onClick={() => handleDispatch(skill.skillName, skill.prompt)}
+                  // Desktop: run the skill now. Web (monitor): open the skill note
+                  // to read/edit it — on-demand running is a host process.
+                  onClick={() => (isWeb ? openNote(skill.id, skill.skillName) : handleDispatch(skill.skillName, skill.prompt))}
+                  title={isWeb ? "Open this skill" : "Run this skill now"}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-left transition-colors hover:bg-[var(--glass-hover)]"
                   style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
                 >
-                  <Play size={12} style={{ color: "var(--color-accent)" }} />
+                  {isWeb ? (
+                    <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />
+                  ) : (
+                    <Play size={12} style={{ color: "var(--color-accent)" }} />
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="truncate capitalize">{skill.skillName.replace(/-/g, " ")}</div>
                     {skill.enabled && (
@@ -180,49 +206,58 @@ export default function AgentActivity(_props: RendererProps) {
           )}
         </div>
 
-        {/* Custom dispatch */}
+        {/* Custom dispatch — running on demand spawns claude -p on the host (desktop only). */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>Custom Task</h3>
-          <div className="flex items-end gap-2">
-            <textarea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              placeholder="Describe what you want the agent to do..."
-              rows={2}
-              className="flex-1 rounded-lg px-3 py-2 text-xs outline-none resize-none"
-              style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+          {isWeb ? (
+            <DesktopOnlyNotice
+              feature="Running the agent on demand"
+              detail="Triggering a run spawns Claude on the machine hosting your vault. Use the Prism desktop app to run skills or custom tasks; here you can review every past run."
             />
-            <button
-              onClick={handleCustomDispatch}
-              disabled={!customPrompt.trim()}
-              className="p-2 rounded-lg transition-colors disabled:opacity-30"
-              style={{ background: "var(--color-accent)", color: "white" }}
-            >
-              <Send size={14} />
-            </button>
-          </div>
+          ) : (
+            <div className="flex items-end gap-2">
+              <textarea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="Describe what you want the agent to do..."
+                rows={2}
+                className="flex-1 rounded-lg px-3 py-2 text-xs outline-none resize-none"
+                style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              />
+              <button
+                onClick={handleCustomDispatch}
+                disabled={!customPrompt.trim()}
+                className="p-2 rounded-lg transition-colors disabled:opacity-30"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                <Send size={14} />
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Active dispatches */}
+        {/* Active dispatches (cancel is host-side → desktop only) */}
         {active.length > 0 && (
-          <DispatchSection title="Active" icon={<Loader2 size={13} className="animate-spin" />} dispatches={active} onCancel={handleCancel} />
+          <DispatchSection title="Active" icon={<Loader2 size={13} className="animate-spin" />} dispatches={active} onCancel={isWeb ? undefined : handleCancel} onOpen={isWeb ? openNote : undefined} />
         )}
 
         {/* Completed */}
         {completed.length > 0 && (
-          <DispatchSection title={`Completed (${completed.length})`} icon={<CheckCircle2 size={13} />} dispatches={completed} defaultClosed />
+          <DispatchSection title={`Completed (${completed.length})`} icon={<CheckCircle2 size={13} />} dispatches={completed} defaultClosed onOpen={isWeb ? openNote : undefined} />
         )}
 
         {/* Failed */}
         {failed.length > 0 && (
-          <DispatchSection title={`Failed (${failed.length})`} icon={<XCircle size={13} />} dispatches={failed} defaultClosed />
+          <DispatchSection title={`Failed (${failed.length})`} icon={<XCircle size={13} />} dispatches={failed} defaultClosed onOpen={isWeb ? openNote : undefined} />
         )}
 
         {/* Empty state */}
         {!dispatches?.length && (
           <div className="text-center py-8">
             <Bot size={32} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>No dispatches yet. Use the quick actions above to get started.</p>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+              {isWeb ? "No agent runs yet. They'll appear here as your skills run on the desktop app." : "No dispatches yet. Use the quick actions above to get started."}
+            </p>
           </div>
         )}
       </div>
@@ -231,9 +266,9 @@ export default function AgentActivity(_props: RendererProps) {
 }
 
 function DispatchSection({
-  title, icon, dispatches, onCancel, defaultClosed,
+  title, icon, dispatches, onCancel, onOpen, defaultClosed,
 }: {
-  title: string; icon: React.ReactNode; dispatches: AgentDispatch[]; onCancel?: (id: string) => void; defaultClosed?: boolean;
+  title: string; icon: React.ReactNode; dispatches: AgentDispatch[]; onCancel?: (id: string) => void; onOpen?: (id: string, title: string) => void; defaultClosed?: boolean;
 }) {
   const [open, setOpen] = useState(!defaultClosed);
 
@@ -251,7 +286,7 @@ function DispatchSection({
       {open && (
         <div className="space-y-2">
           {dispatches.map((d) => (
-            <DispatchCard key={d.id} dispatch={d} onCancel={onCancel} />
+            <DispatchCard key={d.id} dispatch={d} onCancel={onCancel} onOpen={onOpen} />
           ))}
         </div>
       )}
@@ -259,7 +294,7 @@ function DispatchSection({
   );
 }
 
-function DispatchCard({ dispatch, onCancel }: { dispatch: AgentDispatch; onCancel?: (id: string) => void }) {
+function DispatchCard({ dispatch, onCancel, onOpen }: { dispatch: AgentDispatch; onCancel?: (id: string) => void; onOpen?: (id: string, title: string) => void }) {
   const [expanded, setExpanded] = useState(dispatch.status === "running");
 
   const statusColor = {
@@ -302,9 +337,11 @@ function DispatchCard({ dispatch, onCancel }: { dispatch: AgentDispatch; onCance
 
       {expanded && (
         <div className="px-3 pb-3 space-y-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
-          <div className="text-[10px] pt-2" style={{ color: "var(--text-muted)" }}>
-            {dispatch.prompt.length > 200 ? dispatch.prompt.slice(0, 200) + "..." : dispatch.prompt}
-          </div>
+          {dispatch.prompt && (
+            <div className="text-[10px] pt-2" style={{ color: "var(--text-muted)" }}>
+              {dispatch.prompt.length > 200 ? dispatch.prompt.slice(0, 200) + "..." : dispatch.prompt}
+            </div>
+          )}
           {dispatch.output && (
             <div className="rounded p-2 text-xs whitespace-pre-wrap" style={{ background: "var(--bg-surface)", color: "var(--text-secondary)" }}>
               {dispatch.output}
@@ -314,6 +351,16 @@ function DispatchCard({ dispatch, onCancel }: { dispatch: AgentDispatch; onCance
             <div className="rounded p-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--color-danger)" }}>
               {dispatch.error}
             </div>
+          )}
+          {/* Web monitor: the run's full report is the dispatch note — open it. */}
+          {onOpen && dispatch.note_id && (
+            <button
+              onClick={() => onOpen(dispatch.note_id!, dispatch.skill || "Agent run")}
+              className="text-[11px] flex items-center gap-1 pt-1 hover:opacity-80"
+              style={{ color: "var(--color-accent)" }}
+            >
+              <ChevronRight size={11} /> Open full report
+            </button>
           )}
         </div>
       )}

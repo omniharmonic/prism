@@ -23,7 +23,9 @@ import {
   getSpace,
   grantsForResource,
   getFederatedByKey,
+  upsertFederatedNote,
   listMirrorRequests,
+  getFederationEnabled,
   type Grant,
 } from "../src/db";
 import {
@@ -193,6 +195,91 @@ test("accepting an already-mapped key is idempotent (reuses the local id, no dup
   assert.equal(r2.mapped[0]!.localId, localId1, "reuses the existing local id");
   assert.equal(createCallsAfterSecond, createCallsAfterFirst, "no second vault note created");
   assert.equal(getFederatedByKey("snk-x")!.local_id, localId1);
+});
+
+// ── 3. GET /acl/spaces serializes peers + sync status (the Federate-panel readback) ──
+test("GET /acl/spaces returns granted peers, noteCount, and lastSyncedAt", async () => {
+  const spaceId = "space-view";
+  const { pubkey, token } = pairedPeer(spaceId);
+  const posted = (await (await mirror(token, {
+    spaceId,
+    spaceTitle: "Viewable",
+    notes: [{ spaceNoteKey: "view-k1", kind: "document", title: "Doc" }],
+  })).json()) as { requestId: string };
+  await ownerReq(`/federation/mirrors/${posted.requestId}/accept`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ level: "suggest" }),
+  });
+
+  type SpaceView = {
+    id: string;
+    peers: Array<{ pubkey: string; fingerprint: string; label: string | null; level: string }>;
+    noteCount: number;
+    lastSyncedAt: number | null;
+  };
+  const list1 = (await (await ownerReq("/spaces")).json()) as SpaceView[];
+  const sv = list1.find((s) => s.id === spaceId);
+  assert.ok(sv, "space present in /acl/spaces");
+  assert.equal(sv!.noteCount, 1, "one federated note mapped");
+  assert.equal(sv!.peers.length, 1, "one granted peer");
+  assert.equal(sv!.peers[0]!.pubkey, pubkey);
+  assert.equal(sv!.peers[0]!.level, "suggest");
+  assert.ok(sv!.peers[0]!.fingerprint, "peer fingerprint surfaced");
+  assert.equal(sv!.lastSyncedAt, null, "never synced → null");
+
+  // Once a note records a peer pull, lastSyncedAt reflects the newest clock.
+  const fed = getFederatedByKey("view-k1")!;
+  const syncedAt = Date.now();
+  upsertFederatedNote({ ...fed, peer_synced_at: syncedAt });
+  const list2 = (await (await ownerReq("/spaces")).json()) as SpaceView[];
+  const sv2 = list2.find((s) => s.id === spaceId)!;
+  assert.equal(sv2.lastSyncedAt, syncedAt, "lastSyncedAt = newest peer_synced_at");
+});
+
+// ── 4. runtime federation toggle (owner-only, persisted) ─────────────────────
+test("POST /acl/federation/enabled toggles the runtime flag; owner-only; status reflects it", async () => {
+  // .env.test default is OFF.
+  assert.equal(getFederationEnabled(), false);
+  assert.equal((await (await ownerReq("/federation/status")).json() as { enabled: boolean }).enabled, false);
+
+  // A non-owner (no session cookie) is denied by the /acl gate and changes nothing.
+  const anon = await acl.request("/federation/enabled", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(anon.status, 403);
+  assert.equal(getFederationEnabled(), false);
+
+  // Owner enables → persisted + status flips.
+  const on = await ownerReq("/federation/enabled", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(on.status, 200);
+  assert.equal((await on.json() as { enabled: boolean }).enabled, true);
+  assert.equal(getFederationEnabled(), true);
+  assert.equal((await (await ownerReq("/federation/status")).json() as { enabled: boolean }).enabled, true);
+
+  // Missing/!boolean body → 400 (flag unchanged).
+  const bad = await ownerReq("/federation/enabled", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(bad.status, 400);
+  assert.equal(getFederationEnabled(), true);
+
+  // Owner disables again.
+  const off = await ownerReq("/federation/enabled", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal((await off.json() as { enabled: boolean }).enabled, false);
+  assert.equal(getFederationEnabled(), false);
 });
 
 test("owner can reject a mirror request → marked rejected, no space materialized", async () => {

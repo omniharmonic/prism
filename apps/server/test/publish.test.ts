@@ -28,9 +28,11 @@ import {
   type FakeVault,
 } from "./helpers";
 import {
+  db,
   addGrant,
   createPublication,
   getPublicationByResource,
+  getPublicationBySlug,
   grantsForResource,
 } from "../src/db";
 
@@ -113,6 +115,22 @@ test("single note: in-publication note 200, out-of-publication note 403", async 
   // though the id is guessable. (defense-in-depth: tag re-checked on the route)
   const forbidden = await publish.request("/mysite/notes/secret");
   assert.equal(forbidden.status, 403);
+});
+
+test("single-line HTML note → title is the heading, not the whole body", async () => {
+  // TipTap notes are stored as ONE line of HTML (no newlines). deriveTitle must
+  // not return the entire document as the title — that's what dumped raw HTML
+  // into the published wiki's title heading.
+  const body =
+    "<h1>Accelerationism</h1><p>A long body with [[wetiko]] and lots more text that must never become the title heading.</p><h2>Further Reading</h2><ul><li><p>x</p></li></ul>";
+  fv.put({ id: "html1", path: "wiki/concept.md", tags: ["wiki"], content: body });
+  publishTag("htmlsite", "wiki");
+
+  const r = await publish.request("/htmlsite/notes/html1");
+  assert.equal(r.status, 200);
+  const note = await readJson(r);
+  assert.equal(note.title, "Accelerationism");
+  assert.ok(note.title.length < 40, `title must be short, got ${note.title.length} chars`);
 });
 
 // ── graph leak-prevention ────────────────────────────────────────────────────
@@ -235,4 +253,299 @@ test("owner can set a password then unpublish, which clears the anyone-grant", a
   assert.equal(del.status, 200);
   assert.equal(getPublicationByResource("tag", "wiki"), null);
   assert.equal(grantsForResource("tag", "wiki").filter((g) => g.subject_type === "anyone").length, 0);
+});
+
+// ── publish-by-path-prefix ────────────────────────────────────────────────────
+/** Notes that exercise prefix membership: two inside `docs/guide`, a sibling
+ *  `docs/guidance/...` that must NOT match `docs/guide`, and an out-of-prefix
+ *  note. The in-set notes wikilink each other and an out-of-set note. */
+function seedPaths() {
+  fv.put({ id: "g1", path: "docs/guide/intro.md", tags: ["anything"], content: "# Intro\n\nsee [[Setup]] and [[Other]]" });
+  fv.put({ id: "g2", path: "docs/guide/setup.md", tags: [], content: "# Setup\n\nback to [[Intro]]" });
+  fv.put({ id: "sibling", path: "docs/guidance/oops.md", tags: [], content: "# Sibling\n\nnot in docs/guide" });
+  fv.put({ id: "other", path: "blog/post.md", tags: [], content: "# Other\n\nelsewhere" });
+}
+
+test("path publish: manifest lists ONLY in-prefix notes (sibling prefix excluded)", async () => {
+  seedPaths();
+  const res = await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide", title: "Guide" }),
+  });
+  assert.equal(res.status, 200);
+  const body = await readJson(res);
+  assert.equal(body.pathPrefix, "docs/guide");
+  assert.equal(body.count, 2, "only the two docs/guide notes count");
+  assert.equal(body.passwordRequired, false);
+  assert.match(body.url, /\/p\//);
+
+  const man = await readJson(await publish.request(`/${body.slug}`));
+  const ids = man.notes.map((n: { id: string }) => n.id).sort();
+  assert.deepEqual(ids, ["g1", "g2"], "sibling docs/guidance and blog/post excluded");
+});
+
+test("path publish: out-of-prefix + sibling notes 403 on the single-note route", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  assert.equal((await publish.request(`/${slug}/notes/g1`)).status, 200, "in-prefix note served");
+  // guessable ids that are out of the prefix must never be pulled.
+  assert.equal((await publish.request(`/${slug}/notes/sibling`)).status, 403, "docs/guidance is NOT under docs/guide");
+  assert.equal((await publish.request(`/${slug}/notes/other`)).status, 403, "blog/post is out of prefix");
+});
+
+test("path publish: graph is in-set only; out-of-prefix wikilink dropped", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  const { nodes, edges } = await readJson(await publish.request(`/${slug}/graph`));
+  assert.deepEqual(nodes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+  // g1→[[Setup]] resolves (g2); g2→[[Intro]] resolves (g1); g1→[[Other]] is
+  // out-of-set and MUST NOT appear.
+  const pairs = edges.map((e: { source: string; target: string }) => `${e.source}->${e.target}`).sort();
+  assert.deepEqual(pairs, ["g1->g2", "g2->g1"]);
+  for (const e of edges) assert.ok(e.target !== "other" && e.source !== "other");
+});
+
+test("path publish rejects traversal/empty prefixes", async () => {
+  seedPaths();
+  for (const pathPrefix of ["../etc", "docs/../secret", "..", "/", "   ", ""]) {
+    const res = await ownerReq("/publish/path", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pathPrefix }),
+    });
+    assert.equal(res.status, 400, `prefix ${JSON.stringify(pathPrefix)} must be rejected`);
+  }
+});
+
+test("path publish normalizes the prefix and is idempotent per prefix", async () => {
+  seedPaths();
+  // leading/trailing slashes + double slash all normalize to "docs/guide".
+  const a = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "/docs//guide/" }),
+  }));
+  assert.equal(a.pathPrefix, "docs/guide");
+  const b = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+  assert.equal(b.slug, a.slug, "same normalized prefix → same slug, no duplicate row");
+  // a path publication creates NO anyone-grant (guarded by path membership only).
+  assert.equal(grantsForResource("path", "docs/guide").length, 0);
+  assert.equal(grantsForResource("tag", "docs/guide").filter((g) => g.subject_type === "anyone").length, 0);
+});
+
+test("slug-based unpublish removes a path publication", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+  assert.ok(getPublicationBySlug(slug), "publication exists after publish");
+
+  const del = await ownerReq(`/publications/${slug}`, { method: "DELETE" });
+  assert.equal(del.status, 200);
+  assert.equal(getPublicationBySlug(slug), null, "row removed");
+  assert.equal((await publish.request(`/${slug}`)).status, 404, "manifest 404s after unpublish");
+});
+
+test("slug-based password set/clear gates a path publication", async () => {
+  seedPaths();
+  const { slug } = await readJson(await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  }));
+
+  // set a password by slug → manifest withholds nav.
+  await ownerReq(`/publications/${slug}/password`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "open-sesame" }),
+  });
+  const locked = await readJson(await publish.request(`/${slug}`));
+  assert.equal(locked.passwordRequired, true);
+  assert.deepEqual(locked.notes, []);
+
+  // clear it → nav returns.
+  await ownerReq(`/publications/${slug}/password`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+  });
+  const open = await readJson(await publish.request(`/${slug}`));
+  assert.equal(open.passwordRequired, false);
+  assert.deepEqual(open.notes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+});
+
+// ── per-publication tending (exclude notes + home note) ──────────────────────
+/** Three in-tag notes (so we can exclude the middle one). */
+function seedThree() {
+  fv.put({ id: "t1", path: "wiki/one.md", tags: ["wiki"], content: "# One" });
+  fv.put({ id: "t2", path: "wiki/two.md", tags: ["wiki"], content: "# Two" });
+  fv.put({ id: "t3", path: "wiki/three.md", tags: ["wiki"], content: "# Three" });
+}
+
+test("excludeNoteIds drops a note from manifest, single-note route, and graph", async () => {
+  seedThree();
+  publishTag("site3", "wiki");
+
+  // exclude t2 via the settings endpoint.
+  const set = await ownerReq("/publications/site3/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t2"] }),
+  });
+  assert.equal(set.status, 200);
+  assert.deepEqual(await readJson(set), { ok: true });
+
+  // manifest lists 2 notes, t2 absent.
+  const man = await readJson(await publish.request("/site3"));
+  assert.deepEqual(man.notes.map((n: { id: string }) => n.id).sort(), ["t1", "t3"]);
+  assert.ok(!man.notes.some((n: { id: string }) => n.id === "t2"));
+
+  // single-note route for the excluded id → forbidden (same leak-proofing as
+  // an out-of-set id — see the `secret` 403 case above).
+  assert.equal((await publish.request("/site3/notes/t2")).status, 403);
+  assert.equal((await publish.request("/site3/notes/t1")).status, 200);
+
+  // graph excludes t2 (routes through publicationNotes).
+  const { nodes } = await readJson(await publish.request("/site3/graph"));
+  assert.deepEqual(nodes.map((n: { id: string }) => n.id).sort(), ["t1", "t3"]);
+});
+
+test("homeNoteId reflects an in-set note, and degrades to nav[0] when out-of-set/excluded", async () => {
+  seedThree();
+  publishTag("site4", "wiki");
+
+  // set home to an in-set note → manifest reflects it.
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "t3" }),
+  });
+  let man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t3");
+
+  // exclude t3 → home falls back to nav[0] (an excluded id is not in the set).
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t3"] }),
+  });
+  man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t1", "excluded home degrades to nav[0]");
+
+  // point home at an entirely out-of-set id → also nav[0].
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "does-not-exist", excludeNoteIds: [] }),
+  });
+  man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t1", "out-of-set home degrades to nav[0]");
+});
+
+test("GET /publications surfaces homeNoteId + excludeNoteIds", async () => {
+  seedThree();
+  publishTag("site5", "wiki");
+  await ownerReq("/publications/site5/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "t2", excludeNoteIds: ["t1"] }),
+  });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "site5");
+  assert.ok(row);
+  assert.equal(row.homeNoteId, "t2");
+  assert.deepEqual(row.excludeNoteIds, ["t1"]);
+});
+
+test("settings endpoint is owner-only and 404s an unknown slug", async () => {
+  seedThree();
+  publishTag("site6", "wiki");
+
+  // anon (no cookie) → 403 from the acl owner guard.
+  const anon = await acl.request("/publications/site6/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t1"] }),
+  });
+  assert.equal(anon.status, 403);
+
+  // unknown slug → 404.
+  const missing = await ownerReq("/publications/nope/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: [] }),
+  });
+  assert.equal(missing.status, 404);
+
+  // bad excludeNoteIds type → 400.
+  const bad = await ownerReq("/publications/site6/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: "t1" }),
+  });
+  assert.equal(bad.status, 400);
+});
+
+test("settings endpoint persists a valid theme and rejects bad shapes/oversize", async () => {
+  seedThree();
+  publishTag("site-theme", "wiki");
+
+  // Valid theme → 200, echoed back (parsed) by GET /publications and the manifest.
+  const theme = { logoUrl: "https://ex.com/l.png", accent: "#ff0066", font: "serif" };
+  const ok = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme }),
+  });
+  assert.equal(ok.status, 200);
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "site-theme");
+  assert.deepEqual(row.theme, theme);
+
+  const man = await readJson<any>(await publish.request("/site-theme"));
+  assert.deepEqual(man.theme, theme);
+
+  // Non-object theme → 400.
+  const badShape = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: "blue" }),
+  });
+  assert.equal(badShape.status, 400);
+
+  // Oversize theme (>4KB) → 400.
+  const huge = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: { logoUrl: "x".repeat(5000) } }),
+  });
+  assert.equal(huge.status, 400);
+
+  // null theme → 200, clears it.
+  const cleared = await ownerReq("/publications/site-theme/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ theme: null }),
+  });
+  assert.equal(cleared.status, 200);
+  const rows2 = await readJson<Array<any>>(await ownerReq("/publications"));
+  assert.equal(rows2.find((r) => r.slug === "site-theme").theme, null);
+});
+
+test("migration: a pre-column publications row reads excludeNoteIds as []", async () => {
+  seedThree();
+  // Insert a row directly WITHOUT excluded_note_ids (simulates a row created
+  // before the migration added the column).
+  db.prepare(
+    `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, password_hash, theme, expires_at, created_by, created_at)
+     VALUES ('legacy', 'tag', 'wiki', 'wiki', NULL, NULL, NULL, NULL, NULL, 'owner', ?)`,
+  ).run(Date.now());
+  addGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: "wiki", level: "view", created_by: "test" });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "legacy");
+  assert.ok(row);
+  assert.deepEqual(row.excludeNoteIds, []);
+  // and it still serves its full set.
+  const man = await readJson(await publish.request("/legacy"));
+  assert.equal(man.notes.length, 3);
+});
+
+test("GET /publications reports kind + pathPrefix/tag for both kinds", async () => {
+  seedWiki();
+  seedPaths();
+  await ownerReq("/tags/wiki/publish", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  await ownerReq("/publish/path", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pathPrefix: "docs/guide" }),
+  });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const tagRow = rows.find((r) => r.kind === "tag");
+  const pathRow = rows.find((r) => r.kind === "path");
+  assert.ok(tagRow && tagRow.tag === "wiki" && (tagRow.pathPrefix ?? null) === null);
+  assert.ok(pathRow && pathRow.pathPrefix === "docs/guide" && !pathRow.tag);
 });

@@ -3,6 +3,8 @@ import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, 
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, localAiApi, vaultApi } from "../../lib/parachute/client";
+import { useIsWeb } from "../../data/Platform";
+import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface SettingsProps {
   open: boolean;
@@ -14,6 +16,7 @@ const EDITOR_FONT_OPTIONS = ["Newsreader", "Georgia", "Merriweather", "Lora", "S
 const MONO_FONT_OPTIONS = ["JetBrains Mono", "SF Mono", "Fira Code", "Source Code Pro", "IBM Plex Mono", "Cascadia Code", "Menlo"];
 
 export function Settings({ open, onClose }: SettingsProps) {
+  const isWeb = useIsWeb();
   const [tab, setTab] = useState<"services" | "sources" | "appearance">("services");
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -97,11 +100,15 @@ export function Settings({ open, onClose }: SettingsProps) {
 
   if (!open) return null;
 
+  // Data Sources is entirely desktop-only (every field writes native config /
+  // probes host CLIs), so the whole tab is hidden in the web shell.
   const tabs = [
     { id: "services" as const, label: "Services" },
-    { id: "sources" as const, label: "Data Sources" },
+    ...(isWeb ? [] : [{ id: "sources" as const, label: "Data Sources" }]),
     { id: "appearance" as const, label: "Appearance" },
   ];
+  // Guard against a stale `tab` if the active tab is hidden in web.
+  const activeTab = isWeb && tab === "sources" ? "services" : tab;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
@@ -121,9 +128,9 @@ export function Settings({ open, onClose }: SettingsProps) {
                 onClick={() => setTab(t.id)}
                 className="px-3 py-1.5 text-xs font-medium rounded-t-lg transition-colors"
                 style={{
-                  color: tab === t.id ? "var(--text-primary)" : "var(--text-muted)",
-                  background: tab === t.id ? "var(--glass-active)" : "transparent",
-                  borderBottom: tab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
+                  color: activeTab === t.id ? "var(--text-primary)" : "var(--text-muted)",
+                  background: activeTab === t.id ? "var(--glass-active)" : "transparent",
+                  borderBottom: activeTab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
                 }}
               >
                 {t.label}
@@ -134,12 +141,19 @@ export function Settings({ open, onClose }: SettingsProps) {
 
         <div className="overflow-auto px-6 py-4 space-y-6" style={{ maxHeight: "calc(85vh - 100px)" }}>
           {/* Services Tab */}
-          {tab === "services" && config && (
+          {activeTab === "services" && config && (
             <>
               <Section title="Core Services">
                 <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
                   Configure connections to core infrastructure. Changes take effect on restart.
                 </p>
+                {isWeb ? (
+                  <DesktopOnlyNotice
+                    feature="Service credentials"
+                    detail="Parachute, Matrix, Google, and Claude credentials are written to native config and the Keychain on the machine hosting your vault, so they're edited in the desktop app."
+                  />
+                ) : (
+                <>
                 <ServiceField
                   icon={<Database size={14} />}
                   label="Parachute"
@@ -200,6 +214,8 @@ export function Settings({ open, onClose }: SettingsProps) {
                   onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))}
                   onSave={handleSave}
                 />
+                </>
+                )}
               </Section>
 
               <Section title="Vaults">
@@ -335,7 +351,13 @@ export function Settings({ open, onClose }: SettingsProps) {
                   Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
                 </p>
 
-                {/* Interactive-skill model assignments (provider configured in the Local AI section below) */}
+                {isWeb ? (
+                  <DesktopOnlyNotice
+                    feature="AI model routing & local models"
+                    detail="Skill-to-model assignments and the local OpenAI-compatible server (LM Studio / Ollama) run the Claude CLI and reach a model server on the host, so they're configured in the desktop app."
+                  />
+                ) : (
+                /* Interactive-skill model assignments (provider configured in the Local AI section below) */
                 <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
                   <div className="grid grid-cols-[1fr_100px_1fr] gap-0 px-3 py-1.5" style={{ background: "var(--glass)", borderBottom: "1px solid var(--glass-border)" }}>
                     <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skill</span>
@@ -374,14 +396,15 @@ export function Settings({ open, onClose }: SettingsProps) {
                     );
                   })}
                 </div>
+                )}
               </Section>
 
-              <LocalAiSettings config={config} onSave={handleSave} saving={saving} savedKeys={savedKeys} />
+              {!isWeb && <LocalAiSettings config={config} onSave={handleSave} saving={saving} savedKeys={savedKeys} />}
             </>
           )}
 
           {/* Data Sources Tab */}
-          {tab === "sources" && config && (
+          {activeTab === "sources" && config && (
             <>
               <Section title="Meeting Transcripts">
                 <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
@@ -435,7 +458,7 @@ export function Settings({ open, onClose }: SettingsProps) {
           )}
 
           {/* Appearance Tab */}
-          {tab === "appearance" && (
+          {activeTab === "appearance" && (
             <>
               <Section title="Theme">
                 <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>

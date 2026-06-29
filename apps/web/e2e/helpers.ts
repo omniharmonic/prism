@@ -137,10 +137,37 @@ export const acl = {
   async unpublishTag(tag: string): Promise<void> {
     await aclReq(`/tags/${encodeURIComponent(tag)}/publish`, { method: "DELETE" });
   },
+  /** Unpublish by slug (tag or path publication). Best-effort. */
+  async unpublishSlug(slug: string): Promise<void> {
+    await aclReq(`/publications/${encodeURIComponent(slug)}`, { method: "DELETE" });
+  },
   /** List publications (owner view). */
-  async publications(): Promise<Array<{ slug: string; tag: string; passwordRequired: boolean }>> {
+  async publications(): Promise<
+    Array<{ slug: string; kind: "tag" | "path"; tag: string; pathPrefix: string | null; passwordRequired: boolean }>
+  > {
     const r = await aclReq("/publications");
     return Array.isArray(r.body) ? r.body : [];
+  },
+  /** Runtime federation transport state (owner view). */
+  async federationStatus(): Promise<{ enabled: boolean }> {
+    const r = await aclReq("/federation/status");
+    return { enabled: !!r.body?.enabled };
+  },
+  /** The configured vault registry (owner view; GET /api/vaults, no tokens). */
+  async vaults(): Promise<Array<{ id: string; label: string; vault: string; active: boolean }>> {
+    requireToken();
+    const r = await fetch(`${BASE_URL}/api/vaults`, { headers: { Authorization: `Bearer ${OWNER_TOKEN}` } });
+    const body = await r.json().catch(() => []);
+    return Array.isArray(body) ? body : [];
+  },
+  /** Link an existing vault into the registry; returns its summary. */
+  async linkVault(args: { label: string; url: string; vault: string; token: string }): Promise<{ id: string; label: string }> {
+    const r = await aclReq(`/vaults`, { method: "POST", body: JSON.stringify({ mode: "link", ...args }) });
+    return r.body;
+  },
+  /** Remove an added vault from the registry (best-effort cleanup). */
+  async removeVault(id: string): Promise<void> {
+    await aclReq(`/vaults/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
   /** Mint a capability link for a note; returns the bare `?t=` token + its cap id. */
   async createLink(noteId: string, level: string): Promise<{ token: string; capId: string }> {

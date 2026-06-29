@@ -23,9 +23,13 @@ export { sanitizeHtml } from "./lib/html/sanitize";
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph, SemanticHit } from "./data/VaultClient";
+export { GraphCanvas } from "./components/layout/GraphPanel";
+export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphPanel";
 
 // Collab sharing seam — host shells inject how share links are minted.
-export { CollabSharingProvider, useCollabSharing } from "./data/CollabSharing";
+export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
+export { PlatformProvider, usePlatform, useIsWeb, type Platform } from "./data/Platform";
+export { DesktopOnlyNotice } from "./components/ui/DesktopOnlyNotice";
 export type {
   CollabSharing,
   ShareLevel,
@@ -35,6 +39,14 @@ export type {
   NoteAccess,
   SetPersonResult,
   PublicationInfo,
+  PublicationTheme,
+  NodeIdentity,
+  PeerInfo,
+  SpaceInfo,
+  SpacePeerGrant,
+  PairingCode,
+  MirrorRequestInfo,
+  VaultSummary,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

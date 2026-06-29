@@ -185,6 +185,7 @@ export const CONTENT_TYPE_ICONS: Record<ContentType, string> = {
   briefing: "Newspaper",
   dashboard: "LayoutDashboard",
   "messages-dashboard": "MessageSquare",
+  network: "Radio",
 };
 
 // Display names
@@ -205,4 +206,5 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   briefing: "Briefing",
   dashboard: "Dashboard",
   "messages-dashboard": "Messages",
+  network: "Network",
 };

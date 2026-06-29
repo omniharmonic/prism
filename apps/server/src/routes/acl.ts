@@ -30,6 +30,7 @@ import {
   getPublicationBySlug,
   getPublicationByResource,
   listPublications,
+  excludedNoteIds,
   deletePublication,
   storePairing,
   listPeers,
@@ -52,9 +53,17 @@ import {
   getSuggestion,
   setSuggestionStatus,
   deleteSuggestion,
+  getFederationEnabled,
+  setFederationEnabled,
+  addVaultEntry,
+  getVaultRegistry,
+  removeVaultEntry,
   type Space,
 } from "../db";
+import { vaultRegistry } from "../config";
+import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind } from "../collab";
+import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 
@@ -96,7 +105,7 @@ const normEmail = (x: string) => x.trim().toLowerCase();
  *  + lazy so the @hocuspocus/provider client never loads on a non-federation
  *  deployment; failures are swallowed (best-effort — never block the ACL write). */
 function kickFederationSync(): void {
-  if (!config.federationEnabled) return;
+  if (!getFederationEnabled()) return;
   void import("../federation-manager")
     .then(({ federationManager }) => federationManager.syncSpaces())
     .catch((e) => console.error("[federation] syncSpaces after ACL change failed:", e));
@@ -123,6 +132,98 @@ function deriveTitle(content: string): string {
 }
 
 acl.get("/users", (c) => c.json(listUsers()));
+
+// ── Vault registry management (multi-vault: in-app create / link) ────────────
+// Owner-only (the whole /acl group is). Tokens are written to SQLite server-side
+// and NEVER returned — the response is the same token-free summary as GET
+// /api/vaults: { id, label, vault, active:false } (added vaults are never the
+// primary/active one, which stays the env entry[0]).
+const vaultSlug = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+
+/** A registry-unique id derived from the label (random suffix on collision). */
+function uniqueVaultId(label: string): string {
+  let id = vaultSlug(label) || randomUUID().slice(0, 8);
+  const taken = new Set(getVaultRegistry().map((v) => v.id));
+  while (taken.has(id)) id = `${vaultSlug(label) || "vault"}-${Math.floor(Math.random() * 10000)}`;
+  return id;
+}
+
+/** Probe a linked vault is reachable with the given token (GET /tags). Returns
+ *  true on a 2xx, false on any error/non-2xx — best-effort guard, not auth. */
+async function probeVault(url: string, vault: string, token: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${url}/vault/${encodeURIComponent(vault)}/api/tags`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+acl.post("/vaults", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const mode = body.mode;
+
+  if (mode === "link") {
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const url = typeof body.url === "string" ? body.url.trim().replace(/\/+$/, "") : "";
+    const vault = typeof body.vault === "string" ? body.vault.trim() : "";
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    if (!label || !vault || !token) return c.json({ error: "bad_request", detail: "label, vault and token are required" }, 400);
+    if (!/^https?:\/\//i.test(url)) return c.json({ error: "bad_request", detail: "url must be http(s)" }, 400);
+    if (!(await probeVault(url, vault, token))) return c.json({ error: "unreachable" }, 400);
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault, token });
+    return c.json({ id, label, vault, active: false });
+  }
+
+  if (mode === "create") {
+    if (!config.allowVaultCreate) return c.json({ error: "disabled", detail: "vault creation is disabled on this server" }, 403);
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!label || !name) return c.json({ error: "bad_request", detail: "label and name are required" }, 400);
+    if (!/^[a-z0-9_-]+$/.test(name)) return c.json({ error: "bad_request", detail: "name must match ^[a-z0-9_-]+$" }, 400);
+
+    let created: { name: string; token: string };
+    try {
+      created = await createVaultViaCli(name);
+    } catch (e) {
+      // The failure happens BEFORE any token is minted (creation failed), so the
+      // message can't carry a token; still, log server-side and keep detail terse.
+      console.error("[vaults] parachute-vault create failed:", e);
+      return c.json({ error: "create_failed", detail: (e as Error).message }, 500);
+    }
+
+    const url = config.parachuteUrl;
+    const id = uniqueVaultId(label);
+    addVaultEntry({ id, label, url, vault: name, token: created.token });
+
+    if (body.seedSchemas !== false) {
+      try {
+        await seedVault({ vaultUrl: url, vault: name, token: created.token });
+      } catch (e) {
+        console.error("[vaults] seedTagSchemas failed (non-fatal):", e);
+      }
+    }
+    return c.json({ id, label, vault: name, active: false });
+  }
+
+  return c.json({ error: "bad_request", detail: "mode must be 'link' or 'create'" }, 400);
+});
+
+// Remove an owner-ADDED vault. Env-configured vaults (e.g. "primary") are not in
+// the prism_vaults table, so removeVaultEntry no-ops on them and the merged
+// registry keeps the env entry — i.e. an env vault can never be deleted here.
+acl.delete("/vaults/:id", (c) => {
+  const id = c.req.param("id");
+  if (vaultRegistry.some((v) => v.id === id)) {
+    return c.json({ error: "forbidden", detail: "cannot remove an env-configured vault" }, 400);
+  }
+  removeVaultEntry(id);
+  return c.json({ ok: true });
+});
 
 /** Full sharing picture for a note: direct people, links, and tag-grants that
  *  currently reach it (because the note carries a granted tag). */
@@ -243,18 +344,62 @@ acl.delete("/tags/:tag/people/:email", (c) => {
 const slugify = (s: string): string =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "site";
 
+/** Parse a stored theme JSON blob back into an object for the settings UI.
+ *  Tolerates null/malformed → null (never throws into the list response). */
+function parsePublicationTheme(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Max serialized size for a per-publication theme blob (renders on a PUBLIC
+ *  page, so it stays small + bounded). */
+const MAX_THEME_BYTES = 4096;
+
+/** Validate an owner-supplied theme: a plain JSON object under the size cap (or
+ *  null to clear). Returns the serialized string to persist, `null` to clear, or
+ *  an `{ error }` describing why it was rejected. The publinc site additionally
+ *  re-validates every value at render (http(s) logo, color/url patterns) — this
+ *  is the size/shape gate, not the injection gate. */
+function validateTheme(value: unknown): { json: string | null } | { error: string } {
+  if (value === null || value === undefined) return { json: null };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { error: "theme must be a plain object or null" };
+  }
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json, "utf8") > MAX_THEME_BYTES) {
+    return { error: `theme must be under ${MAX_THEME_BYTES} bytes` };
+  }
+  return { json };
+}
+
 acl.get("/publications", (c) =>
   c.json(
-    listPublications().map((p) => ({
-      slug: p.id,
-      tag: p.resource,
-      template: p.template,
-      title: p.title,
-      passwordRequired: !!p.password_hash,
-      expiresAt: p.expires_at,
-      url: `${config.appOrigin}/p/${p.id}`,
-      createdAt: p.created_at,
-    })),
+    listPublications().map((p) => {
+      const kind = p.resource_type === "path" ? "path" : "tag";
+      return {
+        slug: p.id,
+        kind,
+        // Keep `tag` populated for tag pubs (existing UI/e2e), add `pathPrefix`
+        // for path pubs. Both echo `resource` for their respective kind; the
+        // other is empty/null to match core's PublicationInfo contract.
+        tag: kind === "tag" ? p.resource : "",
+        pathPrefix: kind === "path" ? p.resource : null,
+        template: p.template,
+        title: p.title,
+        passwordRequired: !!p.password_hash,
+        theme: parsePublicationTheme(p.theme),
+        homeNoteId: p.home_note_id,
+        excludeNoteIds: excludedNoteIds(p),
+        expiresAt: p.expires_at,
+        url: `${config.appOrigin}/p/${p.id}`,
+        createdAt: p.created_at,
+      };
+    }),
   ),
 );
 
@@ -316,6 +461,131 @@ acl.delete("/tags/:tag/publish", (c) => {
   return c.json({ ok: true });
 });
 
+// ── Publish-by-path-prefix: a public, read-only site rooted at a directory ──
+// Unlike tag pubs, a path publication uses NO `anyone` grant — the public read
+// path (routes/publish.ts) guards it purely by the path-membership predicate on
+// the vault's own `path` field. So this only writes the `publications` row.
+acl.post("/publish/path", async (c) => {
+  const body = await c.req
+    .json<{ pathPrefix?: string; title?: string; slug?: string; password?: string }>()
+    .catch(() => ({}) as { pathPrefix?: string; title?: string; slug?: string; password?: string });
+
+  const prefix = typeof body.pathPrefix === "string" ? normalizePathPrefix(body.pathPrefix) : null;
+  if (!prefix) return c.json({ error: "bad_request", message: "invalid path prefix" }, 400);
+
+  // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
+  const passwordHash = body.password ? hashPassword(body.password) : null;
+
+  // One publication per prefix → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("path", prefix);
+  let slug = existing?.id ?? "";
+  if (!existing) {
+    slug = (body.slug && slugify(body.slug)) || slugify(prefix);
+    while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
+    createPublication({
+      id: slug,
+      resource_type: "path",
+      resource: prefix,
+      template: "wiki",
+      title: body.title ?? null,
+      home_note_id: null,
+      password_hash: passwordHash,
+      theme: null,
+      expires_at: null,
+      created_by: config.ownerEmail,
+    });
+  } else if (body.password !== undefined) {
+    updatePublication(existing.id, { password_hash: passwordHash });
+  }
+
+  // Live count (and dynamic): notes whose path is inside the prefix. The same
+  // membership predicate the public read path uses — never trust a vault query.
+  let count = 0;
+  try {
+    count = (await vault.listNotes({})).filter((n) => pathInPrefix(n.path, prefix)).length;
+  } catch {
+    /* best-effort */
+  }
+  return c.json({ slug, pathPrefix: prefix, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
+});
+
+// ── Slug-based publication management (works for BOTH tag and path pubs) ──
+/** Set or clear a publication's password by slug (clear by omitting/empty password). */
+acl.put("/publications/:slug/password", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
+  updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
+  return c.json({ ok: true, passwordRequired: !!password });
+});
+
+/** Per-publication "tending" controls (owner hand-tuning of a public wiki):
+ *  - homeNoteId: which note loads first (string, or null to clear → derive at read).
+ *  - excludeNoteIds: note ids to DROP from the public set even though they match
+ *    the tag/path (string[]; empty clears all exclusions).
+ *  - theme: a small plain object of presentation overrides (logo/colors/font),
+ *    persisted as JSON (≤4KB; null clears). Re-validated at render on the public
+ *    site (http(s) logo, color patterns) — never trusted as raw HTML.
+ *  Only the provided fields are patched. Returns 404 for an unknown slug. */
+acl.put("/publications/:slug/settings", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const body = await c.req
+    .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown }>()
+    .catch(() => ({}) as { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown });
+
+  const patch: {
+    title?: string | null;
+    home_note_id?: string | null;
+    excluded_note_ids?: string | null;
+    theme?: string | null;
+  } = {};
+
+  if ("title" in body) {
+    if (body.title !== null && typeof body.title !== "string") {
+      return c.json({ error: "bad_request", detail: "title must be a string or null" }, 400);
+    }
+    // Empty string → clear (fall back to derived title).
+    patch.title = body.title && body.title.trim() ? body.title.trim() : null;
+  }
+
+  if ("homeNoteId" in body) {
+    if (body.homeNoteId !== null && typeof body.homeNoteId !== "string") {
+      return c.json({ error: "bad_request", detail: "homeNoteId must be a string or null" }, 400);
+    }
+    patch.home_note_id = body.homeNoteId;
+  }
+
+  if ("excludeNoteIds" in body) {
+    const ids = body.excludeNoteIds;
+    if (!Array.isArray(ids) || !ids.every((s) => typeof s === "string")) {
+      return c.json({ error: "bad_request", detail: "excludeNoteIds must be an array of strings" }, 400);
+    }
+    patch.excluded_note_ids = JSON.stringify(ids);
+  }
+
+  if ("theme" in body) {
+    const t = validateTheme(body.theme);
+    if ("error" in t) return c.json({ error: "bad_request", detail: t.error }, 400);
+    patch.theme = t.json;
+  }
+
+  updatePublication(pub.id, patch);
+  return c.json({ ok: true });
+});
+
+/** Unpublish by slug. Removes the row; for a tag pub it also drops the backing
+ *  `anyone/tag/view` grant. (Path pubs have no grant to remove.) */
+acl.delete("/publications/:slug", (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  deletePublication(pub.id);
+  if (pub.resource_type === "tag") {
+    removeGrantBySubjectResource("anyone", "*", "tag", pub.resource);
+  }
+  return c.json({ ok: true });
+});
+
 // ── Suggestions review (Horizon C, suggest-level): durable owner inbox ──
 // A suggest-level peer/collaborator's proposed change is stored (survives
 // restart) for the owner to accept or reject. Accept/reject is a status
@@ -361,6 +631,35 @@ acl.delete("/suggestions/:id", (c) => {
 acl.get("/peers/identity", (c) => {
   const kp = serverKeyPair();
   return c.json({ publicKey: kp.publicKeyB64url, fingerprint: fingerprint(kp.publicKeyB64url) });
+});
+
+/** Whether the live federation transport is enabled on this node. The pairing /
+ *  space / mirror endpoints work either way (they only mutate the local store),
+ *  but actual sync requires the flag — the UI shows status + a toggle. Reads the
+ *  runtime value (persisted; defaults to the FEDERATION_ENABLED env). */
+acl.get("/federation/status", (c) => c.json({ enabled: getFederationEnabled() }));
+
+/** Toggle the live federation transport at runtime (owner-only; persisted, no
+ *  restart). Enabling starts the FederationManager and binds known spaces;
+ *  disabling tears every binding down. The module is imported LAZILY so a node
+ *  that never enables federation never loads @hocuspocus/provider. */
+acl.post("/federation/enabled", async (c) => {
+  const { enabled } = await c.req.json<{ enabled?: boolean }>().catch(() => ({}) as { enabled?: boolean });
+  if (typeof enabled !== "boolean") return c.json({ error: "bad_request" }, 400);
+  setFederationEnabled(enabled); // set first — start()/syncSpaces() gate on this flag
+  try {
+    const { federationManager } = await import("../federation-manager");
+    if (enabled) {
+      federationManager.start();
+      await federationManager.syncSpaces();
+    } else {
+      await federationManager.stop();
+    }
+  } catch (e) {
+    console.error("[federation] toggle lifecycle failed:", e);
+    // The flag is persisted regardless; a restart will reconcile the manager.
+  }
+  return c.json({ enabled });
 });
 
 acl.post("/peers/pair", async (c) => {
@@ -421,8 +720,23 @@ acl.post("/peers/:pubkey/url", async (c) => {
 const asStringArray = (x: unknown): string[] =>
   Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : [];
 
-/** Serialize a Space row for the API (parse the JSON tag scopes). */
+/** Serialize a Space row for the API (parse the JSON tag scopes). Includes the
+ *  granted peers (so the UI reflects real grants, not optimistic state) and a
+ *  sync summary derived from the space's federated-note mappings. */
 function spaceView(s: Space) {
+  const peers = grantsForResource("space", s.id)
+    .filter((g) => g.subject_type === "peer")
+    .map((g) => {
+      const peer = getPeer(g.subject);
+      return {
+        pubkey: g.subject,
+        fingerprint: fingerprint(g.subject),
+        label: peer?.label ?? null,
+        level: g.level,
+      };
+    });
+  const fed = federatedNotesForSpace(s.id);
+  const syncedAts = fed.map((f) => f.peer_synced_at).filter((t): t is number => t != null);
   return {
     id: s.id,
     title: s.title,
@@ -430,6 +744,9 @@ function spaceView(s: Space) {
     excludeTags: s.scope_exclude_tags ? (JSON.parse(s.scope_exclude_tags) as string[]) : [],
     pathPrefix: s.path_prefix,
     createdAt: s.created_at,
+    peers,
+    noteCount: fed.length,
+    lastSyncedAt: syncedAts.length ? Math.max(...syncedAts) : null,
   };
 }
 

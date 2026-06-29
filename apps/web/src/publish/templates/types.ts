@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { PublicationTheme } from "@prism/core";
 
 /**
  * Shared contract between PublicationView (the data shell) and the publication
@@ -19,7 +20,9 @@ export interface PublicationManifest {
   slug: string;
   title: string;
   template: string;
-  theme: unknown | null;
+  /** Owner-set presentation overrides (logo/colors/font); null/absent → default.
+   *  Untrusted — every field is re-validated before it's applied to the page. */
+  theme: PublicationTheme | null;
   homeNoteId: string | null;
   passwordRequired: boolean;
   notes: NavNote[];

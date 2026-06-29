@@ -5,12 +5,13 @@
  * from index.ts (process startup: assertConfig + serve + collab) so the full
  * request pipeline can be constructed and tested without binding a port.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
+import { vaults } from "./routes/vaults";
 import { acl } from "./routes/acl";
 import { rag } from "./routes/rag";
 import { publish } from "./routes/publish";
@@ -37,7 +38,10 @@ export function createApp(): Hono {
     // only — script-src stays tight, so no code can load from there). Self-hosting
     // these would fully air-gap the canvas; for now this is font-only.
     "font-src 'self' data: https://fonts.gstatic.com https://esm.sh",
-    "img-src 'self' data: blob:",
+    // Published notes legitimately embed external images (Substack/Medium/web
+    // clips). Allow any https image source — img-src can't execute code, so this
+    // doesn't widen the script attack surface.
+    "img-src 'self' data: blob: https:",
     "worker-src 'self' blob:",
     "connect-src 'self' ws: wss: https:",
   ].join("; ");
@@ -91,14 +95,29 @@ export function createApp(): Hono {
   // gateway, whose owner short-circuit would otherwise proxy these to the vault
   // (which has no semantic endpoint). Other /api paths fall through to `api`.
   app.route("/api", rag);
+  // Owner-only vault registry — mounted BEFORE the gateway so /api/vaults is not
+  // proxied to the vault by the owner short-circuit inside `api`.
+  app.route("/api", vaults);
   app.route("/api", api);
   app.route("/acl", acl);
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
+  // Cache strategy: Vite content-hashes everything under /assets, so those are
+  // immutable + cached forever; the SPA entry (index.html) and the service
+  // worker must ALWAYS revalidate, or a stale cached index pins old asset hashes
+  // and a deploy never takes effect (the "still rendering old code" trap, made
+  // worse by an edge/CDN in front).
   const WEB_ROOT = process.env.WEB_ROOT ?? "../web/dist";
-  app.use("/assets/*", serveStatic({ root: WEB_ROOT }));
-  app.get("/*", serveStatic({ root: WEB_ROOT }));
-  app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html` }));
+  const cacheHeaders = (path: string, c: Context) => {
+    if (path.includes("/assets/")) {
+      c.header("Cache-Control", "public, max-age=31536000, immutable");
+    } else if (/\.(html)$|sw\.js$|workbox-[^/]*\.js$/.test(path)) {
+      c.header("Cache-Control", "no-cache");
+    }
+  };
+  app.use("/assets/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
+  app.get("/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
+  app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html`, onFound: cacheHeaders }));
 
   return app;
 }

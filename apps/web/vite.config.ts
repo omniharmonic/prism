@@ -15,8 +15,13 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: "autoUpdate",
-      injectRegister: "auto",
+      // PROMPT, not autoUpdate: a loaded session keeps a consistent asset set —
+      // the new build is applied only on a user-confirmed reload (see the
+      // UpdatePrompt in main.tsx). autoUpdate + skipWaiting used to swap the SW
+      // mid-session and evict in-use CSS/JS, so styling vanished until a manual
+      // refresh and stale chunks rendered old code.
+      registerType: "prompt",
+      injectRegister: null,
       includeAssets: ["apple-touch-icon.png", "vite.svg"],
       manifest: {
         name: "Prism",
@@ -47,10 +52,10 @@ export default defineConfig({
           "**/createText-*",
         ],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
-        // Activate a new build immediately instead of waiting for every tab to
-        // close — so users stop getting a stale app shell after a deploy.
-        skipWaiting: true,
-        clientsClaim: true,
+        // Do NOT skipWaiting/clientsClaim: the new SW waits until the user
+        // accepts the update (UpdatePrompt → updateServiceWorker), then it
+        // activates + reloads cleanly. This keeps the running session's assets
+        // consistent (no mid-session eviction → no "styling disappeared").
         cleanupOutdatedCaches: true,
         navigateFallback: "index.html",
         // Let server-handled routes reach the network instead of being shadowed

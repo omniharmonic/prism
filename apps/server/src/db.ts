@@ -5,11 +5,25 @@
  */
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { config } from "./config";
+import { chmodSync } from "node:fs";
+import { config, vaultRegistry, type VaultEntry } from "./config";
 import type { Level } from "./permissions";
 
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
+
+// This db holds added-vault TOKENS (plus sessions + grants). SQLite creates the
+// file world-readable by default; tighten it and its WAL/SHM siblings to 0600.
+// Best-effort (skips the in-memory test db; siblings may not exist yet).
+if (config.dbPath !== ":memory:" && !config.dbPath.startsWith(":")) {
+  for (const p of [config.dbPath, `${config.dbPath}-wal`, `${config.dbPath}-shm`]) {
+    try {
+      chmodSync(p, 0o600);
+    } catch {
+      /* sibling absent or not ours — best effort */
+    }
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -76,11 +90,12 @@ db.exec(`
   -- the only guard). Publish = insert this row + an anyone grant in one txn.
   CREATE TABLE IF NOT EXISTS publications (
     id            TEXT PRIMARY KEY,   -- slug (also the public URL segment)
-    resource_type TEXT NOT NULL,      -- 'tag' (v1; 'note' reserved)
-    resource      TEXT NOT NULL,      -- tag name
+    resource_type TEXT NOT NULL,      -- 'tag' | 'path' ('note' reserved)
+    resource      TEXT NOT NULL,      -- tag name OR normalized path prefix
     template      TEXT NOT NULL,      -- 'wiki' (template registry key)
     title         TEXT,
     home_note_id  TEXT,               -- landing note; null → derive at read time
+    excluded_note_ids TEXT,           -- JSON string[] of note ids to DROP from the set; null → []
     password_hash TEXT,               -- scrypt (auth/password.ts); null → open
     theme         TEXT,               -- JSON blob
     expires_at    INTEGER,            -- null → no expiry
@@ -184,6 +199,27 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS federation_mirror_status ON federation_mirror_requests(status);
   CREATE INDEX IF NOT EXISTS federation_mirror_peer   ON federation_mirror_requests(peer_pubkey, space_id);
+
+  -- Owner-mutable runtime settings (kv). Currently: federation_enabled, so the
+  -- owner can toggle the federation bridge from the UI without a restart. Each
+  -- key falls back to its config/env default when unset.
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  -- Owner-added vaults (multi-vault: in-app create/link). The ENV-configured
+  -- vaults live in config.ts (PRISM_VAULTS / PARACHUTE_*); these rows are the
+  -- vaults added at runtime from the UI. Their TOKEN lives here, server-side
+  -- ONLY — it is never returned to a client (GET /api/vaults omits token+url).
+  CREATE TABLE IF NOT EXISTS prism_vaults (
+    id         TEXT PRIMARY KEY,
+    label      TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    vault      TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -205,8 +241,116 @@ db.exec(`
   }
 }
 
+// Migration: publications gained per-site "tending" controls — a list of note
+// ids to DROP from the public set even though they match the tag/path. Add the
+// column to an older db (CREATE TABLE IF NOT EXISTS won't alter an existing one).
+{
+  const cols = db.prepare("PRAGMA table_info(publications)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "excluded_note_ids")) {
+    db.exec("ALTER TABLE publications ADD COLUMN excluded_note_ids TEXT");
+  }
+}
+
+// ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
+const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
+const upsertSetting = db.prepare(
+  "INSERT INTO settings (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value=@value",
+);
+function getSetting(key: string): string | null {
+  return (selectSetting.get(key) as { value: string } | undefined)?.value ?? null;
+}
+function setSetting(key: string, value: string): void {
+  upsertSetting.run({ key, value });
+}
+
+/**
+ * Federation enablement is runtime-mutable so the owner can flip the bridge from
+ * the UI (no .env edit / restart). Persisted in `settings`, defaulting to the
+ * `FEDERATION_ENABLED` env flag when never set. Read straight from the row each
+ * call (a 1-row prepared SELECT — the gate is per connection/action, not a hot
+ * loop), so a toggle takes effect immediately and tests stay isolated (resetDb
+ * clears the row → the env default returns). All the old `config.federationEnabled`
+ * gates now call `getFederationEnabled()`.
+ */
+export function getFederationEnabled(): boolean {
+  const stored = getSetting("federation_enabled");
+  return stored === null ? config.federationEnabled : stored === "true";
+}
+export function setFederationEnabled(enabled: boolean): void {
+  setSetting("federation_enabled", enabled ? "true" : "false");
+}
+
+// ── Added vaults (runtime registry; owner-managed via /acl/vaults) ───────────
+// The ENV base (config.vaultRegistry) is immutable boot config; these rows are
+// vaults the owner created/linked from the UI. Tokens are stored here and NEVER
+// serialized to a client.
+const insertVaultEntry = db.prepare(
+  `INSERT INTO prism_vaults (id, label, url, vault, token, created_at)
+   VALUES (@id, @label, @url, @vault, @token, @created_at)`,
+);
+const selectVaultEntries = db.prepare("SELECT * FROM prism_vaults ORDER BY created_at ASC");
+const selectVaultEntry = db.prepare("SELECT * FROM prism_vaults WHERE id = ?");
+const deleteVaultEntryStmt = db.prepare("DELETE FROM prism_vaults WHERE id = ?");
+
+const stripVaultRow = (r: VaultEntry & { created_at?: number }): VaultEntry => ({
+  id: r.id,
+  label: r.label,
+  url: r.url,
+  vault: r.vault,
+  token: r.token,
+});
+
+export function addVaultEntry(e: VaultEntry): VaultEntry {
+  insertVaultEntry.run({ ...e, created_at: Date.now() });
+  return e;
+}
+export function listVaultEntries(): VaultEntry[] {
+  return (selectVaultEntries.all() as Array<VaultEntry & { created_at: number }>).map(stripVaultRow);
+}
+export function getVaultEntry(id: string): VaultEntry | null {
+  const row = selectVaultEntry.get(id) as (VaultEntry & { created_at: number }) | undefined;
+  return row ? stripVaultRow(row) : null;
+}
+export function removeVaultEntry(id: string): void {
+  deleteVaultEntryStmt.run(id);
+}
+
+/**
+ * The full vault registry: the ENV base (config.vaultRegistry) followed by the
+ * owner-added vaults from SQLite, deduped by id with the ENV entries WINNING
+ * (so the env primary[0] always stays primary/active). This is the authoritative
+ * registry read by GET /api/vaults and the owner passthrough.
+ */
+export function getVaultRegistry(): VaultEntry[] {
+  const merged: VaultEntry[] = [...vaultRegistry];
+  const seen = new Set(merged.map((v) => v.id));
+  for (const e of listVaultEntries()) {
+    if (seen.has(e.id)) continue; // env wins
+    seen.add(e.id);
+    merged.push(e);
+  }
+  return merged;
+}
+
+/**
+ * Resolve a vault id against the MERGED registry. Unknown/absent id → the
+ * primary (first env entry), so a stale/bogus `X-Prism-Vault` header degrades to
+ * the default vault rather than erroring. Lives here (not config.ts) so it can
+ * see db-added vaults without a config↔db import cycle.
+ */
+export function resolveVaultEntry(id?: string | null): VaultEntry {
+  if (id) {
+    const found = getVaultRegistry().find((v) => v.id === id);
+    if (found) return found;
+  }
+  return vaultRegistry[0]!;
+}
+
 export type SubjectType = "user" | "link" | "anyone" | "peer";
-export type ResourceType = "note" | "tag" | "space";
+// "path" is used ONLY as a publication's resource_type (publish-by-directory);
+// it is never a grant resource_type (path publications are guarded by the
+// path-membership predicate, not by grants — see routes/publish.ts).
+export type ResourceType = "note" | "tag" | "space" | "path";
 
 export interface Grant {
   id: string;
@@ -499,6 +643,7 @@ export interface Publication {
   template: string;
   title: string | null;
   home_note_id: string | null;
+  excluded_note_ids: string | null; // JSON string[]
   password_hash: string | null;
   theme: string | null;
   expires_at: number | null;
@@ -506,8 +651,8 @@ export interface Publication {
   created_at: number;
 }
 const insertPublication = db.prepare(
-  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, password_hash, theme, expires_at, created_by, created_at)
-   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
+  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, excluded_note_ids, password_hash, theme, expires_at, created_by, created_at)
+   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @excluded_note_ids, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
 );
 const selectPublication = db.prepare("SELECT * FROM publications WHERE id = ?");
 const selectPublicationByResource = db.prepare(
@@ -516,13 +661,27 @@ const selectPublicationByResource = db.prepare(
 const selectPublications = db.prepare("SELECT * FROM publications ORDER BY created_at DESC");
 const deletePublicationStmt = db.prepare("DELETE FROM publications WHERE id = ?");
 const updatePublicationStmt = db.prepare(
-  `UPDATE publications SET title=@title, home_note_id=@home_note_id, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
+  `UPDATE publications SET title=@title, home_note_id=@home_note_id, excluded_note_ids=@excluded_note_ids, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
 );
 
-export function createPublication(p: Omit<Publication, "created_at">): Publication {
-  const row: Publication = { ...p, created_at: now() };
+export function createPublication(
+  p: Omit<Publication, "created_at" | "excluded_note_ids"> & { excluded_note_ids?: string | null },
+): Publication {
+  const row: Publication = { excluded_note_ids: null, ...p, created_at: now() };
   insertPublication.run(row);
   return row;
+}
+
+/** Parsed list of note ids excluded from a publication's public set (defaults to
+ *  [] when unset or malformed). */
+export function excludedNoteIds(pub: Publication): string[] {
+  if (!pub.excluded_note_ids) return [];
+  try {
+    const parsed = JSON.parse(pub.excluded_note_ids);
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
 }
 export function getPublicationBySlug(slug: string): Publication | null {
   return (selectPublication.get(slug) as Publication | undefined) ?? null;
@@ -536,10 +695,10 @@ export function listPublications(): Publication[] {
 export function deletePublication(slug: string): void {
   deletePublicationStmt.run(slug);
 }
-/** Patch the mutable fields of a publication (title/home/password/theme/expiry). */
+/** Patch the mutable fields of a publication (title/home/excluded/password/theme/expiry). */
 export function updatePublication(
   slug: string,
-  patch: Partial<Pick<Publication, "title" | "home_note_id" | "password_hash" | "theme" | "expires_at">>,
+  patch: Partial<Pick<Publication, "title" | "home_note_id" | "excluded_note_ids" | "password_hash" | "theme" | "expires_at">>,
 ): Publication | null {
   const existing = getPublicationBySlug(slug);
   if (!existing) return null;
@@ -548,6 +707,7 @@ export function updatePublication(
     id: slug,
     title: merged.title,
     home_note_id: merged.home_note_id,
+    excluded_note_ids: merged.excluded_note_ids,
     password_hash: merged.password_hash,
     theme: merged.theme,
     expires_at: merged.expires_at,

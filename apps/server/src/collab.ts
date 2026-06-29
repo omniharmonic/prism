@@ -39,6 +39,7 @@ import {
   getFederatedByKey,
   getPeer,
   grantsForPeer,
+  getFederationEnabled,
   type Grant,
 } from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
@@ -122,7 +123,7 @@ export const PEER_ORIGIN = "peer-federation";
  * i.e. exactly the documentName the caller already used (no behavior change).
  */
 export function federationTarget(documentName: string): { noteId: string; kind?: CollabKind } {
-  if (config.federationEnabled) {
+  if (getFederationEnabled()) {
     const fed = getFederatedByKey(documentName);
     if (fed) return { noteId: fed.local_id, kind: fed.kind as CollabKind };
   }
@@ -386,7 +387,7 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
   // (owner/session/capability) — both now connect under the space_note_key (gap
   // #2). When federation is off, getFederatedByKey is never consulted, so this
   // branch is inert and the path below is byte-for-byte today's.
-  if (config.federationEnabled) {
+  if (getFederationEnabled()) {
     const fed = getFederatedByKey(noteId);
     if (fed) {
       const claims = verifyPeerConnToken(token);
@@ -609,11 +610,13 @@ export function attachCollab(server: Server): void {
   server.on("close", stopReconciler);
 
   // Federation (GATED): bring up the peer-bridge once collab is live. A no-op
-  // unless config.federationEnabled — and the module is imported LAZILY so the
+  // unless getFederationEnabled() (the runtime flag, persisted; defaults to the
+  // FEDERATION_ENABLED env) — and the module is imported LAZILY so the
   // @hocuspocus/provider client (and the whole federation path) never loads on
   // the default, non-federation deployment. Dynamic import also sidesteps the
   // collab ⇄ federation-manager import cycle (collab is fully loaded by now).
-  if (config.federationEnabled) {
+  // Runtime toggles after boot are handled by POST /acl/federation/enabled.
+  if (getFederationEnabled()) {
     void import("./federation-manager")
       .then(({ federationManager }) => {
         federationManager.start();
