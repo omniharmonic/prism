@@ -5,7 +5,7 @@
  * from index.ts (process startup: assertConfig + serve + collab) so the full
  * request pipeline can be constructed and tested without binding a port.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
@@ -99,10 +99,22 @@ export function createApp(): Hono {
   app.route("/acl", acl);
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
+  // Cache strategy: Vite content-hashes everything under /assets, so those are
+  // immutable + cached forever; the SPA entry (index.html) and the service
+  // worker must ALWAYS revalidate, or a stale cached index pins old asset hashes
+  // and a deploy never takes effect (the "still rendering old code" trap, made
+  // worse by an edge/CDN in front).
   const WEB_ROOT = process.env.WEB_ROOT ?? "../web/dist";
-  app.use("/assets/*", serveStatic({ root: WEB_ROOT }));
-  app.get("/*", serveStatic({ root: WEB_ROOT }));
-  app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html` }));
+  const cacheHeaders = (path: string, c: Context) => {
+    if (path.includes("/assets/")) {
+      c.header("Cache-Control", "public, max-age=31536000, immutable");
+    } else if (/\.(html)$|sw\.js$|workbox-[^/]*\.js$/.test(path)) {
+      c.header("Cache-Control", "no-cache");
+    }
+  };
+  app.use("/assets/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
+  app.get("/*", serveStatic({ root: WEB_ROOT, onFound: cacheHeaders }));
+  app.get("*", serveStatic({ path: `${WEB_ROOT}/index.html`, onFound: cacheHeaders }));
 
   return app;
 }

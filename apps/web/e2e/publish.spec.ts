@@ -30,6 +30,7 @@ let homeId = "";
 
 const HOME_BODY = "E2EPUB_HOME_BODY_MARKER_42";
 const COMMENT_HEADING = "E2EPUB Comment Heading Marker";
+const CONCEPT_HEADING = "E2EPUB Concept Heading Marker";
 
 test.beforeAll(async () => {
   const home = await vault.createNote({ content: `# E2E Publish Home\n\n${HOME_BODY}`, path: "_test/e2epub/e2e-pub-home.md" });
@@ -51,6 +52,15 @@ test.beforeAll(async () => {
   created.push(withComment.id);
   await vault.addTags(withComment.id, [TAG]);
 
+  // A concept note authored IN Prism — full one-line TipTap HTML with inline
+  // [[wikilinks]] (the exact shape of the notes the user still saw render raw).
+  const concept = await vault.createNote({
+    content: `<h1>${CONCEPT_HEADING}</h1><p>Body with a link to [[e2e-pub-second]] and an unresolved [[nowhere]].</p><h2>Further Reading</h2><ul><li><p>[[e2e-pub-home|Home]]</p></li></ul><p></p>`,
+    path: "_test/e2epub/e2e-pub-concept.md",
+  });
+  created.push(concept.id);
+  await vault.addTags(concept.id, [TAG]);
+
   slug = await acl.publishTag(TAG, { title: "E2E Pub Site", homeNoteId: homeId });
 });
 
@@ -60,9 +70,9 @@ test.afterAll(async () => {
 });
 
 test("@live public wiki renders both in-set notes in the nav and the home body", async ({ page }) => {
-  // Sanity: the anonymous manifest lists our three notes.
+  // Sanity: the anonymous manifest lists our four notes.
   const m = await (await fetch(`${BASE_URL}/api/p/${slug}`)).json();
-  expect(m.notes).toHaveLength(3);
+  expect(m.notes).toHaveLength(4);
 
   await page.goto(`/p/${slug}`);
 
@@ -90,15 +100,28 @@ test("@live a markdown note starting with an HTML comment renders as markdown, n
   await expect(article).not.toContainText(`## ${COMMENT_HEADING}`);
 });
 
+test("@live a full TipTap-HTML concept note renders as HTML, not raw text", async ({ page }) => {
+  await page.goto(`/p/${slug}`);
+  await page.locator("nav").first().getByText("e2e-pub-concept", { exact: false }).click();
+
+  const article = page.locator("article.prose-editor");
+  // The <h1>…</h1> must be a real heading element, not literal "<h1>" text.
+  await expect(article.locator("h1")).toContainText(CONCEPT_HEADING);
+  await expect(article.locator("h2")).toContainText("Further Reading");
+  await expect(article).not.toContainText(`<h1>${CONCEPT_HEADING}</h1>`);
+  // The resolved wikilink became an in-app anchor; the unresolved one is inert text.
+  await expect(article.locator("a.pub-wikilink")).toHaveCount(2); // e2e-pub-second + Home
+});
+
 test("@live owner can exclude a note from a publication via the Content controls", async ({ context, page }) => {
   await authedContext(context);
   await page.goto("/");
   await page.getByRole("button", { name: "Network" }).click();
   await expect(page.getByRole("heading", { name: "Network" })).toBeVisible();
 
-  // Manifest starts with all three notes.
+  // Manifest starts with all four notes.
   const before = await (await fetch(`${BASE_URL}/api/p/${slug}`)).json();
-  expect(before.notes).toHaveLength(3);
+  expect(before.notes).toHaveLength(4);
 
   // Open this publication's settings, then its Content list.
   const card = page.locator(`[data-pub-slug="${slug}"]`);
@@ -114,5 +137,5 @@ test("@live owner can exclude a note from a publication via the Content controls
   // The public manifest now drops that note.
   await expect.poll(async () => (await (await fetch(`${BASE_URL}/api/p/${slug}`)).json()).notes.length, {
     timeout: 10_000,
-  }).toBe(2);
+  }).toBe(3);
 });
