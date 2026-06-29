@@ -38,6 +38,16 @@ pub fn run() {
     log::info!("Parachute: url={}, vault={}, api_key_present={}", parachute_url, parachute_vault, parachute_key.is_some());
     let parachute = ParachuteClient::new(&parachute_url, &parachute_vault, parachute_key.clone());
 
+    // Write the managed MCP config from the ACTIVE vault so `claude -p` agent runs
+    // target the current vault (regenerated on every vault switch). This is what
+    // makes Parachute MCP work in a released `.app` whose cwd has no repo `.mcp.json`.
+    if let Some(tok) = &parachute_key {
+        match crate::commands::config::AppConfig::write_managed_mcp_config(&parachute_url, &parachute_vault, tok) {
+            Ok(p) => log::info!("Managed MCP config written: {:?}", p),
+            Err(e) => log::warn!("Failed to write managed MCP config: {}", e),
+        }
+    }
+
     // Matrix client configured from omniharmonic .env
     let matrix_client = MatrixClient::new(
         &app_config.matrix_homeserver,

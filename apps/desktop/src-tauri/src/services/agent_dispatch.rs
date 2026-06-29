@@ -79,6 +79,25 @@ impl DispatchManager {
         }
     }
 
+    /// Repoint the background dispatch stack at a different vault with no restart.
+    /// The report-note writer (`parachute`) follows immediately. The `claude -p`
+    /// agent path follows via the regenerated managed MCP config (rewritten by the
+    /// caller). `reconnect_local_mcp` handles the optional local-model MCP session.
+    pub fn set_vault(&self, url: &str, vault: &str, token: Option<String>) {
+        self.parachute.set_vault(url, vault, token);
+    }
+
+    /// Reconnect the local-model agent's vault MCP session to `mcp_url` (no-op when
+    /// no local agent is wired). Best-effort: logs and swallows reconnect errors so
+    /// a vault switch never fails on the opt-in local path.
+    pub async fn reconnect_local_mcp(&self, mcp_url: &str, api_key: Option<&str>) {
+        if let Some(agent) = &self.local_agent {
+            if let Err(e) = agent.reconnect_mcp(mcp_url, api_key).await {
+                log::warn!("local agent MCP reconnect failed (vault switch): {e}");
+            }
+        }
+    }
+
     /// Resolve the effective routing for a dispatch, honoring optional per-skill
     /// overrides and falling back to the global background defaults.
     ///
@@ -417,9 +436,16 @@ fn spawn_claude_process(
 
     // Pass --mcp-config explicitly rather than relying on global auto-discovery.
     // A future Claude Code release makes --bare the default for -p, which skips
-    // auto-discovery of ~/.claude/settings.json MCP servers; passing the project
-    // .mcp.json keeps Parachute MCP available in this fallback path regardless.
-    let mcp_config = prism_root.join(".mcp.json");
+    // auto-discovery of ~/.claude/settings.json MCP servers; passing an explicit
+    // config keeps Parachute MCP available in this fallback path regardless.
+    // Prefer the MANAGED config (regenerated from the active vault on every switch,
+    // and present even in a released `.app`); fall back to the repo `.mcp.json`.
+    let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
+    let mcp_config = if managed.exists() {
+        managed
+    } else {
+        prism_root.join(".mcp.json")
+    };
     let mut args = vec![
         "-p".to_string(),
         "--model".to_string(), "sonnet".to_string(),

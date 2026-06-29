@@ -109,7 +109,14 @@ impl ClaudeClient {
         model: &str,
         timeout_secs: u64,
     ) -> Result<String, PrismError> {
-        let mcp_config = self.prism_root.join(".mcp.json");
+        // Prefer the managed MCP config (regenerated from the ACTIVE vault on every
+        // switch, present even in a released `.app`); fall back to the repo file.
+        let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
+        let mcp_config = if managed.exists() {
+            managed
+        } else {
+            self.prism_root.join(".mcp.json")
+        };
         let mut args = vec![
             "-p".to_string(),
             "--model".to_string(),
@@ -160,7 +167,14 @@ impl ClaudeClient {
         session_id: Option<&str>,
         timeout_secs: u64,
     ) -> Result<ClaudeJsonResponse, PrismError> {
-        let mcp_config = self.prism_root.join(".mcp.json");
+        // Prefer the managed MCP config (regenerated from the ACTIVE vault on every
+        // switch, present even in a released `.app`); fall back to the repo file.
+        let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
+        let mcp_config = if managed.exists() {
+            managed
+        } else {
+            self.prism_root.join(".mcp.json")
+        };
         let mut args = vec![
             "-p".to_string(),
             "--model".to_string(),

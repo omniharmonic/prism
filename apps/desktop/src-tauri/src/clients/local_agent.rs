@@ -56,6 +56,13 @@ impl LocalAgent {
         self.client.base_url()
     }
 
+    /// Repoint the agent's vault MCP connection at a different vault (no restart).
+    /// Delegates to the live MCP client's `reconnect`; the local model server URL
+    /// is unchanged (only the vault it reads/writes moves).
+    pub async fn reconnect_mcp(&self, mcp_url: &str, api_key: Option<&str>) -> Result<(), PrismError> {
+        self.mcp.reconnect(mcp_url, api_key).await
+    }
+
     /// List models the local server currently exposes.
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, PrismError> {
         self.client.list_models().await

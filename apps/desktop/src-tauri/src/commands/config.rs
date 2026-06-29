@@ -306,6 +306,53 @@ impl AppConfig {
             .join("prism-config.json")
     }
 
+    /// Path to the managed MCP config that the app's `claude -p` agent runs use.
+    /// Lives beside `prism-config.json` and is regenerated from the ACTIVE vault
+    /// at launch and on every vault switch, so background agents always target the
+    /// current vault — independent of the static repo `.mcp.json` (which doesn't
+    /// even ship inside a released `.app`).
+    pub fn managed_mcp_config_path() -> PathBuf {
+        Self::config_path().with_file_name("prism-mcp.json")
+    }
+
+    /// (Re)write the managed MCP config so `claude -p` agent runs target the given
+    /// vault. `server_root` is the configured URL (a bare hub root, tolerating a
+    /// legacy `/api` suffix). The file holds a vault token, so it's chmod 600 on
+    /// unix — matching how `.env` secrets are handled.
+    pub fn write_managed_mcp_config(
+        server_root: &str,
+        vault: &str,
+        token: &str,
+    ) -> Result<PathBuf, PrismError> {
+        let root = server_root.trim_end_matches('/');
+        let root = root.strip_suffix("/api").unwrap_or(root);
+        let url = format!("{}/vault/{}/mcp", root, vault);
+        let cfg = serde_json::json!({
+            "mcpServers": {
+                "parachute-vault": {
+                    "type": "http",
+                    "url": url,
+                    "headers": { "Authorization": format!("Bearer {}", token) }
+                }
+            }
+        });
+        let path = Self::managed_mcp_config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
+        }
+        let json = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| PrismError::Other(format!("Serialize MCP config: {}", e)))?;
+        std::fs::write(&path, json)
+            .map_err(|e| PrismError::Io(format!("Write MCP config to {:?}: {}", path, e)))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(path)
+    }
+
     /// Search common locations for a legacy omniharmonic .env file (one-time migration).
     fn find_legacy_env() -> Option<PathBuf> {
         let home = dirs::home_dir()?;

@@ -26,12 +26,18 @@ pub struct McpToolDef {
 /// let mcp = PrismMcpClient::connect("http://localhost:1940/mcp", Some("my-api-key")).await?;
 /// let result = mcp.call_tool("query-notes", json!({"search": "hello"})).await?;
 /// ```
-pub struct PrismMcpClient {
+/// Mutable connection target — swapped atomically by [`PrismMcpClient::reconnect`]
+/// so a vault switch repoints the live MCP session without rebuilding the client.
+struct ConnState {
     mcp_url: String,
-    client: Client,
-    tools: Vec<McpToolDef>,
     session_id: Option<String>,
     api_key: Option<String>,
+}
+
+pub struct PrismMcpClient {
+    conn: std::sync::RwLock<ConnState>,
+    client: Client,
+    tools: Vec<McpToolDef>,
     next_id: AtomicU64,
 }
 
@@ -164,26 +170,108 @@ impl PrismMcpClient {
         );
 
         Ok(Self {
-            mcp_url: mcp_url.to_string(),
+            conn: std::sync::RwLock::new(ConnState {
+                mcp_url: mcp_url.to_string(),
+                session_id,
+                api_key,
+            }),
             client,
             tools,
-            session_id,
-            api_key,
             next_id,
         })
     }
 
-    /// Build a POST request to the MCP endpoint with auth + session + accept headers.
-    fn build_request(&self) -> reqwest::RequestBuilder {
-        let mut req = self
+    /// Repoint the live MCP session at a different vault's endpoint with NO
+    /// rebuild — re-runs the initialize handshake against `mcp_url` for a fresh
+    /// session, then swaps in the new url + key. Cached tool defs are reused (the
+    /// Parachute MCP surface is identical across vaults). Used by the multi-vault
+    /// switcher so background/local-model agents follow a vault switch live.
+    pub async fn reconnect(&self, mcp_url: &str, api_key: Option<&str>) -> Result<(), PrismError> {
+        let api_key = api_key.map(|s| s.to_string());
+
+        // --- initialize ---
+        let init_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let init_body = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "prism", "version": "0.1.3" }
+            }
+        });
+        let mut init_req = self
             .client
-            .post(&self.mcp_url)
+            .post(mcp_url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
-        if let Some(key) = &self.api_key {
+        if let Some(key) = &api_key {
+            init_req = init_req.header("Authorization", format!("Bearer {key}"));
+        }
+        let init_resp = init_req
+            .json(&init_body)
+            .send()
+            .await
+            .map_err(|e| PrismError::Mcp(format!("reconnect initialize failed: {e}")))?;
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let init_json: Value = init_resp
+            .json()
+            .await
+            .map_err(|e| PrismError::Mcp(format!("reconnect initialize parse failed: {e}")))?;
+        if init_json.get("error").is_some() {
+            return Err(PrismError::Mcp(format!(
+                "reconnect initialize error: {}",
+                init_json["error"]
+            )));
+        }
+
+        // --- notifications/initialized ---
+        let mut notif_req = self
+            .client
+            .post(mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &api_key {
+            notif_req = notif_req.header("Authorization", format!("Bearer {key}"));
+        }
+        if let Some(sid) = &session_id {
+            notif_req = notif_req.header("mcp-session-id", sid);
+        }
+        notif_req
+            .json(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .send()
+            .await
+            .map_err(|e| PrismError::Mcp(format!("reconnect initialized notification failed: {e}")))?;
+
+        if let Ok(mut c) = self.conn.write() {
+            c.mcp_url = mcp_url.to_string();
+            c.session_id = session_id;
+            c.api_key = api_key;
+        }
+        log::info!("MCP client reconnected to {}", mcp_url);
+        Ok(())
+    }
+
+    /// Build a POST request to the MCP endpoint with auth + session + accept headers.
+    fn build_request(&self) -> reqwest::RequestBuilder {
+        let (url, key, sid) = {
+            let c = self.conn.read().expect("mcp conn lock poisoned");
+            (c.mcp_url.clone(), c.api_key.clone(), c.session_id.clone())
+        };
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+        if let Some(key) = &key {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
-        if let Some(sid) = &self.session_id {
+        if let Some(sid) = &sid {
             req = req.header("mcp-session-id", sid);
         }
         req

@@ -104,12 +104,17 @@ pub fn vault_list(config: tauri::State<'_, AppConfig>) -> Result<Vec<VaultSummar
         .collect())
 }
 
-/// Switch the active vault and repoint the live `ParachuteClient` with no restart.
+/// Switch the active vault and repoint the ENTIRE live stack with no restart:
+/// the REST `ParachuteClient`, the managed MCP config that `claude -p` agents read,
+/// the background `DispatchManager` (report-note writer), and the optional
+/// local-model agent's MCP session. After this returns, both interactive reads and
+/// background agent runs target the newly-selected vault.
 #[tauri::command]
 pub fn vault_set_active(
     id: String,
     config: tauri::State<'_, AppConfig>,
     parachute: tauri::State<'_, ParachuteClient>,
+    dispatch: tauri::State<'_, std::sync::Arc<crate::services::agent_dispatch::DispatchManager>>,
 ) -> Result<(), PrismError> {
     let mut cfg = load_normalized(&config);
     let entry = cfg
@@ -125,8 +130,28 @@ pub fn vault_set_active(
     cfg.normalize_vaults();
     cfg.save()?;
 
-    // Repoint the live client so reads/writes immediately hit the new vault.
-    parachute.set_vault(&entry.url, &entry.vault, Some(entry.token));
+    // 1. Repoint the live REST client so reads/writes immediately hit the new vault.
+    parachute.set_vault(&entry.url, &entry.vault, Some(entry.token.clone()));
+
+    // 2. Rewrite the managed MCP config so the NEXT `claude -p` agent run targets
+    //    the new vault (the file path is stable; only its contents change).
+    if let Err(e) =
+        AppConfig::write_managed_mcp_config(&entry.url, &entry.vault, &entry.token)
+    {
+        log::warn!("vault switch: failed to rewrite managed MCP config: {e}");
+    }
+
+    // 3. Repoint the background dispatch stack (report-note writer + local MCP).
+    dispatch.set_vault(&entry.url, &entry.vault, Some(entry.token.clone()));
+    let root = entry.url.trim_end_matches('/');
+    let root = root.strip_suffix("/api").unwrap_or(root);
+    let mcp_url = format!("{}/vault/{}/mcp", root, entry.vault);
+    let token = entry.token.clone();
+    let dispatch_inner = dispatch.inner().clone();
+    tauri::async_runtime::block_on(async move {
+        dispatch_inner.reconnect_local_mcp(&mcp_url, Some(&token)).await;
+    });
+
     log::info!("Active vault switched to '{}' ({})", entry.label, entry.vault);
     Ok(())
 }
@@ -200,15 +225,34 @@ pub fn vault_create(
     cfg.vaults.push(entry.clone());
     cfg.save()?;
 
-    // Best-effort schema seed via the same client, repointed at the new vault.
-    // Deferred: the desktop has no Rust seeder, so we note this rather than ship a
-    // half-seed. (The web/server path seeds via seedTagSchemas; on desktop the
-    // `prism-setup-schema` skill / CLI handles seeding.)
+    // Seed starter tag schemas on the new vault (idempotent + additive). Mirrors
+    // the web/server `seedTagSchemas`; the canonical schema is bundled into the
+    // binary (see `schema_seed`). Best-effort: a seeding failure never fails the
+    // create — the vault is already registered and usable.
     if seed_schemas.unwrap_or(true) {
-        log::info!(
-            "vault_create('{}'): schema seeding deferred — run prism-setup-schema against '{}'",
-            name, name
-        );
+        // Normalize the configured URL to a bare server root (tolerate a legacy
+        // `/api` suffix / trailing slash), matching `ParachuteClient::compute_urls`.
+        let root = entry.url.trim_end_matches('/');
+        let root = root.strip_suffix("/api").unwrap_or(root).to_string();
+        let seed_vault = entry.vault.clone();
+        let seed_token = entry.token.clone();
+        match tauri::async_runtime::block_on(crate::commands::schema_seed::seed_tag_schemas(
+            &root,
+            &seed_vault,
+            &seed_token,
+        )) {
+            Ok(s) => log::info!(
+                "vault_create('{}'): seeded schemas — {} created, {} updated, {} unchanged",
+                name,
+                s.created.len(),
+                s.updated.len(),
+                s.unchanged
+            ),
+            Err(e) => log::warn!(
+                "vault_create('{}'): schema seeding failed (vault still usable): {}",
+                name, e
+            ),
+        }
     }
 
     let summary = VaultSummary::from_entry(&entry, &cfg.active_vault_id);
