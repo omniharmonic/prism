@@ -22,13 +22,17 @@ export default function NetworkRenderer(_props: RendererProps) {
   const sharing = useCollabSharing();
   const canPublish = !!sharing?.publishTag;
   const canFederate = !!sharing?.getNodeIdentity;
+  // Multi-vault is the Prism Server's owner-passthrough registry — web only. The
+  // desktop talks to its own single configured vault, so it doesn't expose
+  // listVaults; hide the tab there rather than show a dead "not available" panel.
+  const canVaults = !!sharing?.listVaults;
 
   const tabs = [
     ...(canPublish ? [{ id: "publish", label: "Publish", icon: <Globe size={14} /> }] : []),
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
-    { id: "vaults", label: "Vaults", icon: <Database size={14} /> },
+    ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
   ];
-  const [tab, setTab] = useState<string>(tabs[0]?.id ?? "vaults");
+  const [tab, setTab] = useState<string>(tabs[0]?.id ?? "publish");
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
