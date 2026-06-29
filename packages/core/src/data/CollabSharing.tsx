@@ -169,10 +169,10 @@ export interface CollabSharing {
   setPublishPassword?(tag: string, password: string | null): Promise<void>;
   /** Set/clear a publication's password by slug — works for tag + path publications. */
   setPublicationPassword?(slug: string, password: string | null): Promise<void>;
-  /** Per-publication tending: choose the home note and/or hand-exclude notes. */
+  /** Per-publication tending: rename, choose the home note, and/or hand-exclude notes. */
   updatePublicationSettings?(
     slug: string,
-    settings: { homeNoteId?: string | null; excludeNoteIds?: string[] },
+    settings: { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: string[] },
   ): Promise<void>;
   unpublishTag?(tag: string): Promise<void>;
   /** Unpublish by slug — works for both tag and path publications. */

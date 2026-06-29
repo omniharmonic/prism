@@ -77,7 +77,7 @@ export function PublishPanel() {
       ]);
       if (!alive) return;
       // Seed live counts for whatever is already published.
-      if (list) void loadCounts(list.map((p) => p.tag));
+      if (list) void loadCounts(list);
       setLoading(false);
     })();
     return () => {
@@ -86,19 +86,42 @@ export function PublishPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
-  // Fetch live counts for a set of tags (used after publish/refresh).
+  // Live note counts per publication (keyed by slug). Tag pubs count by tag;
+  // PATH pubs count membership under the prefix — NOT listNotes({tag:""}), which
+  // returns the WHOLE vault (the "Publishing 8465 notes" miscount). The number
+  // here matches what's actually published.
   const loadCounts = useCallback(
-    async (tagList: string[]) => {
+    async (pubList: PublicationInfo[]) => {
       await Promise.all(
-        tagList.map(async (tag) => {
-          try {
-            const notes = await vault.listNotes({ tag });
-            setCounts((c) => ({ ...c, [tag]: notes.length }));
-          } catch {
-            /* leave undefined → falls back to picker count */
-          }
-        }),
+        pubList
+          .filter((p) => p.kind !== "path")
+          .map(async (p) => {
+            try {
+              const notes = await vault.listNotes({ tag: p.tag });
+              setCounts((c) => ({ ...c, [p.slug]: notes.length }));
+            } catch {
+              /* leave undefined → falls back to picker count */
+            }
+          }),
       );
+      const pathPubs = pubList.filter((p) => p.kind === "path");
+      if (pathPubs.length) {
+        try {
+          const all = await vault.listNotes({}); // one fetch, filtered per prefix
+          setCounts((c) => {
+            const next = { ...c };
+            for (const p of pathPubs) {
+              const pre = p.pathPrefix ?? "";
+              next[p.slug] = all.filter(
+                (n) => n.path === pre || (n.path?.startsWith(pre + "/") ?? false),
+              ).length;
+            }
+            return next;
+          });
+        } catch {
+          /* leave undefined */
+        }
+      }
     },
     [vault],
   );
@@ -117,11 +140,12 @@ export function PublishPanel() {
     [],
   );
 
-  // Resolve the best-known count for a tag: live count > picker count.
+  // Resolve the best-known count for a publication: live count (by slug) > picker
+  // count (tag pubs only — a path pub's count is meaningless against the tag list).
   const countFor = useCallback(
-    (tag: string): number | undefined => {
-      if (counts[tag] !== undefined) return counts[tag];
-      return tags.find((t) => t.tag === tag)?.count;
+    (pub: PublicationInfo): number | undefined => {
+      if (counts[pub.slug] !== undefined) return counts[pub.slug];
+      return pub.kind === "tag" ? tags.find((t) => t.tag === pub.tag)?.count : undefined;
     },
     [counts, tags],
   );
@@ -188,13 +212,13 @@ export function PublishPanel() {
               <PublicationRow
                 key={p.slug}
                 pub={p}
-                count={countFor(p.tag)}
+                count={countFor(p)}
                 copied={copied}
                 onCopy={copy}
                 sharing={sharing}
                 onChanged={async () => {
                   const list = await refresh();
-                  if (list) void loadCounts(list.map((x) => x.tag));
+                  if (list) void loadCounts(list);
                 }}
               />
             ))}
@@ -210,7 +234,7 @@ export function PublishPanel() {
         onPublished={async () => {
           const list = await refresh();
           // Live counts only apply to tag pubs (path pubs report their own count).
-          if (list) void loadCounts(list.filter((p) => p.kind !== "path").map((x) => x.tag));
+          if (list) void loadCounts(list);
         }}
       />
     </div>
@@ -480,10 +504,15 @@ function PublicationSettings({
     setSavingTitle(true);
     setTitleError(null);
     try {
-      // Re-publishing is idempotent — used here to update the title.
-      const opts = { template: pub.template || "wiki", title: title.trim() };
-      if (pub.kind === "path") await sharing.publishPath?.(pub.pathPrefix ?? "", opts);
-      else await sharing.publishTag?.(pub.tag, opts);
+      // Title is a per-publication SETTING — update it by slug. (Re-publishing an
+      // existing tag/path only updated the password, so the title never stuck.)
+      if (sharing.updatePublicationSettings) {
+        await sharing.updatePublicationSettings(pub.slug, { title: title.trim() || null });
+      } else {
+        const opts = { template: pub.template || "wiki", title: title.trim() };
+        if (pub.kind === "path") await sharing.publishPath?.(pub.pathPrefix ?? "", opts);
+        else await sharing.publishTag?.(pub.tag, opts);
+      }
       await onChanged();
     } catch (e) {
       setTitleError(e instanceof Error ? e.message : "Couldn't save the title.");

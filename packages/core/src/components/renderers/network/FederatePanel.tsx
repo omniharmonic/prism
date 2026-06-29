@@ -854,14 +854,20 @@ function SpaceCard({
   const tag = space.includeTags?.[0];
 
   // Best-effort note count (no per-space membership endpoint yet — derive it).
+  // A space can be scoped by tag, by path prefix, or both. A path-ONLY space
+  // counted by tag would always read 0 — so when there's no tag, enumerate by
+  // path. The prefix matches the directory AND everything beneath it (subfolders).
   const loadNotes = useCallback(async () => {
-    if (!tag) {
+    const pre = space.pathPrefix;
+    if (!tag && !pre) {
       setNotes([]);
       setCount(0);
       return;
     }
-    const all = await vault.listNotes({ tag });
-    const filtered = space.pathPrefix ? all.filter((n) => n.path?.startsWith(space.pathPrefix!)) : all;
+    const all = tag ? await vault.listNotes({ tag }) : await vault.listNotes({});
+    const filtered = pre
+      ? all.filter((n) => n.path === pre || (n.path?.startsWith(pre + "/") ?? false))
+      : all;
     setNotes(filtered);
     setCount(filtered.length);
   }, [vault, tag, space.pathPrefix]);

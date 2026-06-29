@@ -494,10 +494,18 @@ acl.put("/publications/:slug/settings", async (c) => {
   const pub = getPublicationBySlug(c.req.param("slug"));
   if (!pub) return c.json({ error: "not_found" }, 404);
   const body = await c.req
-    .json<{ homeNoteId?: string | null; excludeNoteIds?: unknown }>()
-    .catch(() => ({}) as { homeNoteId?: string | null; excludeNoteIds?: unknown });
+    .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown }>()
+    .catch(() => ({}) as { title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown });
 
-  const patch: { home_note_id?: string | null; excluded_note_ids?: string | null } = {};
+  const patch: { title?: string | null; home_note_id?: string | null; excluded_note_ids?: string | null } = {};
+
+  if ("title" in body) {
+    if (body.title !== null && typeof body.title !== "string") {
+      return c.json({ error: "bad_request", detail: "title must be a string or null" }, 400);
+    }
+    // Empty string → clear (fall back to derived title).
+    patch.title = body.title && body.title.trim() ? body.title.trim() : null;
+  }
 
   if ("homeNoteId" in body) {
     if (body.homeNoteId !== null && typeof body.homeNoteId !== "string") {
