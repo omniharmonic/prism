@@ -15,6 +15,7 @@ let slug = "";
 let homeId = "";
 
 const HOME_BODY = "E2EPUB_HOME_BODY_MARKER_42";
+const COMMENT_HEADING = "E2EPUB Comment Heading Marker";
 
 test.beforeAll(async () => {
   const home = await vault.createNote({ content: `# E2E Publish Home\n\n${HOME_BODY}`, path: "_test/e2epub/e2e-pub-home.md" });
@@ -26,6 +27,15 @@ test.beforeAll(async () => {
   created.push(second.id);
   await vault.addTags(second.id, [TAG]);
 
+  // Markdown note that STARTS WITH an HTML comment (the bug: misclassified as
+  // HTML → dumped raw, with `##` shown literally and newlines collapsed).
+  const withComment = await vault.createNote({
+    content: `<!-- Note: leading comment -->\n\n## ${COMMENT_HEADING}\n\nBody with **bold** text.`,
+    path: "_test/e2epub/e2e-pub-comment.md",
+  });
+  created.push(withComment.id);
+  await vault.addTags(withComment.id, [TAG]);
+
   slug = await acl.publishTag(TAG, { title: "E2E Pub Site", homeNoteId: homeId });
 });
 
@@ -35,9 +45,9 @@ test.afterAll(async () => {
 });
 
 test("@live public wiki renders both in-set notes in the nav and the home body", async ({ page }) => {
-  // Sanity: the anonymous manifest lists exactly our two notes.
+  // Sanity: the anonymous manifest lists our three notes.
   const m = await (await fetch(`${BASE_URL}/api/p/${slug}`)).json();
-  expect(m.notes).toHaveLength(2);
+  expect(m.notes).toHaveLength(3);
 
   await page.goto(`/p/${slug}`);
 
@@ -51,4 +61,16 @@ test("@live public wiki renders both in-set notes in the nav and the home body",
   const nav = page.locator("nav").first();
   await expect(nav.getByText("e2e pub home", { exact: false })).toBeVisible();
   await expect(nav.getByText("e2e-pub-second", { exact: false })).toBeVisible();
+});
+
+test("@live a markdown note starting with an HTML comment renders as markdown, not raw", async ({ page }) => {
+  await page.goto(`/p/${slug}`);
+  await page.locator("nav").first().getByText("e2e-pub-comment", { exact: false }).click();
+
+  const article = page.locator("article.prose-editor");
+  // `## …` became an <h2> (markdown parsed) and `**bold**` became <strong>…
+  await expect(article.locator("h2")).toContainText(COMMENT_HEADING);
+  await expect(article.locator("strong")).toContainText("bold");
+  // …not dumped as literal markdown syntax.
+  await expect(article).not.toContainText(`## ${COMMENT_HEADING}`);
 });

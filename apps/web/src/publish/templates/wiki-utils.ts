@@ -79,8 +79,23 @@ export function renderWikiBody(content: string, idx: LinkIndex, slug: string): s
     }
     return escapeHtml(display);
   });
-  if (sub.trim().startsWith("<")) return sub;
+  if (looksLikeHtml(sub)) return sub;
   return marked.parse(sub) as string;
+}
+
+/**
+ * Is this body ALREADY html (TipTap-saved) vs markdown source? TipTap html opens
+ * with a block element; markdown often opens with a leading html comment
+ * (`<!-- … -->`), a blockquote (`>`), or other text — a bare `startsWith("<")`
+ * misclassifies all of those as html and dumps the raw markdown (newlines
+ * collapse → one giant paragraph with literal `##`/`**`). So ignore leading
+ * comments + whitespace, then require a real block-level opening tag.
+ */
+function looksLikeHtml(s: string): boolean {
+  const stripped = s.replace(/^(?:\s|<!--[\s\S]*?-->)*/, "");
+  return /^<(p|div|h[1-6]|ul|ol|li|blockquote|pre|table|thead|tbody|tr|td|th|section|article|figure|figcaption|img|hr|a|span|strong|em|b|i|code)[\s/>]/i.test(
+    stripped,
+  );
 }
 
 // ---------------------------------------------------------------------------
