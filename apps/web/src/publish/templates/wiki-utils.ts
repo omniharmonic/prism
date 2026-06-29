@@ -64,8 +64,14 @@ export function resolveTarget(idx: LinkIndex, target: string): string | null {
  * Render a note body to HTML with scoped wikilinks. `[[target]]` /
  * `[[target|display]]` becomes an in-app anchor (carrying `data-target=<id>`)
  * ONLY when it resolves to a note in this publication; otherwise it collapses to
- * inert plain text (no link, no leak), matching ShareView's flattening. HTML
- * note bodies pass through (still wikilink-substituted); markdown is converted.
+ * inert plain text (no link, no leak), matching ShareView's flattening.
+ *
+ * We ALWAYS run `marked`. It parses markdown AND passes embedded HTML blocks
+ * through verbatim (it does NOT markdown-parse text inside an HTML block, so
+ * TipTap-saved HTML survives untouched). The old all-or-nothing "looks like
+ * HTML? skip markdown" check broke the common case of a note that LEADS with an
+ * HTML block (a Substack/Medium `<iframe>`/`<figure>`/`<img>` embed) then has a
+ * markdown body — the whole body was dumped raw (literal `##`/`**`).
  */
 export function renderWikiBody(content: string, idx: LinkIndex, slug: string): string {
   const c = content ?? "";
@@ -79,23 +85,10 @@ export function renderWikiBody(content: string, idx: LinkIndex, slug: string): s
     }
     return escapeHtml(display);
   });
-  if (looksLikeHtml(sub)) return sub;
-  return marked.parse(sub) as string;
-}
-
-/**
- * Is this body ALREADY html (TipTap-saved) vs markdown source? TipTap html opens
- * with a block element; markdown often opens with a leading html comment
- * (`<!-- … -->`), a blockquote (`>`), or other text — a bare `startsWith("<")`
- * misclassifies all of those as html and dumps the raw markdown (newlines
- * collapse → one giant paragraph with literal `##`/`**`). So ignore leading
- * comments + whitespace, then require a real block-level opening tag.
- */
-function looksLikeHtml(s: string): boolean {
-  const stripped = s.replace(/^(?:\s|<!--[\s\S]*?-->)*/, "");
-  return /^<(p|div|h[1-6]|ul|ol|li|blockquote|pre|table|thead|tbody|tr|td|th|section|article|figure|figcaption|img|hr|a|span|strong|em|b|i|code)[\s/>]/i.test(
-    stripped,
-  );
+  // Drop broken empty-text links — Substack/Medium image exports that lost their
+  // image leave `[\n\n](url)`, which marked emits as a literal `<p>[</p>`.
+  const cleaned = sub.replace(/\[\s*\]\([^)]*\)/g, "");
+  return marked.parse(cleaned) as string;
 }
 
 // ---------------------------------------------------------------------------

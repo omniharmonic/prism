@@ -41,10 +41,11 @@ test.beforeAll(async () => {
   created.push(second.id);
   await vault.addTags(second.id, [TAG]);
 
-  // Markdown note that STARTS WITH an HTML comment (the bug: misclassified as
-  // HTML → dumped raw, with `##` shown literally and newlines collapsed).
+  // Markdown note that LEADS WITH an HTML block (Substack/Medium exports start
+  // with an <iframe>/<figure> embed, then markdown) — the bug: the body was
+  // misclassified as HTML → dumped raw, with `##` literal + newlines collapsed.
   const withComment = await vault.createNote({
-    content: `<!-- Note: leading comment -->\n\n## ${COMMENT_HEADING}\n\nBody with **bold** text.`,
+    content: `<iframe src="https://www.youtube.com/embed/x"></iframe>\n\n## ${COMMENT_HEADING}\n\nBody with **bold** text.`,
     path: "_test/e2epub/e2e-pub-comment.md",
   });
   created.push(withComment.id);

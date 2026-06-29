@@ -23,6 +23,8 @@ export { sanitizeHtml } from "./lib/html/sanitize";
 // Data-source seam — the boundary every host shell implements.
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph, SemanticHit } from "./data/VaultClient";
+export { GraphCanvas } from "./components/layout/GraphPanel";
+export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphPanel";
 
 // Collab sharing seam — host shells inject how share links are minted.
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
