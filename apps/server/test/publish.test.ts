@@ -28,6 +28,7 @@ import {
   type FakeVault,
 } from "./helpers";
 import {
+  db,
   addGrant,
   createPublication,
   getPublicationByResource,
@@ -361,6 +362,122 @@ test("slug-based password set/clear gates a path publication", async () => {
   const open = await readJson(await publish.request(`/${slug}`));
   assert.equal(open.passwordRequired, false);
   assert.deepEqual(open.notes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+});
+
+// ── per-publication tending (exclude notes + home note) ──────────────────────
+/** Three in-tag notes (so we can exclude the middle one). */
+function seedThree() {
+  fv.put({ id: "t1", path: "wiki/one.md", tags: ["wiki"], content: "# One" });
+  fv.put({ id: "t2", path: "wiki/two.md", tags: ["wiki"], content: "# Two" });
+  fv.put({ id: "t3", path: "wiki/three.md", tags: ["wiki"], content: "# Three" });
+}
+
+test("excludeNoteIds drops a note from manifest, single-note route, and graph", async () => {
+  seedThree();
+  publishTag("site3", "wiki");
+
+  // exclude t2 via the settings endpoint.
+  const set = await ownerReq("/publications/site3/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t2"] }),
+  });
+  assert.equal(set.status, 200);
+  assert.deepEqual(await readJson(set), { ok: true });
+
+  // manifest lists 2 notes, t2 absent.
+  const man = await readJson(await publish.request("/site3"));
+  assert.deepEqual(man.notes.map((n: { id: string }) => n.id).sort(), ["t1", "t3"]);
+  assert.ok(!man.notes.some((n: { id: string }) => n.id === "t2"));
+
+  // single-note route for the excluded id → forbidden (same leak-proofing as
+  // an out-of-set id — see the `secret` 403 case above).
+  assert.equal((await publish.request("/site3/notes/t2")).status, 403);
+  assert.equal((await publish.request("/site3/notes/t1")).status, 200);
+
+  // graph excludes t2 (routes through publicationNotes).
+  const { nodes } = await readJson(await publish.request("/site3/graph"));
+  assert.deepEqual(nodes.map((n: { id: string }) => n.id).sort(), ["t1", "t3"]);
+});
+
+test("homeNoteId reflects an in-set note, and degrades to nav[0] when out-of-set/excluded", async () => {
+  seedThree();
+  publishTag("site4", "wiki");
+
+  // set home to an in-set note → manifest reflects it.
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "t3" }),
+  });
+  let man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t3");
+
+  // exclude t3 → home falls back to nav[0] (an excluded id is not in the set).
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t3"] }),
+  });
+  man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t1", "excluded home degrades to nav[0]");
+
+  // point home at an entirely out-of-set id → also nav[0].
+  await ownerReq("/publications/site4/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "does-not-exist", excludeNoteIds: [] }),
+  });
+  man = await readJson(await publish.request("/site4"));
+  assert.equal(man.homeNoteId, "t1", "out-of-set home degrades to nav[0]");
+});
+
+test("GET /publications surfaces homeNoteId + excludeNoteIds", async () => {
+  seedThree();
+  publishTag("site5", "wiki");
+  await ownerReq("/publications/site5/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ homeNoteId: "t2", excludeNoteIds: ["t1"] }),
+  });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "site5");
+  assert.ok(row);
+  assert.equal(row.homeNoteId, "t2");
+  assert.deepEqual(row.excludeNoteIds, ["t1"]);
+});
+
+test("settings endpoint is owner-only and 404s an unknown slug", async () => {
+  seedThree();
+  publishTag("site6", "wiki");
+
+  // anon (no cookie) → 403 from the acl owner guard.
+  const anon = await acl.request("/publications/site6/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: ["t1"] }),
+  });
+  assert.equal(anon.status, 403);
+
+  // unknown slug → 404.
+  const missing = await ownerReq("/publications/nope/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: [] }),
+  });
+  assert.equal(missing.status, 404);
+
+  // bad excludeNoteIds type → 400.
+  const bad = await ownerReq("/publications/site6/settings", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ excludeNoteIds: "t1" }),
+  });
+  assert.equal(bad.status, 400);
+});
+
+test("migration: a pre-column publications row reads excludeNoteIds as []", async () => {
+  seedThree();
+  // Insert a row directly WITHOUT excluded_note_ids (simulates a row created
+  // before the migration added the column).
+  db.prepare(
+    `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, password_hash, theme, expires_at, created_by, created_at)
+     VALUES ('legacy', 'tag', 'wiki', 'wiki', NULL, NULL, NULL, NULL, NULL, 'owner', ?)`,
+  ).run(Date.now());
+  addGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: "wiki", level: "view", created_by: "test" });
+
+  const rows = await readJson<Array<any>>(await ownerReq("/publications"));
+  const row = rows.find((r) => r.slug === "legacy");
+  assert.ok(row);
+  assert.deepEqual(row.excludeNoteIds, []);
+  // and it still serves its full set.
+  const man = await readJson(await publish.request("/legacy"));
+  assert.equal(man.notes.length, 3);
 });
 
 test("GET /publications reports kind + pathPrefix/tag for both kinds", async () => {

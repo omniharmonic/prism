@@ -95,6 +95,7 @@ db.exec(`
     template      TEXT NOT NULL,      -- 'wiki' (template registry key)
     title         TEXT,
     home_note_id  TEXT,               -- landing note; null → derive at read time
+    excluded_note_ids TEXT,           -- JSON string[] of note ids to DROP from the set; null → []
     password_hash TEXT,               -- scrypt (auth/password.ts); null → open
     theme         TEXT,               -- JSON blob
     expires_at    INTEGER,            -- null → no expiry
@@ -237,6 +238,16 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(peers)").all() as Array<{ name: string }>;
   if (cols.length && !cols.some((c) => c.name === "collab_url")) {
     db.exec("ALTER TABLE peers ADD COLUMN collab_url TEXT");
+  }
+}
+
+// Migration: publications gained per-site "tending" controls — a list of note
+// ids to DROP from the public set even though they match the tag/path. Add the
+// column to an older db (CREATE TABLE IF NOT EXISTS won't alter an existing one).
+{
+  const cols = db.prepare("PRAGMA table_info(publications)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "excluded_note_ids")) {
+    db.exec("ALTER TABLE publications ADD COLUMN excluded_note_ids TEXT");
   }
 }
 
@@ -632,6 +643,7 @@ export interface Publication {
   template: string;
   title: string | null;
   home_note_id: string | null;
+  excluded_note_ids: string | null; // JSON string[]
   password_hash: string | null;
   theme: string | null;
   expires_at: number | null;
@@ -639,8 +651,8 @@ export interface Publication {
   created_at: number;
 }
 const insertPublication = db.prepare(
-  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, password_hash, theme, expires_at, created_by, created_at)
-   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
+  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, excluded_note_ids, password_hash, theme, expires_at, created_by, created_at)
+   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @excluded_note_ids, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
 );
 const selectPublication = db.prepare("SELECT * FROM publications WHERE id = ?");
 const selectPublicationByResource = db.prepare(
@@ -649,13 +661,27 @@ const selectPublicationByResource = db.prepare(
 const selectPublications = db.prepare("SELECT * FROM publications ORDER BY created_at DESC");
 const deletePublicationStmt = db.prepare("DELETE FROM publications WHERE id = ?");
 const updatePublicationStmt = db.prepare(
-  `UPDATE publications SET title=@title, home_note_id=@home_note_id, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
+  `UPDATE publications SET title=@title, home_note_id=@home_note_id, excluded_note_ids=@excluded_note_ids, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
 );
 
-export function createPublication(p: Omit<Publication, "created_at">): Publication {
-  const row: Publication = { ...p, created_at: now() };
+export function createPublication(
+  p: Omit<Publication, "created_at" | "excluded_note_ids"> & { excluded_note_ids?: string | null },
+): Publication {
+  const row: Publication = { excluded_note_ids: null, ...p, created_at: now() };
   insertPublication.run(row);
   return row;
+}
+
+/** Parsed list of note ids excluded from a publication's public set (defaults to
+ *  [] when unset or malformed). */
+export function excludedNoteIds(pub: Publication): string[] {
+  if (!pub.excluded_note_ids) return [];
+  try {
+    const parsed = JSON.parse(pub.excluded_note_ids);
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
 }
 export function getPublicationBySlug(slug: string): Publication | null {
   return (selectPublication.get(slug) as Publication | undefined) ?? null;
@@ -669,10 +695,10 @@ export function listPublications(): Publication[] {
 export function deletePublication(slug: string): void {
   deletePublicationStmt.run(slug);
 }
-/** Patch the mutable fields of a publication (title/home/password/theme/expiry). */
+/** Patch the mutable fields of a publication (title/home/excluded/password/theme/expiry). */
 export function updatePublication(
   slug: string,
-  patch: Partial<Pick<Publication, "title" | "home_note_id" | "password_hash" | "theme" | "expires_at">>,
+  patch: Partial<Pick<Publication, "title" | "home_note_id" | "excluded_note_ids" | "password_hash" | "theme" | "expires_at">>,
 ): Publication | null {
   const existing = getPublicationBySlug(slug);
   if (!existing) return null;
@@ -681,6 +707,7 @@ export function updatePublication(
     id: slug,
     title: merged.title,
     home_note_id: merged.home_note_id,
+    excluded_note_ids: merged.excluded_note_ids,
     password_hash: merged.password_hash,
     theme: merged.theme,
     expires_at: merged.expires_at,

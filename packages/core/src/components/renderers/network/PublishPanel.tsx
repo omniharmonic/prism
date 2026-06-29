@@ -288,6 +288,7 @@ function PublicationRow({
 
   return (
     <div
+      data-pub-slug={pub.slug}
       style={{
         background: "var(--glass)",
         border: "1px solid var(--glass-border)",
@@ -589,15 +590,194 @@ function PublicationSettings({
         {pwError && <ErrText>{pwError}</ErrText>}
       </Field>
 
+      {/* Per-publication content tending: home note + hand-exclude notes. */}
+      {sharing.updatePublicationSettings && (
+        <PublicationContent pub={pub} sharing={sharing} onChanged={onChanged} />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────── publication content ──
+// Lets the owner pick the landing note and exclude individual notes from the
+// public set when the tag/path heuristic sweeps in something that shouldn't be
+// public (or renders messily). Owner-only; uses the full vault to enumerate the
+// candidate set (including currently-excluded notes, so they can be re-included).
+
+function PublicationContent({
+  pub,
+  sharing,
+  onChanged,
+}: {
+  pub: PublicationInfo;
+  sharing: NonNullable<ReturnType<typeof useCollabSharing>>;
+  onChanged: () => void | Promise<void>;
+}) {
+  const vault = useVaultClient();
+  const [notes, setNotes] = useState<Array<{ id: string; title: string; path: string | null }> | null>(null);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set(pub.excludeNoteIds ?? []));
+  const [home, setHome] = useState<string | null>(pub.homeNoteId ?? null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const noteTitle = useCallback((n: { path: string | null; content?: string }): string => {
+    const base = (n.path ?? "").split("/").pop() ?? "";
+    return base.replace(/\.[a-z0-9]+$/i, "") || "Untitled";
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        // Candidate set: tag pubs → notes with the tag; path pubs → notes under
+        // the prefix (filtered client-side, since the vault path filter is exact).
+        let list = pub.kind === "path" ? await vault.listNotes({}) : await vault.listNotes({ tag: pub.tag });
+        if (pub.kind === "path" && pub.pathPrefix) {
+          const pre = pub.pathPrefix;
+          list = list.filter((n) => n.path === pre || (n.path?.startsWith(pre + "/") ?? false));
+        }
+        if (!alive) return;
+        setNotes(
+          list
+            .map((n) => ({ id: n.id, title: noteTitle(n), path: n.path }))
+            .sort((a, b) => (a.path ?? "").localeCompare(b.path ?? "")),
+        );
+      } catch {
+        if (alive) setNotes([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [vault, pub.kind, pub.tag, pub.pathPrefix, noteTitle]);
+
+  const dirty =
+    home !== (pub.homeNoteId ?? null) ||
+    excluded.size !== (pub.excludeNoteIds?.length ?? 0) ||
+    [...excluded].some((id) => !(pub.excludeNoteIds ?? []).includes(id));
+
+  const toggle = (id: string) =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else {
+        next.add(id);
+        if (home === id) setHome(null); // can't home an excluded note
+      }
+      return next;
+    });
+
+  const save = async () => {
+    if (!sharing.updatePublicationSettings) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await sharing.updatePublicationSettings(pub.slug, {
+        homeNoteId: home,
+        excludeNoteIds: [...excluded],
+      });
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save content settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const includedCount = (notes?.length ?? 0) - excluded.size;
+
+  return (
+    <div style={{ borderTop: "1px dashed var(--glass-border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-secondary)" }}>Content</div>
+        <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+          {notes ? `${includedCount} of ${notes.length} public` : "loading…"}
+        </span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
+        Uncheck a note to keep it out of the public wiki. Pick one as the landing page.
+      </div>
+
       <div
         style={{
-          fontSize: 11.5,
-          color: "var(--text-muted)",
-          borderTop: "1px dashed var(--glass-border)",
-          paddingTop: 12,
+          maxHeight: 220,
+          overflowY: "auto",
+          border: "1px solid var(--glass-border)",
+          borderRadius: 10,
+          background: "var(--bg-surface, var(--glass))",
         }}
       >
-        More settings coming — home note, theme, and a custom URL slug.
+        {!notes ? (
+          <div style={{ padding: "12px", fontSize: 12, color: "var(--text-muted)" }}>Loading notes…</div>
+        ) : notes.length === 0 ? (
+          <div style={{ padding: "12px", fontSize: 12, color: "var(--text-muted)" }}>No notes in this collection yet.</div>
+        ) : (
+          notes.map((n) => {
+            const isExcluded = excluded.has(n.id);
+            return (
+              <div
+                key={n.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "7px 10px",
+                  opacity: isExcluded ? 0.5 : 1,
+                  borderBottom: "1px solid var(--glass-border)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={!isExcluded}
+                  onChange={() => toggle(n.id)}
+                  title={isExcluded ? "Include in the wiki" : "Exclude from the wiki"}
+                  style={{ flexShrink: 0, cursor: "pointer" }}
+                />
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 12.5,
+                    color: "var(--text-secondary)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {n.title}
+                </span>
+                <button
+                  type="button"
+                  disabled={isExcluded}
+                  onClick={() => setHome(home === n.id ? null : n.id)}
+                  title="Set as the landing page"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 11,
+                    padding: "2px 7px",
+                    borderRadius: 999,
+                    cursor: isExcluded ? "default" : "pointer",
+                    border: `1px solid ${home === n.id ? "var(--color-accent)" : "var(--glass-border)"}`,
+                    background: home === n.id ? "var(--color-accent-dim, var(--glass-hover))" : "transparent",
+                    color: home === n.id ? "var(--color-accent)" : "var(--text-muted)",
+                  }}
+                >
+                  {home === n.id ? "Home" : "Set home"}
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {error && <ErrText>{error}</ErrText>}
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <Button variant="secondary" size="sm" loading={saving} disabled={!dirty} onClick={save}>
+          Save content
+        </Button>
       </div>
     </div>
   );

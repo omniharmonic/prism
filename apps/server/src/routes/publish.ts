@@ -18,7 +18,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { vault, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
-import { getPublicationBySlug, grantsForResource, type Publication } from "../db";
+import { getPublicationBySlug, grantsForResource, excludedNoteIds, type Publication } from "../db";
 import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
 import { pathInPrefix } from "../paths";
 import { config } from "../config";
@@ -128,13 +128,19 @@ function publicationActor(pub: Publication): Actor {
  *   membership itself regardless.
  */
 async function publicationNotes(pub: Publication, includeContent: boolean): Promise<Note[]> {
+  // Per-publication "tending": note ids the owner explicitly dropped from the
+  // public set even though they match the tag/path. Excluding here makes the
+  // exclusion authoritative for EVERY reader path (manifest nav, graph, and —
+  // because the single-note route re-checks membership against this same set —
+  // direct id access too).
+  const excluded = new Set(excludedNoteIds(pub));
   if (pub.resource_type === "path") {
     const notes = await vault.listNotes({ includeContent });
-    return notes.filter((n) => pathInPrefix(n.path, pub.resource));
+    return notes.filter((n) => !excluded.has(n.id) && pathInPrefix(n.path, pub.resource));
   }
   const actor = publicationActor(pub);
   const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
+  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
 }
 
 /** First non-empty heading/line of the content → text; fallback "Untitled". */
@@ -222,7 +228,10 @@ publish.get("/:slug", async (c) => {
       tags: n.tags ?? [],
     }));
 
-    homeNoteId = pub.home_note_id ?? nav[0]?.id ?? null;
+    // Home must be an in-set note. An unset home — or one pointing at a note
+    // that's been excluded / fallen out of the set — degrades to nav[0].
+    const homeInSet = pub.home_note_id && nav.some((n) => n.id === pub.home_note_id);
+    homeNoteId = (homeInSet ? pub.home_note_id : nav[0]?.id) ?? null;
     homeTitle = homeNoteId ? nav.find((n) => n.id === homeNoteId)?.title : undefined;
   }
 
@@ -324,11 +333,15 @@ publish.get("/:slug/notes/:id", async (c) => {
   }
 
   const tags = note.tags ?? [];
+  // An explicitly-excluded id is treated exactly like an out-of-set id (403) —
+  // same leak-proofing: no id-guessing into a note the owner tended away.
+  const excluded = new Set(excludedNoteIds(pub));
   const allowed =
-    pub.resource_type === "path"
+    !excluded.has(note.id) &&
+    (pub.resource_type === "path"
       ? pathInPrefix(note.path, pub.resource)
       : tags.includes(pub.resource) &&
-        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view");
+        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view"));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({

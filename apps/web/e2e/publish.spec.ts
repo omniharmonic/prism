@@ -1,5 +1,19 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type BrowserContext } from "@playwright/test";
+import { execSync } from "node:child_process";
+import { resolve } from "node:path";
 import { vault, acl, BASE_URL } from "./helpers";
+
+const SERVER_DIR = resolve(process.cwd(), "../server");
+function mintOwnerSession(): string {
+  return execSync("node --env-file=.env --import tsx scripts/mk-owner-session.ts", { cwd: SERVER_DIR, encoding: "utf8" }).trim();
+}
+async function authedContext(context: BrowserContext) {
+  const sid = mintOwnerSession();
+  const url = new URL(BASE_URL);
+  await context.addCookies([
+    { name: "prism_session", value: sid, domain: url.hostname, path: "/", httpOnly: true, sameSite: "Lax" },
+  ]);
+}
 
 /**
  * @live — needs the live Prism Server + Parachute vault.
@@ -73,4 +87,31 @@ test("@live a markdown note starting with an HTML comment renders as markdown, n
   await expect(article.locator("strong")).toContainText("bold");
   // …not dumped as literal markdown syntax.
   await expect(article).not.toContainText(`## ${COMMENT_HEADING}`);
+});
+
+test("@live owner can exclude a note from a publication via the Content controls", async ({ context, page }) => {
+  await authedContext(context);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Network" }).click();
+  await expect(page.getByRole("heading", { name: "Network" })).toBeVisible();
+
+  // Manifest starts with all three notes.
+  const before = await (await fetch(`${BASE_URL}/api/p/${slug}`)).json();
+  expect(before.notes).toHaveLength(3);
+
+  // Open this publication's settings, then its Content list.
+  const card = page.locator(`[data-pub-slug="${slug}"]`);
+  await card.getByRole("button", { name: "Settings" }).click();
+  await expect(card.getByText("Content", { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  // Uncheck the "second" note (path basename e2e-pub-second → title "e2e-pub-second"),
+  // then save. The Content list rows carry a checkbox per note.
+  const row = card.locator("div", { hasText: "e2e-pub-second" }).filter({ has: page.locator('input[type="checkbox"]') }).last();
+  await row.locator('input[type="checkbox"]').uncheck();
+  await card.getByRole("button", { name: "Save content" }).click();
+
+  // The public manifest now drops that note.
+  await expect.poll(async () => (await (await fetch(`${BASE_URL}/api/p/${slug}`)).json()).notes.length, {
+    timeout: 10_000,
+  }).toBe(2);
 });

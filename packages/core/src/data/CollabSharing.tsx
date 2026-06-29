@@ -60,6 +60,10 @@ export interface PublicationInfo {
   passwordRequired: boolean;
   url: string;
   createdAt: number;
+  /** The landing note id (null → derive at read time). */
+  homeNoteId?: string | null;
+  /** Note ids hand-excluded from the public set even though they match the slice. */
+  excludeNoteIds?: string[];
 }
 
 // ── Federation (peer-to-peer vault sync) ──────────────────────────────────────
@@ -165,6 +169,11 @@ export interface CollabSharing {
   setPublishPassword?(tag: string, password: string | null): Promise<void>;
   /** Set/clear a publication's password by slug — works for tag + path publications. */
   setPublicationPassword?(slug: string, password: string | null): Promise<void>;
+  /** Per-publication tending: choose the home note and/or hand-exclude notes. */
+  updatePublicationSettings?(
+    slug: string,
+    settings: { homeNoteId?: string | null; excludeNoteIds?: string[] },
+  ): Promise<void>;
   unpublishTag?(tag: string): Promise<void>;
   /** Unpublish by slug — works for both tag and path publications. */
   unpublish?(slug: string): Promise<void>;

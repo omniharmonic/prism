@@ -102,6 +102,12 @@ export const webCollabSharing: CollabSharing = {
       body: JSON.stringify({ password: password ?? "" }),
     });
   },
+  async updatePublicationSettings(
+    slug: string,
+    settings: { homeNoteId?: string | null; excludeNoteIds?: string[] },
+  ): Promise<void> {
+    await acl(`/publications/${enc(slug)}/settings`, { method: "PUT", body: JSON.stringify(settings) });
+  },
 
   // ── Federation (peer-to-peer vault sync) ──
   async federationEnabled(): Promise<boolean> {

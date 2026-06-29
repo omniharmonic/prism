@@ -30,6 +30,7 @@ import {
   getPublicationBySlug,
   getPublicationByResource,
   listPublications,
+  excludedNoteIds,
   deletePublication,
   storePairing,
   listPeers,
@@ -358,6 +359,8 @@ acl.get("/publications", (c) =>
         template: p.template,
         title: p.title,
         passwordRequired: !!p.password_hash,
+        homeNoteId: p.home_note_id,
+        excludeNoteIds: excludedNoteIds(p),
         expiresAt: p.expires_at,
         url: `${config.appOrigin}/p/${p.id}`,
         createdAt: p.created_at,
@@ -480,6 +483,39 @@ acl.put("/publications/:slug/password", async (c) => {
   const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
   updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
   return c.json({ ok: true, passwordRequired: !!password });
+});
+
+/** Per-publication "tending" controls (owner hand-tuning of a public wiki):
+ *  - homeNoteId: which note loads first (string, or null to clear → derive at read).
+ *  - excludeNoteIds: note ids to DROP from the public set even though they match
+ *    the tag/path (string[]; empty clears all exclusions).
+ *  Only the provided fields are patched. Returns 404 for an unknown slug. */
+acl.put("/publications/:slug/settings", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  const body = await c.req
+    .json<{ homeNoteId?: string | null; excludeNoteIds?: unknown }>()
+    .catch(() => ({}) as { homeNoteId?: string | null; excludeNoteIds?: unknown });
+
+  const patch: { home_note_id?: string | null; excluded_note_ids?: string | null } = {};
+
+  if ("homeNoteId" in body) {
+    if (body.homeNoteId !== null && typeof body.homeNoteId !== "string") {
+      return c.json({ error: "bad_request", detail: "homeNoteId must be a string or null" }, 400);
+    }
+    patch.home_note_id = body.homeNoteId;
+  }
+
+  if ("excludeNoteIds" in body) {
+    const ids = body.excludeNoteIds;
+    if (!Array.isArray(ids) || !ids.every((s) => typeof s === "string")) {
+      return c.json({ error: "bad_request", detail: "excludeNoteIds must be an array of strings" }, 400);
+    }
+    patch.excluded_note_ids = JSON.stringify(ids);
+  }
+
+  updatePublication(pub.id, patch);
+  return c.json({ ok: true });
 });
 
 /** Unpublish by slug. Removes the row; for a tag pub it also drops the backing
