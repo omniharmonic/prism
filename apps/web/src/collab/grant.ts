@@ -204,9 +204,12 @@ export const webCollabSharing: CollabSharing = {
     return getActiveVault();
   },
   setActiveVault(id: string): void {
-    // Persist + reload so every cache/query refetches against the new vault.
+    // Persist the choice (rest.ts reads it per request via X-Prism-Vault), then
+    // fire a soft-switch event. The app clears its query cache + closes tabs and
+    // refetches against the new vault — NO full page reload, so a waiting
+    // service-worker version never activates mid-switch.
     setActiveVault(id);
-    location.reload();
+    window.dispatchEvent(new CustomEvent("prism:vault-changed", { detail: id }));
   },
   async createVault(args: { label: string; name: string; seedSchemas?: boolean }): Promise<VaultSummary> {
     return (await acl(`/vaults`, { method: "POST", body: JSON.stringify({ mode: "create", ...args }) })).json();

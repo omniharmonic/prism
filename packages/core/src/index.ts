@@ -25,7 +25,7 @@ export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type { VaultClient, VaultLink, VaultGraph, SemanticHit } from "./data/VaultClient";
 
 // Collab sharing seam — host shells inject how share links are minted.
-export { CollabSharingProvider, useCollabSharing } from "./data/CollabSharing";
+export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
 export type {
   CollabSharing,
   ShareLevel,

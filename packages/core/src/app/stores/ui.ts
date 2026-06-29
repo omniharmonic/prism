@@ -67,6 +67,7 @@ interface UIStore {
   openTab: (noteId: string, title: string, type: ContentType) => void;
   closeTab: (tabId: string) => void;
   closeTabs: (noteId: string) => void;
+  closeAllTabs: () => void;
   setActiveTab: (tabId: string) => void;
   markTabDirty: (tabId: string, isDirty: boolean) => void;
   renameTab: (noteId: string, newTitle: string) => void;
@@ -164,6 +165,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
     set({ openTabs: filtered, activeTabId: nextActive });
   },
+
+  closeAllTabs: () => set({ openTabs: [], activeTabId: null, navHistory: [], navIndex: -1 }),
 
   closeTabs: (noteId) => {
     const { openTabs, activeTabId } = get();

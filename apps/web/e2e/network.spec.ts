@@ -90,7 +90,7 @@ test("@live owner opens Network → Federate: node identity + all four sections 
   await expect(page.getByText("Spaces", { exact: true })).toBeVisible();
   await expect(page.getByText("Inbox", { exact: true })).toBeVisible();
   // The pairing flow is reachable (invite/join).
-  await expect(page.getByRole("button", { name: /Invite a peer/i })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Invite a peer/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /New space/i })).toBeVisible();
 });
 
@@ -178,6 +178,36 @@ test("@live Vaults: owner can link an existing vault, then remove it", async ({ 
   // Cleanup — remove the link (env primary is untouched).
   if (linked) await acl.removeVault(linked.id);
   expect((await acl.vaults()).some((v) => v.label === LABEL)).toBe(false);
+});
+
+test("@live switching vaults is a soft repoint — no full page reload, tabs reset", async ({ context, page }) => {
+  const LABEL = "E2E Switch Target";
+  for (const v of await acl.vaults()) if (v.label === LABEL) await acl.removeVault(v.id);
+  const linked = await acl.linkVault({ label: LABEL, url: PARACHUTE_URL, vault: PARACHUTE_VAULT, token: PARACHUTE_TOKEN });
+
+  try {
+    await authedContext(context);
+    await page.goto("/");
+    // Open the Network tab so there's a tab to be reset by the switch.
+    await page.getByRole("button", { name: "Network" }).click();
+    await expect(page.getByRole("heading", { name: "Network" })).toBeVisible();
+
+    // Mark the live document — a FULL reload would wipe this; a soft switch keeps it.
+    await page.evaluate(() => ((window as unknown as { __noReload?: boolean }).__noReload = true));
+
+    // Switch via the nav switcher.
+    await page.getByRole("button", { name: "Switch vault" }).click();
+    await page.getByRole("menuitem", { name: new RegExp(LABEL) }).click();
+
+    // The switcher now shows the new vault as active…
+    await expect(page.getByRole("button", { name: "Switch vault" })).toContainText(LABEL, { timeout: 10_000 });
+    // …without a full page reload (the marker survived)…
+    expect(await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)).toBe(true);
+    // …and the Network tab was reset (its heading is gone).
+    await expect(page.getByRole("heading", { name: "Network" })).toHaveCount(0);
+  } finally {
+    await acl.removeVault(linked.id).catch(() => {});
+  }
 });
 
 test("@live owner opens Network → Vaults: the configured vault is listed as active", async ({ context, page }) => {

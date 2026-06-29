@@ -160,6 +160,11 @@ export const acl = {
     const body = await r.json().catch(() => []);
     return Array.isArray(body) ? body : [];
   },
+  /** Link an existing vault into the registry; returns its summary. */
+  async linkVault(args: { label: string; url: string; vault: string; token: string }): Promise<{ id: string; label: string }> {
+    const r = await aclReq(`/vaults`, { method: "POST", body: JSON.stringify({ mode: "link", ...args }) });
+    return r.body;
+  },
   /** Remove an added vault from the registry (best-effort cleanup). */
   async removeVault(id: string): Promise<void> {
     await aclReq(`/vaults/${encodeURIComponent(id)}`, { method: "DELETE" });

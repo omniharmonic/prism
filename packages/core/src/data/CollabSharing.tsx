@@ -1,6 +1,19 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 export type ShareLevel = "view" | "comment" | "suggest" | "edit";
+
+/** Re-render signal for the active-vault soft switch. Bumps whenever the shell
+ *  fires `prism:vault-changed`, so vault-aware UI (the nav switcher) re-reads the
+ *  active vault without a full page reload. */
+export function useVaultChangeSignal(): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const h = () => setN((x) => x + 1);
+    window.addEventListener("prism:vault-changed", h);
+    return () => window.removeEventListener("prism:vault-changed", h);
+  }, []);
+  return n;
+}
 
 export interface ShareLink {
   id: string;

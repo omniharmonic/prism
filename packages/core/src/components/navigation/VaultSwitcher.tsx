@@ -8,10 +8,11 @@
 // New button.
 import { useEffect, useRef, useState } from "react";
 import { ChevronsUpDown, Check, Database, Settings2, Plus } from "lucide-react";
-import { useCollabSharing, type VaultSummary } from "../../data/CollabSharing";
+import { useCollabSharing, useVaultChangeSignal, type VaultSummary } from "../../data/CollabSharing";
 
 export function VaultSwitcher({ onManage }: { onManage: () => void }) {
   const sharing = useCollabSharing();
+  const vaultSignal = useVaultChangeSignal();
   const [vaults, setVaults] = useState<VaultSummary[]>([]);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -26,7 +27,9 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
     return () => {
       alive = false;
     };
-  }, [sharing]);
+    // Re-load (and re-read the active vault) after a soft vault switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharing, vaultSignal]);
 
   // Close on outside click / Escape.
   useEffect(() => {

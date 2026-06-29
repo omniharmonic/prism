@@ -1,7 +1,8 @@
-import { Component, useState, type ReactNode } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Shell } from "./components/layout/Shell";
 import { Onboarding } from "./components/layout/Onboarding";
+import { useUIStore } from "./app/stores/ui";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -62,6 +63,20 @@ function App({ skipOnboarding }: { skipOnboarding?: boolean } = {}) {
     } catch { /* ignore */ }
     setOnboarded(true);
   };
+
+  // Soft vault switch: the web shell repoints the active vault and fires
+  // `prism:vault-changed` instead of a full page reload (a reload would activate
+  // a waiting service-worker version mid-session — "switching changed the app").
+  // Drop all cached server state + close tabs (their note ids belong to the old
+  // vault) so every view refetches against the newly-selected vault.
+  useEffect(() => {
+    const onVaultChanged = () => {
+      queryClient.clear();
+      useUIStore.getState().closeAllTabs();
+    };
+    window.addEventListener("prism:vault-changed", onVaultChanged);
+    return () => window.removeEventListener("prism:vault-changed", onVaultChanged);
+  }, []);
 
   return (
     <ErrorBoundary>
