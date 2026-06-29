@@ -148,6 +148,35 @@ function useAction() {
 }
 
 // ── reusable bits ─────────────────────────────────────────────────────────────
+/** One segment of a segmented toggle (role=tab) — reads as a switch, not a button. */
+function SegTab({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 12px",
+        borderRadius: 7,
+        border: "none",
+        cursor: "pointer",
+        fontSize: 12.5,
+        fontWeight: 550,
+        background: active ? "var(--bg-surface, var(--glass-hover))" : "transparent",
+        color: active ? "var(--text-primary)" : "var(--text-muted)",
+        boxShadow: active ? "0 1px 2px rgba(0,0,0,0.12)" : "none",
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 function SectionHeader({
   icon,
   title,
@@ -434,23 +463,23 @@ function PeersCard({
 
       {/* pair flow */}
       <div style={subCard}>
-        <div style={{ display: "flex", gap: 4, marginBottom: 14 }}>
-          <Button
-            size="sm"
-            variant={mode === "invite" ? "primary" : "ghost"}
-            icon={<Plus size={13} />}
-            onClick={() => setMode("invite")}
-          >
-            Invite a peer
-          </Button>
-          <Button
-            size="sm"
-            variant={mode === "join" ? "primary" : "ghost"}
-            icon={<ArrowRightLeft size={13} />}
-            onClick={() => setMode("join")}
-          >
-            Join a peer
-          </Button>
+        {/* Segmented toggle (not action buttons) — makes it clear you're
+            switching between two ways to pair, not triggering one. */}
+        <div
+          role="tablist"
+          aria-label="Pairing method"
+          style={{
+            display: "inline-flex",
+            gap: 3,
+            padding: 3,
+            marginBottom: 14,
+            background: "var(--glass)",
+            border: "1px solid var(--glass-border)",
+            borderRadius: 10,
+          }}
+        >
+          <SegTab active={mode === "invite"} onClick={() => setMode("invite")} icon={<Plus size={13} />} label="Invite a peer" />
+          <SegTab active={mode === "join"} onClick={() => setMode("join")} icon={<ArrowRightLeft size={13} />} label="Join a peer" />
         </div>
 
         {mode === "invite" ? (
