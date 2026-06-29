@@ -13,6 +13,7 @@ import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
+import { UpdatePrompt } from "./offline/UpdatePrompt";
 
 // Importing `@prism/core` pulls in the global design system (tokens/glass/
 // typography) as a side effect, so the login screen is styled too.
@@ -150,6 +151,7 @@ async function start() {
             <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
               <App skipOnboarding={isViewer} />
               <OfflineIndicator />
+              <UpdatePrompt />
             </CollabDocumentProvider>
           </CollabSharingProvider>
         </VaultClientProvider>
