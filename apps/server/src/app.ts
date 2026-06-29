@@ -38,7 +38,10 @@ export function createApp(): Hono {
     // only — script-src stays tight, so no code can load from there). Self-hosting
     // these would fully air-gap the canvas; for now this is font-only.
     "font-src 'self' data: https://fonts.gstatic.com https://esm.sh",
-    "img-src 'self' data: blob:",
+    // Published notes legitimately embed external images (Substack/Medium/web
+    // clips). Allow any https image source — img-src can't execute code, so this
+    // doesn't widen the script attack surface.
+    "img-src 'self' data: blob: https:",
     "worker-src 'self' blob:",
     "connect-src 'self' ws: wss: https:",
   ].join("; ");
