@@ -57,3 +57,20 @@ Run tests: `cd apps/server && npm test`. Typecheck: `npm run typecheck`.
 - (start) Phase 0 complete. Beginning Phase 1.
 - Phases 1, 2, 3(secret store), 6(dead dep) landed + tested; comprehensive e2e green;
   test stack torn down; prod intact. 11 commits on sprint/platform-foundation.
+
+## Phase 3 (server-first runtime) — MERGED foundation + branch work, LIVE-proven
+Foundation (secret store) shipped to main + deployed. Branch `sprint/phase-3-worker`
+adds (committed, tested, NOT yet deployed):
+- Agent executor (claude -p over the server, admin-gated, per-vault MCP + scoped
+  token, SSE). LIVE: real claude dispatch → vault MCP list-tags → TAG_COUNT=0 → done.
+- Matrix ingester (Node port of message_sync; secret store creds; message-thread
+  notes matching the desktop). LIVE vs the local Synapse: 92 msgs / 5 rooms → 5
+  notes, 8/8 (incl. secret-store encrypt round-trip).
+- Worker scheduler (per-vault interval + since-cursor persistence) + /api/integrations
+  Matrix config endpoint (store/status/remove/trigger), admin-gated.
+- 266/266 unit tests; typecheck clean. live scripts: verify-matrix-ingest.ts,
+  verify-agent-exec.ts.
+NOT deployed: server-side Matrix would DOUBLE-sync against the desktop's existing
+Matrix sync — enabling it (set SECRETS_KEY + store creds) is a together-decision.
+Deferred: Phase 3 UI (Matrix config panel + agent dispatch UI), Notion/transcript
+ingesters (same worker pattern).
