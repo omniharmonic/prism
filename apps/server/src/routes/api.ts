@@ -12,7 +12,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { resolveVaultEntry } from "../db";
-import { vault, VaultError, type Note } from "../parachute";
+import { vault, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -60,6 +60,12 @@ api.use("*", async (c, next) => {
 });
 
 function vaultErr(c: Context, e: unknown) {
+  // Optimistic-concurrency conflict: pass the vault's status + current state
+  // through so the client can rebase, instead of collapsing it to a 502. (Checked
+  // before VaultError since VaultConflictError extends it.)
+  if (e instanceof VaultConflictError) {
+    return c.json({ error: "conflict", status: e.status, current: e.body }, e.status === 428 ? 428 : 409);
+  }
   if (e instanceof VaultError) {
     if (e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error", status: e.status }, 502);
