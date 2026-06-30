@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Globe, Radio, Database } from "lucide-react";
+import { Globe, Radio, Database, Users } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
 import { useCollabSharing } from "../../data/CollabSharing";
 import type { RendererProps } from "./RendererProps";
 import { PublishPanel } from "./network/PublishPanel";
 import { FederatePanel } from "./network/FederatePanel";
 import { VaultsPanel } from "./network/VaultsPanel";
+import { MembersPanel } from "./network/MembersPanel";
 
 /**
  * The Network surface — a top-level virtual tab (not a per-note dialog) where the
@@ -26,10 +27,12 @@ export default function NetworkRenderer(_props: RendererProps) {
   // desktop talks to its own single configured vault, so it doesn't expose
   // listVaults; hide the tab there rather than show a dead "not available" panel.
   const canVaults = !!sharing?.listVaults;
+  const canMembers = !!sharing?.listMembers;
 
   const tabs = [
     ...(canPublish ? [{ id: "publish", label: "Publish", icon: <Globe size={14} /> }] : []),
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
+    ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
     ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>(tabs[0]?.id ?? "publish");
@@ -49,6 +52,7 @@ export default function NetworkRenderer(_props: RendererProps) {
         <div style={{ maxWidth: 880, margin: "0 auto" }}>
           {tab === "publish" && <PublishPanel />}
           {tab === "federate" && <FederatePanel />}
+          {tab === "members" && <MembersPanel />}
           {tab === "vaults" && <VaultsPanel />}
         </div>
       </div>

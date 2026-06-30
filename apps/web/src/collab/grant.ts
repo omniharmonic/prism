@@ -12,6 +12,8 @@ import type {
   ShareLink,
   SpaceInfo,
   VaultSummary,
+  WorkspaceMember,
+  WorkspaceRole,
 } from "@prism/core";
 import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
 
@@ -21,10 +23,17 @@ import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
  * cookie. Powers the full share dialog (people + capability links + tag-grants).
  */
 async function acl(path: string, init?: RequestInit): Promise<Response> {
+  // Bind every management call to the active vault (Phase 1 multi-tenant), so the
+  // owner/admin manages the workspace they're currently viewing.
+  const activeVault = getActiveVault();
   const r = await fetch(`${GATEWAY_ORIGIN}/acl${path}`, {
     ...init,
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers as Record<string, string>) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(activeVault ? { "X-Prism-Vault": activeVault } : {}),
+      ...(init?.headers as Record<string, string>),
+    },
   });
   if (!r.ok) throw new Error(`ACL ${init?.method ?? "GET"} ${path} → ${r.status}`);
   return r;
@@ -59,6 +68,29 @@ export const webCollabSharing: CollabSharing = {
   },
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
+  },
+
+  // ── Folder/tag sharing + workspace members (Phase 2) ──
+  async setTagPerson(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/tags/${enc(tag)}/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
+  },
+  async removeTagPerson(tag: string, email: string): Promise<void> {
+    await acl(`/tags/${enc(tag)}/people/${enc(email)}`, { method: "DELETE" });
+  },
+  async listMembers(): Promise<WorkspaceMember[]> {
+    return (await acl(`/members`)).json();
+  },
+  async setMember(email: string, role: WorkspaceRole): Promise<SetPersonResult> {
+    return (await acl(`/members`, { method: "PUT", body: JSON.stringify({ email, role }) })).json();
+  },
+  async removeMember(email: string): Promise<void> {
+    await acl(`/members/${enc(email)}`, { method: "DELETE" });
+  },
+  async setVaultPerson(email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/vault/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
+  },
+  async removeVaultPerson(email: string): Promise<void> {
+    await acl(`/vault/people/${enc(email)}`, { method: "DELETE" });
   },
   createLink,
   async revokeLink(noteId: string, linkId: string): Promise<void> {

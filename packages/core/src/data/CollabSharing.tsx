@@ -22,6 +22,16 @@ export interface ShareLink {
   expiresAt: number;
   label?: string | null;
 }
+
+/** Workspace role (Phase 2 multi-tenant). Ordered weakest→strongest:
+ *  guest < member < admin < owner. Distinct from the per-note ShareLevel. */
+export type WorkspaceRole = "guest" | "member" | "admin" | "owner";
+export interface WorkspaceMember {
+  email: string;
+  name: string | null;
+  role: WorkspaceRole;
+  joinedAt: number;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -172,6 +182,22 @@ export interface CollabSharing {
   createLink?(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink>;
   revokeLink?(noteId: string, linkId: string): Promise<void>;
   listUsers?(): Promise<string[]>;
+
+  /** Folder/tag sharing (Phase 2): grant a person access to EVERYTHING carrying a
+   *  tag (≈ "share this folder with this email"). Backs the Share dialog's
+   *  folder-share affordance + the Members panel. */
+  setTagPerson?(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeTagPerson?(tag: string, email: string): Promise<void>;
+
+  /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
+   *  to the active vault at a role; `setVaultPerson` grants broad note access
+   *  (a whole-workspace grant) without management rights. Absent → the Members
+   *  panel hides (desktop / non-owner safe). */
+  listMembers?(): Promise<WorkspaceMember[]>;
+  setMember?(email: string, role: WorkspaceRole): Promise<SetPersonResult>;
+  removeMember?(email: string): Promise<void>;
+  setVaultPerson?(email: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeVaultPerson?(email: string): Promise<void>;
 
   /** Publishing — turn a tag into a public, read-only site. Optional so shells
    *  without it (desktop no-op, capability viewers) simply never show the tab. */
