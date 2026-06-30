@@ -23,6 +23,7 @@
   "dependencies": {
     "@hocuspocus/server": "^4.1.0",
     "@hono/node-server": "^1.13.7",
+    "@openparachute/scope-guard": "^0.5.0",
     "better-sqlite3": "^11.8.1",
     "happy-dom": "^20.10.2",
     "hono": "^4.6.14",

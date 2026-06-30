@@ -11,6 +11,24 @@ export const config = {
   parachuteVault: process.env.PARACHUTE_VAULT ?? "default",
   parachuteToken: process.env.PARACHUTE_TOKEN ?? "",
 
+  // ── Hub identity / token validation (Phase 0 — scope-guard) ──
+  // The hub (@openparachute/hub) is the JWT issuer; we validate vault tokens
+  // against its JWKS (auth/vault-token.ts). `hubOrigin` pins the token `iss` —
+  // the hub's PUBLIC origin after `parachute expose` (e.g.
+  // https://agent.omniharmonic.com), which is what the hub stamps on mints.
+  // JWKS is FETCHED from `hubJwksOrigin` (loopback by default) to avoid a tunnel
+  // hairpin when the public origin points back at this same box. `hubAllowedIssuers`
+  // is an additive allowlist (comma-separated) so a token minted under any of the
+  // hub's own origins validates — never request-derived (see scope-guard's
+  // security invariant). Same env-var contract as Parachute's own resource
+  // servers, so a co-located deploy shares one source of truth.
+  hubOrigin: (process.env.PARACHUTE_HUB_ORIGIN ?? "http://127.0.0.1:1939").replace(/\/+$/, ""),
+  hubJwksOrigin: (process.env.PARACHUTE_HUB_JWKS_ORIGIN ?? "http://127.0.0.1:1939").replace(/\/+$/, ""),
+  hubAllowedIssuers: (process.env.PARACHUTE_HUB_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+
   // Whether the owner may CREATE a brand-new vault from the UI (shells out to
   // `parachute-vault create`, which needs the host operator token). Defaults ON
   // so a normal single-host deploy works; set ALLOW_VAULT_CREATE=false to allow
