@@ -8,6 +8,8 @@
  */
 import { serve } from "@hono/node-server";
 import { config, assertConfig, emailEnabled } from "./config";
+import { getVaultRegistry } from "./db";
+import { reportRegistryTokens } from "./auth/vault-token";
 import { createApp } from "./app";
 import { attachCollab } from "./collab";
 
@@ -21,6 +23,10 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`  owner:  ${config.ownerEmail}`);
   console.log(`  email:  ${emailEnabled() ? "Resend" : "DISABLED (dev: links logged to console)"}`);
   console.log(`  collab: ws://localhost:${info.port}/collab (Hocuspocus)`);
+  // Non-blocking: report token scope/expiry + warn-only hub validation. Never
+  // blocks or fails boot (a bad token is logged, not fatal — wiring strict
+  // rejection is a later, flag-gated step once every deploy sets the hub origin).
+  void reportRegistryTokens(getVaultRegistry());
 });
 
 // Real-time collaboration shares this HTTP server (WebSocket upgrades on /collab).

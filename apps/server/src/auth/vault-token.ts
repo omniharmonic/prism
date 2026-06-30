@@ -68,5 +68,62 @@ export function resetVaultTokenCaches(): void {
   guard.resetRevocationCache();
 }
 
+/**
+ * Decode a JWT's claims WITHOUT verifying the signature. For logging/routing
+ * ONLY — never for authorization (that's verifyVaultToken). Returns null if the
+ * string isn't a well-formed 3-part JWT (e.g. a legacy opaque `pvt_*` token).
+ */
+export function peekTokenClaims(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1]!, "base64url").toString());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this token issued by THIS server's hub, so verifyVaultToken can validate it
+ * against our JWKS? A linked REMOTE-hub vault's token is issued by a different
+ * hub and can't be validated locally — callers skip those. Compares the (peeked,
+ * unverified) `iss` against our configured hub origins; the signature gate in
+ * verifyVaultToken is still the real check.
+ */
+export function isOurHubToken(token: string): boolean {
+  const claims = peekTokenClaims(token);
+  const iss = typeof claims?.iss === "string" ? claims.iss.replace(/\/+$/, "") : null;
+  if (!iss) return false;
+  return new Set([config.hubOrigin, ...config.hubAllowedIssuers]).has(iss);
+}
+
+/**
+ * Non-blocking, warn-only startup introspection of the registry's vault tokens.
+ * Logs each token's scope + expiry date — so an operator SEES an impending
+ * expiry instead of hitting silent 401s weeks later (the F2 "tokens expired in
+ * 90 days" class of bug) — and hub-validates the ones issued by our own hub,
+ * warning (never throwing) on failure so a bad token can't block boot. Remote-hub
+ * linked vaults are reported but not validated (their token is issued elsewhere).
+ */
+export async function reportRegistryTokens(entries: Array<{ id: string; vault: string; token: string }>): Promise<void> {
+  for (const entry of entries) {
+    const claims = peekTokenClaims(entry.token);
+    const scope = (claims?.scope ?? claims?.scopes ?? "(opaque / non-JWT)") as unknown;
+    const exp = typeof claims?.exp === "number" ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : "?";
+    const ours = isOurHubToken(entry.token);
+    console.log(
+      `  token[${entry.id}]: scope=${String(scope)} expires=${exp}${ours ? "" : " (remote hub — not validated here)"}`,
+    );
+    if (ours) {
+      try {
+        await verifyVaultToken(entry.token, entry.vault);
+      } catch (e) {
+        const code = e instanceof HubJwtError ? e.code : "error";
+        console.warn(`  ⚠ token[${entry.id}] FAILED hub validation (${code}): ${(e as Error).message}`);
+      }
+    }
+  }
+}
+
 export { HubJwtError };
 export type { HubJwtClaims };
