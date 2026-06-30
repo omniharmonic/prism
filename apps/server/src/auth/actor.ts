@@ -12,11 +12,12 @@ import { readSession } from "./session";
 import { verifyCapability } from "./capability";
 import { isLocalRequest } from "./local";
 import { grantsForUser, grantsForCapability, type Grant } from "../db";
+import type { Role } from "../roles";
 
 export type Actor =
-  | { kind: "user"; email: string; isOwner: boolean; grants: Grant[] }
-  | { kind: "link"; capabilityId: string; isOwner: false; grants: Grant[] }
-  | { kind: "anon"; isOwner: false; grants: Grant[] };
+  | { kind: "user"; email: string; role: Role; grants: Grant[] }
+  | { kind: "link"; capabilityId: string; role: "guest"; grants: Grant[] }
+  | { kind: "anon"; role: "guest"; grants: Grant[] };
 
 export function resolveActor(c: Context): Actor {
   const session = readSession(c);
@@ -25,7 +26,10 @@ export function resolveActor(c: Context): Actor {
     return {
       kind: "user",
       email,
-      isOwner: email === config.ownerEmail,
+      // Phase 0: role derived from OWNER_EMAIL (byte-identical to the old
+      // isOwner). Phase 1 replaces this with workspaceRole(email, activeVault),
+      // backed by the memberships table + hub user_vaults.
+      role: email === config.ownerEmail ? "owner" : "member",
       grants: grantsForUser(email),
     };
   }
@@ -41,7 +45,7 @@ export function resolveActor(c: Context): Actor {
     isLocalRequest((k) => c.req.header(k)) &&
     ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))
   ) {
-    return { kind: "user", email: config.ownerEmail, isOwner: true, grants: grantsForUser(config.ownerEmail) };
+    return { kind: "user", email: config.ownerEmail, role: "owner", grants: grantsForUser(config.ownerEmail) };
   }
 
   const token = c.req.query("t") ?? capabilityHeader(c);
@@ -51,13 +55,13 @@ export function resolveActor(c: Context): Actor {
       return {
         kind: "link",
         capabilityId: claims.id,
-        isOwner: false,
+        role: "guest",
         grants: grantsForCapability(claims.id),
       };
     }
   }
 
-  return { kind: "anon", isOwner: false, grants: [] };
+  return { kind: "anon", role: "guest", grants: [] };
 }
 
 function capabilityHeader(c: Context): string | undefined {

@@ -15,6 +15,7 @@ import { resolveVaultEntry } from "../db";
 import { vault, VaultError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor } from "../roles";
 
 export const api = new Hono();
 
@@ -54,7 +55,7 @@ async function proxyToVault(c: Context) {
 // Owner short-circuit: full vault access, token-free. Registered before the
 // authorized routes so the owner bypasses per-note filtering entirely.
 api.use("*", async (c, next) => {
-  if (resolveActor(c).isOwner) return proxyToVault(c);
+  if (roleAtLeast(resolveActor(c).role, "admin")) return proxyToVault(c);
   await next();
 });
 
@@ -88,7 +89,7 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
     }
   }
   return [...collected.values()].filter((n) =>
-    atLeast(effectiveLevel(actor.grants, ref(n), false), "view"),
+    atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role)), "view"),
   );
 }
 
@@ -97,7 +98,7 @@ api.get("/health", async (c) => c.json({ vault: await vault.health() }));
 api.get("/notes", async (c) => {
   const actor = resolveActor(c);
   const includeContent = c.req.query("include_content") === "true";
-  if (actor.isOwner) {
+  if (roleAtLeast(actor.role, "admin")) {
     const limit = Number(c.req.query("limit") ?? 50000);
     return c.json(await vault.listNotes({ includeContent, limit }));
   }
@@ -112,14 +113,14 @@ api.get("/notes/:id", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), actor.isOwner);
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role));
   if (!atLeast(level, "view")) return c.json({ error: "forbidden" }, 403);
   return c.json({ ...note, _level: level });
 });
 
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
-  if (!actor.isOwner) return c.json({ error: "forbidden" }, 403);
+  if (!roleAtLeast(actor.role, "admin")) return c.json({ error: "forbidden" }, 403);
   const body = await c.req.json<{
     content: string;
     path?: string;
@@ -142,7 +143,7 @@ api.patch("/notes/:id", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), actor.isOwner);
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role));
   if (!atLeast(level, "edit")) return c.json({ error: "forbidden" }, 403);
 
   const body = await c.req.json<{
@@ -157,7 +158,7 @@ api.patch("/notes/:id", async (c) => {
     const updated = await vault.updateNote(id, {
       content: body.content,
       metadata: body.metadata,
-      path: actor.isOwner ? body.path : undefined,
+      path: roleAtLeast(actor.role, "admin") ? body.path : undefined,
       ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
     });
     return c.json(updated);
@@ -168,7 +169,7 @@ api.patch("/notes/:id", async (c) => {
 
 api.delete("/notes/:id", async (c) => {
   const actor = resolveActor(c);
-  if (!actor.isOwner) return c.json({ error: "forbidden" }, 403);
+  if (!roleAtLeast(actor.role, "admin")) return c.json({ error: "forbidden" }, 403);
   try {
     await vault.deleteNote(c.req.param("id"));
   } catch (e) {
@@ -187,9 +188,9 @@ api.get("/search", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (actor.isOwner) return c.json(results);
+  if (roleAtLeast(actor.role, "admin")) return c.json(results);
   return c.json(
-    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), false), "view")),
+    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role)), "view")),
   );
 });
 
@@ -201,7 +202,7 @@ api.get("/tags", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (actor.isOwner) return c.json(tags);
+  if (roleAtLeast(actor.role, "admin")) return c.json(tags);
   const allowed = new Set(grantedTags(actor.grants));
   return c.json(tags.filter((t) => allowed.has(t.tag)));
 });

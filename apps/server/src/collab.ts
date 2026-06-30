@@ -43,6 +43,7 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
+import { roleFloor, type Role } from "./roles";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
 // one. (These globals are read when the hooks run, never at import.)
@@ -403,7 +404,7 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
         } catch {
           /* unreadable note — match on id/space only */
         }
-        return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, false);
+        return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, null);
       }
       // Not a peer-conn token → it's our OWN client opening the federated note by
       // its space_note_key. Authorize exactly like a normal note, against the
@@ -423,12 +424,13 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
 
   const email = sessionEmailFromCookie(cookieHeader);
   let grants: Grant[] = [];
-  let isOwner = false;
+  let role: Role = "guest";
   if (email) {
-    isOwner = email === config.ownerEmail;
+    // Phase 0: role from OWNER_EMAIL (byte-identical to the old isOwner).
+    role = email === config.ownerEmail ? "owner" : "member";
     grants = grantsForUser(email);
   }
-  if (!isOwner && token && token !== "session") {
+  if (role !== "owner" && token && token !== "session") {
     const claims = verifyCapability(token);
     if (claims) grants = grants.concat(grantsForCapability(claims.id));
   }
@@ -438,7 +440,7 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
   } catch {
     /* new/unknown note — no tags */
   }
-  return effectiveLevel(grants, { id: noteId, tags }, isOwner);
+  return effectiveLevel(grants, { id: noteId, tags }, roleFloor(role));
 }
 
 /**

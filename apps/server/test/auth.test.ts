@@ -74,7 +74,10 @@ test("owner magic link: request → callback → me → logout", async () => {
 test("a stranger CANNOT get a magic link (owner-only), but the response is still 200", async () => {
   const r = await post("/request", { email: "stranger@nowhere.test" });
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true });
+  // `emailDelivery` is a server-wide fact (is Resend set?), not per-user — so the
+  // stranger response is identical to the owner's, leaking nothing (F6). With no
+  // RESEND_API_KEY in .env.test it's false.
+  assert.deepEqual(await r.json(), { ok: true, emailDelivery: false });
   assert.equal(
     logs.some((l) => l.includes("token=")),
     false,

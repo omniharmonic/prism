@@ -2,8 +2,9 @@
  * Permission model. Access is computed per (subject, note): a subject is a
  * signed-in user (email), a capability link, or "anyone with the link". The
  * effective level is the MAX over all grants that match the note directly
- * (resource=note:<id>) or via one of its tags (resource=tag:<name>), plus the
- * owner override. This layer is pure; the store (db) supplies the grants.
+ * (resource=note:<id>) or via one of its tags (resource=tag:<name>), raised by a
+ * role-derived floor (owner/admin → "own"; see roles.ts). This layer is pure;
+ * the store (db) supplies the grants, the caller supplies the floor.
  */
 import type { Grant } from "./db";
 
@@ -36,15 +37,16 @@ export interface NoteRef {
 }
 
 /**
- * Effective level for a set of grants against a note. `isOwner` short-circuits
- * to "own". Grants are matched by note id, by any tag the note carries, or by
- * any shared space the note belongs to (peer/space grants).
+ * Effective level for a set of grants against a note. `floor` is the baseline
+ * level the subject's workspace role confers (owner/admin → "own", member/guest
+ * → null) — see roles.ts `roleFloor`. Grants then raise it: matched by note id,
+ * by any tag the note carries, or by any shared space the note belongs to
+ * (peer/space grants). Passing `null` means "no role floor, grants only".
  */
-export function effectiveLevel(grants: Grant[], note: NoteRef, isOwner: boolean): Level | null {
-  if (isOwner) return "own";
+export function effectiveLevel(grants: Grant[], note: NoteRef, floor: Level | null): Level | null {
   const tagSet = new Set(note.tags);
   const spaceSet = new Set(note.spaceIds ?? []);
-  let level: Level | null = null;
+  let level: Level | null = floor;
   for (const g of grants) {
     const matches =
       (g.resource_type === "note" && g.resource === note.id) ||

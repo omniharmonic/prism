@@ -14,13 +14,14 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { resolveActor } from "../auth/actor";
 import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor } from "../roles";
 import type { Note } from "../parachute";
 import { semanticSearch, indexNote, deindexNote, reindexAll, stats } from "../rag/service";
 
 export const rag = new Hono();
 
 const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
-const ownerOnly = (c: Context) => resolveActor(c).isOwner;
+const ownerOnly = (c: Context) => roleAtLeast(resolveActor(c).role, "admin");
 
 rag.get("/search/semantic", async (c) => {
   const actor = resolveActor(c);
@@ -32,9 +33,9 @@ rag.get("/search/semantic", async (c) => {
   } catch {
     return c.json({ error: "search_error" }, 502);
   }
-  const visible = actor.isOwner
+  const visible = roleAtLeast(actor.role, "admin")
     ? hits
-    : hits.filter((h) => atLeast(effectiveLevel(actor.grants, ref(h.note), false), "view"));
+    : hits.filter((h) => atLeast(effectiveLevel(actor.grants, ref(h.note), roleFloor(actor.role)), "view"));
   // Shape mirrors /notes entries, plus score + snippet for ranked display.
   return c.json(
     visible.map((h) => ({ ...h.note, _score: h.score, _snippet: h.snippet })),

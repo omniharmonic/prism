@@ -11,11 +11,12 @@
 import { Hono } from "hono";
 import { getVaultRegistry } from "../db";
 import { resolveActor } from "../auth/actor";
+import { roleAtLeast } from "../roles";
 
 export const vaults = new Hono();
 
 vaults.get("/vaults", (c) => {
-  if (!resolveActor(c).isOwner) return c.json({ error: "forbidden" }, 403);
+  if (!roleAtLeast(resolveActor(c).role, "admin")) return c.json({ error: "forbidden" }, 403);
   // The merged registry: env base (primary first) + owner-added vaults. active =
   // the primary/default (first entry), which every non-owner route and the legacy
   // vault client bind to. NEVER include token or url.

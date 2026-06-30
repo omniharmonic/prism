@@ -138,9 +138,9 @@ test("federationTarget maps a known key to the local id + pinned kind; unknown p
 // ── effectiveLevel space matching (permissions) ──────────────────────────────
 test("a space grant matches a note only via its spaceIds", () => {
   const grants = [{ id: "g", subject_type: "peer", subject: "pk", resource_type: "space", resource: SPACE, level: "edit", created_at: 0 } as const];
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: [SPACE] }, false), "edit");
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: ["other"] }, false), null);
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [] }, false), null, "no spaceIds → no match");
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: [SPACE] }, null), "edit");
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: ["other"] }, null), null);
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [] }, null), null, "no spaceIds → no match");
 });
 
 // ── durable outbox ───────────────────────────────────────────────────────────

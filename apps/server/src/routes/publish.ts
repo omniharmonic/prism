@@ -108,7 +108,7 @@ function unlocked(c: Context, pub: Publication): boolean {
 function publicationActor(pub: Publication): Actor {
   return {
     kind: "anon",
-    isOwner: false,
+    role: "guest",
     grants: grantsForResource(pub.resource_type, pub.resource).filter((g) => g.subject_type === "anyone"),
   };
 }
@@ -140,7 +140,7 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   }
   const actor = publicationActor(pub);
   const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
+  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), null), "view"));
 }
 
 /** A short display title derived from a note's content. Handles BOTH shapes the
@@ -354,7 +354,7 @@ publish.get("/:slug/notes/:id", async (c) => {
     (pub.resource_type === "path"
       ? pathInPrefix(note.path, pub.resource)
       : tags.includes(pub.resource) &&
-        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view"));
+        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), null), "view"));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({

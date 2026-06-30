@@ -14,6 +14,7 @@ import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { serverKeyPair, fingerprint } from "../auth/peer";
 import { LEVELS, type Level } from "../permissions";
+import { roleAtLeast } from "../roles";
 import {
   ensureUser,
   hasAccount,
@@ -89,9 +90,9 @@ async function grantAndInvite(
 
 export const acl = new Hono();
 
-// Everything here is owner-only.
+// Everything here is owner/admin-only (workspace management).
 acl.use("*", async (c, next) => {
-  if (!resolveActor(c).isOwner) return c.json({ error: "forbidden" }, 403);
+  if (!roleAtLeast(resolveActor(c).role, "admin")) return c.json({ error: "forbidden" }, 403);
   await next();
 });
 
