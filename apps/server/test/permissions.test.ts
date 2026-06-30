@@ -17,6 +17,7 @@ import type { Grant } from "../src/db";
 
 const g = (over: Partial<Grant>): Grant => ({
   id: "g",
+  vault_id: "primary",
   subject_type: "user",
   subject: "a@b.co",
   resource_type: "note",

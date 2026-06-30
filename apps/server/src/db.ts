@@ -220,6 +220,22 @@ db.exec(`
     token      TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  -- ── Multi-tenancy: per-vault workspace membership (Phase 1) ──────────────
+  -- A "tenant" = a vault; membership names WHO belongs to a vault and at what
+  -- workspace ROLE (owner/admin/member/guest — see roles.ts). This is the source
+  -- of truth for workspaceRole(email, vaultId); it sits ABOVE the per-note grants
+  -- table and reconciles with the hub's own user_vaults (the token-authority
+  -- layer). The env OWNER_EMAIL is owner of 'primary' even with no row (bootstrap).
+  CREATE TABLE IF NOT EXISTS memberships (
+    vault_id   TEXT NOT NULL,
+    email      TEXT NOT NULL,
+    role       TEXT NOT NULL,          -- 'owner' | 'admin' | 'member' | 'guest'
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, email)
+  );
+  CREATE INDEX IF NOT EXISTS memberships_email ON memberships(email);
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -250,6 +266,36 @@ db.exec(`
     db.exec("ALTER TABLE publications ADD COLUMN excluded_note_ids TEXT");
   }
 }
+
+// ── Multi-tenancy migration (Phase 1): vault_id across every access-control,
+// collab, and federation table. Additive with DEFAULT 'primary' — every existing
+// row belongs to the env primary vault, so a single-vault deploy is byte-identical
+// after the migration. (CREATE TABLE IF NOT EXISTS won't alter an existing table.)
+// `collab_docs` also needs its PRIMARY KEY widened from (name) to (vault_id, name)
+// since a note id is only unique WITHIN a vault — that PK rebuild is a separate,
+// carefully-guarded step (see below); here we just add the column.
+for (const table of [
+  "grants",
+  "capabilities",
+  "publications",
+  "spaces",
+  "federated_notes",
+  "collab_docs",
+  "pending_suggestions",
+  "federation_mirror_requests",
+  "federation_outbox",
+]) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "vault_id")) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN vault_id TEXT NOT NULL DEFAULT 'primary'`);
+  }
+}
+// Composite indexes so per-vault grant lookups stay fast (the hot path: load a
+// subject's grants within the active vault).
+db.exec(`
+  CREATE INDEX IF NOT EXISTS grants_vault_subject  ON grants(vault_id, subject_type, subject);
+  CREATE INDEX IF NOT EXISTS grants_vault_resource ON grants(vault_id, resource_type, resource);
+`);
 
 // ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
 const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -354,6 +400,9 @@ export type ResourceType = "note" | "tag" | "space" | "path";
 
 export interface Grant {
   id: string;
+  /** The vault (tenant) this grant belongs to. Defaults to 'primary' so a
+   *  single-vault deploy is unchanged; multi-tenant callers pass the active vault. */
+  vault_id: string;
   subject_type: SubjectType;
   subject: string;
   resource_type: ResourceType;
@@ -496,49 +545,59 @@ export function consumeMagicLink(tokenHash: string): string | null {
 }
 
 // ---- grants ----
+// Grant input: vault_id is OPTIONAL (defaults to 'primary') so every existing
+// single-vault call site is unchanged; multi-tenant callers pass the active vault.
+type GrantInput = Omit<Grant, "id" | "created_at" | "vault_id"> & { id?: string; vault_id?: string };
+
 const insertGrant = db.prepare(
-  `INSERT INTO grants (id, subject_type, subject, resource_type, resource, level, created_by, created_at)
-   VALUES (@id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at)`,
+  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at)
+   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at)`,
 );
+// User grants are scoped to the active vault: a member of vault A must not pick up
+// their (or an "anyone") grant from vault B. (anyone grants are per-vault too.)
 const selectGrantsByUser = db.prepare(
-  "SELECT * FROM grants WHERE (subject_type = 'user' AND subject = ?) OR subject_type = 'anyone'",
+  "SELECT * FROM grants WHERE vault_id = ? AND ((subject_type = 'user' AND subject = ?) OR subject_type = 'anyone')",
 );
 const selectGrantsByCapability = db.prepare(
   "SELECT * FROM grants WHERE subject_type = 'link' AND subject = ?",
 );
 const selectGrantsByResource = db.prepare(
-  "SELECT * FROM grants WHERE resource_type = ? AND resource = ?",
+  "SELECT * FROM grants WHERE vault_id = ? AND resource_type = ? AND resource = ?",
 );
 const deleteGrantStmt = db.prepare("DELETE FROM grants WHERE id = ?");
 
-export function addGrant(g: Omit<Grant, "id" | "created_at"> & { id?: string }): Grant {
-  const row: Grant = { ...g, id: g.id ?? randomUUID(), created_at: now() };
+export function addGrant(g: GrantInput): Grant {
+  const row: Grant = { ...g, vault_id: g.vault_id ?? "primary", id: g.id ?? randomUUID(), created_at: now() };
   insertGrant.run(row);
   return row;
 }
-/** Grants for a signed-in user (their own grants + any "anyone-with-link" grants). */
-export function grantsForUser(email: string): Grant[] {
-  return selectGrantsByUser.all(email) as Grant[];
+/** Grants for a signed-in user IN a vault (their own + any "anyone-with-link"
+ *  grants in that vault). Defaults to the primary vault for single-vault callers. */
+export function grantsForUser(email: string, vaultId = "primary"): Grant[] {
+  return selectGrantsByUser.all(vaultId, email) as Grant[];
 }
-/** Grants attached to a specific capability link. */
+/** Grants attached to a specific capability link (each carries its own vault_id;
+ *  a link is bound to one resource in one vault). */
 export function grantsForCapability(capabilityId: string): Grant[] {
   return selectGrantsByCapability.all(capabilityId) as Grant[];
 }
-export function grantsForResource(type: ResourceType, resource: string): Grant[] {
-  return selectGrantsByResource.all(type, resource) as Grant[];
+export function grantsForResource(type: ResourceType, resource: string, vaultId = "primary"): Grant[] {
+  return selectGrantsByResource.all(vaultId, type, resource) as Grant[];
 }
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
 }
 
 const selectGrantBySubjectResource = db.prepare(
-  `SELECT * FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+  `SELECT * FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
 const updateGrantLevel = db.prepare("UPDATE grants SET level = ? WHERE id = ?");
 
-/** Insert or, if a grant for the same (subject, resource) exists, update its level. */
-export function upsertGrant(g: Omit<Grant, "id" | "created_at">): Grant {
+/** Insert or, if a grant for the same (vault, subject, resource) exists, update its level. */
+export function upsertGrant(g: GrantInput): Grant {
+  const vaultId = g.vault_id ?? "primary";
   const existing = selectGrantBySubjectResource.get(
+    vaultId,
     g.subject_type,
     g.subject,
     g.resource_type,
@@ -552,15 +611,56 @@ export function upsertGrant(g: Omit<Grant, "id" | "created_at">): Grant {
 }
 
 const deleteGrantBySubjectResourceStmt = db.prepare(
-  `DELETE FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+  `DELETE FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
 export function removeGrantBySubjectResource(
   subjectType: SubjectType,
   subject: string,
   resourceType: ResourceType,
   resource: string,
+  vaultId = "primary",
 ): void {
-  deleteGrantBySubjectResourceStmt.run(subjectType, subject, resourceType, resource);
+  deleteGrantBySubjectResourceStmt.run(vaultId, subjectType, subject, resourceType, resource);
+}
+
+// ── Memberships (Phase 1 multi-tenancy) ──────────────────────────────────────
+export interface MembershipRow {
+  vault_id: string;
+  email: string;
+  role: string; // 'owner' | 'admin' | 'member' | 'guest' (validated by roles.ts)
+  created_at: number;
+}
+const upsertMembershipStmt = db.prepare(
+  `INSERT INTO memberships (vault_id, email, role, created_by, created_at)
+   VALUES (@vault_id, @email, @role, @created_by, @created_at)
+   ON CONFLICT(vault_id, email) DO UPDATE SET role = @role`,
+);
+const selectMembershipRole = db.prepare("SELECT role FROM memberships WHERE vault_id = ? AND email = ?");
+const selectMembershipsByVault = db.prepare(
+  "SELECT vault_id, email, role, created_at FROM memberships WHERE vault_id = ? ORDER BY created_at",
+);
+const selectMembershipsByUser = db.prepare(
+  "SELECT vault_id, email, role, created_at FROM memberships WHERE email = ?",
+);
+const deleteMembershipStmt = db.prepare("DELETE FROM memberships WHERE vault_id = ? AND email = ?");
+
+/** The raw membership role string for (email, vault), or null if not a member.
+ *  roles.ts `workspaceRole` wraps this with the OWNER_EMAIL bootstrap fallback. */
+export function getMembershipRole(email: string, vaultId: string): string | null {
+  return (selectMembershipRole.get(vaultId, email) as { role: string } | undefined)?.role ?? null;
+}
+export function setMembership(vaultId: string, email: string, role: string, createdBy: string | null): void {
+  ensureUser(email);
+  upsertMembershipStmt.run({ vault_id: vaultId, email, role, created_by: createdBy, created_at: now() });
+}
+export function removeMembership(vaultId: string, email: string): void {
+  deleteMembershipStmt.run(vaultId, email);
+}
+export function listMemberships(vaultId: string): MembershipRow[] {
+  return selectMembershipsByVault.all(vaultId) as MembershipRow[];
+}
+export function membershipsForUser(email: string): MembershipRow[] {
+  return selectMembershipsByUser.all(email) as MembershipRow[];
 }
 
 // ---- users (listing) ----

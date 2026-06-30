@@ -109,6 +109,9 @@ function publicationActor(pub: Publication): Actor {
   return {
     kind: "anon",
     role: "guest",
+    // Publications are primary-vault-scoped in Phase 1 (publish vault-scoping is a
+    // later step); grantsForResource defaults to the primary vault to match.
+    vaultId: "primary",
     grants: grantsForResource(pub.resource_type, pub.resource).filter((g) => g.subject_type === "anyone"),
   };
 }

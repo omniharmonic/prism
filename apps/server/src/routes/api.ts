@@ -12,7 +12,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { resolveVaultEntry } from "../db";
-import { vault, VaultError, VaultConflictError, type Note } from "../parachute";
+import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -80,16 +80,17 @@ function vaultErr(c: Context, e: unknown) {
  * vault's tag filter.
  */
 async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note[]> {
+  const vc = vaultClient(actor.vaultId); // read from the actor's OWN vault, not the primary
   const collected = new Map<string, Note>();
   for (const tag of grantedTags(actor.grants)) {
-    for (const n of await vault.listNotes({ tags: [tag], includeContent })) {
+    for (const n of await vc.listNotes({ tags: [tag], includeContent })) {
       collected.set(n.id, n);
     }
   }
   for (const g of actor.grants.filter((x) => x.resource_type === "note")) {
     if (collected.has(g.resource)) continue;
     try {
-      collected.set(g.resource, await vault.getNote(g.resource));
+      collected.set(g.resource, await vc.getNote(g.resource));
     } catch {
       /* granted note may have been deleted — skip */
     }
@@ -115,7 +116,7 @@ api.get("/notes/:id", async (c) => {
   const actor = resolveActor(c);
   let note: Note;
   try {
-    note = await vault.getNote(c.req.param("id"));
+    note = await vaultClient(actor.vaultId).getNote(c.req.param("id"));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -134,7 +135,7 @@ api.post("/notes", async (c) => {
     tags?: string[];
   }>();
   try {
-    return c.json(await vault.createNote(body));
+    return c.json(await vaultClient(actor.vaultId).createNote(body));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -143,9 +144,10 @@ api.post("/notes", async (c) => {
 api.patch("/notes/:id", async (c) => {
   const actor = resolveActor(c);
   const id = c.req.param("id");
+  const vc = vaultClient(actor.vaultId);
   let note: Note;
   try {
-    note = await vault.getNote(id);
+    note = await vc.getNote(id);
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -161,7 +163,7 @@ api.patch("/notes/:id", async (c) => {
   try {
     // Non-owners may change content/metadata only; path (and tags, never here)
     // stay owner-controlled so a collaborator can't reorganize or re-scope.
-    const updated = await vault.updateNote(id, {
+    const updated = await vc.updateNote(id, {
       content: body.content,
       metadata: body.metadata,
       path: roleAtLeast(actor.role, "admin") ? body.path : undefined,
@@ -177,7 +179,7 @@ api.delete("/notes/:id", async (c) => {
   const actor = resolveActor(c);
   if (!roleAtLeast(actor.role, "admin")) return c.json({ error: "forbidden" }, 403);
   try {
-    await vault.deleteNote(c.req.param("id"));
+    await vaultClient(actor.vaultId).deleteNote(c.req.param("id"));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -190,7 +192,7 @@ api.get("/search", async (c) => {
   const limit = Number(c.req.query("limit") ?? 50);
   let results: Note[];
   try {
-    results = await vault.search(q, [], limit);
+    results = await vaultClient(actor.vaultId).search(q, [], limit);
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -204,7 +206,7 @@ api.get("/tags", async (c) => {
   const actor = resolveActor(c);
   let tags: Array<{ tag: string; count: number }>;
   try {
-    tags = await vault.getTags();
+    tags = await vaultClient(actor.vaultId).getTags();
   } catch (e) {
     return vaultErr(c, e);
   }

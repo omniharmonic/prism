@@ -5,17 +5,34 @@
  * on their per-note effective level; grants then raise individual notes/tags
  * above that floor.
  *
- * Phase 0: a role is derived purely from `OWNER_EMAIL` (owner) — so behavior is
- * byte-identical to the previous `isOwner` boolean, but every call site now
- * speaks `role`. Phase 1 backs this with a real per-vault `memberships` table
- * (`workspaceRole(email, vaultId)`), reconciled with the hub's `user_vaults`.
+ * Phase 1 backs this with a real per-vault `memberships` table
+ * (`workspaceRole(email, vaultId)`), reconciled with the hub's `user_vaults`. The
+ * env `OWNER_EMAIL` remains the bootstrap owner of the primary vault even with no
+ * membership row, so an upgraded single-vault deploy is unchanged.
  */
 import type { Level } from "./permissions";
+import { config } from "./config";
+import { getMembershipRole } from "./db";
 
 export type Role = "owner" | "admin" | "member" | "guest";
 
 /** Ordered weakest → strongest. */
 export const ROLES: readonly Role[] = ["guest", "member", "admin", "owner"] as const;
+
+const isRole = (s: string | null): s is Role => s != null && (ROLES as readonly string[]).includes(s);
+
+/**
+ * The authoritative workspace role for (email, vault). A membership row wins; else
+ * the env OWNER_EMAIL is owner of the primary vault (bootstrap/back-compat); else
+ * a signed-in user with no membership in this vault is a guest (sees only what
+ * explicit grants allow — authentication never implies authorization).
+ */
+export function workspaceRole(email: string, vaultId: string): Role {
+  const row = getMembershipRole(email, vaultId);
+  if (isRole(row)) return row;
+  if (email === config.ownerEmail && vaultId === "primary") return "owner";
+  return "guest";
+}
 
 export const roleRank = (r: Role): number => ROLES.indexOf(r);
 
