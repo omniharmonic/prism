@@ -396,7 +396,9 @@ export type SubjectType = "user" | "link" | "anyone" | "peer";
 // "path" is used ONLY as a publication's resource_type (publish-by-directory);
 // it is never a grant resource_type (path publications are guarded by the
 // path-membership predicate, not by grants — see routes/publish.ts).
-export type ResourceType = "note" | "tag" | "space" | "path";
+// "vault" is a whole-workspace grant (resource = the vault_id): broad access to
+// every note in the vault, distinct from the management RIGHTS a role confers.
+export type ResourceType = "note" | "tag" | "space" | "path" | "vault";
 
 export interface Grant {
   id: string;

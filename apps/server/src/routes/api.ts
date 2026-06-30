@@ -19,7 +19,16 @@ import { roleAtLeast, roleFloor } from "../roles";
 
 export const api = new Hono();
 
-const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
+
+/** The grant subject of an actor (for the private-note creator check). */
+const actorSubject = (a: Actor): string | null =>
+  a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null;
 
 /**
  * Transparent proxy to the vault for the OWNER only. Forwards the exact path,
@@ -96,7 +105,7 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
     }
   }
   return [...collected.values()].filter((n) =>
-    atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role)), "view"),
+    atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role), actorSubject(actor)), "view"),
   );
 }
 
@@ -120,22 +129,36 @@ api.get("/notes/:id", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role));
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role), actorSubject(actor));
   if (!atLeast(level, "view")) return c.json({ error: "forbidden" }, 403);
   return c.json({ ...note, _level: level });
 });
 
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
-  if (!roleAtLeast(actor.role, "admin")) return c.json({ error: "forbidden" }, 403);
+  // Owners/admins are short-circuited to the passthrough upstream; this handler
+  // runs for members/guests/links. A signed-in MEMBER may create — but only
+  // inside a tag/folder they can already EDIT, so a create can't smuggle a note
+  // into an area they lack access to. Guests/links/anon cannot create.
   const body = await c.req.json<{
     content: string;
     path?: string;
     metadata?: Record<string, unknown>;
     tags?: string[];
   }>();
+  const subject = actorSubject(actor);
+  const slice: NoteRef = { id: "<new>", tags: body.tags ?? [] };
+  const canCreate =
+    actor.kind === "user" &&
+    atLeast(effectiveLevel(actor.grants, slice, roleFloor(actor.role), subject), "edit");
+  if (!canCreate) {
+    return c.json({ error: "forbidden", reason: "create requires edit on the target tag/folder" }, 403);
+  }
+  // Stamp the creator (private-to-creator + audit). A member can't forge it — we
+  // overwrite any client-supplied prism_creator with the authenticated subject.
+  const metadata = { ...(body.metadata ?? {}), ...(subject ? { prism_creator: subject } : {}) };
   try {
-    return c.json(await vaultClient(actor.vaultId).createNote(body));
+    return c.json(await vaultClient(actor.vaultId).createNote({ ...body, metadata }));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -151,7 +174,7 @@ api.patch("/notes/:id", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role));
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role), actorSubject(actor));
   if (!atLeast(level, "edit")) return c.json({ error: "forbidden" }, 403);
 
   const body = await c.req.json<{
@@ -198,7 +221,7 @@ api.get("/search", async (c) => {
   }
   if (roleAtLeast(actor.role, "admin")) return c.json(results);
   return c.json(
-    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role)), "view")),
+    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role), actorSubject(actor)), "view")),
   );
 });
 

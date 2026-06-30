@@ -105,3 +105,48 @@ test("grantedTags returns the unique set of tag resources", () => {
   ];
   assert.deepEqual(grantedTags(grants).sort(), ["a", "b"]);
 });
+
+// ── whole-workspace (vault) grant ────────────────────────────────────────────
+test("a vault grant matches every note in the workspace", () => {
+  const grants = [g({ resource_type: "vault", resource: "primary", level: "edit" })];
+  assert.equal(effectiveLevel(grants, { id: "any", tags: [] }, null), "edit");
+  assert.equal(effectiveLevel(grants, { id: "other", tags: ["x", "y"] }, null), "edit");
+});
+
+// ── private-to-creator (Notion-style private pages) ──────────────────────────
+const priv = (over: Partial<Parameters<typeof effectiveLevel>[1]> = {}) => ({
+  id: "p1",
+  tags: ["shared"],
+  creator: "alice@x",
+  visibility: "private" as const,
+  ...over,
+});
+
+test("private note: the creator gets own (subject matches creator)", () => {
+  assert.equal(effectiveLevel([], priv(), null, "alice@x"), "own");
+});
+
+test("private note: a non-creator with a TAG grant is denied (tag + floor ignored)", () => {
+  const grants = [g({ resource_type: "tag", resource: "shared", level: "edit" })];
+  // bob has edit on the folder AND an admin 'own' floor — neither reaches a private note.
+  assert.equal(effectiveLevel(grants, priv(), "own", "bob@x"), null);
+});
+
+test("private note: an admin floor does NOT override (admins can't see members' private notes)", () => {
+  assert.equal(effectiveLevel([], priv(), "own", "admin@x"), null);
+});
+
+test("private note: an explicit per-NOTE grant DOES reach it (the creator shared it)", () => {
+  const grants = [g({ resource_type: "note", resource: "p1", level: "view" })];
+  assert.equal(effectiveLevel(grants, priv(), null, "bob@x"), "view");
+});
+
+test("private note: no subject is fail-closed (creator shortcut needs the subject)", () => {
+  // Omitting subject can never LEAK — only under-grant the creator.
+  assert.equal(effectiveLevel([], priv(), "own"), null);
+});
+
+test("a vault grant does NOT override a private note either", () => {
+  const grants = [g({ resource_type: "vault", resource: "primary", level: "own" })];
+  assert.equal(effectiveLevel(grants, priv(), "own", "bob@x"), null);
+});

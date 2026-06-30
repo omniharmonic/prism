@@ -26,7 +26,15 @@ import { verifyPassword } from "../auth/password";
 
 export const publish = new Hono();
 
-const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+// Includes `visibility` so a PRIVATE note carrying a published tag is excluded
+// from the public set: effectiveLevel returns null for a private note unless the
+// anon actor holds an explicit per-note grant (it never does). Without this a
+// private note could leak onto a public wiki via a shared tag.
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
 
 /** Local equivalent of api.ts `vaultErr` (not exported there): 404 → 404, else 502/500. */
 function vaultErr(c: Context, e: unknown) {

@@ -435,12 +435,19 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
     if (claims) grants = grants.concat(grantsForCapability(claims.id));
   }
   let tags: string[] = [];
+  let creator: string | null = null;
+  let visibility: "private" | "workspace" = "workspace";
   try {
-    tags = (await vault.getNote(noteId)).tags ?? [];
+    const note = await vault.getNote(noteId);
+    tags = note.tags ?? [];
+    // Private-to-creator also gates LIVE editing: a private note is editable only
+    // by its creator (or an explicit per-note grant), never via a tag/role floor.
+    creator = (note.metadata?.prism_creator as string | undefined) ?? null;
+    visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
   } catch {
-    /* new/unknown note — no tags */
+    /* new/unknown note — no tags/metadata */
   }
-  return effectiveLevel(grants, { id: noteId, tags }, roleFloor(role));
+  return effectiveLevel(grants, { id: noteId, tags, creator, visibility }, roleFloor(role), email ?? null);
 }
 
 /**

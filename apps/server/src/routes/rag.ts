@@ -20,7 +20,16 @@ import { semanticSearch, indexNote, deindexNote, reindexAll, stats } from "../ra
 
 export const rag = new Hono();
 
-const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+// Carries creator + visibility so semantic search honors private-to-creator:
+// another member's private note must not surface in a non-creator's results.
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
+const subjectOf = (a: ReturnType<typeof resolveActor>): string | null =>
+  a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null;
 const ownerOnly = (c: Context) => roleAtLeast(resolveActor(c).role, "admin");
 
 rag.get("/search/semantic", async (c) => {
@@ -35,7 +44,7 @@ rag.get("/search/semantic", async (c) => {
   }
   const visible = roleAtLeast(actor.role, "admin")
     ? hits
-    : hits.filter((h) => atLeast(effectiveLevel(actor.grants, ref(h.note), roleFloor(actor.role)), "view"));
+    : hits.filter((h) => atLeast(effectiveLevel(actor.grants, ref(h.note), roleFloor(actor.role), subjectOf(actor)), "view"));
   // Shape mirrors /notes entries, plus score + snippet for ranked display.
   return c.json(
     visible.map((h) => ({ ...h.note, _score: h.score, _snippet: h.snippet })),
