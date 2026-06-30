@@ -236,6 +236,22 @@ db.exec(`
     PRIMARY KEY (vault_id, email)
   );
   CREATE INDEX IF NOT EXISTS memberships_email ON memberships(email);
+
+  -- ── Per-tenant integration secrets (Phase 3 server-first runtime) ────────
+  -- Encrypted-at-rest credentials (Matrix/Notion/Fathom/… tokens) keyed by
+  -- (vault, owner, kind). This is the multi-tenant gate: a server-side ingester
+  -- or agent run reads the secret for the tenant it's acting on, never another's.
+  -- ciphertext = AES-256-GCM(secret)||authTag; the master key (SECRETS_KEY) lives
+  -- in the environment, NEVER in this db. See src/secrets.ts.
+  CREATE TABLE IF NOT EXISTS tenant_secrets (
+    vault_id    TEXT NOT NULL,
+    owner_email TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    ciphertext  BLOB NOT NULL,
+    iv          BLOB NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, owner_email, kind)
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
