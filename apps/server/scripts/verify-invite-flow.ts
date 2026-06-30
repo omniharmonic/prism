@@ -24,7 +24,9 @@ import { authorizeConnection } from "../src/collab";
 import { db } from "../src/db";
 import { vault } from "../src/parachute";
 
-const BASE = "http://localhost:8787";
+// Honor the server's configured PORT (.env), not a hardcoded 8787, so this drives
+// whatever instance is actually running (matches verify-collab-share.ts).
+const BASE = `http://localhost:${config.port}`;
 // Self-provisioned throwaway fixtures (no hardcoded vault IDs — runs on any vault):
 // one note we share with the test user, one that carries no grant (must stay
 // forbidden). Both are created at startup and deleted in the finally block.

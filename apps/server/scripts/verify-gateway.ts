@@ -9,7 +9,9 @@ import { signCapability } from "../src/auth/capability";
 import { vault } from "../src/parachute";
 import { config } from "../src/config";
 
-const BASE = "http://localhost:8787";
+// Honor the server's configured PORT (.env) instead of hardcoding 8787, so this
+// verifies whatever instance you actually started (matches verify-collab-share.ts).
+const BASE = `http://localhost:${config.port}`;
 // Self-provisioned throwaway fixtures — NO hardcoded vault note IDs, so this
 // runs against ANY vault. The gateway section creates GATE_NOTE_COUNT notes
 // under TAG plus one untagged note, asserts the capability gateway, then tears

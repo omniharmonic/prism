@@ -13,6 +13,8 @@ export function LoginScreen({ notice }: { notice?: string }) {
   const [status, setStatus] = useState<"idle" | "working" | "linksent" | "error">("idle");
   const [error, setError] = useState("");
   const [linkMode, setLinkMode] = useState(false);
+  // false when the server has no Resend key — the link was printed to its console.
+  const [emailDelivery, setEmailDelivery] = useState(true);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -20,7 +22,8 @@ export function LoginScreen({ notice }: { notice?: string }) {
     setError("");
     try {
       if (linkMode) {
-        await requestMagicLink(email.trim().toLowerCase());
+        const { emailDelivery } = await requestMagicLink(email.trim().toLowerCase());
+        setEmailDelivery(emailDelivery);
         setStatus("linksent");
       } else {
         await login(email.trim().toLowerCase(), password);
@@ -62,7 +65,15 @@ export function LoginScreen({ notice }: { notice?: string }) {
 
         {status === "linksent" ? (
           <div style={{ fontSize: 14, lineHeight: 1.5 }}>
-            If <strong>{email}</strong> is allowed, a sign-in link is on its way. You can close this tab.
+            {emailDelivery ? (
+              <>If <strong>{email}</strong> is allowed, a sign-in link is on its way. You can close this tab.</>
+            ) : (
+              <>
+                Email isn't configured on this server, so no message was sent. If{" "}
+                <strong>{email}</strong> is the owner, the one-time sign-in link was printed to the{" "}
+                <strong>server console</strong> (the terminal running the Prism Server) — open it from there.
+              </>
+            )}
           </div>
         ) : (
           <>

@@ -185,34 +185,50 @@ pub fn vault_create(
     let mut cfg = load_normalized(&config);
     let url = cfg.parachute_url.clone();
 
-    // Shell out to the Parachute CLI with an ARGS ARRAY (never a shell string) so
-    // the vault name can't be a shell-injection vector.
-    let output = std::process::Command::new("parachute-vault")
-        .args(["create", &name, "--mint", "--scope", "write", "--no-mirror", "--json"])
+    // Shell out to the Parachute CLI with ARGS ARRAYS (never a shell string) so the
+    // vault name can't be a shell-injection vector. Two steps on purpose:
+    //   1. create the vault, then
+    //   2. mint a LONG-LIVED (1-year) write token via `parachute auth mint-token`.
+    // We mint separately rather than rely on `create --mint`, whose token defaults
+    // to a ~90-day TTL — a desktop-created vault would otherwise silently stop
+    // authenticating after 90 days, with no obvious cause for a non-technical user.
+    let create = std::process::Command::new("parachute-vault")
+        .args(["create", &name, "--no-mirror", "--json"])
         .output()
         .map_err(|e| {
             PrismError::Config(format!(
                 "failed to run parachute-vault (is the CLI installed?): {e}"
             ))
         })?;
-    if !output.status.success() {
-        // The failure happens BEFORE any token is minted, so stderr can't carry a
-        // token; still keep it terse and never echo stdout.
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !create.status.success() {
+        // Never echo stdout (defensive); creation precedes any token mint anyway.
+        let stderr = String::from_utf8_lossy(&create.stderr);
         return Err(PrismError::Config(format!(
             "parachute-vault create failed: {}",
             stderr.trim()
         )));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|_| PrismError::Config("parachute-vault create did not return JSON".into()))?;
-    let token = parsed
-        .get("token")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| PrismError::Config("parachute-vault create returned no token".into()))?;
+
+    // Mint a 1-year (31536000s) write token. `mint-token` prints the bare JWT on stdout.
+    let scope = format!("vault:{name}:write");
+    let mint = std::process::Command::new("parachute")
+        .args(["auth", "mint-token", "--scope", &scope, "--expires-in", "31536000"])
+        .output()
+        .map_err(|e| PrismError::Config(format!("failed to run parachute auth mint-token: {e}")))?;
+    if !mint.status.success() {
+        let stderr = String::from_utf8_lossy(&mint.stderr);
+        return Err(PrismError::Config(format!(
+            "parachute auth mint-token failed: {}",
+            stderr.trim()
+        )));
+    }
+    let token = String::from_utf8_lossy(&mint.stdout).trim().to_string();
+    // Sanity-check it's a JWT (Parachute 0.5.x+ rejects legacy pvt_* opaque tokens).
+    if token.is_empty() || !token.starts_with("eyJ") {
+        return Err(PrismError::Config(
+            "parachute auth mint-token returned no JWT".into(),
+        ));
+    }
 
     let id = unique_vault_id(&label, &cfg.vaults);
     let entry = VaultEntry {

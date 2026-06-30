@@ -13,7 +13,7 @@
  * and the magic link only works for the owner email. Strangers can't authenticate.
  */
 import { Hono } from "hono";
-import { config } from "../config";
+import { config, emailEnabled } from "../config";
 import { startSession, endSession, readSession } from "../auth/session";
 import { requestMagicLink, redeemMagicLink } from "../auth/magiclink";
 import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
@@ -83,7 +83,10 @@ auth.post("/request", async (c) => {
   const { email } = await c.req.json<{ email?: string }>();
   if (!validEmail(email)) return c.json({ error: "invalid_email" }, 400);
   if (norm(email) === config.ownerEmail) await requestMagicLink(email);
-  return c.json({ ok: true }); // never reveal who is allowed
+  // `emailDelivery` is a server-wide config fact (is Resend set?), NOT per-user —
+  // so it leaks nothing about who's allowed, but lets the UI tell a no-Resend
+  // operator to read the link from the server console instead of waiting on email.
+  return c.json({ ok: true, emailDelivery: emailEnabled() }); // never reveal who is allowed
 });
 
 auth.get("/callback", (c) => {

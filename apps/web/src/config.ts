@@ -160,8 +160,9 @@ export async function setPassword(password: string, name?: string): Promise<void
 }
 
 /** Request a magic-link sign-in email. Resolves on 200 (the server never
- *  reveals whether an address is known). */
-export async function requestMagicLink(email: string): Promise<void> {
+ *  reveals whether an address is known). Returns `emailDelivery` — false when
+ *  the server has no Resend key, so the link was only printed to its console. */
+export async function requestMagicLink(email: string): Promise<{ emailDelivery: boolean }> {
   const r = await fetch(`${GATEWAY_ORIGIN}/auth/request`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -169,6 +170,8 @@ export async function requestMagicLink(email: string): Promise<void> {
     body: JSON.stringify({ email }),
   });
   if (!r.ok) throw new Error(`Sign-in request failed (${r.status}).`);
+  const body = await r.json().catch(() => ({}));
+  return { emailDelivery: body?.emailDelivery !== false };
 }
 
 export async function logout(): Promise<void> {

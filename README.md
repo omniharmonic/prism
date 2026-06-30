@@ -122,70 +122,67 @@ Prism ships with 11 renderers, each tailored to a content type.
 
 ## :rocket: Getting Started
 
+> **The fast path:** if you use [Claude Code](https://claude.com/claude-code), clone the
+> repo, run `npm install`, then just ask the **`prism-setup`** skill to set everything up —
+> it walks you through the vault, server, schemas, and integrations conversationally. The
+> manual steps below are what that skill automates. Full walkthrough: **[`docs/onboarding.md`](docs/onboarding.md)**.
+
 ### Prerequisites
 
-| Requirement | Version |
-|-------------|---------|
-| macOS | 13+ (Ventura or later) |
-| Rust | 1.75+ |
-| Node.js | 20+ |
-| Parachute vault | Running on `localhost:1940` |
+| Requirement | Why | Notes |
+|-------------|-----|-------|
+| **Node.js 20+** | Builds the web app + runs the Prism Server | `node -v` |
+| **A Parachute vault** | The canonical data layer (Prism never touches SQLite) | Install from **[parachute.computer](https://parachute.computer)**, then `parachute-vault init`. Verify: `curl localhost:1940/health` |
+| **Claude Code CLI** | The AI agent **and** the guided `prism-setup` skill | [Install](https://claude.com/claude-code) — optional but recommended |
+| **Rust 1.75+** | Only to build the **desktop** app (Tauri) | Skip if you only run the web/server path |
 
-### Optional Services
+### 1. Get a vault token
 
-| Service | Purpose | Default |
-|---------|---------|---------|
-| Matrix Synapse | Unified messaging via mautrix bridges | `localhost:8008` |
-| `gog` CLI | Gmail, Google Calendar, Google Docs | Installed globally |
-| Notion API key | Two-way Notion page sync | Set in config |
+Prism's server authenticates to Parachute with a hub-issued JWT (the legacy `pvt_*` tokens
+are rejected). Mint a long-lived write token:
 
-### Installation
+```bash
+parachute auth mint-token --scope vault:default:write --expires-in 31536000
+```
+
+### 2. Provision the Prism Server (gateway + web app)
 
 ```bash
 git clone https://github.com/omniharmonic/prism.git
 cd prism
 npm install
-npm run tauri dev
+npm run setup          # interactive: writes apps/server/.env (chmod 600),
+                       # seeds tag schemas into the vault, renders .mcp.json
 ```
 
-This starts Prism in development mode with hot reload. The frontend runs on Vite; the Rust backend compiles and launches the native window.
-
-### Production Build
+`npm run setup` prompts for your public origin, owner email, vault name, and the token from
+step 1. Then build the web PWA and start the server:
 
 ```bash
-npm run tauri build
+npm run build -w @prism/web        # → apps/web/dist (the server serves this)
+cd apps/server && npm start        # gateway + web app on :8787
 ```
 
-The signed `.app` bundle lands in:
+Open the printed URL and sign in. Auth is **invite-only**: the owner (you) signs in with a
+magic link — if you haven't configured email (Resend), **the link is printed to the server
+console**. Everyone else joins by an invite link you generate from the Share dialog (it's
+copied to your clipboard to paste into a DM — no email service required). See
+[`docs/onboarding.md`](docs/onboarding.md) and [`docs/publishing.md`](docs/publishing.md).
 
-```
-src-tauri/target/release/bundle/macos/Prism.app
-```
+### 3. (Optional) Run the desktop app
 
-To install:
+The desktop app (Tauri) is the full local experience and talks to Parachute directly:
 
 ```bash
-cp -R src-tauri/target/release/bundle/macos/Prism.app /Applications/
+cd apps/desktop && npm run tauri dev      # dev mode with hot reload
+cd apps/desktop && npm run tauri build -- --bundles app   # production .app
 ```
 
-### Configuration
-
-Prism loads configuration from a cascade:
-
-1. The platform app-config dir (primary) — on **macOS** that is
-   `~/Library/Application Support/prism/prism-config.json` (Tauri app-data, via
-   `dirs::config_dir()`), **not** `~/.config/prism`. On Linux it is
-   `~/.config/prism/prism-config.json`.
-2. `omniharmonic_agent/.env` (legacy fallback for API keys, one-time migration)
-3. Built-in defaults
-
-Open **Settings** via the gear icon in the status bar. Configurable options include:
-
-- **Theme** — dark / light / system
-- **Fonts** — editor and UI font families
-- **Multi-vault** — connect multiple Parachute instances
-- **Sync defaults** — Notion, Google Docs sync behavior
-- **Matrix credentials** — homeserver, access token, user ID
+Desktop config lives at `~/Library/Application Support/prism/prism-config.json` (macOS) /
+`~/.config/prism/prism-config.json` (Linux) — point it at your vault URL, name, and token.
+Open **Settings** (gear icon) for theme, fonts, multi-vault, sync defaults, and integration
+credentials (Matrix, Google via the `gog` CLI, Notion, transcripts). Each integration is
+optional and its background sync stays off until you add the credential.
 
 ---
 
