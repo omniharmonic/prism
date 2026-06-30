@@ -59,6 +59,9 @@ import {
   addVaultEntry,
   getVaultRegistry,
   removeVaultEntry,
+  listMemberships,
+  setMembership,
+  removeMembership,
   type Space,
 } from "../db";
 import { vaultRegistry } from "../config";
@@ -76,9 +79,10 @@ async function grantAndInvite(
   resourceType: "note" | "tag",
   resource: string,
   owner: string,
+  vaultId: string,
 ): Promise<{ invited: boolean; inviteUrl?: string }> {
   ensureUser(email);
-  upsertGrant({ subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner });
+  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner });
   if (!hasAccount(email)) {
     // Return the accept URL so the owner can hand it over directly — email may
     // not be configured/paid, and even when it is, "copy invite link" is useful.
@@ -264,7 +268,7 @@ acl.get("/notes/:id", async (c) => {
 acl.put("/notes/:id/people", async (c) => {
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail);
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail, resolveActor(c).vaultId);
   return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
 });
 
@@ -274,6 +278,7 @@ acl.delete("/notes/:id/people/:email", (c) => {
     normEmail(decodeURIComponent(c.req.param("email"))),
     "note",
     c.req.param("id"),
+    resolveActor(c).vaultId,
   );
   return c.json({ ok: true });
 });
@@ -290,6 +295,7 @@ acl.post("/notes/:id/links", async (c) => {
   const exp = Date.now() + (expiresInDays ?? 30) * 86_400_000;
   createCapability({ id: capId, resource_type: "note", resource: id, level, label: label ?? null, expires_at: exp });
   upsertGrant({
+    vault_id: resolveActor(c).vaultId,
     subject_type: "link",
     subject: capId,
     resource_type: "note",
@@ -303,7 +309,7 @@ acl.post("/notes/:id/links", async (c) => {
 acl.delete("/notes/:id/links/:capId", (c) => {
   const capId = c.req.param("capId");
   deleteCapability(capId);
-  removeGrantBySubjectResource("link", capId, "note", c.req.param("id"));
+  removeGrantBySubjectResource("link", capId, "note", c.req.param("id"), resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
 
@@ -320,12 +326,12 @@ acl.delete("/notes/:id/tags/:tag", async (c) => {
   return c.json({ ok: true });
 });
 
-// Tag-grants: a person can access everything carrying a tag.
+// Tag-grants: a person can access everything carrying a tag (≈ "share a folder").
 acl.put("/tags/:tag/people", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
   const { email, level } = await c.req.json<{ email?: string; level?: string }>();
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail);
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail, resolveActor(c).vaultId);
   return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
 });
 
@@ -335,7 +341,62 @@ acl.delete("/tags/:tag/people/:email", (c) => {
     normEmail(decodeURIComponent(c.req.param("email"))),
     "tag",
     decodeURIComponent(c.req.param("tag")),
+    resolveActor(c).vaultId,
   );
+  return c.json({ ok: true });
+});
+
+// ── Members & whole-workspace access (Phase 2) ───────────────────────────────
+// Manage who belongs to THIS vault (the active X-Prism-Vault) and at what role,
+// plus a whole-workspace access grant. Admin-gated by the group middleware.
+acl.get("/members", (c) => {
+  const vaultId = resolveActor(c).vaultId;
+  const byEmail = new Map(listUsers().map((u) => [u.email, u.name]));
+  return c.json(
+    listMemberships(vaultId).map((m) => ({
+      email: m.email,
+      name: byEmail.get(m.email) ?? null,
+      role: m.role,
+      joinedAt: m.created_at,
+    })),
+  );
+});
+
+const isRoleName = (x: unknown): x is "owner" | "admin" | "member" | "guest" =>
+  x === "owner" || x === "admin" || x === "member" || x === "guest";
+
+acl.put("/members", async (c) => {
+  const actor = resolveActor(c);
+  const { email, role } = await c.req.json<{ email?: string; role?: string }>();
+  if (!isEmail(email) || !isRoleName(role)) return c.json({ error: "bad_request" }, 400);
+  setMembership(actor.vaultId, normEmail(email), role, actor.kind === "user" ? actor.email : config.ownerEmail);
+  // If they have no account yet, issue an invite link the admin can hand over.
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), role, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/members/:email", (c) => {
+  removeMembership(resolveActor(c).vaultId, normEmail(decodeURIComponent(c.req.param("email"))));
+  return c.json({ ok: true });
+});
+
+// Whole-workspace access grant: broad note access (view..own) WITHOUT management
+// rights. Distinct from a role (which also confers management). resource = vault_id.
+acl.put("/vault/people", async (c) => {
+  const actor = resolveActor(c);
+  const { email, level } = await c.req.json<{ email?: string; level?: string }>();
+  if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  ensureUser(normEmail(email));
+  upsertGrant({ vault_id: actor.vaultId, subject_type: "user", subject: normEmail(email), resource_type: "vault", resource: actor.vaultId, level, created_by: config.ownerEmail });
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), level, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/vault/people/:email", (c) => {
+  const actor = resolveActor(c);
+  removeGrantBySubjectResource("user", normEmail(decodeURIComponent(c.req.param("email"))), "vault", actor.vaultId, actor.vaultId);
   return c.json({ ok: true });
 });
 
