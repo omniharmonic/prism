@@ -50,6 +50,11 @@ export interface SpawnedProc {
 }
 export type Spawner = (cmd: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => SpawnedProc;
 
+// Default spawner: real claude, with stdin CLOSED (`-p` takes the prompt from
+// argv; leaving stdin open makes claude wait ~3s for piped input first).
+const defaultSpawner: Spawner = (cmd, args, opts) =>
+  realSpawn(cmd, args, { ...opts, stdio: ["ignore", "pipe", "pipe"] }) as unknown as SpawnedProc;
+
 const DISPATCH_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, matches the desktop
 const MAX_OUTPUT = 2_000_000; // cap captured output so a runaway can't OOM the server
 
@@ -180,7 +185,7 @@ export function cancelDispatch(id: string): boolean {
 export function startDispatch(
   entry: VaultEntry,
   req: { prompt: string; skill?: string | null; noteId?: string | null },
-  spawner: Spawner = realSpawn as unknown as Spawner,
+  spawner: Spawner = defaultSpawner,
 ): Dispatch {
   const id = randomUUID();
   const d: Dispatch = {
