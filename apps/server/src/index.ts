@@ -10,6 +10,7 @@ import { serve } from "@hono/node-server";
 import { config, assertConfig, emailEnabled } from "./config";
 import { getVaultRegistry } from "./db";
 import { reportRegistryTokens } from "./auth/vault-token";
+import { startWorker } from "./worker/scheduler";
 import { createApp } from "./app";
 import { attachCollab } from "./collab";
 
@@ -27,6 +28,9 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   // blocks or fails boot (a bad token is logged, not fatal — wiring strict
   // rejection is a later, flag-gated step once every deploy sets the hub origin).
   void reportRegistryTokens(getVaultRegistry());
+  // Phase 3: the Node worker (per-tenant ingesters). No-op unless SECRETS_KEY is
+  // set and a vault has an integration secret; interval is unref'd.
+  startWorker();
 });
 
 // Real-time collaboration shares this HTTP server (WebSocket upgrades on /collab).

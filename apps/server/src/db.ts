@@ -325,6 +325,15 @@ function setSetting(key: string, value: string): void {
   upsertSetting.run({ key, value });
 }
 
+// Worker cursors (Phase 3): the incremental-sync resume token per (vault, kind),
+// e.g. the Matrix /sync next_batch. Persisted in `settings` so a restart resumes.
+export function getWorkerCursor(vaultId: string, kind: string): string | null {
+  return getSetting(`cursor:${kind}:${vaultId}`);
+}
+export function setWorkerCursor(vaultId: string, kind: string, cursor: string): void {
+  setSetting(`cursor:${kind}:${vaultId}`, cursor);
+}
+
 /**
  * Federation enablement is runtime-mutable so the owner can flip the bridge from
  * the UI (no .env edit / restart). Persisted in `settings`, defaulting to the

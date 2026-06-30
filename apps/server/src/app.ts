@@ -18,6 +18,7 @@ import { publish } from "./routes/publish";
 import { federation } from "./routes/federation";
 import { federated } from "./routes/federated";
 import { agentApi } from "./routes/agent";
+import { integrations } from "./routes/integrations";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -99,9 +100,11 @@ export function createApp(): Hono {
   // Owner-only vault registry — mounted BEFORE the gateway so /api/vaults is not
   // proxied to the vault by the owner short-circuit inside `api`.
   app.route("/api", vaults);
-  // Server-side agent dispatch (Phase 3) — admin-only; mounted BEFORE the gateway
-  // so /api/agent/* isn't proxied to the vault by the owner short-circuit.
+  // Server-side agent dispatch + integration config (Phase 3) — admin-only;
+  // mounted BEFORE the gateway so /api/agent + /api/integrations aren't proxied
+  // to the vault by the owner short-circuit.
   app.route("/api/agent", agentApi);
+  app.route("/api/integrations", integrations);
   app.route("/api", api);
   app.route("/acl", acl);
 
