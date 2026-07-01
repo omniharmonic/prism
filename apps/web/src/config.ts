@@ -112,6 +112,13 @@ export async function fetchMe(): Promise<Me> {
   }
 }
 
+/** The cached identity for the signed-in user — for surfaces that need a
+ *  synchronous read (collab presence/authorship). Null until fetchMe() has run.
+ *  Use with fetchMe() to guarantee freshness. */
+export function getMe(): Me | null {
+  return cachedMe;
+}
+
 /** True only for the signed-in vault owner with no capability token in play.
  *  Owner-only features (e.g. the wikilink suggest dropdown, which surfaces vault
  *  note names) gate on this so collaborators/share-link recipients never get it.

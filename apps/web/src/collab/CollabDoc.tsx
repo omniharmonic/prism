@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
-import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken, getActiveVault } from "../config";
+import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken, getActiveVault, getMe, fetchMe } from "../config";
 
 /** The vault-scoped collab documentName: the primary vault uses a BARE note id
  *  (backward-compatible), every other vault prefixes `${vaultId}::` so the server
@@ -29,6 +29,29 @@ function useIsNarrow(): boolean {
 }
 
 const COLORS = ["#f783ac", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ef4444", "#06b6d4"];
+
+/** A STABLE color per identity (so a given person is always the same color across
+ *  sessions/clients), derived from their email/name — not from join order. */
+function colorFor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return COLORS[h % COLORS.length]!;
+}
+
+/** Resolve the collab identity from the signed-in session (name → email), or a
+ *  distinct-per-link "Guest" for capability-link viewers with no account. This is
+ *  what labels every cursor, comment, and suggested edit — so collaborators see
+ *  WHO is acting, instead of everyone showing as the same hardcoded "You". */
+function identityFrom(me: { name?: string | null; email?: string } | null, capToken: string | null): PresenceUser {
+  if (capToken) {
+    // Anonymous share-link viewer: no account. Keep them visually distinct per
+    // link, but they can't be named (that's what account sign-in is for).
+    const seed = `guest-${capToken.slice(0, 10)}`;
+    return { name: "Guest", color: colorFor(seed) };
+  }
+  const name = (me?.name && me.name.trim()) || me?.email || "You";
+  return { name, color: colorFor(me?.email || name) };
+}
 
 function collabUrl(): string {
   const base = GATEWAY_ORIGIN || location.origin;
@@ -202,6 +225,17 @@ export function CollabDoc({
     // whenever federation is off), so the default stays `noteId` with no behavior
     // change for the normal path.
     void (async () => {
+      // Resolve WHO this collaborator is before opening the doc, so the editor
+      // mounts (below, gated on `provider`) with the correct cursor/comment/
+      // suggestion identity — not the stale hardcoded "You".
+      const capToken = getCapabilityToken();
+      if (capToken) {
+        setUser(identityFrom(null, capToken));
+      } else {
+        const me = await fetchMe().catch(() => null);
+        if (!cancelled) setUser(identityFrom(me, null));
+      }
+      if (cancelled) return;
       // Default: the active vault's scoped name (primary → bare id). A federated
       // note overrides this with its space_note_key below.
       let name = vaultDocName(noteId);
@@ -252,10 +286,12 @@ export function CollabDoc({
     return () => aw.off("change", update);
   }, [provider]);
 
-  const user = useMemo(
-    () => ({ name: getCapabilityToken() ? "Guest" : "You", color: COLORS[presence.length % COLORS.length]! }),
-    [presence.length],
-  );
+  // The local collaborator identity (cursor + comment/suggestion authorship).
+  // Seeded synchronously from the cached session (usually already populated), then
+  // confirmed via fetchMe() in the provider effect BEFORE the editor mounts, so
+  // authorship is correct from the first keystroke. Was hardcoded "You" for
+  // everyone — the bug that collapsed all collaborators into one identity.
+  const [user, setUser] = useState<PresenceUser>(() => identityFrom(getMe(), getCapabilityToken()));
 
   if (denied) {
     return (
