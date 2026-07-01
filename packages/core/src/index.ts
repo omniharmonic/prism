@@ -42,6 +42,7 @@ export type {
   PublicationTheme,
   NodeIdentity,
   PeerInfo,
+  PeerEditInfo,
   SpaceInfo,
   SpacePeerGrant,
   PairingCode,

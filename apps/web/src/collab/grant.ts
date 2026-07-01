@@ -5,6 +5,7 @@ import type {
   NoteAccess,
   PairingCode,
   PeerInfo,
+  PeerEditInfo,
   PublicationInfo,
   PublicationTheme,
   SetPersonResult,
@@ -245,6 +246,9 @@ export const webCollabSharing: CollabSharing = {
   },
   async mirrorNoteToPeer(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }> {
     return (await acl(`/notes/${enc(noteId)}/mirror`, { method: "POST", body: JSON.stringify({ pubkey, level }) })).json();
+  },
+  async listPeerEdits(limit = 200): Promise<PeerEditInfo[]> {
+    return (await acl(`/federation/peer-edits?limit=${limit}`)).json();
   },
 
   // ── Inbound mirror requests (owner-reviewed) ──

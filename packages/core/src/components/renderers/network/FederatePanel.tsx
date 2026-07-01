@@ -36,6 +36,7 @@ import {
   ChevronRight,
   ChevronDown,
   AlertTriangle,
+  History,
 } from "lucide-react";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
@@ -46,6 +47,7 @@ import {
   type ShareLevel,
   type NodeIdentity,
   type PeerInfo,
+  type PeerEditInfo,
   type SpaceInfo,
   type MirrorRequestInfo,
 } from "../../../data/CollabSharing";
@@ -1208,6 +1210,38 @@ function MirrorRequestRow({
 }
 
 // ── orchestrator ──────────────────────────────────────────────────────────────
+// ── Peer-edit audit (4.3): owner review of inbound federated edits ────────────
+function PeerEditsCard({ sharing }: { sharing: CollabSharing }) {
+  const [edits, setEdits] = useState<PeerEditInfo[]>([]);
+  useEffect(() => {
+    if (!sharing.listPeerEdits) return;
+    void sharing.listPeerEdits(100).then(setEdits).catch(() => {});
+  }, [sharing]);
+  return (
+    <section style={card}>
+      <SectionHeader
+        icon={<History size={17} />}
+        title="Peer-edit audit"
+        hint="Inbound edits your federated peers made to shared notes."
+        right={edits.length > 0 ? <Badge variant="info">{edits.length}</Badge> : undefined}
+      />
+      {edits.length === 0 ? (
+        <p style={{ ...helpText, textAlign: "center", padding: "8px 0" }}>No peer edits recorded yet.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {edits.map((e, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "4px 0", borderBottom: "1px solid var(--glass-border)" }}>
+              <code style={{ color: "var(--text-primary)" }}>{e.peerFingerprint}</code>
+              <span style={{ flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>note {e.localId}</span>
+              <span style={{ color: "var(--text-muted)" }}>{new Date(e.editedAt).toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function FederatePanel() {
   const sharing = useCollabSharing();
   const vault = useVaultClient();
@@ -1319,6 +1353,8 @@ export function FederatePanel() {
       )}
 
       {sharing.listMirrorRequests && <InboxCard sharing={sharing} requests={mirrors} onChanged={load} />}
+
+      {sharing.listPeerEdits && <PeerEditsCard sharing={sharing} />}
     </div>
   );
 }

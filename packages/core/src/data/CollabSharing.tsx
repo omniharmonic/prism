@@ -124,6 +124,14 @@ export interface PeerInfo {
   pairedAt: number | null;
   createdAt: number;
 }
+/** One inbound edit a federated peer made to a shared note (audit, 4.3). */
+export interface PeerEditInfo {
+  spaceNoteKey: string;
+  localId: string;
+  peer: string;
+  peerFingerprint: string;
+  editedAt: number;
+}
 /** A shared space = a slice of the vault synced with peers. */
 /** A peer granted access to a space, with its level + the vault's last-synced clock. */
 export interface SpacePeerGrant {
@@ -279,6 +287,8 @@ export interface CollabSharing {
   /** "Parachute Sync" (Phase 4.2): mirror ONE note to a paired peer in a single
    *  action — the server composes create-space + add-note + grant-peer + sync. */
   mirrorNoteToPeer?(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }>;
+  /** Peer-edit audit (4.3): inbound edits federated peers made to shared notes. */
+  listPeerEdits?(limit?: number): Promise<PeerEditInfo[]>;
 
   /** Inbound mirror requests this node has received (owner-reviewed). */
   listMirrorRequests?(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]>;
