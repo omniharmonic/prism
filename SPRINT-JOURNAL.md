@@ -159,3 +159,26 @@ server so the web/mobile app can sync with no desktop running:
    verify no-dup — only when moving each OFF the desktop is actually desired.
 Meetily (local SQLite) + Google calendar/email (gog) remain desktop-only, not
 yet ported (calendar/email are ingest, not the sync-adapter shape).
+
+## Phase 1 (vault-scoped multi-tenancy) — COMPLETE + DEPLOYED
+The spine was ~80% (grants/caps/publish/spaces already vault-scoped). Closed the
+real gaps:
+- P1.5 GET /api/vaults: membership-filtered (was owner-only + whole env registry).
+  Server owner sees the full registry; everyone else only vaults they're a member
+  of ∪ hold a grant in. Adds per-vault role. db: vaultIdsWithGrantsForUser().
+- P1.1/1.4 collab_docs vault-scoping — THE isolation hole. Hocuspocus routes by
+  documentName + a note id is unique only within a vault → two tenants' note "42"
+  shared ONE in-memory doc AND one collab_docs row. Fixed: composite PK
+  (vault_id, name) via copy-then-swap (version-gated collab_docs_pk_v2, proven on
+  a copy of the 180MB prod DB — 76 rows + BLOBs preserved). documentName now
+  encodes the vault (primary → BARE id for back-comptat, others → `${vault}::id`);
+  collab.ts repointed off the singleton vault to vaultClient(vaultId) +
+  grantsForUser(email,vaultId) + workspaceRole per vault. web CollabDoc opens the
+  scoped name. federationTarget returns vaultId.
+- Acceptance: verify-multitenant.ts (LIVE, 2 throwaway vaults) — alice (member of
+  A) sees A's note, nothing in B; collab authz grants ≥view on A yet null for the
+  same wire id under B; owner passthrough per-vault. PASS.
+- DEPLOYED: ff-merge → prod DB backed up → pm2 restart (migration ran on boot,
+  76 rows intact, PK composite, flag done) → /health 200. Surfaced a real 2nd
+  registered prod vault (front-range-commons). 298 server tests pass.
+- Deferred (non-isolation): hub user_vaults reconciliation (1.3 nicety).
