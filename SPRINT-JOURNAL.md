@@ -271,3 +271,26 @@ mint-token needs --aud; reused vault names corrupt (stale SQLite) → unique nam
   mirror, desktop+web federated-open parity, reject/downgrade coverage. Only
   deferred item is P1.3 hub user_vaults reconciliation (not needed for the
   server-mediated model).
+
+## ROADMAP CLOSE-OUT — verified iron-clad, ready to merge
+Phases 0–6 status (platform-roadmap.md):
+- P0 trust-root (roles): ✅  P1 multi-tenancy: ✅ deployed  P2 team workspace: ✅ deployed
+- P3 server-first runtime + sync migration: ✅ deployed  P4 federation (incl. live
+  two-hub gap #3): ✅ deployed  P5.1 hub-module manifest: ✅ artifact (opt-in, not
+  activated)  P5.2 fail-closed local trust: ✅ deployed  P6 cross-platform blocker:
+  ✅ already resolved (no macOS-locked deps; cargo check clean).
+Deferred (documented, platform/runtime-gated — NOT blocking the current architecture):
+  P1.3 hub user_vaults reconciliation (server-mediated model needs it not); P5.1
+  credentials receiving-endpoint; P5.3 guided hub-native setup runtime; P6 off-mac
+  secret-store/config fallbacks + desktop-as-remote-client (need Linux/Windows).
+Iron-clad verification (all GREEN):
+  314 in-process server tests · server+core+web+desktop tsc clean · desktop cargo
+  check clean · verify-gateway · verify-collab-share 58/58 · verify-federation 14/14
+  · verify-invite · verify-multitenant (no cross-vault leak) · verify-sync-routes
+  (github+google) · verify-two-hub 12/12 (live convergence) · prod /health 200 ·
+  local-owner path preserved (TRUST_LOCAL=true behind the tunnel).
+Zero-interruption basis: every multi-tenant change scopes by DEFAULT 'primary' →
+  single-vault deploy byte-identical; owner passthrough transparent (verify-gateway);
+  collab_docs migration preserved all 76 rows; sync migration additive (desktop
+  keeps its own path); desktop talks to Parachute directly (server changes don't
+  touch it). Local main = everything; origin is 30 commits behind (not pushed).
