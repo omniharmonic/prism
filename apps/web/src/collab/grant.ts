@@ -19,6 +19,7 @@ import type {
   WorkspaceRole,
 } from "@prism/core";
 import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
+import type { ViewerIdentity } from "@prism/core";
 
 /**
  * Web sharing impl, backed by the Prism Server ACL API (/acl, owner-only). The
@@ -73,15 +74,37 @@ export const webCollabSharing: CollabSharing = {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
   },
   async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
-    // The gateway PATCH merges metadata (prism_creator etc. preserved).
+    // The gateway PATCH merges metadata (prism_creator etc. preserved). `force:true`
+    // is REQUIRED: Parachute enforces optimistic concurrency and 428s any write
+    // that carries neither `if_updated_at` nor `force` — the owner passthrough
+    // forwards this body verbatim, so without it "Make private" silently 428s.
     const activeVault = getActiveVault();
     const r = await fetch(`${GATEWAY_ORIGIN}/api/notes/${enc(noteId)}`, {
       method: "PATCH",
       credentials: "include",
       headers: { "Content-Type": "application/json", ...(activeVault ? { "X-Prism-Vault": activeVault } : {}) },
-      body: JSON.stringify({ metadata: { prism_visibility: isPrivate ? "private" : "workspace" } }),
+      body: JSON.stringify({ metadata: { prism_visibility: isPrivate ? "private" : "workspace" }, force: true }),
     });
     if (!r.ok) throw new Error(`visibility → ${r.status}`);
+  },
+
+  // The viewer's role in the active vault — a FRESH, vault-scoped read (not the
+  // global cachedMe) so it's correct right after a vault switch. Powers role-
+  // gating of the Network management panels.
+  async getViewer(): Promise<ViewerIdentity> {
+    const activeVault = getActiveVault();
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
+      credentials: "include",
+      headers: activeVault ? { "X-Prism-Vault": activeVault } : {},
+    });
+    if (!r.ok) return { email: "", role: "guest", isServerOwner: false, vaultId: activeVault ?? "primary" };
+    const me = (await r.json()) as { email?: string; role?: ViewerIdentity["role"]; isOwner?: boolean; vaultId?: string };
+    return {
+      email: me.email ?? "",
+      role: me.role ?? "guest",
+      isServerOwner: !!me.isOwner,
+      vaultId: me.vaultId ?? activeVault ?? "primary",
+    };
   },
 
   // ── Folder/tag sharing + workspace members (Phase 2) ──

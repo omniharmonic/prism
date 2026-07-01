@@ -5,3 +5,4 @@
 node_modules
 dist
 *.db.backup-*
+*.db.bak-*

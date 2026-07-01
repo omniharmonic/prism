@@ -61,10 +61,16 @@ test("owner magic link: request → callback → me → logout", async () => {
     authenticated: boolean;
     email: string;
     isOwner: boolean;
+    role: string;
+    vaultId: string;
   };
   assert.equal(me.authenticated, true);
   assert.equal(me.email, OWNER);
   assert.equal(me.isOwner, true);
+  // /me now carries the viewer's PER-VAULT role (frontend role-gating). The owner
+  // defaults to the primary vault and is its owner.
+  assert.equal(me.role, "owner");
+  assert.equal(me.vaultId, "primary");
 
   await auth.request("/logout", { method: "POST", headers: { cookie: `prism_session=${sid}` } });
   const after = await auth.request("/me", { headers: { cookie: `prism_session=${sid}` } });

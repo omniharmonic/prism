@@ -44,6 +44,15 @@ export interface WorkspaceGrant {
   grantedBy: string | null;
   grantedAt: number;
 }
+/** The signed-in viewer, scoped to the active vault. `role` is what THIS
+ *  workspace grants them; `isServerOwner` is the global operator flag (owner of
+ *  every vault on the box). Backs role-gating of the Network management panels. */
+export interface ViewerIdentity {
+  email: string;
+  role: WorkspaceRole;
+  isServerOwner: boolean;
+  vaultId: string;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -219,6 +228,13 @@ export interface CollabSharing {
    *  revocable by id. Admin-only server-side; absent → the audit view hides. */
   listGrants?(): Promise<WorkspaceGrant[]>;
   revokeGrant?(id: string): Promise<void>;
+
+  /** The signed-in viewer's identity + role FOR THE ACTIVE VAULT. Role is
+   *  per-vault (a member of workspace A may be a guest in B), so this is re-read
+   *  on every vault switch. The management surfaces (Members/Publish/Federate)
+   *  gate on `role` being admin+ so a member never fires admin-only /acl/* calls
+   *  and sees 403 noise. Absent (desktop shell) → treat the local operator as owner. */
+  getViewer?(): Promise<ViewerIdentity>;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access

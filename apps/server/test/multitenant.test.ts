@@ -60,11 +60,23 @@ test("workspaceRole is per-vault; membership in A is not a role in B", () => {
   assert.equal(workspaceRole("carol@x", "B"), "guest"); // no membership in B → guest
 });
 
-test("OWNER_EMAIL is the bootstrap owner of the PRIMARY vault only", () => {
-  assert.equal(workspaceRole(config.ownerEmail, "primary"), "owner");
-  // The env owner has NO automatic role in a different tenant — they'd need a
-  // membership row there too (so one operator hosting many tenants is explicit).
-  assert.equal(workspaceRole(config.ownerEmail, "tenant-b"), "guest");
+test("OWNER_EMAIL is the SERVER owner — owner of EVERY vault on this box", () => {
+  // The env owner runs the server and creates/links every vault ("workspace") on
+  // it, so they administer all of them — not just primary. This is the fix for
+  // the owner getting 403 on /acl/* when viewing a non-primary vault they own.
+  const saved = config.ownerEmail;
+  (config as { ownerEmail: string }).ownerEmail = "server-owner@x";
+  try {
+    assert.equal(workspaceRole("server-owner@x", "primary"), "owner");
+    assert.equal(workspaceRole("server-owner@x", "tenant-b"), "owner");
+    // …and a stray membership row can never DEMOTE the server owner.
+    setMembership("tenant-b", "server-owner@x", "member", "someone@x");
+    assert.equal(workspaceRole("server-owner@x", "tenant-b"), "owner");
+    // An EMPTY owner email is never owner of anything (no accidental match).
+    assert.equal(workspaceRole("", "primary"), "guest");
+  } finally {
+    (config as { ownerEmail: string }).ownerEmail = saved;
+  }
 });
 
 test("membership lifecycle: upsert (role change), list, per-user view, remove", () => {

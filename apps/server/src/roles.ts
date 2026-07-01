@@ -22,15 +22,21 @@ export const ROLES: readonly Role[] = ["guest", "member", "admin", "owner"] as c
 const isRole = (s: string | null): s is Role => s != null && (ROLES as readonly string[]).includes(s);
 
 /**
- * The authoritative workspace role for (email, vault). A membership row wins; else
- * the env OWNER_EMAIL is owner of the primary vault (bootstrap/back-compat); else
- * a signed-in user with no membership in this vault is a guest (sees only what
+ * The authoritative workspace role for (email, vault). The env OWNER_EMAIL is the
+ * SERVER owner — the operator who runs this box and creates/links every vault on
+ * it — so they are `owner` of EVERY vault (not just primary), and can never be
+ * demoted by a stray membership row. For everyone else a membership row wins; a
+ * signed-in user with no membership in this vault is a guest (sees only what
  * explicit grants allow — authentication never implies authorization).
+ *
+ * This is the distinction the multi-vault ("workspaces") model needs: OWNER_EMAIL
+ * administers all workspaces on their server, while a per-vault `owner`/`admin`
+ * membership is a DELEGATED workspace owner scoped to that one vault.
  */
 export function workspaceRole(email: string, vaultId: string): Role {
+  if (email && email === config.ownerEmail) return "owner";
   const row = getMembershipRole(email, vaultId);
   if (isRole(row)) return row;
-  if (email === config.ownerEmail && vaultId === "primary") return "owner";
   return "guest";
 }
 

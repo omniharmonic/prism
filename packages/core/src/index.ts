@@ -51,6 +51,7 @@ export type {
   WorkspaceGrant,
   WorkspaceMember,
   WorkspaceRole,
+  ViewerIdentity,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

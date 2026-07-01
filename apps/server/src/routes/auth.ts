@@ -19,6 +19,7 @@ import { requestMagicLink, redeemMagicLink } from "../auth/magiclink";
 import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
 import { hashPassword, verifyPassword, passwordProblem } from "../auth/password";
 import { getUser, setAccount, setUserPassword, ensureUser } from "../db";
+import { resolveActor } from "../auth/actor";
 
 export const auth = new Hono();
 
@@ -110,11 +111,19 @@ auth.get("/me", (c) => {
   const s = readSession(c);
   if (!s) return c.json({ authenticated: false }, 401);
   const u = getUser(s.email);
+  // The viewer's role is PER-VAULT (the X-Prism-Vault header, resolved by
+  // resolveActor). `isOwner` stays the global server-owner flag; `role` is what
+  // the active workspace grants them (owner/admin/member/guest) — this is what
+  // the frontend gates its management surfaces on, so a member never fires
+  // admin-only /acl/* calls (and gets 403 noise) for a vault they can't manage.
+  const actor = resolveActor(c);
   return c.json({
     authenticated: true,
     email: s.email,
     name: u?.name ?? null,
     isOwner: s.email === config.ownerEmail,
+    role: actor.kind === "user" ? actor.role : "guest",
+    vaultId: actor.vaultId,
     hasPassword: !!u?.password_hash,
   });
 });

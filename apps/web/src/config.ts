@@ -82,16 +82,27 @@ export interface Me {
   email?: string;
   name?: string | null;
   isOwner?: boolean;
+  /** The viewer's role in the ACTIVE vault (owner/admin/member/guest). Per-vault:
+   *  re-fetched on vault switch. Drives role-gating of management surfaces. */
+  role?: "owner" | "admin" | "member" | "guest";
+  /** The active vault id the role above is scoped to. */
+  vaultId?: string;
   hasPassword?: boolean;
 }
 
 let cachedMe: Me | null = null;
 
 /** Current identity per the session cookie. Never throws. Caches the result so
- *  synchronous owner checks (e.g. gating owner-only UI) don't need a refetch. */
+ *  synchronous owner checks (e.g. gating owner-only UI) don't need a refetch.
+ *  Sends the active-vault header so the returned `role` is scoped to the vault
+ *  the app is currently viewing (role is per-workspace). */
 export async function fetchMe(): Promise<Me> {
   try {
-    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, { credentials: "include" });
+    const activeVault = getActiveVault();
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
+      credentials: "include",
+      headers: activeVault ? { "X-Prism-Vault": activeVault } : {},
+    });
     if (!r.ok) { cachedMe = { authenticated: false }; return cachedMe; }
     cachedMe = (await r.json()) as Me;
     return cachedMe;
