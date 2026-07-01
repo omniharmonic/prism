@@ -14,6 +14,7 @@ import { getSecret, secretsConfigured } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
+import { FathomClient, ingestFathom } from "./fathom";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -35,14 +36,33 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   return res.messages;
 }
 
-/** One full tick: every configured ingester for every vault. Per-vault errors
- *  are isolated so one bad credential can't stall the rest. */
+/** Run one Fathom transcript ingest pass for a vault, if it has a stored key.
+ *  Create-only + dedup by source_id (safe to run alongside the desktop). */
+export async function runFathomOnce(entry: VaultEntry): Promise<number> {
+  const raw = getSecret(entry.id, config.ownerEmail, "fathom");
+  if (!raw) return 0;
+  const { apiKey } = JSON.parse(raw) as { apiKey: string };
+  const client = new FathomClient(apiKey);
+  const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault);
+  if (res.created > 0) {
+    console.log(`[worker] fathom ${entry.id}: +${res.created} transcripts (${res.skipped} skipped)`);
+  }
+  return res.created;
+}
+
+/** One full tick: every configured ingester for every vault. Per-vault, per-source
+ *  errors are isolated so one bad credential can't stall the rest. */
 async function tick(): Promise<void> {
   for (const entry of getVaultRegistry()) {
-    try {
-      await runMatrixOnce(entry);
-    } catch (e) {
-      console.warn(`[worker] matrix ${entry.id} failed:`, (e as Error).message);
+    for (const [name, run] of [
+      ["matrix", runMatrixOnce],
+      ["fathom", runFathomOnce],
+    ] as const) {
+      try {
+        await run(entry);
+      } catch (e) {
+        console.warn(`[worker] ${name} ${entry.id} failed:`, (e as Error).message);
+      }
     }
   }
 }

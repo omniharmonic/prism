@@ -11,7 +11,7 @@ import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
-import { runMatrixOnce } from "../worker/scheduler";
+import { runMatrixOnce, runFathomOnce } from "../worker/scheduler";
 
 export const integrations = new Hono();
 
@@ -57,6 +57,40 @@ integrations.post("/matrix/sync", async (c) => {
   try {
     const messages = await runMatrixOnce(resolveVaultEntry(actor.vaultId));
     return c.json({ ok: true, messages });
+  } catch (e) {
+    return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
+  }
+});
+
+// ── Fathom (meeting transcripts) — same shape as Matrix ──
+integrations.get("/fathom", (c) => {
+  const actor = resolveActor(c);
+  const available = secretsConfigured();
+  const configured = available && !!getSecret(actor.vaultId, config.ownerEmail, "fathom");
+  return c.json({ secretsAvailable: available, configured });
+});
+
+integrations.put("/fathom", async (c) => {
+  if (!secretsConfigured()) {
+    return c.json({ error: "secrets_unconfigured", detail: "SECRETS_KEY is not set on the server" }, 400);
+  }
+  const actor = resolveActor(c);
+  const { apiKey } = await c.req.json<{ apiKey?: string }>().catch(() => ({}) as { apiKey?: string });
+  if (typeof apiKey !== "string" || !apiKey) return c.json({ error: "bad_request", detail: "apiKey required" }, 400);
+  putSecret(actor.vaultId, config.ownerEmail, "fathom", JSON.stringify({ apiKey }));
+  return c.json({ ok: true });
+});
+
+integrations.delete("/fathom", (c) => {
+  deleteSecret(resolveActor(c).vaultId, config.ownerEmail, "fathom");
+  return c.json({ ok: true });
+});
+
+integrations.post("/fathom/sync", async (c) => {
+  const actor = resolveActor(c);
+  try {
+    const transcripts = await runFathomOnce(resolveVaultEntry(actor.vaultId));
+    return c.json({ ok: true, transcripts });
   } catch (e) {
     return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
   }
