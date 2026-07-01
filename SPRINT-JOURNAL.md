@@ -239,3 +239,22 @@ on binding drop → forces re-auth, revoked peer rejected. two-hub-up.sh
 parameterized (FED_ENV_FILE/FED_B_DB) to bring up either side. Provisioning gotcha
 documented: use vault-create --mint tokens (aud=vault.<name>); operator
 mint-token needs --aud; reused vault names corrupt (stale SQLite) → unique names.
+
+## Phase 4 remaining non-UI gaps — CLOSED + DEPLOYED
+- 4.3 peer-edit audit: peer_edits table + GET /acl/federation/peer-edits; binding
+  records inbound remote edits (origin===provider, 3s throttle). Verified LIVE
+  (both hubs logged rows during convergence).
+- 4.3 per-note level override: PUT/DELETE /acl/federation/note-level — a note-level
+  peer grant raises a peer above the space default on one note (+TTL). Additive.
+- 4.4 coverage: mirror reject + grant downgrade in-process tests (+ AC-11/AC-9 live).
+- 4.1 desktop federated-open parity: CONFIRMED already present —
+  DesktopCollabDocument.tsx resolves /api/federated → opens under space_note_key
+  (mirrors web CollabDoc); Canvas.tsx delegates via the seam, no bypass. AC-6 live.
+- DEPLOYED: peer_edits migration verified on prod copy (39 grants + 76 collab_docs
+  intact); merge → restart → /health 200, peer-edits endpoint live. 312 tests.
+- Test hubs + fed-a/fed-b vaults torn down; prod untouched throughout.
+- STILL deferred (documented, non-blocking): P1.3 hub user_vaults reconciliation —
+  NOT needed for the server-mediated model (members never mint their own vault
+  token; the server proxies all vault access) + needs hub admin-API access.
+
+## NEXT: remaining P4 UI (per user) — "Sync with a peer" affordance + audit/TTL surfaces.
