@@ -13,6 +13,8 @@ import type {
   ShareLink,
   SpaceInfo,
   TagAccess,
+  ServerInfo,
+  TunnelStatus,
   VaultSummary,
   WorkspaceGrant,
   WorkspaceMember,
@@ -139,6 +141,17 @@ export const webCollabSharing: CollabSharing = {
   },
   async removeWorkspaceMemberRole(vaultId: string, email: string): Promise<void> {
     await acl(`/workspace/members/${enc(vaultId)}/${enc(email)}`, { method: "DELETE" });
+  },
+
+  // ── Server settings + Cloudflare tunnel (server-owner) ──
+  async getServerInfo(): Promise<ServerInfo> {
+    return (await acl(`/server`)).json();
+  },
+  async controlTunnel(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }> {
+    return (await acl(`/server/tunnel`, { method: "POST", body: JSON.stringify({ action }) })).json();
+  },
+  async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
+    return (await acl(`/server/config`, { method: "PUT", body: JSON.stringify({ key, value }) })).json();
   },
 
   async listMembers(): Promise<WorkspaceMember[]> {

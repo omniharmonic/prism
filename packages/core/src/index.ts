@@ -55,6 +55,8 @@ export type {
   WorkspaceVaultRef,
   WorkspacePerson,
   WorkspaceOverview,
+  TunnelStatus,
+  ServerInfo,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

@@ -73,6 +73,11 @@ import { noteKind } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
+import { getSecret, secretsConfigured } from "../secrets";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile, copyFile } from "node:fs/promises";
+const pexec = promisify(execFile);
 
 /** Grant a person access to a resource, inviting them if they have no account
  *  yet so the access binds to a real, authenticated identity. */
@@ -510,6 +515,114 @@ acl.delete("/workspace/members/:vaultId/:email", (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   removeMembership(c.req.param("vaultId"), normEmail(decodeURIComponent(c.req.param("email"))));
   return c.json({ ok: true });
+});
+
+// ── Server settings + Cloudflare tunnel management (server-owner only) ────────
+// The workspace's operator surface: a config snapshot (secret VALUES are never
+// returned — only booleans), Cloudflare tunnel status + controls (the tunnel is a
+// pm2 process, `prism-tunnel`), and a CURATED editable-.env allowlist. Infra-
+// sensitive → server-owner-gated and narrowly scoped: no token/secret is editable
+// here, and .env writes are backed up first + flagged restart-required.
+
+/** Cloudflare tunnel status: the pm2 process state + the public hostname it
+ *  fronts (read from the cloudflared config). Best-effort — never throws. */
+async function tunnelStatus(): Promise<Record<string, unknown>> {
+  let hostname: string | null = null;
+  try {
+    const cfg = await readFile(`${process.env.HOME}/.cloudflared/prism-config.yml`, "utf8");
+    hostname = cfg.match(/hostname:\s*(\S+)/)?.[1] ?? null;
+  } catch { /* config absent */ }
+  try {
+    const { stdout } = await pexec("pm2", ["jlist"]);
+    const list = JSON.parse(stdout) as Array<{ name: string; pm2_env: { status: string; restart_time: number; pm_uptime: number } }>;
+    const proc = list.find((p) => p.name === "prism-tunnel");
+    if (proc) {
+      return { managed: true, name: "prism-tunnel", status: proc.pm2_env.status, restarts: proc.pm2_env.restart_time, uptime: proc.pm2_env.pm_uptime, hostname };
+    }
+    return { managed: false, hostname, detail: "no pm2 process named 'prism-tunnel'" };
+  } catch {
+    return { managed: false, hostname, detail: "pm2 not available on this host" };
+  }
+}
+
+/** Server config + status snapshot. NEVER returns a secret/token value — only
+ *  whether each is configured. */
+acl.get("/server", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const integrations: Record<string, boolean> = {};
+  for (const k of ["matrix", "fathom", "github", "google", "notion"]) {
+    integrations[k] = secretsConfigured() && !!getSecret("primary", config.ownerEmail, k);
+  }
+  return c.json({
+    appOrigin: config.appOrigin,
+    port: config.port,
+    ownerEmail: config.ownerEmail,
+    parachuteUrl: config.parachuteUrl,
+    parachuteVault: config.parachuteVault,
+    vaultCount: getVaultRegistry().length,
+    federationEnabled: getFederationEnabled(),
+    trustLocal: config.trustLocal,
+    secretsAvailable: secretsConfigured(),
+    emailConfigured: !!config.resendApiKey,
+    magicFrom: config.magicFrom,
+    integrations,
+    tunnel: await tunnelStatus(),
+  });
+});
+
+acl.get("/server/tunnel", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json(await tunnelStatus());
+});
+
+/** Start / stop / restart the Cloudflare tunnel (the pm2 `prism-tunnel` process).
+ *  NOTE: `stop` takes the PUBLIC site offline — the UI warns, and if the caller is
+ *  reaching this over the tunnel they'd cut their own connection. Owner's choice. */
+acl.post("/server/tunnel", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { action } = await c.req.json<{ action?: string }>().catch(() => ({}) as { action?: string });
+  if (action !== "start" && action !== "stop" && action !== "restart") {
+    return c.json({ error: "bad_request", detail: "action must be start|stop|restart" }, 400);
+  }
+  try {
+    await pexec("pm2", [action, "prism-tunnel"]);
+    return c.json({ ok: true, action, tunnel: await tunnelStatus() });
+  } catch (e) {
+    return c.json({ error: "tunnel_control_failed", detail: (e as Error).message }, 500);
+  }
+});
+
+// Curated editable .env keys — deliberately NARROW. No token/secret/OWNER_EMAIL
+// (editing those from the web could lock the owner out or leak). Each write backs
+// up .env first and is flagged restart-required (the process reads env at boot).
+const EDITABLE_ENV: Record<string, (v: string) => boolean> = {
+  APP_ORIGIN: (v) => /^https?:\/\/.+/.test(v),
+  MAGIC_FROM: (v) => v.length > 0 && v.length < 200,
+  RESEND_API_KEY: (v) => v.length < 200,
+};
+
+acl.put("/server/config", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { key, value } = await c.req.json<{ key?: string; value?: string }>().catch(() => ({}) as { key?: string; value?: string });
+  if (typeof key !== "string" || !(key in EDITABLE_ENV)) {
+    return c.json({ error: "not_editable", detail: `only ${Object.keys(EDITABLE_ENV).join(", ")} are editable here` }, 400);
+  }
+  if (typeof value !== "string" || !EDITABLE_ENV[key]!(value)) {
+    return c.json({ error: "bad_value", detail: `invalid value for ${key}` }, 400);
+  }
+  const envPath = `${process.cwd()}/.env`;
+  try {
+    const raw = await readFile(envPath, "utf8");
+    // Back up before any write (timestamped, gitignored *.env.bak-*).
+    await copyFile(envPath, `${envPath}.bak-${Date.now()}`).catch(() => {});
+    const line = `${key}=${value}`;
+    const re = new RegExp(`^${key}=.*$`, "m");
+    const next = re.test(raw) ? raw.replace(re, line) : `${raw.replace(/\n?$/, "\n")}${line}\n`;
+    await writeFile(envPath, next, { mode: 0o600 });
+    return c.json({ ok: true, key, restartRequired: true });
+  } catch (e) {
+    return c.json({ error: "write_failed", detail: (e as Error).message }, 500);
+  }
 });
 
 // Whole-workspace access grant: broad note access (view..own) WITHOUT management

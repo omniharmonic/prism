@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Globe, Radio, Database, Users, Building2 } from "lucide-react";
+import { Globe, Radio, Database, Users, Building2, Server } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
 import { useCollabSharing, useVaultChangeSignal, type WorkspaceRole } from "../../data/CollabSharing";
 import type { RendererProps } from "./RendererProps";
@@ -8,6 +8,7 @@ import { FederatePanel } from "./network/FederatePanel";
 import { VaultsPanel } from "./network/VaultsPanel";
 import { MembersPanel } from "./network/MembersPanel";
 import { WorkspacePanel } from "./network/WorkspacePanel";
+import { ServerPanel } from "./network/ServerPanel";
 
 /**
  * The Network surface — a top-level virtual tab (not a per-note dialog) where the
@@ -53,8 +54,9 @@ export default function NetworkRenderer(_props: RendererProps) {
   // so a member can still see + switch between the workspaces they belong to.
   const canVaults = !!sharing?.listVaults;
   const canMembers = !!sharing?.listMembers && isAdmin;
-  // The Workspace surface spans every vault → server-owner only.
+  // The Workspace + Server surfaces span the whole box → server-owner only.
   const canWorkspace = !!sharing?.getWorkspace && isServerOwner;
+  const canServer = !!sharing?.getServerInfo && isServerOwner;
 
   const tabs = [
     ...(canWorkspace ? [{ id: "workspace", label: "Workspace", icon: <Building2 size={14} /> }] : []),
@@ -62,6 +64,7 @@ export default function NetworkRenderer(_props: RendererProps) {
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
     ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
+    ...(canServer ? [{ id: "server", label: "Server", icon: <Server size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>("publish");
   // Keep the active tab valid as role/vault gating changes which tabs exist.
@@ -98,6 +101,7 @@ export default function NetworkRenderer(_props: RendererProps) {
           {tab === "federate" && <FederatePanel />}
           {tab === "members" && <MembersPanel />}
           {tab === "vaults" && <VaultsPanel />}
+          {tab === "server" && <ServerPanel />}
         </div>
       </div>
     </div>

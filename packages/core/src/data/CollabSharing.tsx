@@ -75,6 +75,34 @@ export interface WorkspaceOverview {
   vaults: WorkspaceVaultRef[];
   people: WorkspacePerson[];
 }
+
+/** Cloudflare tunnel status (the pm2 `prism-tunnel` process fronting this box). */
+export interface TunnelStatus {
+  managed: boolean;
+  name?: string;
+  status?: string;
+  restarts?: number;
+  uptime?: number;
+  hostname?: string | null;
+  detail?: string;
+}
+/** Server settings + status snapshot (server-owner only). Secret VALUES are
+ *  never included — only whether each is configured. */
+export interface ServerInfo {
+  appOrigin: string;
+  port: number;
+  ownerEmail: string;
+  parachuteUrl: string;
+  parachuteVault: string;
+  vaultCount: number;
+  federationEnabled: boolean;
+  trustLocal: boolean;
+  secretsAvailable: boolean;
+  emailConfigured: boolean;
+  magicFrom: string;
+  integrations: Record<string, boolean>;
+  tunnel: TunnelStatus;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -268,6 +296,14 @@ export interface CollabSharing {
   removeWorkspaceAccess?(vaultId: string, email: string): Promise<void>;
   setWorkspaceMemberRole?(email: string, vaultId: string, role: WorkspaceRole): Promise<SetPersonResult>;
   removeWorkspaceMemberRole?(vaultId: string, email: string): Promise<void>;
+
+  /** Server settings + Cloudflare tunnel management (server-owner only). A config
+   *  snapshot (no secret values), tunnel status + start/stop/restart, and a narrow
+   *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM/RESEND_API_KEY — restart-required).
+   *  Absent → the Server surface hides (desktop / non-server-owner). */
+  getServerInfo?(): Promise<ServerInfo>;
+  controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
+  setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access
