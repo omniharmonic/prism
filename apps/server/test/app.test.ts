@@ -80,7 +80,7 @@ test("GET /api/vaults: owner sees the single primary vault (no token); anon deni
   assert.equal(r.status, 200);
   const body = (await r.json()) as Array<Record<string, unknown>>;
   assert.equal(body.length, 1);
-  assert.deepEqual(body[0], { id: "primary", label: "default", vault: "default", active: true });
+  assert.deepEqual(body[0], { id: "primary", label: "default", vault: "default", active: true, role: "owner" });
   // tokens / upstream urls must never be serialized
   assert.equal("token" in body[0]!, false);
   assert.equal("url" in body[0]!, false);

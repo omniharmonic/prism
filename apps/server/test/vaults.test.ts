@@ -19,9 +19,11 @@ import {
   removeVaultEntry,
   getVaultRegistry,
   resolveVaultEntry,
+  setMembership,
+  addGrant,
 } from "../src/db";
 import { setVaultCreator, setVaultSeeder } from "../src/vault-provision";
-import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeSession, sessionCookie, makeCapability, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
 beforeEach(() => {
@@ -269,4 +271,43 @@ test("POST /acl/vaults with an unknown mode → 400", async () => {
     body: JSON.stringify({ mode: "wat" }),
   });
   assert.equal(res.status, 400);
+});
+
+// ── GET /api/vaults membership filter (Phase 1.5) ─────────────────────────────
+test("GET /api/vaults: a non-owner member sees ONLY the vault(s) they belong to", async () => {
+  addVaultEntry({ id: "teamA", label: "Team A", url: "http://a.test", vault: "a", token: "tok-a" });
+  addVaultEntry({ id: "teamB", label: "Team B", url: "http://b.test", vault: "b", token: "tok-b" });
+  // alice is a member of teamA only.
+  setMembership("teamA", "alice@x.co", "member", OWNER);
+
+  const cookie = sessionCookie(makeSession("alice@x.co"));
+  const res = await vaultsRoute.request("/vaults", { headers: { cookie, "x-prism-vault": "teamA" } });
+  assert.equal(res.status, 200);
+  const list = (await res.json()) as Array<{ id: string; role: string; active: boolean }>;
+  assert.deepEqual(list.map((v) => v.id).sort(), ["teamA"], "sees teamA only — not primary, not teamB");
+  assert.equal(list[0]!.role, "member");
+  assert.equal(list[0]!.active, true, "active reflects the x-prism-vault header");
+});
+
+test("GET /api/vaults: a guest with only a direct grant sees that one workspace", async () => {
+  addVaultEntry({ id: "teamA", label: "Team A", url: "http://a.test", vault: "a", token: "tok-a" });
+  addGrant({ vault_id: "teamA", subject_type: "user", subject: "guest@x.co", resource_type: "tag", resource: "shared", level: "view", created_by: OWNER });
+
+  const cookie = sessionCookie(makeSession("guest@x.co"));
+  const res = await vaultsRoute.request("/vaults", { headers: { cookie } });
+  const list = (await res.json()) as Array<{ id: string }>;
+  assert.deepEqual(list.map((v) => v.id), ["teamA"]);
+});
+
+test("GET /api/vaults: the server owner still sees the whole registry", async () => {
+  addVaultEntry({ id: "teamA", label: "Team A", url: "http://a.test", vault: "a", token: "tok-a" });
+  const res = await vaultsRoute.request("/vaults", { headers: { cookie: ownerCookie() } });
+  const list = (await res.json()) as Array<{ id: string }>;
+  assert.deepEqual(list.map((v) => v.id).sort(), ["primary", "teamA"]);
+});
+
+test("GET /api/vaults: a capability link is forbidden (no workspace identity)", async () => {
+  const tok = makeCapability("note", "n1", "view");
+  const res = await vaultsRoute.request("/vaults", { headers: { authorization: `Capability ${tok}` } });
+  assert.equal(res.status, 403);
 });

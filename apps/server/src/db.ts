@@ -611,6 +611,15 @@ export function grantsForCapability(capabilityId: string): Grant[] {
 export function grantsForResource(type: ResourceType, resource: string, vaultId = "primary"): Grant[] {
   return selectGrantsByResource.all(vaultId, type, resource) as Grant[];
 }
+/** The distinct vault_ids where this user holds ≥1 direct grant — a guest
+ *  invited to a workspace (via /acl people-sharing) has grants but no membership
+ *  row, yet should still see that one workspace in their switcher (Phase 1.5). */
+const selectGrantVaultsByUser = db.prepare(
+  "SELECT DISTINCT vault_id FROM grants WHERE subject_type = 'user' AND subject = ?",
+);
+export function vaultIdsWithGrantsForUser(email: string): string[] {
+  return (selectGrantVaultsByUser.all(email.toLowerCase()) as Array<{ vault_id: string }>).map((r) => r.vault_id);
+}
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
 }

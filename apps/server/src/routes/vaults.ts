@@ -1,31 +1,51 @@
 /**
- * Owner-only vault registry listing (multi-vault Phase 1). Powers the web
- * VaultsPanel / owner switcher: it returns the vaults this server can bind to,
- * never their tokens or upstream URLs. A non-owner (capability link, anon, or a
- * signed-in non-owner) is denied so the registry can't be enumerated.
+ * Vault switcher listing (multi-tenancy Phase 1.5). Returns the workspaces the
+ * ACTOR belongs to — never their tokens or upstream URLs. The server owner
+ * (OWNER_EMAIL) manages the whole registry, so they see every vault; any other
+ * signed-in user sees only the vaults they're a MEMBER of (memberships row) or
+ * hold a direct grant in (a guest invited to one workspace sees exactly one).
+ * Anon/capability-link actors are denied so the registry can't be enumerated.
  *
  * Mounted under /api BEFORE the gateway `api` group (like /api/p), so the owner
  * short-circuit inside `api` never proxies /api/vaults to the vault (which has
  * no such route).
  */
 import { Hono } from "hono";
-import { getVaultRegistry } from "../db";
+import { getVaultRegistry, membershipsForUser, vaultIdsWithGrantsForUser } from "../db";
 import { resolveActor } from "../auth/actor";
-import { roleAtLeast } from "../roles";
+import { workspaceRole } from "../roles";
+import { config } from "../config";
 
 export const vaults = new Hono();
 
 vaults.get("/vaults", (c) => {
-  if (!roleAtLeast(resolveActor(c).role, "admin")) return c.json({ error: "forbidden" }, 403);
-  // The merged registry: env base (primary first) + owner-added vaults. active =
-  // the primary/default (first entry), which every non-owner route and the legacy
-  // vault client bind to. NEVER include token or url.
+  const actor = resolveActor(c);
+  // Only a signed-in user has a stable identity to scope workspaces to; a bare
+  // capability link is bound to one resource, not a workspace membership set.
+  if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
+  const email = actor.email;
+  const isServerOwner = email === config.ownerEmail;
+
+  // The workspaces this user belongs to: membership rows ∪ direct-grant vaults
+  // (∪ the primary bootstrap for the server owner, who owns it without a row).
+  const mine = new Set<string>();
+  for (const m of membershipsForUser(email)) mine.add(m.vault_id);
+  for (const vid of vaultIdsWithGrantsForUser(email)) mine.add(vid);
+  if (isServerOwner) mine.add("primary");
+
+  const registry = getVaultRegistry();
+  // The server owner manages the whole registry (env + owner-added); everyone
+  // else is filtered to the vaults they belong to. NEVER include token or url.
+  const visible = isServerOwner ? registry : registry.filter((v) => mine.has(v.id));
+  const activeId = actor.vaultId;
+
   return c.json(
-    getVaultRegistry().map((v, i) => ({
+    visible.map((v) => ({
       id: v.id,
       label: v.label,
       vault: v.vault,
-      active: i === 0,
+      active: v.id === activeId,
+      role: workspaceRole(email, v.id),
     })),
   );
 });
