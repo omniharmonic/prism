@@ -74,3 +74,28 @@ NOT deployed: server-side Matrix would DOUBLE-sync against the desktop's existin
 Matrix sync — enabling it (set SECRETS_KEY + store creds) is a together-decision.
 Deferred: Phase 3 UI (Matrix config panel + agent dispatch UI), Notion/transcript
 ingesters (same worker pattern).
+
+## Matrix sync CUTOVER TO SERVER — DONE + VERIFIED (deployed to prod)
+Phase 3 merged to main + deployed (boot-tested on a copy of the 180MB prod DB first;
+all data intact). Matrix moved desktop→server, no redundancy:
+- Server-side sync enabled: secret stored (prod SECRETS_KEY), cursor set to NOW
+  (skipped 1534 backlog msgs / 200 rooms — no duplicate flood).
+- VERIFIED live: sent a real Matrix msg → server worker ingested it → note in prod
+  vault → cleaned up (verify-matrix-cutover). PASS.
+- Desktop message_sync DISABLED via new AppConfig.disable_message_sync flag +
+  rebuilt/restaged /Applications/Prism.app (backup at ~/Prism.app.rollback-*) +
+  config flag true + relaunched. VERIFIED behaviorally: marker appears exactly
+  once after a full desktop tick-cycle (verify-desktop-sync-off). PASS = server is
+  sole syncer.
+- Prod healthy throughout (health, tunnel 200); desktop app running new build.
+- Commits: main e989747 (desktop flag), branch 63a38ef (scripts).
+
+## Remaining sync features (same pattern, NOT yet done)
+Movable (portable creds, both CONFIGURED): Notion (notion_api_key, BIDIRECTIONAL —
+more involved) + Fathom transcripts (fathom_api_key, one-way — simplest, closest to
+Matrix). STAY desktop (host-bound): Google calendar/email (gog keyring), Meetily
+(local SQLite).
+Fast path per feature: (1) Node ingester porting the Rust service, (2) wire into
+worker/scheduler.ts (secret + cursor), (3) add a desktop disable flag (BATCH both
+in ONE rebuild), (4) cutover: store creds + since=now + verify live + flip flag +
+rebuild + verify no-dup. ~1 desktop rebuild covers both remaining.
