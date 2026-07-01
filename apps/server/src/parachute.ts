@@ -93,9 +93,10 @@ export function vaultClient(vaultId?: string) {
   }
 
   return {
-  async listNotes(opts: { tags?: string[]; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
+  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
     if (opts.includeContent) sp.set("include_content", "true");
+    if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of opts.tags ?? []) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },
