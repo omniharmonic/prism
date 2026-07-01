@@ -7,6 +7,18 @@ export const config = {
   port: Number(process.env.PORT ?? 8787),
   appOrigin: (process.env.APP_ORIGIN ?? "http://localhost:8787").replace(/\/+$/, ""),
 
+  // Trust the "local owner" path (a headerless, presumed-loopback request may
+  // present the COLLAB/vault token as the owner). This is ONLY safe when the
+  // public entrypoint is a proxy that stamps a forwarding header (Cloudflare
+  // tunnel) — on a RAW exposed port, headerless external traffic would be
+  // wrongly trusted (P5.2 finding). So it FAILS CLOSED for a public https
+  // server unless TRUST_LOCAL is explicitly set; dev/desktop (loopback
+  // APP_ORIGIN) defaults on. A tunneled prod deploy sets TRUST_LOCAL=true.
+  trustLocal:
+    process.env.TRUST_LOCAL !== undefined
+      ? process.env.TRUST_LOCAL === "true"
+      : !(process.env.APP_ORIGIN ?? "").startsWith("https"),
+
   parachuteUrl: (process.env.PARACHUTE_URL ?? "http://localhost:1940").replace(/\/+$/, ""),
   parachuteVault: process.env.PARACHUTE_VAULT ?? "default",
   parachuteToken: process.env.PARACHUTE_TOKEN ?? "",
