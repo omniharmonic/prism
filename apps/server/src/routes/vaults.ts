@@ -45,7 +45,10 @@ vaults.get("/vaults", (c) => {
       label: v.label,
       vault: v.vault,
       active: v.id === activeId,
-      role: workspaceRole(email, v.id),
+      // The server owner has full token-free passthrough to every registry vault,
+      // so surface "owner" (their real reach) rather than the literal membership
+      // role — the switcher gates admin UI on this, and passthrough IS admin.
+      role: isServerOwner ? "owner" : workspaceRole(email, v.id),
     })),
   );
 });

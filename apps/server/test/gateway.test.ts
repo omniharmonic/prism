@@ -164,9 +164,25 @@ test("an individually granted note appears in the non-owner's list", async () =>
 
 test("non-owners cannot create or delete notes", async () => {
   fv.put({ id: "n1", content: "x", tags: ["team"] });
-  grantUser("dave@test.local", "tag", "team", "edit"); // even edit can't create/delete
+  grantUser("dave@test.local", "tag", "team", "edit"); // edit on a tag ≠ delete others' notes
   const cookie = sessionCookie(makeSession("dave@test.local"));
   assert.equal((await req("/notes", { method: "POST", cookie, body: JSON.stringify({ content: "y" }) })).status, 403);
+  assert.equal((await req("/notes/n1", { method: "DELETE", cookie })).status, 403);
+});
+
+test("a member may delete their OWN note (creator + edit), but never someone else's (2.4b)", async () => {
+  fv.put({ id: "n1", content: "bob's", tags: ["team"], metadata: { prism_creator: "bob@test.local" } });
+  fv.put({ id: "n2", content: "carol's", tags: ["team"], metadata: { prism_creator: "carol@test.local" } });
+  grantUser("bob@test.local", "tag", "team", "edit"); // edit on the folder, and he authored n1
+  const cookie = sessionCookie(makeSession("bob@test.local"));
+  assert.equal((await req("/notes/n1", { method: "DELETE", cookie })).status, 200, "his own note → deletable");
+  assert.equal((await req("/notes/n2", { method: "DELETE", cookie })).status, 403, "carol's note → forbidden even with edit");
+});
+
+test("delete needs edit, not just view — a creator with only view can't delete", async () => {
+  fv.put({ id: "n1", content: "mine", tags: ["team"], metadata: { prism_creator: "eve@test.local" } });
+  grantUser("eve@test.local", "tag", "team", "view"); // creator, but only view
+  const cookie = sessionCookie(makeSession("eve@test.local"));
   assert.equal((await req("/notes/n1", { method: "DELETE", cookie })).status, 403);
 });
 

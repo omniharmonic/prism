@@ -62,6 +62,8 @@ import {
   listMemberships,
   setMembership,
   removeMembership,
+  listGrantsForVault,
+  getGrantById,
   type Space,
 } from "../db";
 import { vaultRegistry } from "../config";
@@ -378,6 +380,33 @@ acl.put("/members", async (c) => {
 
 acl.delete("/members/:email", (c) => {
   removeMembership(resolveActor(c).vaultId, normEmail(decodeURIComponent(c.req.param("email"))));
+  return c.json({ ok: true });
+});
+
+// ── Grants audit (2.2): every grant in the active vault, each revocable ──
+acl.get("/grants", (c) => {
+  const byEmail = new Map(listUsers().map((u) => [u.email, u.name]));
+  return c.json(
+    listGrantsForVault(resolveActor(c).vaultId).map((g) => ({
+      id: g.id,
+      subjectType: g.subject_type,
+      subject: g.subject,
+      subjectName: g.subject_type === "user" ? (byEmail.get(g.subject) ?? null) : null,
+      resourceType: g.resource_type,
+      resource: g.resource,
+      level: g.level,
+      grantedBy: g.created_by,
+      grantedAt: g.created_at,
+    })),
+  );
+});
+
+acl.delete("/grants/:id", (c) => {
+  // Scope the revoke to the admin's OWN vault — a grant id from another tenant
+  // must not be deletable here.
+  const g = getGrantById(c.req.param("id"));
+  if (!g || g.vault_id !== resolveActor(c).vaultId) return c.json({ error: "not_found" }, 404);
+  removeGrant(g.id);
   return c.json({ ok: true });
 });
 

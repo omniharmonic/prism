@@ -661,6 +661,16 @@ export function vaultIdsWithGrantsForUser(email: string): string[] {
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
 }
+// ── grants audit (Phase 2.2): list every grant in a vault, and fetch one by id
+// (so a revoke can be scoped to the admin's OWN vault — no cross-vault deletes).
+const selectGrantsByVault = db.prepare("SELECT * FROM grants WHERE vault_id = ? ORDER BY created_at DESC");
+const selectGrantById = db.prepare("SELECT * FROM grants WHERE id = ?");
+export function listGrantsForVault(vaultId: string): Grant[] {
+  return selectGrantsByVault.all(vaultId) as Grant[];
+}
+export function getGrantById(id: string): Grant | null {
+  return (selectGrantById.get(id) as Grant | undefined) ?? null;
+}
 
 const selectGrantBySubjectResource = db.prepare(
   `SELECT * FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,

@@ -200,9 +200,26 @@ api.patch("/notes/:id", async (c) => {
 
 api.delete("/notes/:id", async (c) => {
   const actor = resolveActor(c);
-  if (!roleAtLeast(actor.role, "admin")) return c.json({ error: "forbidden" }, 403);
+  // Admins/owners short-circuit to the passthrough (they can delete anything);
+  // this handler runs for members/guests/links. A member may delete ONLY their
+  // own note (prism_creator) and only with edit+ on it — never someone else's
+  // note by default (that's an admin action). 2.4b.
+  const vc = vaultClient(actor.vaultId);
+  const id = c.req.param("id");
+  let note;
   try {
-    await vaultClient(actor.vaultId).deleteNote(c.req.param("id"));
+    note = await vc.getNote(id);
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+  const subject = actorSubject(actor);
+  const noteRef = ref(note);
+  const isCreator = !!subject && noteRef.creator === subject;
+  if (!isCreator || !atLeast(effectiveLevel(actor.grants, noteRef, roleFloor(actor.role), subject), "edit")) {
+    return c.json({ error: "forbidden", reason: "delete requires being the note's creator with edit access" }, 403);
+  }
+  try {
+    await vc.deleteNote(id);
   } catch (e) {
     return vaultErr(c, e);
   }

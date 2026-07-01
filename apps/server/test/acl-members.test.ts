@@ -85,3 +85,30 @@ test("whole-workspace grant: PUT /vault/people grants vault-level access", async
   const grants = grantsForUser("dave@x.co", "primary");
   assert.ok(grants.some((g) => g.resource_type === "vault" && g.level === "view"));
 });
+
+// ── Grants audit (2.2) ────────────────────────────────────────────────────────
+test("grants audit: GET /grants lists the vault's grants; DELETE /grants/:id revokes", async () => {
+  const cookie = ownerCookie();
+  // Seed a couple of grants via the real endpoints.
+  await acl.request("/tags/projects/people", { method: "PUT", headers: { ...J, cookie }, body: JSON.stringify({ email: "carol@x.co", level: "edit" }) });
+  await acl.request("/vault/people", { method: "PUT", headers: { ...J, cookie }, body: JSON.stringify({ email: "dave@x.co", level: "view" }) });
+
+  const list = (await (await acl.request("/grants", { headers: { cookie } })).json()) as Array<{ id: string; subject: string; resourceType: string; resource: string; level: string }>;
+  const tagGrant = list.find((g) => g.subject === "carol@x.co" && g.resourceType === "tag");
+  const vaultGrant = list.find((g) => g.subject === "dave@x.co" && g.resourceType === "vault");
+  assert.ok(tagGrant && tagGrant.resource === "projects" && tagGrant.level === "edit");
+  assert.ok(vaultGrant && vaultGrant.level === "view");
+
+  // Revoke the tag grant and confirm it's gone.
+  const del = await acl.request(`/grants/${tagGrant!.id}`, { method: "DELETE", headers: { cookie } });
+  assert.equal(del.status, 200);
+  const after = (await (await acl.request("/grants", { headers: { cookie } })).json()) as Array<{ id: string }>;
+  assert.ok(!after.some((g) => g.id === tagGrant!.id));
+});
+
+test("grants audit: admin-gated (no session → 403), and revoke is scoped to the active vault", async () => {
+  assert.equal((await acl.request("/grants")).status, 403);
+  // A random / unknown id → 404 (never deletes across vaults).
+  const del = await acl.request("/grants/does-not-exist", { method: "DELETE", headers: { cookie: ownerCookie() } });
+  assert.equal(del.status, 404);
+});
