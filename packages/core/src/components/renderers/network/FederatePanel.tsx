@@ -54,8 +54,9 @@ import type { VaultClient } from "../../../data/VaultClient";
 import type { Note, TagCount } from "../../../lib/types";
 import { TagPicker } from "./TagPicker";
 
-// Spaces are coarser than per-note sharing: view / suggest / edit only.
-const SPACE_LEVELS: ShareLevel[] = ["view", "suggest", "edit"];
+// The full share ladder for space peer grants (4.3): "comment" was already
+// honored by permissions.ts / effectiveLevel, just never offered in the UI.
+const SPACE_LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
 
 // ── shared styling (CSS vars only) ────────────────────────────────────────────
 const card: CSSProperties = {

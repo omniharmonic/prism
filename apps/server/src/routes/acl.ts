@@ -936,6 +936,50 @@ acl.delete("/spaces/:id/peers/:pubkey", (c) => {
   return c.json({ ok: true });
 });
 
+// ── "Parachute Sync": mirror ONE note to a paired peer in a single action (4.2) ──
+// Collapses the 4-step flow (create space → add note → grant peer → sync) behind
+// one call, reusing a singleton "Parachute Sync" space so every one-click mirror
+// shares it. Idempotent per note: re-mirroring refreshes the peer grant/level.
+const SYNC_SPACE_TITLE = "Parachute Sync";
+acl.post("/notes/:id/mirror", async (c) => {
+  const noteId = c.req.param("id");
+  const { pubkey, level } = await c.req.json<{ pubkey?: string; level?: string }>().catch(() => ({}) as { pubkey?: string; level?: string });
+  if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request", detail: "pubkey + level required" }, 400);
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+
+  let kind: string;
+  try {
+    const note = await vault.getNote(noteId);
+    kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "note_not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
+
+  // 1. find-or-create the singleton sync space.
+  let space = listSpaces().find((s) => s.title === SYNC_SPACE_TITLE);
+  if (!space) {
+    space = createSpace({
+      id: randomUUID(),
+      title: SYNC_SPACE_TITLE,
+      scope_include_tags: "[]",
+      scope_exclude_tags: "[]",
+      path_prefix: null,
+      created_by: config.ownerEmail,
+    });
+  }
+  // 2. add the note (reuse its federated identity if already mirrored).
+  const existing = federatedNotesForSpace(space.id).find((f) => f.local_id === noteId);
+  const fed =
+    existing ??
+    upsertFederatedNote({ space_note_key: randomUUID(), space_id: space.id, local_id: noteId, kind, peer_synced_at: null, source_updated_at: null });
+  // 3. grant the peer access to the space at the requested level.
+  upsertGrant({ subject_type: "peer", subject: pubkey, resource_type: "space", resource: space.id, level, created_by: config.ownerEmail });
+  // 4. kick the bridge so the doc starts mirroring to the peer.
+  kickFederationSync();
+  return c.json({ ok: true, spaceId: space.id, spaceNoteKey: fed.space_note_key, pubkey, level });
+});
+
 // ── Inbound federation mirror requests (owner-reviewed) ──────────────────────
 // A paired peer's POST /api/federation/mirror lands here as 'pending'. Accepting
 // creates the local shared space (same id) + a peer grant + a placeholder note

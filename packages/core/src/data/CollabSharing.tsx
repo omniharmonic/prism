@@ -276,6 +276,9 @@ export interface CollabSharing {
   addNoteToSpace?(spaceId: string, noteId: string): Promise<{ space_note_key: string; kind: string }>;
   grantSpacePeer?(spaceId: string, pubkey: string, level: ShareLevel): Promise<void>;
   revokeSpacePeer?(spaceId: string, pubkey: string): Promise<void>;
+  /** "Parachute Sync" (Phase 4.2): mirror ONE note to a paired peer in a single
+   *  action — the server composes create-space + add-note + grant-peer + sync. */
+  mirrorNoteToPeer?(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }>;
 
   /** Inbound mirror requests this node has received (owner-reviewed). */
   listMirrorRequests?(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]>;

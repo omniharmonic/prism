@@ -34,7 +34,7 @@ import {
   addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
   queueOutbox, outboxForPeer, clearOutboxItem,
   createSuggestion, listSuggestions, getSuggestion,
-  storePairing,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer,
 } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { createHash } from "node:crypto";
@@ -235,4 +235,40 @@ test("a suggestion is durable and the owner can accept/reject it", async () => {
 
   // accepting an unknown id → 404.
   assert.equal((await ownerReq("/suggestions/nope/accept", { method: "POST" })).status, 404);
+});
+
+// ── "Parachute Sync": one-action per-note mirror (4.2) ────────────────────────
+const J = { "content-type": "application/json" };
+test("Parachute Sync: POST /notes/:id/mirror composes space+note+peer-grant in one call", async () => {
+  const peer = "PEERPUBKEY_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  fv.put({ id: "n1", content: "# sync me\n\nhi", tags: ["shared"] });
+
+  const r = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "edit" }) });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.ok(body.spaceId && body.spaceNoteKey);
+
+  // Singleton "Parachute Sync" space created, note added, peer granted at edit.
+  assert.equal(listSpaces().find((s) => s.id === body.spaceId)?.title, "Parachute Sync");
+  assert.ok(federatedNotesForSpace(body.spaceId).some((f) => f.local_id === "n1"));
+  assert.equal(grantsForPeer(peer).find((g) => g.resource_type === "space" && g.resource === body.spaceId)?.level, "edit");
+
+  // Idempotent: re-mirroring the same note reuses the space + federated identity
+  // and just updates the peer level (no duplicate space / note / grant).
+  const r2 = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "view" }) });
+  const body2 = (await r2.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.equal(body2.spaceId, body.spaceId);
+  assert.equal(body2.spaceNoteKey, body.spaceNoteKey, "same federated identity, not a new one");
+  assert.equal(listSpaces().filter((s) => s.title === "Parachute Sync").length, 1);
+  assert.equal(federatedNotesForSpace(body.spaceId).filter((f) => f.local_id === "n1").length, 1);
+  assert.equal(grantsForPeer(peer).find((g) => g.resource === body.spaceId)?.level, "view", "level updated in place");
+});
+
+test("Parachute Sync: unknown peer → 404, bad level → 400, missing note → 404", async () => {
+  fv.put({ id: "n1", content: "x", tags: [] });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "nope", level: "edit" }) })).status, 404);
+  upsertPeer({ pubkey: "p", paired_at: Date.now() });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "bogus" }) })).status, 400);
+  assert.equal((await ownerReq("/notes/missing/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "edit" }) })).status, 404);
 });

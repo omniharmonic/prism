@@ -243,6 +243,9 @@ export const webCollabSharing: CollabSharing = {
   async revokeSpacePeer(spaceId: string, pubkey: string): Promise<void> {
     await acl(`/spaces/${enc(spaceId)}/peers/${enc(pubkey)}`, { method: "DELETE" });
   },
+  async mirrorNoteToPeer(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }> {
+    return (await acl(`/notes/${enc(noteId)}/mirror`, { method: "POST", body: JSON.stringify({ pubkey, level }) })).json();
+  },
 
   // ── Inbound mirror requests (owner-reviewed) ──
   async listMirrorRequests(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]> {
