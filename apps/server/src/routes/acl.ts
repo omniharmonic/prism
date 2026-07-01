@@ -65,6 +65,15 @@ import {
   listGrantsForVault,
   getGrantById,
   listPeerEdits,
+  listWorkspaces,
+  getWorkspace,
+  createWorkspace,
+  updateWorkspace,
+  deleteWorkspace,
+  assignVaultToWorkspace,
+  vaultsForWorkspace,
+  workspaceForVault,
+  DEFAULT_WORKSPACE_ID,
   type Space,
 } from "../db";
 import { vaultRegistry } from "../config";
@@ -536,6 +545,82 @@ acl.delete("/workspace/members/:vaultId/:email", (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   removeMembership(c.req.param("vaultId"), normEmail(decodeURIComponent(c.req.param("email"))));
   return c.json({ ok: true });
+});
+
+// ── Workspaces: one server, many workspaces (server-owner only) ──────────────
+// A workspace groups one or more VAULTS + a subdomain. The owner defines them
+// here; each vault belongs to exactly one workspace (unassigned → 'default').
+// Membership/access stay per-vault, so a workspace's people = the union over its
+// vaults (surfaced by the existing /acl/workspace matrix, scoped as the UI lands).
+const wsSlug = (s: string): string =>
+  s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "workspace";
+
+function workspaceView(w: { id: string; name: string; hostname: string | null; created_at: number }) {
+  const vaultIds = vaultsForWorkspace(w.id);
+  const registry = new Map(getVaultRegistry().map((v) => [v.id, v]));
+  return {
+    id: w.id,
+    name: w.name,
+    hostname: w.hostname,
+    createdAt: w.created_at,
+    isDefault: w.id === DEFAULT_WORKSPACE_ID,
+    vaults: vaultIds.map((id) => ({ id, label: registry.get(id)?.label ?? id, vault: registry.get(id)?.vault ?? id })),
+  };
+}
+
+acl.get("/workspaces", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json(listWorkspaces().map(workspaceView));
+});
+
+acl.post("/workspaces", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { name, hostname } = await c.req.json<{ name?: string; hostname?: string }>().catch(() => ({}) as { name?: string; hostname?: string });
+  if (typeof name !== "string" || !name.trim()) return c.json({ error: "bad_request", detail: "name required" }, 400);
+  if (hostname !== undefined && hostname !== "" && !/^[a-z0-9.-]+$/i.test(hostname)) {
+    return c.json({ error: "bad_request", detail: "hostname must be a bare host (no scheme/path)" }, 400);
+  }
+  let id = wsSlug(name);
+  const taken = new Set(listWorkspaces().map((w) => w.id));
+  while (taken.has(id)) id = `${wsSlug(name)}-${Math.floor(Math.random() * 10000)}`;
+  return c.json(workspaceView(createWorkspace({ id, name: name.trim(), hostname: hostname?.trim() || null })));
+});
+
+acl.put("/workspaces/:id", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (!getWorkspace(id)) return c.json({ error: "not_found" }, 404);
+  const { name, hostname } = await c.req.json<{ name?: string; hostname?: string | null }>().catch(() => ({}) as { name?: string; hostname?: string | null });
+  if (hostname !== undefined && hostname !== null && hostname !== "" && !/^[a-z0-9.-]+$/i.test(hostname)) {
+    return c.json({ error: "bad_request", detail: "hostname must be a bare host" }, 400);
+  }
+  updateWorkspace(id, {
+    ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}),
+    ...(hostname !== undefined ? { hostname: hostname ? hostname.trim() : null } : {}),
+  });
+  return c.json(workspaceView(getWorkspace(id)!));
+});
+
+acl.delete("/workspaces/:id", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (id === DEFAULT_WORKSPACE_ID) return c.json({ error: "forbidden", detail: "the default workspace is permanent" }, 400);
+  deleteWorkspace(id);
+  return c.json({ ok: true });
+});
+
+/** Assign a vault to a workspace (each vault belongs to exactly one). */
+acl.put("/workspaces/:id/vaults", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (!getWorkspace(id)) return c.json({ error: "not_found" }, 404);
+  const { vaultId } = await c.req.json<{ vaultId?: string }>().catch(() => ({}) as { vaultId?: string });
+  if (typeof vaultId !== "string" || !getVaultRegistry().some((v) => v.id === vaultId)) {
+    return c.json({ error: "bad_request", detail: "known vaultId required" }, 400);
+  }
+  const previous = workspaceForVault(vaultId);
+  assignVaultToWorkspace(vaultId, id);
+  return c.json({ ok: true, vaultId, workspaceId: id, previous });
 });
 
 // ── Server settings + Cloudflare tunnel management (server-owner only) ────────

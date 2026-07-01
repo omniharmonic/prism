@@ -234,6 +234,25 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  -- ── Workspaces: a workspace groups one or more VAULTS + members + a subdomain
+  -- (the "one server, many workspaces" model). One Node server hosts N of these;
+  -- the public/serving path resolves the active workspace by Host header, and the
+  -- owner admin UI selects one to manage. Backward-compatible: every vault not
+  -- explicitly assigned belongs to the 'default' workspace, so a single-workspace
+  -- deploy is unchanged. Membership/grants stay per-VAULT (a workspace's access is
+  -- the union over its vaults).
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    hostname   TEXT,                    -- subdomain that routes here (nullable until set)
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS vault_workspaces (
+    vault_id     TEXT PRIMARY KEY,      -- each vault belongs to exactly ONE workspace
+    workspace_id TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS vault_workspaces_ws ON vault_workspaces(workspace_id);
+
   -- ── Multi-tenancy: per-vault workspace membership (Phase 1) ──────────────
   -- A "tenant" = a vault; membership names WHO belongs to a vault and at what
   -- workspace ROLE (owner/admin/member/guest — see roles.ts). This is the source
@@ -480,6 +499,94 @@ export function resolveVaultEntry(id?: string | null): VaultEntry {
   }
   return vaultRegistry[0]!;
 }
+
+// ── Workspaces (one server, many workspaces) ─────────────────────────────────
+/** The id of the implicit default workspace: every vault not explicitly assigned
+ *  belongs to it, so a single-workspace deploy is unchanged. */
+export const DEFAULT_WORKSPACE_ID = "default";
+
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  hostname: string | null;
+  created_at: number;
+}
+
+const insertWorkspace = db.prepare(
+  `INSERT INTO workspaces (id, name, hostname, created_at) VALUES (@id, @name, @hostname, @created_at)
+   ON CONFLICT(id) DO UPDATE SET name = @name, hostname = @hostname`,
+);
+const selectWorkspaces = db.prepare("SELECT id, name, hostname, created_at FROM workspaces ORDER BY created_at ASC");
+const selectWorkspace = db.prepare("SELECT id, name, hostname, created_at FROM workspaces WHERE id = ?");
+const selectWorkspaceByHost = db.prepare("SELECT id, name, hostname, created_at FROM workspaces WHERE hostname = ? COLLATE NOCASE");
+const deleteWorkspaceStmt = db.prepare("DELETE FROM workspaces WHERE id = ?");
+const upsertVaultWorkspace = db.prepare(
+  `INSERT INTO vault_workspaces (vault_id, workspace_id) VALUES (?, ?)
+   ON CONFLICT(vault_id) DO UPDATE SET workspace_id = excluded.workspace_id`,
+);
+const selectVaultWorkspace = db.prepare("SELECT workspace_id FROM vault_workspaces WHERE vault_id = ?");
+const selectVaultsForWorkspace = db.prepare("SELECT vault_id FROM vault_workspaces WHERE workspace_id = ?");
+const deleteVaultWorkspacesFor = db.prepare("DELETE FROM vault_workspaces WHERE workspace_id = ?");
+
+/** Ensure the implicit default workspace exists (idempotent, run at boot). */
+export function ensureDefaultWorkspace(): void {
+  if (!selectWorkspace.get(DEFAULT_WORKSPACE_ID)) {
+    insertWorkspace.run({ id: DEFAULT_WORKSPACE_ID, name: "Default", hostname: null, created_at: now() });
+  }
+}
+
+export function listWorkspaces(): WorkspaceRow[] {
+  return selectWorkspaces.all() as WorkspaceRow[];
+}
+export function getWorkspace(id: string): WorkspaceRow | null {
+  return (selectWorkspace.get(id) as WorkspaceRow | undefined) ?? null;
+}
+export function createWorkspace(w: { id: string; name: string; hostname?: string | null }): WorkspaceRow {
+  insertWorkspace.run({ id: w.id, name: w.name, hostname: w.hostname ?? null, created_at: now() });
+  return getWorkspace(w.id)!;
+}
+export function updateWorkspace(id: string, patch: { name?: string; hostname?: string | null }): void {
+  const cur = getWorkspace(id);
+  if (!cur) return;
+  insertWorkspace.run({
+    id,
+    name: patch.name ?? cur.name,
+    hostname: patch.hostname !== undefined ? patch.hostname : cur.hostname,
+    created_at: cur.created_at,
+  });
+}
+export function deleteWorkspace(id: string): void {
+  if (id === DEFAULT_WORKSPACE_ID) return; // the default workspace is permanent
+  deleteVaultWorkspacesFor.run(id); // its vaults fall back to 'default'
+  deleteWorkspaceStmt.run(id);
+}
+
+/** Which workspace a vault belongs to (unassigned → the default workspace). */
+export function workspaceForVault(vaultId: string): string {
+  const row = selectVaultWorkspace.get(vaultId) as { workspace_id: string } | undefined;
+  return row?.workspace_id ?? DEFAULT_WORKSPACE_ID;
+}
+/** Vault ids explicitly assigned to a workspace, PLUS (for the default workspace)
+ *  every registry vault with no explicit assignment. */
+export function vaultsForWorkspace(workspaceId: string): string[] {
+  const explicit = (selectVaultsForWorkspace.all(workspaceId) as Array<{ vault_id: string }>).map((r) => r.vault_id);
+  if (workspaceId !== DEFAULT_WORKSPACE_ID) return explicit;
+  const assigned = new Set((db.prepare("SELECT vault_id FROM vault_workspaces").all() as Array<{ vault_id: string }>).map((r) => r.vault_id));
+  const unassigned = getVaultRegistry().map((v) => v.id).filter((id) => !assigned.has(id));
+  return [...new Set([...explicit, ...unassigned])];
+}
+export function assignVaultToWorkspace(vaultId: string, workspaceId: string): void {
+  upsertVaultWorkspace.run(vaultId, workspaceId);
+}
+/** Resolve a workspace by the request Host header's hostname (exact match on the
+ *  configured subdomain). Null when no workspace claims that host. */
+export function workspaceForHostname(hostname: string): WorkspaceRow | null {
+  if (!hostname) return null;
+  return (selectWorkspaceByHost.get(hostname) as WorkspaceRow | undefined) ?? null;
+}
+// NOTE: ensureDefaultWorkspace() is invoked at the END of this module (after the
+// `now` helper it uses is initialized) — a module-load call here would hit a
+// temporal-dead-zone ReferenceError on `now`.
 
 export type SubjectType = "user" | "link" | "anyone" | "peer";
 // "path" is used ONLY as a publication's resource_type (publish-by-directory);
@@ -1277,3 +1384,8 @@ export function setMirrorRequestStatus(id: string, status: MirrorRequest["status
 export function deleteMirrorRequest(id: string): void {
   deleteMirrorReqStmt.run(id);
 }
+
+// Bootstrap the implicit default workspace. Done HERE (module end) so the `now`
+// helper it uses is already initialized (a call up where the functions are
+// defined would hit the temporal dead zone).
+ensureDefaultWorkspace();
