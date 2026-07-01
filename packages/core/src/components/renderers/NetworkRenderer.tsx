@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Globe, Radio, Database, Users, Building2, Server } from "lucide-react";
+import { Globe, Radio, Database, Users, Building2, Server, Boxes } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
 import { useCollabSharing, useVaultChangeSignal, type WorkspaceRole } from "../../data/CollabSharing";
 import type { RendererProps } from "./RendererProps";
@@ -8,6 +8,7 @@ import { FederatePanel } from "./network/FederatePanel";
 import { VaultsPanel } from "./network/VaultsPanel";
 import { MembersPanel } from "./network/MembersPanel";
 import { WorkspacePanel } from "./network/WorkspacePanel";
+import { WorkspacesPanel } from "./network/WorkspacesPanel";
 import { ServerPanel } from "./network/ServerPanel";
 
 /**
@@ -54,12 +55,14 @@ export default function NetworkRenderer(_props: RendererProps) {
   // so a member can still see + switch between the workspaces they belong to.
   const canVaults = !!sharing?.listVaults;
   const canMembers = !!sharing?.listMembers && isAdmin;
-  // The Workspace + Server surfaces span the whole box → server-owner only.
-  const canWorkspace = !!sharing?.getWorkspace && isServerOwner;
+  // The Workspaces/Access + Server surfaces span the whole box → server-owner only.
+  const canWorkspaces = !!sharing?.listWorkspaceEntities && isServerOwner;
+  const canAccess = !!sharing?.getWorkspace && isServerOwner;
   const canServer = !!sharing?.getServerInfo && isServerOwner;
 
   const tabs = [
-    ...(canWorkspace ? [{ id: "workspace", label: "Workspace", icon: <Building2 size={14} /> }] : []),
+    ...(canWorkspaces ? [{ id: "workspaces", label: "Workspaces", icon: <Boxes size={14} /> }] : []),
+    ...(canAccess ? [{ id: "access", label: "Access", icon: <Building2 size={14} /> }] : []),
     ...(canPublish ? [{ id: "publish", label: "Publish", icon: <Globe size={14} /> }] : []),
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
@@ -96,7 +99,8 @@ export default function NetworkRenderer(_props: RendererProps) {
       </header>
       <div style={{ flex: 1, overflow: "auto", padding: "20px 28px 48px" }}>
         <div style={{ maxWidth: 880, margin: "0 auto" }}>
-          {tab === "workspace" && <WorkspacePanel />}
+          {tab === "workspaces" && <WorkspacesPanel />}
+          {tab === "access" && <WorkspacePanel />}
           {tab === "publish" && <PublishPanel />}
           {tab === "federate" && <FederatePanel />}
           {tab === "members" && <MembersPanel />}

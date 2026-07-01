@@ -16,6 +16,7 @@ import type {
   ServerInfo,
   TunnelStatus,
   VaultSummary,
+  WorkspaceEntity,
   WorkspaceGrant,
   WorkspaceMember,
   WorkspaceOverview,
@@ -144,6 +145,23 @@ export const webCollabSharing: CollabSharing = {
   },
   async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
     return (await acl(`/server/config`, { method: "PUT", body: JSON.stringify({ key, value }) })).json();
+  },
+
+  // ── Workspace entities (one server, many workspaces) ──
+  async listWorkspaceEntities(): Promise<WorkspaceEntity[]> {
+    return (await acl(`/workspaces`)).json();
+  },
+  async createWorkspaceEntity(name: string, hostname?: string): Promise<WorkspaceEntity> {
+    return (await acl(`/workspaces`, { method: "POST", body: JSON.stringify({ name, hostname }) })).json();
+  },
+  async updateWorkspaceEntity(id: string, patch: { name?: string; hostname?: string | null }): Promise<WorkspaceEntity> {
+    return (await acl(`/workspaces/${enc(id)}`, { method: "PUT", body: JSON.stringify(patch) })).json();
+  },
+  async deleteWorkspaceEntity(id: string): Promise<void> {
+    await acl(`/workspaces/${enc(id)}`, { method: "DELETE" });
+  },
+  async assignVaultToWorkspaceEntity(workspaceId: string, vaultId: string): Promise<void> {
+    await acl(`/workspaces/${enc(workspaceId)}/vaults`, { method: "PUT", body: JSON.stringify({ vaultId }) });
   },
 
   async listMembers(): Promise<WorkspaceMember[]> {

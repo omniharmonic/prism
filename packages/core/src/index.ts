@@ -57,6 +57,7 @@ export type {
   WorkspaceVaultRef,
   WorkspacePerson,
   WorkspaceOverview,
+  WorkspaceEntity,
   TunnelStatus,
   ServerInfo,
 } from "./data/CollabSharing";

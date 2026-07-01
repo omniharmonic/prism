@@ -76,6 +76,18 @@ export interface WorkspaceOverview {
   people: WorkspacePerson[];
 }
 
+// ── Workspace entities (one server, many workspaces) ──
+/** A workspace = a subdomain + one-or-more vaults + members. Distinct from the
+ *  WorkspaceOverview people-matrix above: this is the workspace ENTITY the owner
+ *  creates/configures. Each vault belongs to exactly one workspace. */
+export interface WorkspaceEntity {
+  id: string;
+  name: string;
+  hostname: string | null;
+  isDefault: boolean;
+  vaults: WorkspaceVaultRef[];
+}
+
 /** Cloudflare tunnel status (the pm2 `prism-tunnel` process fronting this box). */
 export interface TunnelStatus {
   managed: boolean;
@@ -304,6 +316,15 @@ export interface CollabSharing {
   getServerInfo?(): Promise<ServerInfo>;
   controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
   setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
+
+  /** Workspace entities (server-owner): the "one server, many workspaces" model.
+   *  Create/configure a workspace (name + subdomain), and assign vaults to it.
+   *  Absent → the Workspaces surface hides. */
+  listWorkspaceEntities?(): Promise<WorkspaceEntity[]>;
+  createWorkspaceEntity?(name: string, hostname?: string): Promise<WorkspaceEntity>;
+  updateWorkspaceEntity?(id: string, patch: { name?: string; hostname?: string | null }): Promise<WorkspaceEntity>;
+  deleteWorkspaceEntity?(id: string): Promise<void>;
+  assignVaultToWorkspaceEntity?(workspaceId: string, vaultId: string): Promise<void>;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access
