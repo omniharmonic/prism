@@ -258,3 +258,16 @@ mint-token needs --aud; reused vault names corrupt (stale SQLite) → unique nam
   token; the server proxies all vault access) + needs hub admin-API access.
 
 ## NEXT: remaining P4 UI (per user) — "Sync with a peer" affordance + audit/TTL surfaces.
+
+## Phase 4 UI — DONE + DEPLOYED
+- ShareDialog "Sync with a peer" (4.2 headline): pick a paired peer + level →
+  one-action mirrorNoteToPeer; gated on the seam + ≥1 paired peer.
+- FederatePanel peer-edit audit card (listPeerEdits): inbound federated edits with
+  fingerprint · note · time.
+- seam PeerEditInfo + listPeerEdits(); web impls. core+web typecheck clean, web
+  built + check:sw passed; merged to main, prod serves the new static bundle.
+- PHASE 4 COMPLETE (all sub-tasks + all gaps): live two-hub convergence (12/12),
+  revocation-stops-sync fix, TTL, peer-edit audit, per-note override, one-action
+  mirror, desktop+web federated-open parity, reject/downgrade coverage. Only
+  deferred item is P1.3 hub user_vaults reconciliation (not needed for the
+  server-mediated model).
