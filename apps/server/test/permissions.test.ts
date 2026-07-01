@@ -25,6 +25,7 @@ const g = (over: Partial<Grant>): Grant => ({
   level: "view",
   created_by: null,
   created_at: 0,
+  expires_at: null,
   ...over,
 });
 

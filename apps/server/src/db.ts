@@ -315,6 +315,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS grants_vault_resource ON grants(vault_id, resource_type, resource);
 `);
 
+// TTL / expiry on grants (Phase 4.3): a nullable epoch-ms deadline. NULL = never
+// expires (every existing grant → byte-identical behavior). Today only PEER
+// grants honor it (time-boxed federation access); grantsForPeer filters expired.
+{
+  const cols = db.prepare(`PRAGMA table_info(grants)`).all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "expires_at")) {
+    db.exec(`ALTER TABLE grants ADD COLUMN expires_at INTEGER`);
+  }
+}
+
 // `collab_docs` PRIMARY KEY rebuild: (name) → (vault_id, name). SQLite can't
 // alter a PK in place, so copy-then-swap inside a transaction — the one
 // non-additive migration. Version-gated (runs once) and a no-op when the table
@@ -475,6 +485,8 @@ export interface Grant {
   level: Level;
   created_by: string | null;
   created_at: number;
+  /** Epoch-ms expiry; NULL = never. Currently honored for peer grants (4.3). */
+  expires_at: number | null;
 }
 
 export interface Session {
@@ -612,11 +624,15 @@ export function consumeMagicLink(tokenHash: string): string | null {
 // ---- grants ----
 // Grant input: vault_id is OPTIONAL (defaults to 'primary') so every existing
 // single-vault call site is unchanged; multi-tenant callers pass the active vault.
-type GrantInput = Omit<Grant, "id" | "created_at" | "vault_id"> & { id?: string; vault_id?: string };
+type GrantInput = Omit<Grant, "id" | "created_at" | "vault_id" | "expires_at"> & {
+  id?: string;
+  vault_id?: string;
+  expires_at?: number | null;
+};
 
 const insertGrant = db.prepare(
-  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at)
-   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at)`,
+  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at, expires_at)
+   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at, @expires_at)`,
 );
 // User grants are scoped to the active vault: a member of vault A must not pick up
 // their (or an "anyone") grant from vault B. (anyone grants are per-vault too.)
@@ -632,7 +648,7 @@ const selectGrantsByResource = db.prepare(
 const deleteGrantStmt = db.prepare("DELETE FROM grants WHERE id = ?");
 
 export function addGrant(g: GrantInput): Grant {
-  const row: Grant = { ...g, vault_id: g.vault_id ?? "primary", id: g.id ?? randomUUID(), created_at: now() };
+  const row: Grant = { ...g, vault_id: g.vault_id ?? "primary", id: g.id ?? randomUUID(), created_at: now(), expires_at: g.expires_at ?? null };
   insertGrant.run(row);
   return row;
 }
@@ -675,9 +691,10 @@ export function getGrantById(id: string): Grant | null {
 const selectGrantBySubjectResource = db.prepare(
   `SELECT * FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
-const updateGrantLevel = db.prepare("UPDATE grants SET level = ? WHERE id = ?");
+const updateGrantLevel = db.prepare("UPDATE grants SET level = ?, expires_at = ? WHERE id = ?");
 
-/** Insert or, if a grant for the same (vault, subject, resource) exists, update its level. */
+/** Insert or, if a grant for the same (vault, subject, resource) exists, update
+ *  its level (and expiry — re-granting refreshes/clears the TTL). */
 export function upsertGrant(g: GrantInput): Grant {
   const vaultId = g.vault_id ?? "primary";
   const existing = selectGrantBySubjectResource.get(
@@ -688,8 +705,9 @@ export function upsertGrant(g: GrantInput): Grant {
     g.resource,
   ) as Grant | undefined;
   if (existing) {
-    updateGrantLevel.run(g.level, existing.id);
-    return { ...existing, level: g.level };
+    const expires_at = g.expires_at ?? null;
+    updateGrantLevel.run(g.level, expires_at, existing.id);
+    return { ...existing, level: g.level, expires_at };
   }
   return addGrant(g);
 }
@@ -814,12 +832,14 @@ export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: n
 }
 
 // ---- grants (peer subject) ----
+// Expired peer grants (TTL, 4.3) simply don't load → federation access lapses on
+// its own with no sweep needed. NULL expires_at = never expires.
 const selectGrantsByPeer = db.prepare(
-  "SELECT * FROM grants WHERE subject_type = 'peer' AND subject = ?",
+  "SELECT * FROM grants WHERE subject_type = 'peer' AND subject = ? AND (expires_at IS NULL OR expires_at > ?)",
 );
-/** Grants attached to a paired peer (matched by its pubkey). */
+/** Grants attached to a paired peer (matched by its pubkey), excluding expired. */
 export function grantsForPeer(pubkey: string): Grant[] {
-  return selectGrantsByPeer.all(pubkey) as Grant[];
+  return selectGrantsByPeer.all(pubkey, now()) as Grant[];
 }
 
 // ---- publications (Horizon B) ----

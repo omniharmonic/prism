@@ -34,7 +34,7 @@ import {
   addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
   queueOutbox, outboxForPeer, clearOutboxItem,
   createSuggestion, listSuggestions, getSuggestion,
-  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant,
 } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { createHash } from "node:crypto";
@@ -271,4 +271,27 @@ test("Parachute Sync: unknown peer → 404, bad level → 400, missing note → 
   upsertPeer({ pubkey: "p", paired_at: Date.now() });
   assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "bogus" }) })).status, 400);
   assert.equal((await ownerReq("/notes/missing/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "edit" }) })).status, 404);
+});
+
+// ── peer grant TTL / expiry (4.3) ─────────────────────────────────────────────
+test("peer grant TTL: an expired peer grant stops loading + resolving; a future one works", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# Shared" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+
+  // Granted, but expired 1s ago → doesn't load, doesn't resolve.
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() - 1000 });
+  assert.equal(grantsForPeer(peer).length, 0, "expired grant is filtered out");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), null, "expired → no federation access");
+
+  // Re-grant with a future expiry (upsert refreshes the TTL) → access restored.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() + 60_000 });
+  assert.equal(grantsForPeer(peer).length, 1);
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+
+  // Clearing the TTL (null) makes it permanent.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: null });
+  assert.equal(grantsForPeer(peer)[0]!.expires_at, null);
 });

@@ -915,7 +915,7 @@ acl.post("/spaces/:id/notes", async (c) => {
 acl.post("/spaces/:id/peers", async (c) => {
   const id = c.req.param("id");
   if (!getSpace(id)) return c.json({ error: "not_found" }, 404);
-  const { pubkey, level } = await c.req.json<{ pubkey?: string; level?: string }>().catch(() => ({}) as { pubkey?: string; level?: string });
+  const { pubkey, level, expiresInDays } = await c.req.json<{ pubkey?: string; level?: string; expiresInDays?: number }>().catch(() => ({}) as { pubkey?: string; level?: string; expiresInDays?: number });
   if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
   if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
   const grant = upsertGrant({
@@ -925,6 +925,7 @@ acl.post("/spaces/:id/peers", async (c) => {
     resource: id,
     level,
     created_by: config.ownerEmail,
+    expires_at: typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null,
   });
   kickFederationSync();
   return c.json({ ok: true, grant });
@@ -943,9 +944,12 @@ acl.delete("/spaces/:id/peers/:pubkey", (c) => {
 const SYNC_SPACE_TITLE = "Parachute Sync";
 acl.post("/notes/:id/mirror", async (c) => {
   const noteId = c.req.param("id");
-  const { pubkey, level } = await c.req.json<{ pubkey?: string; level?: string }>().catch(() => ({}) as { pubkey?: string; level?: string });
+  const { pubkey, level, expiresInDays } = await c.req
+    .json<{ pubkey?: string; level?: string; expiresInDays?: number }>()
+    .catch(() => ({}) as { pubkey?: string; level?: string; expiresInDays?: number });
   if (typeof pubkey !== "string" || !isLevel(level)) return c.json({ error: "bad_request", detail: "pubkey + level required" }, 400);
   if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const expires_at = typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null;
 
   let kind: string;
   try {
@@ -973,11 +977,11 @@ acl.post("/notes/:id/mirror", async (c) => {
   const fed =
     existing ??
     upsertFederatedNote({ space_note_key: randomUUID(), space_id: space.id, local_id: noteId, kind, peer_synced_at: null, source_updated_at: null });
-  // 3. grant the peer access to the space at the requested level.
-  upsertGrant({ subject_type: "peer", subject: pubkey, resource_type: "space", resource: space.id, level, created_by: config.ownerEmail });
+  // 3. grant the peer access to the space at the requested level (with optional TTL).
+  upsertGrant({ subject_type: "peer", subject: pubkey, resource_type: "space", resource: space.id, level, created_by: config.ownerEmail, expires_at });
   // 4. kick the bridge so the doc starts mirroring to the peer.
   kickFederationSync();
-  return c.json({ ok: true, spaceId: space.id, spaceNoteKey: fed.space_note_key, pubkey, level });
+  return c.json({ ok: true, spaceId: space.id, spaceNoteKey: fed.space_note_key, pubkey, level, expiresAt: expires_at });
 });
 
 // ── Inbound federation mirror requests (owner-reviewed) ──────────────────────
