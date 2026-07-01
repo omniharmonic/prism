@@ -584,6 +584,24 @@ export function workspaceForHostname(hostname: string): WorkspaceRow | null {
   if (!hostname) return null;
   return (selectWorkspaceByHost.get(hostname) as WorkspaceRow | undefined) ?? null;
 }
+
+/**
+ * Resolve the ACTIVE workspace for a request. Order: an explicit
+ * `X-Prism-Workspace` header (the owner's admin switcher) wins; else the request
+ * Host's subdomain matched against a workspace's configured hostname (how a
+ * subdomain serves its own workspace); else the default workspace. Unknown
+ * ids/hosts degrade to 'default', so the pre-workspace behavior is unchanged.
+ */
+export function resolveWorkspaceId(opts: { workspaceHeader?: string | null; hostHeader?: string | null }): string {
+  const wh = opts.workspaceHeader?.trim();
+  if (wh && getWorkspace(wh)) return wh;
+  const host = (opts.hostHeader ?? "").split(":")[0]!.trim().toLowerCase();
+  if (host) {
+    const w = workspaceForHostname(host);
+    if (w) return w.id;
+  }
+  return DEFAULT_WORKSPACE_ID;
+}
 // NOTE: ensureDefaultWorkspace() is invoked at the END of this module (after the
 // `now` helper it uses is initialized) — a module-load call here would hit a
 // temporal-dead-zone ReferenceError on `now`.

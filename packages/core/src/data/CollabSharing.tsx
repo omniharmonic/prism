@@ -325,6 +325,10 @@ export interface CollabSharing {
   updateWorkspaceEntity?(id: string, patch: { name?: string; hostname?: string | null }): Promise<WorkspaceEntity>;
   deleteWorkspaceEntity?(id: string): Promise<void>;
   assignVaultToWorkspaceEntity?(workspaceId: string, vaultId: string): Promise<void>;
+  /** The owner's active-workspace switch (scopes the vault list + admin surface to
+   *  one workspace, via X-Prism-Workspace). Absent → single-workspace, no switcher. */
+  getActiveWorkspace?(): string | null;
+  setActiveWorkspace?(id: string): void;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access

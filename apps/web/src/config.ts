@@ -89,6 +89,8 @@ export interface Me {
   role?: "owner" | "admin" | "member" | "guest";
   /** The active vault id the role above is scoped to. */
   vaultId?: string;
+  /** The active workspace (X-Prism-Workspace → Host subdomain → default). */
+  workspace?: { id: string; name: string };
   hasPassword?: boolean;
 }
 
@@ -100,10 +102,9 @@ let cachedMe: Me | null = null;
  *  the app is currently viewing (role is per-workspace). */
 export async function fetchMe(): Promise<Me> {
   try {
-    const activeVault = getActiveVault();
     const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
       credentials: "include",
-      headers: activeVault ? { "X-Prism-Vault": activeVault } : {},
+      headers: contextHeaders(),
     });
     if (!r.ok) { cachedMe = { authenticated: false }; return cachedMe; }
     cachedMe = (await r.json()) as Me;
@@ -275,4 +276,45 @@ export function setActiveVault(id: string | null): void {
 export function vaultHeader(): Record<string, string> {
   const id = getActiveVault();
   return id ? { "X-Prism-Vault": id } : {};
+}
+
+// ---------------------------------------------------------------------------
+// Active workspace (Stage 2, "one server, many workspaces"). The owner switches
+// which workspace they're managing on the main origin; sent as `X-Prism-Workspace`
+// so the server scopes the vault list + admin surface to that workspace. On a
+// per-workspace SUBDOMAIN the server resolves the workspace by Host instead, so
+// this header is the owner's explicit switch. No header = the default workspace.
+// ---------------------------------------------------------------------------
+
+const ACTIVE_WORKSPACE_KEY = "prism-active-workspace";
+
+export function getActiveWorkspace(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveWorkspace(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_WORKSPACE_KEY, id);
+    else localStorage.removeItem(ACTIVE_WORKSPACE_KEY);
+    // Switching workspace narrows the vault set → force a fresh identity/vault read.
+    window.dispatchEvent(new Event("prism:vault-changed"));
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Combined context headers for gateway calls: the active vault AND workspace.
+ *  Either may be empty (→ the server's default). Use everywhere a gateway/ACL
+ *  request is made so the owner's workspace switch is honored consistently. */
+export function contextHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const v = getActiveVault();
+  if (v) headers["X-Prism-Vault"] = v;
+  const w = getActiveWorkspace();
+  if (w) headers["X-Prism-Workspace"] = w;
+  return headers;
 }

@@ -22,7 +22,7 @@ import type {
   WorkspaceOverview,
   WorkspaceRole,
 } from "@prism/core";
-import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
+import { GATEWAY_ORIGIN, getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders } from "../config";
 import type { ViewerIdentity } from "@prism/core";
 
 /**
@@ -31,15 +31,14 @@ import type { ViewerIdentity } from "@prism/core";
  * cookie. Powers the full share dialog (people + capability links + tag-grants).
  */
 async function acl(path: string, init?: RequestInit): Promise<Response> {
-  // Bind every management call to the active vault (Phase 1 multi-tenant), so the
-  // owner/admin manages the workspace they're currently viewing.
-  const activeVault = getActiveVault();
+  // Bind every management call to the active vault + workspace, so the owner/admin
+  // manages the workspace (and vault) they're currently viewing.
   const r = await fetch(`${GATEWAY_ORIGIN}/acl${path}`, {
     ...init,
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(activeVault ? { "X-Prism-Vault": activeVault } : {}),
+      ...contextHeaders(),
       ...(init?.headers as Record<string, string>),
     },
   });
@@ -88,18 +87,17 @@ export const webCollabSharing: CollabSharing = {
   // global cachedMe) so it's correct right after a vault switch. Powers role-
   // gating of the Network management panels.
   async getViewer(): Promise<ViewerIdentity> {
-    const activeVault = getActiveVault();
     const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
       credentials: "include",
-      headers: activeVault ? { "X-Prism-Vault": activeVault } : {},
+      headers: contextHeaders(),
     });
-    if (!r.ok) return { email: "", role: "guest", isServerOwner: false, vaultId: activeVault ?? "primary" };
+    if (!r.ok) return { email: "", role: "guest", isServerOwner: false, vaultId: getActiveVault() ?? "primary" };
     const me = (await r.json()) as { email?: string; role?: ViewerIdentity["role"]; isOwner?: boolean; vaultId?: string };
     return {
       email: me.email ?? "",
       role: me.role ?? "guest",
       isServerOwner: !!me.isOwner,
-      vaultId: me.vaultId ?? activeVault ?? "primary",
+      vaultId: me.vaultId ?? getActiveVault() ?? "primary",
     };
   },
 
@@ -162,6 +160,12 @@ export const webCollabSharing: CollabSharing = {
   },
   async assignVaultToWorkspaceEntity(workspaceId: string, vaultId: string): Promise<void> {
     await acl(`/workspaces/${enc(workspaceId)}/vaults`, { method: "PUT", body: JSON.stringify({ vaultId }) });
+  },
+  getActiveWorkspace(): string | null {
+    return getActiveWorkspace();
+  },
+  setActiveWorkspace(id: string): void {
+    setActiveWorkspace(id);
   },
 
   async listMembers(): Promise<WorkspaceMember[]> {

@@ -11,7 +11,7 @@
  * no such route).
  */
 import { Hono } from "hono";
-import { getVaultRegistry, membershipsForUser, vaultIdsWithGrantsForUser } from "../db";
+import { getVaultRegistry, membershipsForUser, vaultIdsWithGrantsForUser, resolveWorkspaceId, vaultsForWorkspace } from "../db";
 import { resolveActor } from "../auth/actor";
 import { workspaceRole } from "../roles";
 import { config } from "../config";
@@ -34,9 +34,15 @@ vaults.get("/vaults", (c) => {
   if (isServerOwner) mine.add("primary");
 
   const registry = getVaultRegistry();
+  // Scope to the ACTIVE workspace (X-Prism-Workspace header, else Host subdomain,
+  // else default). A subdomain therefore only ever exposes ITS workspace's vaults,
+  // and the owner's switcher narrows the main-origin view to one workspace.
+  const workspaceId = resolveWorkspaceId({ workspaceHeader: c.req.header("x-prism-workspace"), hostHeader: c.req.header("host") });
+  const inWorkspace = new Set(vaultsForWorkspace(workspaceId));
   // The server owner manages the whole registry (env + owner-added); everyone
-  // else is filtered to the vaults they belong to. NEVER include token or url.
-  const visible = isServerOwner ? registry : registry.filter((v) => mine.has(v.id));
+  // else is filtered to the vaults they belong to. Then intersect with the active
+  // workspace. NEVER include token or url.
+  const visible = (isServerOwner ? registry : registry.filter((v) => mine.has(v.id))).filter((v) => inWorkspace.has(v.id));
   const activeId = actor.vaultId;
 
   return c.json(

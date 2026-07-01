@@ -18,7 +18,7 @@ import { startSession, endSession, readSession } from "../auth/session";
 import { requestMagicLink, redeemMagicLink } from "../auth/magiclink";
 import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
 import { hashPassword, verifyPassword, passwordProblem } from "../auth/password";
-import { getUser, setAccount, setUserPassword, ensureUser, setUserProfile } from "../db";
+import { getUser, setAccount, setUserPassword, ensureUser, setUserProfile, resolveWorkspaceId, getWorkspace } from "../db";
 import { resolveActor } from "../auth/actor";
 
 export const auth = new Hono();
@@ -163,6 +163,10 @@ auth.get("/me", (c) => {
   // the frontend gates its management surfaces on, so a member never fires
   // admin-only /acl/* calls (and gets 403 noise) for a vault they can't manage.
   const actor = resolveActor(c);
+  // The active workspace (X-Prism-Workspace header → Host subdomain → default),
+  // so the UI can show which workspace is in context + drive the switcher.
+  const workspaceId = resolveWorkspaceId({ workspaceHeader: c.req.header("x-prism-workspace"), hostHeader: c.req.header("host") });
+  const ws = getWorkspace(workspaceId);
   return c.json({
     authenticated: true,
     email: s.email,
@@ -171,6 +175,7 @@ auth.get("/me", (c) => {
     isOwner: s.email === config.ownerEmail,
     role: actor.kind === "user" ? actor.role : "guest",
     vaultId: actor.vaultId,
+    workspace: ws ? { id: ws.id, name: ws.name } : { id: workspaceId, name: workspaceId },
     hasPassword: !!u?.password_hash,
   });
 });
