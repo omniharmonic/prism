@@ -15,9 +15,9 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { auth } from "../src/routes/auth";
 import { createInvite } from "../src/auth/invite";
-import { setAccount } from "../src/db";
+import { setAccount, getUser } from "../src/db";
 import { hashPassword } from "../src/auth/password";
-import { resetDb } from "./helpers";
+import { resetDb, makeSession, sessionCookie } from "./helpers";
 
 const OWNER = "owner@test.local";
 const JSON_H = { "content-type": "application/json" };
@@ -188,4 +188,40 @@ test("/auth/me with no cookie is 401", async () => {
 test("invalid email is rejected with 400", async () => {
   const r = await post("/request", { email: "not-an-email" });
   assert.equal(r.status, 400);
+});
+
+// ── Account settings: profile (name + avatar) + change-password ──
+const cookieFor = (email: string) => sessionCookie(makeSession(email));
+const authReq = (path: string, method: string, cookie: string, body: unknown) =>
+  auth.request(path, { method, headers: { ...JSON_H, cookie }, body: JSON.stringify(body) });
+
+test("PUT /auth/profile updates the signed-in user's name + avatar; /me reflects it", async () => {
+  setAccount("m@x.co", "Old Name", hashPassword("Sup3rSecret!"));
+  const cookie = cookieFor("m@x.co");
+  const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  const r = await authReq("/profile", "PUT", cookie, { name: "New Name", avatar: tinyPng });
+  assert.equal(r.status, 200);
+  const me = (await (await auth.request("/me", { headers: { cookie } })).json()) as { name: string; avatar: string };
+  assert.equal(me.name, "New Name");
+  assert.equal(me.avatar, tinyPng);
+  // Clearing the avatar.
+  await authReq("/profile", "PUT", cookie, { avatar: null });
+  assert.equal(getUser("m@x.co")?.avatar, null);
+});
+
+test("PUT /auth/profile validates: needs a session, rejects a non-image/oversize avatar", async () => {
+  assert.equal((await auth.request("/profile", { method: "PUT", headers: JSON_H, body: "{}" })).status, 401);
+  const cookie = cookieFor("m2@x.co");
+  assert.equal((await authReq("/profile", "PUT", cookie, { avatar: "javascript:evil" })).status, 400);
+  assert.equal((await authReq("/profile", "PUT", cookie, { name: "" })).status, 400);
+});
+
+test("POST /auth/change-password verifies the current password", async () => {
+  setAccount("cp@x.co", "CP", hashPassword("OldPass123!"));
+  const cookie = cookieFor("cp@x.co");
+  // Wrong current → 403.
+  assert.equal((await authReq("/change-password", "POST", cookie, { currentPassword: "nope", newPassword: "NewPass123!" })).status, 403);
+  // Right current → 200, and the new password now logs in.
+  assert.equal((await authReq("/change-password", "POST", cookie, { currentPassword: "OldPass123!", newPassword: "NewPass123!" })).status, 200);
+  assert.equal((await post("/login", { email: "cp@x.co", password: "NewPass123!" })).status, 200);
 });

@@ -42,7 +42,7 @@ function colorFor(seed: string): string {
  *  distinct-per-link "Guest" for capability-link viewers with no account. This is
  *  what labels every cursor, comment, and suggested edit — so collaborators see
  *  WHO is acting, instead of everyone showing as the same hardcoded "You". */
-function identityFrom(me: { name?: string | null; email?: string } | null, capToken: string | null): PresenceUser {
+function identityFrom(me: { name?: string | null; email?: string; avatar?: string | null } | null, capToken: string | null): PresenceUser {
   if (capToken) {
     // Anonymous share-link viewer: no account. Keep them visually distinct per
     // link, but they can't be named (that's what account sign-in is for).
@@ -50,7 +50,7 @@ function identityFrom(me: { name?: string | null; email?: string } | null, capTo
     return { name: "Guest", color: colorFor(seed) };
   }
   const name = (me?.name && me.name.trim()) || me?.email || "You";
-  return { name, color: colorFor(me?.email || name) };
+  return { name, color: colorFor(me?.email || name), avatar: me?.avatar ?? null };
 }
 
 function collabUrl(): string {
@@ -61,6 +61,8 @@ function collabUrl(): string {
 interface PresenceUser {
   name: string;
   color: string;
+  /** Small data:image/ avatar (set once in awareness → shown on presence chips). */
+  avatar?: string | null;
 }
 
 type CollabKind = "document" | "code" | "spreadsheet" | "canvas";
@@ -518,9 +520,14 @@ function PresenceAvatars({ users }: { users: PresenceUser[] }) {
             justifyContent: "center",
             border: "2px solid var(--bg-base, #0d0d0f)",
             marginLeft: i === 0 ? 0 : -8,
+            overflow: "hidden",
           }}
         >
-          {u.name.charAt(0).toUpperCase()}
+          {u.avatar ? (
+            <img src={u.avatar} alt={u.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            u.name.charAt(0).toUpperCase()
+          )}
         </div>
       ))}
     </div>

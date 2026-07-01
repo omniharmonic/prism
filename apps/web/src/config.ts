@@ -81,6 +81,8 @@ export interface Me {
   authenticated: boolean;
   email?: string;
   name?: string | null;
+  /** Small data:image/ URL avatar, or null. Feeds collab presence identity. */
+  avatar?: string | null;
   isOwner?: boolean;
   /** The viewer's role in the ACTIVE vault (owner/admin/member/guest). Per-vault:
    *  re-fetched on vault switch. Drives role-gating of management surfaces. */

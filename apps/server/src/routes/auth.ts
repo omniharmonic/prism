@@ -18,7 +18,7 @@ import { startSession, endSession, readSession } from "../auth/session";
 import { requestMagicLink, redeemMagicLink } from "../auth/magiclink";
 import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
 import { hashPassword, verifyPassword, passwordProblem } from "../auth/password";
-import { getUser, setAccount, setUserPassword, ensureUser } from "../db";
+import { getUser, setAccount, setUserPassword, ensureUser, setUserProfile } from "../db";
 import { resolveActor } from "../auth/actor";
 
 export const auth = new Hono();
@@ -66,6 +66,52 @@ auth.post("/set-password", async (c) => {
   if (pwErr) return c.json({ error: pwErr }, 400);
   if (name?.trim()) setAccount(s.email, name.trim(), hashPassword(password!));
   else setUserPassword(s.email, hashPassword(password!));
+  return c.json({ ok: true });
+});
+
+// ---- account settings: update your own profile (name + avatar) ----
+// Session-gated; anyone signed in manages their OWN account. Email is the account
+// identity (primary key) and is NOT changed here. Same endpoint for owner + members.
+const MAX_AVATAR_CHARS = 350_000; // ~256KB as a data: URL (client resizes small)
+auth.put("/profile", async (c) => {
+  const s = readSession(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const { name, avatar } = await c.req.json<{ name?: string; avatar?: string | null }>().catch(() => ({}) as { name?: string; avatar?: string | null });
+  const patch: { name?: string; avatar?: string | null } = {};
+  if (name !== undefined) {
+    if (typeof name !== "string" || !name.trim() || name.length > 120) return c.json({ error: "invalid_name" }, 400);
+    patch.name = name.trim();
+  }
+  if (avatar !== undefined) {
+    if (avatar === null || avatar === "") {
+      patch.avatar = null;
+    } else if (typeof avatar !== "string" || !avatar.startsWith("data:image/") || avatar.length > MAX_AVATAR_CHARS) {
+      return c.json({ error: "invalid_avatar", detail: "avatar must be a small data:image/ URL" }, 400);
+    } else {
+      patch.avatar = avatar;
+    }
+  }
+  if (patch.name === undefined && patch.avatar === undefined) return c.json({ error: "nothing_to_update" }, 400);
+  setUserProfile(s.email, patch);
+  const u = getUser(s.email);
+  return c.json({ ok: true, name: u?.name ?? null, avatar: u?.avatar ?? null });
+});
+
+// ---- change your password (verifies the current one) ----
+// Distinct from /set-password (owner/first-run bootstrap, no current password):
+// this requires the existing password, so a hijacked session can't silently
+// change it. If the account has no password yet, falls back to just setting one.
+auth.post("/change-password", async (c) => {
+  const s = readSession(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const { currentPassword, newPassword } = await c.req.json<{ currentPassword?: string; newPassword?: string }>().catch(() => ({}) as { currentPassword?: string; newPassword?: string });
+  const pwErr = passwordProblem(newPassword ?? "");
+  if (pwErr) return c.json({ error: pwErr }, 400);
+  const u = getUser(s.email);
+  if (u?.password_hash && !verifyPassword(currentPassword ?? "", u.password_hash)) {
+    return c.json({ error: "wrong_password" }, 403);
+  }
+  setUserPassword(s.email, hashPassword(newPassword!));
   return c.json({ ok: true });
 });
 
@@ -121,6 +167,7 @@ auth.get("/me", (c) => {
     authenticated: true,
     email: s.email,
     name: u?.name ?? null,
+    avatar: u?.avatar ?? null,
     isOwner: s.email === config.ownerEmail,
     role: actor.kind === "user" ? actor.role : "guest",
     vaultId: actor.vaultId,

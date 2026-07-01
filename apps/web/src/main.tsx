@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings } from "@prism/core";
+import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
@@ -148,11 +149,13 @@ async function start() {
       <PlatformProvider value="web">
         <VaultClientProvider client={httpVaultClient}>
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
-            <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-              <App skipOnboarding={isViewer} />
-              <OfflineIndicator />
-              <UpdatePrompt />
-            </CollabDocumentProvider>
+            <AccountProvider value={capability ? null : webAccount}>
+              <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
+                <App skipOnboarding={isViewer} />
+                <OfflineIndicator />
+                <UpdatePrompt />
+              </CollabDocumentProvider>
+            </AccountProvider>
           </CollabSharingProvider>
         </VaultClientProvider>
       </PlatformProvider>

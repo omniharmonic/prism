@@ -274,6 +274,11 @@ db.exec(`
   if (!cols.some((c) => c.name === "password_hash")) {
     db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
   }
+  // Migration: accounts gained a profile avatar (a small data: URL, bounded at
+  // the API). Used to identify a person on their comments/cursors/edits.
+  if (!cols.some((c) => c.name === "avatar")) {
+    db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+  }
 }
 
 // Migration: peers gained a collab_url (the peer hub's /collab WS URL) so the
@@ -544,11 +549,22 @@ export interface UserRow {
   email: string;
   name: string | null;
   password_hash: string | null;
+  avatar: string | null;
   created_at: number;
 }
-const selectUser = db.prepare("SELECT email, name, password_hash, created_at FROM users WHERE email = ?");
+const selectUser = db.prepare("SELECT email, name, password_hash, avatar, created_at FROM users WHERE email = ?");
 export function getUser(email: string): UserRow | null {
   return (selectUser.get(email) as UserRow | undefined) ?? null;
+}
+
+const updateProfileName = db.prepare("UPDATE users SET name = ? WHERE email = ?");
+const updateProfileAvatar = db.prepare("UPDATE users SET avatar = ? WHERE email = ?");
+/** Update a user's own profile: display name and/or avatar (only the provided
+ *  fields). Email is the account identity (primary key) and is not changed here. */
+export function setUserProfile(email: string, patch: { name?: string; avatar?: string | null }): void {
+  ensureUser(email);
+  if (patch.name !== undefined) updateProfileName.run(patch.name, email);
+  if (patch.avatar !== undefined) updateProfileAvatar.run(patch.avatar, email);
 }
 export function hasAccount(email: string): boolean {
   const u = getUser(email);
