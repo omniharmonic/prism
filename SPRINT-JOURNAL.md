@@ -125,3 +125,37 @@ Notion DB sync is actually configured.
 Matrix ✓ + Fathom ✓ moved+verified. Notion idle (n/a). Google (gog) + Meetily
 (local SQLite) correctly stay desktop. Desktop app runs new build w/ both
 disable flags; server worker is sole syncer for Matrix + Fathom.
+
+## COMPREHENSIVE sync port — GitHub + Google Docs + Notion adapters SERVER-SIDE
+Reversed the earlier "defer the rest" stance (correctly — piecemeal left the
+migration half-done). Ported ALL three remaining sync adapters to the Node
+server so the web/mobile app can sync with no desktop running:
+- worker/github.ts   — Contents/Trees API; serialize note→md(frontmatter+body),
+  push (skip-unchanged by sha), pull (import repo .md → vault, match by
+  extension-stripped path). LIVE-VERIFIED (verify-github-sync.ts): push+pull.
+- worker/googledocs.ts — shells to the colocated `gog` CLI (works from non-GUI
+  process). create/write/read/remoteRevision(revisionId)/trash. LIVE-VERIFIED
+  (verify-googledocs-sync.ts): create→write→read round-trip.
+- worker/notion.ts   — pure HTTP; md⇄blocks, push(delete-all+append)/pull/create.
+  Built + UNIT-tested. NOT live-verified: desktop notion_api_key is 401 (stale
+  token — credential, not code). Refresh the token to enable.
+- routes/sync.ts — admin-gated /api/sync/note/:id/{push,pull} (google/notion by
+  metadata.sync[]) + /api/sync/github/{push,pull}. Creds from the per-tenant
+  secret store (generic cred<T>). integrations.ts: registerCredential() →
+  GET/PUT/DELETE for github/google/notion (encrypted at rest, never leaked).
+- ROUTE-LEVEL live e2e (verify-sync-routes.ts): drives the REAL Hono app via an
+  owner session cookie + x-prism-vault → resolveActor → secret store → adapter →
+  live GitHub/Google. PASS both. Proves full production wiring, not just adapters.
+- DEPLOYED to prod: ff-merge 1f6c00f→bf10c8a, boot-tested (app constructs, routes
+  403 pre-auth), pm2 restart, live /health 200 + routes 403. No new deps. Purely
+  additive: desktop still owns github/google/notion sync (no disable flags yet),
+  so nothing removed — this is a new parallel server path. 291 server tests pass.
+
+## REMAINING for full parity (the "Matrix/Fathom treatment" for these three):
+1. Store prod creds (gh token + gog account) in the prod secret store so the
+   server can sync unattended for the owner's primary vault.
+2. Refresh the Notion token (currently 401) → then live-verify notion route.
+3. Add desktop disable flags (disable_github_sync/…) + cut over + rebuild +
+   verify no-dup — only when moving each OFF the desktop is actually desired.
+Meetily (local SQLite) + Google calendar/email (gog) remain desktop-only, not
+yet ported (calendar/email are ingest, not the sync-adapter shape).
