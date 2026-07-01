@@ -225,3 +225,17 @@ live hub. Delivered the buildable/testable slice:
   * 4.3 per-note level override within a space + peer-edit audit.
   * 4.4 two-hub CI wiring + reject/downgrade/convergence coverage; gap #3 (live
     two-hub convergence) STILL needs a 2nd hub+vault — the roadmap's known deferral.
+
+## Phase 4 GAP #3 CLOSED — live two-hub convergence proven (12/12)
+Stood up TWO isolated throwaway hubs (feda*/fedb* vaults, :8789/:8788, own DBs +
+Ed25519 identities) — prod default vault NEVER touched. verify-two-hub.ts:
+  AC-1 reachability · AC-2 bidirectional pair · AC-3 space_note_key mint +
+  /mirror+accept · AC-4 peer grants · AC-6 client-routes-by-key · AC-7 A→B
+  converge <15s · AC-8 B→A converge <15s · AC-9 offline outbox replay · AC-11
+  revocation stops sync → ALL PASS (12 PASS, 0 FAIL; AC-10/AC-12 covered in-proc).
+Bug found + fixed: Hocuspocus authorizes on CONNECT only, so a revoked peer kept
+syncing over its open socket (AC-11 leaked). Fix: syncSpaces closeConnections()
+on binding drop → forces re-auth, revoked peer rejected. two-hub-up.sh
+parameterized (FED_ENV_FILE/FED_B_DB) to bring up either side. Provisioning gotcha
+documented: use vault-create --mint tokens (aud=vault.<name>); operator
+mint-token needs --aud; reused vault names corrupt (stale SQLite) → unique names.
