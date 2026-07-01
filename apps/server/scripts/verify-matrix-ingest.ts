@@ -40,7 +40,7 @@ function restVault(url: string, vault: string, token: string): IngestVaultLike {
       for (const t of tags ?? []) sp.append("tag", t);
       const r = await fetch(`${base}/notes?${sp}`, { headers: h });
       if (!r.ok) throw new Error(`list ${r.status}`);
-      return r.json();
+      return r.json() as Promise<any[]>;
     },
     async createNote(p) {
       const r = await fetch(`${base}/notes`, { method: "POST", headers: h, body: JSON.stringify(p) });
@@ -56,8 +56,8 @@ function restVault(url: string, vault: string, token: string): IngestVaultLike {
 }
 
 async function main() {
-  const { putSecret, getSecret } = await import("../src/secrets.ts");
-  const { MatrixClient, ingestMatrix } = await import("../src/worker/matrix.ts");
+  const { putSecret, getSecret } = await import("../src/secrets.js");
+  const { MatrixClient, ingestMatrix } = await import("../src/worker/matrix.js");
 
   console.log("=== 1. read desktop Matrix creds ===");
   const cfgPath = `${homedir()}/Library/Application Support/prism/prism-config.json`;

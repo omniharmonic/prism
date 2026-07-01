@@ -95,3 +95,34 @@ integrations.post("/fathom/sync", async (c) => {
     return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
   }
 });
+
+// ── Sync-adapter credentials (GitHub / Google Docs / Notion), Phase 3 ──
+// Same shape as matrix/fathom: GET status (never leaks the value), PUT to store
+// encrypted, DELETE to remove. github={token}, google={account}, notion={apiKey}.
+function registerCredential(kind: string, fields: string[]) {
+  integrations.get(`/${kind}`, (c) => {
+    const actor = resolveActor(c);
+    const available = secretsConfigured();
+    return c.json({ secretsAvailable: available, configured: available && !!getSecret(actor.vaultId, config.ownerEmail, kind) });
+  });
+  integrations.put(`/${kind}`, async (c) => {
+    if (!secretsConfigured()) return c.json({ error: "secrets_unconfigured", detail: "SECRETS_KEY is not set on the server" }, 400);
+    const actor = resolveActor(c);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const cred: Record<string, string> = {};
+    for (const f of fields) {
+      const v = body[f];
+      if (typeof v !== "string" || !v) return c.json({ error: "bad_request", detail: `${f} required` }, 400);
+      cred[f] = v;
+    }
+    putSecret(actor.vaultId, config.ownerEmail, kind, JSON.stringify(cred));
+    return c.json({ ok: true });
+  });
+  integrations.delete(`/${kind}`, (c) => {
+    deleteSecret(resolveActor(c).vaultId, config.ownerEmail, kind);
+    return c.json({ ok: true });
+  });
+}
+registerCredential("github", ["token"]);
+registerCredential("google", ["account"]);
+registerCredential("notion", ["apiKey"]);

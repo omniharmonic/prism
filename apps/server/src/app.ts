@@ -19,6 +19,7 @@ import { federation } from "./routes/federation";
 import { federated } from "./routes/federated";
 import { agentApi } from "./routes/agent";
 import { integrations } from "./routes/integrations";
+import { sync } from "./routes/sync";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -105,6 +106,7 @@ export function createApp(): Hono {
   // to the vault by the owner short-circuit.
   app.route("/api/agent", agentApi);
   app.route("/api/integrations", integrations);
+  app.route("/api/sync", sync);
   app.route("/api", api);
   app.route("/acl", acl);
 

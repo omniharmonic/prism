@@ -73,6 +73,23 @@ test("matrix config: no SECRETS_KEY → 400 secrets_unconfigured (never stores p
   assert.equal(((await r.json()) as { error: string }).error, "secrets_unconfigured");
 });
 
+for (const [kind, field, val] of [
+  ["github", "token", "ghp_x"],
+  ["google", "account", "me@x.co"],
+  ["notion", "apiKey", "ntn_x"],
+] as const) {
+  test(`${kind} credential: gating + store→status→delete`, async () => {
+    const cookie = ownerCookie();
+    assert.equal((await integrations.request(`/${kind}`)).status, 403); // no session
+    assert.equal((await integrations.request(`/${kind}`, { method: "PUT", headers: { ...J, cookie }, body: "{}" })).status, 400); // missing field
+    const put = await integrations.request(`/${kind}`, { method: "PUT", headers: { ...J, cookie }, body: JSON.stringify({ [field]: val }) });
+    assert.equal(put.status, 200);
+    assert.equal(((await (await integrations.request(`/${kind}`, { headers: { cookie } })).json()) as { configured: boolean }).configured, true);
+    await integrations.request(`/${kind}`, { method: "DELETE", headers: { cookie } });
+    assert.equal(((await (await integrations.request(`/${kind}`, { headers: { cookie } })).json()) as { configured: boolean }).configured, false);
+  });
+}
+
 test("fathom config: gating + store→status→delete round-trip", async () => {
   const cookie = ownerCookie();
   assert.equal((await integrations.request("/fathom")).status, 403); // no session
