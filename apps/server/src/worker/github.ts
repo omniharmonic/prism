@@ -108,7 +108,7 @@ export function parseFrontmatter(text: string): { title?: string; tags?: string[
   const m = text.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!m) return { body: text };
   const fm = m[1]!;
-  const body = text.slice(m[0].length);
+  const body = text.slice(m[0].length).replace(/^\n+/, ""); // drop the blank line after the FM block
   const title = fm.match(/^title:\s*(.+)$/m)?.[1]?.replace(/^["']|["']$/g, "");
   const vaultPath = fm.match(/^vault_path:\s*(.+)$/m)?.[1]?.replace(/^["']|["']$/g, "");
   const tags = [...fm.matchAll(/^\s+-\s+(.+)$/gm)].map((x) => x[1]!.replace(/^["']|["']$/g, ""));
