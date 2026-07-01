@@ -56,6 +56,11 @@ pub struct AppConfig {
     pub matrix_user: String,
     pub matrix_access_token: String,
     pub matrix_device_id: String,
+    /// When true, the desktop does NOT run the background message_sync service —
+    /// the Prism Server ingests Matrix server-side instead (no double-sync). The
+    /// Matrix token stays configured so live messaging / sending still works.
+    #[serde(default)]
+    pub disable_message_sync: bool,
     pub notion_api_key: String,
     pub google_account_primary: String,
     pub google_account_agent: String,
@@ -130,6 +135,7 @@ impl Default for AppConfig {
             matrix_user: "@prism:localhost".into(),
             matrix_access_token: String::new(),
             matrix_device_id: "PRISM".into(),
+            disable_message_sync: false,
             notion_api_key: String::new(),
             google_account_primary: String::new(),
             google_account_agent: String::new(),
