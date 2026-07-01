@@ -63,8 +63,8 @@ pub async fn run(
             }
         }
 
-        // Fathom (API)
-        if !config.fathom_api_key.is_empty() {
+        // Fathom (API) — skipped when handled server-side (disable_fathom_sync).
+        if !config.fathom_api_key.is_empty() && !config.disable_fathom_sync {
             match sync_fathom(&parachute, &config.fathom_api_key).await {
                 Ok(count) => total += count,
                 Err(e) => {
