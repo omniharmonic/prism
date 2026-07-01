@@ -164,6 +164,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS federation_outbox_peer ON federation_outbox(peer_pubkey);
 
+  -- Peer-edit audit (Phase 4.3): a row per inbound edit a federated PEER applied
+  -- to one of our shared docs, so the owner can review who edited what and when.
+  CREATE TABLE IF NOT EXISTS peer_edits (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    space_note_key TEXT NOT NULL,
+    local_id       TEXT NOT NULL,
+    peer_pubkey    TEXT NOT NULL,
+    edited_at      INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS peer_edits_time ON peer_edits(edited_at DESC);
+
   -- Durable pending suggestions (Horizon C, suggest-level). A suggest-level peer
   -- (or capability) does NOT merge into the live doc; its proposed change lands
   -- here for the owner to accept/reject, and MUST survive a server restart (the
@@ -1112,6 +1123,25 @@ export function outboxForPeer(pubkey: string): OutboxItem[] {
 }
 export function clearOutboxItem(id: number): void {
   deleteOutboxStmt.run(id);
+}
+
+// ── peer-edit audit (4.3) ─────────────────────────────────────────────────────
+export interface PeerEdit {
+  id: number;
+  space_note_key: string;
+  local_id: string;
+  peer_pubkey: string;
+  edited_at: number;
+}
+const insertPeerEdit = db.prepare(
+  "INSERT INTO peer_edits (space_note_key, local_id, peer_pubkey, edited_at) VALUES (?, ?, ?, ?)",
+);
+const selectPeerEdits = db.prepare("SELECT * FROM peer_edits ORDER BY edited_at DESC, id DESC LIMIT ?");
+export function recordPeerEdit(spaceNoteKey: string, localId: string, peerPubkey: string): void {
+  insertPeerEdit.run(spaceNoteKey, localId, peerPubkey, now());
+}
+export function listPeerEdits(limit = 200): PeerEdit[] {
+  return selectPeerEdits.all(limit) as PeerEdit[];
 }
 
 // ---- pending suggestions (durable; survive restart) ----

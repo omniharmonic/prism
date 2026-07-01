@@ -34,7 +34,7 @@ import {
   addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
   queueOutbox, outboxForPeer, clearOutboxItem,
   createSuggestion, listSuggestions, getSuggestion,
-  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant, recordPeerEdit, listPeerEdits,
 } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { createHash } from "node:crypto";
@@ -294,4 +294,41 @@ test("peer grant TTL: an expired peer grant stops loading + resolving; a future 
   // Clearing the TTL (null) makes it permanent.
   upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: null });
   assert.equal(grantsForPeer(peer)[0]!.expires_at, null);
+});
+
+// ── peer-edit audit (4.3) ─────────────────────────────────────────────────────
+test("peer-edit audit: recordPeerEdit → listPeerEdits (DESC) + GET /acl/federation/peer-edits", async () => {
+  const pk = serverKeyPair().publicKeyB64url;
+  recordPeerEdit("snk-1", "local-1", pk);
+  recordPeerEdit("snk-2", "local-2", pk);
+  const edits = listPeerEdits(10);
+  assert.equal(edits.length, 2);
+  assert.equal(edits[0]!.space_note_key, "snk-2", "newest first");
+
+  const r = await ownerReq("/federation/peer-edits");
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as Array<{ spaceNoteKey: string; localId: string; peer: string; peerFingerprint: string }>;
+  assert.equal(body.length, 2);
+  assert.equal(body[0]!.spaceNoteKey, "snk-2");
+  assert.ok(body[0]!.peerFingerprint.includes(":"), "fingerprint rendered");
+});
+
+test("peer-edit audit endpoint is admin-gated (no session → 403)", async () => {
+  assert.equal((await acl.request("/federation/peer-edits")).status, 403);
+});
+
+// ── per-note level override (4.3) ─────────────────────────────────────────────
+test("per-note override: a note-level peer grant raises the peer above the space default", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# n1" });
+  fv.put({ id: "local-2", tags: ["shared"], content: "# n2" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: "snk-1", space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertFederatedNote({ space_note_key: "snk-2", space_id: SPACE, local_id: "local-2", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });   // space default = view
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "note", resource: "local-1", level: "edit", created_by: "t" }); // override n1 → edit
+
+  assert.equal(await resolveLevel("snk-1", signPeerConnToken(SPACE), null), "edit", "overridden note gets the higher level");
+  assert.equal(await resolveLevel("snk-2", signPeerConnToken(SPACE), null), "view", "the other note keeps the space default");
 });

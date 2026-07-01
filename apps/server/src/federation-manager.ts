@@ -57,9 +57,13 @@ import {
   queueOutbox,
   outboxForPeer,
   clearOutboxItem,
+  recordPeerEdit,
   getFederationEnabled,
   type FederatedNote,
 } from "./db";
+
+/** Coalesce a burst of CRDT updates from one logical peer edit into one audit row. */
+const EDIT_AUDIT_THROTTLE_MS = 3000;
 
 /** A peer's collaboration endpoint. Supplied by the caller until a peer-URL
  *  registry exists (see gap #1). `url` is the peer hub's /collab WS URL. */
@@ -80,6 +84,7 @@ class PeerBinding {
   private connected = false;
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private stopped = false;
+  private lastEditAudit = 0;
 
   constructor(
     private readonly fed: FederatedNote,
@@ -128,6 +133,17 @@ class PeerBinding {
     // connected, the provider's live state-vector sync already carries edits, so
     // we don't queue.) Skip our own flush re-applies (PEER_ORIGIN).
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
+      // A REMOTE peer edit is applied by our provider with the provider as origin
+      // (HocuspocusProvider.documentUpdateHandler: `origin === this`). Audit it
+      // (throttled — a single logical edit can arrive as many CRDT updates).
+      if (this.provider && origin === this.provider) {
+        const t = Date.now();
+        if (t - this.lastEditAudit > EDIT_AUDIT_THROTTLE_MS) {
+          this.lastEditAudit = t;
+          recordPeerEdit(this.fed.space_note_key, this.fed.local_id, this.peerPubkey);
+        }
+        return;
+      }
       if (this.connected || origin === PEER_ORIGIN) return;
       queueOutbox(this.fed.space_note_key, this.peerPubkey, update);
     };

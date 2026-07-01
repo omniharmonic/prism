@@ -64,6 +64,7 @@ import {
   removeMembership,
   listGrantsForVault,
   getGrantById,
+  listPeerEdits,
   type Space,
 } from "../db";
 import { vaultRegistry } from "../config";
@@ -935,6 +936,52 @@ acl.delete("/spaces/:id/peers/:pubkey", (c) => {
   removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "space", c.req.param("id"));
   kickFederationSync();
   return c.json({ ok: true });
+});
+
+// Per-note level override (4.3): raise a peer's access on ONE shared note above
+// the space default (a note-level peer grant is maxed in by effectiveLevel /
+// resolveLevel). Additive (raises only — the project avoids deny grants); with an
+// optional TTL. resource = this hub's local note id.
+acl.put("/federation/note-level", async (c) => {
+  const { noteId, pubkey, level, expiresInDays } = await c.req
+    .json<{ noteId?: string; pubkey?: string; level?: string; expiresInDays?: number }>()
+    .catch(() => ({}) as { noteId?: string; pubkey?: string; level?: string; expiresInDays?: number });
+  if (typeof noteId !== "string" || !noteId || typeof pubkey !== "string" || !isLevel(level)) {
+    return c.json({ error: "bad_request", detail: "noteId + pubkey + level required" }, 400);
+  }
+  if (!getPeer(pubkey)) return c.json({ error: "unknown_peer" }, 404);
+  const grant = upsertGrant({
+    subject_type: "peer",
+    subject: pubkey,
+    resource_type: "note",
+    resource: noteId,
+    level,
+    created_by: config.ownerEmail,
+    expires_at: typeof expiresInDays === "number" && expiresInDays > 0 ? Date.now() + expiresInDays * 86_400_000 : null,
+  });
+  kickFederationSync();
+  return c.json({ ok: true, noteId, pubkey, level, grant });
+});
+
+acl.delete("/federation/note-level/:noteId/:pubkey", (c) => {
+  removeGrantBySubjectResource("peer", decodeURIComponent(c.req.param("pubkey")), "note", decodeURIComponent(c.req.param("noteId")));
+  kickFederationSync();
+  return c.json({ ok: true });
+});
+
+// Peer-edit audit (4.3): who among our federated peers edited which shared note,
+// and when — owner review of inbound federated changes.
+acl.get("/federation/peer-edits", (c) => {
+  const limit = Math.min(Number(c.req.query("limit") ?? 200) || 200, 1000);
+  return c.json(
+    listPeerEdits(limit).map((e) => ({
+      spaceNoteKey: e.space_note_key,
+      localId: e.local_id,
+      peer: e.peer_pubkey,
+      peerFingerprint: fingerprint(e.peer_pubkey),
+      editedAt: e.edited_at,
+    })),
+  );
 });
 
 // ── "Parachute Sync": mirror ONE note to a paired peer in a single action (4.2) ──
