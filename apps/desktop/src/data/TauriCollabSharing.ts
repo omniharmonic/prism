@@ -64,6 +64,9 @@ export const tauriCollabSharing: CollabSharing = {
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl("DELETE", `/notes/${enc(noteId)}/people/${enc(email)}`);
   },
+  async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
+    await acl("PUT", `/notes/${enc(noteId)}/visibility`, { isPrivate });
+  },
   createLink,
   async revokeLink(noteId: string, linkId: string): Promise<void> {
     await acl("DELETE", `/notes/${enc(noteId)}/links/${enc(linkId)}`);

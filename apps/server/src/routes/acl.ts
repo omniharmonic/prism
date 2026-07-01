@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
-import { vault, VaultError } from "../parachute";
+import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { serverKeyPair, fingerprint } from "../auth/peer";
@@ -321,6 +321,27 @@ acl.delete("/notes/:id/links/:capId", (c) => {
   deleteCapability(capId);
   removeGrantBySubjectResource("link", capId, "note", c.req.param("id"), resolveActor(c).vaultId);
   return c.json({ ok: true });
+});
+
+// Mark a note private-to-creator (or back to workspace-visible). One path for
+// BOTH shells: web + desktop call this (desktop can't reach the /api gateway
+// PATCH directly). Merges metadata (prism_creator preserved) and uses the vault
+// client's force write, so it never 428s on the optimistic-concurrency guard.
+acl.put("/notes/:id/visibility", async (c) => {
+  const id = c.req.param("id");
+  const { isPrivate } = await c.req.json<{ isPrivate?: boolean }>().catch(() => ({}) as { isPrivate?: boolean });
+  if (typeof isPrivate !== "boolean") return c.json({ error: "bad_request", detail: "isPrivate (boolean) required" }, 400);
+  const vc = vaultClient(resolveActor(c).vaultId);
+  try {
+    const note = await vc.getNote(id);
+    await vc.updateNote(id, {
+      metadata: { ...(note.metadata ?? {}), prism_visibility: isPrivate ? "private" : "workspace" },
+    });
+    return c.json({ ok: true, visibility: isPrivate ? "private" : "workspace" });
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "vault_error" }, 502);
+  }
 });
 
 // Join / leave a shared tag (so a note becomes covered by tag-grants).

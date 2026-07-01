@@ -39,6 +39,25 @@ test("every /acl route is owner-only (anon → 403)", async () => {
   assert.equal((await acl.request("/tags/x/people", { method: "PUT", body: "{}" })).status, 403);
 });
 
+test("PUT /notes/:id/visibility marks a note private and preserves other metadata", async () => {
+  fv.put({ id: "n7", content: "secret plan", tags: ["projects"], metadata: { prism_creator: "owner@test.local", keep: "yes" } });
+  const r = await ownerReq("/notes/n7/visibility", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ isPrivate: true }) });
+  assert.equal(r.status, 200);
+  const note = fv.notes.get("n7")!;
+  assert.equal(note.metadata?.prism_visibility, "private");
+  assert.equal(note.metadata?.prism_creator, "owner@test.local", "merge preserved prism_creator");
+  assert.equal(note.metadata?.keep, "yes");
+  // …and back to workspace-visible.
+  await ownerReq("/notes/n7/visibility", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ isPrivate: false }) });
+  assert.equal(fv.notes.get("n7")!.metadata?.prism_visibility, "workspace");
+});
+
+test("PUT /notes/:id/visibility validates the body and is owner-gated", async () => {
+  fv.put({ id: "n8", content: "x", tags: [] });
+  assert.equal((await ownerReq("/notes/n8/visibility", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ nope: 1 }) })).status, 400);
+  assert.equal((await acl.request("/notes/n8/visibility", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ isPrivate: true }) })).status, 403);
+});
+
 test("a signed-in NON-owner is also rejected", async () => {
   const headers = new Headers();
   headers.set("cookie", sessionCookie(makeSession("intruder@test.local")));

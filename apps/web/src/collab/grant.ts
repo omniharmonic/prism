@@ -77,18 +77,10 @@ export const webCollabSharing: CollabSharing = {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
   },
   async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
-    // The gateway PATCH merges metadata (prism_creator etc. preserved). `force:true`
-    // is REQUIRED: Parachute enforces optimistic concurrency and 428s any write
-    // that carries neither `if_updated_at` nor `force` — the owner passthrough
-    // forwards this body verbatim, so without it "Make private" silently 428s.
-    const activeVault = getActiveVault();
-    const r = await fetch(`${GATEWAY_ORIGIN}/api/notes/${enc(noteId)}`, {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", ...(activeVault ? { "X-Prism-Vault": activeVault } : {}) },
-      body: JSON.stringify({ metadata: { prism_visibility: isPrivate ? "private" : "workspace" }, force: true }),
-    });
-    if (!r.ok) throw new Error(`visibility → ${r.status}`);
+    // One server path for both shells (/acl/notes/:id/visibility): it merges
+    // metadata (prism_creator preserved) and force-writes, so it never 428s on
+    // Parachute's optimistic-concurrency guard.
+    await acl(`/notes/${enc(noteId)}/visibility`, { method: "PUT", body: JSON.stringify({ isPrivate }) });
   },
 
   // The viewer's role in the active vault — a FRESH, vault-scoped read (not the
