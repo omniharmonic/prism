@@ -4,6 +4,7 @@
 // rendering old code). When an update is ready we show this; clicking Reload
 // calls updateServiceWorker(true), which activates the new SW and reloads once,
 // cleanly, with a consistent asset set.
+import { useState } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
 export function UpdatePrompt() {
@@ -11,6 +12,25 @@ export function UpdatePrompt() {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW();
+  const [reloading, setReloading] = useState(false);
+
+  // Robust reload. `updateServiceWorker(true)` posts SKIP_WAITING and reloads on
+  // `controllerchange` — but that event only fires if the new SW takes control of
+  // THIS tab. With clientsClaim off (we keep it off so a live session's assets are
+  // never evicted mid-session), an UNCONTROLLED tab (e.g. right after a hard
+  // refresh, or the first load after the SW was cleared) is never claimed, so
+  // controllerchange never fires and the plain button did nothing. So: activate the
+  // waiting SW, then GUARANTEE a reload ourselves. The fresh navigation is served
+  // by the now-active new SW → fresh build. A short delay lets skipWaiting land.
+  async function reload() {
+    setReloading(true);
+    try {
+      await updateServiceWorker(true);
+    } catch {
+      /* fall through to the forced reload */
+    }
+    setTimeout(() => window.location.reload(), 700);
+  }
 
   if (!needRefresh) return null;
 
@@ -37,19 +57,21 @@ export function UpdatePrompt() {
     >
       <span>A new version of Prism is available.</span>
       <button
-        onClick={() => updateServiceWorker(true)}
+        onClick={() => void reload()}
+        disabled={reloading}
         style={{
           padding: "5px 12px",
           borderRadius: 8,
           border: "none",
-          cursor: "pointer",
+          cursor: reloading ? "default" : "pointer",
           fontSize: 12.5,
           fontWeight: 600,
+          opacity: reloading ? 0.7 : 1,
           background: "var(--color-accent, #4f8ff7)",
           color: "white",
         }}
       >
-        Reload
+        {reloading ? "Reloading…" : "Reload"}
       </button>
       <button
         onClick={() => setNeedRefresh(false)}
