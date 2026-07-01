@@ -26,7 +26,7 @@ import { collabExtensions } from "@prism/core/editor-schema";
 import { inferContentType } from "@prism/core/content-types";
 import { marked } from "marked";
 import { config } from "./config";
-import { vault } from "./parachute";
+import { vaultClient } from "./parachute";
 import { verifyCapability } from "./auth/capability";
 import { verifyPeerConnToken } from "./auth/peer-conn";
 import { isLocalRequest } from "./auth/local";
@@ -43,7 +43,7 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
-import { roleFloor, type Role } from "./roles";
+import { roleFloor, workspaceRole, type Role } from "./roles";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
 // one. (These globals are read when the hooks run, never at import.)
@@ -114,21 +114,44 @@ export function noteKind(note: NoteMeta): CollabKind {
  *  external-Parachute edits so loop-guards can ignore our own re-applies. */
 export const PEER_ORIGIN = "peer-federation";
 
+// ---- vault-scoped documentName ----------------------------------------------
+// Hocuspocus routes by documentName, and a note id is only unique WITHIN a vault
+// — so two vaults' note "42" would collide on ONE in-memory doc. We therefore
+// encode the vault in the wire name: the PRIMARY vault uses a BARE note id
+// (backward-compatible with existing clients + persisted collab_docs rows), and
+// every other vault prefixes `${vaultId}::`. Federated docs are exempt (their
+// space_note_key is already globally unique and resolved before this split).
+
+/** Compose the wire documentName for a (vault, note). Primary → bare id. */
+export function docNameFor(vaultId: string, noteId: string): string {
+  return vaultId === "primary" ? noteId : `${vaultId}::${noteId}`;
+}
+/** Split a NON-federated documentName back into (vaultId, noteId). */
+export function parseDocName(documentName: string): { vaultId: string; noteId: string } {
+  const i = documentName.indexOf("::");
+  return i === -1
+    ? { vaultId: "primary", noteId: documentName }
+    : { vaultId: documentName.slice(0, i), noteId: documentName.slice(i + 2) };
+}
+
 /**
  * Resolve a collab documentName to the local vault note it maps to. For a
  * FEDERATED doc the wire documentName is the content-independent `space_note_key`
- * (shared by both hubs); we translate it to this hub's `local_id` for all vault
- * I/O and PIN the kind recorded at join (so an inbound update can never reseed a
- * note as the wrong structure). For every NON-federated doc — and whenever
- * federation is disabled — this returns `{ noteId: documentName }` with no kind,
- * i.e. exactly the documentName the caller already used (no behavior change).
+ * (shared by both hubs); we translate it to this hub's `local_id` (in the hub's
+ * vault) for all vault I/O and PIN the kind recorded at join. For every
+ * NON-federated doc — and whenever federation is disabled — the vault + note are
+ * decoded from the wire name (primary → bare id), so a single-vault deploy is
+ * byte-for-byte today's behavior.
  */
-export function federationTarget(documentName: string): { noteId: string; kind?: CollabKind } {
+export function federationTarget(documentName: string): { noteId: string; vaultId: string; kind?: CollabKind } {
   if (getFederationEnabled()) {
     const fed = getFederatedByKey(documentName);
-    if (fed) return { noteId: fed.local_id, kind: fed.kind as CollabKind };
+    if (fed) return { noteId: fed.local_id, vaultId: fed.vault_id ?? "primary", kind: fed.kind as CollabKind };
   }
-  return { noteId: documentName };
+  return federationTargetNonFed(documentName);
+}
+function federationTargetNonFed(documentName: string): { noteId: string; vaultId: string } {
+  return parseDocName(documentName);
 }
 
 /** Raw text → a fresh Y.Doc's encoded state with the code in a Y.Text. */
@@ -316,8 +339,8 @@ export interface LiveDocs {
 
 /** The Parachute updatedAt we've absorbed for a doc, beyond which a newer note
  *  is an unseen external edit. Max of our persisted snapshot and last apply. */
-function reconcileBaseline(name: string): number {
-  return Math.max(getDocState(name)?.sourceUpdatedAt ?? 0, lastReconciled.get(name) ?? 0);
+function reconcileBaseline(documentName: string, vaultId: string, noteId: string): number {
+  return Math.max(getDocState(noteId, vaultId)?.sourceUpdatedAt ?? 0, lastReconciled.get(documentName) ?? 0);
 }
 
 /**
@@ -330,14 +353,15 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
     const d = doc as Y.Doc & { isLoading?: boolean; getConnectionsCount?: () => number };
     if (d.isLoading) continue; // mid-load — onLoadDocument owns seeding
     if (typeof d.getConnectionsCount === "function" && d.getConnectionsCount() === 0) continue; // about to unload
+    const target = federationTarget(name);
     let note;
     try {
-      note = await vault.getNote(name);
+      note = await vaultClient(target.vaultId).getNote(target.noteId);
     } catch {
       continue; // unreadable/deleted — the load/store lifecycle handles it
     }
     const noteMs = toMs(note.updatedAt);
-    if (noteMs === 0 || noteMs <= reconcileBaseline(name)) continue;
+    if (noteMs === 0 || noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) continue;
     const kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
     kindCache.set(name, kind);
     applyExternalContent(doc, kind, note.content);
@@ -382,15 +406,16 @@ function sessionEmailFromCookie(cookieHeader: string | null): string | null {
 /** Resolve the connection's effective level for a note (session wins over link).
  *  `isLocal` = the connection came straight from loopback (the desktop app), not
  *  the public tunnel; only then is the owner-token path honored. */
-export async function resolveLevel(noteId: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
+export async function resolveLevel(documentName: string, token: string, cookieHeader: string | null, isLocal = false): Promise<Level | null> {
   // Federation path (GATED): a documentName that is a known `space_note_key` is
   // opened EITHER by a peer hub (peer-conn token) OR by THIS hub's own client
   // (owner/session/capability) — both now connect under the space_note_key (gap
   // #2). When federation is off, getFederatedByKey is never consulted, so this
   // branch is inert and the path below is byte-for-byte today's.
   if (getFederationEnabled()) {
-    const fed = getFederatedByKey(noteId);
+    const fed = getFederatedByKey(documentName);
     if (fed) {
+      const fedVault = fed.vault_id ?? "primary";
       const claims = verifyPeerConnToken(token);
       if (claims) {
         // A PEER hub: authenticate the signing pubkey, require a paired peer
@@ -400,7 +425,7 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
         if (!peer || !peer.paired_at) return null;
         let tags: string[] = [];
         try {
-          tags = (await vault.getNote(fed.local_id)).tags ?? [];
+          tags = (await vaultClient(fedVault).getNote(fed.local_id)).tags ?? [];
         } catch {
           /* unreadable note — match on id/space only */
         }
@@ -408,10 +433,14 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
       }
       // Not a peer-conn token → it's our OWN client opening the federated note by
       // its space_note_key. Authorize exactly like a normal note, against the
-      // LOCAL id (a real note id, never a space_note_key → no recursion).
-      return resolveLevel(fed.local_id, token, cookieHeader, isLocal);
+      // LOCAL id in the federated note's vault (re-encoded as a plain docName so
+      // the recursion resolves that vault, never the space_note_key → no loop).
+      return resolveLevel(docNameFor(fedVault, fed.local_id), token, cookieHeader, isLocal);
     }
   }
+
+  // Non-federated: decode the vault + note from the wire name (primary → bare id).
+  const { vaultId, noteId } = parseDocName(documentName);
 
   // Desktop owner path: the trusted Tauri app (on localhost) presents the dedicated
   // COLLAB_TOKEN to join live docs as the owner — kept separate from the vault token
@@ -426,9 +455,11 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
   let grants: Grant[] = [];
   let role: Role = "guest";
   if (email) {
-    // Phase 0: role from OWNER_EMAIL (byte-identical to the old isOwner).
-    role = email === config.ownerEmail ? "owner" : "member";
-    grants = grantsForUser(email);
+    // The authoritative per-vault role (membership row, else OWNER_EMAIL bootstrap
+    // on primary, else guest) — so a signed-in user's floor is scoped to THIS
+    // vault, never leaking owner/admin reach across tenants.
+    role = workspaceRole(email, vaultId);
+    grants = grantsForUser(email, vaultId);
   }
   if (role !== "owner" && token && token !== "session") {
     const claims = verifyCapability(token);
@@ -438,7 +469,7 @@ export async function resolveLevel(noteId: string, token: string, cookieHeader: 
   let creator: string | null = null;
   let visibility: "private" | "workspace" = "workspace";
   try {
-    const note = await vault.getNote(noteId);
+    const note = await vaultClient(vaultId).getNote(noteId);
     tags = note.tags ?? [];
     // Private-to-creator also gates LIVE editing: a private note is editable only
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
@@ -476,11 +507,11 @@ export async function authorizeConnection(
  * Leaves the doc empty if nothing is loadable. Mutates and returns `doc`.
  */
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
-  const target = federationTarget(documentName); // non-federated → { noteId: documentName }
+  const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   let note: { content: string; updatedAt: string | null } | null = null;
   let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
-    const n = await vault.getNote(target.noteId);
+    const n = await vaultClient(target.vaultId).getNote(target.noteId);
     note = { content: n.content, updatedAt: n.updatedAt };
     if (!target.kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
     kindCache.set(documentName, kind);
@@ -500,7 +531,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
           : doc.getXmlFragment(FIELD).length > 0;
   if (populated) return doc;
 
-  const stored = getDocState(documentName);
+  const stored = getDocState(target.noteId, target.vaultId);
   const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
 
   if (stored && !externallyEdited) {
@@ -529,7 +560,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
  * lost. Extracted from the Hocuspocus hook so it is directly testable.
  */
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
-  const target = federationTarget(documentName); // non-federated → { noteId: documentName }
+  const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   let sourceUpdatedAt: number | null = null;
   // Fetch the current note up front: it resolves the kind (a wrong default would
   // persist e.g. code as HTML and corrupt the note) AND lets us detect an
@@ -538,7 +569,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   let kind = target.kind ?? kindCache.get(documentName);
   let current: { content: string; updatedAt: string | null } | null = null;
   try {
-    const n = await vault.getNote(target.noteId);
+    const n = await vaultClient(target.vaultId).getNote(target.noteId);
     current = { content: n.content, updatedAt: n.updatedAt };
     if (!kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
   } catch {
@@ -555,7 +586,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   // the real Hocuspocus flow onLoadDocument always runs first and sets it.
   if (current) {
     const noteMs = toMs(current.updatedAt);
-    const baseline = reconcileBaseline(documentName);
+    const baseline = reconcileBaseline(documentName, target.vaultId, target.noteId);
     if (baseline > 0 && noteMs > baseline) {
       applyExternalContent(doc, kind, current.content);
       lastReconciled.set(documentName, noteMs);
@@ -571,12 +602,12 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           : kind === "canvas"
             ? yDocToScene(doc)
             : yDocToHtml(doc);
-    const updated = await vault.updateNote(target.noteId, { content });
+    const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
-  saveDocState(documentName, Y.encodeStateAsUpdate(doc), sourceUpdatedAt);
+  saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId);
 }
 
 export const hocuspocus = new Hocuspocus({

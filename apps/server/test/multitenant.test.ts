@@ -17,8 +17,11 @@ import {
   removeMembership,
   listMemberships,
   membershipsForUser,
+  getDocState,
+  saveDocState,
 } from "../src/db";
 import { workspaceRole } from "../src/roles";
+import { parseDocName, docNameFor } from "../src/collab";
 import { config } from "../src/config";
 import { resetDb } from "./helpers";
 
@@ -86,4 +89,33 @@ test("membership lifecycle: upsert (role change), list, per-user view, remove", 
 test("an unknown membership role string falls back to guest (never silently elevates)", () => {
   setMembership("A", "weird@x", "superuser" as never, "o"); // not in the Role ladder
   assert.equal(workspaceRole("weird@x", "A"), "guest");
+});
+
+// ── collab_docs are vault-scoped (the isolation hole this migration closes) ──
+test("collab_docs CRDT state is isolated per vault: same note id, different vault → different doc", () => {
+  saveDocState("42", new Uint8Array([1, 2, 3]), 100, "teamA");
+  saveDocState("42", new Uint8Array([9, 9, 9]), 200, "teamB");
+
+  assert.deepEqual([...getDocState("42", "teamA")!.state], [1, 2, 3]);
+  assert.deepEqual([...getDocState("42", "teamB")!.state], [9, 9, 9]);
+  assert.equal(getDocState("42", "teamA")!.sourceUpdatedAt, 100);
+  assert.equal(getDocState("42", "teamB")!.sourceUpdatedAt, 200);
+  // A note id that exists in teamA/teamB does NOT bleed into the primary bucket.
+  assert.equal(getDocState("42", "primary"), null);
+});
+
+test("collab doc-state defaults to the primary vault (backward-compatible single-vault path)", () => {
+  saveDocState("note-1", new Uint8Array([7]), 50); // no vaultId → primary
+  assert.deepEqual([...getDocState("note-1")!.state], [7]); // read default → primary
+  assert.deepEqual([...getDocState("note-1", "primary")!.state], [7]);
+});
+
+test("documentName encodes the vault: primary is a bare id, other vaults prefix — round-trips", () => {
+  assert.equal(docNameFor("primary", "42"), "42");
+  assert.equal(docNameFor("teamA", "42"), "teamA::42");
+  assert.deepEqual(parseDocName("42"), { vaultId: "primary", noteId: "42" });
+  assert.deepEqual(parseDocName("teamA::42"), { vaultId: "teamA", noteId: "42" });
+  // note ids never contain "::", but if a downstream key did, only the FIRST
+  // splits the vault off (the rest stays intact).
+  assert.deepEqual(parseDocName("teamA::a::b"), { vaultId: "teamA", noteId: "a::b" });
 });

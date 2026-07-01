@@ -4,7 +4,16 @@ import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
-import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken } from "../config";
+import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken, getActiveVault } from "../config";
+
+/** The vault-scoped collab documentName: the primary vault uses a BARE note id
+ *  (backward-compatible), every other vault prefixes `${vaultId}::` so the server
+ *  keeps its in-memory doc + persisted CRDT state isolated per tenant. Mirrors the
+ *  server's docNameFor() in apps/server/src/collab.ts. */
+function vaultDocName(noteId: string): string {
+  const v = getActiveVault();
+  return v && v !== "primary" ? `${v}::${noteId}` : noteId;
+}
 import { updateNote as restUpdateNote } from "../parachute/rest";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
@@ -193,7 +202,9 @@ export function CollabDoc({
     // whenever federation is off), so the default stays `noteId` with no behavior
     // change for the normal path.
     void (async () => {
-      let name = noteId;
+      // Default: the active vault's scoped name (primary → bare id). A federated
+      // note overrides this with its space_note_key below.
+      let name = vaultDocName(noteId);
       try {
         const r = await fetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, {
           headers: { ...capabilityHeader() },

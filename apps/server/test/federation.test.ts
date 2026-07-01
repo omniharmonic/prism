@@ -130,9 +130,11 @@ test("with FEDERATION disabled the branch is inert (the key is not a real note �
 // ── federationTarget (document routing) ──────────────────────────────────────
 test("federationTarget maps a known key to the local id + pinned kind; unknown passes through", () => {
   upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "spreadsheet", peer_synced_at: null, source_updated_at: null });
-  assert.deepEqual(federationTarget(KEY), { noteId: "local-1", kind: "spreadsheet" });
-  // an ordinary (non-federated) document name is returned untouched.
-  assert.deepEqual(federationTarget("just-a-note-id"), { noteId: "just-a-note-id" });
+  assert.deepEqual(federationTarget(KEY), { noteId: "local-1", vaultId: "primary", kind: "spreadsheet" });
+  // an ordinary (non-federated) document name decodes to the primary vault + bare id.
+  assert.deepEqual(federationTarget("just-a-note-id"), { noteId: "just-a-note-id", vaultId: "primary" });
+  // a vault-prefixed document name decodes to that vault + the bare note id.
+  assert.deepEqual(federationTarget("teamA::42"), { noteId: "42", vaultId: "teamA" });
 });
 
 // ── effectiveLevel space matching (permissions) ──────────────────────────────

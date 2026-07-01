@@ -67,10 +67,12 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS capabilities_resource ON capabilities(resource_type, resource);
   CREATE TABLE IF NOT EXISTS collab_docs (
-    name              TEXT PRIMARY KEY,   -- note id
+    vault_id          TEXT NOT NULL DEFAULT 'primary',  -- the tenant; a note id is only unique WITHIN a vault
+    name              TEXT NOT NULL,      -- note id
     state             BLOB NOT NULL,      -- Yjs encoded state (CRDT continuity)
     source_updated_at INTEGER,            -- Parachute updatedAt at last store (external-edit detection)
-    updated_at        INTEGER NOT NULL
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, name)
   );
   CREATE TABLE IF NOT EXISTS invites (
     token_hash  TEXT PRIMARY KEY,
@@ -312,6 +314,42 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS grants_vault_subject  ON grants(vault_id, subject_type, subject);
   CREATE INDEX IF NOT EXISTS grants_vault_resource ON grants(vault_id, resource_type, resource);
 `);
+
+// `collab_docs` PRIMARY KEY rebuild: (name) → (vault_id, name). SQLite can't
+// alter a PK in place, so copy-then-swap inside a transaction — the one
+// non-additive migration. Version-gated (runs once) and a no-op when the table
+// is already composite (fresh DBs get the composite PK from CREATE TABLE above).
+// Existing rows carry vault_id='primary' from the ADD COLUMN default, so a
+// single-vault deploy keeps every doc's CRDT state byte-for-byte.
+{
+  // Self-contained settings I/O — this runs at module load, BEFORE the shared
+  // getSetting/setSetting prepared statements below are initialized.
+  const flag = (db.prepare("SELECT value FROM settings WHERE key = ?").get("collab_docs_pk_v2") as { value: string } | undefined)?.value;
+  if (flag !== "done") {
+    const cols = db.prepare(`PRAGMA table_info(collab_docs)`).all() as Array<{ name: string; pk: number }>;
+    const pkCols = cols.filter((c) => c.pk > 0).map((c) => c.name);
+    const alreadyComposite = pkCols.length === 2 && pkCols.includes("vault_id") && pkCols.includes("name");
+    if (cols.length && !alreadyComposite) {
+      const rebuild = db.transaction(() => {
+        db.exec(`CREATE TABLE collab_docs_v2 (
+          vault_id          TEXT NOT NULL DEFAULT 'primary',
+          name              TEXT NOT NULL,
+          state             BLOB NOT NULL,
+          source_updated_at INTEGER,
+          updated_at        INTEGER NOT NULL,
+          PRIMARY KEY (vault_id, name)
+        )`);
+        db.exec(`INSERT INTO collab_docs_v2 (vault_id, name, state, source_updated_at, updated_at)
+                 SELECT COALESCE(vault_id, 'primary'), name, state, source_updated_at, updated_at FROM collab_docs`);
+        db.exec(`DROP TABLE collab_docs`);
+        db.exec(`ALTER TABLE collab_docs_v2 RENAME TO collab_docs`);
+      });
+      rebuild();
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run("collab_docs_pk_v2", "done");
+  }
+}
+db.exec(`CREATE INDEX IF NOT EXISTS collab_docs_vault ON collab_docs(vault_id, name);`);
 
 // ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
 const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -741,20 +779,23 @@ export interface DocState {
   state: Uint8Array;
   sourceUpdatedAt: number | null;
 }
-const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE name = ?");
+const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE vault_id = ? AND name = ?");
 const upsertDocState = db.prepare(
-  `INSERT INTO collab_docs (name, state, source_updated_at, updated_at)
-   VALUES (@name, @state, @source_updated_at, @updated_at)
-   ON CONFLICT(name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
+  `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, updated_at)
+   VALUES (@vault_id, @name, @state, @source_updated_at, @updated_at)
+   ON CONFLICT(vault_id, name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
 );
 
-export function getDocState(name: string): DocState | null {
-  const row = selectDocState.get(name) as { state: Buffer; source_updated_at: number | null } | undefined;
+/** CRDT doc state, scoped to a vault (a note id is only unique within a vault).
+ *  vaultId defaults to 'primary' so pre-multitenant callers are unaffected. */
+export function getDocState(name: string, vaultId = "primary"): DocState | null {
+  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null } | undefined;
   if (!row) return null;
   return { state: new Uint8Array(row.state), sourceUpdatedAt: row.source_updated_at };
 }
-export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null): void {
+export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId = "primary"): void {
   upsertDocState.run({
+    vault_id: vaultId,
     name,
     state: Buffer.from(state),
     source_updated_at: sourceUpdatedAt,
@@ -966,6 +1007,7 @@ export interface FederatedNote {
   peer_synced_at: number | null;
   source_updated_at: number | null;
   created_at: number;
+  vault_id: string; // the tenant this hub maps the federated note into (default 'primary')
 }
 const insertFederatedNote = db.prepare(
   `INSERT INTO federated_notes (space_note_key, space_id, local_id, kind, peer_synced_at, source_updated_at, created_at)
@@ -977,10 +1019,23 @@ const selectFederatedByLocal = db.prepare("SELECT * FROM federated_notes WHERE l
 const selectFederatedBySpace = db.prepare("SELECT * FROM federated_notes WHERE space_id = ?");
 const deleteFederatedStmt = db.prepare("DELETE FROM federated_notes WHERE space_note_key = ?");
 
-export function upsertFederatedNote(f: Omit<FederatedNote, "created_at"> & { created_at?: number }): FederatedNote {
-  const row: FederatedNote = { ...f, created_at: f.created_at ?? now() };
-  insertFederatedNote.run(row);
-  return row;
+export function upsertFederatedNote(
+  f: Omit<FederatedNote, "created_at" | "vault_id"> & { created_at?: number; vault_id?: string },
+): FederatedNote {
+  // vault_id is not written by the prepared statement (the DB column defaults to
+  // 'primary'); it's carried on the read shape only. Callers may omit it — and it
+  // must NOT be passed to .run() (better-sqlite3 rejects unknown named params).
+  const created_at = f.created_at ?? now();
+  insertFederatedNote.run({
+    space_note_key: f.space_note_key,
+    space_id: f.space_id,
+    local_id: f.local_id,
+    kind: f.kind,
+    peer_synced_at: f.peer_synced_at,
+    source_updated_at: f.source_updated_at,
+    created_at,
+  });
+  return { ...f, vault_id: f.vault_id ?? "primary", created_at };
 }
 export function getFederatedByKey(key: string): FederatedNote | null {
   return (selectFederatedByKey.get(key) as FederatedNote | undefined) ?? null;
