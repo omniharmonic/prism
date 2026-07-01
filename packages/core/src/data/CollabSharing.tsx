@@ -98,6 +98,17 @@ export interface TunnelStatus {
   hostname?: string | null;
   detail?: string;
 }
+/** Cloudflare tunnel ingress state: workspace subdomains not yet routed + the
+ *  operator commands to create their DNS routes. */
+export interface TunnelIngress {
+  configPath: string;
+  config: string;
+  tunnelId: string | null;
+  /** Workspace hostnames with no ingress rule yet. */
+  missing: string[];
+  /** `cloudflared tunnel route dns …` per missing hostname (DNS is operator-run). */
+  routeDnsCommands: string[];
+}
 /** Server settings + status snapshot (server-owner only). Secret VALUES are
  *  never included — only whether each is configured. */
 export interface ServerInfo {
@@ -316,6 +327,11 @@ export interface CollabSharing {
   getServerInfo?(): Promise<ServerInfo>;
   controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
   setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
+  /** Cloudflare tunnel ingress: which workspace subdomains still need routing, the
+   *  DNS-route commands to run, and a guarded apply (adds ingress rules + restarts
+   *  the tunnel, rolling back if it doesn't come back online). */
+  getTunnelIngress?(): Promise<TunnelIngress>;
+  applyTunnelIngress?(): Promise<{ added: string[] }>;
 
   /** Workspace entities (server-owner): the "one server, many workspaces" model.
    *  Create/configure a workspace (name + subdomain), and assign vaults to it.

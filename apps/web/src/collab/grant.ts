@@ -15,6 +15,7 @@ import type {
   TagAccess,
   ServerInfo,
   TunnelStatus,
+  TunnelIngress,
   VaultSummary,
   WorkspaceEntity,
   WorkspaceGrant,
@@ -143,6 +144,12 @@ export const webCollabSharing: CollabSharing = {
   },
   async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
     return (await acl(`/server/config`, { method: "PUT", body: JSON.stringify({ key, value }) })).json();
+  },
+  async getTunnelIngress(): Promise<TunnelIngress> {
+    return (await acl(`/server/tunnel/ingress`)).json();
+  },
+  async applyTunnelIngress(): Promise<{ added: string[] }> {
+    return (await acl(`/server/tunnel/ingress`, { method: "POST" })).json();
   },
 
   // ── Workspace entities (one server, many workspaces) ──

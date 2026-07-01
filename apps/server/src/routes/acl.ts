@@ -698,6 +698,89 @@ acl.post("/server/tunnel", async (c) => {
   }
 });
 
+// ── Tunnel ingress: wire each workspace subdomain to this server ─────────────
+// A workspace serves on its own subdomain; that needs (1) a Cloudflare DNS route
+// and (2) an ingress rule in the cloudflared config. This surfaces both: the
+// current config, which workspace hostnames are missing an ingress rule, the
+// exact `cloudflared tunnel route dns` command per hostname (DNS is created by
+// the operator — it mutates their Cloudflare account), and a GUARDED apply that
+// only ADDS missing rules (never rewrites/drops existing ones), backs up first,
+// restarts the tunnel, and ROLLS BACK if it doesn't come back online.
+const CF_CONFIG = `${process.env.HOME}/.cloudflared/prism-config.yml`;
+
+async function readTunnelConfig(): Promise<{ text: string; tunnelId: string | null }> {
+  const text = await readFile(CF_CONFIG, "utf8");
+  const tunnelId = text.match(/^tunnel:\s*(\S+)/m)?.[1] ?? null;
+  return { text, tunnelId };
+}
+
+/** Workspace hostnames that aren't yet present as an ingress `hostname:` line. */
+function missingIngress(configText: string): string[] {
+  const present = new Set([...configText.matchAll(/hostname:\s*(\S+)/g)].map((m) => m[1]!.toLowerCase()));
+  return listWorkspaces()
+    .map((w) => w.hostname)
+    .filter((h): h is string => !!h)
+    .filter((h) => !present.has(h.toLowerCase()));
+}
+
+acl.get("/server/tunnel/ingress", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  try {
+    const { text, tunnelId } = await readTunnelConfig();
+    const missing = missingIngress(text);
+    return c.json({
+      configPath: CF_CONFIG,
+      config: text,
+      tunnelId,
+      missing,
+      // DNS is created out-of-band (it mutates the operator's Cloudflare account),
+      // so we surface the exact commands rather than run them.
+      routeDnsCommands: missing.map((h) => `cloudflared tunnel route dns ${tunnelId ?? "<tunnel>"} ${h}`),
+    });
+  } catch (e) {
+    return c.json({ error: "config_unreadable", detail: (e as Error).message }, 500);
+  }
+});
+
+acl.post("/server/tunnel/ingress", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  let text: string;
+  try {
+    ({ text } = await readTunnelConfig());
+  } catch (e) {
+    return c.json({ error: "config_unreadable", detail: (e as Error).message }, 500);
+  }
+  const missing = missingIngress(text);
+  if (missing.length === 0) return c.json({ ok: true, added: [], detail: "all workspace hostnames already routed" });
+
+  // Insert each missing rule immediately BEFORE the catch-all (`- service:
+  // http_status:404`), preserving every existing rule. If there's no catch-all,
+  // append to the end of the ingress list.
+  const rules = missing.map((h) => `  - hostname: ${h}\n    service: http://localhost:${config.port}\n`).join("");
+  const catchAll = text.match(/^\s*-\s*service:\s*http_status:404\s*$/m);
+  const next = catchAll
+    ? text.replace(catchAll[0], `${rules}${catchAll[0]}`)
+    : `${text.replace(/\n?$/, "\n")}${rules}`;
+
+  try {
+    await copyFile(CF_CONFIG, `${CF_CONFIG}.bak-${Date.now()}`);
+    await writeFile(CF_CONFIG, next);
+    await pexec("pm2", ["restart", "prism-tunnel"]);
+  } catch (e) {
+    return c.json({ error: "apply_failed", detail: (e as Error).message }, 500);
+  }
+  // Verify the tunnel came back; roll back the config if not.
+  const status = await tunnelStatus();
+  if ((status as { status?: string }).status !== "online") {
+    try {
+      await writeFile(CF_CONFIG, text); // restore
+      await pexec("pm2", ["restart", "prism-tunnel"]);
+    } catch { /* best-effort rollback */ }
+    return c.json({ error: "tunnel_unhealthy_rolled_back", detail: "tunnel did not come back online; config restored" }, 500);
+  }
+  return c.json({ ok: true, added: missing, tunnel: status });
+});
+
 // Curated editable .env keys — deliberately NARROW. No token/secret/OWNER_EMAIL
 // (editing those from the web could lock the owner out or leak). Each write backs
 // up .env first and is flagged restart-required (the process reads env at boot).

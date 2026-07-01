@@ -59,6 +59,7 @@ export type {
   WorkspaceOverview,
   WorkspaceEntity,
   TunnelStatus,
+  TunnelIngress,
   ServerInfo,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";

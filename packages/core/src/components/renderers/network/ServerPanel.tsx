@@ -9,7 +9,7 @@ import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, Che
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
-import { useCollabSharing, type ServerInfo } from "../../../data/CollabSharing";
+import { useCollabSharing, type ServerInfo, type TunnelIngress } from "../../../data/CollabSharing";
 
 const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[] = [
   { key: "APP_ORIGIN", label: "App origin (public URL)", help: "The public https origin — must match the tunnel hostname. Changing it affects cookies; restart required." },
@@ -25,15 +25,33 @@ export function ServerPanel() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
+  const [ingress, setIngress] = useState<TunnelIngress | null>(null);
   const refresh = useCallback(async () => {
     if (!sharing?.getServerInfo) return;
     setError(null);
     try {
       setInfo(await sharing.getServerInfo());
+      if (sharing.getTunnelIngress) setIngress(await sharing.getTunnelIngress().catch(() => null));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load server settings.");
     }
   }, [sharing]);
+
+  const applyIngress = useCallback(async () => {
+    if (!sharing?.applyTunnelIngress) return;
+    if (!window.confirm("Add ingress rules for your workspace subdomains and restart the tunnel? (It rolls back automatically if the tunnel doesn't come back online.)")) return;
+    setBusy("ingress");
+    setError(null);
+    try {
+      const res = await sharing.applyTunnelIngress();
+      setNotice(res.added.length ? `Routed: ${res.added.join(", ")}.` : "All subdomains already routed.");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't update tunnel ingress.");
+    } finally {
+      setBusy(null);
+    }
+  }, [sharing, refresh]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -160,6 +178,40 @@ export function ServerPanel() {
           </>
         )}
       </div>
+
+      {/* Workspace subdomain routing (ingress) */}
+      {ingress && (
+        <div style={cardStyle}>
+          <div style={labelStyle}>Workspace subdomains</div>
+          {ingress.missing.length === 0 ? (
+            <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: 0 }}>
+              Every workspace subdomain is routed through the tunnel. Set a subdomain on a workspace (Network → Workspaces)
+              to serve it here.
+            </p>
+          ) : (
+            <>
+              <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 10px" }}>
+                These workspace subdomains need routing: <strong>{ingress.missing.join(", ")}</strong>. Two steps —
+                (1) create the DNS route (run per hostname), then (2) add the ingress rule + restart the tunnel.
+              </p>
+              {ingress.routeDnsCommands.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 4 }}>1. DNS route (run in your terminal):</div>
+                  <pre style={{ fontSize: 11.5, background: "var(--glass-active)", borderRadius: 6, padding: "8px 10px", overflowX: "auto", margin: 0 }}>
+                    {ingress.routeDnsCommands.join("\n")}
+                  </pre>
+                </div>
+              )}
+              <Button onClick={() => void applyIngress()} disabled={busy === "ingress"}>
+                <Radio size={13} /> 2. Add ingress rules &amp; restart tunnel
+              </Button>
+              <p style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--color-warning)", fontSize: 11.5, margin: "10px 0 0" }}>
+                <AlertTriangle size={13} /> Restarts the tunnel (brief blip). Auto-rolls-back if it doesn't come back online.
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Editable config (restart-required) */}
       <div style={cardStyle}>
