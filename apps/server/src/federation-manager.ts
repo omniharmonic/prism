@@ -88,6 +88,12 @@ class PeerBinding {
     readonly level: Level,
   ) {}
 
+  /** The doc (space_note_key) this binding bridges — used to force-close its live
+   *  connections on revocation. */
+  get spaceNoteKey(): string {
+    return this.fed.space_note_key;
+  }
+
   async start(): Promise<void> {
     // Kind-pinning guard: never bind a note whose live structure disagrees with
     // the kind recorded at join — that mismatch is exactly how a note gets
@@ -239,11 +245,20 @@ export class FederationManager {
       }
     }
 
-    // Drop bindings whose note/peer/grant disappeared.
+    // Drop bindings whose note/peer/grant disappeared, and ENFORCE the revocation
+    // on any live sockets: Hocuspocus authorizes on connect only, so a peer whose
+    // grant was just revoked would keep syncing over its already-open connection.
+    // Force-closing the doc's connections makes every client reconnect and
+    // re-authorize — legit clients pass, the revoked peer is now rejected.
     for (const [key, binding] of this.bindings) {
       if (!wanted.has(key)) {
         await binding.stop();
         this.bindings.delete(key);
+        try {
+          hocuspocus.closeConnections(binding.spaceNoteKey);
+        } catch (e) {
+          console.warn(`[federation] closeConnections(${binding.spaceNoteKey}) failed:`, (e as Error).message);
+        }
       }
     }
   }

@@ -36,12 +36,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # → apps/server
 
-ENV_FILE=".env.b"
+# Parameterizable so the SAME script can bring up either side of a two-hub test
+# (Hub A' + Hub B), keeping both fully isolated from the live default stack.
+ENV_FILE="${FED_ENV_FILE:-.env.b}"
 VAULT_NAME="${FED_B_VAULT:-fed-b}"
 HUB_URL="${FED_B_PARACHUTE_URL:-http://localhost:1940}"   # same hub, different vault
 PORT="${FED_B_PORT:-8788}"
 OWNER_EMAIL_B="${FED_B_OWNER:-ownerB@example.com}"
-DB_PATH_B="./prism-b.db"
+DB_PATH_B="${FED_B_DB:-./prism-b.db}"
 
 PROVISION_ONLY=0
 BG=0
