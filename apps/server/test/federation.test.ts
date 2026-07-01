@@ -34,7 +34,7 @@ import {
   addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
   queueOutbox, outboxForPeer, clearOutboxItem,
   createSuggestion, listSuggestions, getSuggestion,
-  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant, recordPeerEdit, listPeerEdits,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant, recordPeerEdit, listPeerEdits, upsertMirrorRequest, getMirrorRequest,
 } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { createHash } from "node:crypto";
@@ -331,4 +331,27 @@ test("per-note override: a note-level peer grant raises the peer above the space
 
   assert.equal(await resolveLevel("snk-1", signPeerConnToken(SPACE), null), "edit", "overridden note gets the higher level");
   assert.equal(await resolveLevel("snk-2", signPeerConnToken(SPACE), null), "view", "the other note keeps the space default");
+});
+
+// ── 4.4 coverage: mirror reject + grant downgrade ─────────────────────────────
+test("mirror REJECT: a pending request is rejected and materializes nothing", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  const spaceId = "11111111-1111-1111-1111-111111111111";
+  const req = upsertMirrorRequest({ peer_pubkey: peer, space_id: spaceId, space_title: "S", payload: JSON.stringify([{ spaceNoteKey: "22222222-2222-2222-2222-222222222222", kind: "document" }]) });
+
+  const r = await ownerReq(`/federation/mirrors/${req.id}/reject`, { method: "POST" });
+  assert.equal(r.status, 200);
+  assert.equal(getMirrorRequest(req.id)!.status, "rejected");
+  // Nothing materialized: no local space, no federated identity, no peer grant.
+  assert.equal(listSpaces().find((s) => s.id === spaceId), undefined);
+  assert.equal(federatedNotesForSpace(spaceId).length, 0);
+  assert.equal(grantsForPeer(peer).length, 0);
+});
+
+test("grant DOWNGRADE: lowering a peer's space grant edit→view takes effect on the next resolve", async () => {
+  federatedFixture("edit");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+  upsertGrant({ subject_type: "peer", subject: serverKeyPair().publicKeyB64url, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "view", "downgrade reflected");
 });
