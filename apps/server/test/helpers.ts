@@ -14,6 +14,22 @@ import { db, createSession, addGrant, type ResourceType } from "../src/db";
 import type { Level } from "../src/permissions";
 import { signCapability } from "../src/auth/capability";
 import { randomBytes } from "node:crypto";
+import { config } from "../src/config";
+
+// SAFETY GUARD (load-time): the test harness TRUNCATES tables (resetDb). It must
+// NEVER run against a real on-disk database. Tests are meant to run with
+// `--env-file=.env.test` (DB_PATH=:memory:); if that flag is forgotten, DB_PATH
+// falls through to the prod default (./prism-server.db) and resetDb would WIPE
+// production. Fail HARD at import instead — a mis-invoked `node --test test/*.ts`
+// aborts before touching any data. (Incident 2026-07-01: a missing --env-file
+// wiped the prod ACL db; recovered from backup. This guard makes it impossible.)
+if (config.dbPath !== ":memory:") {
+  throw new Error(
+    `REFUSING TO RUN TESTS: DB_PATH is "${config.dbPath}", not ":memory:". ` +
+      `Run tests via \`npm test\` (uses --env-file=.env.test). The harness truncates ` +
+      `tables and must never touch a real database.`,
+  );
+}
 
 export interface FakeNote {
   id: string;

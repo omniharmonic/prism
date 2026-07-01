@@ -427,6 +427,91 @@ acl.delete("/grants/:id", (c) => {
   return c.json({ ok: true });
 });
 
+// ── Workspace (= this server) management: people × vaults (server-owner only) ──
+// A WORKSPACE is the whole server — a permission boundary grouping MULTIPLE vaults
+// and the people who can reach them. The per-vault /acl/members endpoints above
+// manage ONE vault (the active X-Prism-Vault); these give the server owner a
+// single cross-vault surface: every person, their role + access in each vault, and
+// the ability to add a person to a CHOSEN vault at a chosen level in one step.
+// Gated on the SERVER owner (not just any vault admin) since it spans all vaults.
+function isServerOwner(c: Parameters<typeof resolveActor>[0]): boolean {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail;
+}
+
+/** The full workspace picture: the vaults on this server + every person's access
+ *  matrix (per-vault management `role` and/or whole-vault access `level`). */
+acl.get("/workspace", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaults = getVaultRegistry().map((v) => ({ id: v.id, label: v.label, vault: v.vault }));
+  const names = new Map(listUsers().map((u) => [u.email, u.name]));
+  type Access = { role?: string; level?: string };
+  const people = new Map<string, { email: string; name: string | null; isServerOwner: boolean; access: Record<string, Access> }>();
+  const ensure = (email: string) => {
+    let p = people.get(email);
+    if (!p) { p = { email, name: names.get(email) ?? null, isServerOwner: email === config.ownerEmail, access: {} }; people.set(email, p); }
+    return p;
+  };
+  // The server owner is owner of every vault (implicit — may have no rows).
+  if (config.ownerEmail) {
+    const owner = ensure(config.ownerEmail);
+    for (const v of vaults) (owner.access[v.id] ??= {}).role = "owner";
+  }
+  for (const v of vaults) {
+    for (const m of listMemberships(v.id)) (ensure(m.email).access[v.id] ??= {}).role = m.role;
+    for (const g of listGrantsForVault(v.id)) {
+      if (g.subject_type === "user" && g.resource_type === "vault") {
+        (ensure(g.subject).access[v.id] ??= {}).level = g.level;
+      }
+    }
+  }
+  return c.json({ vaults, people: [...people.values()] });
+});
+
+const inRegistry = (vaultId: string): boolean => getVaultRegistry().some((v) => v.id === vaultId);
+
+/** Give a person whole-vault ACCESS to a chosen vault at a level (view..own).
+ *  This is the "add someone to the workspace → access to a chosen vault" step. */
+acl.put("/workspace/access", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { email, vaultId, level } = await c.req.json<{ email?: string; vaultId?: string; level?: string }>().catch(() => ({}) as Record<string, string>);
+  if (!isEmail(email) || !isLevel(level) || typeof vaultId !== "string" || !inRegistry(vaultId)) {
+    return c.json({ error: "bad_request", detail: "email, known vaultId, and level required" }, 400);
+  }
+  ensureUser(normEmail(email));
+  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: normEmail(email), resource_type: "vault", resource: vaultId, level, created_by: config.ownerEmail });
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), vaultId, level, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/workspace/access/:vaultId/:email", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.param("vaultId");
+  removeGrantBySubjectResource("user", normEmail(decodeURIComponent(c.req.param("email"))), "vault", vaultId, vaultId);
+  return c.json({ ok: true });
+});
+
+/** Set a person's management ROLE in a chosen vault (owner/admin/member/guest).
+ *  Distinct from access: a role confers management rights over that vault. */
+acl.put("/workspace/members", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const { email, vaultId, role } = await c.req.json<{ email?: string; vaultId?: string; role?: string }>().catch(() => ({}) as Record<string, string>);
+  if (!isEmail(email) || !isRoleName(role) || typeof vaultId !== "string" || !inRegistry(vaultId)) {
+    return c.json({ error: "bad_request", detail: "email, known vaultId, and role required" }, 400);
+  }
+  setMembership(vaultId, normEmail(email), role, config.ownerEmail);
+  let inviteUrl: string | undefined;
+  if (!hasAccount(normEmail(email))) inviteUrl = await createInvite(normEmail(email), null, config.ownerEmail);
+  return c.json({ ok: true, email: normEmail(email), vaultId, role, invited: !!inviteUrl, inviteUrl });
+});
+
+acl.delete("/workspace/members/:vaultId/:email", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  removeMembership(c.req.param("vaultId"), normEmail(decodeURIComponent(c.req.param("email"))));
+  return c.json({ ok: true });
+});
+
 // Whole-workspace access grant: broad note access (view..own) WITHOUT management
 // rights. Distinct from a role (which also confers management). resource = vault_id.
 acl.put("/vault/people", async (c) => {

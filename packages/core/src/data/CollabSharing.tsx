@@ -53,6 +53,28 @@ export interface ViewerIdentity {
   isServerOwner: boolean;
   vaultId: string;
 }
+
+// ── Workspace = the whole server: a permission boundary grouping many vaults ──
+/** One vault within the workspace (token never included). */
+export interface WorkspaceVaultRef {
+  id: string;
+  label: string;
+  vault: string;
+}
+/** A person's access across the workspace: per-vault management `role` and/or
+ *  whole-vault access `level`. A vault absent from `access` = no access there. */
+export interface WorkspacePerson {
+  email: string;
+  name: string | null;
+  isServerOwner: boolean;
+  access: Record<string, { role?: WorkspaceRole; level?: ShareLevel }>;
+}
+/** The whole workspace: the vaults on this server + everyone's access matrix.
+ *  Server-owner only (spans all vaults). */
+export interface WorkspaceOverview {
+  vaults: WorkspaceVaultRef[];
+  people: WorkspacePerson[];
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -235,6 +257,17 @@ export interface CollabSharing {
    *  gate on `role` being admin+ so a member never fires admin-only /acl/* calls
    *  and sees 403 noise. Absent (desktop shell) → treat the local operator as owner. */
   getViewer?(): Promise<ViewerIdentity>;
+
+  /** Workspace management (server-owner only): the WHOLE server as a permission
+   *  boundary grouping every vault. `getWorkspace` returns the people × vaults
+   *  access matrix; the setters add/revoke a person's whole-vault ACCESS (level)
+   *  or management ROLE in a CHOSEN vault — the "add someone to the workspace →
+   *  access to a chosen vault" flow. Absent → the Workspace surface hides. */
+  getWorkspace?(): Promise<WorkspaceOverview>;
+  setWorkspaceAccess?(email: string, vaultId: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeWorkspaceAccess?(vaultId: string, email: string): Promise<void>;
+  setWorkspaceMemberRole?(email: string, vaultId: string, role: WorkspaceRole): Promise<SetPersonResult>;
+  removeWorkspaceMemberRole?(vaultId: string, email: string): Promise<void>;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access

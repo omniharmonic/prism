@@ -16,6 +16,7 @@ import type {
   VaultSummary,
   WorkspaceGrant,
   WorkspaceMember,
+  WorkspaceOverview,
   WorkspaceRole,
 } from "@prism/core";
 import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
@@ -123,6 +124,23 @@ export const webCollabSharing: CollabSharing = {
   async revokeGrant(id: string): Promise<void> {
     await acl(`/grants/${enc(id)}`, { method: "DELETE" });
   },
+  // ── Workspace (= the server): cross-vault people management (server-owner) ──
+  async getWorkspace(): Promise<WorkspaceOverview> {
+    return (await acl(`/workspace`)).json();
+  },
+  async setWorkspaceAccess(email: string, vaultId: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/workspace/access`, { method: "PUT", body: JSON.stringify({ email, vaultId, level }) })).json();
+  },
+  async removeWorkspaceAccess(vaultId: string, email: string): Promise<void> {
+    await acl(`/workspace/access/${enc(vaultId)}/${enc(email)}`, { method: "DELETE" });
+  },
+  async setWorkspaceMemberRole(email: string, vaultId: string, role: WorkspaceRole): Promise<SetPersonResult> {
+    return (await acl(`/workspace/members`, { method: "PUT", body: JSON.stringify({ email, vaultId, role }) })).json();
+  },
+  async removeWorkspaceMemberRole(vaultId: string, email: string): Promise<void> {
+    await acl(`/workspace/members/${enc(vaultId)}/${enc(email)}`, { method: "DELETE" });
+  },
+
   async listMembers(): Promise<WorkspaceMember[]> {
     return (await acl(`/members`)).json();
   },

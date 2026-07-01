@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Globe, Radio, Database, Users } from "lucide-react";
+import { Globe, Radio, Database, Users, Building2 } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
 import { useCollabSharing, useVaultChangeSignal, type WorkspaceRole } from "../../data/CollabSharing";
 import type { RendererProps } from "./RendererProps";
@@ -7,6 +7,7 @@ import { PublishPanel } from "./network/PublishPanel";
 import { FederatePanel } from "./network/FederatePanel";
 import { VaultsPanel } from "./network/VaultsPanel";
 import { MembersPanel } from "./network/MembersPanel";
+import { WorkspacePanel } from "./network/WorkspacePanel";
 
 /**
  * The Network surface — a top-level virtual tab (not a per-note dialog) where the
@@ -29,14 +30,15 @@ export default function NetworkRenderer(_props: RendererProps) {
   // Re-read whenever the active vault changes (role is per-workspace). When the
   // shell has no getViewer (desktop = local operator), treat as owner.
   const [role, setRole] = useState<WorkspaceRole | null>(sharing?.getViewer ? null : "owner");
+  const [isServerOwner, setIsServerOwner] = useState<boolean>(!sharing?.getViewer);
   useEffect(() => {
     const getViewer = sharing?.getViewer;
-    if (!getViewer) { setRole("owner"); return; }
+    if (!getViewer) { setRole("owner"); setIsServerOwner(true); return; }
     let live = true;
     setRole(null);
     getViewer()
-      .then((v) => { if (live) setRole(v.role); })
-      .catch(() => { if (live) setRole("guest"); });
+      .then((v) => { if (live) { setRole(v.role); setIsServerOwner(v.isServerOwner); } })
+      .catch(() => { if (live) { setRole("guest"); setIsServerOwner(false); } });
     return () => { live = false; };
   }, [sharing, vaultSignal]);
 
@@ -51,8 +53,11 @@ export default function NetworkRenderer(_props: RendererProps) {
   // so a member can still see + switch between the workspaces they belong to.
   const canVaults = !!sharing?.listVaults;
   const canMembers = !!sharing?.listMembers && isAdmin;
+  // The Workspace surface spans every vault → server-owner only.
+  const canWorkspace = !!sharing?.getWorkspace && isServerOwner;
 
   const tabs = [
+    ...(canWorkspace ? [{ id: "workspace", label: "Workspace", icon: <Building2 size={14} /> }] : []),
     ...(canPublish ? [{ id: "publish", label: "Publish", icon: <Globe size={14} /> }] : []),
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
@@ -88,6 +93,7 @@ export default function NetworkRenderer(_props: RendererProps) {
       </header>
       <div style={{ flex: 1, overflow: "auto", padding: "20px 28px 48px" }}>
         <div style={{ maxWidth: 880, margin: "0 auto" }}>
+          {tab === "workspace" && <WorkspacePanel />}
           {tab === "publish" && <PublishPanel />}
           {tab === "federate" && <FederatePanel />}
           {tab === "members" && <MembersPanel />}
