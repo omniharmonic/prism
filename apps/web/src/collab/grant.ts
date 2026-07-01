@@ -11,7 +11,9 @@ import type {
   ShareLevel,
   ShareLink,
   SpaceInfo,
+  TagAccess,
   VaultSummary,
+  WorkspaceGrant,
   WorkspaceMember,
   WorkspaceRole,
 } from "@prism/core";
@@ -76,6 +78,15 @@ export const webCollabSharing: CollabSharing = {
   },
   async removeTagPerson(tag: string, email: string): Promise<void> {
     await acl(`/tags/${enc(tag)}/people/${enc(email)}`, { method: "DELETE" });
+  },
+  async getTagAccess(tag: string): Promise<TagAccess[]> {
+    return (await acl(`/tags/${enc(tag)}/access`)).json();
+  },
+  async listGrants(): Promise<WorkspaceGrant[]> {
+    return (await acl(`/grants`)).json();
+  },
+  async revokeGrant(id: string): Promise<void> {
+    await acl(`/grants/${enc(id)}`, { method: "DELETE" });
   },
   async listMembers(): Promise<WorkspaceMember[]> {
     return (await acl(`/members`)).json();

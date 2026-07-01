@@ -47,6 +47,7 @@ export type {
   PairingCode,
   MirrorRequestInfo,
   VaultSummary,
+  WorkspaceGrant,
   WorkspaceMember,
   WorkspaceRole,
 } from "./data/CollabSharing";

@@ -5,13 +5,14 @@
 //
 // Phase 2 of the multi-tenant platform — docs/roadmap/platform-roadmap.md.
 import { useCallback, useEffect, useState } from "react";
-import { Users, UserPlus, Trash2, Copy, FolderInput, KeyRound } from "lucide-react";
+import { Users, UserPlus, Trash2, Copy, FolderInput, KeyRound, ShieldCheck, ScrollText } from "lucide-react";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
 import {
   useCollabSharing,
   type WorkspaceMember,
+  type WorkspaceGrant,
   type WorkspaceRole,
   type ShareLevel,
 } from "../../../data/CollabSharing";
@@ -19,25 +20,32 @@ import {
 const ROLES: WorkspaceRole[] = ["guest", "member", "admin", "owner"];
 const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
 
-export function MembersPanel() {
+/** `initialTag` pre-fills the folder-share row — the ProjectTree "Share this
+ *  folder" deep-link opens the panel with the tag already filled. */
+export function MembersPanel({ initialTag = "" }: { initialTag?: string }) {
   const sharing = useCollabSharing();
 
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [grants, setGrants] = useState<WorkspaceGrant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<WorkspaceRole>("member");
 
-  const [tag, setTag] = useState("");
+  const [tag, setTag] = useState(initialTag);
   const [tagEmail, setTagEmail] = useState("");
   const [tagLevel, setTagLevel] = useState<ShareLevel>("edit");
+
+  const [wsEmail, setWsEmail] = useState("");
+  const [wsLevel, setWsLevel] = useState<ShareLevel>("edit");
 
   const refresh = useCallback(async () => {
     if (!sharing?.listMembers) return;
     setError(null);
     try {
       setMembers(await sharing.listMembers());
+      if (sharing.listGrants) setGrants(await sharing.listGrants());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load members.");
     }
@@ -46,6 +54,11 @@ export function MembersPanel() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Keep the folder field synced if the panel is re-opened with a new deep-link tag.
+  useEffect(() => {
+    if (initialTag) setTag(initialTag);
+  }, [initialTag]);
 
   const showInvite = (r: { invited: boolean; inviteUrl?: string }, who: string) => {
     if (r.invited && r.inviteUrl) {
@@ -83,10 +96,36 @@ export function MembersPanel() {
       const res = await sharing.setTagPerson(tag.trim(), tagEmail.trim().toLowerCase(), tagLevel);
       showInvite(res, `${tagEmail.trim().toLowerCase()} (folder #${tag.trim()})`);
       setTagEmail("");
+      await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't share folder.");
     }
-  }, [sharing, tag, tagEmail, tagLevel]);
+  }, [sharing, tag, tagEmail, tagLevel, refresh]);
+
+  const grantWorkspace = useCallback(async () => {
+    if (!sharing?.setVaultPerson || !wsEmail.trim()) return;
+    try {
+      const res = await sharing.setVaultPerson(wsEmail.trim().toLowerCase(), wsLevel);
+      showInvite(res, `${wsEmail.trim().toLowerCase()} (whole workspace, ${wsLevel})`);
+      setWsEmail("");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't grant workspace access.");
+    }
+  }, [sharing, wsEmail, wsLevel, refresh]);
+
+  const revoke = useCallback(
+    async (g: WorkspaceGrant) => {
+      if (!sharing?.revokeGrant) return;
+      try {
+        await sharing.revokeGrant(g.id);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Couldn't revoke grant.");
+      }
+    },
+    [sharing, refresh],
+  );
 
   if (!sharing?.listMembers) {
     return (
@@ -191,6 +230,60 @@ export function MembersPanel() {
               <KeyRound size={14} /> Share
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Whole-workspace access grant (2.6) — broad note access without a role. */}
+      {sharing.setVaultPerson && (
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <ShieldCheck size={15} />
+            <div style={labelStyle}>Grant whole-workspace access</div>
+          </div>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 10px" }}>
+            Access to every note in this workspace — without management rights (that's a role).
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Input placeholder="email@example.com" value={wsEmail} onChange={(e) => setWsEmail(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+            <select value={wsLevel} onChange={(e) => setWsLevel(e.target.value as ShareLevel)} style={{ fontSize: 13, padding: "6px 8px", borderRadius: 6, background: "var(--glass-bg)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}>
+              {LEVELS.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+            <Button onClick={() => void grantWorkspace()} disabled={!wsEmail.trim()}>
+              <ShieldCheck size={14} /> Grant
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Grants audit (2.2) — every grant in the vault, each revocable. */}
+      {sharing.listGrants && (
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <ScrollText size={16} />
+            <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Access audit</h2>
+          </div>
+          {grants.length === 0 ? (
+            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>No grants in this workspace yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {grants.map((g) => (
+                <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--glass-border)", fontSize: 12 }}>
+                  <span style={{ flex: 1, color: "var(--text-primary)" }}>
+                    {g.subjectType === "user" ? (g.subjectName ? `${g.subjectName} · ${g.subject}` : g.subject) : `${g.subjectType}${g.subject && g.subject !== "*" ? ` · ${g.subject.slice(0, 10)}` : ""}`}
+                  </span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {g.resourceType === "vault" ? "whole workspace" : `${g.resourceType} · ${g.resource}`}
+                  </span>
+                  <Badge>{g.level}</Badge>
+                  <button onClick={() => void revoke(g)} title="Revoke" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

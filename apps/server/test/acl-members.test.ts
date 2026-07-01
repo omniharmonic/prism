@@ -112,3 +112,10 @@ test("grants audit: admin-gated (no session → 403), and revoke is scoped to th
   const del = await acl.request("/grants/does-not-exist", { method: "DELETE", headers: { cookie: ownerCookie() } });
   assert.equal(del.status, 404);
 });
+
+test("folder sharing: GET /tags/:tag/access lists who can reach the tag", async () => {
+  const cookie = ownerCookie();
+  await acl.request("/tags/projects/people", { method: "PUT", headers: { ...J, cookie }, body: JSON.stringify({ email: "carol@x.co", level: "edit" }) });
+  const access = (await (await acl.request("/tags/projects/access", { headers: { cookie } })).json()) as Array<{ tag: string; email?: string; level: string; subjectType: string }>;
+  assert.ok(access.some((a) => a.tag === "projects" && a.email === "carol@x.co" && a.level === "edit" && a.subjectType === "user"));
+})

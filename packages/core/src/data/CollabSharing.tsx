@@ -32,6 +32,18 @@ export interface WorkspaceMember {
   role: WorkspaceRole;
   joinedAt: number;
 }
+/** One access grant in the active vault, for the Members panel's audit view. */
+export interface WorkspaceGrant {
+  id: string;
+  subjectType: string; // 'user' | 'link' | 'anyone' | ...
+  subject: string;
+  subjectName: string | null;
+  resourceType: string; // 'note' | 'tag' | 'vault' | ...
+  resource: string;
+  level: ShareLevel;
+  grantedBy: string | null;
+  grantedAt: number;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -188,6 +200,14 @@ export interface CollabSharing {
    *  folder-share affordance + the Members panel. */
   setTagPerson?(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
   removeTagPerson?(tag: string, email: string): Promise<void>;
+  /** Who currently has access to a tag/folder (people + anyone-grants). Backs the
+   *  Share dialog's folder-share panel. */
+  getTagAccess?(tag: string): Promise<TagAccess[]>;
+
+  /** Grants audit (Phase 2.2): every access grant in the active vault, each
+   *  revocable by id. Admin-only server-side; absent → the audit view hides. */
+  listGrants?(): Promise<WorkspaceGrant[]>;
+  revokeGrant?(id: string): Promise<void>;
 
   /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
    *  to the active vault at a role; `setVaultPerson` grants broad note access

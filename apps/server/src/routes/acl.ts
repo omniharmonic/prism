@@ -251,7 +251,7 @@ acl.get("/notes/:id", async (c) => {
     }));
     const tagAccess: Array<{ tag: string; email?: string; subjectType: string; level: Level }> = [];
     for (const tag of tags) {
-      for (const g of grantsForResource("tag", tag)) {
+      for (const g of grantsForResource("tag", tag, resolveActor(c).vaultId)) {
         tagAccess.push({
           tag,
           email: g.subject_type === "user" ? g.subject : undefined,
@@ -335,6 +335,20 @@ acl.put("/tags/:tag/people", async (c) => {
   if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
   const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail, resolveActor(c).vaultId);
   return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
+});
+
+// Who currently has access to a tag/folder in the active vault (backs the Share
+// dialog's folder panel + the ProjectTree → Members deep-link, Phase 2.3).
+acl.get("/tags/:tag/access", (c) => {
+  const tag = decodeURIComponent(c.req.param("tag"));
+  return c.json(
+    grantsForResource("tag", tag, resolveActor(c).vaultId).map((g) => ({
+      tag,
+      email: g.subject_type === "user" ? g.subject : undefined,
+      subjectType: g.subject_type,
+      level: g.level,
+    })),
+  );
 });
 
 acl.delete("/tags/:tag/people/:email", (c) => {
