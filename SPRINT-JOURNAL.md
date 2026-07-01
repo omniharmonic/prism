@@ -99,3 +99,29 @@ Fast path per feature: (1) Node ingester porting the Rust service, (2) wire into
 worker/scheduler.ts (secret + cursor), (3) add a desktop disable flag (BATCH both
 in ONE rebuild), (4) cutover: store creds + since=now + verify live + flip flag +
 rebuild + verify no-dup. ~1 desktop rebuild covers both remaining.
+
+## Fathom transcripts CUTOVER TO SERVER — DONE + VERIFIED
+- Node port worker/fathom.ts (dedup by source_id → create-only, overlap-safe).
+  Wired into worker tick [matrix, fathom]. /api/integrations/fathom endpoints.
+- Deployed to prod (boot-tested on prod DB copy w/ SECRETS_KEY STRIPPED so the
+  boot worker couldn't write to the real vault; merge→restart, healthy).
+- Server-side enabled: fathom key stored (prod SECRETS_KEY), runFathomOnce OK
+  (0 new — no meetings in last 7d; API reachable, write path unit-tested +
+  proven live vs a throwaway vault).
+- Desktop Fathom sync DISABLED: new Rust flag disable_fathom_sync + 2nd desktop
+  rebuild/restage (backup ~/Prism.app.rollback-fathom-*) + config true +
+  relaunch. Mechanism re-verified on the new build (Matrix marker-once test PASS
+  = the config-flag+binary disable path works; Fathom uses the identical path).
+- Prod healthy throughout. Commits: main 1f6c00f, branch 1222029.
+
+## Notion — IDLE, nothing to move
+No notion-sync-configs.json → the desktop notion_task_sync has no database
+configured to sync (the API key is set but unused). So server-side Notion is
+DEFERRED (would be a large bidirectional port for something not in use).
+Building it now = untested risk for zero benefit — correct to defer until a
+Notion DB sync is actually configured.
+
+## STATE: all ACTIVE movable syncs are now server-side.
+Matrix ✓ + Fathom ✓ moved+verified. Notion idle (n/a). Google (gog) + Meetily
+(local SQLite) correctly stay desktop. Desktop app runs new build w/ both
+disable flags; server worker is sole syncer for Matrix + Fathom.
