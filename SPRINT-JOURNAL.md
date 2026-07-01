@@ -203,3 +203,25 @@ Server was ~90% (members/roles/private-perm/vault-grant existed). Closed:
   (MembersPanel already does folder sharing).
 - Repo hygiene: purged a 172MB DB backup accidentally committed in 65c4932 (not
   pushed) via filter-branch; gitignored *.db.backup-*.
+
+## Phase 4 (federation depth) — headline + controls done + deployed; live two-hub deferred
+Federation is GATED (FEDERATION_ENABLED off) and full convergence needs a 2nd
+live hub. Delivered the buildable/testable slice:
+- 4.2 "Parachute Sync" one-action: POST /acl/notes/:id/mirror composes create-space
+  + add-note + grant-peer + kick-sync in ONE call. Singleton "Parachute Sync"
+  space; idempotent per note (reuses federated identity, updates level in place).
+  Seam + web mirrorNoteToPeer(). Tested (composition + idempotency + validation).
+- 4.3 TTL/expiry on peer grants: additive grants.expires_at (NULL=never; existing
+  grants unchanged). grantsForPeer filters expired → access lapses with no sweep.
+  mirror + space-peer endpoints take expiresInDays. + "comment" space level in
+  FederatePanel ("own" isn't a ShareLevel). Tested (expired→null, future→ok).
+- DEPLOYED: boot-test → prod DB backed up → merge → restart → /health 200, mirror
+  gates 403/400, grants.expires_at present (39 grants intact). 307 server tests.
+- gap #1 (peer-url registry) + #2 (client opens by space_note_key, web) were
+  already CLOSED. Remaining (honest, mostly 2nd-hub-gated):
+  * 4.1 desktop Canvas.tsx federated-open parity + AC-6 client test (web done).
+  * 4.2 "Sync with a peer" ShareDialog UI (server+seam+web-method done, affordance
+    not wired).
+  * 4.3 per-note level override within a space + peer-edit audit.
+  * 4.4 two-hub CI wiring + reject/downgrade/convergence coverage; gap #3 (live
+    two-hub convergence) STILL needs a 2nd hub+vault — the roadmap's known deferral.
