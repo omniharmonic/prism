@@ -186,6 +186,26 @@ test("delete needs edit, not just view — a creator with only view can't delete
   assert.equal((await req("/notes/n1", { method: "DELETE", cookie })).status, 403);
 });
 
+test("private-to-creator: a private note in a shared folder is invisible to the folder's members until shared (2.5)", async () => {
+  // n1 lives in folder #projects, is PRIVATE, and was authored by bob.
+  fv.put({ id: "n1", content: "bob's private", tags: ["projects"], metadata: { prism_creator: "bob@test.local", prism_visibility: "private" } });
+  fv.put({ id: "n2", content: "shared note", tags: ["projects"] });
+  grantUser("bob@test.local", "tag", "projects", "edit");
+  grantUser("alice@test.local", "tag", "projects", "edit"); // alice is ALSO a folder member
+  const alice = sessionCookie(makeSession("alice@test.local"));
+  const bob = sessionCookie(makeSession("bob@test.local"));
+
+  // Alice sees the shared note but NOT bob's private one (list + direct GET).
+  const aliceList = (await (await req("/notes", { cookie: alice })).json()) as Array<{ id: string }>;
+  assert.deepEqual(aliceList.map((n) => n.id).sort(), ["n2"], "private n1 hidden from the folder member's list");
+  assert.equal((await req("/notes/n1", { cookie: alice })).status, 403, "direct GET of the private note → 403");
+  // Bob (the creator) sees his own private note.
+  assert.equal((await req("/notes/n1", { cookie: bob })).status, 200);
+  // Bob shares THAT ONE note with alice at view → she now sees exactly it.
+  grantUser("alice@test.local", "note", "n1", "view");
+  assert.equal((await req("/notes/n1", { cookie: alice })).status, 200, "explicit per-note grant reveals it");
+});
+
 // ----------------------------------------------------------- search & tags
 
 test("search results are filtered to what the actor may view", async () => {

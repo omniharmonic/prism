@@ -55,7 +55,7 @@ export interface TagAccess {
   level: ShareLevel;
 }
 export interface NoteAccess {
-  note: { id: string; tags: string[]; title: string };
+  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null };
   people: SharePerson[];
   links: ShareLink[];
   tagAccess: TagAccess[];
@@ -191,6 +191,9 @@ export interface CollabSharing {
   getAccess?(noteId: string): Promise<NoteAccess>;
   setPerson?(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
   removePerson?(noteId: string, email: string): Promise<void>;
+  /** Private-to-creator (Phase 2.5): mark a note private (only the creator + people
+   *  with an explicit per-note grant can see it) or back to workspace-visible. */
+  setNoteVisibility?(noteId: string, isPrivate: boolean): Promise<void>;
   createLink?(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink>;
   revokeLink?(noteId: string, linkId: string): Promise<void>;
   listUsers?(): Promise<string[]>;

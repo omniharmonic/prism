@@ -71,6 +71,17 @@ export const webCollabSharing: CollabSharing = {
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
   },
+  async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
+    // The gateway PATCH merges metadata (prism_creator etc. preserved).
+    const activeVault = getActiveVault();
+    const r = await fetch(`${GATEWAY_ORIGIN}/api/notes/${enc(noteId)}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(activeVault ? { "X-Prism-Vault": activeVault } : {}) },
+      body: JSON.stringify({ metadata: { prism_visibility: isPrivate ? "private" : "workspace" } }),
+    });
+    if (!r.ok) throw new Error(`visibility → ${r.status}`);
+  },
 
   // ── Folder/tag sharing + workspace members (Phase 2) ──
   async setTagPerson(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult> {

@@ -260,7 +260,9 @@ acl.get("/notes/:id", async (c) => {
         });
       }
     }
-    return c.json({ note: { id, tags, title: deriveTitle(note.content) }, people, links, tagAccess });
+    const visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
+    const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
+    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);

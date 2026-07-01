@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Check, Copy, X, Link2, Trash2, Loader2, Globe } from "lucide-react";
+import { Check, Copy, X, Link2, Trash2, Loader2, Globe, Lock } from "lucide-react";
 import type {
   CollabSharing,
   NoteAccess,
@@ -66,6 +66,20 @@ export function ShareDialog({
       setError("Couldn't load sharing settings.");
     }
   }, [sharing, noteId]);
+
+  const isPrivate = access?.note.visibility === "private";
+  const toggleVisibility = useCallback(async () => {
+    if (!sharing.setNoteVisibility || !access) return;
+    setBusy(true);
+    try {
+      await sharing.setNoteVisibility(noteId, !isPrivate);
+      await refresh();
+    } catch {
+      setError("Couldn't change visibility.");
+    } finally {
+      setBusy(false);
+    }
+  }, [sharing, access, isPrivate, noteId, refresh]);
 
   useEffect(() => {
     void refresh();
@@ -343,6 +357,24 @@ export function ShareDialog({
               Send this so they can create their account. Expires in 7 days.
             </p>
           </div>
+        )}
+
+        {/* Private-to-creator toggle (2.5) — only when the seam supports it. */}
+        {sharing.setNoteVisibility && access && (
+          <button
+            onClick={() => void toggleVisibility()}
+            disabled={busy}
+            className="w-full mb-3 flex items-center gap-2 px-3 py-2 rounded text-xs"
+            style={{ border: "1px solid var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}
+          >
+            {isPrivate ? <Lock size={14} /> : <Globe size={14} />}
+            <span style={{ flex: 1, textAlign: "left" }}>
+              {isPrivate
+                ? "Private — only you and people added here can see it"
+                : "Workspace-visible — folder & workspace members can see it"}
+            </span>
+            <span style={{ color: "var(--text-muted)" }}>{isPrivate ? "Make visible" : "Make private"}</span>
+          </button>
         )}
 
         {/* People with access */}
