@@ -61,6 +61,11 @@ pub struct AppConfig {
     /// Matrix token stays configured so live messaging / sending still works.
     #[serde(default)]
     pub disable_message_sync: bool,
+    /// When true, the desktop skips the FATHOM half of transcript_sync — the Prism
+    /// Server ingests Fathom server-side. Meetily (local SQLite) still syncs on the
+    /// desktop. The Fathom key stays configured so live use still works.
+    #[serde(default)]
+    pub disable_fathom_sync: bool,
     pub notion_api_key: String,
     pub google_account_primary: String,
     pub google_account_agent: String,
@@ -136,6 +141,7 @@ impl Default for AppConfig {
             matrix_access_token: String::new(),
             matrix_device_id: "PRISM".into(),
             disable_message_sync: false,
+            disable_fathom_sync: false,
             notion_api_key: String::new(),
             google_account_primary: String::new(),
             google_account_agent: String::new(),
