@@ -182,3 +182,24 @@ real gaps:
   76 rows intact, PK composite, flag done) → /health 200. Surfaced a real 2nd
   registered prod vault (front-range-commons). 298 server tests pass.
 - Deferred (non-isolation): hub user_vaults reconciliation (1.3 nicety).
+
+## Phase 2 (roles, membership & team workspace) — COMPLETE + DEPLOYED
+Server was ~90% (members/roles/private-perm/vault-grant existed). Closed:
+- 2.4b DELETE /notes: a member may delete ONLY their own note (prism_creator) with
+  edit+ — never others'. 2.2 GET/DELETE /acl/grants: grants-audit surface,
+  vault-scoped revoke. 2.3 GET /acl/tags/:tag/access (+ fixed note-getAccess to
+  use the active vault, was leaking primary's grants in the dialog). 2.5 getAccess
+  returns visibility/creator; private-note enforcement acceptance-tested (a private
+  note in a shared folder is invisible to folder members until per-note shared).
+- UI (core seam + web + MembersPanel + ShareDialog): WorkspaceGrant type +
+  getTagAccess/listGrants/revokeGrant/setNoteVisibility. MembersPanel gained a
+  grants-audit sub-view, whole-workspace access grant, and an initialTag prop
+  (ProjectTree "share this folder" deep-link infra). ShareDialog gained a
+  Make-private/Make-visible lock toggle. All gated on seam presence.
+- DEPLOYED: ff-merge → boot-test → pm2 restart → /health 200, /acl/grants +
+  /acl/tags/:tag/access live. 304 server tests; core+web typecheck clean, web built.
+- Deferred UI polish (needs browser verification; infra ready): ProjectTree
+  right-click → Members deep-link wiring, a dedicated ShareDialog folder-share tab
+  (MembersPanel already does folder sharing).
+- Repo hygiene: purged a 172MB DB backup accidentally committed in 65c4932 (not
+  pushed) via filter-branch; gitignored *.db.backup-*.
