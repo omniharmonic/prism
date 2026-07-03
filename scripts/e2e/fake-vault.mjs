@@ -8,6 +8,7 @@ import http from "node:http";
 const PORT = Number(process.env.FAKE_VAULT_PORT ?? 8791);
 const VAULT = process.env.FAKE_VAULT_NAME ?? "default";
 const notes = new Map();
+const tags = new Map(); // name → { name, count, description, fields, parent_names }
 let seq = 0;
 
 http
@@ -28,7 +29,20 @@ http
       }
       if (url.pathname === "/health") return send(200, { ok: true });
       const api = `/vault/${VAULT}/api`;
-      if (url.pathname === `${api}/tags`) return send(200, []);
+      if (url.pathname === `${api}/tags`) return send(200, [...tags.values()]);
+      // Tag schema upsert (used by seedTagSchemas) — store description/fields/parent_names.
+      const tm = url.pathname.match(new RegExp(`^${api}/tags/(.+)$`));
+      if (tm && req.method === "PUT") {
+        const name = decodeURIComponent(tm[1]);
+        const cur = tags.get(name) ?? { name, count: 0, description: null, fields: null };
+        tags.set(name, {
+          ...cur,
+          description: body.description ?? cur.description,
+          fields: body.fields ?? cur.fields,
+          ...(body.parent_names ? { parent_names: body.parent_names } : {}),
+        });
+        return send(200, tags.get(name));
+      }
       const m = url.pathname.match(new RegExp(`^${api}/notes(?:/(.+))?$`));
       if (!m) return send(404, { error: "not found" });
       const id = m[1] ? decodeURIComponent(m[1]) : null;
