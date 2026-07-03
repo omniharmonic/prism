@@ -103,5 +103,15 @@ export default defineConfig({
   },
   server: {
     port: 5180,
+    // Dev-only: proxy the server-owned routes to a locally running Prism Server
+    // so `npm run dev -w @prism/web` is fully functional (sign-in, the gateway,
+    // /api/governance, and the collab websocket) without building + serving via
+    // the server. Set PRISM_SERVER to point at a non-default origin. Production
+    // is same-origin (the server serves the built PWA), so this never applies there.
+    proxy: {
+      "/api": { target: process.env.PRISM_SERVER ?? "http://localhost:8787", changeOrigin: true },
+      "/auth": { target: process.env.PRISM_SERVER ?? "http://localhost:8787", changeOrigin: true },
+      "/collab": { target: process.env.PRISM_SERVER ?? "http://localhost:8787", changeOrigin: true, ws: true },
+    },
   },
 });

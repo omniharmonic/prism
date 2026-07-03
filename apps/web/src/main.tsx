@@ -11,6 +11,7 @@ import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
 import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
+import { GovernancePanel } from "./governance/GovernancePanel";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -105,6 +106,27 @@ async function start() {
         <VaultClientProvider client={httpVaultClient}>
           <CollabPage noteId={decodeURIComponent(collab[1])} />
         </VaultClientProvider>
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Commons governance surface: /governance. A signed-in member drives the
+  // constitution + proposal lifecycle here (the API is /api/governance). Requires
+  // a session; capability-link viewers are redirected to sign in.
+  if (window.location.pathname === "/governance") {
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice="Sign in to access commons governance." />
+        </React.StrictMode>,
+      );
+      return;
+    }
+    root.render(
+      <React.StrictMode>
+        <GovernancePanel />
       </React.StrictMode>,
     );
     return;
