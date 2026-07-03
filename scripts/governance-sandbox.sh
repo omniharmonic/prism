@@ -42,8 +42,21 @@ LOG="${TMPDIR:-/tmp}/prism-governance-sandbox.log"
 say()  { printf '\033[1;36m[sandbox]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[sandbox]\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ -f "$SERVER_DIR/.env" ] || fail "apps/server/.env not found — the sandbox reuses your existing server config (PARACHUTE_TOKEN etc.)."
-[ -d "$ROOT/node_modules" ] || fail "node_modules missing — run 'npm install' at the repo root first."
+# Worktree-friendly: if this checkout has no apps/server/.env (it's gitignored,
+# so a fresh `git worktree add` won't have one), borrow it from the MAIN
+# worktree — the sandbox reuses your existing server config (PARACHUTE_TOKEN
+# etc.) without you copying anything.
+if [ ! -f "$SERVER_DIR/.env" ]; then
+  MAIN_WT="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+  if [ -n "$MAIN_WT" ] && [ "$MAIN_WT" != "$ROOT" ] && [ -f "$MAIN_WT/apps/server/.env" ]; then
+    cp "$MAIN_WT/apps/server/.env" "$SERVER_DIR/.env"
+    chmod 600 "$SERVER_DIR/.env"
+    say "copied apps/server/.env from your main checkout ($MAIN_WT)"
+  else
+    fail "apps/server/.env not found — copy it from your main checkout: cp <main-repo>/apps/server/.env apps/server/.env"
+  fi
+fi
+[ -d "$ROOT/node_modules" ] || fail "node_modules missing — run 'npm install' in $ROOT first."
 
 # Refuse to start if the sandbox port is already in use. We NEVER kill anything.
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
