@@ -37,6 +37,7 @@ export function BioregionPanel() {
   const [loading, setLoading] = useState(true);
   const [tagFilter, setTagFilter] = useState<Set<BioTag>>(new Set());
   const [sensingFilter, setSensingFilter] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setAll(await loadBioregion());
@@ -95,14 +96,65 @@ export function BioregionPanel() {
         ))}
       </div>
 
-      <BioregionMap entities={filtered} />
+      <BioregionMap entities={filtered} onPick={setSelected} />
+
+      {selected &&
+        (() => {
+          const e = all.find((x) => x.id === selected);
+          if (!e) return null;
+          const byName = (n: string) => all.find((x) => x.name === n);
+          return (
+            <div style={{ ...s.li, borderTop: "none", background: "rgba(128,128,128,0.06)", borderRadius: 12, padding: 16, marginTop: 14, display: "block" }} data-testid="entity-detail">
+              <div style={{ ...s.row, margin: 0, justifyContent: "space-between" }}>
+                <div>
+                  <span style={s.tag(TAG_COLOR[e.tag])}>{e.tag}</span> <b style={{ fontSize: 18 }}>{e.name}</b>
+                  {e.sensing ? <span style={{ ...s.mono, marginLeft: 8 }}>{e.sensing}</span> : null}
+                </div>
+                <button style={{ ...s.chip(false, "#37474f") }} onClick={() => setSelected(null)}>close</button>
+              </div>
+              {(e.affects.length > 0 || e.response.length > 0) && (
+                <div style={{ marginTop: 10, display: "flex", gap: 24, flexWrap: "wrap" }} data-testid="cybernetic-links">
+                  {e.affects.length > 0 && (
+                    <div>
+                      <div style={{ fontWeight: 650, color: "#c62828" }}>⚠ Affects (sensed)</div>
+                      {e.affects.map((n) => (
+                        <div key={n} style={{ padding: "3px 0" }}>
+                          {byName(n) ? (
+                            <a href="#" onClick={(ev) => { ev.preventDefault(); setSelected(byName(n)!.id); }}>{n}</a>
+                          ) : (
+                            <span>{n}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {e.response.length > 0 && (
+                    <div>
+                      <div style={{ fontWeight: 650, color: "#2e7d32" }}>→ Response</div>
+                      {e.response.map((n) => (
+                        <div key={n} style={{ padding: "3px 0" }}>
+                          {byName(n) ? (
+                            <a href="#" onClick={(ev) => { ev.preventDefault(); setSelected(byName(n)!.id); }}>{n}</a>
+                          ) : (
+                            <span>{n}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <pre style={{ marginTop: 10, whiteSpace: "pre-wrap", fontFamily: "inherit", opacity: 0.85 }}>{e.content.slice(0, 600)}</pre>
+            </div>
+          );
+        })()}
 
       <div style={{ marginTop: 20 }} data-testid="entity-list">
         <div style={{ fontWeight: 650, opacity: 0.75 }}>
           Showing <span data-testid="entity-count">{filtered.length}</span> of {all.length}
         </div>
         {filtered.map((e) => (
-          <div key={e.id} style={s.li} data-entity-row={e.id}>
+          <div key={e.id} style={{ ...s.li, cursor: "pointer" }} data-entity-row={e.id} onClick={() => setSelected(e.id)}>
             <span style={s.tag(TAG_COLOR[e.tag])}>{e.tag}</span>
             <span style={{ flex: 1 }}>
               <b>{e.name}</b>

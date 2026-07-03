@@ -117,9 +117,13 @@ TAIL_PID=$!
 
 OWNER="$(grep -E '^OWNER_EMAIL=' "$ENV_SANDBOX" | cut -d= -f2- || true)"
 say ""
-say "READY. Open  http://localhost:$WEB_PORT/governance"
+say "READY. Open  http://localhost:$WEB_PORT/commons   (Bioregion + Governance)"
 say "Sign in with your owner email (${OWNER:-see .env}) — the magic link will"
-say "print RIGHT HERE in this terminal. Ctrl-C stops the whole sandbox."
+say "print RIGHT HERE in this terminal (yellow banner). Ctrl-C stops the sandbox."
+say ""
+say "Want example content to walk through? In another terminal:"
+say "    node scripts/seed-demo-commons.mjs          # populate a demo Front Range commons"
+say "    node scripts/seed-demo-commons.mjs --clean  # remove it"
 say ""
 
 # ── 4. web dev server (foreground; Ctrl-C tears everything down) ─────────────

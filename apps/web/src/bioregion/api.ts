@@ -30,7 +30,16 @@ export interface BioEntity {
   geometry: unknown | null;
   geo: { lat: number; lon: number } | null;
   status: string;
+  content: string;
+  affects: string[]; // wikilink targets this entity affects (signals)
+  response: string[]; // wikilink targets that respond to it (signals)
 }
+
+const strArr = (m: Record<string, unknown> | null, k: string): string[] => {
+  const v = m?.[k];
+  if (!Array.isArray(v)) return [];
+  return v.map(String).map((x) => x.replace(/^\[\[|\]\]$/g, "")).filter(Boolean);
+};
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
@@ -62,6 +71,9 @@ function toEntity(n: BioNote, tag: BioTag): BioEntity {
     geometry: m?.geometry ?? m?.boundaryGeometry ?? m?.rangeGeometry ?? null,
     geo: geo && typeof geo.lat === "number" && typeof geo.lon === "number" ? { lat: geo.lat, lon: geo.lon } : null,
     status: str(m, "status") || str(m, "severity"),
+    content: n.content,
+    affects: strArr(m, "affects"),
+    response: strArr(m, "response"),
   };
 }
 

@@ -77,7 +77,7 @@ test.describe("bioregional commons @live", () => {
     await seedNote({
       content: "# Proposed rezoning threat (e2e)",
       tags: [E2E_TAG, "signal"],
-      metadata: { title: "Rezoning threat (e2e)", signal_kind: "policy", severity: "high", sensing_or_responding: "sense", geo: { lat: 40.1, lon: -105.25 } },
+      metadata: { title: "Rezoning threat (e2e)", signal_kind: "policy", severity: "high", sensing_or_responding: "sense", geo: { lat: 40.1, lon: -105.25 }, affects: ["[[Boulder Creek (e2e)]]"] },
     });
   });
 
@@ -109,6 +109,15 @@ test.describe("bioregional commons @live", () => {
     await expect(list.getByText("St. Vrain (e2e)")).toHaveCount(0);
     // clear it
     await page.getByTestId("type-filters").getByRole("button", { name: "ecological-entity" }).click();
+
+    // Sense → respond: click the policy threat; its detail shows what it affects,
+    // closing the cybernetic loop.
+    await list.getByText("Rezoning threat (e2e)").click();
+    const detail = page.getByTestId("entity-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail.getByTestId("cybernetic-links")).toContainText("Affects");
+    await expect(detail.getByTestId("cybernetic-links")).toContainText("Boulder Creek (e2e)");
+    await detail.getByRole("button", { name: "close" }).click();
 
     // Sensing lens: 'respond' → the creek is in, the sense-only watershed is out.
     await page.getByTestId("sensing-filters").getByRole("button", { name: "respond" }).click();
