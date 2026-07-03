@@ -52,6 +52,8 @@ import {
   revisionForProposal,
   publishRevision,
   rollbackNote,
+  forkNote,
+  proposeMerge,
   isContentAction,
   recordAudit,
   type GovChange,
@@ -349,6 +351,33 @@ governance.post("/notes/:id/rollback", async (c) => {
     return c.json({ ok: true, revisionId: r.revisionId });
   } catch (e) {
     return c.json({ error: "rollback_failed", detail: (e as Error).message }, 400);
+  }
+});
+
+// ── fork / merge-back (G5 — proposal-only merge) ──────────────────────────────
+
+/** Fork a note: any member may take a divergent copy (with ancestry pointers).
+ *  The fork does not sync with its origin. */
+governance.post("/fork", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const noteId = String(b.noteId ?? "");
+  if (!noteId) return c.json({ error: "bad_request", detail: "noteId required" }, 400);
+  try {
+    const fork = await forkNote(vault, noteId, email(c));
+    return c.json({ ok: true, ...fork }, 201);
+  } catch (e) {
+    return c.json({ error: "fork_failed", detail: (e as Error).message }, 400);
+  }
+});
+
+/** Propose merging a fork's content back into its origin — an ordinary
+ *  edit_note proposal, gated by the origin's per-tag policy like any change. */
+governance.post("/forks/:id/propose-merge", async (c) => {
+  try {
+    const r = await proposeMerge(vault, c.req.param("id"), email(c));
+    return c.json({ ok: true, ...r }, 201);
+  } catch (e) {
+    return c.json({ error: "merge_propose_failed", detail: (e as Error).message }, 400);
   }
 });
 

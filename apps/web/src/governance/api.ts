@@ -111,6 +111,9 @@ export const govApi = {
   revisions: (noteId: string) => call<{ revisions: Revision[] }>(`/notes/${encodeURIComponent(noteId)}/revisions`),
   rollback: (noteId: string, revision: string) =>
     call(`/notes/${encodeURIComponent(noteId)}/rollback`, "POST", { revision }),
+  fork: (noteId: string) => call<{ id: string; forkedFrom: string }>("/fork", "POST", { noteId }),
+  proposeMerge: (forkId: string) =>
+    call<{ proposalId: string; target: string }>(`/forks/${encodeURIComponent(forkId)}/propose-merge`, "POST"),
 };
 
 export interface Revision {

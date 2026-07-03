@@ -455,6 +455,60 @@ export async function rollbackNote(
   return { revisionId: created.id };
 }
 
+// ── fork / ancestry / merge-back (G5) ─────────────────────────────────────────
+// A fork is a full local copy with ancestry pointers; it does NOT sync with its
+// origin. Merge-back is PROPOSAL-ONLY (locked decision): the fork's content is
+// submitted as an ordinary edit_note proposal against the origin, gated by the
+// same per-tag policy as any other change. On a federated origin, an applied
+// merge converges to mirrors via the existing CRDT bridge — the hub whose
+// governance gates the merge IS the canonical hub.
+
+/** Fork a note: copy content+tags+metadata, stamp ancestry, audit. */
+export async function forkNote(
+  vault: ServiceVault,
+  noteId: string,
+  by: string,
+): Promise<{ id: string; forkedFrom: string }> {
+  const origin = await vault.getNote(noteId);
+  const metadata: Record<string, unknown> = {
+    ...(origin.metadata ?? {}),
+    forked_from: origin.id,
+    forked_at: nowIso(),
+    forked_by: by,
+  };
+  const fork = await vault.createNote({
+    content: origin.content,
+    ...(origin.path ? { path: `${origin.path}-fork-${Date.now().toString(36)}` } : {}),
+    metadata,
+    tags: origin.tags ?? [],
+  });
+  await recordAudit(vault, { action: "note_forked", actor: by, before: origin.id, after: fork.id });
+  return { id: fork.id, forkedFrom: origin.id };
+}
+
+/** Open a merge-back proposal: the fork's current content as an edit_note
+ *  proposal against its origin. Returns the proposal id. */
+export async function proposeMerge(
+  vault: ServiceVault,
+  forkId: string,
+  by: string,
+): Promise<{ proposalId: string; target: string }> {
+  const fork = await vault.getNote(forkId);
+  const target = String(fork.metadata?.forked_from ?? "");
+  if (!target) throw new Error("note has no forked_from ancestry — not a fork");
+  // Origin must still exist (merge-back has somewhere to land).
+  await vault.getNote(target);
+  const payload: ContentPayload = { content: fork.content };
+  const { id } = await openProposal(vault, {
+    action: "edit_note",
+    target,
+    payload: JSON.stringify({ ...payload, merge_of: forkId }),
+    openedBy: by,
+  });
+  await recordAudit(vault, { action: "merge_proposed", actor: by, before: forkId, after: id });
+  return { proposalId: id, target };
+}
+
 /** Mark a proposal's terminal state (applied/rejected/withdrawn). Reads-then-
  *  merges so the other proposal fields survive regardless of whether the vault's
  *  PATCH merges or replaces metadata. */

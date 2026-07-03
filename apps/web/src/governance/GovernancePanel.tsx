@@ -412,6 +412,7 @@ function ProposalsCard({
 function HistoryCard({ run }: { run: (fn: () => Promise<ApiResult>) => Promise<ApiResult> }) {
   const [noteId, setNoteId] = useState("");
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
+  const [forkId, setForkId] = useState<string | null>(null);
 
   const load = async () => {
     const r = await govApi.revisions(noteId.trim());
@@ -420,11 +421,30 @@ function HistoryCard({ run }: { run: (fn: () => Promise<ApiResult>) => Promise<A
 
   return (
     <div style={s.card}>
-      <h2 style={s.h2}>Note history & rollback</h2>
+      <h2 style={s.h2}>Note history, fork & rollback</h2>
       <div style={s.row}>
         <input style={{ ...s.input, minWidth: 260 }} placeholder="note id" value={noteId} onChange={(e) => setNoteId(e.target.value)} />
         <button style={s.btn} onClick={() => void load()}>Load history</button>
+        <button
+          style={s.btn}
+          onClick={() =>
+            void run(() => govApi.fork(noteId.trim())).then((r) => {
+              const id = (r.data as { id?: string })?.id;
+              if (r.ok && id) setForkId(id);
+            })
+          }
+        >
+          Fork this note
+        </button>
       </div>
+      {forkId && (
+        <div style={{ ...s.row, marginTop: 8 }}>
+          <span style={s.mono}>fork: {forkId}</span>
+          <button style={s.btn} onClick={() => void run(() => govApi.proposeMerge(forkId))}>
+            Propose merge back
+          </button>
+        </div>
+      )}
       {revisions !== null && revisions.length === 0 && <p style={{ opacity: 0.6, marginTop: 8 }}>No governed revisions for this note.</p>}
       {(revisions ?? []).map((r) => (
         <div key={r.id} style={s.li}>
