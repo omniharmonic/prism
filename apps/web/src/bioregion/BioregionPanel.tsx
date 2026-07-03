@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadBioregion, BIO_TAGS, type BioEntity, type BioTag } from "./api";
 import { BioregionMap } from "./BioregionMap";
+import { CommonsNav } from "../commons/CommonsNav";
 
 const s = {
   page: { maxWidth: 980, margin: "0 auto", padding: "32px 20px 80px", fontFamily: "system-ui, sans-serif" } as React.CSSProperties,
@@ -61,10 +62,18 @@ export function BioregionPanel() {
     return next;
   };
 
-  if (loading) return <div style={s.page}>Loading the bioregion…</div>;
+  if (loading)
+    return (
+      <div>
+        <CommonsNav active="bioregion" />
+        <div style={s.page}>Loading the bioregion…</div>
+      </div>
+    );
 
   return (
-    <div style={s.page}>
+    <div>
+      <CommonsNav active="bioregion" />
+      <div style={s.page}>
       <h1 style={s.h1}>Bioregional Commons</h1>
       <p style={{ opacity: 0.7, marginTop: 0 }}>
         {all.length} entities · a cybernetic layer for sensing &amp; responding. Filter by type or by why it's in the commons.
@@ -103,6 +112,7 @@ export function BioregionPanel() {
           </div>
         ))}
         {filtered.length === 0 && <p style={{ opacity: 0.6 }}>Nothing matches these filters.</p>}
+      </div>
       </div>
     </div>
   );

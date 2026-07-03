@@ -13,6 +13,7 @@ import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { GovernancePanel } from "./governance/GovernancePanel";
 import { BioregionPanel } from "./bioregion/BioregionPanel";
+import { CommonsLanding } from "./commons/CommonsLanding";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -128,6 +129,25 @@ async function start() {
     root.render(
       <React.StrictMode>
         <GovernancePanel />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Commons landing: /commons — orientation + the two doors (requires a session).
+  if (window.location.pathname === "/commons") {
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice="Sign in to enter the commons." />
+        </React.StrictMode>,
+      );
+      return;
+    }
+    root.render(
+      <React.StrictMode>
+        <CommonsLanding />
       </React.StrictMode>,
     );
     return;

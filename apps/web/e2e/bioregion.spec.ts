@@ -114,6 +114,15 @@ test.describe("bioregional commons @live", () => {
     await page.getByTestId("sensing-filters").getByRole("button", { name: "respond" }).click();
     await expect(list.getByText("Boulder Creek (e2e)")).toBeVisible();
     await expect(list.getByText("St. Vrain (e2e)")).toHaveCount(0);
+
+    // Cross-surface nav: the Commons header moves between the two doors. These
+    // are full-page navigations, so wait for the URL before asserting the panel.
+    await page.getByTestId("commons-nav").getByRole("link", { name: "Governance" }).click();
+    await page.waitForURL(/\/governance$/);
+    await expect(page.getByRole("heading", { name: "Commons Governance" })).toBeVisible();
+    await page.getByTestId("commons-nav").getByRole("link", { name: "Bioregion" }).click();
+    await page.waitForURL(/\/bioregion$/);
+    await expect(page.getByRole("heading", { name: "Bioregional Commons" })).toBeVisible();
   });
 
   test("a stranger cannot reach the bioregion surface", async ({ page }) => {

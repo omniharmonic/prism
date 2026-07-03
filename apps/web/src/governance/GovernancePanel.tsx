@@ -20,6 +20,7 @@ import {
   type ApiResult,
   type Revision,
 } from "./api";
+import { CommonsNav } from "../commons/CommonsNav";
 
 const POWERS = ["review", "publish", "certify_gardener", "manage_policy", "arbitrate", "invite", "revoke", "amend_governance"] as const;
 
@@ -74,18 +75,29 @@ export function GovernancePanel() {
     [load],
   );
 
-  if (loading) return <div style={s.page}>Loading governance…</div>;
+  if (loading)
+    return (
+      <div>
+        <CommonsNav active="governance" />
+        <div style={s.page}>Loading governance…</div>
+      </div>
+    );
   if (!state)
     return (
-      <div style={s.page}>
-        <h1 style={s.h1}>Commons Governance</h1>
-        <p style={s.err}>{err}</p>
-        <a href="/" style={s.btn}>Go to sign in</a>
+      <div>
+        <CommonsNav active="governance" />
+        <div style={s.page}>
+          <h1 style={s.h1}>Commons Governance</h1>
+          <p style={s.err}>{err}</p>
+          <a href="/" style={s.btn}>Go to sign in</a>
+        </div>
       </div>
     );
 
   return (
-    <div style={s.page}>
+    <div>
+      <CommonsNav active="governance" />
+      <div style={s.page}>
       <h1 style={s.h1}>Commons Governance</h1>
       <div style={{ ...s.row, margin: "6px 0 4px" }}>
         {state.enabled ? <span style={s.badge("#2e7d32")}>Enabled</span> : <span style={s.badge("#757575")}>Not enabled</span>}
@@ -106,6 +118,7 @@ export function GovernancePanel() {
       <ContentProposeCard run={run} />
       <HistoryCard run={run} />
       <AuditCard audit={audit} />
+      </div>
     </div>
   );
 }
