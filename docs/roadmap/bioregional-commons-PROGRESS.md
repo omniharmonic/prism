@@ -56,19 +56,24 @@ E2E_FAKE_VAULT=1 PW_EXECUTABLE_PATH=/path/to/chromium ./scripts/e2e-governance.s
 - 4/4 specs pass. Server suite 251/252 (one pre-existing unrelated magic-link
   failure); web + e2e typechecks clean.
 
-## Remaining — blocked on infrastructure this environment can't provide
-These are the only plan items left, and each needs something a headless sandbox
-can't stand up, so they're intentionally NOT built speculatively:
-- **G2b** — auto-intercept live *suggest*-level collab (Yjs) edits into proposals.
-  The HTTP propose→sign-off→publish pipeline already delivers the user flow; this
-  only wires the live TipTap/Yjs editor into it. Verifying it needs two concurrent
-  collab clients, and getting it wrong risks corrupting the live collab path
-  (see the CLAUDE.md collab warnings) — so it wants a real collab session to
-  build against, not a fixture.
-- **G5** — canonical vault / fork / GitHub rollback backbone. Needs a second live
-  federation hub to exercise convergence.
+### Mock infrastructure (unblocked the "infra-blocked" items)
+`scripts/two-hub-mock.sh` reconstructs the two-hub federation environment with
+zero real infrastructure (two fake vaults behind two REAL Prism Servers) and runs
+the existing `verify-two-hub.ts` harness: **11 PASS / 0 FAIL** in a headless
+sandbox — pairing, mirror flow, live A⇄B CRDT convergence, revocation.
+`--keep` leaves the stacks running for interactive work.
+
+| Formerly blocked | State |
+|---|---|
+| G2b — suggest-mode durable capture + accept/reject that APPLIES | ✅ 10 unit tests + live Yjs client proof (`scripts/verify-suggestions.ts`, ALL PASS); also fixed a real attribution-loss bug in the shared suggestion marks |
+| Two-hub federation convergence (handoff AC-1..11) | ✅ 11/0 via `two-hub-mock.sh` |
+
+## Remaining
+- **G5** — canonical vault / fork / GitHub rollback backbone. The two-hub mock
+  now makes this buildable+verifiable here; next in line.
 - **S2** — dedicated per-type renderers inside the *main* Prism app (types render
   as documents there today). The `/bioregion` surface already covers browse +
   map + detail; wiring a renderer into the Canvas/Registry is the remaining bit.
 
-Everything else in both plans is built, committed, and e2e-verified.
+Everything else in both plans is built, committed, and verified (e2e or live
+harness).
