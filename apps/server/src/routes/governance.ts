@@ -35,6 +35,7 @@ import {
   GOV_TAGS,
   parseProposal,
   loadVotesFor,
+  listAudit,
 } from "../governance-store";
 import {
   loadGovernance,
@@ -84,6 +85,18 @@ governance.get("/state", async (c) => {
     myPowers: [...powersForSubject(state, me)],
     isBootstrapOwner: !isLocked(state.config) && me === state.config.bootstrapOwner,
   });
+});
+
+/** The membership roster — who holds which role (transparency for members). */
+governance.get("/memberships", async (c) => {
+  const state = await loadGovernance(vault, config.ownerEmail);
+  return c.json({ memberships: state.memberships });
+});
+
+/** The audit trail — every governance mutation, newest first (Ostrom #4). */
+governance.get("/audit", async (c) => {
+  const limit = Math.min(500, Math.max(1, Number(c.req.query("limit") ?? 100)));
+  return c.json({ audit: await listAudit(vault, limit) });
 });
 
 // ── bootstrap / admin writes (funnel through the lock) ────────────────────────
@@ -275,6 +288,21 @@ governance.post("/proposals/:id/apply", async (c) => {
   }
 
   return c.json({ error: "unsupported", detail: `unknown proposal action "${proposal.action}"` }, 400);
+});
+
+/** Withdraw an open proposal. Only the proposer (or the owner) may close it. */
+governance.post("/proposals/:id/withdraw", async (c) => {
+  const proposal = await getProposalRaw(vault, c.req.param("id"));
+  if (!proposal) return c.json({ error: "not_found" }, 404);
+  if (proposal.proposal.state !== "open") return c.json({ error: "closed", detail: `proposal is ${proposal.proposal.state}` }, 409);
+  const actor = resolveActor(c);
+  const me = actor.kind === "user" ? actor.email : "";
+  if (proposal.proposal.openedBy !== me && !actor.isOwner) {
+    return c.json({ error: "forbidden", detail: "only the proposer or owner may withdraw" }, 403);
+  }
+  await setProposalState(vault, proposal.proposal.id, "withdrawn");
+  await recordAudit(vault, { action: "proposal_withdrawn", actor: me, before: proposal.proposal.id });
+  return c.json({ ok: true });
 });
 
 // ── payload coercion (shared by propose + apply) ───────────────────────────────

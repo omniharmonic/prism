@@ -133,6 +133,27 @@ export function parseProposal(note: Note): Proposal {
   };
 }
 
+export interface AuditEntry {
+  id: string;
+  action: string;
+  actor: string;
+  before: string;
+  after: string;
+  at: string;
+}
+
+export function parseAudit(note: Note): AuditEntry {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    action: str(m, "action"),
+    actor: str(m, "actor"),
+    before: str(m, "before"),
+    after: str(m, "after"),
+    at: str(m, "at"),
+  };
+}
+
 export function parseVote(note: Note): Vote {
   const m = note.metadata;
   const reason = str(m, "reason");
@@ -237,4 +258,10 @@ export async function loadState(
 export async function loadVotesFor(vault: GovernanceVault, proposalId: string): Promise<Vote[]> {
   const notes = await vault.listNotes({ tags: [GOV_TAGS.vote] });
   return notes.map(parseVote).filter((v) => v.proposal === proposalId);
+}
+
+/** Load the audit trail, newest first — the commons's legible memory (Ostrom #4). */
+export async function listAudit(vault: GovernanceVault, limit = 100): Promise<AuditEntry[]> {
+  const notes = await vault.listNotes({ tags: [GOV_TAGS.audit], limit });
+  return notes.map(parseAudit).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 }

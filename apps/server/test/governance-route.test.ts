@@ -147,6 +147,39 @@ test("an amendment takes effect only when votes clear the amend threshold", asyn
   assert.ok(s.roles.some((r: { name: string }) => r.name === "gardener"));
 });
 
+// ── observability + withdraw ──────────────────────────────────────────────────
+
+test("membership roster and audit trail are observable to members", async () => {
+  await bootstrapEnabled();
+  const owner = cookieFor(OWNER);
+
+  const roster = await body(await jreq("/memberships", owner));
+  const admins = roster.memberships.map((m: { subject: string }) => m.subject).sort();
+  assert.deepEqual(admins, ["a1@test.local", "a2@test.local", "a3@test.local"]);
+
+  // the bootstrap writes (role/policy/memberships/config) left a legible audit trail
+  const { audit } = await body(await jreq("/audit", owner));
+  assert.ok(audit.length >= 4, "bootstrap mutations are recorded");
+  assert.ok(audit.every((e: { actor: string }) => e.actor === OWNER));
+});
+
+test("the proposer may withdraw an open proposal; a stranger may not", async () => {
+  await bootstrapEnabled();
+  const open = await jreq("/proposals", cookieFor("a1@test.local"), "POST", {
+    action: "amend_governance",
+    target: "governance",
+    payload: JSON.stringify({ kind: "add_role", role: { name: "gardener", powers: ["review"] } }),
+  });
+  const { id } = await body(open);
+
+  // a stranger cannot withdraw someone else's proposal
+  assert.equal((await jreq(`/proposals/${id}/withdraw`, cookieFor("stranger@test.local"), "POST")).status, 403);
+  // the proposer can
+  assert.equal((await jreq(`/proposals/${id}/withdraw`, cookieFor("a1@test.local"), "POST")).status, 200);
+  // and a withdrawn proposal is closed to votes
+  assert.equal((await jreq(`/proposals/${id}/vote`, cookieFor("a2@test.local"), "POST", { vote: "approve" })).status, 409);
+});
+
 test("a non-eligible member cannot vote, and no one may vote twice", async () => {
   await bootstrapEnabled();
   const open = await jreq("/proposals", cookieFor("a1@test.local"), "POST", {
