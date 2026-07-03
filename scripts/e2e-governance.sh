@@ -94,7 +94,7 @@ done
 # ── playwright ────────────────────────────────────────────────────────────────
 # Which specs to run: the commons flows that work against the (fake or real)
 # vault. Override with E2E_SPECS="e2e/foo.spec.ts".
-SPECS="${E2E_SPECS:-e2e/governance.spec.ts e2e/bioregion.spec.ts}"
+SPECS="${E2E_SPECS:-e2e/governance.spec.ts e2e/bioregion.spec.ts e2e/import.spec.ts}"
 say "running specs: $SPECS"
 HEADED=()
 [ "${E2E_HEADED:-0}" = "1" ] && HEADED=(--headed)
@@ -102,6 +102,8 @@ HEADED=()
   cd "$WEB_DIR" &&
   E2E_BASE_URL="http://localhost:$PORT" \
   E2E_SERVER_LOG="$LOG" \
+  PARACHUTE_URL="$(grep -E '^PARACHUTE_URL=' "$ENV_E2E" | cut -d= -f2-)" \
+  PARACHUTE_VAULT="$(grep -E '^PARACHUTE_VAULT=' "$ENV_E2E" | cut -d= -f2-)" \
   PARACHUTE_TOKEN="$(grep -E '^PARACHUTE_TOKEN=' "$ENV_E2E" | cut -d= -f2-)" \
   COLLAB_TOKEN="$(grep -E '^COLLAB_TOKEN=' "$ENV_E2E" | cut -d= -f2- || true)" \
   OWNER_EMAIL="$(grep -E '^OWNER_EMAIL=' "$ENV_E2E" | cut -d= -f2-)" \
