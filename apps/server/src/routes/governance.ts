@@ -42,9 +42,14 @@ import {
   openProposal,
   castVote,
   hasVoted,
-  getProposal,
+  getProposalRaw,
   setProposalState,
+  proposalContext,
+  applyContentProposal,
+  isContentAction,
+  recordAudit,
   type GovChange,
+  type ContentPayload,
   type MutateResult,
 } from "../governance-service";
 
@@ -159,10 +164,12 @@ governance.get("/proposals", async (c) => {
 
 governance.get("/proposals/:id", async (c) => {
   const state = await loadGovernance(vault, config.ownerEmail);
-  const proposal = await getProposal(vault, c.req.param("id"));
-  if (!proposal) return c.json({ error: "not_found" }, 404);
+  const raw = await getProposalRaw(vault, c.req.param("id"));
+  if (!raw) return c.json({ error: "not_found" }, 404);
+  const { proposal, payload } = raw;
+  const ctx = await proposalContext(vault, proposal, payload as ContentPayload);
   const votes = await loadVotesFor(vault, proposal.id);
-  const evaluation = evaluateProposal(state, proposal, votes);
+  const evaluation = evaluateProposal(state, proposal, votes, ctx);
   return c.json({ proposal, votes, evaluation });
 });
 
@@ -178,17 +185,42 @@ governance.post("/proposals", async (c) => {
   return c.json({ ok: true, id }, 201);
 });
 
+/** Propose a CONTENT change — an edit to a note or a brand-new entry (which may
+ *  be a stub for a researcher/AI to fill in). Any member may propose; whether it
+ *  goes live is decided by the per-tag policy at apply time. */
+governance.post("/content/propose", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const action = b.action === "new_entry" ? "new_entry" : b.action === "edit_note" ? "edit_note" : "";
+  if (!action) return c.json({ error: "bad_request", detail: "action must be edit_note or new_entry" }, 400);
+  const target = String(b.target ?? "");
+  if (action === "edit_note" && !target) return c.json({ error: "bad_request", detail: "edit_note requires a target note id" }, 400);
+
+  const payload: ContentPayload = coerceContentPayload(b);
+  const { id } = await openProposal(vault, {
+    action,
+    target: target || (payload.path ?? ""),
+    payload: JSON.stringify(payload),
+    openedBy: email(c),
+  });
+  return c.json({ ok: true, id }, 201);
+});
+
 governance.post("/proposals/:id/vote", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const decision = b.vote === "reject" ? "reject" : "approve";
   const state = await loadGovernance(vault, config.ownerEmail);
-  const proposal = await getProposal(vault, c.req.param("id"));
-  if (!proposal) return c.json({ error: "not_found" }, 404);
+  const raw = await getProposalRaw(vault, c.req.param("id"));
+  if (!raw) return c.json({ error: "not_found" }, 404);
+  const { proposal, payload } = raw;
   if (proposal.state !== "open") return c.json({ error: "closed", detail: `proposal is ${proposal.state}` }, 409);
 
+  // Eligibility is scoped by the proposal's context (the target note's tags for
+  // an edit, the proposed tags for a new entry) so a gardener-of-#medicine may
+  // only sign off within #medicine.
+  const ctx = await proposalContext(vault, proposal, payload as ContentPayload);
+  const policy = requiredPolicy(state, proposal.action, ctx);
   const me = email(c);
-  const policy = requiredPolicy(state, proposal.action);
-  if (!subjectHoldsRole(state, me, policy.eligibleRole)) {
+  if (!subjectHoldsRole(state, me, policy.eligibleRole, ctx)) {
     return c.json({ error: "ineligible", detail: `only members of role "${policy.eligibleRole}" may vote on this` }, 403);
   }
   if (await hasVoted(vault, proposal.id, me)) {
@@ -198,37 +230,64 @@ governance.post("/proposals/:id/vote", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Apply an approved amend_governance proposal (effect the change if its votes
- *  clear the constitutional threshold). Content proposals are the G2 pipeline. */
+/** Apply an approved proposal — effect the change if its votes clear the policy.
+ *  Governance amendments go through the constitutional threshold (mutateGovernance);
+ *  content proposals (edit_note/new_entry) go through their per-tag policy and, if
+ *  satisfied, write the change live. */
 governance.post("/proposals/:id/apply", async (c) => {
   const state = await loadGovernance(vault, config.ownerEmail);
-  const proposal = await getProposal(vault, c.req.param("id"));
-  if (!proposal) return c.json({ error: "not_found" }, 404);
+  const raw = await getProposalRaw(vault, c.req.param("id"));
+  if (!raw) return c.json({ error: "not_found" }, 404);
+  const { proposal, payload } = raw;
   if (proposal.state !== "open") return c.json({ error: "closed", detail: `proposal is ${proposal.state}` }, 409);
-  if (proposal.action !== "amend_governance") {
-    return c.json({ error: "unsupported", detail: "only amend_governance proposals apply here; content proposals use the review pipeline" }, 400);
+  const me = email(c);
+  const votes = await loadVotesFor(vault, proposal.id);
+
+  // Governance amendment — constitutional threshold, via the lock choke point.
+  if (proposal.action === "amend_governance") {
+    const change = coerceChange(payload);
+    if (!change) return c.json({ error: "bad_payload", detail: "proposal payload is not a valid governance change" }, 400);
+    const res = await mutateGovernance(vault, state, me, change, { proposal, votes });
+    if (!res.ok) return c.json({ error: res.code, detail: res.detail, evaluation: res.evaluation }, httpFor(res));
+    await setProposalState(vault, proposal.id, "applied");
+    return c.json({ ok: true, applied: res.applied, note: res.note });
   }
 
-  const note = await vault.getNote(proposal.id).catch(() => null);
-  const payloadRaw = note?.metadata?.payload;
-  const change = coerceChange(typeof payloadRaw === "string" ? safeJson(payloadRaw) : payloadRaw);
-  if (!change) return c.json({ error: "bad_payload", detail: "proposal payload is not a valid governance change" }, 400);
+  // Content proposal — per-tag policy; write the change live when satisfied.
+  if (isContentAction(proposal.action)) {
+    const cp = coerceContentPayload(payload);
+    const ctx = await proposalContext(vault, proposal, cp);
+    const ev = evaluateProposal(state, proposal, votes, ctx);
+    if (!ev.satisfied) {
+      return c.json(
+        {
+          error: "insufficient_approvals",
+          detail: `needs ${ev.needed} approvals from role "${ev.policy.eligibleRole}" (has ${ev.approvals}${ev.quorumMet ? "" : ", quorum not met"})`,
+          evaluation: ev,
+        },
+        409,
+      );
+    }
+    const written = await applyContentProposal(vault, proposal, cp);
+    await setProposalState(vault, proposal.id, "applied");
+    await recordAudit(vault, { action: `apply:${proposal.action}`, actor: me, after: written.id });
+    return c.json({ ok: true, applied: proposal.action, note: written });
+  }
 
-  const votes = await loadVotesFor(vault, proposal.id);
-  const res = await mutateGovernance(vault, state, email(c), change, { proposal, votes });
-  if (!res.ok) return c.json({ error: res.code, detail: res.detail, evaluation: res.evaluation }, httpFor(res));
-  await setProposalState(vault, proposal.id, "applied");
-  return c.json({ ok: true, applied: res.applied, note: res.note });
+  return c.json({ error: "unsupported", detail: `unknown proposal action "${proposal.action}"` }, 400);
 });
 
-// ── payload coercion (shared by apply) ─────────────────────────────────────────
+// ── payload coercion (shared by propose + apply) ───────────────────────────────
 
-function safeJson(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
+/** Sanitize an untrusted object into a ContentPayload (only the allowed keys). */
+function coerceContentPayload(obj: unknown): ContentPayload {
+  const o = (obj ?? {}) as Record<string, unknown>;
+  const out: ContentPayload = {};
+  if (typeof o.content === "string") out.content = o.content;
+  if (o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)) out.metadata = o.metadata as Record<string, unknown>;
+  if (Array.isArray(o.tags)) out.tags = o.tags.map(String).filter(Boolean);
+  if (typeof o.path === "string" && o.path) out.path = o.path;
+  return out;
 }
 
 /** Validate an untrusted object into a GovChange (or null). */

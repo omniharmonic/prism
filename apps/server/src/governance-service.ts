@@ -16,6 +16,7 @@ import {
   canMutateGovernanceDirectly,
   evaluateAmendment,
   isLocked,
+  type ActionContext,
   type GovernanceConfig,
   type GovernanceState,
   type Membership,
@@ -230,6 +231,81 @@ export async function getProposal(vault: ServiceVault, id: string): Promise<Prop
   } catch {
     return null;
   }
+}
+
+/** Fetch a proposal together with its decoded payload (the proposed change). */
+export async function getProposalRaw(
+  vault: ServiceVault,
+  id: string,
+): Promise<{ proposal: Proposal; payload: unknown } | null> {
+  const note = await vault.getNote(id).catch(() => null);
+  if (!note || !(note.tags ?? []).includes(GOV_TAGS.proposal)) return null;
+  const raw = note.metadata?.payload;
+  let payload: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      payload = null;
+    }
+  }
+  return { proposal: parseProposal(note), payload };
+}
+
+// ── content proposals (the G2 review pipeline — governed content changes) ──────
+
+/** The shape of a content proposal's payload (the proposed change to a note). */
+export interface ContentPayload {
+  content?: string;
+  metadata?: Record<string, unknown>;
+  tags?: string[];
+  path?: string;
+}
+
+/** The governance actions that carry a ContentPayload (vs. governance amendments). */
+export const CONTENT_ACTIONS = ["edit_note", "new_entry"] as const;
+export const isContentAction = (a: string): boolean => (CONTENT_ACTIONS as readonly string[]).includes(a);
+
+/**
+ * The action context for a proposal — the tags/note the policy is scoped by.
+ * For `edit_note` it is the TARGET note's live tags (so a gardener-of-#medicine
+ * policy governs edits to medicine notes). For `new_entry` it is the proposed
+ * tags carried in the payload. Governance amendments have no content context.
+ */
+export async function proposalContext(vault: ServiceVault, proposal: Proposal, payload?: ContentPayload): Promise<ActionContext> {
+  if (proposal.action === "edit_note") {
+    const target = await vault.getNote(proposal.target).catch(() => null);
+    return target ? { noteId: target.id, tags: target.tags ?? [] } : { noteId: proposal.target, tags: [] };
+  }
+  if (proposal.action === "new_entry") {
+    return { tags: payload?.tags ?? [] };
+  }
+  return {};
+}
+
+/** Effect a content proposal — write the proposed change to the vault. This is
+ *  the "goes live" consumer the accept path lacked. (Approval≠publishing split is
+ *  G4; for now an applied edit is live.) */
+export async function applyContentProposal(
+  vault: ServiceVault,
+  proposal: Proposal,
+  payload: ContentPayload,
+): Promise<{ id: string }> {
+  if (proposal.action === "edit_note") {
+    const params: { content?: string; metadata?: Record<string, unknown> } = {};
+    if (typeof payload.content === "string") params.content = payload.content;
+    if (payload.metadata) params.metadata = payload.metadata;
+    const n = await vault.updateNote(proposal.target, params);
+    return { id: n.id };
+  }
+  // new_entry
+  const n = await vault.createNote({
+    content: payload.content ?? "",
+    ...(payload.path ? { path: payload.path } : {}),
+    ...(payload.metadata ? { metadata: payload.metadata } : {}),
+    tags: payload.tags ?? [],
+  });
+  return { id: n.id };
 }
 
 /** Mark a proposal's terminal state (applied/rejected/withdrawn). Reads-then-
