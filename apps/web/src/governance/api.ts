@@ -105,6 +105,21 @@ export const govApi = {
     call<{ id: string }>("/content/propose", "POST", b),
   vote: (id: string, vote: "approve" | "reject", reason?: string) =>
     call(`/proposals/${encodeURIComponent(id)}/vote`, "POST", { vote, reason }),
-  apply: (id: string) => call(`/proposals/${encodeURIComponent(id)}/apply`, "POST"),
+  apply: (id: string) => call<{ published?: boolean }>(`/proposals/${encodeURIComponent(id)}/apply`, "POST"),
+  publish: (id: string) => call(`/proposals/${encodeURIComponent(id)}/publish`, "POST"),
   withdraw: (id: string) => call(`/proposals/${encodeURIComponent(id)}/withdraw`, "POST"),
+  revisions: (noteId: string) => call<{ revisions: Revision[] }>(`/notes/${encodeURIComponent(noteId)}/revisions`),
+  rollback: (noteId: string, revision: string) =>
+    call(`/notes/${encodeURIComponent(noteId)}/rollback`, "POST", { revision }),
 };
+
+export interface Revision {
+  id: string;
+  note: string;
+  parent: string;
+  proposal: string;
+  author: string;
+  origin: "proposal" | "rollback" | "publish";
+  published: boolean;
+  at: string;
+}

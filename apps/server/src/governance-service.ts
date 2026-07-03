@@ -30,6 +30,7 @@ import {
   configToMetadata,
   loadState,
   loadVotesFor,
+  listRevisionsFor,
   policyToMetadata,
   proposalToMetadata,
   roleToMetadata,
@@ -37,6 +38,9 @@ import {
   voteToMetadata,
   auditToMetadata,
   parseProposal,
+  parseRevision,
+  revisionToMetadata,
+  type Revision,
 } from "./governance-store";
 
 /** The vault surface the service needs (satisfied by parachute.ts `vault`). */
@@ -283,29 +287,172 @@ export async function proposalContext(vault: ServiceVault, proposal: Proposal, p
   return {};
 }
 
-/** Effect a content proposal — write the proposed change to the vault. This is
- *  the "goes live" consumer the accept path lacked. (Approval≠publishing split is
- *  G4; for now an applied edit is live.) */
+/** Result of applying a content proposal: either live (published) or staged. */
+export interface ContentApplyResult {
+  published: boolean;
+  revisionId: string;
+  noteId: string | null; // null while a staged new_entry has no note yet
+}
+
+/** Snapshot a revision note (the note CONTENT is the snapshot). */
+async function createRevisionNote(
+  vault: ServiceVault,
+  r: Omit<Revision, "id"> & { content: string },
+): Promise<{ id: string }> {
+  const { content, ...meta } = r;
+  const note = await vault.createNote({
+    content,
+    metadata: revisionToMetadata(meta),
+    tags: [GOV_TAGS.revision],
+  });
+  return { id: note.id };
+}
+
+const latestRevisionId = async (vault: ServiceVault, noteId: string): Promise<string> =>
+  (await listRevisionsFor(vault, noteId))[0]?.id ?? "";
+
+/**
+ * Effect an APPROVED content proposal (G4: approval ≠ publishing). Always
+ * snapshots a revision; the policy's `autoPublish` decides whether the change
+ * also goes live now or stays STAGED (published=false) awaiting an explicit
+ * publish by a `publish`-power holder.
+ */
 export async function applyContentProposal(
   vault: ServiceVault,
   proposal: Proposal,
   payload: ContentPayload,
-): Promise<{ id: string }> {
+  opts: { author: string; autoPublish: boolean },
+): Promise<ContentApplyResult> {
+  const at = nowIso();
+  const content = payload.content ?? "";
+
   if (proposal.action === "edit_note") {
-    const params: { content?: string; metadata?: Record<string, unknown> } = {};
-    if (typeof payload.content === "string") params.content = payload.content;
-    if (payload.metadata) params.metadata = payload.metadata;
-    const n = await vault.updateNote(proposal.target, params);
-    return { id: n.id };
+    const parent = await latestRevisionId(vault, proposal.target);
+    if (opts.autoPublish) {
+      const params: { content?: string; metadata?: Record<string, unknown> } = {};
+      if (typeof payload.content === "string") params.content = payload.content;
+      if (payload.metadata) params.metadata = payload.metadata;
+      await vault.updateNote(proposal.target, params);
+    }
+    const rev = await createRevisionNote(vault, {
+      note: proposal.target,
+      parent,
+      proposal: proposal.id,
+      author: opts.author,
+      origin: "proposal",
+      published: opts.autoPublish,
+      at,
+      payload: "",
+      content,
+    });
+    return { published: opts.autoPublish, revisionId: rev.id, noteId: proposal.target };
   }
+
   // new_entry
-  const n = await vault.createNote({
-    content: payload.content ?? "",
-    ...(payload.path ? { path: payload.path } : {}),
-    ...(payload.metadata ? { metadata: payload.metadata } : {}),
-    tags: payload.tags ?? [],
+  if (opts.autoPublish) {
+    const n = await vault.createNote({
+      content,
+      ...(payload.path ? { path: payload.path } : {}),
+      ...(payload.metadata ? { metadata: payload.metadata } : {}),
+      tags: payload.tags ?? [],
+    });
+    const rev = await createRevisionNote(vault, {
+      note: n.id,
+      parent: "",
+      proposal: proposal.id,
+      author: opts.author,
+      origin: "proposal",
+      published: true,
+      at,
+      payload: "",
+      content,
+    });
+    return { published: true, revisionId: rev.id, noteId: n.id };
+  }
+  // Staged: the revision carries everything needed to create the note on publish.
+  const rev = await createRevisionNote(vault, {
+    note: "",
+    parent: "",
+    proposal: proposal.id,
+    author: opts.author,
+    origin: "proposal",
+    published: false,
+    at,
+    payload: JSON.stringify({ path: payload.path ?? "", tags: payload.tags ?? [], metadata: payload.metadata ?? null }),
+    content,
   });
-  return { id: n.id };
+  return { published: false, revisionId: rev.id, noteId: null };
+}
+
+/** The (unpublished) revision a proposal staged, if any. */
+export async function revisionForProposal(vault: ServiceVault, proposalId: string): Promise<Revision | null> {
+  const notes = await vault.listNotes({ tags: [GOV_TAGS.revision] });
+  const match = notes.map(parseRevision).find((r) => r.proposal === proposalId);
+  return match ?? null;
+}
+
+/** Publish a staged revision: write it live and mark it published. */
+export async function publishRevision(
+  vault: ServiceVault,
+  revisionId: string,
+  author: string,
+): Promise<{ noteId: string }> {
+  const revNote = await vault.getNote(revisionId);
+  const rev = parseRevision(revNote);
+  if (rev.published) throw new Error("revision is already published");
+
+  let noteId = rev.note;
+  if (noteId) {
+    await vault.updateNote(noteId, { content: revNote.content });
+  } else {
+    // Staged new_entry — create the note from the stored payload.
+    let p: { path?: string; tags?: string[]; metadata?: Record<string, unknown> | null } = {};
+    try {
+      p = JSON.parse(rev.payload || "{}");
+    } catch {
+      p = {};
+    }
+    const n = await vault.createNote({
+      content: revNote.content,
+      ...(p.path ? { path: p.path } : {}),
+      ...(p.metadata ? { metadata: p.metadata } : {}),
+      tags: p.tags ?? [],
+    });
+    noteId = n.id;
+  }
+  await vault.updateNote(revisionId, {
+    metadata: { ...(revNote.metadata ?? {}), note: noteId, published: true, origin: "publish" },
+  });
+  await recordAudit(vault, { action: "revision_published", actor: author, after: `${revisionId} → ${noteId}` });
+  return { noteId };
+}
+
+/** Roll a note's live content back to a prior revision (non-destructive: the
+ *  rollback itself is snapshotted as a new revision). */
+export async function rollbackNote(
+  vault: ServiceVault,
+  noteId: string,
+  revisionId: string,
+  author: string,
+): Promise<{ revisionId: string }> {
+  const revNote = await vault.getNote(revisionId);
+  const rev = parseRevision(revNote);
+  if (rev.note !== noteId) throw new Error("revision does not belong to this note");
+  await vault.updateNote(noteId, { content: revNote.content });
+  const parent = await latestRevisionId(vault, noteId);
+  const created = await createRevisionNote(vault, {
+    note: noteId,
+    parent,
+    proposal: "",
+    author,
+    origin: "rollback",
+    published: true,
+    at: nowIso(),
+    payload: "",
+    content: revNote.content,
+  });
+  await recordAudit(vault, { action: "note_rolled_back", actor: author, before: revisionId, after: created.id });
+  return { revisionId: created.id };
 }
 
 /** Mark a proposal's terminal state (applied/rejected/withdrawn). Reads-then-

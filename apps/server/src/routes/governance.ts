@@ -22,6 +22,7 @@ import { resolveActor } from "../auth/actor";
 import {
   isLocked,
   powersForSubject,
+  hasPower,
   requiredPolicy,
   subjectHoldsRole,
   evaluateProposal,
@@ -36,6 +37,7 @@ import {
   parseProposal,
   loadVotesFor,
   listAudit,
+  listRevisionsFor,
 } from "../governance-store";
 import {
   loadGovernance,
@@ -47,6 +49,9 @@ import {
   setProposalState,
   proposalContext,
   applyContentProposal,
+  revisionForProposal,
+  publishRevision,
+  rollbackNote,
   isContentAction,
   recordAudit,
   type GovChange,
@@ -266,7 +271,9 @@ governance.post("/proposals/:id/apply", async (c) => {
     return c.json({ ok: true, applied: res.applied, note: res.note });
   }
 
-  // Content proposal — per-tag policy; write the change live when satisfied.
+  // Content proposal — per-tag policy. When satisfied: snapshot a revision and
+  // either go live now (policy.auto_publish) or stay STAGED for an explicit
+  // publish (approval ≠ publishing, G4).
   if (isContentAction(proposal.action)) {
     const cp = coerceContentPayload(payload);
     const ctx = await proposalContext(vault, proposal, cp);
@@ -281,13 +288,68 @@ governance.post("/proposals/:id/apply", async (c) => {
         409,
       );
     }
-    const written = await applyContentProposal(vault, proposal, cp);
-    await setProposalState(vault, proposal.id, "applied");
-    await recordAudit(vault, { action: `apply:${proposal.action}`, actor: me, after: written.id });
-    return c.json({ ok: true, applied: proposal.action, note: written });
+    const result = await applyContentProposal(vault, proposal, cp, { author: me, autoPublish: ev.policy.autoPublish });
+    await setProposalState(vault, proposal.id, result.published ? "applied" : "approved");
+    await recordAudit(vault, {
+      action: `apply:${proposal.action}${result.published ? "" : ":staged"}`,
+      actor: me,
+      after: result.noteId ?? result.revisionId,
+    });
+    return c.json({ ok: true, applied: proposal.action, ...result });
   }
 
   return c.json({ error: "unsupported", detail: `unknown proposal action "${proposal.action}"` }, 400);
+});
+
+/** Publish an APPROVED (staged) content proposal's revision — the explicit
+ *  go-live step. Requires the `publish` power (scope-aware to the note's tags). */
+governance.post("/proposals/:id/publish", async (c) => {
+  const state = await loadGovernance(vault, config.ownerEmail);
+  const raw = await getProposalRaw(vault, c.req.param("id"));
+  if (!raw) return c.json({ error: "not_found" }, 404);
+  const { proposal, payload } = raw;
+  if (proposal.state !== "approved") {
+    return c.json({ error: "not_approved", detail: `proposal is ${proposal.state}; only approved (staged) proposals publish` }, 409);
+  }
+  const me = email(c);
+  const ctx = await proposalContext(vault, proposal, payload as ContentPayload);
+  if (!hasPower(state, me, "publish", ctx)) {
+    return c.json({ error: "forbidden", detail: "publishing requires the publish power" }, 403);
+  }
+  const rev = await revisionForProposal(vault, proposal.id);
+  if (!rev) return c.json({ error: "no_revision", detail: "no staged revision found for this proposal" }, 409);
+  if (rev.published) return c.json({ error: "already_published" }, 409);
+  const { noteId } = await publishRevision(vault, rev.id, me);
+  await setProposalState(vault, proposal.id, "applied");
+  return c.json({ ok: true, noteId, revisionId: rev.id });
+});
+
+/** Revision history for a note, newest first. */
+governance.get("/notes/:id/revisions", async (c) => {
+  const revisions = await listRevisionsFor(vault, c.req.param("id"));
+  return c.json({ revisions });
+});
+
+/** Roll a note back to a prior revision (non-destructive — the rollback is
+ *  itself a new revision). Requires the `publish` power. */
+governance.post("/notes/:id/rollback", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const revisionId = String(b.revision ?? "");
+  if (!revisionId) return c.json({ error: "bad_request", detail: "revision required" }, 400);
+  const noteId = c.req.param("id");
+  const state = await loadGovernance(vault, config.ownerEmail);
+  const me = email(c);
+  const target = await vault.getNote(noteId).catch(() => null);
+  if (!target) return c.json({ error: "not_found" }, 404);
+  if (!hasPower(state, me, "publish", { noteId, tags: target.tags ?? [] })) {
+    return c.json({ error: "forbidden", detail: "rollback requires the publish power" }, 403);
+  }
+  try {
+    const r = await rollbackNote(vault, noteId, revisionId, me);
+    return c.json({ ok: true, revisionId: r.revisionId });
+  } catch (e) {
+    return c.json({ error: "rollback_failed", detail: (e as Error).message }, 400);
+  }
 });
 
 /** Withdraw an open proposal. Only the proposer (or the owner) may close it. */

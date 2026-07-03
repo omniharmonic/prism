@@ -38,6 +38,7 @@ export const GOV_TAGS = {
   proposal: "governance-proposal",
   vote: "governance-vote",
   audit: "governance-audit",
+  revision: "governance-revision",
 } as const;
 
 // ── defensive coercion ────────────────────────────────────────────────────────
@@ -264,4 +265,57 @@ export async function loadVotesFor(vault: GovernanceVault, proposalId: string): 
 export async function listAudit(vault: GovernanceVault, limit = 100): Promise<AuditEntry[]> {
   const notes = await vault.listNotes({ tags: [GOV_TAGS.audit], limit });
   return notes.map(parseAudit).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}
+
+// ── revisions (approval ≠ publishing, G4) ─────────────────────────────────────
+
+/** A content revision snapshot. The revision NOTE's content is the snapshot;
+ *  this is its metadata. `published=false` = approved/staged, not live. */
+export interface Revision {
+  id: string;
+  note: string; // target note id ("" while a staged new_entry is uncreated)
+  parent: string;
+  proposal: string;
+  author: string;
+  origin: "proposal" | "rollback" | "publish";
+  published: boolean;
+  at: string;
+  payload: string; // staged new_entry: JSON {path,tags,metadata}
+}
+
+export function parseRevision(note: Note): Revision {
+  const m = note.metadata;
+  return {
+    id: note.id,
+    note: str(m, "note"),
+    parent: str(m, "parent"),
+    proposal: str(m, "proposal"),
+    author: str(m, "author"),
+    origin: oneOf(str(m, "origin", "proposal"), ["proposal", "rollback", "publish"] as const, "proposal"),
+    published: bool(m, "published", false),
+    at: str(m, "at"),
+    payload: str(m, "payload"),
+  };
+}
+
+export function revisionToMetadata(r: Omit<Revision, "id">): Record<string, unknown> {
+  return {
+    note: r.note,
+    parent: r.parent,
+    proposal: r.proposal,
+    author: r.author,
+    origin: r.origin,
+    published: r.published,
+    at: r.at,
+    payload: r.payload,
+  };
+}
+
+/** Revision history for a note, newest first. */
+export async function listRevisionsFor(vault: GovernanceVault, noteId: string): Promise<Revision[]> {
+  const notes = await vault.listNotes({ tags: [GOV_TAGS.revision] });
+  return notes
+    .map(parseRevision)
+    .filter((r) => r.note === noteId)
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 }

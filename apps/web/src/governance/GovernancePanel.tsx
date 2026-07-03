@@ -18,6 +18,7 @@ import {
   type Membership,
   type AuditEntry,
   type ApiResult,
+  type Revision,
 } from "./api";
 
 const POWERS = ["review", "publish", "certify_gardener", "manage_policy", "arbitrate", "invite", "revoke", "amend_governance"] as const;
@@ -103,6 +104,7 @@ export function GovernancePanel() {
       <MembersCard members={members} />
       <ProposalsCard state={state} proposals={proposals} run={run} />
       <ContentProposeCard run={run} />
+      <HistoryCard run={run} />
       <AuditCard audit={audit} />
     </div>
   );
@@ -307,7 +309,8 @@ function ProposalsCard({
 }) {
   const [payload, setPayload] = useState(AMEND_TEMPLATES.add_role);
   const open = proposals.filter((p) => p.state === "open");
-  const closed = proposals.filter((p) => p.state !== "open");
+  const staged = proposals.filter((p) => p.state === "approved"); // approved ≠ published
+  const closed = proposals.filter((p) => p.state !== "open" && p.state !== "approved");
 
   return (
     <div style={s.card}>
@@ -361,6 +364,22 @@ function ProposalsCard({
         </div>
       ))}
 
+      {staged.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <b>Approved — awaiting publish</b>
+          <div style={{ opacity: 0.7, fontSize: 13 }}>Approval ≠ publishing: these cleared their threshold but are not live until someone with the publish power publishes them.</div>
+          {staged.map((p) => (
+            <div key={p.id} style={s.li}>
+              <b>{p.action}</b> → <span style={s.mono}>{p.target}</span> <span style={s.badge("#1565c0")}>approved</span>
+              <div style={{ ...s.row, marginTop: 6 }}>
+                <button style={s.btn} onClick={() => run(() => govApi.publish(p.id))}>Publish</button>
+                <button style={s.btn} onClick={() => run(() => govApi.withdraw(p.id))}>Withdraw</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {closed.length > 0 && (
         <details style={{ marginTop: 10 }}>
           <summary style={{ cursor: "pointer", opacity: 0.75 }}>Closed proposals ({closed.length})</summary>
@@ -371,6 +390,45 @@ function ProposalsCard({
           ))}
         </details>
       )}
+    </div>
+  );
+}
+
+// ── note history / rollback ───────────────────────────────────────────────────
+
+function HistoryCard({ run }: { run: (fn: () => Promise<ApiResult>) => Promise<ApiResult> }) {
+  const [noteId, setNoteId] = useState("");
+  const [revisions, setRevisions] = useState<Revision[] | null>(null);
+
+  const load = async () => {
+    const r = await govApi.revisions(noteId.trim());
+    setRevisions(r.ok ? (r.data.revisions ?? []) : []);
+  };
+
+  return (
+    <div style={s.card}>
+      <h2 style={s.h2}>Note history & rollback</h2>
+      <div style={s.row}>
+        <input style={{ ...s.input, minWidth: 260 }} placeholder="note id" value={noteId} onChange={(e) => setNoteId(e.target.value)} />
+        <button style={s.btn} onClick={() => void load()}>Load history</button>
+      </div>
+      {revisions !== null && revisions.length === 0 && <p style={{ opacity: 0.6, marginTop: 8 }}>No governed revisions for this note.</p>}
+      {(revisions ?? []).map((r) => (
+        <div key={r.id} style={s.li}>
+          <span style={s.mono}>{r.at}</span> · <b>{r.origin}</b> · {r.author}{" "}
+          {r.published ? <span style={s.badge("#2e7d32")}>published</span> : <span style={s.badge("#757575")}>staged</span>}
+          <div style={{ ...s.row, marginTop: 4 }}>
+            <button
+              style={s.btn}
+              onClick={() =>
+                void run(() => govApi.rollback(noteId.trim(), r.id)).then(() => load())
+              }
+            >
+              Roll back to this
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

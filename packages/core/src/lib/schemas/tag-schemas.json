@@ -1874,6 +1874,51 @@
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
         }
       }
+    },
+    "governance-revision": {
+      "description": "A content revision snapshot (approval≠publishing, Plan 1 G4). The revision note CONTENT is the snapshot; metadata links it to the target note, its parent revision, and the proposal that produced it. published=false means approved/staged but not live.",
+      "contentType": "document",
+      "precedence": 47,
+      "fields": {
+        "note": {
+          "type": "string",
+          "description": "Target note id (empty while a staged new_entry has not been created yet).",
+          "indexed": true
+        },
+        "parent": {
+          "type": "string",
+          "description": "Previous revision note id (the history chain)."
+        },
+        "proposal": {
+          "type": "string",
+          "description": "The governance-proposal that produced this revision."
+        },
+        "author": {
+          "type": "string",
+          "description": "Who authored/applied the change."
+        },
+        "origin": {
+          "type": "string",
+          "description": "How this revision came to be.",
+          "enum": [
+            "proposal",
+            "rollback",
+            "publish"
+          ]
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Whether this revision is (was) the live/published content."
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO-8601 snapshot time."
+        },
+        "payload": {
+          "type": "string",
+          "description": "For staged new_entry: JSON {path,tags,metadata} needed to create the note on publish."
+        }
+      }
     }
   },
   "drift": [

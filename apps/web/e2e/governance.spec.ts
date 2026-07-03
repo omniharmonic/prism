@@ -91,9 +91,10 @@ test.describe("commons governance @live", () => {
     await expect(page.getByText("Unlocked (bootstrap)")).toBeVisible();
     await expect(page.getByText("You are the bootstrap owner")).toBeVisible();
 
-    // ── bootstrap: admin role with the constitutional power ──
+    // ── bootstrap: admin role with the constitutional + publish powers ──
     await page.getByPlaceholder("name (e.g. gardener)").fill("admin");
     await page.getByRole("checkbox", { name: "amend_governance" }).check();
+    await page.getByRole("checkbox", { name: "publish", exact: true }).check();
     await page.getByRole("button", { name: "Add role" }).click();
     await expect(page.locator("text=admin").first()).toBeVisible();
 
@@ -133,7 +134,9 @@ test.describe("commons governance @live", () => {
     // The amendment is live: the gardener role now shows in the Roles card.
     await expect(page.getByText("gardener").first()).toBeVisible();
 
-    // ── governed content change: propose a new entry, sign off, verify note ──
+    // ── governed content change with APPROVAL ≠ PUBLISHING ──
+    // The default policy does not auto-publish, so Apply stages the entry; it
+    // goes live only at the explicit Publish step.
     await page.getByRole("radio", { name: "new_entry" }).check();
     await page.getByPlaceholder("path (e.g. medicine/yarrow)").fill("medicine/e2e-yarrow");
     await page.getByPlaceholder("tags (comma-separated)").fill("medicine");
@@ -144,7 +147,17 @@ test.describe("commons governance @live", () => {
     await page.getByRole("button", { name: "Approve" }).first().click();
     await page.getByRole("button", { name: "Apply" }).first().click();
 
-    // The note exists in the vault (checked over the owner API, not the UI).
+    // Approved but NOT live: the staged section shows it, and the vault has no
+    // medicine note yet.
+    await expect(page.getByText("Approved — awaiting publish")).toBeVisible();
+    {
+      const r = await ownerFetch(`/api/notes?tag=medicine`);
+      const notes = (await r.json()) as Array<{ content: string }>;
+      expect(notes.some((n) => n.content.includes("Yarrow (e2e)"))).toBe(false);
+    }
+
+    // Publish → the note exists in the vault.
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
     await expect
       .poll(async () => {
         const r = await ownerFetch(`/api/notes?tag=medicine`);
