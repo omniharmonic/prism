@@ -52,6 +52,7 @@ export const PARACHUTE_VAULT = env("PARACHUTE_VAULT", "default");
 export const PARACHUTE_TOKEN = env("PARACHUTE_TOKEN");
 /** Owner Bearer for /acl — matches actor.ts (`collabToken || parachuteToken`). */
 export const OWNER_TOKEN = env("COLLAB_TOKEN") || PARACHUTE_TOKEN;
+export const OWNER_EMAIL = env("OWNER_EMAIL", "owner@test.local");
 export const APP_ORIGIN = env("APP_ORIGIN", "http://localhost:8787");
 export const BASE_URL = process.env.E2E_BASE_URL || `http://localhost:${env("PORT", "8787")}`;
 
