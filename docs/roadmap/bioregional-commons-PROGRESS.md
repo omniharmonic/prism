@@ -77,3 +77,40 @@ sandbox — pairing, mirror flow, live A⇄B CRDT convergence, revocation.
 
 Everything else in both plans is built, committed, and verified (e2e or live
 harness).
+
+---
+
+## Final evaluation (full battery, one sweep)
+
+Both plans are implemented end to end. The complete verification battery, run
+together on the final code:
+
+| Suite | Result |
+|---|---|
+| Server unit + route suites (`npm test`) | **274 / 275** (the 1 failure is a pre-existing, unrelated magic-link env test) |
+| Playwright e2e — governance + bioregion + import (5 specs, real Chromium) | **5 / 5** |
+| Two-hub federation convergence (`two-hub-mock.sh` → `verify-two-hub.ts`) | **11 / 0** (+3 operator/in-proc skips) |
+| Suggest-mode capture+apply live (`verify-suggestions.ts`) | **ALL PASS** |
+| Concurrency + bulk stress (`stress-commons.mjs`) | **PASS** — 200-note bulk map import; 30 concurrent propose→vote→apply each landing exactly once; 10 fork→merge cycles; audit integrity |
+| Typechecks — server, core, web, e2e | **clean** |
+| Web production build | **succeeds** |
+
+### Acceptance against the plans
+- **Plan 1 (governance):** roles/trust, per-tag threshold policies with
+  distinct-approver/quorum/window, the bootstrap lock (owner bound once enabled),
+  the propose→sign-off→apply pipeline, approval≠publishing + revisions + rollback,
+  fork/ancestry/proposal-only merge, audit, and suggest-mode capture+apply — all
+  built, note-native, and verified. Governance surfaces both as a Network sub-tab
+  (production) and the standalone `/governance` route (dev).
+- **Plan 2 (graph):** the 11-type purpose-bound ontology + parent_names is-a tree,
+  the GeoJSON convention + utils, the `/bioregion` map/browse with the
+  sensing/responding cleavage and sense→respond detail, a dedicated main-app
+  renderer, and importers (GBIF/Darwin Core, GeoJSON, USGS WBD) — built and
+  verified.
+- **Infra:** the whole federation substrate reproduced with zero real
+  infrastructure (`two-hub-mock.sh`) so federation/collab items are buildable +
+  verifiable in a headless sandbox.
+
+Reproduce it all: `E2E_FAKE_VAULT=1 ./scripts/e2e-governance.sh`,
+`./scripts/two-hub-mock.sh`, and (with `--keep`) `node scripts/stress-commons.mjs`
++ `HUB_ENV=.env.mock-a node --import tsx apps/server/scripts/verify-suggestions.ts`.
