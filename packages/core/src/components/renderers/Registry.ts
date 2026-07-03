@@ -20,6 +20,7 @@ const CalendarDashboardRenderer = lazy(() => import("../comms/CalendarDashboard"
 const MessagesDashboardRenderer = lazy(() => import("../comms/VaultMessagesDashboard"));
 const AgentActivityRenderer = lazy(() => import("../agent/AgentActivity"));
 const NetworkRenderer = lazy(() => import("./NetworkRenderer"));
+const BioregionEntityRenderer = lazy(() => import("./BioregionEntityRenderer"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
   document: DocumentRenderer,
@@ -39,6 +40,7 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   canvas: CanvasRenderer,
   "messages-dashboard": MessagesDashboardRenderer,
   network: NetworkRenderer,
+  "bioregion-entity": BioregionEntityRenderer,
 } as Record<string, React.LazyExoticComponent<ComponentType<RendererProps>>>;
 
 // Virtual dashboard renderers (not in ContentType union)

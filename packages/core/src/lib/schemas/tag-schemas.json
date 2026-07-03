@@ -1128,7 +1128,7 @@
     },
     "ecological-entity": {
       "description": "A located living/geophysical being or feature (a river, creek, forest stand, wetland, observed population). Carries GeoJSON geometry. The SENSING substrate — matters even when no economic event touches it.",
-      "contentType": "document",
+      "contentType": "bioregion-entity",
       "precedence": 51,
       "fields": {
         "name": {
@@ -1217,7 +1217,7 @@
     },
     "species": {
       "description": "A taxon (knowledge-level). Field names are the literal Darwin Core terms so notes round-trip to GBIF/OBIS; anchored to stable GBIF/iNat ids. Distinct from ecological-entity (a located occurrence/population).",
-      "contentType": "document",
+      "contentType": "bioregion-entity",
       "precedence": 52,
       "fields": {
         "scientificName": {
@@ -1304,7 +1304,7 @@
     },
     "place": {
       "description": "A bounded area whose state we sense or within which we respond (schema.org/Place + GeoCoordinates). Subtypes via place_kind; watersheds have their own tag for HUC nesting.",
-      "contentType": "document",
+      "contentType": "bioregion-entity",
       "precedence": 53,
       "fields": {
         "name": {
@@ -1374,7 +1374,7 @@
     },
     "watershed": {
       "description": "A hydrologic unit, keyed by USGS HUC. The HUC code encodes its own nesting (HUC2⊃HUC4⊃…⊃HUC12), so the place hierarchy is derivable by prefix — no join.",
-      "contentType": "document",
+      "contentType": "bioregion-entity",
       "precedence": 54,
       "fields": {
         "huc12": {
@@ -1578,7 +1578,7 @@
     },
     "signal": {
       "description": "The cybernetic core: a sensed condition that DEMANDS a response for resilience — a policy/corporate/ecological threat or signal. No general ontology models this because none is purpose-bound to resilience; it is the raison d'être of the commons.",
-      "contentType": "document",
+      "contentType": "bioregion-entity",
       "precedence": 57,
       "fields": {
         "title": {

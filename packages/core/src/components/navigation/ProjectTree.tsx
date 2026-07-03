@@ -22,6 +22,7 @@ import {
   Square,
   CheckSquare2,
   Radio,
+  MapPin,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useVaultTree, useDeleteNote, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
@@ -53,6 +54,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   dashboard: LayoutDashboard,
   "messages-dashboard": MessageSquare,
   network: Radio,
+  "bioregion-entity": MapPin,
 };
 
 // Build a tree from flat notes list

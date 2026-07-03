@@ -37,7 +37,7 @@ const KNOWN_TYPES = new Set<string>([
   "document", "note", "presentation", "code", "email",
   "message-thread", "task-board", "task", "event",
   "project", "spreadsheet", "website", "canvas", "briefing",
-  "dashboard", "messages-dashboard",
+  "dashboard", "messages-dashboard", "bioregion-entity",
 ]);
 
 // Tag → ContentType mapping, ordered by priority (first match wins).
@@ -186,6 +186,7 @@ export const CONTENT_TYPE_ICONS: Record<ContentType, string> = {
   dashboard: "LayoutDashboard",
   "messages-dashboard": "MessageSquare",
   network: "Radio",
+  "bioregion-entity": "MapPin",
 };
 
 // Display names
@@ -207,4 +208,5 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   dashboard: "Dashboard",
   "messages-dashboard": "Messages",
   network: "Network",
+  "bioregion-entity": "Bioregion Entity",
 };

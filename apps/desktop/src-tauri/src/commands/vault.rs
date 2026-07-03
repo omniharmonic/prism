@@ -64,7 +64,7 @@ fn enrich_note(mut note: Note) -> Note {
             "document", "note", "presentation", "code", "email",
             "message-thread", "task-board", "task", "event",
             "project", "spreadsheet", "website", "canvas", "briefing",
-            "dashboard",
+            "dashboard", "bioregion-entity",
         ];
 
         if !known_prism_types.contains(&current_type.as_str()) {
