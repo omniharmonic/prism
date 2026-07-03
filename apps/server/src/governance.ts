@@ -86,6 +86,7 @@ export interface Vote {
   voter: string;
   vote: "approve" | "reject";
   at: string; // ISO-8601
+  reason?: string;
 }
 
 /** The constitution (singleton `governance-config` note). */

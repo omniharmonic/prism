@@ -17,6 +17,7 @@ import { rag } from "./routes/rag";
 import { publish } from "./routes/publish";
 import { federation } from "./routes/federation";
 import { federated } from "./routes/federated";
+import { governance } from "./routes/governance";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -98,6 +99,10 @@ export function createApp(): Hono {
   // Owner-only vault registry — mounted BEFORE the gateway so /api/vaults is not
   // proxied to the vault by the owner short-circuit inside `api`.
   app.route("/api", vaults);
+  // Commons governance (note-native) — mounted BEFORE the gateway so
+  // /api/governance/* is handled here, not proxied to the vault. Member-authed
+  // in-handler; inert until an owner enables governance.
+  app.route("/api/governance", governance);
   app.route("/api", api);
   app.route("/acl", acl);
 

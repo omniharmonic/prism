@@ -135,11 +135,13 @@ export function parseProposal(note: Note): Proposal {
 
 export function parseVote(note: Note): Vote {
   const m = note.metadata;
+  const reason = str(m, "reason");
   return {
     proposal: str(m, "proposal"),
     voter: str(m, "voter"),
     vote: oneOf(str(m, "vote", "approve"), ["approve", "reject"] as const, "approve"),
     at: str(m, "at"),
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -148,6 +150,15 @@ export function parseVote(note: Note): Vote {
 // governance-* note. Field names mirror tag-schemas.json exactly, so
 // parse(serialize(x)) round-trips.
 
+export function configToMetadata(c: GovernanceConfig): Record<string, unknown> {
+  return {
+    enabled: c.enabled,
+    bootstrap_owner: c.bootstrapOwner,
+    amend_policy: c.amendPolicy,
+    default_threshold_n: c.defaultThresholdN,
+    default_eligible_role: c.defaultEligibleRole,
+  };
+}
 export function roleToMetadata(r: Omit<Role, "id">): Record<string, unknown> {
   return { name: r.name, powers: r.powers, scope_type: r.scopeType, scope: r.scope };
 }
@@ -171,7 +182,7 @@ export function proposalToMetadata(p: Omit<Proposal, "id">): Record<string, unkn
   return { action: p.action, target: p.target, state: p.state, opened_by: p.openedBy, opened_at: p.openedAt };
 }
 export function voteToMetadata(v: Vote): Record<string, unknown> {
-  return { proposal: v.proposal, voter: v.voter, vote: v.vote, at: v.at };
+  return { proposal: v.proposal, voter: v.voter, vote: v.vote, at: v.at, reason: v.reason ?? "" };
 }
 export function auditToMetadata(e: {
   action: string;
