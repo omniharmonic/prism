@@ -841,6 +841,233 @@
           "description": "Timestamp of most recent message"
         }
       }
+    },
+    "governance-config": {
+      "description": "Commons governance constitution (singleton). Holds the master enabled switch (the one-way bootstrap lock), the bootstrap owner, the amend/disable threshold policy id, and system defaults. Once `enabled` is true, this note can only be changed through an amend_governance proposal.",
+      "contentType": "document",
+      "precedence": 40,
+      "fields": {
+        "enabled": {
+          "type": "boolean",
+          "description": "The bootstrap lock. false = owner configures freely; true = governance is self-amending and all governance-* mutations require governance. One-way in practice: flipping back to false itself requires an amend_governance proposal."
+        },
+        "bootstrap_owner": {
+          "type": "string",
+          "description": "The genesis admin subject (email) who seeds roles/policies before enablement."
+        },
+        "amend_policy": {
+          "type": "string",
+          "description": "Note id of the governance-policy governing the amend_governance action (changing/disabling governance itself). The constitutional threshold — should be strictly harder than ordinary content policies."
+        },
+        "default_threshold_n": {
+          "type": "number",
+          "description": "Fallback approvals required when no more-specific policy matches an action."
+        },
+        "default_eligible_role": {
+          "type": "string",
+          "description": "Fallback role whose members may approve when no policy matches."
+        }
+      }
+    },
+    "governance-role": {
+      "description": "A commons governance role: a named bundle of powers, optionally scoped to a tag (nested/tag-scoped governance, e.g. gardener of #watershed). Powers ∈ review, publish, certify_gardener, manage_policy, arbitrate, invite, revoke, amend_governance.",
+      "contentType": "document",
+      "precedence": 41,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Role name (e.g. gardener, steward, admin, arbiter)."
+        },
+        "powers": {
+          "type": "array",
+          "description": "Governance powers this role grants."
+        },
+        "scope_type": {
+          "type": "string",
+          "description": "Whether the role acts globally or only within a tag.",
+          "enum": [
+            "global",
+            "tag"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "description": "The tag this role is scoped to when scope_type=tag (empty for global)."
+        }
+      }
+    },
+    "governance-membership": {
+      "description": "Binds a subject (email) to a governance-role. Optional expiry gives term limits / periodic recall for free.",
+      "contentType": "document",
+      "precedence": 42,
+      "fields": {
+        "subject": {
+          "type": "string",
+          "description": "The member (email).",
+          "indexed": true
+        },
+        "role": {
+          "type": "string",
+          "description": "Note id or name of the governance-role."
+        },
+        "granted_by": {
+          "type": "string",
+          "description": "Who granted this membership (subject or proposal id)."
+        },
+        "expires_at": {
+          "type": "string",
+          "description": "ISO-8601 expiry, or empty for no expiry."
+        }
+      }
+    },
+    "governance-policy": {
+      "description": "A collective-choice rule: how many sign-offs, from which role, over what window, are required for an action on a scope, and whether approval auto-publishes. The HOW-MANY axis.",
+      "contentType": "document",
+      "precedence": 43,
+      "fields": {
+        "action": {
+          "type": "string",
+          "description": "The governed action (e.g. edit_note, new_entry, publish, certify_gardener, add_admin, remove_admin, amend_governance).",
+          "indexed": true
+        },
+        "scope_type": {
+          "type": "string",
+          "description": "Granularity the policy applies at.",
+          "enum": [
+            "global",
+            "tag",
+            "note"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "description": "The tag or note id the policy applies to (empty for global)."
+        },
+        "threshold_n": {
+          "type": "number",
+          "description": "Number of approvals required."
+        },
+        "quorum": {
+          "type": "number",
+          "description": "Minimum participation (absolute count) required for the vote to count; 0 = no quorum."
+        },
+        "distinct_required": {
+          "type": "boolean",
+          "description": "Require threshold_n DISTINCT approvers (anti-sock-puppet)."
+        },
+        "eligible_role": {
+          "type": "string",
+          "description": "Role whose members' approvals count toward the threshold."
+        },
+        "window_seconds": {
+          "type": "number",
+          "description": "Time window within which approvals must accrue; 0 = no window."
+        },
+        "auto_publish": {
+          "type": "boolean",
+          "description": "Whether meeting the threshold also publishes (moves the live pointer) vs. only approves."
+        }
+      }
+    },
+    "governance-proposal": {
+      "description": "A pending change awaiting sign-off: a content revision, a new entry, a role/membership change, a policy change, or an amend_governance action. Evaluated against its matching governance-policy.",
+      "contentType": "document",
+      "precedence": 44,
+      "fields": {
+        "action": {
+          "type": "string",
+          "description": "The action being proposed (matches a governance-policy action).",
+          "indexed": true
+        },
+        "target": {
+          "type": "string",
+          "description": "The resource the proposal acts on (note id, tag, role id, or 'governance-config')."
+        },
+        "payload": {
+          "type": "string",
+          "description": "The proposed change (revision id, JSON patch, or role/policy body)."
+        },
+        "state": {
+          "type": "string",
+          "description": "Lifecycle state.",
+          "indexed": true,
+          "enum": [
+            "open",
+            "approved",
+            "rejected",
+            "applied",
+            "withdrawn"
+          ]
+        },
+        "opened_by": {
+          "type": "string",
+          "description": "Subject who opened the proposal."
+        },
+        "opened_at": {
+          "type": "string",
+          "description": "ISO-8601 open time (drives the policy window)."
+        }
+      }
+    },
+    "governance-vote": {
+      "description": "One sign-off on a governance-proposal by an eligible member. Distinct (voter, proposal) pairs are what the threshold counts.",
+      "contentType": "document",
+      "precedence": 45,
+      "fields": {
+        "proposal": {
+          "type": "string",
+          "description": "Note id of the governance-proposal.",
+          "indexed": true
+        },
+        "voter": {
+          "type": "string",
+          "description": "Subject casting the vote."
+        },
+        "vote": {
+          "type": "string",
+          "description": "The decision.",
+          "enum": [
+            "approve",
+            "reject"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional rationale."
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO-8601 vote time."
+        }
+      }
+    },
+    "governance-audit": {
+      "description": "An append-only audit entry recording a governance mutation (grant/role/policy change, approval, publish, sanction). The commons's legible memory.",
+      "contentType": "document",
+      "precedence": 46,
+      "fields": {
+        "action": {
+          "type": "string",
+          "description": "What happened (e.g. membership_granted, policy_amended, proposal_applied).",
+          "indexed": true
+        },
+        "actor": {
+          "type": "string",
+          "description": "Who did it (subject or 'system')."
+        },
+        "before": {
+          "type": "string",
+          "description": "JSON of prior state (empty for creations)."
+        },
+        "after": {
+          "type": "string",
+          "description": "JSON of new state."
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO-8601 timestamp."
+        }
+      }
     }
   },
   "drift": [

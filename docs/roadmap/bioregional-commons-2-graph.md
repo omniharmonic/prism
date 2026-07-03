@@ -350,9 +350,12 @@ ships independently and every note created is governed by Plan 1.
    with the spine (`entity`+subtypes, `place`/`watershed`, `species`, `signal`,
    `recipe`) and add `flow`/`commitment` once REA accounting is actually needed?
    *Recommendation: spine first (S2–S3), accounting (`flow`/`commitment`) in S5.*
-2. **REA depth.** Full Valueflows process/commitment accounting (powerful, heavy)
-   vs. a light `event`/`resource`/`flow` subset for v1? *Recommendation: light
-   subset; the supertype decision keeps the door open to full VF later.*
+2. **REA depth.** — **RESOLVED: light.** v1 ships the `entity`/`event`/`resource`
+   core plus a light `flow`/`commitment` layer only; full Valueflows process/
+   commitment accounting is deferred. The neutral `entity` supertype keeps the
+   door open to full VF later without a migration. Governance thresholds attach
+   per-type (Plan 1), so a small type set also keeps the initial policy surface
+   small.
 3. **`signal`/`threat` — manual vs. agent-sensed.** Curate threats by hand first,
    or wire the existing intelligence-scan/web-monitor agents to propose them as
    pending notes (governed by Plan 1)? *Recommendation: agent-proposed → human-

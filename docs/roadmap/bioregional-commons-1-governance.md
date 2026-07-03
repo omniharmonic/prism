@@ -13,6 +13,37 @@
 
 ---
 
+## Decisions locked (2026-07, from the owner)
+
+Three architectural questions from the first draft are now settled and are load-
+bearing for everything below:
+
+1. **Governance state is dogfooded as governed notes.** Roles, policies, the
+   constitution/config, proposals, votes, and the audit log live **in the
+   Parachute vault as typed, tagged notes** — not in a separate server SQLite
+   schema. The server keeps only *derived/operational* state (caches, session
+   rows). Consequence: governance data versions, federates, and is itself
+   governable exactly like any other commons content — the system is made of the
+   same stuff it governs. (This supersedes draft open-question §5.2's "hybrid"
+   lean toward server SQLite.)
+2. **Governance is self-amending once enabled (the bootstrap lock).** There is a
+   one-way switch: before it is thrown, the owner configures freely (bootstrap);
+   **the moment governance is turned on, changing or turning it off requires
+   going through governance itself** — an `amend_governance` proposal that meets
+   its own configured threshold. No actor, including the owner, can silently
+   disable it or edit policies/roles out of band. This is a constitutional lock
+   (Ostrom #3 collective-choice + #7 minimal-recognition made literal).
+3. **REA depth is light (v1).** Adopt the `entity`/`event`/`resource` core and a
+   light `flow`/`commitment` layer only; full Valueflows process accounting is
+   deferred. (Detailed in **Plan 2** — noted here because governance thresholds
+   attach per-type and the type set is intentionally small at first.)
+
+Everything in §2–§5 should be read through these three commitments; the sections
+most affected (§2.2 meta-governance, §2.5 audit, §4 phasing, §5 open questions)
+have been revised to match.
+
+---
+
 ## 0. The reframe — from PKM to a governed commons
 
 Prism + Parachute were built for **personal** knowledge management. The entire
@@ -273,6 +304,47 @@ edit, approval, publish, and sanction. The hooks already exist as choke points
 (see §3); we just record through them. This makes the commons **legible and
 accountable to its members**, which is what separates a commons from a fiefdom.
 
+### 2.6 The note-native governance model (Decision §1) + the bootstrap lock (§2)
+
+Rather than a parallel SQLite schema, the governance layer is a small set of
+**typed notes** in the vault, each guard-tagged so it is itself governed:
+
+| Artifact | Tag | Key metadata | Governs |
+|---|---|---|---|
+| Constitution/config (singleton) | `governance-config` | `enabled`, `bootstrap_owner`, `amend_policy` (the disable/amend threshold), `defaults` | the whole system |
+| Role definition | `governance-role` | `name`, `powers[]`, `scope_type`, `scope` | who can do what |
+| Membership | `governance-membership` | `subject`, `role`, `granted_by`, `expires_at` | subject→role |
+| Policy | `governance-policy` | `action`, `scope_type`, `scope`, `threshold_n`, `quorum`, `distinct_required`, `eligible_role`, `window_seconds`, `auto_publish` | how many sign-offs |
+| Proposal | `governance-proposal` | `action`, `target`, `payload`, `state`, `opened_by`, `opened_at` | a pending change |
+| Vote | `governance-vote` | `proposal`, `voter`, `vote`, `reason`, `at` | one sign-off |
+| Audit entry | `governance-audit` | `action`, `actor`, `before`, `after`, `at` | append-only memory |
+
+The server reads these via the existing vault client (`parachute.ts` `listNotes({
+tags: [...] })`), parses them into the pure structures the **engine** (§ below)
+operates on, and caches. Writes to any `governance-*` note are themselves gated
+by the engine — you cannot edit a `governance-policy` except through an
+`amend_governance` proposal once the lock is on. This is what makes governance
+**self-amending and self-protecting**: the config note carries its own
+`amend_policy`, and the guard on `governance-*` notes points back at that policy,
+so the only way to change the rules is to satisfy the rules.
+
+**The bootstrap lock is a one-way latch on `governance-config.enabled`.** While
+`false`, the owner (bootstrap root) may create/edit any `governance-*` note
+directly — this is setup. Flipping it to `true` is the ratification event; from
+then on every `governance-*` mutation (including flipping `enabled` back to
+`false`) must ride an `amend_governance` proposal that clears `amend_policy`. The
+engine exposes a single predicate, `isLocked(config)`, and the mutation guard
+(hook 1, §3) consults it: locked → route through governance; unlocked → allow the
+bootstrap owner. No code path lets a locked config be edited out of band.
+
+**Pure-engine boundary.** All *decisions* (role resolution, policy selection,
+proposal evaluation, the lock predicate) live in a dependency-free
+`governance.ts` — a sibling to `permissions.ts`, unit-tested in isolation exactly
+like `effectiveLevel`. Note-parsing (notes → structures) and note-writing are a
+thin `governance-store.ts` seam over `parachute.ts`; the engine never does I/O.
+This keeps the authoritative logic testable and keeps `effectiveLevel` +
+`governance` as two small, pure algebras the whole gateway hangs off.
+
 ---
 
 ## 3. Where it attaches (exact hook points)
@@ -305,11 +377,14 @@ policy check + an audit write at each, not rearchitecting.
 
 ## 4. Phased build plan (testable, committed per step)
 
-- **G0 — Schema + policy engine.** Add `roles`, `role_members`, `policies`,
-  `revisions`, `approvals`, `audit_log` tables (`db.ts`) + the pure
-  `requiredApprovals/isSatisfied` helpers (a `governance.ts` sibling to
-  `permissions.ts`, fully unit-testable like the existing `effectiveLevel` tests).
-  No behavior change yet. *Verify: typecheck + helper tests.*
+- **G0 — Governance note-schema + pure engine.** Define the `governance-*` note
+  tag-schemas (§2.6) in `tag-schemas.json` (contentType `document`, no renderer/
+  Rust changes) + the pure `governance.ts` engine: role/power resolution, policy
+  selection, `evaluateProposal`, and the `isLocked` bootstrap-lock predicate — a
+  sibling to `permissions.ts`, fully unit-testable like the existing
+  `effectiveLevel` tests. No behavior change yet, nothing wired into live routes.
+  *Verify: typecheck + `governance.test.ts` + content-types drift self-check.*
+  **← this is the phase being built now.**
 - **G1 — Audit + roles (WHO).** Wrap grant mutations (hook 1); add role CRUD to
   `acl.ts` + a Network "Members & Roles" sub-tab; render the audit trail.
   Owner-bootstrapped roles, manual certification first. *Verify: gateway e2e —
@@ -346,16 +421,22 @@ independently shippable and leaves `effectiveLevel` authoritative.
    gardeners (simple, high-trust, matches "we'll certify gardeners"), and add
    metric-driven auto-tiers later? Or build the computed `trust_score` now?
    *Recommendation: appoint first, automate later.*
-2. **Where governance state lives.** Roles/policies/revisions in the **Prism
-   Server SQLite** (fast, server-authoritative, but a second source of truth
-   beside the vault) vs. **as governed notes in Parachute itself** (dogfoods the
-   commons, federates for free, but slower and needs careful guard-tagging).
-   *Recommendation: hybrid — operational state (approvals, sessions) in server
-   SQLite; durable artifacts (proposals, policy docs, role registry) as
-   guard-tagged notes so they version + federate like everything else.*
+2. **Where governance state lives.** — **RESOLVED: dogfooded as governed notes.**
+   All durable governance artifacts (config/constitution, roles, memberships,
+   policies, proposals, votes, audit log) are typed notes in the vault; the server
+   holds only derived caches. See "Decisions locked" §1 and §2.6 below.
 3. **Fork merge model.** Full DAG merge (powerful, complex) vs. proposal-only
    "re-submit a fork's changes as pending revisions to canonical" (simpler, gated
-   by the same engine). *Recommendation: proposal-only for v1.*
-4. **Does the owner stay sovereign,** or is even the owner bound by thresholds for
-   high-stakes actions from day one? (Affects whether this is "a benevolent
-   admin's tool" or "a real commons" — a values choice, not a technical one.)
+   by the same engine). *Recommendation: proposal-only for v1.* (Still open.)
+4. **Does the owner stay sovereign?** — **RESOLVED: no, once governance is on.**
+   Before enablement the owner is the bootstrap root and configures freely; after
+   the one-way switch, even the owner must go through an `amend_governance`
+   proposal to change roles/policies or disable governance (Decisions locked §2).
+   The owner remains the *genesis* admin (seeds the first roles/thresholds) but is
+   bound by the constitution the moment it is ratified.
+5. **What is the disable/break-glass threshold?** The one genuinely hard sub-
+   question left by Decision §2: `amend_governance` must be hard enough to prevent
+   capture yet not permanently lock out a small commons if members go dark.
+   Candidate: a high distinct-admin quorum **plus** a long time-delay/veto window
+   (a "constitutional" threshold strictly above ordinary content thresholds).
+   *Needs the owner's call on the exact numbers before G3.*
