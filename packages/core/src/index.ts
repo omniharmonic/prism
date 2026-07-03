@@ -7,6 +7,7 @@ import "./styles/collab.css";
 
 // App shell
 export { default as App } from "./App";
+export { GovernancePanel } from "./components/renderers/network/governance/GovernancePanel";
 
 // Collaborative editor (CRDT) — host shells supply the Yjs doc + provider.
 export { CollabEditor } from "./components/renderers/CollabEditor";

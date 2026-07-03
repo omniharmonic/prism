@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings, GovernancePanel } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
@@ -11,9 +11,9 @@ import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
 import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
-import { GovernancePanel } from "./governance/GovernancePanel";
 import { BioregionPanel } from "./bioregion/BioregionPanel";
 import { CommonsLanding } from "./commons/CommonsLanding";
+import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -128,6 +128,7 @@ async function start() {
     }
     root.render(
       <React.StrictMode>
+        <CommonsNav active="governance" />
         <GovernancePanel />
       </React.StrictMode>,
     );
