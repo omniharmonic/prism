@@ -92,7 +92,10 @@ for i in $(seq 1 60); do
 done
 
 # ── playwright ────────────────────────────────────────────────────────────────
-say "running the governance spec…"
+# Which specs to run: the commons flows that work against the (fake or real)
+# vault. Override with E2E_SPECS="e2e/foo.spec.ts".
+SPECS="${E2E_SPECS:-e2e/governance.spec.ts e2e/bioregion.spec.ts}"
+say "running specs: $SPECS"
 HEADED=()
 [ "${E2E_HEADED:-0}" = "1" ] && HEADED=(--headed)
 (
@@ -102,6 +105,6 @@ HEADED=()
   PARACHUTE_TOKEN="$(grep -E '^PARACHUTE_TOKEN=' "$ENV_E2E" | cut -d= -f2-)" \
   COLLAB_TOKEN="$(grep -E '^COLLAB_TOKEN=' "$ENV_E2E" | cut -d= -f2- || true)" \
   OWNER_EMAIL="$(grep -E '^OWNER_EMAIL=' "$ENV_E2E" | cut -d= -f2-)" \
-  npx playwright test e2e/governance.spec.ts --reporter=list "${HEADED[@]}"
+  npx playwright test $SPECS --reporter=list "${HEADED[@]}"
 )
-say "governance e2e PASSED"
+say "commons e2e PASSED"

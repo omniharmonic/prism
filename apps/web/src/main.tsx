@@ -12,6 +12,7 @@ import { ShareView } from "./share/ShareView";
 import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { GovernancePanel } from "./governance/GovernancePanel";
+import { BioregionPanel } from "./bioregion/BioregionPanel";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -127,6 +128,26 @@ async function start() {
     root.render(
       <React.StrictMode>
         <GovernancePanel />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Bioregional commons browse + map surface: /bioregion. Reads the graph through
+  // the gateway (owner passthrough, or a member's granted slice); requires a session.
+  if (window.location.pathname === "/bioregion") {
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice="Sign in to explore the bioregional commons." />
+        </React.StrictMode>,
+      );
+      return;
+    }
+    root.render(
+      <React.StrictMode>
+        <BioregionPanel />
       </React.StrictMode>,
     );
     return;
