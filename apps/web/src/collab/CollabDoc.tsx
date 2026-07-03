@@ -149,9 +149,12 @@ export function CollabDoc({
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
         const filename = note.path?.split("/").pop() as string | undefined;
         const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
-        if (k === "document") setTitle(deriveTitle(note.content || ""));
+        // Prefer the note's explicit title / filename; fall back to a heading
+        // derived from the body. (Content-only derivation left "Shared document"
+        // whenever the body had no leading heading — or was collab HTML.)
+        if (k === "document") setTitle(titleMeta || filename || deriveTitle(note.content || ""));
         else if (k === "canvas") setTitle(titleMeta || filename || "Canvas");
-        else setTitle(filename || deriveTitle(note.content || ""));
+        else setTitle(titleMeta || filename || deriveTitle(note.content || ""));
       } catch {
         /* level unknown → server still enforces */
       }
@@ -198,8 +201,12 @@ export function CollabDoc({
   // Local-first persistence: the Y.Doc is mirrored to IndexedDB, so edits made
   // while offline (or before the server syncs) survive a reload and merge via
   // CRDT on reconnect — nothing is lost if the network drops mid-edit.
+  // The `v2-` prefix retires pre-fix local stores: before the server persisted
+  // its seed, every reconnect re-seeded a fresh-client-ID copy that accumulated
+  // in these IndexedDB docs. Bumping the key abandons that duplicated state so a
+  // corrupted note reloads clean from the (now stable) server doc.
   useEffect(() => {
-    const persistence = new IndexeddbPersistence(`prism-collab-${noteId}`, ydoc);
+    const persistence = new IndexeddbPersistence(`prism-collab-v2-${noteId}`, ydoc);
     return () => {
       void persistence.destroy();
     };

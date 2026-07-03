@@ -534,8 +534,15 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   const stored = getDocState(target.noteId, target.vaultId);
   const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
 
-  if (stored && !externallyEdited) {
-    Y.applyUpdate(doc, stored.state); // live CRDT state is current
+  if (stored) {
+    // Always restore the persisted CRDT state first: it carries the doc's stable
+    // Yjs client IDs. A reconnecting client (in-session, or via IndexedDB across
+    // reloads) then merges IDENTICAL items → idempotent, no duplication.
+    Y.applyUpdate(doc, stored.state);
+    // If Parachute changed underneath us, fold that edit in via a minimal CRDT
+    // DIFF (updateYFragment et al.) — NOT an additive re-seed, which would stack
+    // a second fresh-client-ID copy of the whole note on top of the first.
+    if (externallyEdited && note) applyExternalContent(doc, kind, note.content);
   } else if (note) {
     const seed =
       kind === "code"
@@ -545,11 +552,17 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
           : kind === "canvas"
             ? sceneToYUpdate(note.content)
             : contentToYUpdate(note.content);
-    Y.applyUpdate(doc, seed); // seed (or re-seed on external edit)
+    Y.applyUpdate(doc, seed); // first-ever seed into a fresh, empty doc
   }
-  // The doc now reflects Parachute as of note.updatedAt — record it so the
-  // reconciler doesn't immediately re-apply the very content we just loaded.
-  if (note) lastReconciled.set(documentName, toMs(note.updatedAt));
+  // Persist NOW, even without an edit. Otherwise a view-only note (which never
+  // triggers a store) has no stored state, so every connection re-seeds a fresh
+  // client-ID copy and reconnecting clients accumulate duplicates (the "content
+  // repeats again and again" bug). Recording it means the next load restores this
+  // exact state instead of re-seeding.
+  if (note) {
+    saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
+    lastReconciled.set(documentName, toMs(note.updatedAt));
+  }
   return doc;
 }
 

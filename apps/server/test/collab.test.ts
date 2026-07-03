@@ -170,6 +170,29 @@ test("loadDocumentState re-seeds when Parachute was edited externally (external 
   assert.doesNotMatch(html, /old crdt text/);
 });
 
+test("loadDocumentState persists its seed so a reconnect does NOT duplicate content (view-only reload bug)", async () => {
+  fv.put({ id: "n1", content: "working relationship note", tags: [] });
+
+  // First connection: seed a fresh doc. The server MUST persist it even though
+  // no edit/store happened — a view-only note never triggers storeDocumentState.
+  const load1 = await loadDocumentState("n1", new Y.Doc());
+  assert.ok(getDocState("n1"), "the seed must be persisted on first load");
+
+  // The client holds that state locally (IndexedDB across reloads / the live doc
+  // across an in-session reconnect).
+  const client = new Y.Doc();
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(load1));
+
+  // Reconnect: a SECOND independent server load must restore the SAME persisted
+  // state (stable Yjs client IDs), NOT re-seed a fresh-client-ID copy — otherwise
+  // the client merges a second whole copy and the note repeats.
+  const load2 = await loadDocumentState("n1", new Y.Doc());
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(load2));
+
+  const occurrences = yDocToHtml(client).split("working relationship note").length - 1;
+  assert.equal(occurrences, 1, "content must appear exactly once after a reconnect");
+});
+
 // ---------------------------------------------------------- storeDocumentState
 
 test("storeDocumentState writes HTML to the vault AND persists the Yjs binary", async () => {
