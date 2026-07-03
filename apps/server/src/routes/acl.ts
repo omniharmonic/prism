@@ -6,7 +6,7 @@
  * ("share everything tagged X with this person"). Authorization for the shared
  * content itself is still enforced by the /api gateway via these grants.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
 import { vault, VaultError } from "../parachute";
@@ -62,7 +62,7 @@ import {
 } from "../db";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
-import { noteKind } from "../collab";
+import { noteKind, resolveSuggestionsInHtml } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
@@ -608,19 +608,38 @@ acl.get("/suggestions", (c) => {
   );
 });
 
-acl.post("/suggestions/:id/accept", (c) => {
-  const s = getSuggestion(c.req.param("id"));
+/** Resolve a captured suggested-edit: APPLY the author's suggestion marks to the
+ *  live note (accept keeps insertions / removes deletions; reject the inverse),
+ *  then flip the row's status. The open collab doc absorbs the change via the
+ *  external-edit reconcile loop, so connected editors see it live. (G2b — the
+ *  old endpoints flipped status without applying anything.) */
+async function resolveSuggestion(c: Context, action: "accept" | "reject") {
+  const s = getSuggestion(c.req.param("id") ?? "");
   if (!s) return c.json({ error: "not_found" }, 404);
-  setSuggestionStatus(s.id, "accepted");
-  return c.json({ ok: true, status: "accepted" });
-});
+  if (s.status !== "pending") return c.json({ error: "resolved", detail: `suggestion is ${s.status}` }, 409);
+  let applied = false;
+  // Only mark-captured USER suggestions apply via the HTML transform. Peer-kind
+  // rows (the federation inbox) carry a Yjs payload consumed by the collab
+  // layer on doc load — their accept/reject stays a durable status transition.
+  if (s.author && s.author_kind === "user") {
+    try {
+      const note = await vault.getNote(s.note_id);
+      const next = resolveSuggestionsInHtml(note.content, s.author, action);
+      if (next !== note.content) {
+        await vault.updateNote(s.note_id, { content: next });
+        applied = true;
+      }
+    } catch (e) {
+      return c.json({ error: "apply_failed", detail: (e as Error).message }, 500);
+    }
+  }
+  setSuggestionStatus(s.id, action === "accept" ? "accepted" : "rejected");
+  return c.json({ ok: true, status: action === "accept" ? "accepted" : "rejected", applied });
+}
 
-acl.post("/suggestions/:id/reject", (c) => {
-  const s = getSuggestion(c.req.param("id"));
-  if (!s) return c.json({ error: "not_found" }, 404);
-  setSuggestionStatus(s.id, "rejected");
-  return c.json({ ok: true, status: "rejected" });
-});
+acl.post("/suggestions/:id/accept", (c) => resolveSuggestion(c, "accept"));
+
+acl.post("/suggestions/:id/reject", (c) => resolveSuggestion(c, "reject"));
 
 acl.delete("/suggestions/:id", (c) => {
   deleteSuggestion(c.req.param("id"));

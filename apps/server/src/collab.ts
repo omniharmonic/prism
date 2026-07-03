@@ -43,6 +43,9 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, atLeast, type Level } from "./permissions";
+import { randomUUID } from "node:crypto";
+import { createSuggestion, suggestionsForNote } from "./db";
+import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
 // one. (These globals are read when the hooks run, never at import.)
@@ -66,6 +69,57 @@ export function contentToYUpdate(content: string): Uint8Array {
 
 export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
+}
+
+// ---- server-side suggested edits (G2b) ----
+// Pure transforms live in ./suggestions (PM JSON); these wrappers own the
+// HTML⇄JSON rendering with the shared schema.
+
+/** Distinct suggestion-mark authors present in a note's HTML ("" if none). */
+export function suggestionAuthorsInHtml(html: string): string[] {
+  if (!html.includes("data-suggestion")) return []; // cheap pre-check
+  return suggestionAuthors(generateJSON(html, exts) as PmNode);
+}
+
+/** Apply accept/reject of an author's suggestion marks to a note's HTML. */
+export function resolveSuggestionsInHtml(html: string, author: string | null, action: "accept" | "reject"): string {
+  const json = generateJSON(html, exts) as PmNode;
+  if (!hasSuggestions(json, author)) return html;
+  return generateHTML(resolveSuggestions(json, author, action) as never, exts);
+}
+
+/** Summary line for the review inbox. */
+export function summarizeSuggestionsInHtml(html: string, author: string): string {
+  return summarizeSuggestions(generateJSON(html, exts) as PmNode, author);
+}
+
+/**
+ * Durable suggestion capture: when a persisted document carries suggestion
+ * marks, ensure a pending_suggestions row exists per suggesting author, so the
+ * owner has a review QUEUE (not just marks floating in the doc). Idempotent per
+ * (note, author) while a pending row exists; errors never block the persist.
+ */
+function captureSuggestions(noteId: string, html: string): void {
+  try {
+    const authors = suggestionAuthorsInHtml(html).filter((a) => a !== "");
+    if (authors.length === 0) return;
+    const existing = suggestionsForNote(noteId).filter((s) => s.status === "pending");
+    const json = generateJSON(html, exts) as PmNode;
+    for (const author of authors) {
+      if (existing.some((s) => s.author === author)) continue;
+      createSuggestion({
+        id: randomUUID(),
+        space_note_key: null,
+        note_id: noteId,
+        author,
+        author_kind: "user",
+        summary: summarizeSuggestions(json, author),
+        payload: "",
+      });
+    }
+  } catch {
+    /* capture is best-effort — never fail the persist */
+  }
 }
 
 // ---- collab kinds (type-aware seeding/persistence) ----
@@ -564,6 +618,8 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
             : yDocToHtml(doc);
     const updated = await vault.updateNote(target.noteId, { content });
     sourceUpdatedAt = toMs(updated.updatedAt);
+    // G2b: persisted suggestion marks land in the owner's durable review queue.
+    if (kind === "document") captureSuggestions(target.noteId, content);
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
