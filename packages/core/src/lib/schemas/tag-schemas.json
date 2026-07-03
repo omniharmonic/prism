@@ -495,7 +495,10 @@
             "funder"
           ]
         }
-      }
+      },
+      "parent_names": [
+        "entity"
+      ]
     },
     "organization": {
       "description": "An organization, company, DAO, nonprofit, or collective",
@@ -538,7 +541,10 @@
           "type": "number",
           "description": "Extraction confidence (0-1)"
         }
-      }
+      },
+      "parent_names": [
+        "entity"
+      ]
     },
     "decision-record": {
       "description": "A record of a decision made, with context and alternatives",
@@ -1204,7 +1210,10 @@
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
         }
-      }
+      },
+      "parent_names": [
+        "entity"
+      ]
     },
     "species": {
       "description": "A taxon (knowledge-level). Field names are the literal Darwin Core terms so notes round-trip to GBIF/OBIS; anchored to stable GBIF/iNat ids. Distinct from ecological-entity (a located occurrence/population).",
@@ -1288,7 +1297,10 @@
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
         }
-      }
+      },
+      "parent_names": [
+        "entity"
+      ]
     },
     "place": {
       "description": "A bounded area whose state we sense or within which we respond (schema.org/Place + GeoCoordinates). Subtypes via place_kind; watersheds have their own tag for HUC nesting.",
@@ -1422,7 +1434,10 @@
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
         }
-      }
+      },
+      "parent_names": [
+        "place"
+      ]
     },
     "event": {
       "description": "A dated occurrence registering a change of state or a coordinated response (REA Economic Event / schema.org/Event).",

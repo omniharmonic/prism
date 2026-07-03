@@ -59,6 +59,13 @@ interface VaultTag {
   count: number;
   description: string | null;
   fields: Record<string, TagFieldDef> | null;
+  parent_names?: string[] | null;
+}
+
+/** The `parent_names` (is-a parents) declared for a tag, if any. */
+function desiredParentNames(entry: TagSchemaEntry): string[] {
+  const p = (entry as { parent_names?: unknown }).parent_names;
+  return Array.isArray(p) ? p.map(String).filter(Boolean) : [];
 }
 
 export interface SeedOptions {
@@ -134,6 +141,7 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
   for (const [tag, entry] of Object.entries(desired)) {
     const desiredDescription = isNonEmptyString(entry.description) ? entry.description.trim() : "";
     const desiredFields = entry.fields ?? {};
+    const desiredParents = desiredParentNames(entry);
 
     const cur = existing.get(tag);
     // "Has a schema" = the vault tag carries a description or any field definitions.
@@ -143,7 +151,7 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
       // Absent (or bare tag with no schema) → create.
       const addedFields = Object.keys(desiredFields);
       const filledDescription = !!desiredDescription;
-      if (!desiredDescription && addedFields.length === 0) {
+      if (!desiredDescription && addedFields.length === 0 && desiredParents.length === 0) {
         // Nothing to seed for this tag.
         result.unchanged.push(tag);
         continue;
@@ -153,10 +161,14 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
       if (!opts.dryRun) {
         await vaultFetch(opts, `/tags/${encodeURIComponent(tag)}`, {
           method: "PUT",
-          body: JSON.stringify({ description: desiredDescription, fields: desiredFields }),
+          body: JSON.stringify({
+            description: desiredDescription,
+            fields: desiredFields,
+            ...(desiredParents.length ? { parent_names: desiredParents } : {}),
+          }),
         });
       }
-      log(`${opts.dryRun ? "[dry-run] " : ""}create ${tag} (${addedFields.length} fields${filledDescription ? ", +description" : ""})`);
+      log(`${opts.dryRun ? "[dry-run] " : ""}create ${tag} (${addedFields.length} fields${filledDescription ? ", +description" : ""}${desiredParents.length ? `, parents=${desiredParents.join("/")}` : ""})`);
       continue;
     }
 
@@ -176,7 +188,12 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
     const filledDescription = !curDescription && !!desiredDescription;
     const finalDescription = curDescription || desiredDescription;
 
-    if (addedFields.length === 0 && !filledDescription) {
+    // parent_names are additive/non-destructive: only set them when the vault tag
+    // has none yet (never clobber a curated hierarchy).
+    const curParents = Array.isArray(cur!.parent_names) ? cur!.parent_names! : [];
+    const addParents = curParents.length === 0 && desiredParents.length > 0;
+
+    if (addedFields.length === 0 && !filledDescription && !addParents) {
       result.unchanged.push(tag);
       continue;
     }
@@ -186,7 +203,11 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
     if (!opts.dryRun) {
       await vaultFetch(opts, `/tags/${encodeURIComponent(tag)}`, {
         method: "PUT",
-        body: JSON.stringify({ description: finalDescription, fields: mergedFields }),
+        body: JSON.stringify({
+          description: finalDescription,
+          fields: mergedFields,
+          ...(addParents ? { parent_names: desiredParents } : {}),
+        }),
       });
     }
     log(
