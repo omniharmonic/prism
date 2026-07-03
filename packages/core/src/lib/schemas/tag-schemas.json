@@ -1068,6 +1068,812 @@
           "description": "ISO-8601 timestamp."
         }
       }
+    },
+    "entity": {
+      "description": "Supertype for actors/beings in the commons (person, organization, ecological-entity). REA's 'Agent' is a role an entity may also play — the neutral supertype lets ecological entities exist for SENSING reasons, not only economic ones. Query all actors via tag:entity; narrow via entity_kind or the subtype tag.",
+      "contentType": "document",
+      "precedence": 50,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Display name."
+        },
+        "entity_kind": {
+          "type": "string",
+          "description": "The is-a subtype axis (works today; parent_names is a later seed enhancement).",
+          "enum": [
+            "person",
+            "organization",
+            "ecological"
+          ],
+          "indexed": true
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "ecological-entity": {
+      "description": "A located living/geophysical being or feature (a river, creek, forest stand, wetland, observed population). Carries GeoJSON geometry. The SENSING substrate — matters even when no economic event touches it.",
+      "contentType": "document",
+      "precedence": 51,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Common name for this entity/feature."
+        },
+        "ecological_kind": {
+          "type": "string",
+          "description": "What kind of ecological entity.",
+          "enum": [
+            "river",
+            "creek",
+            "waterway",
+            "watershed-feature",
+            "forest",
+            "wetland",
+            "grassland",
+            "population",
+            "habitat",
+            "other"
+          ],
+          "indexed": true
+        },
+        "status": {
+          "type": "string",
+          "description": "Resilience state of this entity.",
+          "enum": [
+            "healthy",
+            "threatened",
+            "degraded",
+            "unknown"
+          ],
+          "indexed": true
+        },
+        "species": {
+          "type": "string",
+          "description": "Wikilink to the species note, when this entity is a population of one."
+        },
+        "geometry": {
+          "type": "object",
+          "description": "GeoJSON geometry (Point/LineString/Polygon/MultiPolygon), WGS84, [lon,lat]. RFC 7946 — no crs member."
+        },
+        "bbox": {
+          "type": "array",
+          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering.",
+          "indexed": true
+        },
+        "geo": {
+          "type": "object",
+          "description": "Simple centroid { lat, lon } for quick lookups."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "species": {
+      "description": "A taxon (knowledge-level). Field names are the literal Darwin Core terms so notes round-trip to GBIF/OBIS; anchored to stable GBIF/iNat ids. Distinct from ecological-entity (a located occurrence/population).",
+      "contentType": "document",
+      "precedence": 52,
+      "fields": {
+        "scientificName": {
+          "type": "string",
+          "description": "Full scientific name + authorship (dwc:scientificName).",
+          "indexed": true
+        },
+        "taxonRank": {
+          "type": "string",
+          "description": "dwc:taxonRank (species/genus/…)."
+        },
+        "kingdom": {
+          "type": "string",
+          "description": "dwc:kingdom."
+        },
+        "phylum": {
+          "type": "string",
+          "description": "dwc:phylum."
+        },
+        "family": {
+          "type": "string",
+          "description": "dwc:family.",
+          "indexed": true
+        },
+        "genus": {
+          "type": "string",
+          "description": "dwc:genus."
+        },
+        "vernacularName": {
+          "type": "string",
+          "description": "Common name(s) (dwc:vernacularName)."
+        },
+        "gbifTaxonKey": {
+          "type": "number",
+          "description": "GBIF backbone usageKey — the stable species id (re-fetch handle).",
+          "indexed": true
+        },
+        "inatTaxonId": {
+          "type": "number",
+          "description": "iNaturalist taxon id (cross-referenced with GBIF)."
+        },
+        "iucnCategory": {
+          "type": "string",
+          "description": "IUCN Red List category (LC/NT/VU/EN/CR/…)."
+        },
+        "rangeGeometry": {
+          "type": "object",
+          "description": "Range/distribution as GeoJSON MultiPolygon (WGS84)."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "place": {
+      "description": "A bounded area whose state we sense or within which we respond (schema.org/Place + GeoCoordinates). Subtypes via place_kind; watersheds have their own tag for HUC nesting.",
+      "contentType": "document",
+      "precedence": 53,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Place name."
+        },
+        "place_kind": {
+          "type": "string",
+          "description": "Kind of place.",
+          "enum": [
+            "bioregion",
+            "watershed",
+            "site",
+            "region",
+            "parcel"
+          ],
+          "indexed": true
+        },
+        "containedIn": {
+          "type": "string",
+          "description": "Wikilink to the containing place (schema.org/containedInPlace)."
+        },
+        "geometry": {
+          "type": "object",
+          "description": "GeoJSON geometry (Point/LineString/Polygon/MultiPolygon), WGS84, [lon,lat]. RFC 7946 — no crs member."
+        },
+        "bbox": {
+          "type": "array",
+          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering.",
+          "indexed": true
+        },
+        "geo": {
+          "type": "object",
+          "description": "Simple centroid { lat, lon } for quick lookups."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "watershed": {
+      "description": "A hydrologic unit, keyed by USGS HUC. The HUC code encodes its own nesting (HUC2⊃HUC4⊃…⊃HUC12), so the place hierarchy is derivable by prefix — no join.",
+      "contentType": "document",
+      "precedence": 54,
+      "fields": {
+        "huc12": {
+          "type": "string",
+          "description": "12-digit Hydrologic Unit Code — the stable id.",
+          "indexed": true
+        },
+        "hucName": {
+          "type": "string",
+          "description": "Watershed name (WBD)."
+        },
+        "hucLevel": {
+          "type": "number",
+          "description": "HUC level (2/4/6/8/10/12)."
+        },
+        "parentHuc": {
+          "type": "string",
+          "description": "Parent HUC (this code truncated) — the nesting pointer.",
+          "indexed": true
+        },
+        "boundaryGeometry": {
+          "type": "object",
+          "description": "Boundary as GeoJSON Polygon/MultiPolygon (WGS84)."
+        },
+        "bbox": {
+          "type": "array",
+          "description": "Derived bbox for indexed spatial pre-filtering.",
+          "indexed": true
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "event": {
+      "description": "A dated occurrence registering a change of state or a coordinated response (REA Economic Event / schema.org/Event).",
+      "contentType": "document",
+      "precedence": 55,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Event name."
+        },
+        "event_kind": {
+          "type": "string",
+          "description": "Kind of event.",
+          "enum": [
+            "observation",
+            "gathering",
+            "harvest",
+            "hazard",
+            "restoration",
+            "other"
+          ],
+          "indexed": true
+        },
+        "startDate": {
+          "type": "string",
+          "description": "ISO-8601 start (schema.org/startDate).",
+          "indexed": true
+        },
+        "endDate": {
+          "type": "string",
+          "description": "ISO-8601 end."
+        },
+        "location": {
+          "type": "string",
+          "description": "Wikilink to a place."
+        },
+        "organizer": {
+          "type": "string",
+          "description": "Wikilink to organizing entity."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "resource": {
+      "description": "A stock/flow regenerative response can produce, consume, or steward (REA/Valueflows Economic Resource). Light REA for v1.",
+      "contentType": "document",
+      "precedence": 56,
+      "fields": {
+        "name": {
+          "type": "string",
+          "description": "Resource name."
+        },
+        "resource_kind": {
+          "type": "string",
+          "description": "Kind of resource.",
+          "enum": [
+            "food",
+            "medicine",
+            "material",
+            "knowledge",
+            "energy",
+            "water"
+          ],
+          "indexed": true
+        },
+        "quantity": {
+          "type": "object",
+          "description": "{ unit, value } (VF resourceQuantity)."
+        },
+        "conformsTo": {
+          "type": "string",
+          "description": "Wikilink to a resource specification (VF conformsTo)."
+        },
+        "currentLocation": {
+          "type": "string",
+          "description": "Wikilink to a place."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "signal": {
+      "description": "The cybernetic core: a sensed condition that DEMANDS a response for resilience — a policy/corporate/ecological threat or signal. No general ontology models this because none is purpose-bound to resilience; it is the raison d'être of the commons.",
+      "contentType": "document",
+      "precedence": 57,
+      "fields": {
+        "title": {
+          "type": "string",
+          "description": "Short description of the signal/threat."
+        },
+        "signal_kind": {
+          "type": "string",
+          "description": "Domain of the signal.",
+          "enum": [
+            "policy",
+            "corporate",
+            "ecological"
+          ],
+          "indexed": true
+        },
+        "severity": {
+          "type": "string",
+          "description": "How urgent.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "indexed": true
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle.",
+          "enum": [
+            "active",
+            "monitoring",
+            "resolved"
+          ],
+          "indexed": true
+        },
+        "observedAt": {
+          "type": "string",
+          "description": "ISO-8601 when sensed.",
+          "indexed": true
+        },
+        "affects": {
+          "type": "array",
+          "description": "Wikilinks to affected place/species/watershed notes."
+        },
+        "sourceUrl": {
+          "type": "string",
+          "description": "Primary evidence URL."
+        },
+        "response": {
+          "type": "array",
+          "description": "Wikilinks to response recipe/flow notes (close the sense→respond loop)."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "recipe": {
+      "description": "A reusable how-to for RESPONDING — a social or material process others can re-run. OpenCivics Protocol (objective/roles/steps) on the inside, schema.org/HowTo on the wire; unifies VF Recipe (material) and OpenCivics Protocol (social).",
+      "contentType": "document",
+      "precedence": 58,
+      "fields": {
+        "objective": {
+          "type": "string",
+          "description": "What this recipe/playbook brings about."
+        },
+        "recipe_kind": {
+          "type": "string",
+          "description": "Domain of coordination.",
+          "enum": [
+            "governance",
+            "production",
+            "coordination",
+            "economics"
+          ],
+          "indexed": true
+        },
+        "roles": {
+          "type": "array",
+          "description": "Roles the protocol defines."
+        },
+        "steps": {
+          "type": "array",
+          "description": "Ordered steps (HowToStep: text, tools, supplies)."
+        },
+        "totalTime": {
+          "type": "string",
+          "description": "ISO-8601 duration (schema.org/totalTime, e.g. PT2H)."
+        },
+        "governance": {
+          "type": "string",
+          "description": "Decision method (consent/consensus/…)."
+        },
+        "bundles": {
+          "type": "array",
+          "description": "Wikilinks to sub-recipes/protocols this playbook composes."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "flow": {
+      "description": "Links entities/resources into a planned or observed action — who did/will do what to which resource (REA duality / VF Commitment/Event). Light REA: the small connective layer, not full process accounting.",
+      "contentType": "document",
+      "precedence": 59,
+      "fields": {
+        "action": {
+          "type": "string",
+          "description": "The Valueflows action verb.",
+          "enum": [
+            "produce",
+            "consume",
+            "use",
+            "cite",
+            "work",
+            "transfer",
+            "transferCustody",
+            "move",
+            "pickup",
+            "dropoff"
+          ],
+          "indexed": true
+        },
+        "provider": {
+          "type": "string",
+          "description": "Wikilink to the providing entity/agent."
+        },
+        "receiver": {
+          "type": "string",
+          "description": "Wikilink to the receiving entity/agent."
+        },
+        "resource": {
+          "type": "string",
+          "description": "Wikilink to the economic resource."
+        },
+        "quantity": {
+          "type": "object",
+          "description": "{ unit, value }."
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO-8601 time of the event (or due, for a commitment).",
+          "indexed": true
+        },
+        "planned": {
+          "type": "boolean",
+          "description": "True for a commitment (planned), false for an observed event."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
+    },
+    "herbal-use": {
+      "description": "The join between a species and a medicinal/ethnobotanical use (USDA Dr. Duke's, CC0). One species carries many uses; each use cites its authority. Where species and earth-systems knowledge intersect — the resilience case for bioregional medicine.",
+      "contentType": "document",
+      "precedence": 60,
+      "fields": {
+        "species": {
+          "type": "string",
+          "description": "Wikilink to the species note."
+        },
+        "scientificName": {
+          "type": "string",
+          "description": "Denormalized scientific name for querying.",
+          "indexed": true
+        },
+        "ethnobotanicalUse": {
+          "type": "string",
+          "description": "The documented use."
+        },
+        "preparation": {
+          "type": "string",
+          "description": "How it is prepared."
+        },
+        "plantPart": {
+          "type": "string",
+          "description": "Part used (root/leaf/flower/…)."
+        },
+        "biologicalActivity": {
+          "type": "string",
+          "description": "e.g. Antibacterial, Anti-inflammatory."
+        },
+        "chemical": {
+          "type": "string",
+          "description": "Active phytochemical."
+        },
+        "pubchemCid": {
+          "type": "number",
+          "description": "PubChem CID for the chemical."
+        },
+        "license": {
+          "type": "string",
+          "description": "Data license (e.g. CC0)."
+        },
+        "sensing_or_responding": {
+          "type": "string",
+          "description": "The cleavage gate: does this serve SENSing state/threats, RESPONDing for resilience, or BOTH? A note that can't declare one is out of scope.",
+          "enum": [
+            "sense",
+            "respond",
+            "both"
+          ],
+          "indexed": true
+        },
+        "wikidata_qid": {
+          "type": "string",
+          "description": "Stable global identifier (Wikidata QID) — survives renames; links to the global graph."
+        },
+        "same_as": {
+          "type": "array",
+          "description": "External authority URLs/ids this note mirrors (GBIF, Murmurations, USGS, GeoNames)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Provenance — where this was captured."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Extraction/observation confidence (0–1)."
+        },
+        "indigenous_governed": {
+          "type": "boolean",
+          "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        }
+      }
     }
   },
   "drift": [

@@ -367,8 +367,12 @@ ships independently and every note created is governed by Plan 1.
    but bloats large polygons; do we need a linked-attachment path for big
    watershed/range geometries from day one? *Recommendation: inline + `bbox` now;
    attachment path only if profiling shows metadata bloat.*
-6. **Parachute `parent_names` confirmation.** Verify the running Parachute lets
-   `update-tag` set `parent_names` and that the Prism seed preserves it — the
-   whole `entity` supertype hierarchy depends on it. (Fallback if not: dimension
-   tags `entity-type/ecological` + an indexed `entity_type` field, per the
-   schema-bridge dimension pattern — slightly less elegant, fully functional.)
+6. **Parachute `parent_names` confirmation.** — **RESOLVED for S1 via the
+   fallback.** The current seed (`seedTagSchemas`) pushes only `description` +
+   `fields` to the vault, so `parent_names` would be dead data today. S1 therefore
+   ships the working-today dimension pattern: an **indexed `entity_kind`** field
+   on `entity` (person/organization/ecological) as the is-a axis, with `species`,
+   `place`, `event`, `resource`, `signal`, `recipe`, `flow`, `herbal-use` as
+   sibling top-level tags. *Follow-up:* extend the seed to also PUT `parent_names`
+   (and confirm `update-tag` accepts it against the live vault), then switch the
+   hierarchy to true `expand: subtypes` — a small, isolated enhancement.
