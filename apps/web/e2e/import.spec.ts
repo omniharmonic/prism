@@ -1,8 +1,9 @@
 /**
  * Importers → surface (@live). Runs the real import CLI to pull a GeoJSON
  * FeatureCollection into the vault as ecological-entity notes, then confirms
- * they show up on the /bioregion map + list. This proves the plan's data path
- * end to end: authoritative open data → typed commons notes → the browse UI.
+ * they show up on the vault's integrated Map surface (list + MapLibre). This
+ * proves the plan's data path end to end: authoritative open data → typed commons
+ * notes → the geospatial view inside Prism.
  */
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
@@ -78,18 +79,18 @@ test.describe("data importers @live", () => {
     await cleanup();
   });
 
-  test("imported GeoJSON entities appear on the bioregion surface", async ({ page }) => {
-    test.setTimeout(60_000);
+  test("imported GeoJSON entities appear on the map surface", async ({ page }) => {
+    test.setTimeout(90_000);
     await loginAsOwner(page);
     await page.goto("/bioregion?basemap=blank");
 
-    const list = page.getByTestId("entity-list");
-    await expect(list.getByText("Boulder Creek", { exact: true })).toBeVisible();
+    const list = page.getByTestId("map-list");
+    await expect(list.getByText("Boulder Creek", { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(list.getByText("Dry Creek", { exact: true })).toBeVisible();
 
     // the MapLibre map mounts and loads the imported features (or degrades to a
     // graceful WebGL fallback — both valid in a headless runner)
-    const map = page.getByTestId("bioregion-map");
+    const map = page.getByTestId("vault-map");
     await expect(map).toBeVisible();
     await expect
       .poll(async () => (await map.getAttribute("data-map-ready")) ?? (await map.getAttribute("data-map-fallback")), { timeout: 15_000 })

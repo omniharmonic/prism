@@ -44,7 +44,13 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-function App({ skipOnboarding }: { skipOnboarding?: boolean } = {}) {
+export interface InitialTab {
+  id: string;
+  title: string;
+  type: string;
+}
+
+function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initialTab?: InitialTab } = {}) {
   // Show onboarding for first-time users, skip for returning users.
   // `skipOnboarding` lets a shell force-skip the (Tauri-only) wizard — the web
   // shell passes it for capability-link viewers and invited non-owners, who must
@@ -77,6 +83,13 @@ function App({ skipOnboarding }: { skipOnboarding?: boolean } = {}) {
     window.addEventListener("prism:vault-changed", onVaultChanged);
     return () => window.removeEventListener("prism:vault-changed", onVaultChanged);
   }, []);
+
+  // Deep-link support: a shell can boot straight into a surface (e.g. the Map
+  // tab from a /bioregion or /map URL) instead of an empty canvas. One-shot.
+  useEffect(() => {
+    if (!initialTab) return;
+    useUIStore.getState().openTab(initialTab.id, initialTab.title, initialTab.type as never);
+  }, [initialTab]);
 
   return (
     <ErrorBoundary>

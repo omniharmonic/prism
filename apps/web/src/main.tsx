@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings, GovernancePanel } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, PlatformProvider, initializeSettings, GovernancePanel, type InitialTab } from "@prism/core";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
@@ -11,7 +11,6 @@ import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
 import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
-import { BioregionPanel } from "./bioregion/BioregionPanel";
 import { CommonsLanding } from "./commons/CommonsLanding";
 import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
@@ -154,25 +153,14 @@ async function start() {
     return;
   }
 
-  // Bioregional commons browse + map surface: /bioregion. Reads the graph through
-  // the gateway (owner passthrough, or a member's granted slice); requires a session.
-  if (window.location.pathname === "/bioregion") {
-    const me = await fetchMe();
-    if (!me.authenticated) {
-      root.render(
-        <React.StrictMode>
-          <LoginScreen notice="Sign in to explore the bioregional commons." />
-        </React.StrictMode>,
-      );
-      return;
-    }
-    root.render(
-      <React.StrictMode>
-        <BioregionPanel />
-      </React.StrictMode>,
-    );
-    return;
-  }
+  // Geospatial surface deep-links: /map (and the legacy /bioregion alias) boot the
+  // real Prism app straight into the Map tab — a vault-wide MapLibre view where
+  // every located note appears and clicking one opens it for editing. This is the
+  // integrated replacement for the old standalone /bioregion panel: the map is a
+  // lens over the vault, sharing the same tabs/search/renderers as everything else.
+  const path = window.location.pathname;
+  const initialTab: InitialTab | undefined =
+    path === "/map" || path === "/bioregion" ? { id: "map", title: "Map", type: "map" } : undefined;
 
   // The owner setup wizard is Tauri-only (its steps call `invoke()`), so the web
   // shell skips it by DEFAULT for everyone — a capability viewer, an invited
@@ -213,7 +201,7 @@ async function start() {
         <VaultClientProvider client={httpVaultClient}>
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
             <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-              <App skipOnboarding={isViewer} />
+              <App skipOnboarding={isViewer} initialTab={initialTab} />
               <OfflineIndicator />
               <UpdatePrompt />
             </CollabDocumentProvider>

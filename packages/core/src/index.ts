@@ -6,7 +6,7 @@ import "./styles/typography.css";
 import "./styles/collab.css";
 
 // App shell
-export { default as App } from "./App";
+export { default as App, type InitialTab } from "./App";
 export { GovernancePanel } from "./components/renderers/network/governance/GovernancePanel";
 export { CommonsMap } from "./components/map/CommonsMap";
 export type { MapFeature, CommonsMapProps } from "./components/map/CommonsMap";
