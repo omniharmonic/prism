@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { type Map as MLMap, type StyleSpecification, type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { resolveBasemap, kindColor, kindColorExpression, BLANK_STYLE, BASEMAPS, type Basemap } from "./basemaps";
+import { DrawController, type DrawKind, type DrawMode } from "./draw";
 
 export interface MapFeature {
   id: string;
@@ -40,6 +41,12 @@ export interface CommonsMapProps {
   /** Fit to data on load + when the feature set changes (default true). */
   autoFit?: boolean;
   testId?: string;
+  /** Enable the draw toolbar (point/line/polygon) — the geometry-editing UX. */
+  editable?: boolean;
+  /** The note's current geometry, used to seed edits. */
+  value?: unknown | null;
+  /** Emitted when the user finishes drawing (or clears). Persist as GeoJSON. */
+  onGeometryChange?: (geometry: unknown | null) => void;
 }
 
 type FC = GeoJSON.FeatureCollection;
@@ -98,13 +105,17 @@ function hasWebGL(): boolean {
   }
 }
 
-export function CommonsMap({ features, basemap, height = 460, onPick, selectedId, showControls = true, autoFit = true, testId = "commons-map" }: CommonsMapProps) {
+export function CommonsMap({ features, basemap, height = 460, onPick, selectedId, showControls = true, autoFit = true, testId = "commons-map", editable = false, value, onGeometryChange }: CommonsMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
+  const drawRef = useRef<DrawController | null>(null);
+  const [drawMode, setDrawMode] = useState<DrawMode>("none");
   const [current, setCurrent] = useState<Basemap>(() => resolveBasemap(basemap));
   const [webglFailed, setWebglFailed] = useState(false);
   const featRef = useRef(features);
   featRef.current = features;
+  const geomChangeRef = useRef(onGeometryChange);
+  geomChangeRef.current = onGeometryChange;
 
   // (Re)build sources + layers on the active style; idempotent.
   const paint = (map: MLMap, hasGlyphs: boolean) => {
@@ -213,6 +224,16 @@ export function CommonsMap({ features, basemap, height = 460, onPick, selectedId
       try {
         paint(map, current.hasGlyphs);
         painted = true;
+        if (editable) {
+          if (!drawRef.current) {
+            drawRef.current = new DrawController(map, (g) => {
+              setDrawMode("none");
+              geomChangeRef.current?.(g);
+            });
+          } else {
+            drawRef.current.refresh();
+          }
+        }
       } catch {
         if (containerRef.current) containerRef.current.dataset.mapFallback = "true";
       }
@@ -239,6 +260,8 @@ export function CommonsMap({ features, basemap, height = 460, onPick, selectedId
     return () => {
       clearTimeout(styleTimer);
       clearTimeout(hardTimer);
+      drawRef.current?.destroy();
+      drawRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -291,9 +314,40 @@ export function CommonsMap({ features, basemap, height = 460, onPick, selectedId
     );
   }
 
+  const startDraw = (kind: DrawKind) => {
+    const d = drawRef.current;
+    if (!d) return;
+    const existing = value as { type?: string } | null | undefined;
+    // Re-drawing the same geometry type seeds the existing vertices so you edit
+    // rather than start from scratch; a different type starts fresh.
+    if (existing && existing.type === kind) d.loadForEdit(existing as never);
+    else d.setMode(kind);
+    setDrawMode(kind);
+  };
+  const btn = (active: boolean): React.CSSProperties => ({ padding: "5px 9px", borderRadius: 7, border: "1px solid rgba(0,0,0,0.15)", background: active ? "#f59e0b" : "rgba(255,255,255,0.92)", color: active ? "#fff" : "#222", cursor: "pointer", font: "12px system-ui", fontWeight: 600 });
+
   return (
     <div style={{ position: "relative" }}>
       <div ref={containerRef} data-testid={testId} style={{ height, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(128,128,128,0.3)" }} />
+
+      {editable && !webglFailed && (
+        <div style={{ position: "absolute", top: 10, left: 10, display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }} data-testid="map-draw-toolbar">
+          <div style={{ display: "flex", gap: 5, background: "rgba(255,255,255,0.85)", backdropFilter: "blur(6px)", padding: 5, borderRadius: 9 }}>
+            <button style={btn(drawMode === "Point")} onClick={() => startDraw("Point")} title="Draw a point">● Point</button>
+            <button style={btn(drawMode === "LineString")} onClick={() => startDraw("LineString")} title="Draw a line">╱ Line</button>
+            <button style={btn(drawMode === "Polygon")} onClick={() => startDraw("Polygon")} title="Draw a polygon">⬠ Polygon</button>
+            {drawMode !== "none" && drawMode !== "Point" && (
+              <button style={btn(false)} onClick={() => drawRef.current?.finish()} title="Finish (or double-click)">✓ Finish</button>
+            )}
+            <button style={btn(false)} onClick={() => { drawRef.current?.clear(); setDrawMode("none"); }} title="Clear geometry">✕ Clear</button>
+          </div>
+          {drawMode !== "none" && drawMode !== "Point" && (
+            <span style={{ fontSize: 11, color: "#222", background: "rgba(255,255,255,0.85)", padding: "3px 8px", borderRadius: 7 }}>
+              Click to add points · double-click or Finish to close
+            </span>
+          )}
+        </div>
+      )}
       {showControls && (
         <>
           <div style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: 6, flexWrap: "wrap", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(6px)", padding: "6px 8px", borderRadius: 10, maxWidth: "70%", fontFamily: "system-ui, sans-serif" }} data-testid="map-legend">

@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isPosition, computeBbox, validateGeometry, withBbox, type Geometry } from "./geojson";
+import { isPosition, computeBbox, validateGeometry, withBbox, buildGeometry, roundPos, type Geometry } from "./geojson";
 
 const point = (lon: number, lat: number): Geometry => ({ type: "Point", coordinates: [lon, lat] });
 
@@ -80,6 +80,33 @@ test("validateGeometry validates every geometry in a collection", () => {
     geometries: [point(-105, 40), { type: "Point", coordinates: [10, 200] }],
   };
   assert.equal(validateGeometry(bad).ok, false);
+});
+
+test("buildGeometry: point/line/polygon with ring auto-close + rounding", () => {
+  assert.deepEqual(buildGeometry("Point", [[-105.123456789, 40.1]]), { type: "Point", coordinates: [-105.123457, 40.1] });
+  assert.deepEqual(buildGeometry("LineString", [[-105, 40], [-104, 41]]), { type: "LineString", coordinates: [[-105, 40], [-104, 41]] });
+  const poly = buildGeometry("Polygon", [[-105, 40], [-104, 40], [-104, 41]]);
+  assert.equal(poly?.type, "Polygon");
+  // ring auto-closed: first === last, 4 positions from 3 vertices
+  const ring = (poly!.coordinates as number[][][])[0]!;
+  assert.equal(ring.length, 4);
+  assert.deepEqual(ring[0], ring[3]);
+});
+
+test("buildGeometry: too-few vertices → null (nothing to save)", () => {
+  assert.equal(buildGeometry("Point", []), null);
+  assert.equal(buildGeometry("LineString", [[-105, 40]]), null);
+  assert.equal(buildGeometry("Polygon", [[-105, 40], [-104, 40]]), null);
+});
+
+test("buildGeometry: an already-closed polygon ring isn't double-closed", () => {
+  const poly = buildGeometry("Polygon", [[-105, 40], [-104, 40], [-104, 41], [-105, 40]]);
+  const ring = (poly!.coordinates as number[][][])[0]!;
+  assert.equal(ring.length, 4);
+});
+
+test("roundPos preserves elevation", () => {
+  assert.deepEqual(roundPos([-105.1234567, 40.7654321, 1655]), [-105.123457, 40.765432, 1655]);
 });
 
 test("withBbox stamps a derived bbox, idempotently", () => {

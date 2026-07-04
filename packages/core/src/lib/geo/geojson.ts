@@ -160,3 +160,28 @@ export function withBbox(metadata: Record<string, unknown>): Record<string, unkn
   if (!bbox) return metadata;
   return { ...metadata, bbox };
 }
+
+/** Round a position to ~6 decimals (~10cm) — enough precision, small payloads. */
+export const roundPos = (p: Position): Position =>
+  (p.length === 3 ? [r6(p[0]), r6(p[1]), p[2]] : [r6(p[0]), r6(p[1])]) as Position;
+const r6 = (n: number): number => Math.round(n * 1e6) / 1e6;
+
+/**
+ * Build a valid GeoJSON geometry from a flat list of drawn vertices (the output
+ * of the map draw tool). Polygons auto-close the ring; a polygon needs ≥3
+ * distinct vertices, a line ≥2, a point ≥1 — otherwise returns null (nothing to
+ * save). Coordinates are rounded. This is the pure heart of the draw UX, tested
+ * in isolation.
+ */
+export function buildGeometry(kind: "Point" | "LineString" | "Polygon", vertices: Position[]): Geometry | null {
+  const pts = vertices.map(roundPos);
+  if (kind === "Point") return pts[0] ? { type: "Point", coordinates: pts[0] } : null;
+  if (kind === "LineString") return pts.length >= 2 ? { type: "LineString", coordinates: pts } : null;
+  // Polygon: need ≥3 vertices; close the ring if the last point isn't the first.
+  if (pts.length < 3) return null;
+  const ring = [...pts];
+  const first = ring[0]!;
+  const last = ring[ring.length - 1]!;
+  if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
+  return { type: "Polygon", coordinates: [ring] };
+}

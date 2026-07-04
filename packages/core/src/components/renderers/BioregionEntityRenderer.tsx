@@ -8,6 +8,7 @@
  */
 import type { RendererProps } from "./RendererProps";
 import { CommonsMap, type MapFeature } from "../map/CommonsMap";
+import { withBbox } from "../../lib/geo/geojson";
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
@@ -21,7 +22,7 @@ const arr = (m: Record<string, unknown> | null, k: string): string[] => {
 // The fields worth surfacing per type — literal upstream terms.
 const FIELDS = ["scientificName", "vernacularName", "family", "gbifTaxonKey", "huc12", "hucName", "ecological_kind", "signal_kind", "severity", "resource_kind", "status", "same_as"];
 
-export default function BioregionEntityRenderer({ note }: RendererProps) {
+export default function BioregionEntityRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   const m = (note.metadata ?? null) as Record<string, unknown> | null;
   const geometry = (m?.geometry ?? m?.boundaryGeometry ?? m?.rangeGeometry) as { type?: string; coordinates?: unknown } | undefined;
   const sensing = str(m, "sensing_or_responding");
@@ -29,6 +30,22 @@ export default function BioregionEntityRenderer({ note }: RendererProps) {
   const color = tag === "signal" ? "#c62828" : tag === "watershed" ? "#1565c0" : tag === "species" ? "#00897b" : "#2e7d32";
   const affects = arr(m, "affects");
   const response = arr(m, "response");
+  const editable = !!onMetadataChange && !readOnly;
+
+  // Persist a drawn geometry (with a derived bbox) into note metadata; null clears it.
+  const saveGeometry = (g: unknown | null) => {
+    if (!onMetadataChange) return;
+    const base = { ...(note.metadata ?? {}) } as Record<string, unknown>;
+    if (g == null) {
+      delete base.geometry;
+      delete base.bbox;
+      onMetadataChange(base);
+    } else {
+      onMetadataChange(withBbox({ ...base, geometry: g }));
+    }
+  };
+
+  const hasGeo = geometry?.coordinates !== undefined || Boolean(m?.geo);
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: 20, fontFamily: "system-ui, sans-serif" }} data-testid="bioregion-entity">
@@ -37,13 +54,21 @@ export default function BioregionEntityRenderer({ note }: RendererProps) {
         {sensing && <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, opacity: 0.7 }}>{sensing}</span>}
       </div>
 
-      {(geometry?.coordinates !== undefined || Boolean(m?.geo)) && (
+      {(hasGeo || editable) && (
         <div style={{ margin: "12px 0" }}>
+          {editable && !hasGeo && (
+            <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+              No location yet — use the draw tools (top-left of the map) to add a point, line, or polygon. It saves as GeoJSON on this note.
+            </div>
+          )}
           <CommonsMap
-            features={[{ id: note.id, kind: tag, name: (m?.name as string) ?? note.id, sensing, geometry: geometry ?? null, geo: (m?.geo as { lat: number; lon: number } | undefined) ?? null } as MapFeature]}
-            height={340}
+            features={hasGeo ? [{ id: note.id, kind: tag, name: (m?.name as string) ?? note.id, sensing, geometry: geometry ?? null, geo: (m?.geo as { lat: number; lon: number } | undefined) ?? null } as MapFeature] : []}
+            height={360}
             showControls={false}
             testId="entity-map"
+            editable={editable}
+            value={geometry ?? null}
+            onGeometryChange={saveGeometry}
           />
         </div>
       )}
