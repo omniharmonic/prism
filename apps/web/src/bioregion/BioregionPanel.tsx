@@ -96,7 +96,12 @@ export function BioregionPanel() {
         ))}
       </div>
 
-      <BioregionMap entities={filtered} onPick={setSelected} />
+      <BioregionMap
+        entities={filtered}
+        onPick={setSelected}
+        selectedId={selected}
+        basemap={typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("basemap") : null}
+      />
 
       {selected &&
         (() => {

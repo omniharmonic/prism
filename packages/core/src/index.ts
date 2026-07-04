@@ -8,6 +8,9 @@ import "./styles/collab.css";
 // App shell
 export { default as App } from "./App";
 export { GovernancePanel } from "./components/renderers/network/governance/GovernancePanel";
+export { CommonsMap } from "./components/map/CommonsMap";
+export type { MapFeature, CommonsMapProps } from "./components/map/CommonsMap";
+export { BASEMAPS, DEFAULT_BASEMAP, resolveBasemap, kindColor } from "./components/map/basemaps";
 
 // Collaborative editor (CRDT) — host shells supply the Yjs doc + provider.
 export { CollabEditor } from "./components/renderers/CollabEditor";

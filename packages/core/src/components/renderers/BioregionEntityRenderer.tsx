@@ -1,71 +1,13 @@
 /**
  * Bioregional entity renderer — a geo-aware view for the commons's mapped types
- * (ecological-entity, species, watershed, place, signal). Shows the note's
- * GeoJSON geometry on a dependency-free inline-SVG map (WGS84, [lon,lat] — no
- * external tiles, CSP-safe), the sensing/responding cleavage, the key
- * identifier/standard fields, and — for signals — the affects/response links
- * that close the sense→respond loop. Falls back to the document body below.
+ * (ecological-entity, species, watershed, place, signal). Renders the note's
+ * GeoJSON on the shared MapLibre CommonsMap (OpenFreeMap basemap, blank
+ * fallback), the sensing/responding cleavage, the key identifier/standard
+ * fields, and — for signals — the affects/response links that close the
+ * sense→respond loop.
  */
-import { useMemo } from "react";
 import type { RendererProps } from "./RendererProps";
-
-type Pt = [number, number];
-
-function eachPos(coords: unknown, cb: (p: Pt) => void): void {
-  if (Array.isArray(coords) && typeof coords[0] === "number" && typeof coords[1] === "number") {
-    cb([coords[0], coords[1]]);
-    return;
-  }
-  if (Array.isArray(coords)) for (const c of coords) eachPos(c, cb);
-}
-
-const W = 640;
-const H = 360;
-const PAD = 22;
-
-function MiniMap({ geometry, color }: { geometry: { type?: string; coordinates?: unknown }; color: string }) {
-  const bbox = useMemo(() => {
-    let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity, n = 0;
-    eachPos(geometry.coordinates, ([lon, lat]) => {
-      n++;
-      a = Math.min(a, lon); b = Math.min(b, lat); c = Math.max(c, lon); d = Math.max(d, lat);
-    });
-    return n > 0 ? { minX: a, minY: b, maxX: c, maxY: d } : null;
-  }, [geometry]);
-
-  if (!bbox) return null;
-  const spanX = bbox.maxX - bbox.minX || 1e-6;
-  const spanY = bbox.maxY - bbox.minY || 1e-6;
-  const scale = Math.min((W - 2 * PAD) / spanX, (H - 2 * PAD) / spanY);
-  const offX = (W - scale * spanX) / 2;
-  const offY = (H - scale * spanY) / 2;
-  const proj = ([lon, lat]: Pt): Pt => [offX + (lon - bbox.minX) * scale, H - (offY + (lat - bbox.minY) * scale)];
-
-  const g = geometry;
-  let shapes: React.ReactNode = null;
-  if (g.type === "LineString" || g.type === "MultiLineString") {
-    const lines = g.type === "LineString" ? [g.coordinates as Pt[]] : (g.coordinates as Pt[][]);
-    shapes = lines.map((line, i) => <polyline key={i} points={line.map((p) => proj(p as Pt).join(",")).join(" ")} fill="none" stroke={color} strokeWidth={2} />);
-  } else if (g.type === "Polygon" || g.type === "MultiPolygon") {
-    const polys = g.type === "Polygon" ? [g.coordinates as Pt[][]] : (g.coordinates as Pt[][][]);
-    shapes = polys.map((rings, i) => {
-      const outer = (rings[0] ?? []) as Pt[];
-      return <path key={i} d={outer.map((p, j) => `${j === 0 ? "M" : "L"}${proj(p as Pt).join(" ")}`).join(" ") + " Z"} fill={color} fillOpacity={0.18} stroke={color} strokeWidth={1.5} />;
-    });
-  } else {
-    const pts: Pt[] = [];
-    eachPos(g.coordinates, (p) => pts.push(p));
-    shapes = pts.map((p, i) => {
-      const [x, y] = proj(p);
-      return <circle key={i} cx={x} cy={y} r={5} fill={color} />;
-    });
-  }
-  return (
-    <svg data-testid="entity-map" viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", maxWidth: 640, height: "auto", border: "1px solid rgba(128,128,128,0.3)", borderRadius: 10, background: "rgba(128,128,128,0.04)" }}>
-      {shapes}
-    </svg>
-  );
-}
+import { CommonsMap, type MapFeature } from "../map/CommonsMap";
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
@@ -95,7 +37,16 @@ export default function BioregionEntityRenderer({ note }: RendererProps) {
         {sensing && <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, opacity: 0.7 }}>{sensing}</span>}
       </div>
 
-      {geometry?.coordinates !== undefined && <div style={{ margin: "12px 0" }}><MiniMap geometry={geometry} color={color} /></div>}
+      {(geometry?.coordinates !== undefined || Boolean(m?.geo)) && (
+        <div style={{ margin: "12px 0" }}>
+          <CommonsMap
+            features={[{ id: note.id, kind: tag, name: (m?.name as string) ?? note.id, sensing, geometry: geometry ?? null, geo: (m?.geo as { lat: number; lon: number } | undefined) ?? null } as MapFeature]}
+            height={340}
+            showControls={false}
+            testId="entity-map"
+          />
+        </div>
+      )}
 
       <table style={{ borderCollapse: "collapse", margin: "8px 0" }}>
         <tbody>
