@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use chrono::Timelike;
 use tokio::sync::watch;
 use crate::clients::parachute::ParachuteClient;
 use crate::commands::config::AppConfig;
@@ -9,14 +10,23 @@ use crate::error::PrismError;
 
 const SYNC_INTERVAL_SECS: u64 = 600; // 10 minutes
 
-// Fireflies rate-limits aggressively (the GraphQL API returns "too many requests"
-// errors), and our list→detail flow is one request per new transcript. Keep each
-// run small and spaced out: scan fewer transcripts, ingest a bounded number of
-// new ones per cycle, and pause between detail calls. The 10-minute loop catches
-// up over successive runs without tripping the limit.
+// Fireflies enforces a *daily* API request quota (the GraphQL API returns "too
+// many requests" until the next 00:00 UTC), and our list→detail flow is one
+// request per new transcript. Polling every 10 minutes exhausts that daily
+// budget within minutes and then 429s for the rest of the day — so we DON'T poll
+// Fireflies on the 10-minute loop. Instead we sync it at a few fixed local hours
+// (see FIREFLIES_SYNC_HOURS), once per hour-slot, keeping the run small (bounded
+// new ingests + a pause between detail calls). This deliberately leaves the rest
+// of the daily quota for the cleanup agent to verify + delete synced transcripts.
 const FIREFLIES_LIST_LIMIT: i64 = 25;
 const FIREFLIES_MAX_NEW_PER_RUN: usize = 6;
 const FIREFLIES_THROTTLE_MS: u64 = 1200;
+
+/// Local-time hours (24h) at which to actually hit the Fireflies API: 11am, 1pm,
+/// 3pm, 6pm. The 6pm slot is intentional — the daily quota resets at 00:00 UTC,
+/// which is 6pm America/Denver, so that run gets a fresh budget. Each slot fires
+/// at most once per day (on the first 10-minute tick at/after the top of the hour).
+const FIREFLIES_SYNC_HOURS: [u32; 4] = [11, 13, 15, 18];
 
 /// Heuristic: does this error look like a Fireflies rate-limit (HTTP 429 or a
 /// "too many requests" GraphQL error)? Used to back off gracefully.
@@ -43,6 +53,11 @@ pub async fn run(
 
     // Initial delay
     tokio::time::sleep(tokio::time::Duration::from_secs(25)).await;
+
+    // Fireflies is gated to fixed local hours (see FIREFLIES_SYNC_HOURS). This
+    // tracks the last hour-slot we ran ("YYYY-MM-DD-HH") so each slot fires at
+    // most once per day even though the outer loop ticks every 10 minutes.
+    let mut last_fireflies_slot: Option<String> = None;
 
     loop {
         if *shutdown.borrow() {
@@ -74,13 +89,27 @@ pub async fn run(
             }
         }
 
-        // Fireflies (GraphQL API)
+        // Fireflies (GraphQL API) — only at the fixed local hours, once per slot,
+        // to stay under the daily request quota and leave budget for the cleanup
+        // agent. (Not polled on every 10-minute tick like the other sources.)
         if !config.fireflies_api_key.is_empty() {
-            match sync_fireflies(&parachute, &config.fireflies_api_key).await {
-                Ok(count) => total += count,
-                Err(e) => {
-                    log::warn!("Fireflies sync error: {}", e);
-                    errors_str.push(format!("Fireflies: {}", e));
+            let now = chrono::Local::now();
+            let hour = now.hour();
+            let slot = now.format("%Y-%m-%d-%H").to_string();
+            let due = FIREFLIES_SYNC_HOURS.contains(&hour)
+                && last_fireflies_slot.as_deref() != Some(slot.as_str());
+            if due {
+                // Claim the slot up front so we make at most one API-touching run
+                // per scheduled hour, regardless of outcome — conserving the daily
+                // quota for the cleanup agent even if this run errors or is throttled.
+                last_fireflies_slot = Some(slot.clone());
+                log::info!("Fireflies: scheduled sync for {}:00 local (slot {})", hour, slot);
+                match sync_fireflies(&parachute, &config.fireflies_api_key).await {
+                    Ok(count) => total += count,
+                    Err(e) => {
+                        log::warn!("Fireflies sync error: {}", e);
+                        errors_str.push(format!("Fireflies: {}", e));
+                    }
                 }
             }
         }
