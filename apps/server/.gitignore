@@ -7,3 +7,6 @@ dist
 *.db.backup-*
 *.db.bak-*
 .env.bak-*
+
+# Ad-hoc DB recovery snapshots (contain sessions + encrypted secrets)
+*.db.postrecovery-*
