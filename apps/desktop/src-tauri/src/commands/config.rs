@@ -66,6 +66,13 @@ pub struct AppConfig {
     /// desktop. The Fathom key stays configured so live use still works.
     #[serde(default)]
     pub disable_fathom_sync: bool,
+    /// When true, the desktop skips the FIREFLIES half of transcript_sync — the
+    /// Prism Server ingests Fireflies server-side AND deletes each transcript
+    /// from Fireflies once it's confirmed in the vault. Must be true once the
+    /// server owns Fireflies, so the two don't double-ingest or race on delete.
+    /// The Fireflies key stays configured so live use still works.
+    #[serde(default)]
+    pub disable_fireflies_sync: bool,
     pub notion_api_key: String,
     pub google_account_primary: String,
     pub google_account_agent: String,
@@ -142,6 +149,7 @@ impl Default for AppConfig {
             matrix_device_id: "PRISM".into(),
             disable_message_sync: false,
             disable_fathom_sync: false,
+            disable_fireflies_sync: false,
             notion_api_key: String::new(),
             google_account_primary: String::new(),
             google_account_agent: String::new(),

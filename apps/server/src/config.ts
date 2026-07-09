@@ -69,6 +69,34 @@ export const config = {
   // exercised independently; this gates the live sync (Phase 2+).
   federationEnabled: process.env.FEDERATION_ENABLED === "true",
 
+  // ── Fireflies transcript sync (server-side ingest + self-cleanup) ──
+  // The loop pulls transcripts at a few fixed LOCAL hours, ingests new ones, and
+  // deletes each from Fireflies once its note is confirmed in the vault — keeping
+  // the account under the free-tier daily API-request quota (50/day). The daily
+  // budget is the HARD ceiling on Fireflies calls/day (enforced, not advisory):
+  // default 40 is free-tier-safe; raise to ~450 while on Pro to drain a backlog
+  // fast, then revert. Hours are interpreted in `firefliesTz`.
+  // Deleting from Fireflies is IRREVERSIBLE. Off unless explicitly enabled: the
+  // loop otherwise runs as a DRY RUN that logs exactly what it would delete. A
+  // delete additionally requires per-transcript proof the body is in the vault
+  // (see isIngestConfirmed) — this flag only decides whether proof may act.
+  firefliesDeleteEnabled: process.env.FIREFLIES_DELETE_ENABLED === "true",
+  firefliesDailyBudget: Number(process.env.FIREFLIES_DAILY_BUDGET ?? 40),
+  firefliesMaxNewPerRun: Number(process.env.FIREFLIES_MAX_NEW_PER_RUN ?? 6),
+  firefliesMaxDeletePerRun: Number(process.env.FIREFLIES_MAX_DELETE_PER_RUN ?? 9),
+  firefliesSyncHours: (process.env.FIREFLIES_SYNC_HOURS ?? "11,13,15,18")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 23),
+  firefliesTz: process.env.FIREFLIES_TZ ?? "America/Denver",
+  // When Fireflies leaves a recording untranscribed (it stops transcribing over
+  // the minutes cap), hand the audio back for transcription rather than letting
+  // the recording rot un-ingestable. Recovery only — it never deletes.
+  firefliesRecoverEmpty: process.env.FIREFLIES_RECOVER_EMPTY !== "false",
+  firefliesMaxRecoveriesPerRun: Number(process.env.FIREFLIES_MAX_RECOVERIES_PER_RUN ?? 3),
+  /** Plan transcription-minutes cap (free = 400). Warns at 80%. */
+  firefliesQuotaMinutesCap: Number(process.env.FIREFLIES_QUOTA_MINUTES_CAP ?? 400),
+
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   magicFrom: process.env.MAGIC_FROM ?? "Prism <login@example.com>",
 
