@@ -886,3 +886,51 @@ pub fn check_google_cli() -> Result<serde_json::Value, PrismError> {
         _ => Ok(serde_json::json!({ "installed": false })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialize the defaults, patch keys the way prism-config.json does, read back.
+    fn config_from(patch: &[(&str, serde_json::Value)]) -> AppConfig {
+        let mut v = serde_json::to_value(AppConfig::default()).expect("serialize defaults");
+        let o = v.as_object_mut().unwrap();
+        for (k, val) in patch {
+            o.insert((*k).to_string(), val.clone());
+        }
+        serde_json::from_value(v).expect("deserialize patched config")
+    }
+
+    /// The desktop's Fireflies sync is disabled by a `#[serde(default)]` bool, so a
+    /// mismatch between the JSON key and the field name would deserialize SILENTLY to
+    /// `false` and quietly resume double-syncing Fireflies alongside the server (which
+    /// also owns deletion). Pin the exact on-disk key name.
+    #[test]
+    fn disable_fireflies_sync_binds_to_the_snake_case_key() {
+        let cfg = config_from(&[("disable_fireflies_sync", serde_json::json!(true))]);
+        assert!(cfg.disable_fireflies_sync, "on-disk key must bind to the field");
+    }
+
+    /// Absent from an older config file the flag defaults to false — the desktop keeps
+    /// syncing. That's why the server cutover REQUIRES writing the key explicitly.
+    #[test]
+    fn disable_fireflies_sync_defaults_to_false_when_absent() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("disable_fireflies_sync");
+        let cfg: AppConfig = serde_json::from_value(v).unwrap();
+        assert!(!cfg.disable_fireflies_sync);
+    }
+
+    /// The gate in transcript_sync.rs is `!key.is_empty() && !disable`. A configured key
+    /// PLUS the flag must evaluate to "do not sync" — that pairing is the whole cutover.
+    #[test]
+    fn configured_key_plus_disable_flag_means_no_desktop_sync() {
+        let cfg = config_from(&[
+            ("fireflies_api_key", serde_json::json!("ff_key")),
+            ("disable_fireflies_sync", serde_json::json!(true)),
+        ]);
+        assert!(!cfg.fireflies_api_key.is_empty(), "key stays configured for live use");
+        let would_sync = !cfg.fireflies_api_key.is_empty() && !cfg.disable_fireflies_sync;
+        assert!(!would_sync, "desktop must not sync Fireflies once the server owns it");
+    }
+}
