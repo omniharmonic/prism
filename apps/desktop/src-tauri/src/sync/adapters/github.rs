@@ -292,7 +292,7 @@ pub async fn sync_directory(
         .filter(|n| {
             n.path
                 .as_deref()
-                .map(|p| p.starts_with(&config.vault_path))
+                .map(|p| is_under_vault_path(p, &config.vault_path))
                 .unwrap_or(false)
         })
         .collect();
@@ -342,7 +342,9 @@ pub async fn sync_directory(
                 } else {
                     // local-wins: overwrite disk, stage
                     write_file(clone_path, &repo_rel, &serialized)?;
-                    run_git(&["add", &repo_rel], clone_path).await?;
+                    // `--` terminates option parsing so paths beginning with
+                    // '-' (e.g. "-labs/…") are treated as pathspecs, not flags.
+                    run_git(&["add", "--", &repo_rel], clone_path).await?;
                     result.pushed.push(repo_rel.clone());
                     staged_any = true;
                 }
@@ -350,7 +352,7 @@ pub async fn sync_directory(
             None => {
                 // New file — write and stage
                 write_file(clone_path, &repo_rel, &serialized)?;
-                run_git(&["add", &repo_rel], clone_path).await?;
+                run_git(&["add", "--", &repo_rel], clone_path).await?;
                 result.pushed.push(repo_rel.clone());
                 staged_any = true;
             }
@@ -414,7 +416,7 @@ pub async fn push_single_file(
         .filter(|n| {
             n.path
                 .as_deref()
-                .map(|p| p.starts_with(&config.vault_path))
+                .map(|p| is_under_vault_path(p, &config.vault_path))
                 .unwrap_or(false)
         })
         .chain(std::iter::once(note))
@@ -423,7 +425,7 @@ pub async fn push_single_file(
     let serialized = serialize_note_to_markdown(note, &repo_rel, &lookup);
 
     write_file(clone_path, &repo_rel, &serialized)?;
-    run_git(&["add", &repo_rel], clone_path).await?;
+    run_git(&["add", "--", &repo_rel], clone_path).await?;
 
     let filename = Path::new(&repo_rel)
         .file_name()
@@ -685,6 +687,20 @@ fn serialize_note_to_markdown(
 ///
 /// Strips the `config.vault_path` prefix and appends `config.file_extension`
 /// when the remaining path has no extension.
+/// Whether `note_path` falls under `vault_path`, matching only on a path-segment
+/// boundary. A raw `starts_with` would wrongly pull in a sibling directory that
+/// merely shares a name prefix (e.g. vault_path `vault/projects/opencivics`
+/// matching `vault/projects/opencivics-labs/…` and stripping to a leading-dash
+/// `-labs/…` repo path).
+pub fn is_under_vault_path(note_path: &str, vault_path: &str) -> bool {
+    let base = vault_path.trim_end_matches('/');
+    if base.is_empty() {
+        return true;
+    }
+    note_path == base
+        || note_path.starts_with(&format!("{base}/"))
+}
+
 fn map_vault_path_to_repo_path(vault_path: &str, config: &DirectorySyncConfig) -> String {
     let stripped = vault_path
         .strip_prefix(&config.vault_path)
