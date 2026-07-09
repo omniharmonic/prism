@@ -132,8 +132,9 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
     }
   }
 
+  const budget = makeFirefliesBudget(entry.id, config.firefliesDailyBudget);
   const res = await ingestAndCleanupFireflies(client, vaultClient(entry.id) as unknown as FirefliesVault, {
-    budget: makeFirefliesBudget(entry.id, config.firefliesDailyBudget),
+    budget,
     skipSet: skip,
     ownerEmail: owner,
     deleteEnabled: config.firefliesDeleteEnabled,
@@ -155,18 +156,21 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
       else if (e.kind === "undeletable") console.warn(`${p} cannot delete ${e.id} "${e.title}" — ${e.reason}`);
     },
   });
-  if (res.created || res.deleted || res.wouldDelete || res.unverified || res.notOwner || res.falseDeletes || res.recovered) {
-    console.log(
-      `[worker] fireflies ${entry.id}: +${res.created} ingested, -${res.deleted} deleted` +
-        (res.recovered ? `, ${res.recovered} recovered` : "") +
-        (res.wouldDelete ? `, ${res.wouldDelete} would-delete (dry run)` : "") +
-        (res.unverified ? `, ${res.unverified} UNVERIFIED (kept)` : "") +
-        (res.notOwner ? `, ${res.notOwner} not-yours` : "") +
-        (res.falseDeletes ? `, ${res.falseDeletes} FALSE-DELETES relabeled` : "") +
-        ` (${res.skipped} skipped)` +
-        (opts.force ? " [forced]" : ` [slot ${slot}]`),
-    );
-  }
+  // ALWAYS log one line per run (<=4/day). A quiet run is the norm once the
+  // backlog is drained — everything falls into the in-memory skip-set and no
+  // counter moves — and a silently-quiet run is indistinguishable from a run
+  // that never happened. Silent stalls are exactly what wedged this integration
+  // before, so the heartbeat is the point, not the counters.
+  console.log(
+    `[worker] fireflies ${entry.id}: +${res.created} ingested, -${res.deleted} deleted` +
+      (res.recovered ? `, ${res.recovered} recovered` : "") +
+      (res.wouldDelete ? `, ${res.wouldDelete} would-delete (dry run)` : "") +
+      (res.unverified ? `, ${res.unverified} UNVERIFIED (kept)` : "") +
+      (res.notOwner ? `, ${res.notOwner} not-yours` : "") +
+      (res.falseDeletes ? `, ${res.falseDeletes} FALSE-DELETES relabeled` : "") +
+      ` (${res.skipped} skipped, ${budget.remaining()}/${config.firefliesDailyBudget} calls left today)` +
+      (opts.force ? " [forced]" : ` [slot ${slot}]`),
+  );
   return res.created;
 }
 
