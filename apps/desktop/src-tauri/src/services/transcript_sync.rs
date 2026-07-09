@@ -90,9 +90,11 @@ pub async fn run(
         }
 
         // Fireflies (GraphQL API) — only at the fixed local hours, once per slot,
-        // to stay under the daily request quota and leave budget for the cleanup
-        // agent. (Not polled on every 10-minute tick like the other sources.)
-        if !config.fireflies_api_key.is_empty() {
+        // to stay under the daily request quota. Skipped entirely when handled
+        // server-side (disable_fireflies_sync): the Prism Server owns Fireflies —
+        // it ingests AND deletes each transcript from Fireflies once confirmed in
+        // the vault — so the desktop must NOT also sync (double-ingest / delete race).
+        if !config.fireflies_api_key.is_empty() && !config.disable_fireflies_sync {
             let now = chrono::Local::now();
             let hour = now.hour();
             let slot = now.format("%Y-%m-%d-%H").to_string();

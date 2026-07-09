@@ -11,7 +11,7 @@ import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
-import { runMatrixOnce, runFathomOnce } from "../worker/scheduler";
+import { runMatrixOnce, runFathomOnce, runFirefliesOnce } from "../worker/scheduler";
 
 export const integrations = new Hono();
 
@@ -90,6 +90,42 @@ integrations.post("/fathom/sync", async (c) => {
   const actor = resolveActor(c);
   try {
     const transcripts = await runFathomOnce(resolveVaultEntry(actor.vaultId));
+    return c.json({ ok: true, transcripts });
+  } catch (e) {
+    return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
+  }
+});
+
+// ── Fireflies (meeting transcripts + self-cleanup) — same shape as Fathom ──
+integrations.get("/fireflies", (c) => {
+  const actor = resolveActor(c);
+  const available = secretsConfigured();
+  const configured = available && !!getSecret(actor.vaultId, config.ownerEmail, "fireflies");
+  return c.json({ secretsAvailable: available, configured });
+});
+
+integrations.put("/fireflies", async (c) => {
+  if (!secretsConfigured()) {
+    return c.json({ error: "secrets_unconfigured", detail: "SECRETS_KEY is not set on the server" }, 400);
+  }
+  const actor = resolveActor(c);
+  const { apiKey } = await c.req.json<{ apiKey?: string }>().catch(() => ({}) as { apiKey?: string });
+  if (typeof apiKey !== "string" || !apiKey) return c.json({ error: "bad_request", detail: "apiKey required" }, 400);
+  putSecret(actor.vaultId, config.ownerEmail, "fireflies", JSON.stringify({ apiKey }));
+  return c.json({ ok: true });
+});
+
+integrations.delete("/fireflies", (c) => {
+  deleteSecret(resolveActor(c).vaultId, config.ownerEmail, "fireflies");
+  return c.json({ ok: true });
+});
+
+// Force one ingest+cleanup pass now (bypasses the fixed-hours slot gate, still
+// honors the daily budget). Repeat-call ≥1/min to drain a backlog on Pro.
+integrations.post("/fireflies/sync", async (c) => {
+  const actor = resolveActor(c);
+  try {
+    const transcripts = await runFirefliesOnce(resolveVaultEntry(actor.vaultId), { force: true });
     return c.json({ ok: true, transcripts });
   } catch (e) {
     return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
