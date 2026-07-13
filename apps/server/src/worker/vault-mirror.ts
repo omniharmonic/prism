@@ -83,12 +83,15 @@ export async function syncMirror(src: MirrorVault, dst: MirrorVault, cfg: VaultM
   );
   const dstNotes = (await dst.listNotes({ pathPrefix: cfg.dest_prefix })).filter((n) => pathInPrefix(n.path, cfg.dest_prefix));
 
-  // Destination index by source identity. Unmarked notes are invisible to the
-  // mirror by construction.
+  // Destination index by source identity, scoped to THIS mirror's own copies
+  // (mirror_id match). Unmarked notes are invisible by construction; another
+  // mirror's copies must be too — indexing on the marker alone would let two
+  // mirrors sharing a source hijack (re-path, re-stamp) each other's copies and
+  // churn or duplicate them every cycle.
   const byMarker = new Map<string, Note>();
   for (const n of dstNotes) {
     const marker = n.metadata?.mirror_source;
-    if (typeof marker === "string" && marker) byMarker.set(marker, n);
+    if (typeof marker === "string" && marker && n.metadata?.mirror_id === cfg.id) byMarker.set(marker, n);
   }
 
   const liveMarkers = new Set<string>();
@@ -113,17 +116,25 @@ export async function syncMirror(src: MirrorVault, dst: MirrorVault, cfg: VaultM
       }
       const sourceChanged = existing.metadata?.mirror_source_updated_at !== (srcNote.updatedAt ?? null);
       const movedOrArchived = existing.path !== destPath; // covers renames/moves AND un-archiving a resurrected source
-      if (!sourceChanged && !movedOrArchived) {
+      // Compare tags directly too: listings carry them, and whether a tag-only
+      // PATCH bumps the vault's updatedAt is not a contract we can lean on.
+      const tagsChanged = !sameTags(srcNote.tags, existing.tags);
+      if (!sourceChanged && !movedOrArchived && !tagsChanged) {
         res.skipped++;
         continue;
       }
       const full = await src.getNote(srcNote.id);
+      // Tags FIRST: updateNote below advances mirror_source_updated_at, and once
+      // that marker matches the source a failed tag write would never be retried
+      // (the note reads as unchanged forever after).
+      await diffTags(dst, existing, full.tags ?? []);
       await dst.updateNote(existing.id, {
         content: full.content ?? "",
         path: destPath,
-        metadata: mirrorMetadata(full, marker, cfg.id),
+        // The vault PATCH MERGES metadata, so a key deleted on the source would
+        // survive on the copy without an explicit null tombstone.
+        metadata: withTombstones(mirrorMetadata(full, marker, cfg.id), existing.metadata),
       });
-      await diffTags(dst, existing, full.tags ?? []);
       res.updated++;
     } catch (e) {
       res.errors.push(`${marker}: ${(e as Error).message}`);
@@ -134,14 +145,19 @@ export async function syncMirror(src: MirrorVault, dst: MirrorVault, cfg: VaultM
   // absence is CONFIRMED by a direct re-fetch, and archive (not destroy) by default.
   for (const [marker, copy] of byMarker) {
     if (liveMarkers.has(marker)) continue;
-    if (copy.metadata?.mirror_id !== cfg.id) continue; // another mirror's copy — not ours to manage
     if (cfg.delete_mode === "keep") continue;
-    if (cfg.delete_mode === "archive" && pathInPrefix(copy.path, archivePrefix(cfg.dest_prefix))) continue; // already archived
+    // Archived copies are settled history in EVERY mode: flipping delete_mode
+    // from 'archive' to 'delete' later must not retroactively destroy the
+    // archive ("archive destroys nothing" is a promise, not a mode).
+    if (pathInPrefix(copy.path, archivePrefix(cfg.dest_prefix))) continue;
     const srcId = marker.slice(cfg.src_vault.length + 1);
     try {
-      await src.getNote(srcId);
-      // Still alive in the source — the listing was incomplete. Touch nothing.
-      continue;
+      const live = await src.getNote(srcId);
+      // Alive AND still under the prefix → the listing was incomplete; touch
+      // nothing. Alive but MOVED OUT of the prefix → deliberately un-shared;
+      // fall through and treat exactly like a deletion (otherwise the copy is
+      // stranded: never updated, never removed, still readable by collaborators).
+      if (pathInPrefix(live.path, cfg.src_prefix)) continue;
     } catch (e) {
       if (!isNotFound(e)) {
         res.errors.push(`${marker}: delete-verify failed (${(e as Error).message}) — keeping`);
@@ -176,6 +192,22 @@ function mirrorMetadata(source: Note, marker: string, mirrorId: string): Record<
   };
 }
 
+const sameTags = (a: string[] | null, b: string[] | null): boolean => {
+  const sa = new Set(a ?? []);
+  const sb = new Set(b ?? []);
+  return sa.size === sb.size && [...sa].every((t) => sb.has(t));
+};
+
+/** The vault PATCH merges metadata; keys the source dropped need an explicit
+ *  null tombstone or they'd live on the copy forever (stale dashboard filters). */
+function withTombstones(next: Record<string, unknown>, previous: Record<string, unknown> | null): Record<string, unknown> {
+  const out = { ...next };
+  for (const key of Object.keys(previous ?? {})) {
+    if (!(key in out)) out[key] = null;
+  }
+  return out;
+}
+
 /** Converge the copy's tags onto the source's via add/remove diffs. */
 async function diffTags(dst: MirrorVault, copy: Note, wanted: string[]): Promise<void> {
   const have = new Set(copy.tags ?? []);
@@ -192,28 +224,52 @@ async function diffTags(dst: MirrorVault, copy: Note, wanted: string[]): Promise
  *  every worker tick would be wasteful). Forced runs (the on-demand route) bypass it. */
 const MIRROR_INTERVAL_MS = 5 * 60_000;
 
+/** Mirrors currently mid-run. A forced run (POST /:id/sync) can otherwise
+ *  interleave with the scheduler's run of the same mirror — two concurrent
+ *  passes each see !existing for the same source note and both create, leaving
+ *  a permanent doppelgänger copy the marker index can never manage. */
+const running = new Set<string>();
+
 /** Run one mirror if it is enabled and due; records the run summary on the row.
- *  Returns the result, or null when skipped (disabled / not due). */
+ *  Returns the result, or null when skipped (disabled / not due / already
+ *  running / a vault no longer in the registry). */
 export async function runVaultMirrorOnce(cfg: VaultMirror, opts: { force?: boolean } = {}): Promise<MirrorRunResult | null> {
   if (!cfg.enabled && !opts.force) return null;
   if (!opts.force && cfg.last_run_at && Date.now() - cfg.last_run_at < MIRROR_INTERVAL_MS) return null;
-  const { vaultClient } = await import("../parachute");
-  const { recordMirrorRun } = await import("../db");
-  const res = await syncMirror(
-    vaultClient(cfg.src_vault) as unknown as MirrorVault,
-    vaultClient(cfg.dest_vault) as unknown as MirrorVault,
-    cfg,
-  );
-  recordMirrorRun(cfg.id, res);
-  if (res.created || res.updated || res.deleted || res.archived || res.errors.length) {
-    console.log(
-      `[worker] vault-mirror ${cfg.id} (${cfg.src_vault}/${cfg.src_prefix} → ${cfg.dest_vault}/${cfg.dest_prefix}): ` +
-        `+${res.created} created, ~${res.updated} updated, -${res.deleted} deleted, ${res.archived} archived ` +
-        `(${res.skipped} unchanged)` +
-        (res.errors.length ? ` — ${res.errors.length} ERRORS: ${res.errors.slice(0, 3).join("; ")}` : ""),
+  // Claim the in-flight slot BEFORE the first await — two concurrent callers
+  // must not both pass the check.
+  if (running.has(cfg.id)) return null;
+  running.add(cfg.id);
+  try {
+    const { vaultClient } = await import("../parachute");
+    const { recordMirrorRun, getVaultRegistry } = await import("../db");
+    // HARD registry check on both ends. resolveVaultEntry (inside vaultClient)
+    // silently falls back to the PRIMARY vault for an unknown id — an orphaned
+    // mirror would then delete-verify every copy against the wrong vault, 404,
+    // and mass-archive/delete the destination. Refuse to run instead.
+    const ids = new Set(getVaultRegistry().map((v) => v.id));
+    if (!ids.has(cfg.src_vault) || !ids.has(cfg.dest_vault)) {
+      console.error(`[worker] vault-mirror ${cfg.id}: vault "${!ids.has(cfg.src_vault) ? cfg.src_vault : cfg.dest_vault}" is not in the registry — refusing to run`);
+      return null;
+    }
+    const res = await syncMirror(
+      vaultClient(cfg.src_vault) as unknown as MirrorVault,
+      vaultClient(cfg.dest_vault) as unknown as MirrorVault,
+      cfg,
     );
+    recordMirrorRun(cfg.id, res);
+    if (res.created || res.updated || res.deleted || res.archived || res.errors.length) {
+      console.log(
+        `[worker] vault-mirror ${cfg.id} (${cfg.src_vault}/${cfg.src_prefix} → ${cfg.dest_vault}/${cfg.dest_prefix}): ` +
+          `+${res.created} created, ~${res.updated} updated, -${res.deleted} deleted, ${res.archived} archived ` +
+          `(${res.skipped} unchanged)` +
+          (res.errors.length ? ` — ${res.errors.length} ERRORS: ${res.errors.slice(0, 3).join("; ")}` : ""),
+      );
+    }
+    return res;
+  } finally {
+    running.delete(cfg.id);
   }
-  return res;
 }
 
 /** All configured mirrors, per-mirror error isolation (the scheduler tick calls this). */

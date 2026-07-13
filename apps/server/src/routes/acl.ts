@@ -79,6 +79,7 @@ import {
   getVaultMirror,
   updateVaultMirror,
   removeVaultMirror,
+  removeVaultMirrorsForVault,
   type MirrorDeleteMode,
   type VaultMirror,
   type Space,
@@ -252,8 +253,13 @@ acl.delete("/vaults/:id", (c) => {
   if (vaultRegistry.some((v) => v.id === id)) {
     return c.json({ error: "forbidden", detail: "cannot remove an env-configured vault" }, 400);
   }
+  // Mirrors referencing this vault must die with it: an orphaned mirror would
+  // silently retarget the primary vault (resolveVaultEntry fallback) and its
+  // delete-verify would then mass-archive/delete the destination copies.
+  const mirrorsDropped = removeVaultMirrorsForVault(id);
+  if (mirrorsDropped) console.log(`[vaults] removed ${mirrorsDropped} mirror(s) referencing deleted vault ${id}`);
   removeVaultEntry(id);
-  return c.json({ ok: true });
+  return c.json({ ok: true, mirrorsRemoved: mirrorsDropped });
 });
 
 // ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
@@ -261,6 +267,19 @@ acl.delete("/vaults/:id", (c) => {
 // in another vault on this server — one-way, source-wins, structure preserved.
 // Config rows only; the sync itself runs in the worker (src/worker/vault-mirror.ts)
 // and on demand via POST /acl/mirrors/:id/sync.
+//
+// SERVER-OWNER only (not just the /acl admin gate): a mirror names arbitrary
+// src/dest vaults and the engine writes with the server's own vault tokens, so
+// a mere vault-admin could otherwise exfiltrate another tenant's vault into one
+// they control. Same posture as the workspace routes.
+acl.use("/mirrors/*", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
+acl.use("/mirrors", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
 
 const isDeleteMode = (x: unknown): x is MirrorDeleteMode =>
   x === "archive" || x === "delete" || x === "keep";

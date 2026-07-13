@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { acl } from "../src/routes/acl";
 import { config } from "../src/config";
 import { resetDb, makeSession, sessionCookie, installFakeVault, type FakeVault } from "./helpers";
-import { addVaultEntry, createVaultMirror, getVaultMirror, listVaultMirrors, type VaultMirror } from "../src/db";
-import { syncMirror, rebasePath, mirrorSourceKey, type MirrorVault } from "../src/worker/vault-mirror";
+import { addVaultEntry, createVaultMirror, getVaultMirror, listVaultMirrors, setMembership, type VaultMirror } from "../src/db";
+import { syncMirror, rebasePath, mirrorSourceKey, runVaultMirrorOnce, type MirrorVault } from "../src/worker/vault-mirror";
 import { pathInPrefix } from "../src/paths";
 
 // ── in-memory MirrorVault fake ────────────────────────────────────────────────
@@ -261,6 +261,102 @@ test("other mirrors' copies in the same destination folder are not managed", asy
   assert.ok(dst.notes.get("other"), "another mirror's copy survives");
 });
 
+test("a second mirror sharing the source never hijacks the first mirror's copy", async () => {
+  const src = memVault();
+  const dst = memVault();
+  src.put({ id: "a", path: "sfr/doc", content: "x" });
+  // Another mirror's copy of the SAME source note, nested under our dest prefix.
+  const foreign = dst.put({ id: "f", path: "frontrange/sfr/summary/doc", content: "x", metadata: { mirror_source: "personal:a", mirror_id: "other-mirror", mirror_source_updated_at: "2026-01-01T00:00:00Z" } });
+  const res = await syncMirror(src, dst, mkCfg());
+  assert.equal(res.created, 1, "creates its OWN copy instead of adopting the other mirror's");
+  assert.equal(foreign.path, "frontrange/sfr/summary/doc", "the other mirror's copy is not re-pathed");
+  assert.equal(foreign.metadata?.mirror_id, "other-mirror", "…nor re-stamped");
+});
+
+test("flipping delete_mode from 'archive' to 'delete' never destroys the existing archive", async () => {
+  const src = memVault();
+  const dst = memVault();
+  src.put({ id: "a", path: "sfr/doc", content: "x" });
+  await syncMirror(src, dst, mkCfg());
+  src.notes.delete("a");
+  await syncMirror(src, dst, mkCfg()); // archived under _archive
+  const res = await syncMirror(src, dst, mkCfg({ delete_mode: "delete" }));
+  assert.equal(res.deleted, 0);
+  assert.equal(dstByMarker(dst, "personal:a")!.path, "frontrange/sfr/_archive/doc", "archived history is settled in every mode");
+});
+
+test("a source note moved OUT of the prefix is un-shared (archived), not stranded", async () => {
+  const src = memVault();
+  const dst = memVault();
+  const note = src.put({ id: "a", path: "sfr/salary-review", content: "sensitive" });
+  await syncMirror(src, dst, mkCfg());
+
+  note.path = "private/salary-review"; // deliberately pulled out of the shared folder
+  const res = await syncMirror(src, dst, mkCfg());
+  assert.equal(res.archived, 1, "treated like a removal");
+  assert.equal(dstByMarker(dst, "personal:a")!.path, "frontrange/sfr/_archive/salary-review");
+
+  // With delete mode, the copy is removed outright.
+  const src2 = memVault();
+  const dst2 = memVault();
+  const n2 = src2.put({ id: "b", path: "sfr/doc", content: "x" });
+  await syncMirror(src2, dst2, mkCfg({ delete_mode: "delete" }));
+  n2.path = "private/doc";
+  await syncMirror(src2, dst2, mkCfg({ delete_mode: "delete" }));
+  assert.ok(!dstByMarker(dst2, "personal:b"), "copy deleted once the source left the folder");
+});
+
+test("a tag-only change propagates even when the vault does not bump updatedAt", async () => {
+  const src = memVault();
+  const dst = memVault();
+  const note = src.put({ id: "a", path: "sfr/doc", content: "x", tags: ["draft"] });
+  await syncMirror(src, dst, mkCfg());
+
+  note.tags = ["draft", "task"]; // updatedAt deliberately untouched
+  const res = await syncMirror(src, dst, mkCfg());
+  assert.equal(res.updated, 1);
+  assert.deepEqual([...(dstByMarker(dst, "personal:a")!.tags ?? [])].sort(), ["draft", "task"]);
+});
+
+test("a metadata key deleted on the source is tombstoned on the copy (vault PATCH merges)", async () => {
+  const src = memVault();
+  const dst = memVault();
+  const note = src.put({ id: "a", path: "sfr/doc", content: "x", metadata: { status: "active" } });
+  await syncMirror(src, dst, mkCfg());
+  assert.equal(dstByMarker(dst, "personal:a")!.metadata?.status, "active");
+
+  note.metadata = {}; // key deleted at the source
+  note.updatedAt = "2026-04-04T00:00:00Z";
+  await syncMirror(src, dst, mkCfg());
+  const meta = dstByMarker(dst, "personal:a")!.metadata!;
+  assert.ok("status" in meta && meta.status === null, "explicit null tombstone sent for the dropped key");
+});
+
+test("a transient tag-write failure is retried — the change marker is not advanced past it", async () => {
+  const src = memVault();
+  const dst = memVault();
+  const note = src.put({ id: "a", path: "sfr/doc", content: "v1", tags: [] });
+  await syncMirror(src, dst, mkCfg());
+
+  note.content = "v2";
+  note.tags = ["task"];
+  note.updatedAt = "2026-05-05T00:00:00Z";
+  const realAddTags = dst.addTags.bind(dst);
+  dst.addTags = async () => {
+    throw Object.assign(new Error("vault 500"), { status: 500 });
+  };
+  let res = await syncMirror(src, dst, mkCfg());
+  assert.equal(res.updated, 0);
+  assert.equal(res.errors.length, 1, "failure surfaced");
+
+  dst.addTags = realAddTags;
+  res = await syncMirror(src, dst, mkCfg());
+  assert.equal(res.updated, 1, "retried on the next run — not skipped as unchanged");
+  const copy = dstByMarker(dst, "personal:a")!;
+  assert.equal(copy.content, "v2");
+  assert.deepEqual(copy.tags, ["task"]);
+});
+
 // ── routes ────────────────────────────────────────────────────────────────────
 
 const J = { "content-type": "application/json" };
@@ -296,6 +392,50 @@ test("mirrors CRUD is owner/admin-gated", async () => {
   const rando = sessionCookie(makeSession("rando@example.com"));
   assert.equal((await acl.request("/mirrors", { headers: { cookie: rando } })).status, 403);
   assert.equal((await postMirror(rando, { srcVault: "primary", srcPrefix: "sfr", destVault: "commons", destPrefix: "frc/sfr" })).status, 403);
+});
+
+test("mirrors are SERVER-OWNER only — a vault admin cannot mirror another tenant's vault", async () => {
+  // An admin of the commons vault passes the /acl admin gate via X-Prism-Vault,
+  // but must NOT be able to name arbitrary src/dest vaults (cross-tenant
+  // exfiltration through the server's own vault tokens).
+  setMembership("commons", "admin@example.com", "admin", "test");
+  const admin = sessionCookie(makeSession("admin@example.com"));
+  const headers = { ...J, cookie: admin, "X-Prism-Vault": "commons" };
+  const r = await acl.request("/mirrors", { method: "POST", headers, body: JSON.stringify({ srcVault: "primary", srcPrefix: "sfr", destVault: "commons", destPrefix: "stolen" }) });
+  assert.equal(r.status, 403);
+  assert.equal((await acl.request("/mirrors", { headers })).status, 403, "listing is owner-only too");
+  assert.equal(listVaultMirrors().length, 0);
+});
+
+test("deleting a vault removes every mirror referencing it (no orphan retargeting)", async () => {
+  const cookie = ownerCookie();
+  const m = (await (await postMirror(cookie, { srcVault: "primary", srcPrefix: "sfr", destVault: "commons", destPrefix: "frc/sfr" })).json()) as { id: string };
+  assert.ok(getVaultMirror(m.id));
+  const r = await acl.request("/vaults/commons", { method: "DELETE", headers: { cookie } });
+  assert.equal(r.status, 200);
+  assert.equal(((await r.json()) as { mirrorsRemoved: number }).mirrorsRemoved, 1);
+  assert.equal(getVaultMirror(m.id), null, "mirror died with its vault");
+});
+
+test("an orphaned mirror (vault gone from the registry) refuses to run", async () => {
+  // Row created directly (the route would reject it) — simulates a mirror whose
+  // vault was removed out-of-band. resolveVaultEntry would silently fall back to
+  // the PRIMARY vault; the runner must refuse instead of mass-archiving.
+  const m = createVaultMirror({ src_vault: "ghost", src_prefix: "sfr", dest_vault: "commons", dest_prefix: "frc/sfr" });
+  const callsBefore = fv.calls.length;
+  const res = await runVaultMirrorOnce(m, { force: true });
+  assert.equal(res, null, "refused");
+  assert.equal(fv.calls.length, callsBefore, "no vault was touched");
+});
+
+test("concurrent runs of the same mirror cannot double-create (in-flight guard)", async () => {
+  fv.put({ id: "s1", path: "sfr/doc", content: "x", tags: [] });
+  const m = createVaultMirror({ src_vault: "primary", src_prefix: "sfr", dest_vault: "commons", dest_prefix: "frc/sfr" });
+  const [r1, r2] = await Promise.all([runVaultMirrorOnce(m, { force: true }), runVaultMirrorOnce(m, { force: true })]);
+  const ran = [r1, r2].filter(Boolean);
+  assert.equal(ran.length, 1, "exactly one of the two concurrent runs executed");
+  const copies = [...fv.notes.values()].filter((n) => n.metadata?.mirror_source === mirrorSourceKey("primary", "s1"));
+  assert.equal(copies.length, 1, "no doppelgänger copy");
 });
 
 test("PATCH toggles enabled/delete_mode; DELETE removes; unknown ids 404", async () => {

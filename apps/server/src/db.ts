@@ -592,6 +592,14 @@ export function updateVaultMirror(id: string, patch: { enabled?: boolean; delete
 export function removeVaultMirror(id: string): void {
   deleteMirrorStmt.run(id);
 }
+const deleteMirrorsForVaultStmt = db.prepare("DELETE FROM vault_mirrors WHERE src_vault = ? OR dest_vault = ?");
+/** Drop every mirror referencing a vault (called when the vault leaves the
+ *  registry). CRITICAL: an orphaned mirror would silently retarget the PRIMARY
+ *  vault via resolveVaultEntry's fallback — its delete-verify would then 404 on
+ *  every copy and mass-archive/delete the destination. Returns rows removed. */
+export function removeVaultMirrorsForVault(vaultId: string): number {
+  return deleteMirrorsForVaultStmt.run(vaultId, vaultId).changes;
+}
 export function recordMirrorRun(id: string, result: unknown): void {
   recordMirrorRunStmt.run({ id, at: Date.now(), result: JSON.stringify(result) });
 }

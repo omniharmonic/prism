@@ -178,16 +178,21 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
 /** One full tick: every configured ingester for every vault. Per-vault, per-source
  *  errors are isolated so one bad credential can't stall the rest. */
 async function tick(): Promise<void> {
-  for (const entry of getVaultRegistry()) {
-    for (const [name, run] of [
-      ["matrix", runMatrixOnce],
-      ["fathom", runFathomOnce],
-      ["fireflies", runFirefliesOnce],
-    ] as const) {
-      try {
-        await run(entry);
-      } catch (e) {
-        console.warn(`[worker] ${name} ${entry.id} failed:`, (e as Error).message);
+  // Secret-backed ingesters keep their original gate: on a mirrors-only server
+  // (no SECRETS_KEY) they would otherwise throw per vault × source on every
+  // tick, flooding the logs while appearing configured.
+  if (secretsConfigured()) {
+    for (const entry of getVaultRegistry()) {
+      for (const [name, run] of [
+        ["matrix", runMatrixOnce],
+        ["fathom", runFathomOnce],
+        ["fireflies", runFirefliesOnce],
+      ] as const) {
+        try {
+          await run(entry);
+        } catch (e) {
+          console.warn(`[worker] ${name} ${entry.id} failed:`, (e as Error).message);
+        }
       }
     }
   }
