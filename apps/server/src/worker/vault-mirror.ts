@@ -17,10 +17,13 @@
  * and the default `delete_mode` is 'archive' (move under <dest>/_archive/),
  * which destroys nothing.
  */
+// The sync ENGINE (syncMirror + helpers) is deliberately pure: type-only imports
+// plus the pure paths helpers, so the verify harness (scripts/verify-folder-sync.ts)
+// can drive it against scratch vaults without loading the server's SQLite or
+// config. Only the scheduler glue at the bottom touches db/parachute — lazily.
 import type { Note } from "../parachute";
-import { vaultClient } from "../parachute";
 import { pathInPrefix } from "../paths";
-import { listVaultMirrors, recordMirrorRun, type VaultMirror } from "../db";
+import type { VaultMirror } from "../db";
 
 /** The minimal vault surface the mirror needs (satisfied by vaultClient();
  *  injectable so the sync logic is unit-tested without a live vault). */
@@ -194,6 +197,8 @@ const MIRROR_INTERVAL_MS = 5 * 60_000;
 export async function runVaultMirrorOnce(cfg: VaultMirror, opts: { force?: boolean } = {}): Promise<MirrorRunResult | null> {
   if (!cfg.enabled && !opts.force) return null;
   if (!opts.force && cfg.last_run_at && Date.now() - cfg.last_run_at < MIRROR_INTERVAL_MS) return null;
+  const { vaultClient } = await import("../parachute");
+  const { recordMirrorRun } = await import("../db");
   const res = await syncMirror(
     vaultClient(cfg.src_vault) as unknown as MirrorVault,
     vaultClient(cfg.dest_vault) as unknown as MirrorVault,
@@ -213,6 +218,7 @@ export async function runVaultMirrorOnce(cfg: VaultMirror, opts: { force?: boole
 
 /** All configured mirrors, per-mirror error isolation (the scheduler tick calls this). */
 export async function runVaultMirrorsOnce(): Promise<void> {
+  const { listVaultMirrors } = await import("../db");
   for (const m of listVaultMirrors()) {
     try {
       await runVaultMirrorOnce(m);
