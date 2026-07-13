@@ -74,8 +74,17 @@ import {
   vaultsForWorkspace,
   workspaceForVault,
   DEFAULT_WORKSPACE_ID,
+  createVaultMirror,
+  listVaultMirrors,
+  getVaultMirror,
+  updateVaultMirror,
+  removeVaultMirror,
+  type MirrorDeleteMode,
+  type VaultMirror,
   type Space,
 } from "../db";
+import { runVaultMirrorOnce } from "../worker/vault-mirror";
+import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind } from "../collab";
@@ -245,6 +254,96 @@ acl.delete("/vaults/:id", (c) => {
   }
   removeVaultEntry(id);
   return c.json({ ok: true });
+});
+
+// ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
+// A mirror converges a folder (path prefix) of one registry vault onto a prefix
+// in another vault on this server — one-way, source-wins, structure preserved.
+// Config rows only; the sync itself runs in the worker (src/worker/vault-mirror.ts)
+// and on demand via POST /acl/mirrors/:id/sync.
+
+const isDeleteMode = (x: unknown): x is MirrorDeleteMode =>
+  x === "archive" || x === "delete" || x === "keep";
+
+/** Client view of a mirror row: last_result JSON parsed, nothing secret to strip. */
+function mirrorView(m: VaultMirror): Record<string, unknown> {
+  let lastResult: unknown = null;
+  if (m.last_result) {
+    try {
+      lastResult = JSON.parse(m.last_result);
+    } catch {
+      lastResult = m.last_result;
+    }
+  }
+  return { ...m, last_result: lastResult };
+}
+
+acl.get("/mirrors", (c) => c.json(listVaultMirrors().map(mirrorView)));
+
+acl.post("/mirrors", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const srcVault = typeof body.srcVault === "string" ? body.srcVault.trim() : "";
+  const destVault = typeof body.destVault === "string" ? body.destVault.trim() : "";
+  const srcPrefix = typeof body.srcPrefix === "string" ? normalizePathPrefix(body.srcPrefix) : null;
+  const destPrefix = typeof body.destPrefix === "string" ? normalizePathPrefix(body.destPrefix) : null;
+  if (!srcVault || !destVault) return c.json({ error: "bad_request", detail: "srcVault and destVault are required" }, 400);
+  if (!srcPrefix || !destPrefix) return c.json({ error: "bad_request", detail: "srcPrefix and destPrefix must be valid path prefixes" }, 400);
+  if (body.deleteMode !== undefined && !isDeleteMode(body.deleteMode)) {
+    return c.json({ error: "bad_request", detail: "deleteMode must be 'archive', 'delete' or 'keep'" }, 400);
+  }
+  const registry = getVaultRegistry();
+  for (const [name, id] of [["srcVault", srcVault], ["destVault", destVault]] as const) {
+    if (!registry.some((v) => v.id === id)) return c.json({ error: "bad_request", detail: `${name} "${id}" is not a registered vault` }, 400);
+  }
+  // A mirror whose destination lies inside its own source (or vice versa) in the
+  // SAME vault would feed itself — refuse the overlap outright.
+  if (srcVault === destVault && (pathInPrefix(srcPrefix, destPrefix) || pathInPrefix(destPrefix, srcPrefix))) {
+    return c.json({ error: "bad_request", detail: "source and destination prefixes overlap within the same vault" }, 400);
+  }
+  const actor = resolveActor(c);
+  const mirror = createVaultMirror({
+    src_vault: srcVault,
+    src_prefix: srcPrefix,
+    dest_vault: destVault,
+    dest_prefix: destPrefix,
+    delete_mode: isDeleteMode(body.deleteMode) ? body.deleteMode : undefined,
+    created_by: actor.kind === "user" ? actor.email : null,
+  });
+  // The worker gate is "secrets OR mirrors exist" — creating the first mirror on
+  // a secrets-less server must start the loop without a restart (idempotent).
+  startWorker();
+  return c.json(mirrorView(mirror));
+});
+
+acl.patch("/mirrors/:id", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  if (body.deleteMode !== undefined && !isDeleteMode(body.deleteMode)) {
+    return c.json({ error: "bad_request", detail: "deleteMode must be 'archive', 'delete' or 'keep'" }, 400);
+  }
+  const updated = updateVaultMirror(c.req.param("id"), {
+    enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+    delete_mode: isDeleteMode(body.deleteMode) ? body.deleteMode : undefined,
+  });
+  if (!updated) return c.json({ error: "not_found" }, 404);
+  return c.json(mirrorView(updated));
+});
+
+acl.delete("/mirrors/:id", (c) => {
+  if (!getVaultMirror(c.req.param("id"))) return c.json({ error: "not_found" }, 404);
+  removeVaultMirror(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+/** Run a mirror NOW (bypasses the enabled flag and the worker cadence). */
+acl.post("/mirrors/:id/sync", async (c) => {
+  const mirror = getVaultMirror(c.req.param("id"));
+  if (!mirror) return c.json({ error: "not_found" }, 404);
+  try {
+    const result = await runVaultMirrorOnce(mirror, { force: true });
+    return c.json({ ok: true, result });
+  } catch (e) {
+    return c.json({ error: "sync_failed", detail: (e as Error).message }, 500);
+  }
 });
 
 /** Full sharing picture for a note: direct people, links, and tag-grants that

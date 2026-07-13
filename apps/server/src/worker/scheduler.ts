@@ -9,13 +9,14 @@
  * Today: Matrix. Notion/transcripts plug in the same way (a secret kind + an
  * ingest fn). gog-backed Gmail/Calendar + Meetily stay desktop (host-bound).
  */
-import { getVaultRegistry, getWorkerCursor, setWorkerCursor } from "../db";
+import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } from "../db";
 import { getSecret, secretsConfigured } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
+import { runVaultMirrorsOnce } from "./vault-mirror";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -190,12 +191,18 @@ async function tick(): Promise<void> {
       }
     }
   }
+  // Vault mirrors are per-PAIR (source vault × dest vault), not per-vault-entry,
+  // hence their own iteration. Each mirror throttles itself (last_run_at), so a
+  // 60s tick costs one SELECT when nothing is due.
+  await runVaultMirrorsOnce();
 }
 
-/** Start the worker loop. No-op if secrets aren't configured (nothing to read)
- *  or already running. The interval is unref'd so it never blocks shutdown. */
+/** Start the worker loop. No-op if there is nothing it could ever do (no secrets
+ *  → no ingesters, and no mirrors) or already running. The interval is unref'd so
+ *  it never blocks shutdown. POST /acl/mirrors re-invokes this, so creating the
+ *  first mirror on a secrets-less server starts the loop without a restart. */
 export function startWorker(intervalMs = 60_000): void {
-  if (timer || !secretsConfigured()) return;
+  if (timer || (!secretsConfigured() && listVaultMirrors().length === 0)) return;
   timer = setInterval(() => void tick(), intervalMs);
   timer.unref();
   void tick(); // an immediate first pass on boot
