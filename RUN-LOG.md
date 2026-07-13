@@ -30,3 +30,10 @@ Legend: 🤖 autonomous · 📝 decide & log · ⏸ parked for Benjamin (see HAN
 - 🤖 Chased the worker 401s ("revocation list unavailable") seen in pm2 logs: error-log mtime is Jul 12 11:00 — STALE pre-deploy lines interleaved by pm2 without timestamps; the identical queries return 200 live, 3/3. Not a regression.
 - 🤖 Temp owner session (mk-owner-session) revoked surgically by id (not --clean, which would kill Benjamin's real sessions).
 - ⏸ Remaining for Benjamin: grant the collaborator access to the Commons material (tag or vault membership) — the folder tree renders from paths once granted.
+
+## 2026-07-13 — member self-serve MCP tokens (PR #17)
+
+- 🤖 Investigated: the hub is already public at https://agent.omniharmonic.com (parachute expose tunnel, separate from the prism tunnel) and serves per-vault MCP at /vault/<name>/mcp; proved end-to-end with an ephemeral scoped token against front-range-commons (MCP initialize OK — the 77 mirrored notes are visible to agents), then revoked.
+- 🤖 Built /api/mcp: POST /token (member+ on the TARGET vault mints vault:<name>:read|write, default write/90d; returns token once + .mcp.json snippet + claude-mcp-add one-liner), GET /tokens (audit; members own, admin+ all; never token material), DELETE /tokens/:jti (minter or admin+; fail-closed audit mark), GET / (info). Injectable execFile seams for parachute auth mint-token / revoke-token. mcp_tokens audit table (jti only, never the token). Strict registry resolve — no silent primary fallback. MCP_PUBLIC_URL config.
+- 🤖 408 tests green (11 new). PR #17 merged; MCP_PUBLIC_URL added to .env; pm2 restarted; all baseline checks match; live loop verified through the API (mint → public MCP handshake → revoke → audit marked); probe tokens revoked, temp session removed.
+- ⏸ Follow-up: a Share-dialog / Network-panel UI affordance for minting (API-only today).
