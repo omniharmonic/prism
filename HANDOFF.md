@@ -2,9 +2,18 @@
 
 Everything parked here needs Benjamin's hands or judgment. Branch: `feat/single-server-folder-sync` (draft PR open). Nothing on this branch has touched a live vault — all testing was on throwaway `_mirror_*` scratch vaults, torn down after each run.
 
-## ⏸ 1. Turn it on for real: SFR folder → Front Range Commons
+## ✅ 1. DONE (2026-07-13): SFR folder → Front Range Commons is LIVE
 
-The feature is API-complete but **no real mirror is configured**. To go live after merge + deploy:
+Completed with Benjamin's go-ahead: PR #16 merged to main, pm2 `prism-server` restarted (post-deploy checks matched the pre-deploy baseline exactly; DB backed up first to `apps/server/backups/prism-server-pre-mirror-20260713.db`). Mirror `7917d05b` runs every ~5 min:
+
+- `primary:vault/projects/spirit-of-the-front-range` → `front-range-commons:projects/spirit-of-the-front-range`, `delete_mode: archive`
+- Initial sync: **76 notes, full folder structure** (meetings/60, docs/5, outputs/4, …); the 4 pre-existing Commons notes untouched
+- Proven live: idempotent steady state (76 skipped, 0 writes), create-propagation and verified delete→archive (with a throwaway note, fully cleaned up afterward)
+- The worker-log 401s ("revocation list unavailable") visible in `pm2 logs` are STALE lines from Jul 12 (error-log mtime predates the deploy); the same queries return 200 live
+
+Remaining owner knob: share the Commons material with the collaborator (tag or vault membership) so they see the folder tree.
+
+<details><summary>Original go-live instructions (kept for reference)</summary>
 
 1. **Restart `pm2 prism-server` after deploying** (the known gotcha: tsx compiles at start, no hot reload — a stale server has no `/acl/mirrors` routes).
 2. Confirm the Front Range Commons vault's registry id: `GET /api/vaults` (as owner) or check the Vaults panel.
@@ -17,6 +26,8 @@ The feature is API-complete but **no real mirror is configured**. To go live aft
    Default `delete_mode` is `archive` (a deleted source note moves under `<destPrefix>/_archive/`, nothing destroyed) — recommend keeping that. The worker picks it up within ~60s and re-converges every 5 min; `POST /acl/mirrors/:id/sync` runs it immediately and returns the summary.
 4. **First-run sanity check**: point `destPrefix` at a fresh/dedicated folder in the Commons vault, run the on-demand sync, and eyeball the result before granting collaborators. Every run's summary lands on the mirror row (`GET /acl/mirrors` → `last_result`).
 5. The collaborator sees folders once their grants cover the mirrored notes — share the Commons material by **tag or vault membership** (see item 3 below for the folder-grant gap).
+
+</details>
 
 ## ⏸ 2. GitHub account mismatch
 
