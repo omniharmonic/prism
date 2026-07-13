@@ -128,7 +128,7 @@ test("link-mode persists, appears in GET /api/vaults without a token, then DELET
   // DELETE removes the added vault.
   const del = await ownerReq(acl, `/vaults/${summary.id}`, { method: "DELETE" });
   assert.equal(del.status, 200);
-  assert.deepEqual(await del.json(), { ok: true });
+  assert.deepEqual(await del.json(), { ok: true, mirrorsRemoved: 0 });
   assert.equal(getVaultEntry(summary.id), null);
 });
 

@@ -284,6 +284,26 @@ db.exec(`
     created_at  INTEGER NOT NULL,
     PRIMARY KEY (vault_id, owner_email, kind)
   );
+
+  -- ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────
+  -- A mirror converges one path prefix (folder) of a source vault onto a prefix
+  -- in a destination vault ON THIS SERVER — one-way, source-wins, folder
+  -- structure preserved (paths rebased). This is the intra-server sibling of
+  -- federation spaces: no peer, no CRDT transport, just the worker diffing two
+  -- prefixes through the per-vault clients. See src/worker/vault-mirror.ts.
+  CREATE TABLE IF NOT EXISTS vault_mirrors (
+    id          TEXT PRIMARY KEY,
+    src_vault   TEXT NOT NULL,      -- registry vault id
+    src_prefix  TEXT NOT NULL,      -- normalized path prefix (paths.ts)
+    dest_vault  TEXT NOT NULL,
+    dest_prefix TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    delete_mode TEXT NOT NULL DEFAULT 'archive',  -- 'archive' | 'delete' | 'keep'
+    created_by  TEXT,
+    created_at  INTEGER NOT NULL,
+    last_run_at INTEGER,
+    last_result TEXT               -- JSON MirrorRunResult of the last run
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -498,6 +518,90 @@ export function resolveVaultEntry(id?: string | null): VaultEntry {
     if (found) return found;
   }
   return vaultRegistry[0]!;
+}
+
+// ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
+export type MirrorDeleteMode = "archive" | "delete" | "keep";
+
+export interface VaultMirror {
+  id: string;
+  src_vault: string;
+  src_prefix: string;
+  dest_vault: string;
+  dest_prefix: string;
+  enabled: boolean;
+  delete_mode: MirrorDeleteMode;
+  created_by: string | null;
+  created_at: number;
+  last_run_at: number | null;
+  last_result: string | null;
+}
+
+const insertMirror = db.prepare(
+  `INSERT INTO vault_mirrors (id, src_vault, src_prefix, dest_vault, dest_prefix, enabled, delete_mode, created_by, created_at)
+   VALUES (@id, @src_vault, @src_prefix, @dest_vault, @dest_prefix, @enabled, @delete_mode, @created_by, @created_at)`,
+);
+const selectMirrors = db.prepare("SELECT * FROM vault_mirrors ORDER BY created_at ASC");
+const selectMirror = db.prepare("SELECT * FROM vault_mirrors WHERE id = ?");
+const updateMirrorStmt = db.prepare("UPDATE vault_mirrors SET enabled = @enabled, delete_mode = @delete_mode WHERE id = @id");
+const deleteMirrorStmt = db.prepare("DELETE FROM vault_mirrors WHERE id = ?");
+const recordMirrorRunStmt = db.prepare("UPDATE vault_mirrors SET last_run_at = @at, last_result = @result WHERE id = @id");
+
+type MirrorRow = Omit<VaultMirror, "enabled"> & { enabled: number };
+const mirrorFromRow = (r: MirrorRow): VaultMirror => ({ ...r, enabled: !!r.enabled });
+
+export function createVaultMirror(m: {
+  src_vault: string;
+  src_prefix: string;
+  dest_vault: string;
+  dest_prefix: string;
+  delete_mode?: MirrorDeleteMode;
+  created_by?: string | null;
+}): VaultMirror {
+  const id = randomUUID();
+  insertMirror.run({
+    id,
+    src_vault: m.src_vault,
+    src_prefix: m.src_prefix,
+    dest_vault: m.dest_vault,
+    dest_prefix: m.dest_prefix,
+    enabled: 1,
+    delete_mode: m.delete_mode ?? "archive",
+    created_by: m.created_by ?? null,
+    created_at: Date.now(),
+  });
+  return getVaultMirror(id)!;
+}
+export function listVaultMirrors(): VaultMirror[] {
+  return (selectMirrors.all() as MirrorRow[]).map(mirrorFromRow);
+}
+export function getVaultMirror(id: string): VaultMirror | null {
+  const row = selectMirror.get(id) as MirrorRow | undefined;
+  return row ? mirrorFromRow(row) : null;
+}
+export function updateVaultMirror(id: string, patch: { enabled?: boolean; delete_mode?: MirrorDeleteMode }): VaultMirror | null {
+  const cur = getVaultMirror(id);
+  if (!cur) return null;
+  updateMirrorStmt.run({
+    id,
+    enabled: (patch.enabled ?? cur.enabled) ? 1 : 0,
+    delete_mode: patch.delete_mode ?? cur.delete_mode,
+  });
+  return getVaultMirror(id);
+}
+export function removeVaultMirror(id: string): void {
+  deleteMirrorStmt.run(id);
+}
+const deleteMirrorsForVaultStmt = db.prepare("DELETE FROM vault_mirrors WHERE src_vault = ? OR dest_vault = ?");
+/** Drop every mirror referencing a vault (called when the vault leaves the
+ *  registry). CRITICAL: an orphaned mirror would silently retarget the PRIMARY
+ *  vault via resolveVaultEntry's fallback — its delete-verify would then 404 on
+ *  every copy and mass-archive/delete the destination. Returns rows removed. */
+export function removeVaultMirrorsForVault(vaultId: string): number {
+  return deleteMirrorsForVaultStmt.run(vaultId, vaultId).changes;
+}
+export function recordMirrorRun(id: string, result: unknown): void {
+  recordMirrorRunStmt.run({ id, at: Date.now(), result: JSON.stringify(result) });
 }
 
 // ── Workspaces (one server, many workspaces) ─────────────────────────────────
