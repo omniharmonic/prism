@@ -20,6 +20,7 @@ import { federated } from "./routes/federated";
 import { agentApi } from "./routes/agent";
 import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
+import { mcp } from "./routes/mcp";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -107,6 +108,10 @@ export function createApp(): Hono {
   app.route("/api/agent", agentApi);
   app.route("/api/integrations", integrations);
   app.route("/api/sync", sync);
+  // Member self-serve MCP tokens — role-gated in-handler (member+ on the target
+  // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
+  // /api/mcp to the vault.
+  app.route("/api/mcp", mcp);
   app.route("/api", api);
   app.route("/acl", acl);
 

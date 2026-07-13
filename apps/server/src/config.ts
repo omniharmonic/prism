@@ -47,6 +47,13 @@ export const config = {
   // only LINKING existing vaults (e.g. a hardened host with no operator token).
   allowVaultCreate: process.env.ALLOW_VAULT_CREATE !== "false",
 
+  // The hub's PUBLIC base URL for agent/MCP access (e.g. the cloudflared
+  // hostname `parachute expose` serves — https://agent.example.com). Used by
+  // routes/mcp.ts to hand members a reachable `<base>/vault/<name>/mcp` URL.
+  // Empty → minting still works but the URL falls back to parachuteUrl
+  // (loopback), which only helps same-host agents.
+  mcpPublicUrl: (process.env.MCP_PUBLIC_URL ?? "").replace(/\/+$/, ""),
+
   sessionSecret: process.env.SESSION_SECRET ?? "",
   capabilitySecret: process.env.CAPABILITY_SECRET ?? process.env.SESSION_SECRET ?? "",
 
