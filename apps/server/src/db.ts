@@ -285,6 +285,24 @@ db.exec(`
     PRIMARY KEY (vault_id, owner_email, kind)
   );
 
+  -- ── Member-minted MCP tokens (audit registry) ────────────────────────────
+  -- One row per hub JWT a vault member minted for their agent's MCP access
+  -- (routes/mcp.ts). The TOKEN ITSELF IS NEVER STORED — only its jti (for
+  -- revocation via the hub) and enough context to list "who has standing
+  -- agent access to which vault". revoked_at is our local mark; the hub's
+  -- revocation list is the enforcement point (~60s propagation).
+  CREATE TABLE IF NOT EXISTS mcp_tokens (
+    jti        TEXT PRIMARY KEY,
+    vault_id   TEXT NOT NULL,      -- registry vault id
+    email      TEXT NOT NULL,      -- the member who minted it
+    scope      TEXT NOT NULL,      -- e.g. vault:front-range-commons:write
+    label      TEXT,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS mcp_tokens_vault ON mcp_tokens(vault_id);
+
   -- ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────
   -- A mirror converges one path prefix (folder) of a source vault onto a prefix
   -- in a destination vault ON THIS SERVER — one-way, source-wins, folder
@@ -518,6 +536,39 @@ export function resolveVaultEntry(id?: string | null): VaultEntry {
     if (found) return found;
   }
   return vaultRegistry[0]!;
+}
+
+// ── Member-minted MCP tokens (audit registry) ────────────────────────────────
+export interface McpTokenRow {
+  jti: string;
+  vault_id: string;
+  email: string;
+  scope: string;
+  label: string | null;
+  expires_at: number;
+  created_at: number;
+  revoked_at: number | null;
+}
+
+const insertMcpToken = db.prepare(
+  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at)
+   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at)`,
+);
+const selectMcpTokensForVault = db.prepare("SELECT * FROM mcp_tokens WHERE vault_id = ? ORDER BY created_at DESC");
+const selectMcpToken = db.prepare("SELECT * FROM mcp_tokens WHERE jti = ?");
+const markMcpTokenRevoked = db.prepare("UPDATE mcp_tokens SET revoked_at = ? WHERE jti = ?");
+
+export function recordMcpToken(row: Omit<McpTokenRow, "created_at" | "revoked_at"> & { label?: string | null }): void {
+  insertMcpToken.run({ label: null, ...row, created_at: Date.now() });
+}
+export function listMcpTokens(vaultId: string): McpTokenRow[] {
+  return selectMcpTokensForVault.all(vaultId) as McpTokenRow[];
+}
+export function getMcpToken(jti: string): McpTokenRow | null {
+  return (selectMcpToken.get(jti) as McpTokenRow | undefined) ?? null;
+}
+export function setMcpTokenRevoked(jti: string): void {
+  markMcpTokenRevoked.run(Date.now(), jti);
 }
 
 // ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
