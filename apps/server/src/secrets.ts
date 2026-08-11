@@ -47,6 +47,9 @@ const deleteStmt = db.prepare(
 const listKindsStmt = db.prepare(
   "SELECT kind FROM tenant_secrets WHERE vault_id = ? AND owner_email = ? ORDER BY kind",
 );
+const otherOwnersStmt = db.prepare(
+  "SELECT DISTINCT owner_email FROM tenant_secrets WHERE vault_id = ? AND kind = ? AND owner_email <> ?",
+);
 
 /** Encrypt + store a secret for (vault, owner, kind). Overwrites any existing. */
 export function putSecret(vaultId: string, ownerEmail: string, kind: string, plaintext: string): void {
@@ -76,4 +79,15 @@ export function deleteSecret(vaultId: string, ownerEmail: string, kind: string):
 /** Which secret kinds exist for (vault, owner) — never returns the values. */
 export function listSecretKinds(vaultId: string, ownerEmail: string): string[] {
   return (listKindsStmt.all(vaultId, ownerEmail) as Array<{ kind: string }>).map((r) => r.kind);
+}
+
+/** Owners OTHER than `ownerEmail` holding a secret of this kind for this vault.
+ *  Non-empty is the orphan signature: the credential exists but is keyed to a
+ *  stale identity, which reads identically to "never configured" at the call
+ *  site and is why the 2026-08-04 OWNER_EMAIL rotation went undetected for a
+ *  week. Returns addresses only — never the values. */
+export function otherSecretOwners(vaultId: string, kind: string, ownerEmail: string): string[] {
+  return (otherOwnersStmt.all(vaultId, kind, ownerEmail) as Array<{ owner_email: string }>).map(
+    (r) => r.owner_email,
+  );
 }

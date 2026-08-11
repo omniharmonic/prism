@@ -10,7 +10,7 @@
  * ingest fn). gog-backed Gmail/Calendar + Meetily stay desktop (host-bound).
  */
 import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } from "../db";
-import { getSecret, secretsConfigured } from "../secrets";
+import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
@@ -29,13 +29,47 @@ const firefliesSkip = new Map<string, Set<string>>();
 // ownership against it, and re-fetching it every run would waste daily quota.
 const firefliesOwnerEmail = new Map<string, string>();
 
+// A missing credential is the one failure that produces NO output at all: every
+// ingester returns 0 before it can log, mirrors stay quiet when nothing is due,
+// and the whole tick goes silent — a dead pipeline reads exactly like an idle
+// one. That cost 7 days of undetected downtime on 2026-08-04, when OWNER_EMAIL
+// was rotated and the stored secrets were left keyed to the previous address.
+// Two cases hide behind one missing row, and they deserve very different volume:
+//   ORPHANED  — the credential exists under a different owner_email. Something
+//               broke; this is the 08-04 bug. Warn hourly until it is fixed.
+//   UNSET     — no row under any owner. A mirror-only vault is legitimately like
+//               this forever, so say it once at boot and never again.
+const missingSecretWarnedAt = new Map<string, number>();
+const unsetSecretNoted = new Set<string>();
+function warnMissingSecret(vaultId: string, kind: string): void {
+  const key = `${vaultId}:${kind}`;
+  const strays = otherSecretOwners(vaultId, kind, config.ownerEmail);
+  if (strays.length === 0) {
+    if (unsetSecretNoted.has(key)) return;
+    unsetSecretNoted.add(key);
+    console.log(`[worker] ${kind} ${vaultId}: no credential configured — ingester idle (expected for mirror-only vaults)`);
+    return;
+  }
+  const now = Date.now();
+  if (now - (missingSecretWarnedAt.get(key) ?? 0) < 3_600_000) return;
+  missingSecretWarnedAt.set(key, now);
+  console.warn(
+    `[worker] ${kind} ${vaultId}: ORPHANED CREDENTIAL — ingest is a silent no-op. A ${kind} secret exists for ` +
+      `${strays.map((s) => `"${s}"`).join(", ")} but OWNER_EMAIL is "${config.ownerEmail}". Re-key tenant_secrets ` +
+      `to the current address, or re-enter the integration.`,
+  );
+}
+
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
 export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
   // for now; a per-member model can key it differently later.
   const raw = getSecret(entry.id, config.ownerEmail, "matrix");
-  if (!raw) return 0;
+  if (!raw) {
+    warnMissingSecret(entry.id, "matrix");
+    return 0;
+  }
   const creds = JSON.parse(raw) as MatrixCreds;
   const client = new MatrixClient(creds);
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
@@ -51,7 +85,10 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
  *  Create-only + dedup by source_id (safe to run alongside the desktop). */
 export async function runFathomOnce(entry: VaultEntry): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "fathom");
-  if (!raw) return 0;
+  if (!raw) {
+    warnMissingSecret(entry.id, "fathom");
+    return 0;
+  }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
   const client = new FathomClient(apiKey);
   const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault);
@@ -103,7 +140,10 @@ function makeFirefliesBudget(vaultId: string, dailyBudget: number): FirefliesBud
  *  its note is confirmed in the vault. Returns the count newly ingested. */
 export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "fireflies");
-  if (!raw) return 0;
+  if (!raw) {
+    warnMissingSecret(entry.id, "fireflies");
+    return 0;
+  }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
 
   const { hour, day } = localHourAndDay(config.firefliesTz);
