@@ -25,7 +25,7 @@ import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type 
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
-import { indexedNoteIds } from "../rag/store";
+import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -426,10 +426,13 @@ async function indexSweep(opts: { force?: boolean }): Promise<number> {
     }
   }
 
-  // Drop vectors for notes that no longer exist in the vault.
+  // Drop vectors for notes that no longer exist in the vault — across ALL
+  // models, not just the current one. A model-scoped scan cannot see rows left
+  // by a PREVIOUS embedder for a note deleted since the switch, so those orphans
+  // would survive forever (observed: 2 notes stuck after the nomic switch).
   const live = new Set(lean.map((n) => n.id));
   let dropped = 0;
-  for (const id of indexedNoteIds(model)) {
+  for (const id of allIndexedNoteIds()) {
     if (!live.has(id)) {
       deindexNote(id);
       dropped++;

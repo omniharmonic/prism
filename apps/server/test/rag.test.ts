@@ -335,3 +335,22 @@ test("an empty note is not re-selected forever once the cursor exists", async ()
   const refetched = fv.calls.slice(callsBefore).filter((c) => JSON.stringify(c).includes("blank"));
   assert.equal(refetched.length, 0, "the empty note was not fetched again");
 });
+
+test("deletion cleanup collects orphans left by a PREVIOUS embedder model", async () => {
+  // The exact shape that stranded 2 notes after the nomic switch: a note deleted
+  // from the vault, whose only rows are under the old model. A model-scoped scan
+  // cannot see them, so they survive every sweep forever.
+  const stale = new Float32Array([1, 0, 0, 0]);
+  upsertNoteChunks("ghost-note", "hash-abc", "hash:384", [{ idx: 0, text: "gone", vec: stale }]);
+  assert.ok(db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"), "seeded");
+
+  fv.put({ id: "live", content: "still here", path: "a", metadata: null, tags: [] });
+  await runIndexOnce(); // "ghost-note" is not in the vault → must be collected
+
+  assert.equal(
+    db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"),
+    undefined,
+    "old-model orphan dropped even though the sweep runs a different model",
+  );
+  assert.ok(indexedHash("live", getEmbedder().id), "the live note is untouched");
+});
