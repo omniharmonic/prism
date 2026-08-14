@@ -3,22 +3,37 @@
  * runs the server-side ingesters per vault on an interval, so context flows into
  * each tenant's vault with no desktop running. Credentials come from the
  * per-tenant secret store; cursors (incremental-sync tokens) persist in settings
- * so a restart resumes. Gated: does nothing unless SECRETS_KEY is configured and
- * a vault actually has an integration secret. Errors are logged, never fatal.
+ * so a restart resumes. Errors are logged, never fatal.
  *
- * Today: Matrix. Notion/transcripts plug in the same way (a secret kind + an
- * ingest fn). gog-backed Gmail/Calendar + Meetily stay desktop (host-bound).
+ * Three kinds of work, on three cadences:
+ *   - INGESTERS (Matrix, Fathom, Fireflies) — need a stored credential, so they
+ *     no-op unless SECRETS_KEY is set and the vault has that secret.
+ *   - VAULT MIRRORS — per source×dest pair, each self-throttled by last_run_at.
+ *   - INDEX MAINTENANCE — needs no credential at all, and is the reason the loop
+ *     can be worth running on a server that has none. Slower cadence
+ *     (INDEX_INTERVAL_MS); 0 disables it.
+ *
+ * gog-backed Gmail/Calendar + Meetily stay desktop (host-bound).
  */
 import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } from "../db";
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
-import { vaultClient } from "../parachute";
+import { vault, vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { runVaultMirrorsOnce } from "./vault-mirror";
+import { indexNote, deindexNote } from "../rag/service";
+import { getEmbedder } from "../rag/embedder";
+import { indexedNoteIds } from "../rag/store";
 
 let timer: ReturnType<typeof setInterval> | null = null;
+
+// Index maintenance runs on a slower cadence than the 60s ingest tick; this is
+// the in-process throttle (the durable "how far have we indexed" state is the
+// per-model worker cursor, so a restart resumes rather than re-sweeping).
+let lastIndexSweepAt = 0;
+let indexSweepInFlight = false;
 
 // Per-vault set of Fireflies transcript ids that are un-deletable (owned by a
 // teammate, needs team-admin). Kept in-process so we don't waste the daily
@@ -60,6 +75,72 @@ function warnMissingSecret(vaultId: string, kind: string): void {
   );
 }
 
+/**
+ * Track consecutive per-(vault, source) ingest failures so a BROKEN pipeline stops
+ * looking like a noisy one.
+ *
+ * A transport failure repeats forever at one warn line a minute and never
+ * escalates: the Matrix homeserver reached over an unsupervised SSH forward
+ * produced 31,162 identical `fetch failed` warnings with nothing anywhere saying
+ * "this has been down for hours" (audit 2026-08-13, F4). Warn on the first
+ * failure, escalate to an error with elapsed time once it is clearly not a blip,
+ * then fall silent until it either recovers (which logs) or crosses the next
+ * escalation interval — so the log stays readable AND the outage stays visible.
+ */
+const ingestFailures = new Map<string, { count: number; since: number; lastLoggedAt: number }>();
+const ESCALATE_AFTER = 5; // consecutive failures ≈ 5 minutes on the 60s tick
+const ESCALATE_EVERY_MS = 3_600_000; // then at most hourly
+
+export function noteIngestOutcome(vaultId: string, source: string, err: Error | null): void {
+  const key = `${vaultId}:${source}`;
+  const prev = ingestFailures.get(key);
+
+  if (!err) {
+    if (prev) {
+      const mins = Math.round((Date.now() - prev.since) / 60_000);
+      console.log(`[worker] ${source} ${vaultId}: RECOVERED after ${prev.count} failed run(s) over ~${mins}m`);
+      ingestFailures.delete(key);
+    }
+    return;
+  }
+
+  const now = Date.now();
+  const state = prev ?? { count: 0, since: now, lastLoggedAt: 0 };
+  state.count++;
+
+  // First failure: one warn (could be a blip). At the escalation threshold, and
+  // at most hourly after that: an error naming how long it has actually been down.
+  // Everything in between is silent — the per-minute repeat was the noise that
+  // made the real outage invisible.
+  const escalating = state.count >= ESCALATE_AFTER && now - state.lastLoggedAt >= ESCALATE_EVERY_MS;
+  if (state.count === 1) {
+    console.warn(`[worker] ${source} ${vaultId} failed:`, err.message);
+    state.lastLoggedAt = now;
+  } else if (state.count === ESCALATE_AFTER || escalating) {
+    const mins = Math.round((now - state.since) / 60_000);
+    console.error(
+      `[worker] ${source} ${vaultId}: DOWN — ${state.count} consecutive failures over ~${mins}m. ` +
+        `Last error: ${err.message}. Ingest for this source has produced nothing that whole time.`,
+    );
+    state.lastLoggedAt = now;
+  }
+  ingestFailures.set(key, state);
+}
+
+/** Clear all tracked failure state (tests; also a natural restart boundary). */
+export function resetIngestFailures(): void {
+  ingestFailures.clear();
+}
+
+/** Current consecutive-failure state, for tests and for /api/integrations status. */
+export function ingestFailureState(): Array<{ vaultId: string; source: string; count: number; sinceMs: number }> {
+  const now = Date.now();
+  return [...ingestFailures.entries()].map(([k, v]) => {
+    const [vaultId, source] = k.split(":");
+    return { vaultId: vaultId!, source: source!, count: v.count, sinceMs: now - v.since };
+  });
+}
+
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
 export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
@@ -81,20 +162,36 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   return res.messages;
 }
 
-/** Run one Fathom transcript ingest pass for a vault, if it has a stored key.
- *  Create-only + dedup by source_id (safe to run alongside the desktop). */
-export async function runFathomOnce(entry: VaultEntry): Promise<number> {
+/**
+ * Run one Fathom transcript ingest pass for a vault, if it has a stored key.
+ * Create-only + dedup by source_id (safe to run alongside the desktop).
+ *
+ * Throttled and heartbeat-logged (audit 2026-08-13, F10). Two problems, one fix:
+ * this ran on every 60s tick and re-fetched the vault's ENTIRE transcript set to
+ * dedupe against — once a minute, forever — while Fireflies has superseded it as
+ * the transcript source (nothing new since 2026-07-06). And because it only
+ * logged when it created something, a genuinely broken Fathom was byte-for-byte
+ * indistinguishable from a correctly idle one. Now: one run per interval, and one
+ * line per run whatever the outcome, exactly like the Fireflies ingester.
+ */
+export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
   const raw = getSecret(entry.id, config.ownerEmail, "fathom");
   if (!raw) {
     warnMissingSecret(entry.id, "fathom");
     return 0;
   }
+  const slot = Math.floor(Date.now() / config.fathomIntervalMs);
+  if (!opts.force) {
+    if (getWorkerCursor(entry.id, "fathom-slot") === String(slot)) return 0;
+    setWorkerCursor(entry.id, "fathom-slot", String(slot)); // claim up front
+  }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
   const client = new FathomClient(apiKey);
   const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault);
-  if (res.created > 0) {
-    console.log(`[worker] fathom ${entry.id}: +${res.created} transcripts (${res.skipped} skipped)`);
-  }
+  console.log(
+    `[worker] fathom ${entry.id}: +${res.created} transcripts (${res.skipped} skipped)` +
+      (opts.force ? " [forced]" : ""),
+  );
   return res.created;
 }
 
@@ -215,6 +312,96 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
   return res.created;
 }
 
+/**
+ * Keep the semantic-search index current from the ALWAYS-ON process.
+ *
+ * Until 2026-08-13 nothing here indexed: `indexNote` was reachable only through
+ * the owner-only `/api/index/notes` route, and its sole caller was the DESKTOP
+ * app's 5-minute sweep. So the index advanced only while the desktop happened to
+ * be open — web and mobile searched an ageing index with no signal that anything
+ * was wrong. (Measured gap: zero embeddings written 2026-07-30 → 08-10.) The
+ * server owns the index and the query path, so it should own the maintenance too.
+ *
+ * Incremental by design, because a full sweep is expensive:
+ *   - the LEAN note list (no bodies) is one cheap call and carries `updatedAt`;
+ *   - only notes newer than the cursor have their body fetched and re-embedded;
+ *   - `indexNote` still hash-skips, so a redundant push costs nothing;
+ *   - ids that vanished from the vault are de-indexed (orphan vectors are hits
+ *     for notes that no longer exist).
+ * With no cursor — first boot, or an embedder change, which changes the model id
+ * every vector is stored under — it falls back to one full content sweep, which
+ * is exactly the backfill those cases need.
+ *
+ * Primary vault only: the `embeddings` table is keyed by note id with no vault
+ * column, so indexing a second vault would collide ids in one namespace.
+ */
+export async function runIndexOnce(opts: { force?: boolean } = {}): Promise<number> {
+  // A first-run backfill of a full vault takes far longer than one sweep
+  // interval, so without this guard the timer would start a SECOND sweep over
+  // the same notes while the first is still embedding — doubling the load on the
+  // embedding endpoint and racing two writers over the same rows.
+  if (indexSweepInFlight) return 0;
+  indexSweepInFlight = true;
+  try {
+    return await indexSweep(opts);
+  } finally {
+    indexSweepInFlight = false;
+  }
+}
+
+async function indexSweep(opts: { force?: boolean }): Promise<number> {
+  const model = getEmbedder().id;
+  const cursorKey = `index-sweep:${model}`; // model-scoped → a model swap re-backfills
+  const since = opts.force ? null : getWorkerCursor("primary", cursorKey);
+
+  // Lean list first: ids + updatedAt for the whole vault, no bodies.
+  const lean = await vault.listNotes({});
+  const newest = lean.reduce((mx, n) => {
+    const t = n.updatedAt ?? n.createdAt ?? "";
+    return t > mx ? t : mx;
+  }, "");
+
+  let indexed = 0;
+  if (!since) {
+    // Full backfill — one bulk call WITH content beats N round-trips.
+    const full = await vault.listNotes({ includeContent: true });
+    for (const n of full) {
+      const r = await indexNote(n.id, n.content ?? "", opts.force);
+      if (r.status === "indexed") indexed++;
+    }
+  } else {
+    const changed = lean.filter((n) => (n.updatedAt ?? n.createdAt ?? "") > since);
+    for (const n of changed) {
+      try {
+        const full = await vault.getNote(n.id);
+        const r = await indexNote(full.id, full.content ?? "", opts.force);
+        if (r.status === "indexed") indexed++;
+      } catch (e) {
+        // A single unreadable note must not abort the sweep — and must not
+        // advance the cursor past itself either, so leave `newest` alone and
+        // let the next sweep retry it.
+        console.warn(`[worker] index primary: note ${n.id} failed:`, (e as Error).message);
+      }
+    }
+  }
+
+  // Drop vectors for notes that no longer exist in the vault.
+  const live = new Set(lean.map((n) => n.id));
+  let dropped = 0;
+  for (const id of indexedNoteIds(model)) {
+    if (!live.has(id)) {
+      deindexNote(id);
+      dropped++;
+    }
+  }
+
+  if (newest) setWorkerCursor("primary", cursorKey, newest);
+  if (indexed > 0 || dropped > 0) {
+    console.log(`[worker] index primary: +${indexed} embedded, -${dropped} dropped (model=${model})`);
+  }
+  return indexed;
+}
+
 /** One full tick: every configured ingester for every vault. Per-vault, per-source
  *  errors are isolated so one bad credential can't stall the rest. */
 async function tick(): Promise<void> {
@@ -230,8 +417,9 @@ async function tick(): Promise<void> {
       ] as const) {
         try {
           await run(entry);
+          noteIngestOutcome(entry.id, name, null);
         } catch (e) {
-          console.warn(`[worker] ${name} ${entry.id} failed:`, (e as Error).message);
+          noteIngestOutcome(entry.id, name, e as Error);
         }
       }
     }
@@ -240,14 +428,32 @@ async function tick(): Promise<void> {
   // hence their own iteration. Each mirror throttles itself (last_run_at), so a
   // 60s tick costs one SELECT when nothing is due.
   await runVaultMirrorsOnce();
+
+  // Semantic index maintenance, on its own slower cadence — embeddings are not
+  // latency-critical, and even the lean note list is a whole-vault fetch, so it
+  // has no business running on the 60s ingest tick.
+  if (indexSweepEnabled() && Date.now() - lastIndexSweepAt >= config.indexIntervalMs) {
+    lastIndexSweepAt = Date.now();
+    try {
+      await runIndexOnce();
+    } catch (e) {
+      console.warn("[worker] index primary failed:", (e as Error).message);
+    }
+  }
 }
 
-/** Start the worker loop. No-op if there is nothing it could ever do (no secrets
- *  → no ingesters, and no mirrors) or already running. The interval is unref'd so
- *  it never blocks shutdown. POST /acl/mirrors re-invokes this, so creating the
- *  first mirror on a secrets-less server starts the loop without a restart. */
+/** Is periodic index maintenance turned on? (INDEX_INTERVAL_MS=0 disables it.) */
+export const indexSweepEnabled = (): boolean => config.indexIntervalMs > 0;
+
+/** Start the worker loop. No-op if already running, or if there is nothing any
+ *  subsystem could ever do: no secrets (→ no ingesters), no mirrors, AND no index
+ *  sweep. Index maintenance now counts toward "something to do" — it is the one
+ *  subsystem that needs no credential, which is why the loop can be worth running
+ *  on a server that has none. The interval is unref'd so it never blocks shutdown.
+ *  POST /acl/mirrors re-invokes this, so creating the first mirror on a
+ *  secrets-less server starts the loop without a restart. */
 export function startWorker(intervalMs = 60_000): void {
-  if (timer || (!secretsConfigured() && listVaultMirrors().length === 0)) return;
+  if (timer || (!secretsConfigured() && listVaultMirrors().length === 0 && !indexSweepEnabled())) return;
   timer = setInterval(() => void tick(), intervalMs);
   timer.unref();
   void tick(); // an immediate first pass on boot

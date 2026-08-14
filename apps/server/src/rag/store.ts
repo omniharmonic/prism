@@ -42,6 +42,9 @@ const countByModel = db.prepare("SELECT COUNT(*) AS n FROM embeddings WHERE mode
 const countNotesByModel = db.prepare(
   "SELECT COUNT(DISTINCT note_id) AS n FROM embeddings WHERE model = ?",
 );
+const selectNoteIdsByModel = db.prepare(
+  "SELECT DISTINCT note_id FROM embeddings WHERE model = ?",
+);
 
 function vecToBuf(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -94,6 +97,15 @@ export function removeNoteChunks(noteId: string): void {
 export function indexedHash(noteId: string, model: string): string | null {
   const row = selectHashForNote.get(noteId, model) as { content_hash: string } | undefined;
   return row?.content_hash ?? null;
+}
+
+/** Every note id that has chunks under `model`. The maintenance sweep diffs this
+ *  against the vault so notes deleted while the sweep wasn't running still get
+ *  dropped from the index (an orphaned vector is a search hit for a note that no
+ *  longer exists — worse than a missing one). */
+export function indexedNoteIds(model: string): Set<string> {
+  const rows = selectNoteIdsByModel.all(model) as Array<{ note_id: string }>;
+  return new Set(rows.map((r) => r.note_id));
 }
 
 export interface ScoredChunk {

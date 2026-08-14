@@ -83,7 +83,7 @@ pub async fn sync_trigger(
 ///
 /// The old check — `content.contains('<')` — misfired on plain markdown that
 /// merely contains a `<` ("Gitcoin <> OpenCivics", "a < b", an email like
-/// "<benjamin@opencivics.co>"), sending markdown through an HTML parser that
+/// "<synergy@benjaminlife.one>"), sending markdown through an HTML parser that
 /// collapses its blank lines.
 ///
 /// Instead we look for actual block-level tags that the TipTap editor always

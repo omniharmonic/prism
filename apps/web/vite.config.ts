@@ -64,7 +64,7 @@ export default defineConfig({
         // includes the public publication JSON at /api/p/*). The human-facing
         // published Wiki URL /p/:slug is a CLIENT route — it intentionally FALLS
         // BACK to index.html (the SPA), which then fetches /api/p/:slug.
-        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//],
+        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/],
         runtimeCaching: [
           {
             // Recently-viewed vault content stays available offline (read-only).

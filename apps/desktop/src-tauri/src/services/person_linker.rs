@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn keeps_real_people() {
         for e in [
-            "benjamin@opencivics.co", "alice.smith@example.com", "Alice Smith",
+            "synergy@benjaminlife.one", "alice.smith@example.com", "Alice Smith",
             "christopher@unitedindependents.us", "pat.obrien@firm.org",
         ] {
             assert!(!is_nonhuman_email(e), "expected human: {e}");

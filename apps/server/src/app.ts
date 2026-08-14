@@ -9,6 +9,7 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
+import { vault } from "./parachute";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
 import { vaults } from "./routes/vaults";
@@ -114,6 +115,17 @@ export function createApp(): Hono {
   app.route("/api/mcp", mcp);
   app.route("/api", api);
   app.route("/acl", acl);
+
+  // Liveness + vault reachability, for uptime monitors. This MUST be a real route
+  // mounted above the SPA fallback: before it existed, GET /health fell through to
+  // the catch-all and returned index.html with a 200, so a monitor pointed at it
+  // passed while the vault was unreachable (audit 2026-08-13, F8). Unauthenticated
+  // on purpose — it discloses one boolean and no vault content. `/api/health` is
+  // kept as-is so existing callers don't break.
+  app.get("/health", async (c) => {
+    const ok = await vault.health();
+    return c.json({ ok, vault: ok }, ok ? 200 : 503);
+  });
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
   // Cache strategy: Vite content-hashes everything under /assets, so those are
