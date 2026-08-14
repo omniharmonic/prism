@@ -23,7 +23,7 @@ import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { runVaultMirrorsOnce } from "./vault-mirror";
-import { indexNote, deindexNote } from "../rag/service";
+import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds } from "../rag/store";
 
@@ -34,6 +34,12 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // per-model worker cursor, so a restart resumes rather than re-sweeping).
 let lastIndexSweepAt = 0;
 let indexSweepInFlight = false;
+
+// Notes with no embeddable content. They can never appear in the index, so
+// "missing from the index" alone would re-select them on every single pass.
+// In-process only: a restart re-checks them once, which is cheap and keeps this
+// out of the schema.
+const emptyNotes = new Set<string>();
 
 // Per-vault set of Fireflies transcript ids that are un-deletable (owned by a
 // teammate, needs team-admin). Kept in-process so we don't waste the daily
@@ -361,26 +367,61 @@ async function indexSweep(opts: { force?: boolean }): Promise<number> {
     return t > mx ? t : mx;
   }, "");
 
+  // Work is selected by what the index is actually MISSING, not by the cursor
+  // alone. Two independent reasons a note needs embedding:
+  //   · it has no vectors under this model — never indexed, or a past attempt
+  //     failed. This is what makes the sweep self-healing: a note that errors
+  //     stays un-indexed, so it is re-selected next pass no matter what.
+  //   · its content changed since the cursor — the steady-state case.
+  // A pure timestamp cursor had neither property. It also drove the backfill off
+  // ONE bulk `includeContent` call over the whole vault (~100MB in a single
+  // response, re-issued every interval), and a single transient failure anywhere
+  // in that loop aborted the pass before the cursor advanced — so it restarted
+  // the entire backfill forever and never converged. Content is now fetched
+  // per note: bounded memory, and one bad note costs one note.
+  // An EMPTY note (no chunks) never lands in the index by design, so
+  // "missing from the index" would re-select it on every pass forever. Skipping
+  // it needs the same signal the sweep already has: its content is unchanged, so
+  // once the cursor is past it there is nothing to do. Before the cursor exists,
+  // one fetch per empty note per pass is the price, and it is bounded.
+  const alreadyIndexed = indexedNoteIds(model);
+  const changedSince = (n: { updatedAt: string | null; createdAt: string }) =>
+    since !== null && (n.updatedAt ?? n.createdAt ?? "") > since;
+
+  const needsIndexing = (n: (typeof lean)[number]): boolean => {
+    if (opts.force) return true;
+    if (changedSince(n)) return true; // content moved — re-embed regardless
+    if (alreadyIndexed.has(n.id)) return false; // has vectors, unchanged
+    if (emptyNotes.has(n.id)) return false; // has no chunks to embed, unchanged
+    return true; // missing from the index → try it
+  };
+  const work = lean.filter(needsIndexing);
+
   let indexed = 0;
-  if (!since) {
-    // Full backfill — one bulk call WITH content beats N round-trips.
-    const full = await vault.listNotes({ includeContent: true });
-    for (const n of full) {
-      const r = await indexNote(n.id, n.content ?? "", opts.force);
-      if (r.status === "indexed") indexed++;
-    }
-  } else {
-    const changed = lean.filter((n) => (n.updatedAt ?? n.createdAt ?? "") > since);
-    for (const n of changed) {
+  let failed = 0;
+  let retried = 0;
+  for (const n of work) {
+    try {
+      // One retry on a short backoff. The failures seen here are transient
+      // `fetch failed` connection drops under sustained back-to-back requests —
+      // not bad notes; every note that failed embeds fine in isolation. Without
+      // a retry each blip defers that note to an entire next pass.
+      let status: IndexResult["status"];
       try {
-        const full = await vault.getNote(n.id);
-        const r = await indexNote(full.id, full.content ?? "", opts.force);
-        if (r.status === "indexed") indexed++;
-      } catch (e) {
-        // A single unreadable note must not abort the sweep — and must not
-        // advance the cursor past itself either, so leave `newest` alone and
-        // let the next sweep retry it.
-        console.warn(`[worker] index primary: note ${n.id} failed:`, (e as Error).message);
+        status = (await indexNote(n.id, await noteContent(n.id), opts.force)).status;
+      } catch {
+        retried++;
+        await new Promise((r) => setTimeout(r, 1000));
+        status = (await indexNote(n.id, await noteContent(n.id), opts.force)).status;
+      }
+      if (status === "indexed") indexed++;
+      if (status === "empty") emptyNotes.add(n.id);
+    } catch (e) {
+      failed++;
+      // Name the note. "index primary failed: fetch failed" with no id was
+      // undiagnosable; the id is what makes a recurring bad note findable.
+      if (failed <= 3) {
+        console.warn(`[worker] index primary: note ${n.id} (${n.path ?? "?"}) failed:`, (e as Error).message);
       }
     }
   }
@@ -395,9 +436,27 @@ async function indexSweep(opts: { force?: boolean }): Promise<number> {
     }
   }
 
-  if (newest) setWorkerCursor("primary", cursorKey, newest);
-  if (indexed > 0 || dropped > 0) {
-    console.log(`[worker] index primary: +${indexed} embedded, -${dropped} dropped (model=${model})`);
+  // Advance the cursor only on a CLEAN pass. A note that failed is still
+  // un-indexed and would be re-selected regardless — but a note that was already
+  // indexed and merely CHANGED is only findable by timestamp, so moving the
+  // cursor past a pass that dropped work could strand a stale copy.
+  if (newest && failed === 0) setWorkerCursor("primary", cursorKey, newest);
+
+  // Log whenever anything happened OR anything failed. A pass that only fails
+  // must never be silent — that silence is what let the stalled backfill run for
+  // hours looking exactly like a finished one.
+  if (indexed > 0 || dropped > 0 || failed > 0) {
+    // `still missing` is the number that actually matters during a backfill: it
+    // is what the NEXT pass will pick up, so a converging sweep visibly counts
+    // down and a stuck one visibly doesn't.
+    const nowIndexed = indexedNoteIds(model);
+    const stillMissing = lean.filter((n) => !nowIndexed.has(n.id) && !emptyNotes.has(n.id)).length;
+    console.log(
+      `[worker] index primary: +${indexed} embedded, -${dropped} dropped` +
+        (retried ? `, ${retried} retried` : "") +
+        (failed ? `, ${failed} FAILED` : "") +
+        `, ${stillMissing} still missing (model=${model}${failed === 0 ? "" : "; cursor held"})`,
+    );
   }
   return indexed;
 }
@@ -440,6 +499,13 @@ async function tick(): Promise<void> {
       console.warn("[worker] index primary failed:", (e as Error).message);
     }
   }
+}
+
+/** A note's content, fetched on its own. The backfill used to pull every note's
+ *  body in ONE call over the whole vault; per-note keeps memory bounded and makes
+ *  a failure cost exactly one note. */
+async function noteContent(id: string): Promise<string> {
+  return (await vault.getNote(id)).content ?? "";
 }
 
 /** Is periodic index maintenance turned on? (INDEX_INTERVAL_MS=0 disables it.) */

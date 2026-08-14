@@ -280,3 +280,58 @@ test("concurrent sweeps cannot overlap (in-flight guard)", async () => {
   assert.equal(a + b, 2, "the two notes were embedded exactly once between them");
   assert.ok(a === 0 || b === 0, "one call short-circuited instead of racing");
 });
+
+test("a note missing from the index is retried on the next sweep (self-healing)", async () => {
+  fv.put({ id: "ok1", content: "fine", path: "a", metadata: null, tags: [] });
+  const model = getEmbedder().id;
+
+  // A note that was unreachable during a sweep ends it with no vectors. Simulate
+  // that end state by indexing while it is absent, then restoring it.
+  const missed = { id: "missed", content: "body", path: "b", metadata: null, tags: [], updatedAt: "2026-03-01T00:00:00Z" };
+  await runIndexOnce();
+  assert.ok(indexedHash("ok1", model), "the reachable note indexed");
+  assert.equal(indexedHash("missed", model), null, "the absent note has no vectors");
+
+  // Restore it. The cursor has already advanced past its updatedAt, so a
+  // timestamp-only sweep would skip it forever. Selection is by what the index
+  // is MISSING, so the next pass must pick it up.
+  fv.put(missed);
+  assert.equal(await runIndexOnce(), 1, "re-selected on the next pass");
+  assert.ok(indexedHash("missed", model), "and now has vectors");
+});
+
+test("the sweep converges: a completed pass leaves no un-indexed note", async () => {
+  for (let i = 0; i < 12; i++) {
+    fv.put({ id: `n${i}`, content: `body ${i}`, path: `p${i}`, metadata: null, tags: [] });
+  }
+  await runIndexOnce();
+  const model = getEmbedder().id;
+  const missing = [...fv.notes.keys()].filter((id) => !indexedHash(id, model));
+  assert.deepEqual(missing, [], "every live note has vectors after one pass");
+  assert.equal(await runIndexOnce(), 0, "and the next pass has nothing to do");
+});
+
+test("a note added after the cursor advanced is still picked up", async () => {
+  fv.put({ id: "first", content: "one", path: "a", metadata: null, tags: [], updatedAt: "2026-05-01T00:00:00Z" });
+  await runIndexOnce();
+  // Backdated on purpose: older than the cursor, so a timestamp-only sweep would
+  // never see it. The missing-from-index clause must catch it anyway.
+  fv.put({ id: "backdated", content: "two", path: "b", metadata: null, tags: [], updatedAt: "2026-01-01T00:00:00Z" });
+  assert.equal(await runIndexOnce(), 1, "indexed despite being older than the cursor");
+  assert.ok(indexedHash("backdated", getEmbedder().id));
+});
+
+test("an empty note is not re-selected forever once the cursor exists", async () => {
+  fv.put({ id: "real", content: "has words", path: "a", metadata: null, tags: [] });
+  fv.put({ id: "blank", content: "", path: "b", metadata: null, tags: [] });
+  await runIndexOnce(); // establishes the cursor and learns "blank" is empty
+  const model = getEmbedder().id;
+  assert.equal(indexedHash("blank", model), null, "an empty note has no vectors, by design");
+
+  // Without the empty-note memo, "missing from the index" would re-fetch it on
+  // every single pass for the life of the process.
+  const callsBefore = fv.calls.length;
+  await runIndexOnce();
+  const refetched = fv.calls.slice(callsBefore).filter((c) => JSON.stringify(c).includes("blank"));
+  assert.equal(refetched.length, 0, "the empty note was not fetched again");
+});
