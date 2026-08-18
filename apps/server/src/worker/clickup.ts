@@ -137,10 +137,14 @@ export function mapStatus(status: ClickUpTask["status"]): string {
   return "todo";
 }
 
-/** ClickUp priority → the vault enum (critical|high|medium|low); null → undefined (omit). */
-export function mapPriority(priority: ClickUpTask["priority"]): string | undefined {
+/** ClickUp priority → the vault enum (critical|high|medium|low). No ClickUp
+ *  priority → "medium": the mapper must always write one explicitly, because
+ *  Parachute fills omitted schema'd enum fields with the FIRST enum value on
+ *  create — which for `priority` is "critical", the worst possible default on
+ *  the vault's only indexed field. */
+export function mapPriority(priority: ClickUpTask["priority"]): string {
   const map: Record<string, string> = { urgent: "critical", high: "high", normal: "medium", low: "low" };
-  return priority?.priority ? map[priority.priority] : undefined;
+  return (priority?.priority && map[priority.priority]) || "medium";
 }
 
 const msToIso = (x: string | null | undefined): string | undefined => {
@@ -189,7 +193,7 @@ export function clickupTaskNote(
       clickup_status: task.status?.status ?? "",
       clickup_date_updated: task.date_updated ?? "",
       ...(due ? { due } : {}),
-      ...(priority ? { priority } : {}),
+      priority,
       ...(assigned ? { assigned } : {}),
       project: task.list?.name ?? "",
       context,

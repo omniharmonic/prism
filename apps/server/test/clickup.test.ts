@@ -140,13 +140,14 @@ test("mapStatus: custom/open statuses match by keyword", () => {
   assert.equal(mapStatus(undefined), "todo");
 });
 
-test("mapPriority: urgent→critical, high/low pass through, normal→medium, null→omit", () => {
+test("mapPriority: urgent→critical, high/low pass through, normal→medium, null→medium (never omitted — the vault would default an omitted schema'd field to 'critical')", () => {
   assert.equal(mapPriority({ priority: "urgent" }), "critical");
   assert.equal(mapPriority({ priority: "high" }), "high");
   assert.equal(mapPriority({ priority: "normal" }), "medium");
   assert.equal(mapPriority({ priority: "low" }), "low");
-  assert.equal(mapPriority(null), undefined);
-  assert.equal(mapPriority(undefined), undefined);
+  assert.equal(mapPriority(null), "medium");
+  assert.equal(mapPriority(undefined), "medium");
+  assert.equal(mapPriority({ priority: "bogus" }), "medium");
 });
 
 // ── clickupTaskNote ──
@@ -191,7 +192,7 @@ test("clickupTaskNote omits null fields and skips the hidden folder in the bread
   const t = task({ priority: null, due_date: null, assignees: [], parent: null, folder: { id: "f0", name: "hidden", hidden: true } });
   const n = clickupTaskNote(t, CTX);
   assert.ok(!("due" in n.metadata));
-  assert.ok(!("priority" in n.metadata));
+  assert.equal(n.metadata.priority, "medium"); // always explicit — see mapPriority
   assert.ok(!("assigned" in n.metadata));
   assert.ok(!("clickup_parent" in n.metadata));
   assert.equal(n.metadata.context, "INU / Sprint 12");
