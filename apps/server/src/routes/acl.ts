@@ -774,7 +774,7 @@ async function tunnelStatus(): Promise<Record<string, unknown>> {
 acl.get("/server", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const integrations: Record<string, boolean> = {};
-  for (const k of ["matrix", "fathom", "fireflies", "github", "google", "notion"]) {
+  for (const k of ["matrix", "fathom", "fireflies", "clickup", "github", "google", "notion"]) {
     integrations[k] = secretsConfigured() && !!getSecret("primary", config.ownerEmail, k);
   }
   return c.json({

@@ -22,6 +22,7 @@ import { vault, vaultClient } from "../parachute";
 import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
+import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
@@ -199,6 +200,41 @@ export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean }
       (opts.force ? " [forced]" : ""),
   );
   return res.created;
+}
+
+/** Run one ClickUp task ingest pass for a vault, if it has a stored credential.
+ *  Throttled to one run per CLICKUP_INTERVAL_MS slot (0 disables); `force`
+ *  bypasses the gate (the on-demand /api/integrations/clickup/sync route).
+ *  The cursor is the max task `date_updated` (ms) from the last CLEAN pass —
+ *  never Date.now() — advanced only forward; each incremental run re-covers a
+ *  120s overlap so a task updated during the previous pass can't be missed. */
+export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean } = {}): Promise<number> {
+  const raw = getSecret(entry.id, config.ownerEmail, "clickup");
+  if (!raw) {
+    warnMissingSecret(entry.id, "clickup");
+    return 0;
+  }
+  if (config.clickupIntervalMs <= 0 && !opts.force) return 0;
+  const slot = Math.floor(Date.now() / config.clickupIntervalMs);
+  if (!opts.force) {
+    if (getWorkerCursor(entry.id, "clickup-slot") === String(slot)) return 0;
+    setWorkerCursor(entry.id, "clickup-slot", String(slot)); // claim up front
+  }
+  const credential = JSON.parse(raw) as ClickUpCredential;
+  const client = new ClickUpClient(credential.apiKey);
+  const cursor = getWorkerCursor(entry.id, "clickup");
+  const sinceMs = cursor ? Number(cursor) - 120_000 : null;
+  const res = await ingestClickUp(client, vaultClient(entry.id) as unknown as ClickUpVault, { credential, sinceMs });
+  const prev = cursor ? Number(cursor) : 0;
+  const next = Math.max(res.maxDateUpdatedMs, prev); // clean-pass value only, never backward
+  if (next > 0) setWorkerCursor(entry.id, "clickup", String(next));
+  console.log(
+    `[worker] clickup ${entry.id}: +${res.created} created ~${res.updated} updated ·${res.skipped} skipped` +
+      (res.errors ? ` !${res.errors} FAILED (cursor clamped to retry)` : "") +
+      (res.rateLimited ? " [rate-limited, cursor held]" : "") +
+      (opts.force ? " [forced]" : ` [slot ${slot}]`),
+  );
+  return res.created + res.updated;
 }
 
 /** Current hour + calendar day in a named timezone (robust to the process TZ),
@@ -476,6 +512,7 @@ async function tick(): Promise<void> {
         ["matrix", runMatrixOnce],
         ["fathom", runFathomOnce],
         ["fireflies", runFirefliesOnce],
+        ["clickup", runClickUpOnce],
       ] as const) {
         try {
           await run(entry);

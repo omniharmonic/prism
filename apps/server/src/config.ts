@@ -138,6 +138,10 @@ export const config = {
   // transcript set to dedupe, so running it on the 60s ingest tick was pure
   // waste — especially now that Fireflies is the live transcript source.
   fathomIntervalMs: Number(process.env.FATHOM_INTERVAL_MS ?? 3_600_000),
+  // How often the ClickUp task ingester may run. Incremental after the first
+  // backfill (cursor = max task date_updated), so a 5-minute cadence is cheap.
+  // 0 DISABLES it (the on-demand /api/integrations/clickup/sync route still works).
+  clickupIntervalMs: Number(process.env.CLICKUP_INTERVAL_MS ?? 300_000),
 } as const;
 
 /**

@@ -11,7 +11,7 @@ import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
-import { runMatrixOnce, runFathomOnce, runFirefliesOnce } from "../worker/scheduler";
+import { runMatrixOnce, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
 
 export const integrations = new Hono();
 
@@ -127,6 +127,60 @@ integrations.post("/fireflies/sync", async (c) => {
   try {
     const transcripts = await runFirefliesOnce(resolveVaultEntry(actor.vaultId), { force: true });
     return c.json({ ok: true, transcripts });
+  } catch (e) {
+    return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
+  }
+});
+
+// ── ClickUp (task pull) — custom routes: apiKey required, scope fields optional ──
+// Status also echoes the NON-secret scope fields (never the apiKey) so the UI
+// can prefill them — a re-save of just the key must not drop teamId/spaceIds.
+integrations.get("/clickup", (c) => {
+  const actor = resolveActor(c);
+  const available = secretsConfigured();
+  const raw = available ? getSecret(actor.vaultId, config.ownerEmail, "clickup") : null;
+  const out: Record<string, unknown> = { secretsAvailable: available, configured: !!raw };
+  if (raw) {
+    try {
+      const cred = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof cred.teamId === "string") out.teamId = cred.teamId;
+      if (typeof cred.spaceIds === "string") out.spaceIds = cred.spaceIds;
+      if (typeof cred.assignedOnly === "boolean") out.assignedOnly = cred.assignedOnly;
+    } catch {
+      // unreadable blob — report configured only
+    }
+  }
+  return c.json(out);
+});
+
+integrations.put("/clickup", async (c) => {
+  if (!secretsConfigured()) {
+    return c.json({ error: "secrets_unconfigured", detail: "SECRETS_KEY is not set on the server" }, 400);
+  }
+  const actor = resolveActor(c);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const apiKey = body.apiKey;
+  if (typeof apiKey !== "string" || !apiKey) return c.json({ error: "bad_request", detail: "apiKey required" }, 400);
+  const cred: Record<string, unknown> = { apiKey };
+  if (typeof body.teamId === "string" && body.teamId) cred.teamId = body.teamId;
+  if (typeof body.spaceIds === "string" && body.spaceIds) cred.spaceIds = body.spaceIds;
+  if (typeof body.assignedOnly === "boolean") cred.assignedOnly = body.assignedOnly;
+  putSecret(actor.vaultId, config.ownerEmail, "clickup", JSON.stringify(cred));
+  return c.json({ ok: true });
+});
+
+integrations.delete("/clickup", (c) => {
+  deleteSecret(resolveActor(c).vaultId, config.ownerEmail, "clickup");
+  return c.json({ ok: true });
+});
+
+// Force one ingest pass now (bypasses the interval slot gate). Returns the
+// count of tasks created+updated this pass.
+integrations.post("/clickup/sync", async (c) => {
+  const actor = resolveActor(c);
+  try {
+    const tasks = await runClickUpOnce(resolveVaultEntry(actor.vaultId), { force: true });
+    return c.json({ ok: true, tasks });
   } catch (e) {
     return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
   }
