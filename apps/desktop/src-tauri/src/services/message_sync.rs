@@ -437,6 +437,14 @@ async fn find_conversation_note(
     }))
 }
 
+/// Above this many joined members, a room is a group chat rather than a
+/// relationship. In group rooms we still link participants we already know, but
+/// never auto-create person notes for them: a group roster is not a contact
+/// list. Creating one note per member is what produced ~3.3k junk person stubs
+/// from Telegram/WhatsApp group handles (cleaned 2026-06-22, recreated wholesale
+/// by a re-sync on 2026-06-24).
+const MAX_MEMBERS_FOR_PERSON_CREATION: usize = 3;
+
 /// Link conversation note to person notes for all participants.
 async fn link_participants(
     parachute: &ParachuteClient,
@@ -445,6 +453,7 @@ async fn link_participants(
     matrix_ids: &[String],
     platform: &str,
 ) {
+    let allow_create = display_names.len() <= MAX_MEMBERS_FOR_PERSON_CREATION;
     for (i, name) in display_names.iter().enumerate() {
         let matrix_id = matrix_ids.get(i).map(|s| s.as_str());
         // Skip bridge bots
@@ -453,9 +462,19 @@ async fn link_participants(
                 continue;
             }
         }
-        match person_linker::find_or_create_person(
-            parachute, name, None, matrix_id, Some(platform),
-        ).await {
+        let resolved = if allow_create {
+            person_linker::find_or_create_person(
+                parachute, name, None, matrix_id, Some(platform),
+            ).await
+        } else {
+            match person_linker::find_person(parachute, Some(name), None, matrix_id).await {
+                Ok(Some(note)) => Ok(note.id),
+                // Unknown participant in a group room — link nothing, create nothing.
+                Ok(None) => continue,
+                Err(e) => Err(e),
+            }
+        };
+        match resolved {
             Ok(person_id) => {
                 if let Err(e) = person_linker::link_to_person(
                     parachute, note_id, &person_id, "messages-with",

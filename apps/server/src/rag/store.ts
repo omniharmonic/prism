@@ -42,6 +42,10 @@ const countByModel = db.prepare("SELECT COUNT(*) AS n FROM embeddings WHERE mode
 const countNotesByModel = db.prepare(
   "SELECT COUNT(DISTINCT note_id) AS n FROM embeddings WHERE model = ?",
 );
+const selectNoteIdsByModel = db.prepare(
+  "SELECT DISTINCT note_id FROM embeddings WHERE model = ?",
+);
+const selectAllNoteIds = db.prepare("SELECT DISTINCT note_id FROM embeddings");
 
 function vecToBuf(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -94,6 +98,22 @@ export function removeNoteChunks(noteId: string): void {
 export function indexedHash(noteId: string, model: string): string | null {
   const row = selectHashForNote.get(noteId, model) as { content_hash: string } | undefined;
   return row?.content_hash ?? null;
+}
+
+/** Every note id that has chunks under `model` — i.e. what the sweep considers
+ *  already done. Use `allIndexedNoteIds` for deletion cleanup, not this. */
+export function indexedNoteIds(model: string): Set<string> {
+  const rows = selectNoteIdsByModel.all(model) as Array<{ note_id: string }>;
+  return new Set(rows.map((r) => r.note_id));
+}
+
+/** Every note id with chunks under ANY model. Deletion cleanup must use this,
+ *  not the current-model set: after a model switch, rows left by the PREVIOUS
+ *  model for notes deleted in the meantime are invisible to a model-scoped scan
+ *  and would never be collected. */
+export function allIndexedNoteIds(): Set<string> {
+  const rows = selectAllNoteIds.all() as Array<{ note_id: string }>;
+  return new Set(rows.map((r) => r.note_id));
 }
 
 export interface ScoredChunk {

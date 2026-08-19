@@ -559,7 +559,10 @@ const selectMcpToken = db.prepare("SELECT * FROM mcp_tokens WHERE jti = ?");
 const markMcpTokenRevoked = db.prepare("UPDATE mcp_tokens SET revoked_at = ? WHERE jti = ?");
 
 export function recordMcpToken(row: Omit<McpTokenRow, "created_at" | "revoked_at"> & { label?: string | null }): void {
-  insertMcpToken.run({ label: null, ...row, created_at: Date.now() });
+  // `label` is normalized explicitly rather than by spread-over-default: with
+  // `{ label: null, ...row }` an optional property present-but-undefined wins the
+  // spread and better-sqlite3 throws on binding undefined (and TS flags TS2783).
+  insertMcpToken.run({ ...row, label: row.label ?? null, created_at: Date.now() });
 }
 export function listMcpTokens(vaultId: string): McpTokenRow[] {
   return selectMcpTokensForVault.all(vaultId) as McpTokenRow[];

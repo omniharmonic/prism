@@ -14,6 +14,7 @@ import type {
   SpaceInfo,
   TagAccess,
   ServerInfo,
+  IntegrationStatus,
   TunnelStatus,
   TunnelIngress,
   VaultSummary,
@@ -44,6 +45,22 @@ async function acl(path: string, init?: RequestInit): Promise<Response> {
     },
   });
   if (!r.ok) throw new Error(`ACL ${init?.method ?? "GET"} ${path} → ${r.status}`);
+  return r;
+}
+
+/** Gateway /api/* calls (session cookie, active-vault/workspace scoped) — the
+ *  same conventions as acl() for routes mounted under /api (integrations). */
+async function api(path: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(`${GATEWAY_ORIGIN}/api${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...contextHeaders(),
+      ...(init?.headers as Record<string, string>),
+    },
+  });
+  if (!r.ok) throw new Error(`API ${init?.method ?? "GET"} ${path} → ${r.status}`);
   return r;
 }
 
@@ -150,6 +167,22 @@ export const webCollabSharing: CollabSharing = {
   },
   async applyTunnelIngress(): Promise<{ added: string[] }> {
     return (await acl(`/server/tunnel/ingress`, { method: "POST" })).json();
+  },
+
+  // ── Server-side sync-integration credentials (admin+, /api/integrations) ──
+  // Status rides the same api() (active-vault) scope as the PUT, so the
+  // configured badge always reflects the vault a Save actually wrote to.
+  async getIntegrationStatus(kind: string): Promise<IntegrationStatus> {
+    return (await api(`/integrations/${enc(kind)}`)).json();
+  },
+  async setIntegrationCredential(kind: string, fields: Record<string, unknown>): Promise<void> {
+    await api(`/integrations/${enc(kind)}`, { method: "PUT", body: JSON.stringify(fields) });
+  },
+  async deleteIntegrationCredential(kind: string): Promise<void> {
+    await api(`/integrations/${enc(kind)}`, { method: "DELETE" });
+  },
+  async syncIntegration(kind: string): Promise<Record<string, unknown>> {
+    return (await api(`/integrations/${enc(kind)}/sync`, { method: "POST" })).json();
   },
 
   // ── Workspace entities (one server, many workspaces) ──

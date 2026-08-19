@@ -33,7 +33,7 @@ async function main() {
   const { GitHubClient } = await import("../src/worker/github.js");
 
   const ghToken = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
-  const gogAccount = "benjamin@opencivics.co";
+  const gogAccount = "synergy@benjaminlife.one";
   const runId = Date.now();
   const vname = `syncrt${runId}`;
   const settle = () => new Promise((r) => setTimeout(r, 2500));

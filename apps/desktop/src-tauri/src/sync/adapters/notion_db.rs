@@ -355,6 +355,44 @@ impl NotionDatabaseAdapter {
 
                 // Determine whether to create or update
                 if let Some(note_id) = config.id_map.get(&page_id) {
+                    // Conflict strategy: read the current vault note so the
+                    // configured strategy can decide whether Notion may
+                    // overwrite it. If the note can't be read, the strategy
+                    // can't be applied — skip this page this cycle (it retries
+                    // next pull) instead of blind-overwriting data we can't see.
+                    let note = match parachute.get_note(note_id).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            result
+                                .errors
+                                .push(format!("Read {} for conflict check: {}", page_id, e));
+                            continue;
+                        }
+                    };
+
+                    // The vault merges metadata, so the write is a no-op
+                    // when content matches and every mapped field already
+                    // holds its target value — identical data is never a
+                    // conflict, so this runs before the strategy gate.
+                    if note.content == content
+                        && metadata_unchanged(&meta_value, note.metadata.as_ref())
+                    {
+                        continue;
+                    }
+                    if !should_overwrite(
+                        &config.conflict_strategy,
+                        page["last_edited_time"].as_str(),
+                        note.updated_at.as_deref(),
+                        &config.last_synced,
+                    ) {
+                        debug!(
+                            "Skipping {} ({} keeps the vault version)",
+                            page_id, config.conflict_strategy
+                        );
+                        result.conflicts += 1;
+                        continue;
+                    }
+
                     // Update existing note
                     let params = UpdateNoteParams {
                         content: Some(content),
@@ -573,6 +611,62 @@ impl NotionDatabaseAdapter {
 // ---------------------------------------------------------------------------
 // Free-standing helpers
 // ---------------------------------------------------------------------------
+
+/// Decide whether a pulled Notion page may overwrite its vault note, per the
+/// configured conflict strategy. Unparseable or missing timestamps fall back
+/// to overwriting (the adapter's historical notion-wins behavior).
+fn should_overwrite(
+    strategy: &str,
+    page_edited: Option<&str>,
+    note_updated: Option<&str>,
+    last_synced: &str,
+) -> bool {
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok();
+    match strategy {
+        "parachute-wins" => {
+            // A vault edit since the last sync always wins.
+            match (note_updated.and_then(parse), parse(last_synced)) {
+                (Some(note), Some(synced)) => {
+                    if note > synced {
+                        return false;
+                    }
+                    // Untouched vault note: overwrite only when Notion itself
+                    // changed since the last sync. last_synced advances every
+                    // cycle even past conflicts, so without this a local edit
+                    // skipped in cycle N would be clobbered by the unchanged
+                    // page in cycle N+1 (pull-only configs have no push to
+                    // carry the edit to Notion in between).
+                    match page_edited.and_then(parse) {
+                        Some(page) => page > synced,
+                        None => true,
+                    }
+                }
+                _ => true,
+            }
+        }
+        "newer-wins" => {
+            // Overwrite only when the Notion edit is strictly newer.
+            match (page_edited.and_then(parse), note_updated.and_then(parse)) {
+                (Some(page), Some(note)) => page > note,
+                _ => true,
+            }
+        }
+        // "notion-wins" and unknown strategies: always overwrite.
+        _ => true,
+    }
+}
+
+/// True when every mapped field already holds its target value in the
+/// existing metadata. The vault merges metadata on update, so extra
+/// vault-side fields do not count as a difference.
+fn metadata_unchanged(mapped: &Value, existing: Option<&Value>) -> bool {
+    match (mapped.as_object(), existing.and_then(|m| m.as_object())) {
+        (Some(mapped), Some(existing)) => {
+            mapped.iter().all(|(k, v)| existing.get(k) == Some(v))
+        }
+        _ => false,
+    }
+}
 
 /// Extract the raw string value from a Notion property JSON blob.
 fn extract_property_value(property: &Value, prop_type: &str) -> String {
@@ -812,4 +906,102 @@ fn title_case(input: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const T1: &str = "2026-08-18T10:00:00.000Z"; // earliest
+    const T2: &str = "2026-08-18T11:00:00.000Z";
+    const T3: &str = "2026-08-18T12:00:00.000Z"; // latest
+
+    #[test]
+    fn test_should_overwrite_notion_wins_always() {
+        // notion-wins ignores every timestamp, including a newer vault note.
+        assert!(should_overwrite("notion-wins", Some(T1), Some(T3), T2));
+        assert!(should_overwrite("notion-wins", Some(T3), Some(T1), T2));
+        assert!(should_overwrite("notion-wins", None, None, ""));
+        assert!(should_overwrite("notion-wins", Some("garbage"), Some("garbage"), "garbage"));
+    }
+
+    #[test]
+    fn test_should_overwrite_unknown_strategy_defaults_to_overwrite() {
+        assert!(should_overwrite("bogus", Some(T1), Some(T3), T2));
+    }
+
+    #[test]
+    fn test_should_overwrite_parachute_wins() {
+        // Vault note untouched and Notion changed since last sync → update.
+        assert!(should_overwrite("parachute-wins", Some(T3), Some(T1), T2));
+        // Exactly at last_synced counts as untouched.
+        assert!(should_overwrite("parachute-wins", Some(T3), Some(T2), T2));
+        // Vault note edited after last sync → keep the vault version.
+        assert!(!should_overwrite("parachute-wins", Some(T3), Some(T3), T2));
+        // A vault edit wins regardless of page_edited.
+        assert!(!should_overwrite("parachute-wins", None, Some(T3), T2));
+    }
+
+    #[test]
+    fn test_should_overwrite_parachute_wins_stable_page_never_clobbers() {
+        // last_synced advances every cycle, so after a conflict skip the
+        // vault note reads as "untouched" on the next pass — an UNCHANGED
+        // Notion page must not overwrite it then (pull-only data-loss window).
+        assert!(!should_overwrite("parachute-wins", Some(T1), Some(T1), T2));
+        // Page edited exactly at last_synced is not a new Notion change.
+        assert!(!should_overwrite("parachute-wins", Some(T2), Some(T1), T2));
+        // Unparseable page timestamp falls back to overwriting (legacy).
+        assert!(should_overwrite("parachute-wins", None, Some(T1), T2));
+        assert!(should_overwrite("parachute-wins", Some("garbage"), Some(T1), T2));
+    }
+
+    #[test]
+    fn test_should_overwrite_parachute_wins_unparseable_falls_back() {
+        // Missing/garbage timestamps preserve the old overwrite behavior.
+        assert!(should_overwrite("parachute-wins", Some(T3), None, T2));
+        assert!(should_overwrite("parachute-wins", Some(T3), Some("garbage"), T2));
+        assert!(should_overwrite("parachute-wins", Some(T3), Some(T3), ""));
+        assert!(should_overwrite("parachute-wins", Some(T3), Some(T3), "garbage"));
+    }
+
+    #[test]
+    fn test_should_overwrite_newer_wins() {
+        // Notion strictly newer → overwrite.
+        assert!(should_overwrite("newer-wins", Some(T3), Some(T1), T2));
+        // Vault newer → keep the vault version.
+        assert!(!should_overwrite("newer-wins", Some(T1), Some(T3), T2));
+        // Tie → no overwrite (nothing is newer).
+        assert!(!should_overwrite("newer-wins", Some(T2), Some(T2), T1));
+        // last_synced is irrelevant to this strategy.
+        assert!(!should_overwrite("newer-wins", Some(T1), Some(T3), ""));
+    }
+
+    #[test]
+    fn test_should_overwrite_newer_wins_unparseable_falls_back() {
+        assert!(should_overwrite("newer-wins", None, Some(T3), T2));
+        assert!(should_overwrite("newer-wins", Some("garbage"), Some(T3), T2));
+        assert!(should_overwrite("newer-wins", Some(T1), None, T2));
+        assert!(should_overwrite("newer-wins", Some(T1), Some("garbage"), T2));
+    }
+
+    #[test]
+    fn test_metadata_unchanged_subset_semantics() {
+        let mapped = serde_json::json!({ "status": "done", "priority": "high" });
+        // Extra vault-side fields don't count as a difference (merge semantics).
+        let existing = serde_json::json!({
+            "status": "done", "priority": "high", "notion_page_id": "abc"
+        });
+        assert!(metadata_unchanged(&mapped, Some(&existing)));
+
+        // A mapped field with a different value is a change.
+        let drifted = serde_json::json!({ "status": "todo", "priority": "high" });
+        assert!(!metadata_unchanged(&mapped, Some(&drifted)));
+
+        // A mapped field missing from the vault is a change.
+        let partial = serde_json::json!({ "status": "done" });
+        assert!(!metadata_unchanged(&mapped, Some(&partial)));
+
+        // No existing metadata → treat as changed.
+        assert!(!metadata_unchanged(&mapped, None));
+    }
 }

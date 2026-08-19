@@ -2,14 +2,16 @@
 // snapshot (no secret values), integration status, a narrow editable-.env
 // allowlist (restart-required), and Cloudflare tunnel status + controls. The
 // tunnel is a pm2 process; STOP takes the public site offline — heavily warned.
-// Everything is server-owner-gated server-side; the panel hides when the seam
-// lacks getServerInfo (desktop / non-server-owner).
+// Server/tunnel/config cards are server-owner-gated server-side; the sync-
+// integrations card is admin+ and vault-scoped, so it must work even when
+// /acl/server 403s (non-owner admin) — its state comes from the per-kind
+// GET /api/integrations/<kind>, never the owner-only ServerInfo snapshot.
 import { useCallback, useEffect, useState } from "react";
-import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, CheckCircle2, XCircle } from "lucide-react";
+import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, CheckCircle2, XCircle, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
-import { useCollabSharing, type ServerInfo, type TunnelIngress } from "../../../data/CollabSharing";
+import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress } from "../../../data/CollabSharing";
 
 const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[] = [
   { key: "APP_ORIGIN", label: "App origin (public URL)", help: "The public https origin — must match the tunnel hostname. Changing it affects cookies; restart required." },
@@ -17,9 +19,196 @@ const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[]
   { key: "RESEND_API_KEY", label: "Resend API key", help: "Enables outbound email. Leave blank to log links to the console instead.", secret: true },
 ];
 
+// ── Server-side sync integrations: which credential fields each kind takes.
+// The row list is this registry merged with ServerInfo.integrations, so a kind
+// the running server doesn't report yet (e.g. pre-restart) is still configurable.
+interface IntegrationField {
+  key: string;
+  label: string;
+  help?: string;
+  secret?: boolean;
+  required?: boolean;
+  type?: "checkbox";
+  default?: boolean;
+}
+const INTEGRATION_FIELDS: Record<string, IntegrationField[]> = {
+  clickup: [
+    { key: "apiKey", label: "API key", secret: true, required: true },
+    { key: "teamId", label: "Workspace ID", help: "blank = all workspaces" },
+    { key: "spaceIds", label: "Space IDs (comma-sep)" },
+    { key: "assignedOnly", label: "Only tasks assigned to me", type: "checkbox", default: true },
+  ],
+  fireflies: [{ key: "apiKey", label: "API key", secret: true, required: true }],
+  fathom: [{ key: "apiKey", label: "API key", secret: true, required: true }],
+  notion: [{ key: "apiKey", label: "API key", secret: true, required: true }],
+  github: [{ key: "token", label: "Token", secret: true, required: true }],
+  google: [{ key: "account", label: "Account", required: true }],
+  matrix: [
+    { key: "homeserver", label: "Homeserver", required: true },
+    { key: "accessToken", label: "Access token", secret: true, required: true },
+  ],
+};
+/** Kinds with a POST /api/integrations/<kind>/sync route. */
+const SYNCABLE = new Set(["matrix", "fathom", "fireflies", "clickup"]);
+
+/** One configurable integration row: badge header → expandable credential form. */
+function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, onChanged }: {
+  kind: string;
+  configured: boolean;
+  status?: IntegrationStatus;
+  sharing: CollabSharing;
+  onNotice: (msg: string) => void;
+  onError: (msg: string) => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const fields = INTEGRATION_FIELDS[kind] ?? [];
+  const configurable = fields.length > 0 && !!sharing.setIntegrationCredential;
+
+  // Prefill non-secret fields from the server's status echo so a key re-save
+  // doesn't silently drop teamId/spaceIds or reset a checkbox to its default.
+  const openForm = () => {
+    setOpen((o) => {
+      if (!o) {
+        const seed: Record<string, string | boolean> = {};
+        for (const f of fields) {
+          const v = status?.[f.key];
+          if (f.secret || v === undefined) continue;
+          if (f.type === "checkbox" ? typeof v === "boolean" : typeof v === "string") seed[f.key] = v;
+        }
+        setValues(seed);
+      }
+      return !o;
+    });
+  };
+
+  const str = (key: string) => String(values[key] ?? "").trim();
+  const canSave = fields.filter((f) => f.required).every((f) => str(f.key));
+
+  const save = async () => {
+    if (!sharing.setIntegrationCredential) return;
+    // PUT replaces the whole credential; optional blank strings are omitted.
+    const payload: Record<string, unknown> = {};
+    for (const f of fields) {
+      if (f.type === "checkbox") payload[f.key] = (values[f.key] as boolean | undefined) ?? f.default ?? false;
+      else if (str(f.key)) payload[f.key] = str(f.key);
+    }
+    setBusy("save");
+    try {
+      await sharing.setIntegrationCredential(kind, payload);
+      setValues({});
+      setOpen(false);
+      onNotice(`${kind} credential saved.`);
+      await onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : `Couldn't save the ${kind} credential.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async () => {
+    if (!sharing.deleteIntegrationCredential) return;
+    if (!window.confirm(`Remove the stored ${kind} credential? Sync for it stops until a new one is saved.`)) return;
+    setBusy("remove");
+    try {
+      await sharing.deleteIntegrationCredential(kind);
+      setValues({});
+      onNotice(`${kind} credential removed.`);
+      await onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : `Couldn't remove the ${kind} credential.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sync = async () => {
+    if (!sharing.syncIntegration) return;
+    setBusy("sync");
+    try {
+      const res = await sharing.syncIntegration(kind);
+      const counts = Object.entries(res)
+        .filter(([, v]) => typeof v === "number")
+        .map(([k, v]) => `${v} ${k}`)
+        .join(" · ");
+      onNotice(`${kind} sync: ${counts || "done"}.`);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : `${kind} sync failed.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div style={{ border: "1px solid var(--glass-border)", borderRadius: 8, marginBottom: 8 }}>
+      <button
+        onClick={() => configurable && openForm()}
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 10px", background: "none", border: "none", cursor: configurable ? "pointer" : "default", color: "var(--text-primary)", fontSize: 12.5, textAlign: "left" }}
+      >
+        {configured ? <CheckCircle2 size={13} color="var(--color-success)" /> : <XCircle size={13} color="var(--text-secondary)" />}
+        <span style={{ fontWeight: 600 }}>{kind}</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 11.5 }}>{configured ? "configured" : "not configured"}</span>
+        {configurable && <span style={{ marginLeft: "auto", color: "var(--text-secondary)", display: "inline-flex" }}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>}
+      </button>
+      {open && configurable && (
+        <div style={{ padding: "2px 10px 10px", borderTop: "1px solid var(--glass-border)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+            {fields.map((f) =>
+              f.type === "checkbox" ? (
+                <label key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                  <input
+                    type="checkbox"
+                    checked={(values[f.key] as boolean | undefined) ?? f.default ?? false}
+                    onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.checked }))}
+                  />
+                  {f.label}
+                </label>
+              ) : (
+                <div key={f.key}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3 }}>
+                    {f.label}
+                    {f.required && <span style={{ color: "var(--text-secondary)", fontWeight: 400 }}> (required)</span>}
+                  </div>
+                  <Input
+                    type={f.secret ? "password" : "text"}
+                    placeholder={f.secret && configured ? "configured — enter to replace" : ""}
+                    value={String(values[f.key] ?? "")}
+                    onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.value }))}
+                  />
+                  {f.help && <p style={{ color: "var(--text-secondary)", fontSize: 11.5, margin: "3px 0 0" }}>{f.help}</p>}
+                </div>
+              ),
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <Button onClick={() => void save()} disabled={!canSave || busy !== null}><Save size={13} /> Save</Button>
+            {configured && SYNCABLE.has(kind) && !!sharing.syncIntegration && (
+              <Button variant="ghost" onClick={() => void sync()} disabled={busy !== null}><RefreshCw size={13} /> {busy === "sync" ? "Syncing…" : "Sync now"}</Button>
+            )}
+            {configured && !!sharing.deleteIntegrationCredential && (
+              <Button variant="ghost" onClick={() => void remove()} disabled={busy !== null}><Trash2 size={13} /> Remove</Button>
+            )}
+          </div>
+          <p style={{ color: "var(--text-secondary)", fontSize: 11.5, margin: "8px 0 0" }}>
+            Saving replaces the whole credential — stored values are never shown, so re-enter secrets when saving.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ServerPanel() {
   const sharing = useCollabSharing();
+  const vaultSignal = useVaultChangeSignal();
   const [info, setInfo] = useState<ServerInfo | null>(null);
+  // Per-kind, vault-scoped configured-state (GET /api/integrations/<kind>) —
+  // the same scope setIntegrationCredential's PUT writes to, and readable by a
+  // non-owner admin. null = not loaded / seam absent.
+  const [integrationStatus, setIntegrationStatus] = useState<Record<string, IntegrationStatus> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -27,14 +216,36 @@ export function ServerPanel() {
 
   const [ingress, setIngress] = useState<TunnelIngress | null>(null);
   const refresh = useCallback(async () => {
-    if (!sharing?.getServerInfo) return;
+    if (!sharing?.getServerInfo && !sharing?.getIntegrationStatus) return;
     setError(null);
-    try {
-      setInfo(await sharing.getServerInfo());
-      if (sharing.getTunnelIngress) setIngress(await sharing.getTunnelIngress().catch(() => null));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load server settings.");
+    let infoError: string | null = null;
+    if (sharing.getServerInfo) {
+      try {
+        setInfo(await sharing.getServerInfo());
+        if (sharing.getTunnelIngress) setIngress(await sharing.getTunnelIngress().catch(() => null));
+      } catch (e) {
+        setInfo(null);
+        infoError = e instanceof Error ? e.message : "Couldn't load server settings.";
+      }
     }
+    let statuses: Record<string, IntegrationStatus> | null = null;
+    if (sharing.getIntegrationStatus) {
+      const rows = await Promise.all(
+        Object.keys(INTEGRATION_FIELDS).map(async (k) => {
+          try {
+            return [k, await sharing.getIntegrationStatus!(k)] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const ok = rows.filter((r): r is readonly [string, IntegrationStatus] => r !== null);
+      if (ok.length > 0) statuses = Object.fromEntries(ok);
+    }
+    setIntegrationStatus(statuses);
+    // A non-owner admin can't read /acl/server (owner-only 403) but can still
+    // manage integrations — don't surface that as a page-level error then.
+    if (infoError && !statuses) setError(infoError);
   }, [sharing]);
 
   const applyIngress = useCallback(async () => {
@@ -53,7 +264,8 @@ export function ServerPanel() {
     }
   }, [sharing, refresh]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  // Re-read on vault switch too: the integration scope follows the active vault.
+  useEffect(() => { void refresh(); }, [refresh, vaultSignal]);
 
   const saveConfig = useCallback(async (key: string) => {
     if (!sharing?.setServerConfig) return;
@@ -89,7 +301,7 @@ export function ServerPanel() {
     }
   }, [sharing]);
 
-  if (!sharing?.getServerInfo) {
+  if (!sharing?.getServerInfo && !sharing?.getIntegrationStatus) {
     return <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>Server settings aren't available here (server owner only).</p>;
   }
 
@@ -131,19 +343,31 @@ export function ServerPanel() {
         )}
       </div>
 
-      {/* Integrations */}
-      {info && (
+      {/* Integrations — known kinds merged with what the server reports, so a
+          kind the running server predates (e.g. clickup) is still configurable.
+          Configured-state prefers the per-kind vault-scoped status (matches
+          where Save writes, and works for non-owner admins); the owner-only
+          ServerInfo snapshot (primary vault) is only a fallback. */}
+      {(integrationStatus || info) && (
         <div style={cardStyle}>
-          <div style={labelStyle}>Sync integrations (primary vault)</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {Object.entries(info.integrations).map(([k, ok]) => (
-              <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, border: "1px solid var(--glass-border)", borderRadius: 6, padding: "4px 8px" }}>
-                {ok ? <CheckCircle2 size={13} color="var(--color-success)" /> : <XCircle size={13} color="var(--text-secondary)" />}
-                {k}
-              </span>
-            ))}
-          </div>
-          {!info.secretsAvailable && <p style={{ color: "var(--color-warning)", fontSize: 12, marginTop: 8 }}>SECRETS_KEY is not set — server-side sync is disabled.</p>}
+          <div style={labelStyle}>Sync integrations ({sharing.getActiveVault?.() ?? "primary"} vault)</div>
+          {[...new Set([...Object.keys(INTEGRATION_FIELDS), ...Object.keys(info?.integrations ?? {})])].map((k) => (
+            <IntegrationRow
+              key={k}
+              kind={k}
+              configured={integrationStatus ? !!integrationStatus[k]?.configured : !!info?.integrations[k]}
+              status={integrationStatus?.[k]}
+              sharing={sharing}
+              onNotice={(m) => { setError(null); setNotice(m); }}
+              onError={(m) => { setNotice(null); setError(m); }}
+              onChanged={refresh}
+            />
+          ))}
+          {(integrationStatus
+            ? Object.values(integrationStatus).some((s) => !s.secretsAvailable)
+            : info && !info.secretsAvailable) && (
+            <p style={{ color: "var(--color-warning)", fontSize: 12, marginTop: 8 }}>SECRETS_KEY is not set — server-side sync is disabled.</p>
+          )}
         </div>
       )}
 

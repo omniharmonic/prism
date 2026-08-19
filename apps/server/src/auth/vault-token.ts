@@ -105,15 +105,32 @@ export function isOurHubToken(token: string): boolean {
  * warning (never throwing) on failure so a bad token can't block boot. Remote-hub
  * linked vaults are reported but not validated (their token is issued elsewhere).
  */
+/** Warn this many days before a vault token lapses. 45 leaves room to notice a
+ *  boot warning and mint a replacement without an emergency. */
+const TOKEN_EXPIRY_WARN_DAYS = 45;
+
 export async function reportRegistryTokens(entries: Array<{ id: string; vault: string; token: string }>): Promise<void> {
   for (const entry of entries) {
     const claims = peekTokenClaims(entry.token);
     const scope = (claims?.scope ?? claims?.scopes ?? "(opaque / non-JWT)") as unknown;
     const exp = typeof claims?.exp === "number" ? new Date(claims.exp * 1000).toISOString().slice(0, 10) : "?";
     const ours = isOurHubToken(entry.token);
+    // Days-to-expiry, surfaced inline. A date alone doesn't read as urgent at a
+    // glance, and a vault token lapsing silently takes its whole pipeline with it
+    // — the production mirror runs on one of these (audit 2026-08-13, F11).
+    const days =
+      typeof claims?.exp === "number"
+        ? Math.floor((claims.exp * 1000 - Date.now()) / 86_400_000)
+        : null;
+    const ttl = days === null ? "" : ` (${days}d)`;
     console.log(
-      `  token[${entry.id}]: scope=${String(scope)} expires=${exp}${ours ? "" : " (remote hub — not validated here)"}`,
+      `  token[${entry.id}]: scope=${String(scope)} expires=${exp}${ttl}${ours ? "" : " (remote hub — not validated here)"}`,
     );
+    if (days !== null && days <= 0) {
+      console.error(`  ✗ token[${entry.id}] HAS EXPIRED — every call using this vault is failing. Mint a new one: parachute auth mint-token`);
+    } else if (days !== null && days <= TOKEN_EXPIRY_WARN_DAYS) {
+      console.warn(`  ⚠ token[${entry.id}] expires in ${days} day(s) — mint a replacement: parachute auth mint-token`);
+    }
     if (ours) {
       try {
         await verifyVaultToken(entry.token, entry.vault);

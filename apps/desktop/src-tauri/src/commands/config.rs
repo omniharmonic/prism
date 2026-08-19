@@ -755,6 +755,63 @@ pub async fn acl_request(
     serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("acl parse failed: {e}")))
 }
 
+/// Narrow proxy to the Prism Server's `/api` gateway, authenticated with the
+/// desktop COLLAB_TOKEN (Bearer) — the server treats a local Bearer of the
+/// collab/vault token as the owner. Deliberately allowlist-scoped: only the
+/// `/integrations` routes (server-side sync-integration credentials + manual
+/// sync) are reachable, so this never becomes a generic vault passthrough.
+/// Same base-URL derivation + error handling as `acl_request` above.
+#[tauri::command]
+pub async fn api_request(
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to manage integrations from the desktop app".into(),
+        ));
+    }
+    // Allowlist: only the integrations surface. Everything else stays desktop-native.
+    if !path.starts_with("/integrations") {
+        return Err(PrismError::Other(format!(
+            "api path not allowed from the desktop proxy: {path}"
+        )));
+    }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
+
+    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
+    let mut req = reqwest::Client::new()
+        .request(m, format!("{http_base}/api{path}"))
+        .bearer_auth(&config.collab_token)
+        .timeout(std::time::Duration::from_secs(60));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("api request failed: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(PrismError::Other(format!("api {method} {path} → {status}")));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("api parse failed: {e}")))
+}
+
 /// Get full config (for Settings UI to populate fields).
 /// Masks sensitive keys for display.
 #[tauri::command]

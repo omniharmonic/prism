@@ -126,6 +126,14 @@ export interface ServerInfo {
   integrations: Record<string, boolean>;
   tunnel: TunnelStatus;
 }
+/** One integration's status in the ACTIVE vault (never the stored value). */
+export interface IntegrationStatus {
+  secretsAvailable: boolean;
+  configured: boolean;
+  /** Non-secret scope fields some kinds echo back (e.g. clickup's teamId /
+   *  spaceIds / assignedOnly) so a re-save can prefill instead of dropping them. */
+  [field: string]: string | boolean | undefined;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -332,6 +340,19 @@ export interface CollabSharing {
    *  the tunnel, rolling back if it doesn't come back online). */
   getTunnelIngress?(): Promise<TunnelIngress>;
   applyTunnelIngress?(): Promise<{ added: string[] }>;
+
+  /** Server-side sync-integration credentials (admin+). `setIntegrationCredential`
+   *  stores/replaces one integration's credential fields (encrypted server-side);
+   *  `syncIntegration` triggers an immediate ingest pass and resolves with the
+   *  server's count payload. Configured-state comes from `getIntegrationStatus`
+   *  (GET /api/integrations/<kind>) — the same vault scope the PUT writes to, and
+   *  admin-accessible (unlike the owner-only ServerInfo snapshot, which reports
+   *  the primary vault only). Stored values are NEVER returned. Absent → the
+   *  panel shows read-only badges. */
+  getIntegrationStatus?(kind: string): Promise<IntegrationStatus>;
+  setIntegrationCredential?(kind: string, fields: Record<string, unknown>): Promise<void>;
+  deleteIntegrationCredential?(kind: string): Promise<void>;
+  syncIntegration?(kind: string): Promise<Record<string, unknown>>;
 
   /** Workspace entities (server-owner): the "one server, many workspaces" model.
    *  Create/configure a workspace (name + subdomain), and assign vaults to it.

@@ -61,6 +61,7 @@ export type {
   TunnelStatus,
   TunnelIngress,
   ServerInfo,
+  IntegrationStatus,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

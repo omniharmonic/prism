@@ -5,6 +5,14 @@
  */
 export const config = {
   port: Number(process.env.PORT ?? 8787),
+  // Loopback by default. The public entrypoint is the Cloudflare tunnel, which
+  // dials this from the same host, so binding the wildcard only ever added
+  // reachability we don't want: until 2026-08-11 the server answered on the LAN
+  // (10.0.0.38:8787) and on every Tailscale node, putting the magic-link/login
+  // routes and the collab WebSocket in front of anyone on those networks.
+  // (Anonymous callers still resolved to an actor with no grants — this was
+  // exposed surface, not open data.) Set BIND_HOST=0.0.0.0 to opt back in.
+  bindHost: process.env.BIND_HOST ?? "127.0.0.1",
   appOrigin: (process.env.APP_ORIGIN ?? "http://localhost:8787").replace(/\/+$/, ""),
 
   // Trust the "local owner" path (a headerless, presumed-loopback request may
@@ -120,6 +128,20 @@ export const config = {
   // Dimension of the offline fallback embedder (ignored for a real endpoint,
   // whose dimension is whatever the model returns).
   embedFallbackDim: Number(process.env.EMBED_FALLBACK_DIM ?? 384),
+  // How often the worker sweeps the vault to keep the semantic index current.
+  // Deliberately much slower than the 60s ingest tick: even the lean note list is
+  // a whole-vault fetch, and embeddings are not latency-critical.
+  // 0 DISABLES the sweep — for a deploy that doesn't want RAG, and for tests,
+  // where an unref'd background timer hitting the vault is cross-test noise.
+  indexIntervalMs: Number(process.env.INDEX_INTERVAL_MS ?? 300_000),
+  // How often the Fathom ingester may run. It re-fetches the vault's whole
+  // transcript set to dedupe, so running it on the 60s ingest tick was pure
+  // waste — especially now that Fireflies is the live transcript source.
+  fathomIntervalMs: Number(process.env.FATHOM_INTERVAL_MS ?? 3_600_000),
+  // How often the ClickUp task ingester may run. Incremental after the first
+  // backfill (cursor = max task date_updated), so a 5-minute cadence is cheap.
+  // 0 DISABLES it (the on-demand /api/integrations/clickup/sync route still works).
+  clickupIntervalMs: Number(process.env.CLICKUP_INTERVAL_MS ?? 300_000),
 } as const;
 
 /**
