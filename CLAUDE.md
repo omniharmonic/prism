@@ -218,7 +218,9 @@ Dashboard notes (`tag: dashboard`) store their layout in `metadata.layout.widget
 
 ## Sync Adapters
 
-`src-tauri/src/sync/adapters/` contains adapters for: `google_docs`, `notion`, `notion_db`, `github`. Each adapter implements the sync engine's trait. GitHub sync pushes vault notes as markdown files to a repo. Notion DB sync bidirectionally maps Parachute notes to Notion database rows using `PropertyMapping` config stored in `NotionDbSyncConfig`.
+`src-tauri/src/sync/adapters/` contains adapters for: `google_docs`, `notion`, `notion_db`, `github`. Each adapter implements the sync engine's trait. GitHub sync pushes vault notes as markdown files to a repo. Notion DB sync bidirectionally maps Parachute notes to Notion database rows using `PropertyMapping` config stored in `NotionDbSyncConfig` — its pull honors `conflict_strategy` via `should_overwrite()` (notion-wins / parachute-wins / newer-wins) and skips no-op writes.
+
+**ClickUp task sync** is server-side: `apps/server/src/worker/clickup.ts` polls `GET /v2/team/{id}/task` (assigned-to-me by default; credential kind `clickup` = `{apiKey, teamId?, spaceIds?, assignedOnly?}`) every `CLICKUP_INTERVAL_MS` (5 min), mirroring tasks to `vault/tasks/clickup/*` tagged `[task, clickup]`, deduped by `metadata.source_id`, cursor `cursor:clickup:<vaultId>` = max `date_updated` ms (clamped below failed writes). One-way pull; deletions + write-back are handled nightly by the vault-weave scheduled job via ClickUp MCP. **Parachute gotcha**: on create the vault default-fills omitted schema'd enum fields with the FIRST enum value — ingesters must write schema'd fields (e.g. `priority`) explicitly, and enum order in `tag-schemas.json` deliberately leads with the neutral value.
 
 ## Graph
 
