@@ -220,6 +220,7 @@ pub fn run() {
             config::get_full_config,
             config::create_collab_share_link,
             config::acl_request,
+            config::api_request,
             config::update_config,
             config::discover_meetily_path,
             // Multi-vault registry

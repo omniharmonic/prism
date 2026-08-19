@@ -38,12 +38,12 @@
         },
         "priority": {
           "type": "string",
-          "description": "Priority level (indexed — queryable with operators)",
+          "description": "Priority level (indexed — queryable with operators). Enum order matters: Parachute default-fills omitted schema'd enum fields with the FIRST value, so the neutral default leads.",
           "indexed": true,
           "enum": [
-            "critical",
-            "high",
             "medium",
+            "high",
+            "critical",
             "low"
           ]
         },
@@ -486,11 +486,11 @@
         },
         "relationship_type": {
           "type": "string",
-          "description": "Relationship to Benjamin",
+          "description": "Relationship to Benjamin. Enum order matters: Parachute default-fills omitted schema'd enum fields with the FIRST value, so the neutral 'contact' leads — an auto-created person stub must never default to 'collaborator' (it inflates triage importance boosts).",
           "enum": [
+            "contact",
             "collaborator",
             "stakeholder",
-            "contact",
             "advisor",
             "funder"
           ]
