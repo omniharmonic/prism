@@ -161,10 +161,19 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   const creds = JSON.parse(raw) as MatrixCreds;
   const client = new MatrixClient(creds);
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
-  const res = await ingestMatrix(client, vaultClient(entry.id) as unknown as IngestVault, { since });
+  const res = await ingestMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
+    since,
+    autoJoin: config.matrixAutoJoin,
+    maxJoinsPerRun: config.matrixAutoJoinPerRun,
+  });
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
-  if (res.messages > 0) {
-    console.log(`[worker] matrix ${entry.id}: +${res.messages} msgs (${res.created} new threads, ${res.updated} updated)`);
+  if (res.messages > 0 || res.joined > 0) {
+    console.log(`[worker] matrix ${entry.id}: +${res.messages} msgs (${res.created} new threads, ${res.updated} updated, ${res.joined} rooms joined)`);
+  }
+  // Un-joined rooms are invisible to /sync — say so, once per pass that sees them,
+  // instead of looking healthy while every new chat since the last join is dropped.
+  if (res.invitesPending > 0 && !config.matrixAutoJoin) {
+    console.warn(`[worker] matrix ${entry.id}: ${res.invitesPending} pending room invite(s) not joined — their messages are NOT ingested. Set MATRIX_AUTO_JOIN=true to accept them.`);
   }
   return res.messages;
 }

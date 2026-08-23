@@ -21,6 +21,7 @@ test("parseSync extracts name + joined members + messages per room", () => {
     },
   });
   assert.equal(res.nextBatch, "s_2");
+  assert.deepEqual(res.invites, []);
   assert.equal(res.rooms.length, 1);
   const r = res.rooms[0]!;
   assert.equal(r.name, "Family");
@@ -69,6 +70,7 @@ function fakeVault(seed: Note[] = []) {
 
 const oneRoomSync = (roomId: string): SyncResult => ({
   nextBatch: "s2",
+  invites: [],
   rooms: [{ roomId, name: "Chat", memberIds: ["@whatsapp_9:hs"], displayNames: { "@whatsapp_9:hs": "Nine" }, messages: [{ sender: "@whatsapp_9:hs", body: "yo", ts: Date.UTC(2026, 0, 2, 3, 4), eventId: "$x" }] }],
 });
 
@@ -114,11 +116,42 @@ test("ingestMatrix leaves tags alone on an untriaged thread", async () => {
 
 test("ingestMatrix returns nextBatch and skips empty rooms", async () => {
   const client = {
-    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [{ roomId: "!empty:hs", name: "x", memberIds: [], displayNames: {}, messages: [] }] }),
+    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [{ roomId: "!empty:hs", name: "x", memberIds: [], displayNames: {}, messages: [] }], invites: [] }),
   };
   const fv = fakeVault([]);
   const res = await ingestMatrix(client, fv.vault);
   assert.equal(res.nextBatch, "s9");
   assert.equal(res.created, 0);
   assert.equal(res.messages, 0);
+});
+
+test("parseSync surfaces pending invites (rooms.invite) with their stripped-state name", () => {
+  const res = parseSync({
+    next_batch: "s3",
+    rooms: { invite: { "!inv:hs": { invite_state: { events: [{ type: "m.room.name", content: { name: "New Chat" } }, { type: "m.room.member", state_key: "@me:hs", content: { membership: "invite" } }] } } } },
+  });
+  assert.deepEqual(res.invites, [{ roomId: "!inv:hs", name: "New Chat" }]);
+  assert.equal(res.rooms.length, 0);
+});
+
+test("ingestMatrix accepts invites only when autoJoin is on, throttled by maxJoinsPerRun", async () => {
+  const joinedIds: string[] = [];
+  const sync = async (): Promise<SyncResult> => ({ nextBatch: "s", rooms: [], invites: [{ roomId: "!a:hs", name: "A" }, { roomId: "!b:hs", name: null }, { roomId: "!c:hs", name: "C" }] });
+  const client = { sync, join: async (id: string) => { joinedIds.push(id); } };
+  const off = await ingestMatrix(client, fakeVault().vault);
+  assert.equal(off.joined, 0);
+  assert.equal(off.invitesPending, 3);
+  assert.deepEqual(joinedIds, []);
+  const on = await ingestMatrix(client, fakeVault().vault, { autoJoin: true, maxJoinsPerRun: 2 });
+  assert.equal(on.joined, 2);
+  assert.deepEqual(joinedIds, ["!a:hs", "!b:hs"]);
+});
+
+test("ingestMatrix keeps going when one join fails", async () => {
+  const joinedIds: string[] = [];
+  const sync = async (): Promise<SyncResult> => ({ nextBatch: "s", rooms: [], invites: [{ roomId: "!bad:hs", name: null }, { roomId: "!ok:hs", name: null }] });
+  const client = { sync, join: async (id: string) => { if (id === "!bad:hs") throw new Error("403"); joinedIds.push(id); } };
+  const res = await ingestMatrix(client, fakeVault().vault, { autoJoin: true });
+  assert.equal(res.joined, 1);
+  assert.deepEqual(joinedIds, ["!ok:hs"]);
 });

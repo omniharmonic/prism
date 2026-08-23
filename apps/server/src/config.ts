@@ -142,6 +142,13 @@ export const config = {
   // backfill (cursor = max task date_updated), so a 5-minute cadence is cheap.
   // 0 DISABLES it (the on-demand /api/integrations/clickup/sync route still works).
   clickupIntervalMs: Number(process.env.CLICKUP_INTERVAL_MS ?? 300_000),
+  // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
+  // new chat portal; an un-joined room never appears in /sync, so its messages
+  // are invisible to the ingester). Off by default — on a long-lived bridge the
+  // backlog can be 1000+ portals, and joining one creates a thread note for it.
+  // MATRIX_AUTO_JOIN_PER_RUN throttles how many invites one 60s pass accepts.
+  matrixAutoJoin: process.env.MATRIX_AUTO_JOIN === "true",
+  matrixAutoJoinPerRun: Number(process.env.MATRIX_AUTO_JOIN_PER_RUN ?? 20),
 } as const;
 
 /**

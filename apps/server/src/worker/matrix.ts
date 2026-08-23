@@ -33,6 +33,8 @@ export interface RoomBatch {
 export interface SyncResult {
   nextBatch: string;
   rooms: RoomBatch[];
+  /** Rooms the user is INVITED to but has not joined (their timeline is not in /sync). */
+  invites: Array<{ roomId: string; name: string | null }>;
 }
 
 type FetchLike = typeof fetch;
@@ -71,6 +73,16 @@ export class MatrixClient {
     const data = (await this.get(`/sync?${qs}`)) as MatrixSyncResponse;
     return parseSync(data);
   }
+
+  /** Accept a pending invite. The room's timeline shows up in the NEXT /sync. */
+  async join(roomId: string): Promise<void> {
+    const r = await this.fetchImpl(this.url(`/join/${encodeURIComponent(roomId)}`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) throw new Error(`matrix join ${roomId} → ${r.status}`);
+  }
 }
 
 // ── pure parsing + mapping (unit-tested without a homeserver) ─────────────────
@@ -85,7 +97,10 @@ interface MatrixEvent {
 }
 interface MatrixSyncResponse {
   next_batch?: string;
-  rooms?: { join?: Record<string, { state?: { events?: MatrixEvent[] }; timeline?: { events?: MatrixEvent[] } }> };
+  rooms?: {
+    join?: Record<string, { state?: { events?: MatrixEvent[] }; timeline?: { events?: MatrixEvent[] } }>;
+    invite?: Record<string, { invite_state?: { events?: MatrixEvent[] } }>;
+  };
 }
 
 /** Parse a raw /sync response into per-room name + members + messages. */
@@ -115,7 +130,12 @@ export function parseSync(data: MatrixSyncResponse): SyncResult {
     }
     rooms.push({ roomId, name, memberIds: [...memberIds], displayNames, messages });
   }
-  return { nextBatch: data.next_batch ?? "", rooms };
+  const invites: SyncResult["invites"] = [];
+  for (const [roomId, room] of Object.entries(data.rooms?.invite ?? {})) {
+    const nameEv = (room.invite_state?.events ?? []).find((e) => e.type === "m.room.name");
+    invites.push({ roomId, name: typeof nameEv?.content?.name === "string" ? nameEv.content.name : null });
+  }
+  return { nextBatch: data.next_batch ?? "", rooms, invites };
 }
 
 /** Detect the bridged platform from member ids (mautrix puppet prefixes). */
@@ -173,6 +193,10 @@ export interface IngestResult {
   created: number;
   updated: number;
   nextBatch: string;
+  /** Pending invites seen this pass (all of them, whether or not any were accepted). */
+  invitesPending: number;
+  /** Invites accepted this pass (0 unless opts.autoJoin). */
+  joined: number;
 }
 
 /**
@@ -181,11 +205,27 @@ export interface IngestResult {
  * nextBatch to persist for the next incremental pass.
  */
 export async function ingestMatrix(
-  client: Pick<MatrixClient, "sync">,
+  client: Pick<MatrixClient, "sync"> & Partial<Pick<MatrixClient, "join">>,
   vault: IngestVault,
-  opts: { since?: string; maxRooms?: number } = {},
+  opts: { since?: string; maxRooms?: number; autoJoin?: boolean; maxJoinsPerRun?: number } = {},
 ): Promise<IngestResult> {
-  const { nextBatch, rooms } = await client.sync(opts.since);
+  const { nextBatch, rooms, invites } = await client.sync(opts.since);
+
+  // Accept pending invites (opt-in). Joined rooms' timelines arrive on the next
+  // /sync, so nothing else happens this pass. Throttled so a 1000-portal backlog
+  // drains over many passes instead of hammering the homeserver + vault at once.
+  let joined = 0;
+  if (opts.autoJoin && client.join) {
+    const cap = opts.maxJoinsPerRun ?? 20;
+    for (const inv of invites.slice(0, cap)) {
+      try {
+        await client.join(inv.roomId);
+        joined++;
+      } catch (e) {
+        console.warn(`[worker] matrix: join ${inv.roomId} (${inv.name ?? "?"}) failed: ${String(e)}`);
+      }
+    }
+  }
   const existing = await vault.listNotes({ tags: ["message-thread"], includeContent: true });
   const byRoom = new Map<string, Note>();
   for (const n of existing) {
@@ -243,5 +283,5 @@ export async function ingestMatrix(
       created++;
     }
   }
-  return { rooms: processed, messages, created, updated, nextBatch };
+  return { rooms: processed, messages, created, updated, nextBatch, invitesPending: invites.length, joined };
 }
