@@ -155,3 +155,15 @@ test("ingestMatrix keeps going when one join fails", async () => {
   assert.equal(res.joined, 1);
   assert.deepEqual(joinedIds, ["!ok:hs"]);
 });
+
+test("ingestMatrix merges the invite probe (backlog) with fresh invites from incremental sync, deduped", async () => {
+  const sync = async (): Promise<SyncResult> => ({ nextBatch: "s", rooms: [], invites: [{ roomId: "!new:hs", name: "New" }] });
+  const pendingInvites = async () => [{ roomId: "!new:hs", name: "New" }, { roomId: "!old:hs", name: "Old" }];
+  const joinedIds: string[] = [];
+  const client = { sync, pendingInvites, join: async (id: string) => { joinedIds.push(id); } };
+  const noProbe = await ingestMatrix(client, fakeVault().vault);
+  assert.equal(noProbe.invitesPending, 1);
+  const probed = await ingestMatrix(client, fakeVault().vault, { probeInvites: true, autoJoin: true });
+  assert.equal(probed.invitesPending, 2);
+  assert.deepEqual(joinedIds, ["!new:hs", "!old:hs"]);
+});

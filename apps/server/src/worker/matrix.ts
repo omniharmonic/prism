@@ -74,6 +74,26 @@ export class MatrixClient {
     return parseSync(data);
   }
 
+  /**
+   * ALL pending invites. An incremental /sync (with `since`) only lists invites
+   * that changed after the cursor, so a backlog from before the cursor is
+   * invisible to it. This is a full /sync with everything but the invite list
+   * filtered out (no timeline, no room state, no presence) — cheap even with
+   * hundreds of joined rooms. Its next_batch is deliberately NOT returned: the
+   * ingest cursor must keep advancing from the incremental stream.
+   */
+  async pendingInvites(): Promise<SyncResult["invites"]> {
+    const filter = encodeURIComponent(
+      JSON.stringify({
+        room: { timeline: { limit: 0 }, state: { types: [] }, ephemeral: { types: [] }, account_data: { types: [] } },
+        presence: { types: [] },
+        account_data: { types: [] },
+      }),
+    );
+    const data = (await this.get(`/sync?filter=${filter}&timeout=0`)) as MatrixSyncResponse;
+    return parseSync(data).invites;
+  }
+
   /** Accept a pending invite. The room's timeline shows up in the NEXT /sync. */
   async join(roomId: string): Promise<void> {
     const r = await this.fetchImpl(this.url(`/join/${encodeURIComponent(roomId)}`), {
@@ -205,11 +225,21 @@ export interface IngestResult {
  * nextBatch to persist for the next incremental pass.
  */
 export async function ingestMatrix(
-  client: Pick<MatrixClient, "sync"> & Partial<Pick<MatrixClient, "join">>,
+  client: Pick<MatrixClient, "sync"> & Partial<Pick<MatrixClient, "join" | "pendingInvites">>,
   vault: IngestVault,
-  opts: { since?: string; maxRooms?: number; autoJoin?: boolean; maxJoinsPerRun?: number } = {},
+  opts: { since?: string; maxRooms?: number; autoJoin?: boolean; maxJoinsPerRun?: number; probeInvites?: boolean } = {},
 ): Promise<IngestResult> {
-  const { nextBatch, rooms, invites } = await client.sync(opts.since);
+  const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
+  // Incremental sync only carries NEW invites; the probe sees the whole backlog.
+  const invites = [...fresh];
+  if (opts.probeInvites && client.pendingInvites) {
+    try {
+      const seen = new Set(invites.map((i) => i.roomId));
+      for (const inv of await client.pendingInvites()) if (!seen.has(inv.roomId)) invites.push(inv);
+    } catch (e) {
+      console.warn(`[worker] matrix: invite probe failed: ${String(e)}`);
+    }
+  }
 
   // Accept pending invites (opt-in). Joined rooms' timelines arrive on the next
   // /sync, so nothing else happens this pass. Throttled so a 1000-portal backlog

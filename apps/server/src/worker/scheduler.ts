@@ -150,6 +150,7 @@ export function ingestFailureState(): Array<{ vaultId: string; source: string; c
 
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
+let matrixPass = 0;
 export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
   // for now; a per-member model can key it differently later.
@@ -165,6 +166,9 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
     since,
     autoJoin: config.matrixAutoJoin,
     maxJoinsPerRun: config.matrixAutoJoinPerRun,
+    // Probe the full invite backlog every 10th pass (~10 min) — or every pass
+    // while auto-join is draining it.
+    probeInvites: config.matrixAutoJoin || matrixPass++ % 10 === 0,
   });
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
   if (res.messages > 0 || res.joined > 0) {
