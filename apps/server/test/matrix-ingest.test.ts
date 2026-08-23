@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSync, detectPlatform, ingestMatrix, type IngestVault, type SyncResult } from "../src/worker/matrix";
+import { parseSync, detectPlatform, ingestMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
 import type { Note } from "../src/parachute";
 
 test("parseSync extracts name + joined members + messages per room", () => {
@@ -14,7 +14,7 @@ test("parseSync extracts name + joined members + messages per room", () => {
     rooms: {
       join: {
         "!room1:hs": {
-          state: { events: [{ type: "m.room.name", content: { name: "Family" } }, { type: "m.room.member", state_key: "@whatsapp_123:hs", content: { membership: "join" } }] },
+          state: { events: [{ type: "m.room.name", content: { name: "Family" } }, { type: "m.room.member", state_key: "@whatsapp_123:hs", content: { membership: "join", displayname: "Alice (WA)" } }] },
           timeline: { events: [{ type: "m.room.message", sender: "@whatsapp_123:hs", event_id: "$e1", origin_server_ts: 1000, content: { body: "hi", msgtype: "m.text" } }] },
         },
       },
@@ -25,8 +25,15 @@ test("parseSync extracts name + joined members + messages per room", () => {
   const r = res.rooms[0]!;
   assert.equal(r.name, "Family");
   assert.deepEqual(r.memberIds, ["@whatsapp_123:hs"]);
+  assert.deepEqual(r.displayNames, { "@whatsapp_123:hs": "Alice (WA)" });
   assert.equal(r.messages.length, 1);
   assert.equal(r.messages[0]!.body, "hi");
+});
+
+test("formatLine stamps UTC time + display name (desktop format), falls back to short sender id", () => {
+  const m = { sender: "@whatsapp_lid-155611094364236:hs", body: "hello", ts: Date.UTC(2026, 7, 23, 20, 12, 30), eventId: "$1" };
+  assert.equal(formatLine(m, { "@whatsapp_lid-155611094364236:hs": "Benjamin" }), "[2026-08-23 20:12] Benjamin: hello");
+  assert.equal(formatLine(m), "[2026-08-23 20:12] lid-155611094364236: hello");
 });
 
 test("detectPlatform maps mautrix puppet prefixes", () => {
@@ -39,8 +46,12 @@ test("detectPlatform maps mautrix puppet prefixes", () => {
 /** A fake vault that records creates/updates. */
 function fakeVault(seed: Note[] = []) {
   const creates: Array<{ path?: string; tags?: string[]; metadata?: Record<string, unknown>; content: string }> = [];
-  const updates: Array<{ id: string; content?: string }> = [];
+  const updates: Array<{ id: string; content?: string; metadata?: Record<string, unknown> }> = [];
+  const removed: Array<{ id: string; tags: string[] }> = [];
   const vault: IngestVault = {
+    async removeTags(id, tags) {
+      removed.push({ id, tags });
+    },
     async listNotes() {
       return seed;
     },
@@ -53,12 +64,12 @@ function fakeVault(seed: Note[] = []) {
       return { id, content: p.content ?? "", path: null, metadata: p.metadata ?? null, tags: null, createdAt: "", updatedAt: "" };
     },
   };
-  return { vault, creates, updates };
+  return { vault, creates, updates, removed };
 }
 
 const oneRoomSync = (roomId: string): SyncResult => ({
   nextBatch: "s2",
-  rooms: [{ roomId, name: "Chat", memberIds: ["@whatsapp_9:hs"], messages: [{ sender: "@whatsapp_9:hs", body: "yo", ts: 5, eventId: "$x" }] }],
+  rooms: [{ roomId, name: "Chat", memberIds: ["@whatsapp_9:hs"], displayNames: { "@whatsapp_9:hs": "Nine" }, messages: [{ sender: "@whatsapp_9:hs", body: "yo", ts: Date.UTC(2026, 0, 2, 3, 4), eventId: "$x" }] }],
 });
 
 test("ingestMatrix CREATES a message-thread note for a new room", async () => {
@@ -73,23 +84,37 @@ test("ingestMatrix CREATES a message-thread note for a new room", async () => {
   assert.equal(c.metadata?.matrixRoomId, "!new:hs");
   assert.equal(c.metadata?.platform, "whatsapp");
   assert.match(c.path ?? "", /^vault\/messages\/whatsapp\//);
-  assert.match(c.content, /yo/);
+  assert.match(c.content, /\[2026-01-02 03:04\] Nine: yo/);
+  assert.equal(c.metadata?.messageCount, 1);
+  assert.deepEqual(c.metadata?.participants, ["Nine"]);
 });
 
 test("ingestMatrix UPDATES an existing note matched by matrixRoomId", async () => {
-  const existing: Note = { id: "n1", content: "# Chat — whatsapp\n\nold", path: null, metadata: { type: "message-thread", matrixRoomId: "!exist:hs" }, tags: ["message-thread"], createdAt: "", updatedAt: "" };
+  const existing: Note = { id: "n1", content: "# Chat — whatsapp\n\nold", path: null, metadata: { type: "message-thread", matrixRoomId: "!exist:hs", messageCount: 7 }, tags: ["message-thread", "triaged", "low"], createdAt: "", updatedAt: "" };
   const fv = fakeVault([existing]);
   const client = { sync: async () => oneRoomSync("!exist:hs") };
   const res = await ingestMatrix(client, fv.vault);
   assert.equal(res.created, 0);
   assert.equal(res.updated, 1);
   assert.equal(fv.updates[0]!.id, "n1");
-  assert.match(fv.updates[0]!.content ?? "", /old[\s\S]*yo/); // appended, old preserved
+  assert.match(fv.updates[0]!.content ?? "", /old\n\[2026-01-02 03:04\] Nine: yo/); // appended, old preserved, dated + named
+  assert.equal(fv.updates[0]!.metadata?.messageCount, 8);
+  assert.deepEqual(fv.updates[0]!.metadata?.participants, ["Nine"]);
+  // stale triage verdict cleared so the hourly classifier re-triages the thread
+  assert.deepEqual(fv.removed, [{ id: "n1", tags: ["triaged", "low"] }]);
+});
+
+test("ingestMatrix leaves tags alone on an untriaged thread", async () => {
+  const existing: Note = { id: "n2", content: "x", path: null, metadata: { matrixRoomId: "!e2:hs" }, tags: ["message-thread"], createdAt: "", updatedAt: "" };
+  const fv = fakeVault([existing]);
+  await ingestMatrix({ sync: async () => oneRoomSync("!e2:hs") }, fv.vault);
+  assert.deepEqual(fv.removed, []);
+  assert.ok(TRIAGE_TAGS.includes("triaged"));
 });
 
 test("ingestMatrix returns nextBatch and skips empty rooms", async () => {
   const client = {
-    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [{ roomId: "!empty:hs", name: "x", memberIds: [], messages: [] }] }),
+    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [{ roomId: "!empty:hs", name: "x", memberIds: [], displayNames: {}, messages: [] }] }),
   };
   const fv = fakeVault([]);
   const res = await ingestMatrix(client, fv.vault);

@@ -26,6 +26,8 @@ export interface RoomBatch {
   roomId: string;
   name: string | null;
   memberIds: string[];
+  /** Joined member id → displayname (from m.room.member state), when known. */
+  displayNames: Record<string, string>;
   messages: MatrixMessage[];
 }
 export interface SyncResult {
@@ -94,11 +96,15 @@ export function parseSync(data: MatrixSyncResponse): SyncResult {
     const events = [...(room.state?.events ?? []), ...(room.timeline?.events ?? [])];
     let name: string | null = null;
     const memberIds = new Set<string>();
+    const displayNames: Record<string, string> = {};
     const messages: MatrixMessage[] = [];
     for (const e of events) {
       if (e.type === "m.room.name" && typeof e.content?.name === "string") name = e.content.name;
-      if (e.type === "m.room.member" && e.content?.membership === "join" && e.state_key) memberIds.add(e.state_key);
-      if (e.type === "m.room.message" && typeof e.content?.body === "string") {
+      if (e.type === "m.room.member" && e.content?.membership === "join" && e.state_key) {
+        memberIds.add(e.state_key);
+        if (typeof e.content.displayname === "string" && e.content.displayname.trim()) displayNames[e.state_key] = e.content.displayname.trim();
+      }
+      if (e.type === "m.room.message" && typeof e.content?.body === "string" && e.content.body.trim()) {
         messages.push({
           sender: e.sender ?? "?",
           body: e.content.body as string,
@@ -107,7 +113,7 @@ export function parseSync(data: MatrixSyncResponse): SyncResult {
         });
       }
     }
-    rooms.push({ roomId, name, memberIds: [...memberIds], messages });
+    rooms.push({ roomId, name, memberIds: [...memberIds], displayNames, messages });
   }
   return { nextBatch: data.next_batch ?? "", rooms };
 }
@@ -132,11 +138,33 @@ const sanitizePath = (s: string): string =>
 
 const shortSender = (id: string): string => id.replace(/^@/, "").replace(/:.+$/, "").replace(/^(whatsapp|telegram|signal|discord|instagram|messenger|twitter)_/i, "");
 
+/** `[YYYY-MM-DD HH:MM]` in UTC — the desktop message_sync format, so readers can date every line. */
+export const formatStamp = (ts: number): string => {
+  const d = new Date(ts);
+  if (!ts || Number.isNaN(d.getTime())) return "[unknown]";
+  return `[${d.toISOString().slice(0, 16).replace("T", " ")}]`;
+};
+
+/** One transcript line: `[2026-08-23 20:12] Display Name: body` (falls back to the short sender id). */
+export function formatLine(m: MatrixMessage, displayNames: Record<string, string> = {}): string {
+  const who = displayNames[m.sender] ?? shortSender(m.sender);
+  return `${formatStamp(m.ts)} ${who}: ${m.body}`;
+}
+
+/**
+ * Tags that mark a thread as already classified by the hourly triage skill.
+ * A thread note is updated IN PLACE as messages arrive, so an old verdict would
+ * otherwise stick forever — strip them on append so the next run re-triages.
+ */
+export const TRIAGE_TAGS = ["triaged", "urgent", "action-required", "informational", "low"];
+
 /** The minimal vault surface the ingester needs (so tests inject a fake). */
 export interface IngestVault {
   listNotes(opts: { tags?: string[]; includeContent?: boolean }): Promise<Note[]>;
   createNote(p: { content: string; path?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<Note>;
   updateNote(id: string, p: { content?: string; metadata?: Record<string, unknown> }): Promise<Note>;
+  /** Optional: strip tags (used to clear stale triage verdicts on append). */
+  removeTags?(id: string, tags: string[]): Promise<void>;
 }
 
 export interface IngestResult {
@@ -176,14 +204,31 @@ export async function ingestMatrix(
     messages += rb.messages.length;
 
     const platform = detectPlatform(rb.memberIds);
-    const lines = rb.messages.map((m) => `**${shortSender(m.sender)}**: ${m.body}`);
+    const lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
     const lastMessageAt = Math.max(...rb.messages.map((m) => m.ts));
+    const participants = rb.memberIds.map((id) => rb.displayNames[id] ?? shortSender(id));
     const note = byRoom.get(rb.roomId);
     if (note) {
+      const prev = note.metadata ?? {};
+      const prevCount = typeof prev.messageCount === "number" ? prev.messageCount : 0;
+      // Keep the desktop's participant list if this sync pass carried no member state.
+      const mergedParticipants = participants.length ? participants : prev.participants;
       await vault.updateNote(note.id, {
-        content: `${note.content}\n${lines.join("\n")}`,
-        metadata: { ...(note.metadata ?? {}), type: "message-thread", platform, matrixRoomId: rb.roomId, lastMessageAt },
+        content: `${note.content.trimEnd()}\n${lines.join("\n")}`,
+        metadata: {
+          ...prev,
+          type: "message-thread",
+          platform,
+          matrixRoomId: rb.roomId,
+          lastMessageAt,
+          messageCount: prevCount + lines.length,
+          ...(mergedParticipants ? { participants: mergedParticipants } : {}),
+        },
       });
+      const stale = TRIAGE_TAGS.filter((t) => note.tags?.includes(t));
+      if (stale.length && vault.removeTags) {
+        await vault.removeTags(note.id, stale).catch((e) => console.warn(`[worker] matrix: could not clear triage tags on ${note.id}: ${String(e)}`));
+      }
       updated++;
     } else {
       const name = rb.name ?? rb.roomId;
@@ -191,7 +236,7 @@ export async function ingestMatrix(
         content: `# ${name} — ${platform}\n\n${lines.join("\n")}`,
         path: `vault/messages/${platform}/${sanitizePath(name)}`,
         tags: ["message-thread"],
-        metadata: { type: "message-thread", platform, matrixRoomId: rb.roomId, lastMessageAt },
+        metadata: { type: "message-thread", platform, matrixRoomId: rb.roomId, lastMessageAt, messageCount: lines.length, participants },
       });
       created++;
     }
