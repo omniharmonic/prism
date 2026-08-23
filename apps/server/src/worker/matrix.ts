@@ -211,8 +211,10 @@ export async function ingestMatrix(
     if (note) {
       const prev = note.metadata ?? {};
       const prevCount = typeof prev.messageCount === "number" ? prev.messageCount : 0;
-      // Keep the desktop's participant list if this sync pass carried no member state.
-      const mergedParticipants = participants.length ? participants : prev.participants;
+      // Incremental /sync only carries member DELTAS — union with the stored list
+      // (which the desktop seeded from full room state) rather than replacing it.
+      const prevParticipants = Array.isArray(prev.participants) ? (prev.participants as unknown[]).filter((x): x is string => typeof x === "string") : [];
+      const mergedParticipants = [...new Set([...prevParticipants, ...participants])];
       await vault.updateNote(note.id, {
         content: `${note.content.trimEnd()}\n${lines.join("\n")}`,
         metadata: {
@@ -222,7 +224,7 @@ export async function ingestMatrix(
           matrixRoomId: rb.roomId,
           lastMessageAt,
           messageCount: prevCount + lines.length,
-          ...(mergedParticipants ? { participants: mergedParticipants } : {}),
+          ...(mergedParticipants.length ? { participants: mergedParticipants } : {}),
         },
       });
       const stale = TRIAGE_TAGS.filter((t) => note.tags?.includes(t));

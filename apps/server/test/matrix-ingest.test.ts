@@ -90,7 +90,7 @@ test("ingestMatrix CREATES a message-thread note for a new room", async () => {
 });
 
 test("ingestMatrix UPDATES an existing note matched by matrixRoomId", async () => {
-  const existing: Note = { id: "n1", content: "# Chat — whatsapp\n\nold", path: null, metadata: { type: "message-thread", matrixRoomId: "!exist:hs", messageCount: 7 }, tags: ["message-thread", "triaged", "low"], createdAt: "", updatedAt: "" };
+  const existing: Note = { id: "n1", content: "# Chat — whatsapp\n\nold", path: null, metadata: { type: "message-thread", matrixRoomId: "!exist:hs", messageCount: 7, participants: ["Old Timer (WA)"] }, tags: ["message-thread", "triaged", "low"], createdAt: "", updatedAt: "" };
   const fv = fakeVault([existing]);
   const client = { sync: async () => oneRoomSync("!exist:hs") };
   const res = await ingestMatrix(client, fv.vault);
@@ -99,7 +99,7 @@ test("ingestMatrix UPDATES an existing note matched by matrixRoomId", async () =
   assert.equal(fv.updates[0]!.id, "n1");
   assert.match(fv.updates[0]!.content ?? "", /old\n\[2026-01-02 03:04\] Nine: yo/); // appended, old preserved, dated + named
   assert.equal(fv.updates[0]!.metadata?.messageCount, 8);
-  assert.deepEqual(fv.updates[0]!.metadata?.participants, ["Nine"]);
+  assert.deepEqual(fv.updates[0]!.metadata?.participants, ["Old Timer (WA)", "Nine"]); // union, not replace
   // stale triage verdict cleared so the hourly classifier re-triages the thread
   assert.deepEqual(fv.removed, [{ id: "n1", tags: ["triaged", "low"] }]);
 });
