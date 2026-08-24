@@ -187,3 +187,26 @@ test("ingestMatrix drops probe invites that /joined_rooms says are already joine
   assert.equal(res.invitesPending, 1);
   assert.deepEqual(joinedIds, ["!real:hs"]);
 });
+
+test("ingestMatrix retries a 409 create with a room-id-suffixed path", async () => {
+  const fv = fakeVault([]);
+  const orig = fv.vault.createNote;
+  let calls = 0;
+  fv.vault.createNote = async (p) => { calls++; if (calls === 1) throw new Error("POST /notes: 409"); return orig(p); };
+  const res = await ingestMatrix({ sync: async () => oneRoomSync("!AbCdEfGh1234:hs") }, fv.vault);
+  assert.equal(res.created, 1);
+  assert.equal(fv.creates.length, 1);
+  assert.match(fv.creates[0]!.path ?? "", /^vault\/messages\/whatsapp\/chat-abcdefgh$/);
+});
+
+test("ingestMatrix isolates a failing room — the others still land and nextBatch advances", async () => {
+  const fv = fakeVault([]);
+  const orig = fv.vault.createNote;
+  fv.vault.createNote = async (p) => { if (/boom/.test(p.content)) throw new Error("POST /notes: 500 kaboom"); return orig(p); };
+  const room = (id: string, body: string) => ({ roomId: id, name: body, memberIds: ["@whatsapp_1:hs"], displayNames: {}, messages: [{ sender: "@whatsapp_1:hs", body, ts: 1, eventId: "$" }] });
+  const client = { sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [room("!a:hs", "ok1"), room("!b:hs", "boom"), room("!c:hs", "ok2")], invites: [] }) };
+  const res = await ingestMatrix(client, fv.vault);
+  assert.equal(res.created, 2);
+  assert.equal(res.nextBatch, "s9");
+  assert.equal(fv.creates.length, 2);
+});
