@@ -210,3 +210,16 @@ test("ingestMatrix isolates a failing room — the others still land and nextBat
   assert.equal(res.nextBatch, "s9");
   assert.equal(fv.creates.length, 2);
 });
+
+test("ingestMatrix rejects an un-joinable (404) invite so it leaves the queue, but keeps 429s pending", async () => {
+  const left: string[] = []; const joinedIds: string[] = [];
+  const sync = async (): Promise<SyncResult> => ({ nextBatch: "s", rooms: [], invites: [{ roomId: "!dead:hs", name: "Dead" }, { roomId: "!ok:hs", name: null }, { roomId: "!limited:hs", name: null }] });
+  const client = {
+    sync,
+    join: async (id: string) => { if (id === "!dead:hs") throw new Error("matrix join !dead:hs → 404"); if (id === "!limited:hs") throw new Error("matrix join !limited:hs → 429"); joinedIds.push(id); },
+    leave: async (id: string) => { left.push(id); },
+  };
+  await ingestMatrix(client, fakeVault().vault, { autoJoin: true });
+  assert.deepEqual(left, ["!dead:hs"]);   // rejected, gone from queue
+  assert.deepEqual(joinedIds, ["!ok:hs"]); // still joined after the 404
+});

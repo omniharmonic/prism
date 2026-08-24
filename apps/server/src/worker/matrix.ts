@@ -132,6 +132,16 @@ export class MatrixClient {
     );
     if (!r.ok) throw new Error(`matrix join ${roomId} → ${r.status}`);
   }
+
+  /** Reject a pending invite (leave). Removes it from the pending-invite list. */
+  async leave(roomId: string): Promise<void> {
+    const r = await this.fetchImpl(this.url(`/rooms/${encodeURIComponent(roomId)}/leave`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) throw new Error(`matrix leave ${roomId} → ${r.status}`);
+  }
 }
 
 // ── pure parsing + mapping (unit-tested without a homeserver) ─────────────────
@@ -321,7 +331,7 @@ export interface IngestResult {
  */
 export async function ingestMatrix(
   client: Pick<MatrixClient, "sync"> &
-    Partial<Pick<MatrixClient, "join" | "pendingInvites" | "joinedRooms">>,
+    Partial<Pick<MatrixClient, "join" | "pendingInvites" | "joinedRooms" | "leave">>,
   vault: IngestVault,
   opts: {
     since?: string;
@@ -370,6 +380,16 @@ export async function ingestMatrix(
         // of this batch would 429 too — stop, and let the next pass retry; the
         // rooms stay pending and the probe re-lists them.
         if (/→ 429$/.test(msg)) break;
+        // Any OTHER failure (404 = dead room, 403 = revoked invite, …) fails
+        // identically forever, and the probe lists invites in a stable order —
+        // so one poisoned invite wedges the head of every batch and starves the
+        // rest once the 429 budget burns. Reject it so it leaves the queue.
+        if (client.leave) {
+          await client.leave(inv.roomId).then(
+            () => console.warn(`[worker] matrix: rejected un-joinable invite ${inv.roomId} (${inv.name ?? "?"})`),
+            (le) => console.warn(`[worker] matrix: could not reject ${inv.roomId}: ${String(le)}`),
+          );
+        }
       }
     }
   }
