@@ -94,6 +94,11 @@ export class MatrixClient {
     return parseSync(data).invites;
   }
 
+  /** Authoritative joined-room ids (the invite probe can be served from Synapse's cache and lag). */
+  async joinedRooms(): Promise<string[]> {
+    return (await this.get("/joined_rooms") as { joined_rooms: string[] }).joined_rooms ?? [];
+  }
+
   /** Accept a pending invite. The room's timeline shows up in the NEXT /sync. */
   async join(roomId: string): Promise<void> {
     const r = await this.fetchImpl(this.url(`/join/${encodeURIComponent(roomId)}`), {
@@ -225,7 +230,7 @@ export interface IngestResult {
  * nextBatch to persist for the next incremental pass.
  */
 export async function ingestMatrix(
-  client: Pick<MatrixClient, "sync"> & Partial<Pick<MatrixClient, "join" | "pendingInvites">>,
+  client: Pick<MatrixClient, "sync"> & Partial<Pick<MatrixClient, "join" | "pendingInvites" | "joinedRooms">>,
   vault: IngestVault,
   opts: { since?: string; maxRooms?: number; autoJoin?: boolean; maxJoinsPerRun?: number; probeInvites?: boolean } = {},
 ): Promise<IngestResult> {
@@ -235,7 +240,11 @@ export async function ingestMatrix(
   if (opts.probeInvites && client.pendingInvites) {
     try {
       const seen = new Set(invites.map((i) => i.roomId));
-      for (const inv of await client.pendingInvites()) if (!seen.has(inv.roomId)) invites.push(inv);
+      // Synapse can serve the full-sync probe from cache for a while after a
+      // join, so it re-lists rooms joined last pass; /joined_rooms is live.
+      // Without this every pass burns its join budget on 200-no-op re-joins.
+      const joinedNow = new Set(client.joinedRooms ? await client.joinedRooms() : []);
+      for (const inv of await client.pendingInvites()) if (!seen.has(inv.roomId) && !joinedNow.has(inv.roomId)) invites.push(inv);
     } catch (e) {
       console.warn(`[worker] matrix: invite probe failed: ${String(e)}`);
     }
