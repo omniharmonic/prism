@@ -252,7 +252,12 @@ export async function ingestMatrix(
         await client.join(inv.roomId);
         joined++;
       } catch (e) {
-        console.warn(`[worker] matrix: join ${inv.roomId} (${inv.name ?? "?"}) failed: ${String(e)}`);
+        const msg = String(e);
+        console.warn(`[worker] matrix: join ${inv.roomId} (${inv.name ?? "?"}) failed: ${msg}`);
+        // Synapse rate-limits joins (rc_joins: burst ~10, then 0.1/s). The rest
+        // of this batch would 429 too — stop, and let the next pass retry; the
+        // rooms stay pending and the probe re-lists them.
+        if (/→ 429$/.test(msg)) break;
       }
     }
   }

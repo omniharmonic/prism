@@ -146,9 +146,10 @@ export const config = {
   // new chat portal; an un-joined room never appears in /sync, so its messages
   // are invisible to the ingester). Off by default — on a long-lived bridge the
   // backlog can be 1000+ portals, and joining one creates a thread note for it.
-  // MATRIX_AUTO_JOIN_PER_RUN throttles how many invites one 60s pass accepts.
+  // MATRIX_AUTO_JOIN_PER_RUN throttles how many invites one 60s pass accepts
+  // (default 10 = Synapse's rc_joins burst; a 429 ends the batch early anyway).
   matrixAutoJoin: process.env.MATRIX_AUTO_JOIN === "true",
-  matrixAutoJoinPerRun: Number(process.env.MATRIX_AUTO_JOIN_PER_RUN ?? 20),
+  matrixAutoJoinPerRun: Number(process.env.MATRIX_AUTO_JOIN_PER_RUN ?? 10),
 } as const;
 
 /**

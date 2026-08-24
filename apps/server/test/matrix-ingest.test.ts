@@ -167,3 +167,12 @@ test("ingestMatrix merges the invite probe (backlog) with fresh invites from inc
   assert.equal(probed.invitesPending, 2);
   assert.deepEqual(joinedIds, ["!new:hs", "!old:hs"]);
 });
+
+test("ingestMatrix stops the join batch on a 429 (Synapse join rate limit)", async () => {
+  const joinedIds: string[] = [];
+  const sync = async (): Promise<SyncResult> => ({ nextBatch: "s", rooms: [], invites: [{ roomId: "!1:hs", name: null }, { roomId: "!2:hs", name: null }, { roomId: "!3:hs", name: null }] });
+  const client = { sync, join: async (id: string) => { if (id === "!2:hs") throw new Error("matrix join !2:hs → 429"); joinedIds.push(id); } };
+  const res = await ingestMatrix(client, fakeVault().vault, { autoJoin: true });
+  assert.equal(res.joined, 1);
+  assert.deepEqual(joinedIds, ["!1:hs"]); // !3 never attempted
+});
