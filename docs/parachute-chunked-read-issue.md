@@ -1,5 +1,5 @@
 # Parachute issue: support chunked / range reads of note content over MCP
-
+This is going to be a long running and very complex task.
 **For:** Aaron (Parachute maintainer)
 **From:** Benjamin (via Prism integration work)
 **Parachute version observed:** 0.5.x — MCP over Streamable HTTP, vault-scoped `/vault/{name}/mcp`; REST at `/vault/{name}/api`.
