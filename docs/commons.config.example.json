@@ -1,0 +1,31 @@
+{
+  "name": "Spirit of the Front Range — Bioregional Knowledge Commons",
+  "governance": {
+    "roles": [
+      { "name": "admin", "powers": ["amend_governance", "review", "publish", "certify_gardener", "manage_policy", "arbitrate", "invite", "revoke"], "scopeType": "global", "scope": "" },
+      { "name": "gardener", "powers": ["review", "publish"], "scopeType": "global", "scope": "" },
+      { "name": "watershed-gardener", "powers": ["review", "publish"], "scopeType": "tag", "scope": "watershed" }
+    ],
+    "policies": [
+      { "action": "amend_governance", "scopeType": "global", "scope": "", "thresholdN": 2, "quorum": 0, "distinctRequired": true, "eligibleRole": "admin", "windowSeconds": 0, "autoPublish": false },
+      { "action": "edit_note", "scopeType": "global", "scope": "", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
+      { "action": "new_entry", "scopeType": "global", "scope": "", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
+      { "action": "edit_note", "scopeType": "tag", "scope": "medicine", "thresholdN": 3, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
+      { "action": "edit_note", "scopeType": "tag", "scope": "watershed", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "watershed-gardener", "autoPublish": true }
+    ],
+    "members": [
+      { "subject": "owner@example.com", "role": "admin" }
+    ],
+    "config": {
+      "defaultThresholdN": 2,
+      "defaultEligibleRole": "gardener",
+      "amendPolicyAction": "amend_governance"
+    },
+    "enable": false
+  },
+  "dataSources": [
+    { "source": "geojson-entities", "file": "apps/server/test/fixtures/creeks.geojson", "kind": "creek", "sensing": "respond", "extraTag": "front-range" },
+    { "source": "wbd-watersheds", "file": "apps/server/test/fixtures/wbd.geojson", "extraTag": "front-range" },
+    { "source": "gbif-species", "file": "apps/server/test/fixtures/gbif-species.json", "extraTag": "front-range" }
+  ]
+}

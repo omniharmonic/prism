@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings, GovernancePanel, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
@@ -12,6 +12,8 @@ import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
 import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
+import { CommonsLanding } from "./commons/CommonsLanding";
+import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -111,6 +113,56 @@ async function start() {
     return;
   }
 
+  // Commons governance surface: /governance. A signed-in member drives the
+  // constitution + proposal lifecycle here (the API is /api/governance). Requires
+  // a session; capability-link viewers are redirected to sign in.
+  if (window.location.pathname === "/governance") {
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice="Sign in to access commons governance." />
+        </React.StrictMode>,
+      );
+      return;
+    }
+    root.render(
+      <React.StrictMode>
+        <CommonsNav active="governance" />
+        <GovernancePanel />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Commons landing: /commons — orientation + the two doors (requires a session).
+  if (window.location.pathname === "/commons") {
+    const me = await fetchMe();
+    if (!me.authenticated) {
+      root.render(
+        <React.StrictMode>
+          <LoginScreen notice="Sign in to enter the commons." />
+        </React.StrictMode>,
+      );
+      return;
+    }
+    root.render(
+      <React.StrictMode>
+        <CommonsLanding />
+      </React.StrictMode>,
+    );
+    return;
+  }
+
+  // Geospatial surface deep-links: /map (and the legacy /bioregion alias) boot the
+  // real Prism app straight into the Map tab — a vault-wide MapLibre view where
+  // every located note appears and clicking one opens it for editing. This is the
+  // integrated replacement for the old standalone /bioregion panel: the map is a
+  // lens over the vault, sharing the same tabs/search/renderers as everything else.
+  const path = window.location.pathname;
+  const initialTab: InitialTab | undefined =
+    path === "/map" || path === "/bioregion" ? { id: "map", title: "Map", type: "map" } : undefined;
+
   // The owner setup wizard is Tauri-only (its steps call `invoke()`), so the web
   // shell skips it by DEFAULT for everyone — a capability viewer, an invited
   // non-owner, and even the owner (web setup is the desktop/CLI's job). The only
@@ -151,7 +203,7 @@ async function start() {
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-                <App skipOnboarding={isViewer} />
+                <App skipOnboarding={isViewer} initialTab={initialTab} />
                 <OfflineIndicator />
                 <UpdatePrompt />
               </CollabDocumentProvider>

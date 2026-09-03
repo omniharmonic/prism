@@ -118,6 +118,32 @@ Prism ships with 11 renderers, each tailored to a content type.
 | **Dashboard** | Configurable widget grid (see Dashboard Builder above) |
 | **Document** | Default rich text editor (see Document Editor above) |
 
+### :earth_americas: Bioregional Knowledge Commons
+
+Prism can run as a **governed, geospatial wiki** for a bioregion — a shared vault a
+community stewards together, backed by the Prism Server gateway.
+
+- **Note-native governance** — roles, tag-scoped threshold policies (quorum, distinct
+  approvers, voting windows), a propose → sign-off → apply pipeline, approval ≠
+  publishing with revisions/rollback, fork/merge, and an audit trail. Governance state
+  is itself stored as governed notes, and once enabled it is **self-amending**: changing
+  or disabling it requires an approved proposal. Surfaces as **Network → Governance**.
+- **The bioregional ontology** — 11 purpose-bound types (`ecological-entity`, `species`,
+  `watershed`, `place`, `signal`, `herbal-use`, `recipe`, …) with a sensing/responding
+  cleavage, a `parent_names` is-a hierarchy, and one GeoJSON convention (WGS84,
+  `[lon, lat]`, derived `bbox`).
+- **The Map** — a vault-wide MapLibre surface (sidebar → **Map**; `/map` deep-link). Every
+  located note appears; click one to open it, and draw a point/line/polygon on it to
+  attach GeoJSON.
+- **Importers** — GBIF/Darwin Core species, GeoJSON entities, USGS WBD watersheds, driven
+  by `scripts/import-bioregion.mjs` or a whole-commons config via
+  `scripts/commons-init.mjs` (schema + governance + ingest + verify).
+
+Docs: [`docs/commons-provisioning.md`](docs/commons-provisioning.md) ·
+[`docs/roadmap/bioregional-commons-PROGRESS.md`](docs/roadmap/bioregional-commons-PROGRESS.md)
+(status + the readiness audit) · [`docs/roadmap/bioregional-commons-1-governance.md`](docs/roadmap/bioregional-commons-1-governance.md)
+· [`docs/roadmap/bioregional-commons-2-graph.md`](docs/roadmap/bioregional-commons-2-graph.md).
+
 ---
 
 ## :rocket: Getting Started

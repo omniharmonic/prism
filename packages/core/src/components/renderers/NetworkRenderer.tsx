@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Globe, Radio, Database, Users, Building2, Server, Boxes } from "lucide-react";
+import { Globe, Radio, Database, Scale, Users, Building2, Server, Boxes } from "lucide-react";
 import { Tabs } from "../ui/Tabs";
 import { useCollabSharing, useVaultChangeSignal, type WorkspaceRole } from "../../data/CollabSharing";
 import type { RendererProps } from "./RendererProps";
@@ -10,6 +10,7 @@ import { MembersPanel } from "./network/MembersPanel";
 import { WorkspacePanel } from "./network/WorkspacePanel";
 import { WorkspacesPanel } from "./network/WorkspacesPanel";
 import { ServerPanel } from "./network/ServerPanel";
+import { GovernancePanel } from "./network/governance/GovernancePanel";
 
 /**
  * The Network surface — a top-level virtual tab (not a per-note dialog) where the
@@ -59,6 +60,10 @@ export default function NetworkRenderer(_props: RendererProps) {
   const canWorkspaces = !!sharing?.listWorkspaceEntities && isServerOwner;
   const canAccess = !!sharing?.getWorkspace && isServerOwner;
   const canServer = !!sharing?.getServerInfo && isServerOwner;
+  // Governance is member-authed in its own handler (members vote on proposals),
+  // so it is NOT admin-gated: show it wherever the Network surface has any web
+  // capability; hidden on desktop / for capability viewers.
+  const canGovern = canPublish || canFederate || canVaults;
 
   const tabs = [
     ...(canWorkspaces ? [{ id: "workspaces", label: "Workspaces", icon: <Boxes size={14} /> }] : []),
@@ -67,6 +72,7 @@ export default function NetworkRenderer(_props: RendererProps) {
     ...(canFederate ? [{ id: "federate", label: "Federate", icon: <Radio size={14} /> }] : []),
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
     ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
+    ...(canGovern ? [{ id: "governance", label: "Governance", icon: <Scale size={14} /> }] : []),
     ...(canServer ? [{ id: "server", label: "Server", icon: <Server size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>("publish");
@@ -105,6 +111,7 @@ export default function NetworkRenderer(_props: RendererProps) {
           {tab === "federate" && <FederatePanel />}
           {tab === "members" && <MembersPanel />}
           {tab === "vaults" && <VaultsPanel />}
+          {tab === "governance" && <GovernancePanel />}
           {tab === "server" && <ServerPanel />}
         </div>
       </div>

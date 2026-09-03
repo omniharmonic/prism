@@ -19,7 +19,7 @@ export function Canvas() {
   const isTagView = activeTab?.noteId.startsWith("tag:");
 
   // Virtual notes (e.g., matrix:room_id, messages-dashboard, calendar-dashboard) don't come from Parachute
-  const VIRTUAL_TAB_IDS = new Set(["messages-dashboard", "calendar-dashboard", "vault-messages", "agent-activity", "network"]);
+  const VIRTUAL_TAB_IDS = new Set(["messages-dashboard", "calendar-dashboard", "vault-messages", "agent-activity", "network", "map"]);
   const isVirtual = activeTab ? (
     (activeTab.noteId.includes(":") && !activeTab.noteId.match(/^\d/)) ||
     VIRTUAL_TAB_IDS.has(activeTab.noteId)

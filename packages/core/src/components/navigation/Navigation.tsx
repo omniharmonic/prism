@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, FolderPlus, ChevronsDownUp } from "lucide-react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -14,7 +14,7 @@ import { ComposeMessage } from "../comms/ComposeMessage";
 import type { ContentType } from "../../lib/types";
 
 /** Virtual tab ids that aren't real notes (so they're excluded from Recent). */
-const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network"]);
+const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network", "map"]);
 
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -56,6 +56,10 @@ export function Navigation() {
 
   const handleOpenNetwork = () => {
     openTab("network", "Network", "network" as ContentType);
+  };
+
+  const handleOpenMap = () => {
+    openTab("map", "Map", "map" as ContentType);
   };
 
   // "New folder" for a path-based vault. Parachute has no empty-folder entity —
@@ -151,6 +155,7 @@ export function Navigation() {
             />
             <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
             <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
+            <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
             <NavItem icon={<Radio size={15} />} label="Network" onClick={handleOpenNetwork} />
           </div>
 
