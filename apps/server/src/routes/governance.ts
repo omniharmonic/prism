@@ -21,17 +21,21 @@ import { vault } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import {
   isLocked,
+  membershipActive,
   powersForSubject,
   hasPower,
+  proposalWindowExpired,
   requiredPolicy,
   subjectHoldsRole,
   evaluateProposal,
+  type GovernanceState,
   type GovernanceConfig,
   type Membership,
   type Policy,
   type Power,
   type Role,
 } from "../governance";
+import { roleAtLeast } from "../roles";
 import {
   GOV_TAGS,
   parseProposal,
@@ -43,8 +47,7 @@ import {
   loadGovernance,
   mutateGovernance,
   openProposal,
-  castVote,
-  hasVoted,
+  upsertVote,
   getProposalRaw,
   setProposalState,
   proposalContext,
@@ -75,8 +78,44 @@ const email = (c: Context): string => {
   return a.kind === "user" ? a.email : "";
 };
 
-const httpFor = (r: Extract<MutateResult, { ok: false }>): 403 | 409 =>
-  r.code === "insufficient_approvals" ? 409 : 403;
+const httpFor = (r: Extract<MutateResult, { ok: false }>): 400 | 403 | 404 | 409 => {
+  if (r.code === "insufficient_approvals") return 409;
+  if (r.code === "not_found") return 404;
+  if (r.code === "invalid_config") return 400;
+  return 403;
+};
+
+/**
+ * Standing to PROPOSE. Proposing is cheap for the proposer and expensive for
+ * everyone who must read it, so the commons requires some prior relationship:
+ * a workspace member (or above), a governance role holder, or someone who holds
+ * at least one grant in this vault. A signed-in stranger with zero grants may
+ * read governance but not fill the queue. (Standing ≠ eligibility to VOTE — that
+ * is the policy's `eligibleRole`, checked separately.)
+ */
+function hasStanding(c: Context, state: GovernanceState): boolean {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return false;
+  if (roleAtLeast(actor.role, "member")) return true;
+  // Only grants addressed to THIS person count. `grantsForUser` also returns the
+  // vault's `anyone` grants (they apply to every request), but a public
+  // publication must not hand every signed-in stranger a seat at the proposal
+  // queue — that would erase the standing requirement on any workspace with a
+  // published tag.
+  if (actor.grants.some((g) => g.subject_type === "user")) return true;
+  const me = actor.email.toLowerCase();
+  const now = Date.now();
+  return state.memberships.some((m) => m.subject.toLowerCase() === me && membershipActive(m, now));
+}
+
+const noStanding = (c: Context) =>
+  c.json(
+    {
+      error: "no_standing",
+      detail: "proposing requires workspace membership, a governance role, or a grant in this vault",
+    },
+    403,
+  );
 
 // ── read state ────────────────────────────────────────────────────────────────
 
@@ -173,6 +212,49 @@ governance.post("/memberships", async (c) => {
   return applyDirect(c, { kind: "add_membership", membership });
 });
 
+// ── update / remove (bootstrap fixups; post-lock these 403 → amendment) ───────
+// Same choke point as everything else: `applyDirect` → `mutateGovernance`, so
+// while unlocked only the bootstrap owner may use them, and once locked they
+// refuse with `requires_proposal` — no bypass, just an ergonomic surface for
+// correcting a mistyped role/policy/membership before ratification.
+
+governance.patch("/roles/:ref", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const patch: Partial<Omit<Role, "id">> = {};
+  if (typeof b.name === "string" && b.name) patch.name = b.name;
+  if (Array.isArray(b.powers)) patch.powers = asPowers(b.powers);
+  if (b.scopeType === "tag" || b.scopeType === "global") patch.scopeType = b.scopeType;
+  if (typeof b.scope === "string") patch.scope = b.scope;
+  return applyDirect(c, { kind: "update_role", ref: c.req.param("ref"), role: patch });
+});
+
+governance.delete("/roles/:ref", (c) => applyDirect(c, { kind: "remove_role", ref: c.req.param("ref") }));
+
+governance.patch("/policies/:ref", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const patch: Partial<Omit<Policy, "id">> = {};
+  if (typeof b.action === "string" && b.action) patch.action = b.action;
+  if (b.scopeType === "note" || b.scopeType === "tag" || b.scopeType === "global") patch.scopeType = b.scopeType;
+  if (typeof b.scope === "string") patch.scope = b.scope;
+  if (b.thresholdN !== undefined) patch.thresholdN = Math.max(1, Number(b.thresholdN) || 1);
+  if (b.quorum !== undefined) patch.quorum = Math.max(0, Number(b.quorum) || 0);
+  if (b.distinctRequired !== undefined) patch.distinctRequired = b.distinctRequired !== false;
+  if (typeof b.eligibleRole === "string") patch.eligibleRole = b.eligibleRole;
+  if (b.windowSeconds !== undefined) patch.windowSeconds = Math.max(0, Number(b.windowSeconds) || 0);
+  if (b.autoPublish !== undefined) patch.autoPublish = Boolean(b.autoPublish);
+  return applyDirect(c, { kind: "update_policy", ref: c.req.param("ref"), policy: patch });
+});
+
+governance.delete("/policies/:ref", (c) => applyDirect(c, { kind: "remove_policy", ref: c.req.param("ref") }));
+
+governance.delete("/memberships", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const subject = String(b.subject ?? "").toLowerCase();
+  const role = String(b.role ?? "");
+  if (!subject || !role) return c.json({ error: "bad_request", detail: "subject and role required" }, 400);
+  return applyDirect(c, { kind: "remove_membership", subject, role });
+});
+
 // ── proposals ─────────────────────────────────────────────────────────────────
 
 governance.get("/proposals", async (c) => {
@@ -200,6 +282,7 @@ governance.post("/proposals", async (c) => {
   const action = String(b.action ?? "");
   const target = String(b.target ?? "");
   if (!action) return c.json({ error: "bad_request", detail: "action required" }, 400);
+  if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
   const payload = typeof b.payload === "string" ? b.payload : JSON.stringify(b.payload ?? {});
   const { id } = await openProposal(vault, { action, target, payload, openedBy: email(c) });
   return c.json({ ok: true, id }, 201);
@@ -214,6 +297,7 @@ governance.post("/content/propose", async (c) => {
   if (!action) return c.json({ error: "bad_request", detail: "action must be edit_note or new_entry" }, 400);
   const target = String(b.target ?? "");
   if (action === "edit_note" && !target) return c.json({ error: "bad_request", detail: "edit_note requires a target note id" }, 400);
+  if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
 
   const payload: ContentPayload = coerceContentPayload(b);
   const { id } = await openProposal(vault, {
@@ -239,15 +323,29 @@ governance.post("/proposals/:id/vote", async (c) => {
   // only sign off within #medicine.
   const ctx = await proposalContext(vault, proposal, payload as ContentPayload);
   const policy = requiredPolicy(state, proposal.action, ctx);
+
+  // The window is an objective fact about the proposal, not a privilege: the
+  // first request to touch an expired proposal closes it, whoever they are.
+  if (proposalWindowExpired(policy, proposal)) {
+    await setProposalState(vault, proposal.id, "rejected");
+    await recordAudit(vault, { action: "proposal_window_expired", actor: email(c), before: proposal.id });
+    return c.json({ error: "window_expired", detail: `the ${policy.windowSeconds}s voting window has closed` }, 409);
+  }
+
   const me = email(c);
   if (!subjectHoldsRole(state, me, policy.eligibleRole, ctx)) {
     return c.json({ error: "ineligible", detail: `only members of role "${policy.eligibleRole}" may vote on this` }, 403);
   }
-  if (await hasVoted(vault, proposal.id, me)) {
-    return c.json({ error: "already_voted" }, 409);
-  }
-  await castVote(vault, { proposal: proposal.id, voter: me, vote: decision, at: new Date().toISOString(), reason: String(b.reason ?? "") });
-  return c.json({ ok: true });
+  // Votes are MUTABLE while a proposal is open — a second vote revises the first
+  // (one note per voter, so the distinct-approver tally stays honest).
+  const { updated } = await upsertVote(vault, {
+    proposal: proposal.id,
+    voter: me,
+    vote: decision,
+    at: new Date().toISOString(),
+    reason: String(b.reason ?? ""),
+  });
+  return c.json({ ok: true, updated });
 });
 
 /** Apply an approved proposal — effect the change if its votes clear the policy.
@@ -262,6 +360,21 @@ governance.post("/proposals/:id/apply", async (c) => {
   if (proposal.state !== "open") return c.json({ error: "closed", detail: `proposal is ${proposal.state}` }, 409);
   const me = email(c);
   const votes = await loadVotesFor(vault, proposal.id);
+
+  // An expired proposal that did NOT gather its approvals in-window is dead:
+  // close it here rather than letting it linger as permanently-appliable. (If the
+  // votes DID land in-window the evaluation is satisfied and it applies normally,
+  // whenever someone gets around to pressing apply.)
+  const applyCtx = await proposalContext(vault, proposal, payload as ContentPayload);
+  const applyPolicy = requiredPolicy(state, proposal.action, applyCtx);
+  if (proposalWindowExpired(applyPolicy, proposal)) {
+    const ev = evaluateProposal(state, proposal, votes, applyCtx);
+    if (!ev.satisfied) {
+      await setProposalState(vault, proposal.id, "rejected");
+      await recordAudit(vault, { action: "proposal_window_expired", actor: me, before: proposal.id });
+      return c.json({ error: "window_expired", detail: `the ${applyPolicy.windowSeconds}s voting window closed unsatisfied`, evaluation: ev }, 409);
+    }
+  }
 
   // Governance amendment — constitutional threshold, via the lock choke point.
   if (proposal.action === "amend_governance") {
@@ -278,8 +391,7 @@ governance.post("/proposals/:id/apply", async (c) => {
   // publish (approval ≠ publishing, G4).
   if (isContentAction(proposal.action)) {
     const cp = coerceContentPayload(payload);
-    const ctx = await proposalContext(vault, proposal, cp);
-    const ev = evaluateProposal(state, proposal, votes, ctx);
+    const ev = evaluateProposal(state, proposal, votes, applyCtx);
     if (!ev.satisfied) {
       return c.json(
         {
@@ -460,6 +572,41 @@ function coerceChange(obj: unknown): GovChange | null {
         },
       };
     }
+    case "update_role": {
+      const ref = String(o.ref ?? "");
+      if (!ref) return null;
+      const r = (o.role ?? {}) as Record<string, unknown>;
+      const patch: Partial<Omit<Role, "id">> = {};
+      if (r.name !== undefined) patch.name = String(r.name);
+      if (r.powers !== undefined) patch.powers = asPowers(r.powers);
+      if (r.scopeType !== undefined) patch.scopeType = r.scopeType === "tag" ? "tag" : "global";
+      if (r.scope !== undefined) patch.scope = String(r.scope);
+      return { kind: "update_role", ref, role: patch };
+    }
+    case "remove_role": {
+      const ref = String(o.ref ?? "");
+      return ref ? { kind: "remove_role", ref } : null;
+    }
+    case "update_policy": {
+      const ref = String(o.ref ?? "");
+      if (!ref) return null;
+      const p = (o.policy ?? {}) as Record<string, unknown>;
+      const patch: Partial<Omit<Policy, "id">> = {};
+      if (p.action !== undefined) patch.action = String(p.action);
+      if (p.scopeType !== undefined) patch.scopeType = p.scopeType === "note" ? "note" : p.scopeType === "tag" ? "tag" : "global";
+      if (p.scope !== undefined) patch.scope = String(p.scope);
+      if (p.thresholdN !== undefined) patch.thresholdN = Math.max(1, Number(p.thresholdN));
+      if (p.quorum !== undefined) patch.quorum = Math.max(0, Number(p.quorum));
+      if (p.distinctRequired !== undefined) patch.distinctRequired = p.distinctRequired !== false;
+      if (p.eligibleRole !== undefined) patch.eligibleRole = String(p.eligibleRole);
+      if (p.windowSeconds !== undefined) patch.windowSeconds = Math.max(0, Number(p.windowSeconds));
+      if (p.autoPublish !== undefined) patch.autoPublish = Boolean(p.autoPublish);
+      return { kind: "update_policy", ref, policy: patch };
+    }
+    case "remove_policy": {
+      const ref = String(o.ref ?? "");
+      return ref ? { kind: "remove_policy", ref } : null;
+    }
     case "add_membership": {
       const m = (o.membership ?? {}) as Record<string, unknown>;
       if (!m.subject || !m.role) return null;
@@ -472,6 +619,11 @@ function coerceChange(obj: unknown): GovChange | null {
           expiresAt: m.expiresAt ? String(m.expiresAt) : null,
         },
       };
+    }
+    case "remove_membership": {
+      const subject = String(o.subject ?? "").toLowerCase();
+      const role = String(o.role ?? "");
+      return subject && role ? { kind: "remove_membership", subject, role } : null;
     }
     default:
       return null;

@@ -180,7 +180,7 @@ test("the proposer may withdraw an open proposal; a stranger may not", async () 
   assert.equal((await jreq(`/proposals/${id}/vote`, cookieFor("a2@test.local"), "POST", { vote: "approve" })).status, 409);
 });
 
-test("a non-eligible member cannot vote, and no one may vote twice", async () => {
+test("a non-eligible member cannot vote; a second vote REVISES the first", async () => {
   await bootstrapEnabled();
   const open = await jreq("/proposals", cookieFor("a1@test.local"), "POST", {
     action: "amend_governance",
@@ -194,7 +194,14 @@ test("a non-eligible member cannot vote, and no one may vote twice", async () =>
   assert.equal(bad.status, 403);
   assert.equal((await body(bad)).error, "ineligible");
 
-  // an admin votes once → ok; twice → 409
-  assert.equal((await jreq(`/proposals/${propId}/vote`, cookieFor("a1@test.local"), "POST", { vote: "approve" })).status, 200);
-  assert.equal((await jreq(`/proposals/${propId}/vote`, cookieFor("a1@test.local"), "POST", { vote: "approve" })).status, 409);
+  // an admin votes once → created; again → the SAME vote note is rewritten
+  const first = await jreq(`/proposals/${propId}/vote`, cookieFor("a1@test.local"), "POST", { vote: "approve" });
+  assert.equal(first.status, 200);
+  assert.equal((await body(first)).updated, false);
+  const second = await jreq(`/proposals/${propId}/vote`, cookieFor("a1@test.local"), "POST", { vote: "reject" });
+  assert.equal(second.status, 200);
+  assert.equal((await body(second)).updated, true);
+  const { votes } = await body(await jreq(`/proposals/${propId}`, cookieFor(OWNER)));
+  assert.equal(votes.length, 1);
+  assert.equal(votes[0].vote, "reject");
 });

@@ -360,3 +360,86 @@ export function evaluateAmendment(
   const amend: Proposal = { ...proposal, action: "amend_governance" };
   return evaluateProposal(state, amend, votes, {}, nowMs);
 }
+
+// ── ratification pre-flight (P0) ──────────────────────────────────────────────
+
+export type RatificationCheck = { ok: true } | { ok: false; problems: string[] };
+
+/**
+ * Can this config be RATIFIED (enabled) without bricking the commons? The
+ * bootstrap lock is one-way: once `enabled` is true nothing may change except
+ * through an approved `amend_governance` proposal. So if the constitution being
+ * ratified cannot actually pass an amendment — no amend policy, an eligible role
+ * that does not exist, or fewer active holders of that role than the threshold —
+ * the commons is permanently frozen. This is the guard that refuses that state.
+ *
+ * Pure, and evaluated against the POST-change world: `config` is the incoming
+ * constitution, `state` supplies the roles/policies/memberships it will govern.
+ */
+export function validateRatification(
+  state: GovernanceState,
+  config: GovernanceConfig,
+  nowMs = Date.now(),
+): RatificationCheck {
+  const problems: string[] = [];
+
+  if (!config.bootstrapOwner) {
+    problems.push("bootstrapOwner must name a subject (it is the only recovery root before ratification)");
+  }
+
+  // 1. The amend policy must resolve — either a real amend_governance policy, or
+  //    the config default (which then needs a default eligible role).
+  let amend: Policy | null = null;
+  if (config.amendPolicy) {
+    amend = state.policies.find((p) => p.id === config.amendPolicy) ?? null;
+    if (!amend) {
+      problems.push(`amendPolicy "${config.amendPolicy}" names no existing policy`);
+    } else if (amend.action !== "amend_governance") {
+      problems.push(`amendPolicy "${config.amendPolicy}" has action "${amend.action}", not "amend_governance"`);
+      amend = null;
+    }
+  } else if (!config.defaultEligibleRole) {
+    problems.push("amendPolicy is empty and defaultEligibleRole is unset — no amendment could ever be evaluated");
+  }
+
+  // 2. The effective eligible role for amendments must exist.
+  const eligibleRole = (amend?.eligibleRole || config.defaultEligibleRole) ?? "";
+  const roleExists = eligibleRole !== "" && state.roles.some((r) => r.name === eligibleRole);
+  if (eligibleRole === "") {
+    problems.push("no eligible role resolves for amendments (set the policy's eligibleRole or defaultEligibleRole)");
+  } else if (!roleExists) {
+    problems.push(`eligible role "${eligibleRole}" for amendments does not exist`);
+  }
+
+  // 3. That role must have enough ACTIVE members to clear the amend threshold.
+  const threshold = amend ? amend.thresholdN : Math.max(1, config.defaultThresholdN);
+  if (roleExists) {
+    const holders = new Set<string>();
+    for (const m of state.memberships) {
+      if (!membershipActive(m, nowMs)) continue;
+      const r = state.roles.find((role) => roleMatches(role, m.role));
+      if (r && r.name === eligibleRole) holders.add(m.subject);
+    }
+    if (holders.size < threshold) {
+      problems.push(
+        `role "${eligibleRole}" has ${holders.size} active member(s) but amendments need ${threshold} approval(s) — governance would be un-amendable`,
+      );
+    }
+  }
+
+  return problems.length ? { ok: false, problems } : { ok: true };
+}
+
+// ── voting windows (P0) ───────────────────────────────────────────────────────
+
+/**
+ * Has a proposal's voting window closed? `windowSeconds <= 0` means no window
+ * (never expires); an unparseable `openedAt` is treated as never-expiring rather
+ * than instantly dead. Pure so the auto-close path is unit-testable.
+ */
+export function proposalWindowExpired(policy: Policy, proposal: Proposal, nowMs = Date.now()): boolean {
+  if (!policy || policy.windowSeconds <= 0) return false;
+  const opened = parseTime(proposal.openedAt);
+  if (opened === null) return false;
+  return nowMs > opened + policy.windowSeconds * 1000;
+}

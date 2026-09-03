@@ -11,11 +11,12 @@
  * every DECISION to the pure engine, so the authoritative logic stays testable
  * in isolation and this file stays a thin, auditable choke point.
  */
-import type { VaultHelper } from "./parachute";
+import type { Note, VaultHelper } from "./parachute";
 import {
   canMutateGovernanceDirectly,
   evaluateAmendment,
   isLocked,
+  validateRatification,
   type ActionContext,
   type GovernanceConfig,
   type GovernanceState,
@@ -37,24 +38,49 @@ import {
   membershipToMetadata,
   voteToMetadata,
   auditToMetadata,
+  parseConfig,
+  parseMembership,
+  parsePolicy,
   parseProposal,
   parseRevision,
+  parseRole,
+  parseVote,
   revisionToMetadata,
   type Revision,
 } from "./governance-store";
 
 /** The vault surface the service needs (satisfied by parachute.ts `vault`). */
-export type ServiceVault = Pick<VaultHelper, "listNotes" | "createNote" | "updateNote" | "getNote">;
+export type ServiceVault = Pick<VaultHelper, "listNotes" | "createNote" | "updateNote" | "getNote" | "deleteNote">;
 
-/** A governance change to effect. Kept to the small v1 set (light REA / small
- *  governance surface); content-note proposals are G2, not here. */
+/**
+ * A governance change to effect — the full lifecycle for each of the three axes
+ * (WHO / HOW-MANY / WHAT-STATE), not just the additive half. Adds are UPSERTS
+ * (re-running a provisioning script must not duplicate the constitution), and
+ * every remove/update names its target by `ref`. Content-note proposals are G2,
+ * not here.
+ */
 export type GovChange =
   | { kind: "set_config"; config: GovernanceConfig }
   | { kind: "add_role"; role: Omit<Role, "id"> }
+  | { kind: "update_role"; ref: string; role: Partial<Omit<Role, "id">> }
+  | { kind: "remove_role"; ref: string }
   | { kind: "add_policy"; policy: Omit<Policy, "id"> }
-  | { kind: "add_membership"; membership: Membership };
+  | { kind: "update_policy"; ref: string; policy: Partial<Omit<Policy, "id">> }
+  | { kind: "remove_policy"; ref: string }
+  | { kind: "add_membership"; membership: Membership }
+  | { kind: "remove_membership"; subject: string; role: string };
 
-export const GOV_CHANGE_KINDS = ["set_config", "add_role", "add_policy", "add_membership"] as const;
+export const GOV_CHANGE_KINDS = [
+  "set_config",
+  "add_role",
+  "update_role",
+  "remove_role",
+  "add_policy",
+  "update_policy",
+  "remove_policy",
+  "add_membership",
+  "remove_membership",
+] as const;
 
 export interface MutateOk {
   ok: true;
@@ -63,13 +89,27 @@ export interface MutateOk {
 }
 export interface MutateErr {
   ok: false;
-  code: "requires_proposal" | "insufficient_approvals" | "forbidden";
+  code: "requires_proposal" | "insufficient_approvals" | "forbidden" | "not_found" | "invalid_config";
   detail: string;
   evaluation?: ReturnType<typeof evaluateAmendment>;
 }
 export type MutateResult = MutateOk | MutateErr;
 
-const nowIso = () => new Date().toISOString();
+/**
+ * A strictly-monotonic ISO clock for governance stamps. Revisions, votes and
+ * audit entries are ordered by their `at` string alone (there is no sequence
+ * column in a note), so two writes landing in the SAME millisecond — a rollback
+ * right after an apply, say — leave their order ambiguous and the "newest first"
+ * history can come back in the wrong order. Never returning the same instant
+ * twice makes that ordering deterministic; the cost is that a burst of writes may
+ * read a few ms ahead of the wall clock.
+ */
+let lastStampMs = 0;
+const nowIso = (): string => {
+  const t = Math.max(Date.now(), lastStampMs + 1);
+  lastStampMs = t;
+  return new Date(t).toISOString();
+};
 
 /** Load the full governance state, defaulting the bootstrap owner to OWNER_EMAIL. */
 export function loadGovernance(vault: ServiceVault, ownerEmail: string): Promise<GovernanceState> {
@@ -93,15 +133,51 @@ export async function recordAudit(
   }
 }
 
-/** Effect a change by writing the backing governance note(s). */
-async function effect(vault: ServiceVault, change: GovChange): Promise<{ id: string }> {
+/** An effect either wrote a note, or refused with a structured reason. */
+type EffectResult = { ok: true; id: string } | { ok: false; code: MutateErr["code"]; detail: string };
+
+const govNotes = (vault: ServiceVault, tag: string): Promise<Note[]> => vault.listNotes({ tags: [tag] });
+
+const notFound = (what: string, ref: string): EffectResult => ({
+  ok: false,
+  code: "not_found",
+  detail: `no governance ${what} matches "${ref}"`,
+});
+
+/**
+ * Merge an incoming config with the current one, protecting the two fields whose
+ * loss is unrecoverable. The UI's "disable governance" amendment template sends
+ * `{enabled:false}` alone; taken literally that would blank `bootstrap_owner` and
+ * leave the commons with NO recovery root once disabled. So an empty
+ * `bootstrapOwner` always inherits, and an empty `amendPolicy` inherits whenever
+ * the config stays enabled (a disable may legitimately clear it).
+ */
+export function mergeConfig(current: GovernanceConfig, incoming: GovernanceConfig): GovernanceConfig {
+  const merged: GovernanceConfig = { ...incoming };
+  if (!merged.bootstrapOwner) merged.bootstrapOwner = current.bootstrapOwner;
+  if (!merged.amendPolicy && merged.enabled) merged.amendPolicy = current.amendPolicy;
+  return merged;
+}
+
+/**
+ * Effect a change by writing the backing governance note(s).
+ *
+ * Adds are UPSERTS keyed by the structure's natural identity (role name; policy
+ * action+scope; membership subject+role) so re-running a provisioning script or
+ * re-applying an amendment converges instead of duplicating the constitution.
+ * Removes cascade where a dangling reference would otherwise survive (deleting a
+ * role deletes the memberships that named it) and refuse where the deletion would
+ * strand governance (the amend policy is load-bearing — without it nothing can
+ * ever be amended again).
+ */
+async function effect(vault: ServiceVault, state: GovernanceState, change: GovChange): Promise<EffectResult> {
   switch (change.kind) {
     case "set_config": {
-      const existing = (await vault.listNotes({ tags: [GOV_TAGS.config] }))[0];
+      const existing = (await govNotes(vault, GOV_TAGS.config))[0];
       const metadata = configToMetadata(change.config);
       if (existing) {
         const n = await vault.updateNote(existing.id, { metadata });
-        return { id: n.id };
+        return { ok: true, id: n.id };
       }
       const n = await vault.createNote({
         content: "# Governance Constitution",
@@ -109,31 +185,126 @@ async function effect(vault: ServiceVault, change: GovChange): Promise<{ id: str
         metadata,
         tags: [GOV_TAGS.config],
       });
-      return { id: n.id };
+      return { ok: true, id: n.id };
     }
+
     case "add_role": {
+      const existing = (await govNotes(vault, GOV_TAGS.role)).find((n) => parseRole(n).name === change.role.name);
+      const metadata = roleToMetadata(change.role);
+      if (existing) {
+        const n = await vault.updateNote(existing.id, { metadata });
+        return { ok: true, id: n.id };
+      }
       const n = await vault.createNote({
         content: `# Governance role: ${change.role.name}`,
-        metadata: roleToMetadata(change.role),
+        metadata,
         tags: [GOV_TAGS.role],
       });
-      return { id: n.id };
+      return { ok: true, id: n.id };
     }
+
+    case "update_role": {
+      const match = (await govNotes(vault, GOV_TAGS.role)).find((n) => {
+        const r = parseRole(n);
+        return r.id === change.ref || r.name === change.ref;
+      });
+      if (!match) return notFound("role", change.ref);
+      const merged: Role = { ...parseRole(match), ...change.role };
+      const n = await vault.updateNote(match.id, { metadata: roleToMetadata(merged) });
+      return { ok: true, id: n.id };
+    }
+
+    case "remove_role": {
+      const match = (await govNotes(vault, GOV_TAGS.role)).find((n) => {
+        const r = parseRole(n);
+        return r.id === change.ref || r.name === change.ref;
+      });
+      if (!match) return notFound("role", change.ref);
+      const role = parseRole(match);
+      await vault.deleteNote(match.id);
+      // Cascade: a membership pointing at a deleted role is a dangling grant of
+      // powers that no longer resolve. Drop them with the role.
+      for (const mn of await govNotes(vault, GOV_TAGS.membership)) {
+        const m = parseMembership(mn);
+        if (m.role === role.id || (role.name !== "" && m.role === role.name)) await vault.deleteNote(mn.id);
+      }
+      return { ok: true, id: match.id };
+    }
+
     case "add_policy": {
+      const existing = (await govNotes(vault, GOV_TAGS.policy)).find((n) => {
+        const p = parsePolicy(n);
+        return p.action === change.policy.action && p.scopeType === change.policy.scopeType && p.scope === change.policy.scope;
+      });
+      const metadata = policyToMetadata(change.policy);
+      if (existing) {
+        const n = await vault.updateNote(existing.id, { metadata });
+        return { ok: true, id: n.id };
+      }
       const n = await vault.createNote({
         content: `# Governance policy: ${change.policy.action}`,
-        metadata: policyToMetadata(change.policy),
+        metadata,
         tags: [GOV_TAGS.policy],
       });
-      return { id: n.id };
+      return { ok: true, id: n.id };
     }
+
+    case "update_policy": {
+      const match = (await govNotes(vault, GOV_TAGS.policy)).find((n) => n.id === change.ref);
+      if (!match) return notFound("policy", change.ref);
+      const merged: Policy = { ...parsePolicy(match), ...change.policy };
+      if (state.config.amendPolicy && match.id === state.config.amendPolicy && merged.action !== "amend_governance") {
+        return {
+          ok: false,
+          code: "invalid_config",
+          detail: "refusing to retarget the constitution's amend policy away from amend_governance — governance would become un-amendable",
+        };
+      }
+      const n = await vault.updateNote(match.id, { metadata: policyToMetadata(merged) });
+      return { ok: true, id: n.id };
+    }
+
+    case "remove_policy": {
+      const match = (await govNotes(vault, GOV_TAGS.policy)).find((n) => n.id === change.ref);
+      if (!match) return notFound("policy", change.ref);
+      if (state.config.amendPolicy && match.id === state.config.amendPolicy) {
+        return {
+          ok: false,
+          code: "invalid_config",
+          detail: "refusing to delete the constitution's amend policy — no amendment could ever be evaluated again",
+        };
+      }
+      await vault.deleteNote(match.id);
+      return { ok: true, id: match.id };
+    }
+
     case "add_membership": {
+      const existing = (await govNotes(vault, GOV_TAGS.membership)).find((n) => {
+        const m = parseMembership(n);
+        return m.subject === change.membership.subject && m.role === change.membership.role;
+      });
+      const metadata = membershipToMetadata(change.membership);
+      if (existing) {
+        const n = await vault.updateNote(existing.id, { metadata });
+        return { ok: true, id: n.id };
+      }
       const n = await vault.createNote({
         content: `# Governance membership: ${change.membership.subject} → ${change.membership.role}`,
-        metadata: membershipToMetadata(change.membership),
+        metadata,
         tags: [GOV_TAGS.membership],
       });
-      return { id: n.id };
+      return { ok: true, id: n.id };
+    }
+
+    case "remove_membership": {
+      const matches = (await govNotes(vault, GOV_TAGS.membership)).filter((n) => {
+        const m = parseMembership(n);
+        return m.subject === change.subject && m.role === change.role;
+      });
+      const first = matches[0];
+      if (!first) return notFound("membership", `${change.subject} → ${change.role}`);
+      for (const n of matches) await vault.deleteNote(n.id);
+      return { ok: true, id: first.id };
     }
   }
 }
@@ -156,10 +327,28 @@ export async function mutateGovernance(
   change: GovChange,
   via?: { proposal: Proposal; votes: Vote[] },
 ): Promise<MutateResult> {
+  // A config write is normalized (and pre-flighted) BEFORE any authorization
+  // branch, so both the bootstrap path and the amendment path get the same
+  // protected merge and the same ratification check.
+  let effective = change;
+  if (change.kind === "set_config") {
+    const merged = mergeConfig(state.config, change.config);
+    effective = { kind: "set_config", config: merged };
+    // The enable transition is the one-way latch. Refuse to ratify a constitution
+    // that could never amend itself — after the latch there is no way back.
+    if (merged.enabled && !isLocked(state.config)) {
+      const check = validateRatification(state, merged);
+      if (!check.ok) {
+        return { ok: false, code: "invalid_config", detail: check.problems.join("; ") };
+      }
+    }
+  }
+
   if (canMutateGovernanceDirectly(state, subject)) {
-    const note = await effect(vault, change);
-    await recordAudit(vault, { action: `direct:${auditFor(change)}`, actor: subject, after: JSON.stringify(change) });
-    return { ok: true, applied: change.kind, note };
+    const res = await effect(vault, state, effective);
+    if (!res.ok) return res;
+    await recordAudit(vault, { action: `direct:${auditFor(effective)}`, actor: subject, after: JSON.stringify(effective) });
+    return { ok: true, applied: effective.kind, note: { id: res.id } };
   }
 
   if (!isLocked(state.config)) {
@@ -178,14 +367,15 @@ export async function mutateGovernance(
       evaluation,
     };
   }
-  const note = await effect(vault, change);
+  const res = await effect(vault, state, effective);
+  if (!res.ok) return res;
   await recordAudit(vault, {
-    action: `amend:${auditFor(change)}`,
+    action: `amend:${auditFor(effective)}`,
     actor: subject,
     before: `proposal ${via.proposal.id}`,
-    after: JSON.stringify(change),
+    after: JSON.stringify(effective),
   });
-  return { ok: true, applied: change.kind, note };
+  return { ok: true, applied: effective.kind, note: { id: res.id } };
 }
 
 // ── proposal helpers (note-native) ─────────────────────────────────────────────
@@ -220,10 +410,45 @@ export async function castVote(vault: ServiceVault, v: Vote): Promise<{ id: stri
   return { id: note.id };
 }
 
-/** Whether `voter` has already voted on `proposalId` (one-vote-per-member). */
+/** Whether `voter` has already voted on `proposalId`. Kept for callers that only
+ *  need the predicate; the vote route uses `upsertVote` (votes are mutable). */
 export async function hasVoted(vault: ServiceVault, proposalId: string, voter: string): Promise<boolean> {
   const votes = await loadVotesFor(vault, proposalId);
   return votes.some((v) => v.voter === voter);
+}
+
+/** The voter's existing vote NOTE on a proposal (`loadVotesFor` drops note ids,
+ *  and we need the id to rewrite the vote in place). */
+export async function findVoteNote(
+  vault: ServiceVault,
+  proposalId: string,
+  voter: string,
+): Promise<Note | null> {
+  const notes = await govNotes(vault, GOV_TAGS.vote);
+  return (
+    notes.find((n) => {
+      const v = parseVote(n);
+      return v.proposal === proposalId && v.voter === voter;
+    }) ?? null
+  );
+}
+
+/**
+ * Cast or CHANGE a vote. A member may revise their sign-off while a proposal is
+ * still open — deliberation that cannot change its mind is not deliberation — so
+ * a second vote rewrites the first rather than being refused. One note per
+ * (proposal, voter) keeps the distinct-approver tally honest either way.
+ */
+export async function upsertVote(vault: ServiceVault, v: Vote): Promise<{ id: string; updated: boolean }> {
+  const existing = await findVoteNote(vault, v.proposal, v.voter);
+  if (existing) {
+    const n = await vault.updateNote(existing.id, {
+      metadata: { ...(existing.metadata ?? {}), ...voteToMetadata(v) },
+    });
+    return { id: n.id, updated: true };
+  }
+  const n = await castVote(vault, v);
+  return { id: n.id, updated: false };
 }
 
 /** Fetch + parse a single proposal note by id. */

@@ -8,7 +8,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { governance } from "../src/routes/governance";
-import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
 beforeEach(() => {
@@ -52,7 +52,9 @@ test("an edit goes live only after the tag policy threshold is met", async () =>
   await bootstrapContentCommons();
   const owner = cookieFor(OWNER);
 
-  // any member (even a non-gardener) may PROPOSE
+  // any member (even a non-gardener) may PROPOSE — standing here comes from a
+  // plain view grant on #medicine, not from any governance role.
+  grantUser("stranger@test.local", "tag", "medicine", "view");
   const open = await jreq("/content/propose", cookieFor("stranger@test.local"), "POST", { action: "edit_note", target: "n_med", content: "new" });
   assert.equal(open.status, 201);
   const { id } = await body(open);

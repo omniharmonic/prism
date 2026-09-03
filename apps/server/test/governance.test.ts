@@ -21,6 +21,8 @@ import {
   evaluateAmendment,
   isLocked,
   canMutateGovernanceDirectly,
+  validateRatification,
+  proposalWindowExpired,
   type GovernanceState,
   type GovernanceConfig,
   type Role,
@@ -324,4 +326,121 @@ test("evaluateAmendment: disabling governance requires clearing the amend policy
   assert.equal(evaluateAmendment(s, disable, twoAdmins, NOW).satisfied, false); // 2 of 3 — not enough
   const threeAdmins = [...twoAdmins, vote("a3@x.co", "approve", 3)];
   assert.equal(evaluateAmendment(s, disable, threeAdmins, NOW).satisfied, true); // constitutional threshold cleared
+});
+
+// ── ratification pre-flight (P0) ──────────────────────────────────────────────
+// The lock is one-way, so the ONLY moment a bad constitution can be caught is
+// the instant before it is ratified. Each case below is a way the commons could
+// otherwise freeze itself permanently.
+
+const ratifiable = () =>
+  state({
+    config: config({ enabled: false }),
+    roles: [role({ id: "ra", name: "admin", powers: ["amend_governance"] })],
+    memberships: [
+      { subject: "a1@x.co", role: "admin" },
+      { subject: "a2@x.co", role: "admin" },
+    ],
+    policies: [policy({ id: "pol-amend", action: "amend_governance", thresholdN: 2, eligibleRole: "admin" })],
+  });
+
+const problems = (r: ReturnType<typeof validateRatification>): string[] => (r.ok ? [] : r.problems);
+
+test("validateRatification passes a constitution that can amend itself", () => {
+  const s = ratifiable();
+  const check = validateRatification(s, config({ enabled: true, amendPolicy: "pol-amend" }), NOW);
+  assert.deepEqual(check, { ok: true });
+});
+
+test("validateRatification passes with NO amend policy when the config default resolves", () => {
+  const s = ratifiable();
+  const check = validateRatification(
+    s,
+    config({ enabled: true, amendPolicy: "", defaultEligibleRole: "admin", defaultThresholdN: 2 }),
+    NOW,
+  );
+  assert.deepEqual(check, { ok: true });
+});
+
+test("validateRatification rejects an amendPolicy that names no policy", () => {
+  const check = validateRatification(ratifiable(), config({ enabled: true, amendPolicy: "pol-ghost" }), NOW);
+  assert.equal(check.ok, false);
+  assert.match(problems(check).join(" "), /names no existing policy/);
+});
+
+test("validateRatification rejects an amendPolicy pointed at the wrong action", () => {
+  const s = state({
+    ...ratifiable(),
+    policies: [policy({ id: "pol-edit", action: "edit_note", eligibleRole: "admin" })],
+  });
+  const check = validateRatification(s, config({ enabled: true, amendPolicy: "pol-edit" }), NOW);
+  assert.equal(check.ok, false);
+  assert.match(problems(check).join(" "), /not "amend_governance"/);
+});
+
+test("validateRatification rejects an empty amendPolicy with no default eligible role", () => {
+  const check = validateRatification(
+    ratifiable(),
+    config({ enabled: true, amendPolicy: "", defaultEligibleRole: "" }),
+    NOW,
+  );
+  assert.equal(check.ok, false);
+  assert.match(problems(check).join(" "), /no amendment could ever be evaluated/);
+});
+
+test("validateRatification rejects an eligible role that does not exist", () => {
+  const s = state({
+    ...ratifiable(),
+    policies: [policy({ id: "pol-amend", action: "amend_governance", thresholdN: 1, eligibleRole: "ghosts" })],
+  });
+  const check = validateRatification(s, config({ enabled: true, amendPolicy: "pol-amend" }), NOW);
+  assert.equal(check.ok, false);
+  assert.match(problems(check).join(" "), /does not exist/);
+});
+
+test("validateRatification rejects too few ACTIVE members to ever clear the threshold", () => {
+  const s = ratifiable();
+  // 3 approvals needed, only 2 members hold the role
+  const short = validateRatification(
+    state({ ...s, policies: [policy({ id: "pol-amend", action: "amend_governance", thresholdN: 3, eligibleRole: "admin" })] }),
+    config({ enabled: true, amendPolicy: "pol-amend" }),
+    NOW,
+  );
+  assert.equal(short.ok, false);
+  assert.match(problems(short).join(" "), /un-amendable/);
+
+  // an EXPIRED membership does not count toward the threshold either
+  const expired = validateRatification(
+    state({
+      ...s,
+      memberships: [
+        { subject: "a1@x.co", role: "admin" },
+        { subject: "a2@x.co", role: "admin", expiresAt: "2026-06-01T00:00:00Z" },
+      ],
+    }),
+    config({ enabled: true, amendPolicy: "pol-amend" }),
+    NOW,
+  );
+  assert.equal(expired.ok, false);
+  assert.match(problems(expired).join(" "), /1 active member/);
+});
+
+test("validateRatification requires a bootstrapOwner", () => {
+  const check = validateRatification(ratifiable(), config({ enabled: true, amendPolicy: "pol-amend", bootstrapOwner: "" }), NOW);
+  assert.equal(check.ok, false);
+  assert.match(problems(check).join(" "), /bootstrapOwner/);
+});
+
+// ── voting windows (P0) ───────────────────────────────────────────────────────
+
+test("proposalWindowExpired: no window never expires; a closed window does", () => {
+  const p = proposal({ openedAt: at(0) });
+  assert.equal(proposalWindowExpired(policy({ windowSeconds: 0 }), p, NOW), false);
+  // 1h window, "now" is 30 min after open → still open
+  assert.equal(proposalWindowExpired(policy({ windowSeconds: 3600 }), p, T0 + 30 * 60_000), false);
+  // exactly at the boundary is still open; past it is expired
+  assert.equal(proposalWindowExpired(policy({ windowSeconds: 3600 }), p, T0 + 3600_000), false);
+  assert.equal(proposalWindowExpired(policy({ windowSeconds: 3600 }), p, T0 + 3600_001), true);
+  // an unparseable openedAt is treated as never-expiring, not instantly dead
+  assert.equal(proposalWindowExpired(policy({ windowSeconds: 60 }), proposal({ openedAt: "" }), NOW), false);
 });
