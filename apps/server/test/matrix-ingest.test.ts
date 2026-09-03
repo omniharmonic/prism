@@ -114,6 +114,18 @@ test("ingestMatrix leaves tags alone on an untriaged thread", async () => {
   assert.ok(TRIAGE_TAGS.includes("triaged"));
 });
 
+test("ingestMatrix clears triage-failed so a failed thread is re-triaged on new messages", async () => {
+  // Regression: the classifier hard-excludes `triage-failed`, so if the ingester
+  // does not strip it on append, a thread that failed once is skipped by every
+  // later run forever — new messages can never earn a fresh attempt.
+  const existing: Note = { id: "n3", content: "old", path: null, metadata: { matrixRoomId: "!e3:hs", messageCount: 7 }, tags: ["message-thread", "triage-failed"], createdAt: "", updatedAt: "" };
+  const fv = fakeVault([existing]);
+  const res = await ingestMatrix({ sync: async () => oneRoomSync("!e3:hs") }, fv.vault);
+  assert.equal(res.updated, 1);
+  assert.deepEqual(fv.removed, [{ id: "n3", tags: ["triage-failed"] }]);
+  assert.ok(TRIAGE_TAGS.includes("triage-failed"));
+});
+
 test("ingestMatrix returns nextBatch and skips empty rooms", async () => {
   const client = {
     sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", rooms: [{ roomId: "!empty:hs", name: "x", memberIds: [], displayNames: {}, messages: [] }], invites: [] }),
