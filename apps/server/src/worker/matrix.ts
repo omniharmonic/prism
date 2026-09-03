@@ -280,9 +280,18 @@ export function formatLine(
 }
 
 /**
- * Tags that mark a thread as already classified by the hourly triage skill.
- * A thread note is updated IN PLACE as messages arrive, so an old verdict would
+ * Tags recording the hourly triage skill's verdict on a thread — either a
+ * successful classification (`triaged` + one importance label) or a failure it
+ * parked for review (`triage-failed`).
+ *
+ * A thread note is updated IN PLACE as messages arrive, so a stale verdict would
  * otherwise stick forever — strip them on append so the next run re-triages.
+ *
+ * `triage-failed` MUST be in this list. The classifier hard-excludes that tag
+ * from its candidate set (structured_skill.rs), so a thread that fails once is
+ * skipped by every later run; without stripping it here, new messages on that
+ * thread can never earn a fresh attempt and the note is silently dropped from
+ * triage for good. Stripping it costs at most one retry per thread per append.
  */
 export const TRIAGE_TAGS = [
   "triaged",
@@ -290,6 +299,7 @@ export const TRIAGE_TAGS = [
   "action-required",
   "informational",
   "low",
+  "triage-failed",
 ];
 
 /** The minimal vault surface the ingester needs (so tests inject a fake). */
