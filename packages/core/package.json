@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./editor-schema": "./src/editor/collabSchema.ts",
     "./content-types": "./src/lib/schemas/content-types.ts",
+    "./governance-prose": "./src/lib/governance/prose.ts",
     "./styles/*": "./src/styles/*"
   },
   "scripts": {

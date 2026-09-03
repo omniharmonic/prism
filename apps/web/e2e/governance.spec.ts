@@ -1,16 +1,19 @@
 /**
  * Commons governance — full e2e through the real browser UI (@live).
  *
- * Drives the exact flows a commons steward walks: owner signs in via magic
- * link, bootstraps the constitution (role → amend policy → membership), enables
- * & LOCKS it, then — now that even the owner can't edit directly — amends it
- * through a proposal (open → approve → apply) and runs a governed content
- * change end to end.
+ * Drives the exact flows a commons steward walks: owner signs in via magic link,
+ * runs the bootstrap wizard (template → adjust → ratify), LOCKS the constitution,
+ * then — now that even the owner can't edit directly — amends it through a
+ * proposal (open → approve → apply) and runs a governed content change end to end.
+ *
+ * The P3 surface is the product one, so the spec also asserts the two things that
+ * make it a product rather than a form: a rule reads as a SENTENCE, and a proposal
+ * shows its arithmetic ("1 of 1 approvals") before anyone can apply it.
  *
  * Stack-agnostic: runs against any Prism Server at E2E_BASE_URL (real vault or
  * scripts/e2e/fake-vault.mjs). The magic link is read from the server's log
- * (E2E_SERVER_LOG) — the server prints it when RESEND_API_KEY is unset, which
- * is exactly the dev flow. Run via scripts/e2e-governance.sh.
+ * (E2E_SERVER_LOG) — the server prints it when RESEND_API_KEY is unset, which is
+ * exactly the dev flow. Run via scripts/e2e-governance.sh.
  */
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
@@ -24,6 +27,7 @@ const GOV_TAGS = [
   "governance-policy",
   "governance-proposal",
   "governance-vote",
+  "governance-revision",
   "governance-audit",
 ];
 
@@ -82,74 +86,87 @@ test.describe("commons governance @live", () => {
   test("bootstrap → lock → self-amend → governed content change", async ({ page }) => {
     // One deliberately long journey (it IS the product's core loop) — give it
     // room beyond the default 30s per-test budget.
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     await loginAsOwner(page);
     await page.goto("/governance");
 
     // ── fresh commons: unlocked, owner is the bootstrap root ──
-    await expect(page.getByText("Not enabled")).toBeVisible();
-    await expect(page.getByText("Unlocked (bootstrap)")).toBeVisible();
-    await expect(page.getByText("You are the bootstrap owner")).toBeVisible();
+    await expect(page.getByTestId("gov-status-enabled")).toContainText("Draft");
+    await expect(page.getByTestId("gov-status-lock")).toContainText("Unlocked");
+    await expect(page.getByTestId("gov-status-bootstrap")).toBeVisible();
+    await expect(page.getByTestId("gov-wizard")).toBeVisible();
 
-    // ── bootstrap: admin role with the constitutional + publish powers ──
-    await page.getByPlaceholder("name (e.g. gardener)").fill("admin");
-    await page.getByRole("checkbox", { name: "amend_governance" }).check();
-    await page.getByRole("checkbox", { name: "publish", exact: true }).check();
-    await page.getByRole("button", { name: "Add role" }).click();
-    await expect(page.locator("text=admin").first()).toBeVisible();
+    // ── step 1: start from the solo-curator template ──
+    await page.getByTestId("gov-template-solo").click();
+    await expect(page.getByTestId("gov-wizard-step2")).toBeVisible();
+    // The template pre-filled a real role, editable in place.
+    await expect(page.getByTestId("gov-wizard-role-0-name")).toHaveValue("steward");
+    // ...and its rule already reads as a sentence in the builder.
+    await expect(page.getByTestId("gov-wizard-policy-0-sentence")).toContainText(
+      "Amendments to the constitution need 1 approval from Stewards",
+    );
 
-    // ── amend policy: 1 distinct admin (threshold kept small for the e2e) ──
-    await page.getByPlaceholder("action (edit_note / new_entry / amend_governance)").fill("amend_governance");
-    await page.getByPlaceholder("eligible role").fill("admin");
-    await page.locator('input[type="number"]').first().fill("1");
-    await page.getByRole("button", { name: "Add policy" }).click();
-    await expect(page.getByText("amend_governance").first()).toBeVisible();
+    // ── step 2 → save the draft (roles + rules + roster are written, not ratified) ──
+    await page.getByTestId("gov-wizard-save").click();
+    await expect(page.getByTestId("gov-wizard-step3")).toBeVisible();
 
-    // ── owner joins the admin role (so they can vote after the lock) ──
-    await page.getByPlaceholder("subject email").fill(OWNER_EMAIL);
-    await page.getByPlaceholder("role name").fill("admin");
-    await page.getByRole("button", { name: "Add member" }).click();
-    await expect(page.getByText(OWNER_EMAIL).first()).toBeVisible();
+    // The constitution now shows up as prose in the panel itself.
+    await expect(page.getByTestId("gov-role-sentence").first()).toContainText("Stewards can read");
+    await expect(page.getByTestId("gov-policy-sentence").first()).toContainText(
+      "Amendments to the constitution need 1 approval from Stewards",
+    );
 
-    // ── ENABLE & LOCK (one-way latch; confirm dialog) ──
-    const amendSelect = page.locator("select");
-    await amendSelect.selectOption({ index: 1 }); // the policy just created
-    page.once("dialog", (d) => void d.accept());
-    await page.getByRole("button", { name: "Enable & lock" }).click();
+    // ── step 3: every readiness check green, then the one-way latch ──
+    const checks = page.getByTestId("gov-ratify-check");
+    await expect(checks).toHaveCount(4);
+    await page.getByTestId("gov-ratify-understood").check();
+    await page.getByTestId("gov-ratify").click();
 
-    await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
-    await expect(page.getByText("Locked (self-amending)")).toBeVisible();
-    // The bootstrap card is gone — there is no direct-edit path anymore.
-    await expect(page.getByText("Bootstrap the constitution")).toHaveCount(0);
+    await expect(page.getByTestId("gov-status-enabled")).toContainText("In force");
+    await expect(page.getByTestId("gov-status-lock")).toContainText("Locked");
+    // The wizard is gone — there is no direct-edit path anymore.
+    await expect(page.getByTestId("gov-wizard")).toHaveCount(0);
 
     // ── self-amend: add a gardener role via proposal → approve → apply ──
-    await expect(page.getByText("New amendment proposal")).toBeVisible();
-    await page.getByRole("button", { name: "add_role" }).click(); // template
-    await page.getByRole("button", { name: "Open amendment proposal" }).click();
-    await expect(page.getByText("amend_governance →").first()).toBeVisible();
+    await expect(page.getByTestId("gov-amend-composer")).toBeVisible();
+    await page.getByTestId("gov-amend-kind").selectOption("add_role");
+    await page.getByTestId("gov-amend-role-name").fill("gardener");
+    await page.getByTestId("gov-amend-open").click();
 
-    await page.getByRole("button", { name: "Approve" }).first().click();
-    await page.getByRole("button", { name: "Apply" }).first().click();
+    const proposal = page.getByTestId("gov-proposal-card").first();
+    await expect(proposal.getByTestId("gov-proposal-title")).toContainText("Create the gardener role");
+    // Before anyone signs off, the card states the arithmetic.
+    await expect(proposal.getByTestId("gov-proposal-progress")).toContainText("0 of 1 approvals");
 
-    // The amendment is live: the gardener role now shows in the Roles card.
-    await expect(page.getByText("gardener").first()).toBeVisible();
+    await proposal.getByTestId("gov-approve").click();
+    await expect(page.getByTestId("gov-proposal-card").first().getByTestId("gov-proposal-progress")).toContainText(
+      "1 of 1 approvals",
+    );
+    await page.getByTestId("gov-proposal-card").first().getByTestId("gov-apply").click();
+
+    // The amendment is live: the gardener role now shows in the Roles section.
+    await expect(page.getByTestId("gov-role-name").filter({ hasText: "gardener" })).toBeVisible();
 
     // ── governed content change with APPROVAL ≠ PUBLISHING ──
-    // The default policy does not auto-publish, so Apply stages the entry; it
-    // goes live only at the explicit Publish step.
-    await page.getByRole("radio", { name: "new_entry" }).check();
-    await page.getByPlaceholder("path (e.g. medicine/yarrow)").fill("medicine/e2e-yarrow");
-    await page.getByPlaceholder("tags (comma-separated)").fill("medicine");
-    await page.getByPlaceholder("proposed content (may be a stub)").fill("# Yarrow (e2e)\nA stub for a gardener to fill in.");
-    await page.getByRole("button", { name: "Propose", exact: true }).click();
-    await expect(page.getByText("new_entry →").first()).toBeVisible();
+    // No rule auto-publishes new entries here, so Apply STAGES the entry; it goes
+    // live only at the explicit Publish step.
+    await page.getByRole("radio", { name: "add a new entry" }).check();
+    await page.getByTestId("gov-propose-path").fill("medicine/e2e-yarrow");
+    await page.getByTestId("gov-propose-tags").fill("medicine");
+    await page.getByTestId("gov-propose-content").fill("# Yarrow (e2e)\nA stub for a gardener to fill in.");
+    await page.getByTestId("gov-propose-submit").click();
 
-    await page.getByRole("button", { name: "Approve" }).first().click();
-    await page.getByRole("button", { name: "Apply" }).first().click();
+    const entry = page.getByTestId("gov-proposal-card").filter({ hasText: "New entry at medicine/e2e-yarrow" }).first();
+    await expect(entry).toBeVisible();
+    await entry.getByTestId("gov-approve").click();
+    await expect(
+      page.getByTestId("gov-proposal-card").filter({ hasText: "New entry at medicine/e2e-yarrow" }).first().getByTestId("gov-proposal-progress"),
+    ).toContainText("1 of 1 approvals");
+    await page.getByTestId("gov-proposal-card").filter({ hasText: "New entry at medicine/e2e-yarrow" }).first().getByTestId("gov-apply").click();
 
-    // Approved but NOT live: the staged section shows it, and the vault has no
-    // medicine note yet.
-    await expect(page.getByText("Approved — awaiting publish")).toBeVisible();
+    // Approved but NOT live: the card is staged, and the vault has no medicine note.
+    const staged = page.getByTestId("gov-proposal-card").filter({ hasText: "New entry at medicine/e2e-yarrow" }).first();
+    await expect(staged.getByTestId("gov-publish")).toBeVisible();
     {
       const r = await ownerFetch(`/api/notes?tag=medicine`);
       const notes = (await r.json()) as Array<{ content: string }>;
@@ -157,7 +174,7 @@ test.describe("commons governance @live", () => {
     }
 
     // Publish → the note exists in the vault.
-    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    await staged.getByTestId("gov-publish").click();
     await expect
       .poll(async () => {
         const r = await ownerFetch(`/api/notes?tag=medicine`);
@@ -166,10 +183,23 @@ test.describe("commons governance @live", () => {
       })
       .toBe(true);
 
-    // ── the audit trail recorded the journey ──
+    // ── the constitution note reads as prose, generated from the rules ──
+    {
+      const r = await ownerFetch(`/api/notes?tag=governance-config`);
+      const notes = (await r.json()) as Array<{ content: string }>;
+      expect(notes[0]?.content).toContain("# Governance Constitution");
+      expect(notes[0]?.content).toContain("Amendments to the constitution need 1 approval from Stewards");
+    }
+
+    // ── your access: the ratified role compiled into real content grants ──
     await page.reload();
-    await expect(page.getByText("Audit trail")).toBeVisible();
-    await expect(page.getByText(/apply:new_entry|amend:add_role/).first()).toBeVisible();
+    await expect(page.getByTestId("gov-your-access")).toBeVisible();
+    await expect(page.getByTestId("gov-access-rows")).toContainText("via the steward role");
+
+    // ── the audit trail recorded the journey ──
+    await expect(page.getByTestId("gov-audit")).toBeVisible();
+    await expect(page.getByTestId("gov-audit-action").first()).toBeVisible();
+    await expect(page.getByTestId("gov-audit").getByText(/changed by amendment|set directly/).first()).toBeVisible();
   });
 
   test("a stranger cannot reach governance", async ({ page }) => {

@@ -20,6 +20,7 @@ import { config } from "../config";
 import { vault } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import {
+  activeRolesForSubject,
   isLocked,
   membershipActive,
   powersForSubject,
@@ -38,7 +39,7 @@ import {
 } from "../governance";
 import { roleAtLeast } from "../roles";
 import { reconcileGovernanceGrants } from "../governance-grants";
-import { isCap, type Cap } from "../permissions";
+import { expandLevel, isCap, type Cap } from "../permissions";
 import {
   GOV_TAGS,
   parseProposal,
@@ -62,6 +63,7 @@ import {
   proposeMerge,
   isContentAction,
   recordAudit,
+  writeConstitutionProse,
   type GovChange,
   type ContentPayload,
   type MutateResult,
@@ -148,6 +150,58 @@ governance.get("/audit", async (c) => {
   return c.json({ audit: await listAudit(vault, limit) });
 });
 
+/**
+ * "Your access" — everything THIS member holds, in one call: the governance
+ * powers they can exercise, the roles they actively hold, and the content grants
+ * those roles (or a human) gave them.
+ *
+ * Strictly first-person. The grants come off the already-resolved actor and are
+ * filtered to `subject_type === "user"` — the vault's `anyone` rows apply to every
+ * request and are not this person's access, and no other subject's rows are ever
+ * visible here. `source` distinguishes what the constitution granted
+ * ("governance:<roleId>", the reconciler's own ownership mark) from what a human
+ * shared by hand ("direct"), which is exactly the question a member asks when
+ * they wonder why they can edit something.
+ */
+governance.get("/me", async (c) => {
+  const actor = resolveActor(c);
+  const state = await loadGovernance(vault, config.ownerEmail);
+  const me = email(c);
+  const now = Date.now();
+
+  const memberships = state.memberships.filter(
+    (m) => m.subject.toLowerCase() === me.toLowerCase() && membershipActive(m, now),
+  );
+
+  const grants = (actor.kind === "user" ? actor.grants : [])
+    .filter((g) => g.subject_type === "user")
+    .map((g) => ({
+      resource_type: g.resource_type,
+      resource: g.resource,
+      level: g.level,
+      caps: g.caps && g.caps.length ? g.caps : [...expandLevel(g.level)],
+      source: g.created_by && g.created_by.startsWith("governance:") ? g.created_by : "direct",
+      expiresAt: g.expires_at ?? null,
+    }));
+
+  // Powers are reported CONTEXT-FREE here — the union over every role the caller
+  // actively holds — because the question this endpoint answers is "what do I
+  // hold", not "what may I do to this note". A tag-scoped role's powers only bite
+  // inside its tag (`powersForSubject` applies that narrowing at the point of
+  // use); the scope is right there in `memberships`, so the summary stays honest
+  // without hiding a power the person genuinely has somewhere.
+  const powers = new Set<Power>();
+  for (const role of activeRolesForSubject(state, me, now)) for (const p of role.powers) powers.add(p);
+
+  return c.json({
+    subject: me,
+    workspaceRole: actor.role,
+    powers: [...powers],
+    memberships,
+    grants,
+  });
+});
+
 // ── bootstrap / admin writes (funnel through the lock) ────────────────────────
 
 async function applyDirect(c: Context, change: GovChange) {
@@ -186,8 +240,12 @@ async function reconcileGrants(where: string): Promise<void> {
   try {
     const fresh = await loadGovernance(vault, config.ownerEmail);
     reconcileGovernanceGrants("primary", fresh);
+    // ...and re-render the constitution's prose body from the same fresh state,
+    // so the `governance-config` note always READS as the rules currently in
+    // force. Same best-effort contract: the governance write is already durable.
+    await writeConstitutionProse(vault, fresh);
   } catch (e) {
-    console.warn(`[governance] grant reconcile after ${where} failed:`, (e as Error).message);
+    console.warn(`[governance] reconcile after ${where} failed:`, (e as Error).message);
   }
 }
 
@@ -308,7 +366,10 @@ governance.get("/proposals/:id", async (c) => {
   const ctx = await proposalContext(vault, proposal, payload as ContentPayload);
   const votes = await loadVotesFor(vault, proposal.id);
   const evaluation = evaluateProposal(state, proposal, votes, ctx);
-  return c.json({ proposal, votes, evaluation });
+  // The PAYLOAD travels with the detail: a member asked to approve a change has to
+  // be able to see the change. For an amendment that is the governance edit; for a
+  // content proposal it is the proposed text the reviewer is signing off on.
+  return c.json({ proposal, votes, evaluation, payload });
 });
 
 /** Open a proposal. Proposing ≠ deciding — any member may open one. The payload

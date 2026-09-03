@@ -107,6 +107,6 @@ HEADED=()
   PARACHUTE_TOKEN="$(grep -E '^PARACHUTE_TOKEN=' "$ENV_E2E" | cut -d= -f2-)" \
   COLLAB_TOKEN="$(grep -E '^COLLAB_TOKEN=' "$ENV_E2E" | cut -d= -f2- || true)" \
   OWNER_EMAIL="$(grep -E '^OWNER_EMAIL=' "$ENV_E2E" | cut -d= -f2-)" \
-  npx playwright test $SPECS --reporter=list "${HEADED[@]}"
+  npx playwright test $SPECS --reporter=list ${HEADED[@]+"${HEADED[@]}"}
 )
 say "commons e2e PASSED"

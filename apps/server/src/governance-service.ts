@@ -11,6 +11,7 @@
  * every DECISION to the pure engine, so the authoritative logic stays testable
  * in isolation and this file stays a thin, auditable choke point.
  */
+import { renderConstitution, renderPolicySentence, renderRoleSentence } from "@prism/core/governance-prose";
 import type { Note, VaultHelper } from "./parachute";
 import {
   canDelegateMembership,
@@ -145,6 +146,40 @@ const notFound = (what: string, ref: string): EffectResult => ({
   detail: `no governance ${what} matches "${ref}"`,
 });
 
+// ── legible bodies (P3) ───────────────────────────────────────────────────────
+// A governance note whose body is just a heading is a row in a database wearing a
+// note's clothes. Every role/policy note carries the SENTENCE it means, rendered
+// by the same pure module the UI renders it with (@prism/core/governance-prose),
+// so the constitution is readable in the vault, in search, and in any client that
+// never heard of governance. Metadata stays authoritative; prose is derived.
+
+const roleBody = (role: Omit<Role, "id"> | Role): string =>
+  `# Governance role: ${role.name}\n\n${renderRoleSentence(role)}`;
+
+const policyBody = (policy: Omit<Policy, "id"> | Policy, state: GovernanceState): string =>
+  `# Governance policy: ${policy.action}\n\n${renderPolicySentence(policy, {
+    roleName: policy.eligibleRole || state.config.defaultEligibleRole,
+  })}`;
+
+/**
+ * Rewrite the `governance-config` note's CONTENT as the human-readable
+ * constitution. Called after every successful mutation (beside the grant
+ * reconcile) so the prose never drifts from the metadata that governs.
+ *
+ * Best-effort and metadata-preserving by construction: it patches `content`
+ * only. A no-op when the prose is already current, and a silent no-op when no
+ * config note exists yet (an un-bootstrapped commons has no constitution to
+ * write).
+ */
+export async function writeConstitutionProse(vault: ServiceVault, state: GovernanceState): Promise<boolean> {
+  const note = (await govNotes(vault, GOV_TAGS.config))[0];
+  if (!note) return false;
+  const content = renderConstitution(state);
+  if (note.content === content) return false;
+  await vault.updateNote(note.id, { content });
+  return true;
+}
+
 /**
  * Merge an incoming config with the current one, protecting the two fields whose
  * loss is unrecoverable. The UI's "disable governance" amendment template sends
@@ -192,15 +227,12 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
     case "add_role": {
       const existing = (await govNotes(vault, GOV_TAGS.role)).find((n) => parseRole(n).name === change.role.name);
       const metadata = roleToMetadata(change.role);
+      const content = roleBody(change.role);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata });
+        const n = await vault.updateNote(existing.id, { metadata, content });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({
-        content: `# Governance role: ${change.role.name}`,
-        metadata,
-        tags: [GOV_TAGS.role],
-      });
+      const n = await vault.createNote({ content, metadata, tags: [GOV_TAGS.role] });
       return { ok: true, id: n.id };
     }
 
@@ -211,7 +243,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       if (!match) return notFound("role", change.ref);
       const merged: Role = { ...parseRole(match), ...change.role };
-      const n = await vault.updateNote(match.id, { metadata: roleToMetadata(merged) });
+      const n = await vault.updateNote(match.id, { metadata: roleToMetadata(merged), content: roleBody(merged) });
       return { ok: true, id: n.id };
     }
 
@@ -238,15 +270,12 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
         return p.action === change.policy.action && p.scopeType === change.policy.scopeType && p.scope === change.policy.scope;
       });
       const metadata = policyToMetadata(change.policy);
+      const content = policyBody(change.policy, state);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata });
+        const n = await vault.updateNote(existing.id, { metadata, content });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({
-        content: `# Governance policy: ${change.policy.action}`,
-        metadata,
-        tags: [GOV_TAGS.policy],
-      });
+      const n = await vault.createNote({ content, metadata, tags: [GOV_TAGS.policy] });
       return { ok: true, id: n.id };
     }
 
@@ -261,7 +290,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
           detail: "refusing to retarget the constitution's amend policy away from amend_governance — governance would become un-amendable",
         };
       }
-      const n = await vault.updateNote(match.id, { metadata: policyToMetadata(merged) });
+      const n = await vault.updateNote(match.id, { metadata: policyToMetadata(merged), content: policyBody(merged, state) });
       return { ok: true, id: n.id };
     }
 

@@ -1,20 +1,50 @@
 {
   "name": "Spirit of the Front Range — Bioregional Knowledge Commons",
   "governance": {
+    "_comment": "Roles carry TWO things: `capabilities` (content access, compiled into real grants once the constitution is ratified) and `powers` (what its holders may do to the commons itself). Powers vocabulary: publish, assign_roles, manage_policy, invite, revoke, amend_governance. Capabilities vocabulary: view, comment, suggest, edit, create, organize, delete, share.",
     "roles": [
-      { "name": "admin", "powers": ["amend_governance", "review", "publish", "certify_gardener", "manage_policy", "arbitrate", "invite", "revoke"], "scopeType": "global", "scope": "" },
-      { "name": "gardener", "powers": ["review", "publish"], "scopeType": "global", "scope": "" },
-      { "name": "watershed-gardener", "powers": ["review", "publish"], "scopeType": "tag", "scope": "watershed" }
+      {
+        "name": "steward",
+        "powers": ["publish", "assign_roles", "manage_policy", "invite", "revoke", "amend_governance"],
+        "capabilities": ["view", "comment", "suggest", "edit", "create", "organize", "delete", "share"],
+        "scopeType": "global",
+        "scope": "",
+        "assigns": ["gardener", "member"]
+      },
+      {
+        "name": "gardener",
+        "powers": ["publish", "assign_roles"],
+        "capabilities": ["view", "comment", "suggest", "edit", "create"],
+        "scopeType": "global",
+        "scope": "",
+        "assigns": ["member"]
+      },
+      {
+        "name": "watershed-gardener",
+        "powers": ["publish"],
+        "capabilities": ["view", "comment", "suggest", "edit", "create"],
+        "scopeType": "tag",
+        "scope": "watershed",
+        "assigns": []
+      },
+      {
+        "name": "member",
+        "powers": [],
+        "capabilities": ["view", "comment", "suggest", "create"],
+        "scopeType": "global",
+        "scope": "",
+        "assigns": []
+      }
     ],
     "policies": [
-      { "action": "amend_governance", "scopeType": "global", "scope": "", "thresholdN": 2, "quorum": 0, "distinctRequired": true, "eligibleRole": "admin", "windowSeconds": 0, "autoPublish": false },
+      { "action": "amend_governance", "scopeType": "global", "scope": "", "thresholdN": 2, "quorum": 0, "distinctRequired": true, "eligibleRole": "steward", "windowSeconds": 0, "autoPublish": false },
       { "action": "edit_note", "scopeType": "global", "scope": "", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
       { "action": "new_entry", "scopeType": "global", "scope": "", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
-      { "action": "edit_note", "scopeType": "tag", "scope": "medicine", "thresholdN": 3, "distinctRequired": true, "eligibleRole": "gardener", "autoPublish": false },
+      { "action": "edit_note", "scopeType": "tag", "scope": "medicine", "thresholdN": 3, "distinctRequired": true, "eligibleRole": "gardener", "windowSeconds": 604800, "autoPublish": false },
       { "action": "edit_note", "scopeType": "tag", "scope": "watershed", "thresholdN": 2, "distinctRequired": true, "eligibleRole": "watershed-gardener", "autoPublish": true }
     ],
     "members": [
-      { "subject": "owner@example.com", "role": "admin" }
+      { "subject": "owner@example.com", "role": "steward" }
     ],
     "config": {
       "defaultThresholdN": 2,
