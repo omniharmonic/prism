@@ -23,6 +23,7 @@ import type {
   Vote,
 } from "./governance";
 import { POWERS } from "./governance";
+import { isCap, type Cap } from "./permissions";
 
 /** The minimum vault surface the store needs — satisfied by parachute.ts `vault`. */
 export interface GovernanceVault {
@@ -84,13 +85,20 @@ export function parseConfig(note: Note): GovernanceConfig {
 
 export function parseRole(note: Note): Role {
   const m = note.metadata;
+  // Unknown names are DROPPED, not rejected: a role note written under an older
+  // vocabulary (P2 cut `review`/`arbitrate` and renamed `certify_gardener` →
+  // `assign_roles`) still loads, minus the powers/caps that no longer exist. A
+  // constitution must degrade, never fail to parse.
   const powers = strArr(m, "powers").filter((p): p is Power => (POWERS as readonly string[]).includes(p));
+  const capabilities = strArr(m, "capabilities").filter((x): x is Cap => isCap(x));
   return {
     id: note.id,
     name: str(m, "name") || note.id,
     powers,
     scopeType: oneOf(str(m, "scope_type", "global"), ["global", "tag"] as const, "global"),
     scope: str(m, "scope"),
+    capabilities,
+    assigns: strArr(m, "assigns"),
   };
 }
 
@@ -182,7 +190,17 @@ export function configToMetadata(c: GovernanceConfig): Record<string, unknown> {
   };
 }
 export function roleToMetadata(r: Omit<Role, "id">): Record<string, unknown> {
-  return { name: r.name, powers: r.powers, scope_type: r.scopeType, scope: r.scope };
+  return {
+    name: r.name,
+    powers: r.powers,
+    scope_type: r.scopeType,
+    scope: r.scope,
+    // P2: the content caps this role confers (compiled into grants) and the roles
+    // its holders may staff. Written unconditionally so parse(serialize(x)) still
+    // round-trips exactly.
+    capabilities: r.capabilities ?? [],
+    assigns: r.assigns ?? [],
+  };
 }
 export function membershipToMetadata(m: Membership): Record<string, unknown> {
   return { subject: m.subject, role: m.role, granted_by: m.grantedBy ?? "", expires_at: m.expiresAt ?? "" };

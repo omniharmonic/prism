@@ -12,6 +12,10 @@
  * authoritative logic pure means it is unit-tested in isolation exactly like the
  * permission algebra.
  *
+ * The one import it carries is a TYPE: `Cap` from permissions.ts. That is a
+ * vocabulary, not a dependency — it erases at compile time, so this module still
+ * emits no imports and does no I/O.
+ *
  * Two ideas carry the design:
  *  - Three axes kept separate: WHO (roles/memberships), HOW-MANY (policies),
  *    WHAT-STATE (proposals/votes). See docs/roadmap/bioregional-commons-1-governance.md.
@@ -23,15 +27,30 @@
  *    path edits a locked config out of band.
  */
 
-/** Governance powers a role may carry (distinct from content `Level`). */
+import type { Cap } from "./permissions";
+
+/**
+ * Governance powers a role may carry (distinct from content `Level`/`Cap`).
+ *
+ * P2 trimmed this list to what the system actually decides with. `review` was
+ * redundant — eligibility to sign off on a proposal is the POLICY's
+ * `eligibleRole`, never a power — and `arbitrate` named a dispute flow that does
+ * not exist. `certify_gardener` became `assign_roles`: the same idea (hand out
+ * roles) said generically, and now genuinely enforced (see the delegated path in
+ * governance-service.ts). `parseRole` filters unknown names, so a note written
+ * under the old vocabulary degrades silently to the powers that survive rather
+ * than failing to load.
+ *
+ * Enforced today: `publish` (routes/governance.ts) and `assign_roles`
+ * (mutateGovernance's delegated path). The rest are DECLARATIVE — they describe
+ * the constitution for humans and for future enforcement; nothing reads them yet.
+ */
 export const POWERS = [
-  "review", // approve/vote on content proposals
-  "publish", // move the live/published pointer
-  "certify_gardener", // grant lower governance roles
-  "manage_policy", // create/edit governance-policy notes
-  "arbitrate", // resolve disputes / graduated sanctions
-  "invite", // invite new members
-  "revoke", // revoke memberships/grants
+  "publish", // move the live/published pointer (enforced)
+  "assign_roles", // add/remove memberships of the roles this role `assigns` (enforced)
+  "manage_policy", // create/edit governance-policy notes (declarative)
+  "invite", // invite new members (declarative)
+  "revoke", // revoke memberships/grants (declarative)
   "amend_governance", // change or disable governance itself (the constitutional power)
 ] as const;
 export type Power = (typeof POWERS)[number];
@@ -39,13 +58,31 @@ export type Power = (typeof POWERS)[number];
 export type ScopeType = "global" | "tag" | "note";
 export type ProposalState = "open" | "approved" | "rejected" | "applied" | "withdrawn";
 
-/** A named bundle of powers, optionally scoped to a single tag (nested governance). */
+/**
+ * A named bundle of powers, optionally scoped to a single tag (nested
+ * governance) — and, since P2, of CONTENT capabilities too.
+ *
+ * `capabilities` is what turns a constitution into access: every active holder of
+ * the role is materialized into an ordinary grant carrying exactly these caps
+ * (`governance-grants.ts`). Governance never becomes a second guard —
+ * `effectiveCaps` stays the only one; governance just writes grants for it.
+ *
+ * `assigns` names the roles whose MEMBERSHIP this role's holders may manage
+ * without an amendment (the `assign_roles` power). Routine stewardship — adding a
+ * gardener — should not need a constitutional vote; changing the constitution
+ * still does, which is why a role carrying `amend_governance` can never be handed
+ * out this way (see `canDelegateMembership`).
+ */
 export interface Role {
   id: string;
   name: string;
   powers: Power[];
   scopeType: "global" | "tag";
   scope: string; // the tag when scopeType==="tag"; "" for global
+  /** Content caps every active holder receives, compiled into real grant rows. */
+  capabilities: Cap[];
+  /** Role names (or ids) whose membership holders of this role may manage. */
+  assigns: string[];
 }
 
 /** Binds a subject (email) to a role, with optional expiry (term limits/recall). */
@@ -135,11 +172,16 @@ export function roleApplies(role: Role, ctx: ActionContext = {}): boolean {
 
 const roleMatches = (role: Role, ref: string): boolean => role.id === ref || role.name === ref;
 
-/** The active roles a subject holds that apply to `ctx`. */
-export function rolesForSubject(
+/**
+ * Every role a subject actively holds, IGNORING context. Used where the scope is
+ * the thing being reasoned about rather than a filter on it: compiling grants
+ * (a tag-scoped role becomes a tag grant, so it must be visible with no note in
+ * hand) and delegated assignment (a tag-scoped assigner is judged against the
+ * TARGET role's scope, not against a note's tags).
+ */
+export function activeRolesForSubject(
   state: GovernanceState,
   subject: string,
-  ctx: ActionContext = {},
   nowMs = Date.now(),
 ): Role[] {
   const out: Role[] = [];
@@ -147,10 +189,20 @@ export function rolesForSubject(
     if (m.subject !== subject) continue;
     if (!membershipActive(m, nowMs)) continue;
     for (const role of state.roles) {
-      if (roleMatches(role, m.role) && roleApplies(role, ctx)) out.push(role);
+      if (roleMatches(role, m.role)) out.push(role);
     }
   }
   return out;
+}
+
+/** The active roles a subject holds that apply to `ctx`. */
+export function rolesForSubject(
+  state: GovernanceState,
+  subject: string,
+  ctx: ActionContext = {},
+  nowMs = Date.now(),
+): Role[] {
+  return activeRolesForSubject(state, subject, nowMs).filter((role) => roleApplies(role, ctx));
 }
 
 /** The union of powers a subject can exercise in `ctx`. */
@@ -187,6 +239,45 @@ export function subjectHoldsRole(
 ): boolean {
   if (!roleName) return false;
   return rolesForSubject(state, subject, ctx, nowMs).some((r) => r.name === roleName);
+}
+
+/**
+ * May `subject` add or remove a membership of `targetRoleRef` DIRECTLY, with no
+ * amendment — the `assign_roles` delegation (P2)?
+ *
+ * Post-ratification everything routes through a proposal, which is right for the
+ * constitution and absurd for routine stewardship: onboarding a gardener should
+ * not require a constitutional vote. So a role may name, in `assigns`, the roles
+ * whose membership its holders may manage, and hold `assign_roles` to exercise it.
+ *
+ * Three conditions, all required:
+ *  1. the assigner holds an ACTIVE role R with the `assign_roles` power;
+ *  2. R.assigns names the target role (by name or id);
+ *  3. scopes are compatible — R is global, or R and the target are tag-scoped to
+ *     the SAME tag. A gardener-of-#medicine can never staff #watershed.
+ *
+ * And one hard rule that no `assigns` list can unlock: a role carrying
+ * `amend_governance` is never assignable this way. Constitutional power changes
+ * hands only through the constitution's own amendment process — otherwise
+ * delegation would be a back door to the amend threshold itself.
+ */
+export function canDelegateMembership(
+  state: GovernanceState,
+  subject: string,
+  targetRoleRef: string,
+  nowMs = Date.now(),
+): boolean {
+  if (!subject || !targetRoleRef) return false;
+  const target = state.roles.find((r) => roleMatches(r, targetRoleRef));
+  if (!target) return false;
+  if (target.powers.includes("amend_governance")) return false;
+  for (const r of activeRolesForSubject(state, subject, nowMs)) {
+    if (!r.powers.includes("assign_roles")) continue;
+    if (!(r.assigns ?? []).some((a) => a === target.name || a === target.id)) continue;
+    if (r.scopeType === "global") return true;
+    if (r.scopeType === "tag" && target.scopeType === "tag" && r.scope !== "" && r.scope === target.scope) return true;
+  }
+  return false;
 }
 
 /** How specific is a policy for this context? note (3) > tag (2) > global (1);

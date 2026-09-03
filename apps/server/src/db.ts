@@ -999,8 +999,14 @@ const hydrate = (row: unknown): Grant => {
 const hydrateAll = (rows: unknown[]): Grant[] => rows.map(hydrate);
 // User grants are scoped to the active vault: a member of vault A must not pick up
 // their (or an "anyone") grant from vault B. (anyone grants are per-vault too.)
+// EXPIRY (P2): an expired grant must not authorize anything. Peer grants have
+// filtered on this since 4.3; the user path did not, which was harmless only
+// because nothing wrote `expires_at` on a user grant. Governance memberships DO
+// (a term-limited role compiles to an expiring grant), so an unfiltered read here
+// would keep a recalled steward's access alive forever. NULL still means never.
 const selectGrantsByUser = db.prepare(
-  "SELECT * FROM grants WHERE vault_id = ? AND ((subject_type = 'user' AND subject = ?) OR subject_type = 'anyone')",
+  "SELECT * FROM grants WHERE vault_id = ? AND ((subject_type = 'user' AND subject = ?) OR subject_type = 'anyone')" +
+    " AND (expires_at IS NULL OR expires_at > ?)",
 );
 const selectGrantsByCapability = db.prepare(
   "SELECT * FROM grants WHERE subject_type = 'link' AND subject = ?",
@@ -1031,7 +1037,7 @@ export function addGrant(g: GrantInput): Grant {
 /** Grants for a signed-in user IN a vault (their own + any "anyone-with-link"
  *  grants in that vault). Defaults to the primary vault for single-vault callers. */
 export function grantsForUser(email: string, vaultId = "primary"): Grant[] {
-  return hydrateAll(selectGrantsByUser.all(vaultId, email));
+  return hydrateAll(selectGrantsByUser.all(vaultId, email, now()));
 }
 /** Grants attached to a specific capability link (each carries its own vault_id;
  *  a link is bound to one resource in one vault). */
@@ -1052,6 +1058,20 @@ export function vaultIdsWithGrantsForUser(email: string): string[] {
 }
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
+}
+
+// ── governance-materialized grants (P2) ──────────────────────────────────────
+// The constitution compiles to ORDINARY grant rows, marked by a `created_by` of
+// "governance:<roleId>". That prefix is the whole contract: the reconciler owns
+// exactly these rows and never touches any other, so a grant a human made by hand
+// survives every reconcile — including one that revokes everything governance
+// granted. Expired rows are INCLUDED: the reconciler must be able to see and
+// clean up what it wrote, even after it stopped applying.
+const selectGovernanceGrants = db.prepare(
+  "SELECT * FROM grants WHERE vault_id = ? AND created_by LIKE 'governance:%'",
+);
+export function listGovernanceGrants(vaultId = "primary"): Grant[] {
+  return hydrateAll(selectGovernanceGrants.all(vaultId));
 }
 // ── grants audit (Phase 2.2): list every grant in a vault, and fetch one by id
 // (so a revoke can be scoped to the admin's OWN vault — no cross-vault deletes).

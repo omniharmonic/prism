@@ -47,9 +47,11 @@ const config = (over: Partial<GovernanceConfig> = {}): GovernanceConfig => ({
 const role = (over: Partial<Role>): Role => ({
   id: "r",
   name: "gardener",
-  powers: ["review"],
+  powers: ["publish"],
   scopeType: "global",
   scope: "",
+  capabilities: [],
+  assigns: [],
   ...over,
 });
 
@@ -94,9 +96,13 @@ const proposal = (over: Partial<Proposal> = {}): Proposal => ({
 
 // ── powers & roles ────────────────────────────────────────────────────────────
 
-test("POWERS includes the constitutional amend power", () => {
+test("POWERS includes the constitutional amend power and the delegation power", () => {
   assert.ok(POWERS.includes("amend_governance"));
-  assert.ok(POWERS.includes("review"));
+  assert.ok(POWERS.includes("assign_roles"));
+  // P2 trimmed the vocabulary to what is actually decided with; these two named
+  // nothing the system does (`review` duplicated a policy's eligibleRole).
+  assert.ok(!(POWERS as readonly string[]).includes("review"));
+  assert.ok(!(POWERS as readonly string[]).includes("arbitrate"));
 });
 
 test("membershipActive: no expiry = forever; past expiry = inactive", () => {
@@ -130,11 +136,11 @@ test("rolesForSubject resolves memberships by id or name and skips expired", () 
 
 test("tag-scoped power is only exercisable within that tag", () => {
   const s = state({
-    roles: [role({ id: "r1", name: "watershed-gardener", powers: ["review"], scopeType: "tag", scope: "watershed" })],
+    roles: [role({ id: "r1", name: "watershed-gardener", powers: ["publish"], scopeType: "tag", scope: "watershed" })],
     memberships: [{ subject: "a@x.co", role: "r1" }],
   });
-  assert.equal(hasPower(s, "a@x.co", "review", { tags: ["watershed"] }, NOW), true);
-  assert.equal(hasPower(s, "a@x.co", "review", { tags: ["species"] }, NOW), false);
+  assert.equal(hasPower(s, "a@x.co", "publish", { tags: ["watershed"] }, NOW), true);
+  assert.equal(hasPower(s, "a@x.co", "publish", { tags: ["species"] }, NOW), false);
   assert.deepEqual([...powersForSubject(s, "a@x.co", { tags: ["species"] }, NOW)], []);
 });
 
@@ -210,7 +216,7 @@ test("defaultPolicy is safe: at least 1 approval, distinct required", () => {
 
 const govWithGardeners = (extra: Partial<GovernanceState> = {}) =>
   state({
-    roles: [role({ id: "rg", name: "gardener", powers: ["review"] })],
+    roles: [role({ id: "rg", name: "gardener", powers: ["publish"] })],
     memberships: [
       { subject: "g1@x.co", role: "rg" },
       { subject: "g2@x.co", role: "rg" },
@@ -282,7 +288,7 @@ test("evaluateProposal: votes outside the window are dropped", () => {
 
 test("evaluateProposal: tag-scoped eligibility respects the proposal context", () => {
   const s = state({
-    roles: [role({ id: "rw", name: "gardener", powers: ["review"], scopeType: "tag", scope: "watershed" })],
+    roles: [role({ id: "rw", name: "gardener", powers: ["publish"], scopeType: "tag", scope: "watershed" })],
     memberships: [
       { subject: "g1@x.co", role: "rw" },
       { subject: "g2@x.co", role: "rw" },

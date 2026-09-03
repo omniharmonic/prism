@@ -280,3 +280,25 @@ test("a path-only PATCH: organize applies it, edit no-ops it, view is still refu
   const view = await req("/notes/n1", { method: "PATCH", cookie: login("val@test.local"), headers: J, body: JSON.stringify({ path: "/nope" }) });
   assert.equal(view.status, 403, "a write attempt is refused, never echoed back as a 200");
 });
+
+// ------------------------------------------- vault-wide grants (P2 overseer fix)
+
+test("a vault grant with view enumerates the whole vault in GET /notes", async () => {
+  // A GLOBAL governance role compiles to exactly this grant shape; the tag-bounded
+  // enumeration would return [] for it even though every per-note check passes.
+  fv.put({ id: "n1", content: "a", tags: ["alpha"] });
+  fv.put({ id: "n2", content: "b", tags: ["beta"] });
+  grantCaps("global@test.local", "vault", "", ["view", "suggest", "edit"]);
+  const r = await req("/notes", { cookie: login("global@test.local") });
+  assert.equal(r.status, 200);
+  const ids = ((await r.json()) as { id: string }[]).map((n) => n.id).sort();
+  assert.deepEqual(ids, ["n1", "n2"]);
+});
+
+test("a vault grant WITHOUT view still enumerates nothing", async () => {
+  fv.put({ id: "n1", content: "a", tags: ["alpha"] });
+  grantCaps("blind@test.local", "vault", "", ["create"]);
+  const r = await req("/notes", { cookie: login("blind@test.local") });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), []);
+});

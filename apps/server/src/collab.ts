@@ -42,7 +42,7 @@ import {
   getFederationEnabled,
   type Grant,
 } from "./db";
-import { effectiveLevel, effectiveCaps, atLeast, type Level } from "./permissions";
+import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
@@ -533,15 +533,24 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     /* new/unknown note — no tags/metadata */
   }
   const noteRef = { id: noteId, tags, creator, visibility };
-  // Read gate on the `view` CAP, not the ladder (P1): a caps grant that omits
-  // `view` (e.g. a create-only drop-box) projects to level "view" for ladder
-  // consumers, and without this check it could open a read-only collab socket on
-  // a note the HTTP gateway refuses to serve. For level-only grants the cap and
-  // the ladder agree, so this is a no-op for every pre-caps grant. (A caps set
-  // like ["view","edit"] still projects to a read-only level here — caps-aware
-  // WRITE authorization for collab is P2; under-granting is the safe direction.)
-  if (!effectiveCaps(grants, noteRef, roleFloor(role), email ?? null).has("view")) return null;
-  return effectiveLevel(grants, noteRef, roleFloor(role), email ?? null);
+  // Collab authorization goes through the CAPS, projected onto the ladder this
+  // socket understands (P1/P2). Two asymmetries the level column alone gets wrong:
+  //  - a caps grant that omits `view` (a create-only drop-box) projects to level
+  //    "view" for ladder consumers, but confers NO read — refuse the socket, or
+  //    it leaks a note the HTTP gateway refuses to serve;
+  //  - a caps grant like ["view","suggest","edit"] (a governance role's compiled
+  //    grant) projects to level "view" via levelForCaps' containment rule, but its
+  //    holder may PATCH over HTTP — the socket must grant the same write access.
+  // For level-only grants caps === the level's expansion, so this returns exactly
+  // effectiveLevel and every pre-caps grant behaves identically.
+  const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email ?? null);
+  if (lvl === "own") return "own";
+  const caps = effectiveCaps(grants, noteRef, roleFloor(role), email ?? null);
+  if (!caps.has("view")) return null;
+  if (caps.has("edit")) return maxLevel(lvl, "edit");
+  if (caps.has("suggest")) return maxLevel(lvl, "suggest");
+  if (caps.has("comment")) return maxLevel(lvl, "comment");
+  return lvl ?? "view";
 }
 
 /**

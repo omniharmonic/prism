@@ -28,6 +28,7 @@ import {
   requiredPolicy,
   subjectHoldsRole,
   evaluateProposal,
+  POWERS,
   type GovernanceState,
   type GovernanceConfig,
   type Membership,
@@ -36,6 +37,8 @@ import {
   type Role,
 } from "../governance";
 import { roleAtLeast } from "../roles";
+import { reconcileGovernanceGrants } from "../governance-grants";
+import { isCap, type Cap } from "../permissions";
 import {
   GOV_TAGS,
   parseProposal,
@@ -151,13 +154,42 @@ async function applyDirect(c: Context, change: GovChange) {
   const state = await loadGovernance(vault, config.ownerEmail);
   const res = await mutateGovernance(vault, state, email(c), change);
   if (!res.ok) return c.json({ error: res.code, detail: res.detail }, httpFor(res));
+  await reconcileGrants(change.kind);
   return c.json({ ok: true, applied: res.applied, note: res.note });
 }
 
-const asPowers = (v: unknown): Power[] => {
-  const allow = new Set<string>(["review", "publish", "certify_gardener", "manage_policy", "arbitrate", "invite", "revoke", "amend_governance"]);
-  return Array.isArray(v) ? (v.map(String).filter((p) => allow.has(p)) as Power[]) : [];
-};
+// The wire vocabulary, kept in lockstep with governance.ts POWERS. Unknown names
+// are DROPPED rather than rejected, so a client written against the old list
+// (`review`, `arbitrate`, `certify_gardener`) still creates a valid role — minus
+// the powers that no longer exist.
+const asPowers = (v: unknown): Power[] =>
+  Array.isArray(v) ? (v.map(String).filter((p) => (POWERS as readonly string[]).includes(p)) as Power[]) : [];
+
+/** Content capabilities on a role (P2) — same defensive filter as the powers. */
+const asCaps = (v: unknown): Cap[] =>
+  Array.isArray(v) ? [...new Set(v.map(String).filter(isCap))] : [];
+
+/** The role names a role may staff (`assign_roles`). Free-form strings by design:
+ *  a role may name one that does not exist yet, and delegation simply won't
+ *  resolve until it does. */
+const asAssigns = (v: unknown): string[] =>
+  Array.isArray(v) ? [...new Set(v.map(String).filter((x) => x !== ""))] : [];
+
+/**
+ * Recompile the constitution into grant rows after a successful mutation, so a
+ * ratified change reaches the CONTENT plane immediately rather than at the next
+ * worker tick. Best-effort by design: the governance write already succeeded and
+ * is durable in the vault: failing the request here would report a false negative
+ * for a change that did happen, and the periodic reconcile converges anyway.
+ */
+async function reconcileGrants(where: string): Promise<void> {
+  try {
+    const fresh = await loadGovernance(vault, config.ownerEmail);
+    reconcileGovernanceGrants("primary", fresh);
+  } catch (e) {
+    console.warn(`[governance] grant reconcile after ${where} failed:`, (e as Error).message);
+  }
+}
 
 governance.post("/config", async (c) => {
   const b = await c.req.json().catch(() => ({}));
@@ -178,6 +210,8 @@ governance.post("/roles", async (c) => {
     powers: asPowers(b.powers),
     scopeType: b.scopeType === "tag" ? "tag" : "global",
     scope: String(b.scope ?? ""),
+    capabilities: asCaps(b.capabilities),
+    assigns: asAssigns(b.assigns),
   };
   if (!role.name) return c.json({ error: "bad_request", detail: "role name required" }, 400);
   return applyDirect(c, { kind: "add_role", role });
@@ -225,6 +259,8 @@ governance.patch("/roles/:ref", async (c) => {
   if (Array.isArray(b.powers)) patch.powers = asPowers(b.powers);
   if (b.scopeType === "tag" || b.scopeType === "global") patch.scopeType = b.scopeType;
   if (typeof b.scope === "string") patch.scope = b.scope;
+  if (Array.isArray(b.capabilities)) patch.capabilities = asCaps(b.capabilities);
+  if (Array.isArray(b.assigns)) patch.assigns = asAssigns(b.assigns);
   return applyDirect(c, { kind: "update_role", ref: c.req.param("ref"), role: patch });
 });
 
@@ -382,6 +418,7 @@ governance.post("/proposals/:id/apply", async (c) => {
     if (!change) return c.json({ error: "bad_payload", detail: "proposal payload is not a valid governance change" }, 400);
     const res = await mutateGovernance(vault, state, me, change, { proposal, votes });
     if (!res.ok) return c.json({ error: res.code, detail: res.detail, evaluation: res.evaluation }, httpFor(res));
+    await reconcileGrants(`amend:${change.kind}`);
     await setProposalState(vault, proposal.id, "applied");
     return c.json({ ok: true, applied: res.applied, note: res.note });
   }
@@ -551,6 +588,8 @@ function coerceChange(obj: unknown): GovChange | null {
           powers: asPowers(r.powers),
           scopeType: r.scopeType === "tag" ? "tag" : "global",
           scope: String(r.scope ?? ""),
+          capabilities: asCaps(r.capabilities),
+          assigns: asAssigns(r.assigns),
         },
       };
     }
@@ -581,6 +620,8 @@ function coerceChange(obj: unknown): GovChange | null {
       if (r.powers !== undefined) patch.powers = asPowers(r.powers);
       if (r.scopeType !== undefined) patch.scopeType = r.scopeType === "tag" ? "tag" : "global";
       if (r.scope !== undefined) patch.scope = String(r.scope);
+      if (r.capabilities !== undefined) patch.capabilities = asCaps(r.capabilities);
+      if (r.assigns !== undefined) patch.assigns = asAssigns(r.assigns);
       return { kind: "update_role", ref, role: patch };
     }
     case "remove_role": {

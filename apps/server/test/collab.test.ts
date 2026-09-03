@@ -480,3 +480,25 @@ test("a view-less caps grant (create-only drop-box) cannot open a collab socket"
     /Forbidden/,
   );
 });
+
+test("a governance-style caps grant (view/suggest/edit) opens the collab socket WRITABLE", async () => {
+  // Regression (P2): ["view","suggest","edit"] projects to level "view" via
+  // levelForCaps' containment rule (no comment cap), but its holder may PATCH
+  // over HTTP — the socket must grant the same write access, or governance-
+  // granted editing is read-only in the real UI.
+  const { addGrant } = await import("../src/db");
+  fv.put({ id: "n1", content: "x", tags: ["medicine"] });
+  addGrant({
+    subject_type: "user",
+    subject: "gardener@test.local",
+    resource_type: "tag",
+    resource: "medicine",
+    level: "view",
+    caps: ["view", "suggest", "edit"],
+    created_by: "governance:role-1",
+  });
+  const cc = { readOnly: false };
+  const level = await authorizeConnection("n1", "", sessionCookie(makeSession("gardener@test.local")), cc);
+  assert.equal(level, "edit");
+  assert.equal(cc.readOnly, false);
+});

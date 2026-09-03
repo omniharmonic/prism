@@ -876,7 +876,7 @@
       }
     },
     "governance-role": {
-      "description": "A commons governance role: a named bundle of powers, optionally scoped to a tag (nested/tag-scoped governance, e.g. gardener of #watershed). Powers ∈ review, publish, certify_gardener, manage_policy, arbitrate, invite, revoke, amend_governance.",
+      "description": "A commons governance role: a named bundle of powers, optionally scoped to a tag (nested/tag-scoped governance, e.g. gardener of #watershed). Powers ∈ publish, assign_roles, manage_policy, invite, revoke, amend_governance. A role may also carry content capabilities, which are materialized into real access grants for every active holder.",
       "contentType": "document",
       "precedence": 41,
       "fields": {
@@ -899,6 +899,14 @@
         "scope": {
           "type": "string",
           "description": "The tag this role is scoped to when scope_type=tag (empty for global)."
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Content capabilities every active holder of this role receives (\u2208 view, comment, suggest, edit, create, organize, delete, share). Compiled into ordinary access grants scoped by scope_type/scope; empty means the role is purely procedural and confers no access to notes."
+        },
+        "assigns": {
+          "type": "array",
+          "description": "Role names whose membership a holder of this role may add/remove directly, without an amendment (requires the assign_roles power, and a matching scope). A role carrying amend_governance can never be assigned this way."
         }
       }
     },
@@ -933,7 +941,7 @@
       "fields": {
         "action": {
           "type": "string",
-          "description": "The governed action (e.g. edit_note, new_entry, publish, certify_gardener, add_admin, remove_admin, amend_governance).",
+          "description": "The governed action (e.g. edit_note, new_entry, publish, assign_roles, add_admin, remove_admin, amend_governance).",
           "indexed": true
         },
         "scope_type": {

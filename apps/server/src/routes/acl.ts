@@ -13,8 +13,8 @@ import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { serverKeyPair, fingerprint } from "../auth/peer";
-import { CAPS, LEVELS, isCap, levelForCaps, type Cap, type Level } from "../permissions";
-import { roleAtLeast } from "../roles";
+import { CAPS, LEVELS, effectiveCaps, expandLevel, isCap, levelForCaps, type Cap, type Level, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor } from "../roles";
 import {
   ensureUser,
   hasAccount,
@@ -124,11 +124,141 @@ async function grantAndInvite(
 
 export const acl = new Hono();
 
-// Everything here is owner/admin-only (workspace management).
+// ── scoped sharing (P2) ──────────────────────────────────────────────────────
+// `share` was defined in P1 and enforced nowhere: every /acl route was admin-only,
+// so "may manage other people's access to THIS folder" was a capability you could
+// hold and never use. These five routes are the surface where it becomes real —
+// a non-admin who holds `share` on a note (or a tag) may manage that one
+// resource's people grants, and nothing else. Everything else on /acl stays
+// admin-only, and the admin path below is untouched: it is still the first branch
+// of the gate, so an admin request does exactly what it did before.
+//
+// Note the asymmetry with the /api gateway: there, a stronger level implies more
+// power over the CONTENT. Here it is about power over ACCESS, which is why the
+// handlers add anti-escalation on top of the route check (you cannot grant what
+// you do not hold, and you cannot pull a stranger into the workspace).
+type ShareScope = { kind: "note" | "tag"; resource: string };
+
+/** The five non-admin-reachable routes, matched against the acl-relative path. */
+const SHARE_ROUTES: Array<{ method: string; re: RegExp; kind: "note" | "tag" }> = [
+  { method: "PUT", re: /^\/notes\/([^/]+)\/people$/, kind: "note" },
+  { method: "DELETE", re: /^\/notes\/([^/]+)\/people\/[^/]+$/, kind: "note" },
+  { method: "GET", re: /^\/notes\/([^/]+)$/, kind: "note" },
+  { method: "PUT", re: /^\/tags\/([^/]+)\/people$/, kind: "tag" },
+  { method: "DELETE", re: /^\/tags\/([^/]+)\/people\/[^/]+$/, kind: "tag" },
+];
+
+/** The path relative to this router, whether it was mounted at /acl or called
+ *  directly (the tests drive `acl.request("/notes/...")`). */
+const aclPath = (c: Context): string => new URL(c.req.url).pathname.replace(/^\/acl(?=\/|$)/, "");
+
+/** Which shareable resource, if any, does this request address? */
+function shareScopeFor(c: Context): ShareScope | null {
+  const path = aclPath(c);
+  const method = c.req.method.toUpperCase();
+  for (const r of SHARE_ROUTES) {
+    if (r.method !== method) continue;
+    const m = path.match(r.re);
+    if (m) return { kind: r.kind, resource: decodeURIComponent(m[1]!) };
+  }
+  return null;
+}
+
+// One vault read per request, reused by the gate and then by the handler's
+// anti-escalation check (they ask the same question of the same resource).
+const sharerCapsCache = new WeakMap<Context, Set<Cap>>();
+
+/**
+ * The caps the REQUESTING actor holds on the resource they are trying to share.
+ * For a note this is the real note (tags, creator, private-visibility all
+ * honored, exactly as routes/api.ts builds it); for a tag it is a synthetic ref
+ * carrying just that tag — the same shape `effectiveCaps` sees for a tag grant.
+ * A note that cannot be read resolves to no caps (fail closed).
+ */
+async function sharerCaps(c: Context, scope: ShareScope): Promise<Set<Cap>> {
+  const cached = sharerCapsCache.get(c);
+  if (cached) return cached;
+  const actor = resolveActor(c);
+  const subject = actor.kind === "user" ? actor.email : actor.kind === "link" ? actor.capabilityId : null;
+  let noteRef: NoteRef;
+  if (scope.kind === "tag") {
+    noteRef = { id: `<tag:${scope.resource}>`, tags: [scope.resource] };
+  } else {
+    try {
+      const n = await vaultClient(actor.vaultId).getNote(scope.resource);
+      noteRef = {
+        id: n.id,
+        tags: n.tags ?? [],
+        creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+        visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+      };
+    } catch {
+      return new Set<Cap>();
+    }
+  }
+  const caps = effectiveCaps(actor.grants, noteRef, roleFloor(actor.role), subject);
+  sharerCapsCache.set(c, caps);
+  return caps;
+}
+
+// Everything here is owner/admin-only (workspace management) — except the five
+// share routes above, which additionally admit a signed-in holder of `share` on
+// the specific resource being shared.
 acl.use("*", async (c, next) => {
-  if (!roleAtLeast(resolveActor(c).role, "admin")) return c.json({ error: "forbidden" }, 403);
-  await next();
+  if (roleAtLeast(resolveActor(c).role, "admin")) return next();
+  const scope = shareScopeFor(c);
+  if (!scope) return c.json({ error: "forbidden" }, 403);
+  if (resolveActor(c).kind !== "user") return c.json({ error: "forbidden" }, 403);
+  if (!(await sharerCaps(c, scope)).has("share")) {
+    return c.json({ error: "forbidden", reason: `sharing requires the share capability on this ${scope.kind}` }, 403);
+  }
+  return next();
 });
+
+/**
+ * Anti-escalation for a NON-ADMIN sharer. Two rules, both of which an admin is
+ * exempt from (they already hold everything, and inviting is their job):
+ *
+ *  (a) SUBSET — the caps handed out must be a subset of the caps the granter
+ *      themself holds on that resource. Sharing may distribute access, never
+ *      manufacture it; without this a `view+share` grant would be a path to
+ *      minting `edit` for a confederate (and then for yourself).
+ *  (b) EXISTING ACCOUNTS ONLY — a non-admin may share with people who already
+ *      have an account. The auto-invite path pulls a NEW person into the
+ *      workspace, which is a membership decision, not a sharing one.
+ *
+ * Returns a Response to send, or null to proceed.
+ */
+async function denyEscalation(
+  c: Context,
+  scope: ShareScope,
+  recipient: string,
+  granting: Iterable<Cap>,
+): Promise<Response | null> {
+  if (roleAtLeast(resolveActor(c).role, "admin")) return null;
+  if (!hasAccount(recipient)) {
+    return c.json({ error: "forbidden", reason: "inviting new people requires an admin" }, 403);
+  }
+  const mine = await sharerCaps(c, scope);
+  const excess = [...new Set(granting)].filter((cap) => !mine.has(cap));
+  if (excess.length) {
+    return c.json(
+      { error: "forbidden", reason: `cannot grant capabilities you do not hold: ${excess.join(", ")}`, caps: excess },
+      403,
+    );
+  }
+  return null;
+}
+
+/** Who a grant should be attributed to. Admin writes keep recording the owner
+ *  (unchanged); a scoped sharer is recorded as themself, so the audit says who
+ *  actually handed out the access. Never starts with "governance:", so the
+ *  materializer will never mistake a human grant for one of its own. */
+function grantAuthor(c: Context): string {
+  const actor = resolveActor(c);
+  if (roleAtLeast(actor.role, "admin")) return config.ownerEmail;
+  return actor.kind === "user" ? actor.email : config.ownerEmail;
+}
 
 const isLevel = (x: unknown): x is Level =>
   typeof x === "string" && (LEVELS as readonly string[]).includes(x);
@@ -423,10 +553,18 @@ acl.put("/notes/:id/people", async (c) => {
   // is required exactly as before.
   const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
   if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "note", c.req.param("id"), config.ownerEmail, resolveActor(c).vaultId, caps);
+  // A non-admin reached here by holding `share` on THIS note; they may not hand
+  // out more than they hold, nor pull a new person into the workspace.
+  const denied = await denyEscalation(c, { kind: "note", resource: c.req.param("id") }, normEmail(email), caps ?? expandLevel(lvl));
+  if (denied) return denied;
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "note", c.req.param("id"), grantAuthor(c), resolveActor(c).vaultId, caps);
   return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
 
+// Revoking a person's access to a note. The route gate is the whole check: a
+// non-admin only reaches this handler with `share` on THIS note, which is exactly
+// the authority to manage other subjects' grants on it. (Removing a grant can
+// only ever reduce access, so there is nothing to escalate.)
 acl.delete("/notes/:id/people/:email", (c) => {
   removeGrantBySubjectResource(
     "user",
@@ -510,7 +648,9 @@ acl.put("/tags/:tag/people", async (c) => {
   if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
   const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
   if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "tag", tag, config.ownerEmail, resolveActor(c).vaultId, caps);
+  const denied = await denyEscalation(c, { kind: "tag", resource: tag }, normEmail(email), caps ?? expandLevel(lvl));
+  if (denied) return denied;
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "tag", tag, grantAuthor(c), resolveActor(c).vaultId, caps);
   return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
 
@@ -528,6 +668,8 @@ acl.get("/tags/:tag/access", (c) => {
   );
 });
 
+// Same as the note revoke: reaching this handler as a non-admin already required
+// `share` on this tag, and a revoke can only narrow access.
 acl.delete("/tags/:tag/people/:email", (c) => {
   removeGrantBySubjectResource(
     "user",

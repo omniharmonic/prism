@@ -24,6 +24,9 @@ import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { runVaultMirrorsOnce } from "./vault-mirror";
+import { loadGovernance } from "../governance-service";
+import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
+import { GOV_TAGS } from "../governance-store";
 import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
@@ -35,6 +38,15 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // per-model worker cursor, so a restart resumes rather than re-sweeping).
 let lastIndexSweepAt = 0;
 let indexSweepInFlight = false;
+
+// Governance→grants reconcile state. `governanceExists` caches the one question
+// that decides whether this subsystem does anything at all, so a deploy with no
+// constitution pays a single cheap listNotes per interval instead of a full state
+// load every tick. Re-probed on the same cadence, so enabling governance is
+// picked up within one interval with no restart.
+let lastGovernanceReconcileAt = 0;
+let governanceExists: boolean | null = null;
+let governanceProbedAt = 0;
 
 // Notes with no embeddable content. They can never appear in the index, so
 // "missing from the index" alone would re-select them on every single pass.
@@ -513,6 +525,45 @@ async function indexSweep(opts: { force?: boolean }): Promise<number> {
   return indexed;
 }
 
+/**
+ * Is there a governance constitution in the primary vault at all? Cached for one
+ * reconcile interval — this is the guard that keeps the whole governance
+ * subsystem free on the (overwhelmingly common) deploy that has never enabled it.
+ */
+async function governanceConfigured(): Promise<boolean> {
+  const now = Date.now();
+  if (governanceExists !== null && now - governanceProbedAt < config.governanceReconcileMs) {
+    return governanceExists;
+  }
+  const notes = await vault.listNotes({ tags: [GOV_TAGS.config], limit: 1 });
+  governanceExists = notes.length > 0;
+  governanceProbedAt = now;
+  return governanceExists;
+}
+
+/** Forget the cached probe (tests; also what a fresh bootstrap wants). */
+export function resetGovernanceProbe(): void {
+  governanceExists = null;
+  governanceProbedAt = 0;
+  lastGovernanceReconcileAt = 0;
+}
+
+/**
+ * Recompile the constitution into grant rows for the primary vault. Returns null
+ * when there is no governance to compile. Primary vault only, matching the
+ * governance routes — the constitution is a property of one vault, and
+ * `loadGovernance` reads that vault's notes.
+ */
+export async function runGovernanceReconcileOnce(): Promise<ReconcileResult | null> {
+  if (!(await governanceConfigured())) return null;
+  const state = await loadGovernance(vault, config.ownerEmail);
+  const res = reconcileGovernanceGrants("primary", state);
+  if (res.added > 0 || res.removed > 0) {
+    console.log(`[worker] governance primary: +${res.added} grants, -${res.removed} grants (${res.kept} unchanged)`);
+  }
+  return res;
+}
+
 /** One full tick: every configured ingester for every vault. Per-vault, per-source
  *  errors are isolated so one bad credential can't stall the rest. */
 async function tick(): Promise<void> {
@@ -540,6 +591,17 @@ async function tick(): Promise<void> {
   // hence their own iteration. Each mirror throttles itself (last_run_at), so a
   // 60s tick costs one SELECT when nothing is due.
   await runVaultMirrorsOnce();
+
+  // Governance→grants, on its own cadence. Isolated exactly like the index sweep:
+  // a broken constitution must never stop the ingesters.
+  if (config.governanceReconcileMs > 0 && Date.now() - lastGovernanceReconcileAt >= config.governanceReconcileMs) {
+    lastGovernanceReconcileAt = Date.now();
+    try {
+      await runGovernanceReconcileOnce();
+    } catch (e) {
+      console.warn("[worker] governance primary failed:", (e as Error).message);
+    }
+  }
 
   // Semantic index maintenance, on its own slower cadence — embeddings are not
   // latency-critical, and even the lean note list is a whole-vault fetch, so it

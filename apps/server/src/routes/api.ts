@@ -102,6 +102,18 @@ function vaultErr(c: Context, e: unknown) {
  */
 async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note[]> {
   const vc = vaultClient(actor.vaultId); // read from the actor's OWN vault, not the primary
+  // A `vault` grant matches every note (see effectiveCaps), so tag-bounded
+  // enumeration would return an empty list for its holder — a global governance
+  // role compiles to exactly this shape (P2). If any vault grant confers `view`,
+  // enumerate the whole vault; the per-note capability filter below remains the
+  // authoritative guard either way.
+  const vaultWide = actor.grants.some(
+    (g) => g.resource_type === "vault" && (g.caps ? g.caps.includes("view") : true),
+  );
+  if (vaultWide) {
+    const all = await vc.listNotes({ includeContent });
+    return all.filter((n) => can(actor, ref(n), "view"));
+  }
   const collected = new Map<string, Note>();
   for (const tag of grantedTags(actor.grants)) {
     for (const n of await vc.listNotes({ tags: [tag], includeContent })) {

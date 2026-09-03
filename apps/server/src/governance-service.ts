@@ -13,6 +13,7 @@
  */
 import type { Note, VaultHelper } from "./parachute";
 import {
+  canDelegateMembership,
   canMutateGovernanceDirectly,
   evaluateAmendment,
   isLocked,
@@ -354,6 +355,35 @@ export async function mutateGovernance(
   if (!isLocked(state.config)) {
     // Unlocked but not the bootstrap owner — bootstrap is owner-only.
     return { ok: false, code: "forbidden", detail: "only the bootstrap owner may configure governance before it is enabled" };
+  }
+
+  // ── delegated stewardship (P2) ────────────────────────────────────────────
+  // Post-lock, EVERY change riding an amendment is correct for the constitution
+  // and wrong for the roster: onboarding a gardener should not require a
+  // constitutional vote, and a commons where it does simply stops onboarding.
+  // So membership changes — and only membership changes — may be made directly
+  // by someone the constitution has explicitly deputized: a role carrying
+  // `assign_roles` that names the target role in its `assigns`, with compatible
+  // scope. The engine decides (`canDelegateMembership`, which also refuses to let
+  // any delegation hand out `amend_governance`); this stays inside the same
+  // choke point, so there is still exactly one place governance is written.
+  if (
+    !via &&
+    (effective.kind === "add_membership" || effective.kind === "remove_membership") &&
+    canDelegateMembership(
+      state,
+      subject,
+      effective.kind === "add_membership" ? effective.membership.role : effective.role,
+    )
+  ) {
+    const res = await effect(vault, state, effective);
+    if (!res.ok) return res;
+    await recordAudit(vault, {
+      action: `delegated:${auditFor(effective)}`,
+      actor: subject,
+      after: JSON.stringify(effective),
+    });
+    return { ok: true, applied: effective.kind, note: { id: res.id } };
   }
 
   // Locked: require a satisfied amend_governance proposal.

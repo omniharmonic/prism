@@ -78,9 +78,9 @@ test("parsePolicy with a missing threshold degrades to 1 (never 0)", () => {
 
 test("parseRole keeps only recognized powers and defaults scope", () => {
   const r = parseRole(
-    note("role1", [GOV_TAGS.role], { name: "gardener", powers: ["review", "not_a_power", "publish"] }),
+    note("role1", [GOV_TAGS.role], { name: "gardener", powers: ["invite", "not_a_power", "publish"] }),
   );
-  assert.deepEqual(r.powers, ["review", "publish"]);
+  assert.deepEqual(r.powers, ["invite", "publish"]);
   assert.equal(r.scopeType, "global");
   assert.equal(r.name, "gardener");
 });
@@ -96,7 +96,15 @@ test("parseConfig reads the bootstrap lock and defaults to disabled", () => {
 // ── round-trips (parse ∘ serialize = id) ──────────────────────────────────────
 
 test("role round-trips through metadata", () => {
-  const r: Role = { id: "role-x", name: "steward", powers: ["review", "publish"], scopeType: "tag", scope: "watershed" };
+  const r: Role = {
+    id: "role-x",
+    name: "steward",
+    powers: ["invite", "publish"],
+    scopeType: "tag",
+    scope: "watershed",
+    capabilities: ["view", "edit"],
+    assigns: ["gardener"],
+  };
   const back = parseRole(note("role-x", [GOV_TAGS.role], roleToMetadata(r)));
   assert.deepEqual(back, r);
 });

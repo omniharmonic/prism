@@ -142,6 +142,14 @@ export const config = {
   // backfill (cursor = max task date_updated), so a 5-minute cadence is cheap.
   // 0 DISABLES it (the on-demand /api/integrations/clickup/sync route still works).
   clickupIntervalMs: Number(process.env.CLICKUP_INTERVAL_MS ?? 300_000),
+  // How often the worker recompiles the governance constitution into grant rows
+  // (governance-grants.ts). The route path already reconciles on every successful
+  // mutation, so this is the SAFETY NET, not the mechanism: it catches a
+  // membership that has simply expired (nothing mutated, but the grant should
+  // stop applying) and any write that landed while a reconcile failed. On a
+  // deploy with no governance-config note it costs one cached probe per interval.
+  // 0 DISABLES it.
+  governanceReconcileMs: Number(process.env.GOVERNANCE_RECONCILE_MS ?? 300_000),
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
   // new chat portal; an un-joined room never appears in /sync, so its messages
   // are invisible to the ingester). Off by default — on a long-lived bridge the

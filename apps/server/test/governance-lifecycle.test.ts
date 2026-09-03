@@ -193,9 +193,9 @@ test("add_role / add_policy / add_membership are UPSERTS — a replayed bootstra
   assert.equal(notesTagged(GOV_TAGS.membership).length, 1);
 
   // and the LAST write wins on the surviving note
-  await jreq("/roles", owner, "POST", { name: "gardener", powers: ["review", "publish"] });
+  await jreq("/roles", owner, "POST", { name: "gardener", powers: ["invite", "publish"] });
   const role = (await state()).roles.find((r: { name: string }) => r.name === "gardener");
-  assert.deepEqual([...role.powers].sort(), ["publish", "review"]);
+  assert.deepEqual([...role.powers].sort(), ["invite", "publish"]);
   assert.equal(notesTagged(GOV_TAGS.role).length, 1);
 });
 
