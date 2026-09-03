@@ -55,3 +55,4 @@ apps/server/.env*
 # Hub B federation sandbox (test stack)
 apps/server/prism-b.db
 apps/server/prism-b.log
+apps/server/.incident-*/

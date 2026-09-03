@@ -194,7 +194,7 @@ pub async fn github_sync_init(
         .filter(|n| {
             n.path
                 .as_deref()
-                .map(|p| p.starts_with(&config.vault_path))
+                .map(|p| github::is_under_vault_path(p, &config.vault_path))
                 .unwrap_or(false)
         })
         .collect();
@@ -257,7 +257,7 @@ pub async fn github_sync_push(
         .filter(|n| {
             n.path
                 .as_deref()
-                .map(|p| p.starts_with(&config.vault_path))
+                .map(|p| github::is_under_vault_path(p, &config.vault_path))
                 .unwrap_or(false)
         })
         .collect();

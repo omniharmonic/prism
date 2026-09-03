@@ -12,13 +12,23 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { resolveVaultEntry } from "../db";
-import { vault, VaultError, type Note } from "../parachute";
+import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, atLeast, grantedTags, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor } from "../roles";
 
 export const api = new Hono();
 
-const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
+
+/** The grant subject of an actor (for the private-note creator check). */
+const actorSubject = (a: Actor): string | null =>
+  a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null;
 
 /**
  * Transparent proxy to the vault for the OWNER only. Forwards the exact path,
@@ -54,11 +64,17 @@ async function proxyToVault(c: Context) {
 // Owner short-circuit: full vault access, token-free. Registered before the
 // authorized routes so the owner bypasses per-note filtering entirely.
 api.use("*", async (c, next) => {
-  if (resolveActor(c).isOwner) return proxyToVault(c);
+  if (roleAtLeast(resolveActor(c).role, "admin")) return proxyToVault(c);
   await next();
 });
 
 function vaultErr(c: Context, e: unknown) {
+  // Optimistic-concurrency conflict: pass the vault's status + current state
+  // through so the client can rebase, instead of collapsing it to a 502. (Checked
+  // before VaultError since VaultConflictError extends it.)
+  if (e instanceof VaultConflictError) {
+    return c.json({ error: "conflict", status: e.status, current: e.body }, e.status === 428 ? 428 : 409);
+  }
   if (e instanceof VaultError) {
     if (e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error", status: e.status }, 502);
@@ -73,22 +89,23 @@ function vaultErr(c: Context, e: unknown) {
  * vault's tag filter.
  */
 async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note[]> {
+  const vc = vaultClient(actor.vaultId); // read from the actor's OWN vault, not the primary
   const collected = new Map<string, Note>();
   for (const tag of grantedTags(actor.grants)) {
-    for (const n of await vault.listNotes({ tags: [tag], includeContent })) {
+    for (const n of await vc.listNotes({ tags: [tag], includeContent })) {
       collected.set(n.id, n);
     }
   }
   for (const g of actor.grants.filter((x) => x.resource_type === "note")) {
     if (collected.has(g.resource)) continue;
     try {
-      collected.set(g.resource, await vault.getNote(g.resource));
+      collected.set(g.resource, await vc.getNote(g.resource));
     } catch {
       /* granted note may have been deleted — skip */
     }
   }
   return [...collected.values()].filter((n) =>
-    atLeast(effectiveLevel(actor.grants, ref(n), false), "view"),
+    atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role), actorSubject(actor)), "view"),
   );
 }
 
@@ -97,7 +114,7 @@ api.get("/health", async (c) => c.json({ vault: await vault.health() }));
 api.get("/notes", async (c) => {
   const actor = resolveActor(c);
   const includeContent = c.req.query("include_content") === "true";
-  if (actor.isOwner) {
+  if (roleAtLeast(actor.role, "admin")) {
     const limit = Number(c.req.query("limit") ?? 50000);
     return c.json(await vault.listNotes({ includeContent, limit }));
   }
@@ -108,26 +125,40 @@ api.get("/notes/:id", async (c) => {
   const actor = resolveActor(c);
   let note: Note;
   try {
-    note = await vault.getNote(c.req.param("id"));
+    note = await vaultClient(actor.vaultId).getNote(c.req.param("id"));
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), actor.isOwner);
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role), actorSubject(actor));
   if (!atLeast(level, "view")) return c.json({ error: "forbidden" }, 403);
   return c.json({ ...note, _level: level });
 });
 
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
-  if (!actor.isOwner) return c.json({ error: "forbidden" }, 403);
+  // Owners/admins are short-circuited to the passthrough upstream; this handler
+  // runs for members/guests/links. A signed-in MEMBER may create — but only
+  // inside a tag/folder they can already EDIT, so a create can't smuggle a note
+  // into an area they lack access to. Guests/links/anon cannot create.
   const body = await c.req.json<{
     content: string;
     path?: string;
     metadata?: Record<string, unknown>;
     tags?: string[];
   }>();
+  const subject = actorSubject(actor);
+  const slice: NoteRef = { id: "<new>", tags: body.tags ?? [] };
+  const canCreate =
+    actor.kind === "user" &&
+    atLeast(effectiveLevel(actor.grants, slice, roleFloor(actor.role), subject), "edit");
+  if (!canCreate) {
+    return c.json({ error: "forbidden", reason: "create requires edit on the target tag/folder" }, 403);
+  }
+  // Stamp the creator (private-to-creator + audit). A member can't forge it — we
+  // overwrite any client-supplied prism_creator with the authenticated subject.
+  const metadata = { ...(body.metadata ?? {}), ...(subject ? { prism_creator: subject } : {}) };
   try {
-    return c.json(await vault.createNote(body));
+    return c.json(await vaultClient(actor.vaultId).createNote({ ...body, metadata }));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -136,13 +167,14 @@ api.post("/notes", async (c) => {
 api.patch("/notes/:id", async (c) => {
   const actor = resolveActor(c);
   const id = c.req.param("id");
+  const vc = vaultClient(actor.vaultId);
   let note: Note;
   try {
-    note = await vault.getNote(id);
+    note = await vc.getNote(id);
   } catch (e) {
     return vaultErr(c, e);
   }
-  const level = effectiveLevel(actor.grants, ref(note), actor.isOwner);
+  const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role), actorSubject(actor));
   if (!atLeast(level, "edit")) return c.json({ error: "forbidden" }, 403);
 
   const body = await c.req.json<{
@@ -154,10 +186,10 @@ api.patch("/notes/:id", async (c) => {
   try {
     // Non-owners may change content/metadata only; path (and tags, never here)
     // stay owner-controlled so a collaborator can't reorganize or re-scope.
-    const updated = await vault.updateNote(id, {
+    const updated = await vc.updateNote(id, {
       content: body.content,
       metadata: body.metadata,
-      path: actor.isOwner ? body.path : undefined,
+      path: roleAtLeast(actor.role, "admin") ? body.path : undefined,
       ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
     });
     return c.json(updated);
@@ -168,9 +200,26 @@ api.patch("/notes/:id", async (c) => {
 
 api.delete("/notes/:id", async (c) => {
   const actor = resolveActor(c);
-  if (!actor.isOwner) return c.json({ error: "forbidden" }, 403);
+  // Admins/owners short-circuit to the passthrough (they can delete anything);
+  // this handler runs for members/guests/links. A member may delete ONLY their
+  // own note (prism_creator) and only with edit+ on it — never someone else's
+  // note by default (that's an admin action). 2.4b.
+  const vc = vaultClient(actor.vaultId);
+  const id = c.req.param("id");
+  let note;
   try {
-    await vault.deleteNote(c.req.param("id"));
+    note = await vc.getNote(id);
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+  const subject = actorSubject(actor);
+  const noteRef = ref(note);
+  const isCreator = !!subject && noteRef.creator === subject;
+  if (!isCreator || !atLeast(effectiveLevel(actor.grants, noteRef, roleFloor(actor.role), subject), "edit")) {
+    return c.json({ error: "forbidden", reason: "delete requires being the note's creator with edit access" }, 403);
+  }
+  try {
+    await vc.deleteNote(id);
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -183,13 +232,13 @@ api.get("/search", async (c) => {
   const limit = Number(c.req.query("limit") ?? 50);
   let results: Note[];
   try {
-    results = await vault.search(q, [], limit);
+    results = await vaultClient(actor.vaultId).search(q, [], limit);
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (actor.isOwner) return c.json(results);
+  if (roleAtLeast(actor.role, "admin")) return c.json(results);
   return c.json(
-    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), false), "view")),
+    results.filter((n) => atLeast(effectiveLevel(actor.grants, ref(n), roleFloor(actor.role), actorSubject(actor)), "view")),
   );
 });
 
@@ -197,11 +246,11 @@ api.get("/tags", async (c) => {
   const actor = resolveActor(c);
   let tags: Array<{ tag: string; count: number }>;
   try {
-    tags = await vault.getTags();
+    tags = await vaultClient(actor.vaultId).getTags();
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (actor.isOwner) return c.json(tags);
+  if (roleAtLeast(actor.role, "admin")) return c.json(tags);
   const allowed = new Set(grantedTags(actor.grants));
   return c.json(tags.filter((t) => allowed.has(t.tag)));
 });

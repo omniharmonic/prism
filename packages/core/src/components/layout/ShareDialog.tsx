@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
-import { Check, Copy, X, Link2, Trash2, Loader2, Globe } from "lucide-react";
+import { Check, Copy, X, Link2, Trash2, Loader2, Globe, Lock, Radio } from "lucide-react";
 import type {
   CollabSharing,
   NoteAccess,
+  PeerInfo,
   PublicationInfo,
   SetPersonResult,
   ShareLevel,
@@ -66,6 +67,50 @@ export function ShareDialog({
       setError("Couldn't load sharing settings.");
     }
   }, [sharing, noteId]);
+
+  const isPrivate = access?.note.visibility === "private";
+  const toggleVisibility = useCallback(async () => {
+    if (!sharing.setNoteVisibility || !access) return;
+    setBusy(true);
+    try {
+      await sharing.setNoteVisibility(noteId, !isPrivate);
+      await refresh();
+    } catch {
+      setError("Couldn't change visibility.");
+    } finally {
+      setBusy(false);
+    }
+  }, [sharing, access, isPrivate, noteId, refresh]);
+
+  // "Parachute Sync" — mirror this note to a paired peer in one action (4.2).
+  const [peers, setPeers] = useState<PeerInfo[]>([]);
+  const [syncPeer, setSyncPeer] = useState("");
+  const [syncLevel, setSyncLevel] = useState<ShareLevel>("edit");
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sharing.listPeers || !sharing.mirrorNoteToPeer) return;
+    void sharing
+      .listPeers()
+      .then((ps) => {
+        const paired = ps.filter((p) => p.pairedAt);
+        setPeers(paired);
+        setSyncPeer((cur) => cur || paired[0]?.pubkey || "");
+      })
+      .catch(() => {});
+  }, [sharing]);
+  const syncToPeer = useCallback(async () => {
+    if (!sharing.mirrorNoteToPeer || !syncPeer) return;
+    setBusy(true);
+    setSyncMsg(null);
+    try {
+      await sharing.mirrorNoteToPeer(noteId, syncPeer, syncLevel);
+      setSyncMsg("Synced — this note now mirrors to that peer live.");
+    } catch {
+      setError("Couldn't start peer sync.");
+    } finally {
+      setBusy(false);
+    }
+  }, [sharing, noteId, syncPeer, syncLevel]);
 
   useEffect(() => {
     void refresh();
@@ -345,6 +390,24 @@ export function ShareDialog({
           </div>
         )}
 
+        {/* Private-to-creator toggle (2.5) — only when the seam supports it. */}
+        {sharing.setNoteVisibility && access && (
+          <button
+            onClick={() => void toggleVisibility()}
+            disabled={busy}
+            className="w-full mb-3 flex items-center gap-2 px-3 py-2 rounded text-xs"
+            style={{ border: "1px solid var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}
+          >
+            {isPrivate ? <Lock size={14} /> : <Globe size={14} />}
+            <span style={{ flex: 1, textAlign: "left" }}>
+              {isPrivate
+                ? "Private — only you and people added here can see it"
+                : "Workspace-visible — folder & workspace members can see it"}
+            </span>
+            <span style={{ color: "var(--text-muted)" }}>{isPrivate ? "Make visible" : "Make private"}</span>
+          </button>
+        )}
+
         {/* People with access */}
         <div className="mb-1 text-[11px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
           People with access
@@ -423,6 +486,42 @@ export function ShareDialog({
             </button>
           </div>
         </div>
+
+        {/* Parachute Sync — mirror this note to a paired peer (4.2). Only when the
+            shell supports federation AND at least one peer is paired. */}
+        {sharing.mirrorNoteToPeer && peers.length > 0 && (
+          <div className="mt-4">
+            <div className="mb-1 text-[11px] uppercase tracking-wide flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+              <Radio size={11} /> Sync with a peer
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={syncPeer}
+                onChange={(e) => setSyncPeer(e.target.value)}
+                className="flex-1 min-w-0 text-xs px-2 py-1.5 rounded outline-none"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}
+              >
+                {peers.map((p) => (
+                  <option key={p.pubkey} value={p.pubkey}>
+                    {p.label || p.email || p.fingerprint}
+                  </option>
+                ))}
+              </select>
+              {levelSelect(syncLevel, setSyncLevel)}
+              <button
+                onClick={syncToPeer}
+                disabled={busy || !syncPeer}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              >
+                <Radio size={12} /> Sync
+              </button>
+            </div>
+            {syncMsg && (
+              <p className="text-[11px] mt-1.5" style={{ color: "var(--text-muted)" }}>{syncMsg}</p>
+            )}
+          </div>
+        )}
 
         <p className="text-[11px] mt-3" style={{ color: "var(--text-muted)" }}>
           People you add sign in with their email. Links work for anyone who has them. The rest of

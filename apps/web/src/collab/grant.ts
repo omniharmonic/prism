@@ -5,15 +5,27 @@ import type {
   NoteAccess,
   PairingCode,
   PeerInfo,
+  PeerEditInfo,
   PublicationInfo,
   PublicationTheme,
   SetPersonResult,
   ShareLevel,
   ShareLink,
   SpaceInfo,
+  TagAccess,
+  ServerInfo,
+  IntegrationStatus,
+  TunnelStatus,
+  TunnelIngress,
   VaultSummary,
+  WorkspaceEntity,
+  WorkspaceGrant,
+  WorkspaceMember,
+  WorkspaceOverview,
+  WorkspaceRole,
 } from "@prism/core";
-import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
+import { GATEWAY_ORIGIN, getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders } from "../config";
+import type { ViewerIdentity } from "@prism/core";
 
 /**
  * Web sharing impl, backed by the Prism Server ACL API (/acl, owner-only). The
@@ -21,12 +33,34 @@ import { GATEWAY_ORIGIN, getActiveVault, setActiveVault } from "../config";
  * cookie. Powers the full share dialog (people + capability links + tag-grants).
  */
 async function acl(path: string, init?: RequestInit): Promise<Response> {
+  // Bind every management call to the active vault + workspace, so the owner/admin
+  // manages the workspace (and vault) they're currently viewing.
   const r = await fetch(`${GATEWAY_ORIGIN}/acl${path}`, {
     ...init,
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers as Record<string, string>) },
+    headers: {
+      "Content-Type": "application/json",
+      ...contextHeaders(),
+      ...(init?.headers as Record<string, string>),
+    },
   });
   if (!r.ok) throw new Error(`ACL ${init?.method ?? "GET"} ${path} → ${r.status}`);
+  return r;
+}
+
+/** Gateway /api/* calls (session cookie, active-vault/workspace scoped) — the
+ *  same conventions as acl() for routes mounted under /api (integrations). */
+async function api(path: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(`${GATEWAY_ORIGIN}/api${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...contextHeaders(),
+      ...(init?.headers as Record<string, string>),
+    },
+  });
+  if (!r.ok) throw new Error(`API ${init?.method ?? "GET"} ${path} → ${r.status}`);
   return r;
 }
 
@@ -59,6 +93,135 @@ export const webCollabSharing: CollabSharing = {
   },
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
+  },
+  async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
+    // One server path for both shells (/acl/notes/:id/visibility): it merges
+    // metadata (prism_creator preserved) and force-writes, so it never 428s on
+    // Parachute's optimistic-concurrency guard.
+    await acl(`/notes/${enc(noteId)}/visibility`, { method: "PUT", body: JSON.stringify({ isPrivate }) });
+  },
+
+  // The viewer's role in the active vault — a FRESH, vault-scoped read (not the
+  // global cachedMe) so it's correct right after a vault switch. Powers role-
+  // gating of the Network management panels.
+  async getViewer(): Promise<ViewerIdentity> {
+    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
+      credentials: "include",
+      headers: contextHeaders(),
+    });
+    if (!r.ok) return { email: "", role: "guest", isServerOwner: false, vaultId: getActiveVault() ?? "primary" };
+    const me = (await r.json()) as { email?: string; role?: ViewerIdentity["role"]; isOwner?: boolean; vaultId?: string };
+    return {
+      email: me.email ?? "",
+      role: me.role ?? "guest",
+      isServerOwner: !!me.isOwner,
+      vaultId: me.vaultId ?? getActiveVault() ?? "primary",
+    };
+  },
+
+  // ── Folder/tag sharing + workspace members (Phase 2) ──
+  async setTagPerson(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/tags/${enc(tag)}/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
+  },
+  async removeTagPerson(tag: string, email: string): Promise<void> {
+    await acl(`/tags/${enc(tag)}/people/${enc(email)}`, { method: "DELETE" });
+  },
+  async getTagAccess(tag: string): Promise<TagAccess[]> {
+    return (await acl(`/tags/${enc(tag)}/access`)).json();
+  },
+  async listGrants(): Promise<WorkspaceGrant[]> {
+    return (await acl(`/grants`)).json();
+  },
+  async revokeGrant(id: string): Promise<void> {
+    await acl(`/grants/${enc(id)}`, { method: "DELETE" });
+  },
+  // ── Workspace (= the server): cross-vault people management (server-owner) ──
+  async getWorkspace(): Promise<WorkspaceOverview> {
+    return (await acl(`/workspace`)).json();
+  },
+  async setWorkspaceAccess(email: string, vaultId: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/workspace/access`, { method: "PUT", body: JSON.stringify({ email, vaultId, level }) })).json();
+  },
+  async removeWorkspaceAccess(vaultId: string, email: string): Promise<void> {
+    await acl(`/workspace/access/${enc(vaultId)}/${enc(email)}`, { method: "DELETE" });
+  },
+  async setWorkspaceMemberRole(email: string, vaultId: string, role: WorkspaceRole): Promise<SetPersonResult> {
+    return (await acl(`/workspace/members`, { method: "PUT", body: JSON.stringify({ email, vaultId, role }) })).json();
+  },
+  async removeWorkspaceMemberRole(vaultId: string, email: string): Promise<void> {
+    await acl(`/workspace/members/${enc(vaultId)}/${enc(email)}`, { method: "DELETE" });
+  },
+
+  // ── Server settings + Cloudflare tunnel (server-owner) ──
+  async getServerInfo(): Promise<ServerInfo> {
+    return (await acl(`/server`)).json();
+  },
+  async controlTunnel(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }> {
+    return (await acl(`/server/tunnel`, { method: "POST", body: JSON.stringify({ action }) })).json();
+  },
+  async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
+    return (await acl(`/server/config`, { method: "PUT", body: JSON.stringify({ key, value }) })).json();
+  },
+  async getTunnelIngress(): Promise<TunnelIngress> {
+    return (await acl(`/server/tunnel/ingress`)).json();
+  },
+  async applyTunnelIngress(): Promise<{ added: string[] }> {
+    return (await acl(`/server/tunnel/ingress`, { method: "POST" })).json();
+  },
+
+  // ── Server-side sync-integration credentials (admin+, /api/integrations) ──
+  // Status rides the same api() (active-vault) scope as the PUT, so the
+  // configured badge always reflects the vault a Save actually wrote to.
+  async getIntegrationStatus(kind: string): Promise<IntegrationStatus> {
+    return (await api(`/integrations/${enc(kind)}`)).json();
+  },
+  async setIntegrationCredential(kind: string, fields: Record<string, unknown>): Promise<void> {
+    await api(`/integrations/${enc(kind)}`, { method: "PUT", body: JSON.stringify(fields) });
+  },
+  async deleteIntegrationCredential(kind: string): Promise<void> {
+    await api(`/integrations/${enc(kind)}`, { method: "DELETE" });
+  },
+  async syncIntegration(kind: string): Promise<Record<string, unknown>> {
+    return (await api(`/integrations/${enc(kind)}/sync`, { method: "POST" })).json();
+  },
+
+  // ── Workspace entities (one server, many workspaces) ──
+  async listWorkspaceEntities(): Promise<WorkspaceEntity[]> {
+    return (await acl(`/workspaces`)).json();
+  },
+  async createWorkspaceEntity(name: string, hostname?: string): Promise<WorkspaceEntity> {
+    return (await acl(`/workspaces`, { method: "POST", body: JSON.stringify({ name, hostname }) })).json();
+  },
+  async updateWorkspaceEntity(id: string, patch: { name?: string; hostname?: string | null }): Promise<WorkspaceEntity> {
+    return (await acl(`/workspaces/${enc(id)}`, { method: "PUT", body: JSON.stringify(patch) })).json();
+  },
+  async deleteWorkspaceEntity(id: string): Promise<void> {
+    await acl(`/workspaces/${enc(id)}`, { method: "DELETE" });
+  },
+  async assignVaultToWorkspaceEntity(workspaceId: string, vaultId: string): Promise<void> {
+    await acl(`/workspaces/${enc(workspaceId)}/vaults`, { method: "PUT", body: JSON.stringify({ vaultId }) });
+  },
+  getActiveWorkspace(): string | null {
+    return getActiveWorkspace();
+  },
+  setActiveWorkspace(id: string): void {
+    setActiveWorkspace(id);
+  },
+
+  async listMembers(): Promise<WorkspaceMember[]> {
+    return (await acl(`/members`)).json();
+  },
+  async setMember(email: string, role: WorkspaceRole): Promise<SetPersonResult> {
+    return (await acl(`/members`, { method: "PUT", body: JSON.stringify({ email, role }) })).json();
+  },
+  async removeMember(email: string): Promise<void> {
+    await acl(`/members/${enc(email)}`, { method: "DELETE" });
+  },
+  async setVaultPerson(email: string, level: ShareLevel): Promise<SetPersonResult> {
+    return (await acl(`/vault/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
+  },
+  async removeVaultPerson(email: string): Promise<void> {
+    await acl(`/vault/people/${enc(email)}`, { method: "DELETE" });
   },
   createLink,
   async revokeLink(noteId: string, linkId: string): Promise<void> {
@@ -188,6 +351,12 @@ export const webCollabSharing: CollabSharing = {
   },
   async revokeSpacePeer(spaceId: string, pubkey: string): Promise<void> {
     await acl(`/spaces/${enc(spaceId)}/peers/${enc(pubkey)}`, { method: "DELETE" });
+  },
+  async mirrorNoteToPeer(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }> {
+    return (await acl(`/notes/${enc(noteId)}/mirror`, { method: "POST", body: JSON.stringify({ pubkey, level }) })).json();
+  },
+  async listPeerEdits(limit = 200): Promise<PeerEditInfo[]> {
+    return (await acl(`/federation/peer-edits?limit=${limit}`)).json();
   },
 
   // ── Inbound mirror requests (owner-reviewed) ──

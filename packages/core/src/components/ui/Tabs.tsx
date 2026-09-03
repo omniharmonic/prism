@@ -16,13 +16,20 @@ interface TabsProps {
 
 export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
   return (
-    <div className={cn("flex gap-0.5", className)}>
+    // Horizontally scrollable so a strip too wide for the viewport (e.g. the
+    // Network sub-tabs on mobile) scrolls instead of clipping. No visual change
+    // when the tabs already fit. `scrollbar-none` hides the bar; buttons never
+    // shrink so labels stay intact.
+    <div
+      className={cn("flex gap-0.5 overflow-x-auto scrollbar-none", className)}
+      style={{ scrollbarWidth: "none", WebkitOverflowScrolling: "touch" }}
+    >
       {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => onChange(tab.id)}
           className={cn(
-            "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+            "flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
             activeTab === tab.id
               ? "text-[var(--text-primary)] bg-[var(--glass-active)]"
               : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-hover)]",

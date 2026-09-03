@@ -27,7 +27,7 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
   const labels = (meta?.labels as string[]) || [];
   const isUnread = meta?.isUnread as boolean;
   const messageCount = (meta?.messageCount as number) || 1;
-  const account = (meta?.account as string) || "benjamin@opencivics.co";
+  const account = (meta?.account as string) || "synergy@benjaminlife.one";
   const threadId = (meta?.threadId as string) || (meta?.gmail_id as string) || (meta?.thread_id as string) || "";
   const [showReply, setShowReply] = useState(false);
 
@@ -298,7 +298,7 @@ function EmailComposer({ note }: { note: RendererProps["note"] }) {
   const [to, setTo] = useState((meta?.to as string[])?.join(", ") || "");
   const [subject, setSubject] = useState((meta?.subject as string) || "");
   const [body, setBody] = useState(note.content || "");
-  const [account, setAccount] = useState((meta?.account as string) || "benjamin@opencivics.co");
+  const [account, setAccount] = useState((meta?.account as string) || "synergy@benjaminlife.one");
   const [sending, setSending] = useState(false);
 
   const handleSend = useCallback(async () => {
@@ -319,7 +319,7 @@ function EmailComposer({ note }: { note: RendererProps["note"] }) {
           <select value={account} onChange={(e) => setAccount(e.target.value)}
             className="flex-1 h-7 rounded px-2 text-sm outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-            <option value="benjamin@opencivics.co">benjamin@opencivics.co</option>
+            <option value="synergy@benjaminlife.one">synergy@benjaminlife.one</option>
             <option value="omniharmonicagent@gmail.com">omniharmonicagent@gmail.com</option>
           </select>
         </div>

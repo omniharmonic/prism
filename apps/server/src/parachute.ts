@@ -28,6 +28,24 @@ export class VaultError extends Error {
   }
 }
 
+/**
+ * Optimistic-concurrency failure from the vault. The canonical contract: a
+ * mutating write must carry `if_updated_at` (or `force:true`); the vault returns
+ * 428 (Precondition Required) when neither is present, and 409 (Conflict) when
+ * the note changed since the supplied `if_updated_at`. We surface these as a
+ * typed error carrying the vault's response body (which includes the current
+ * state) so a caller can let the client rebase instead of silently overwriting.
+ */
+export class VaultConflictError extends VaultError {
+  constructor(
+    status: number,
+    readonly body: unknown,
+    message: string,
+  ) {
+    super(status, message);
+  }
+}
+
 function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined) sp.append(k, String(v));
@@ -59,16 +77,26 @@ export function vaultClient(vaultId?: string) {
       headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${body}`);
+      const text = await resp.text().catch(() => "");
+      if (resp.status === 409 || resp.status === 428) {
+        let parsed: unknown = text;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          /* keep the raw text */
+        }
+        throw new VaultConflictError(resp.status, parsed, `${init?.method ?? "GET"} ${path}: ${resp.status}`);
+      }
+      throw new VaultError(resp.status, `${init?.method ?? "GET"} ${path}: ${resp.status} ${text}`);
     }
     return resp;
   }
 
   return {
-  async listNotes(opts: { tags?: string[]; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
+  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
     if (opts.includeContent) sp.set("include_content", "true");
+    if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of opts.tags ?? []) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },

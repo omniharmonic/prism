@@ -9,6 +9,7 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
+import { vault } from "./parachute";
 import { auth } from "./routes/auth";
 import { api } from "./routes/api";
 import { vaults } from "./routes/vaults";
@@ -18,6 +19,10 @@ import { publish } from "./routes/publish";
 import { federation } from "./routes/federation";
 import { federated } from "./routes/federated";
 import { governance } from "./routes/governance";
+import { agentApi } from "./routes/agent";
+import { integrations } from "./routes/integrations";
+import { sync } from "./routes/sync";
+import { mcp } from "./routes/mcp";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -103,8 +108,29 @@ export function createApp(): Hono {
   // /api/governance/* is handled here, not proxied to the vault. Member-authed
   // in-handler; inert until an owner enables governance.
   app.route("/api/governance", governance);
+  // Server-side agent dispatch + integration config (Phase 3) — admin-only;
+  // mounted BEFORE the gateway so /api/agent + /api/integrations aren't proxied
+  // to the vault by the owner short-circuit.
+  app.route("/api/agent", agentApi);
+  app.route("/api/integrations", integrations);
+  app.route("/api/sync", sync);
+  // Member self-serve MCP tokens — role-gated in-handler (member+ on the target
+  // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
+  // /api/mcp to the vault.
+  app.route("/api/mcp", mcp);
   app.route("/api", api);
   app.route("/acl", acl);
+
+  // Liveness + vault reachability, for uptime monitors. This MUST be a real route
+  // mounted above the SPA fallback: before it existed, GET /health fell through to
+  // the catch-all and returned index.html with a 200, so a monitor pointed at it
+  // passed while the vault was unreachable (audit 2026-08-13, F8). Unauthenticated
+  // on purpose — it discloses one boolean and no vault content. `/api/health` is
+  // kept as-is so existing callers don't break.
+  app.get("/health", async (c) => {
+    const ok = await vault.health();
+    return c.json({ ok, vault: ok }, ok ? 200 : 503);
+  });
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
   // Cache strategy: Vite content-hashes everything under /assets, so those are

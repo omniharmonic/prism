@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CollabSharing,
+  IntegrationStatus,
   MirrorRequestInfo,
   NodeIdentity,
   NoteAccess,
@@ -8,10 +9,13 @@ import type {
   PeerInfo,
   PublicationInfo,
   PublicationTheme,
+  ServerInfo,
   SetPersonResult,
   ShareLevel,
   ShareLink,
   SpaceInfo,
+  TunnelIngress,
+  TunnelStatus,
   VaultSummary,
 } from "@prism/core";
 
@@ -30,6 +34,13 @@ import type {
  */
 async function acl<T>(method: string, path: string, body?: unknown): Promise<T> {
   return invoke<T>("acl_request", { method, path, body: body ?? null });
+}
+
+/** Prism Server `/api/*` proxy (Rust `api_request`) — allowlist-narrow: the Rust
+ *  side only permits `/integrations…` paths, so this never becomes a generic
+ *  vault passthrough. Same COLLAB_TOKEN owner auth as `acl()`. */
+async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return invoke<T>("api_request", { method, path, body: body ?? null });
 }
 
 const enc = encodeURIComponent;
@@ -64,6 +75,9 @@ export const tauriCollabSharing: CollabSharing = {
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl("DELETE", `/notes/${enc(noteId)}/people/${enc(email)}`);
   },
+  async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
+    await acl("PUT", `/notes/${enc(noteId)}/visibility`, { isPrivate });
+  },
   createLink,
   async revokeLink(noteId: string, linkId: string): Promise<void> {
     await acl("DELETE", `/notes/${enc(noteId)}/links/${enc(linkId)}`);
@@ -71,6 +85,38 @@ export const tauriCollabSharing: CollabSharing = {
   async listUsers(): Promise<string[]> {
     const users = await acl<Array<{ email: string }>>("GET", `/users`);
     return users.map((u) => u.email);
+  },
+
+  // ── Server settings + Cloudflare tunnel (ServerPanel; server-owner routes,
+  // and the desktop's COLLAB_TOKEN authenticates as the owner locally) ──
+  async getServerInfo(): Promise<ServerInfo> {
+    return acl<ServerInfo>("GET", `/server`);
+  },
+  async controlTunnel(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }> {
+    return acl<{ tunnel: TunnelStatus }>("POST", `/server/tunnel`, { action });
+  },
+  async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
+    return acl<{ restartRequired: boolean }>("PUT", `/server/config`, { key, value });
+  },
+  async getTunnelIngress(): Promise<TunnelIngress> {
+    return acl<TunnelIngress>("GET", `/server/tunnel/ingress`);
+  },
+  async applyTunnelIngress(): Promise<{ added: string[] }> {
+    return acl<{ added: string[] }>("POST", `/server/tunnel/ingress`);
+  },
+
+  // ── Server-side sync-integration credentials (/api/integrations proxy) ──
+  async getIntegrationStatus(kind: string): Promise<IntegrationStatus> {
+    return api<IntegrationStatus>("GET", `/integrations/${enc(kind)}`);
+  },
+  async setIntegrationCredential(kind: string, fields: Record<string, unknown>): Promise<void> {
+    await api("PUT", `/integrations/${enc(kind)}`, fields);
+  },
+  async deleteIntegrationCredential(kind: string): Promise<void> {
+    await api("DELETE", `/integrations/${enc(kind)}`);
+  },
+  async syncIntegration(kind: string): Promise<Record<string, unknown>> {
+    return api<Record<string, unknown>>("POST", `/integrations/${enc(kind)}/sync`);
   },
 
   // ── Publishing (Network → Publish) ──

@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, localAiApi, vaultApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
+import { useAccount } from "../../data/Account";
+import { AccountSettings } from "./AccountSettings";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface SettingsProps {
@@ -17,7 +19,8 @@ const MONO_FONT_OPTIONS = ["JetBrains Mono", "SF Mono", "Fira Code", "Source Cod
 
 export function Settings({ open, onClose }: SettingsProps) {
   const isWeb = useIsWeb();
-  const [tab, setTab] = useState<"services" | "sources" | "appearance">("services");
+  const account = useAccount();
+  const [tab, setTab] = useState<"account" | "services" | "sources" | "appearance">("services");
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -103,12 +106,16 @@ export function Settings({ open, onClose }: SettingsProps) {
   // Data Sources is entirely desktop-only (every field writes native config /
   // probes host CLIs), so the whole tab is hidden in the web shell.
   const tabs = [
+    // Account is web-session only (the shell provides an AccountClient); hidden on
+    // desktop (local owner, no session).
+    ...(account ? [{ id: "account" as const, label: "Account" }] : []),
     { id: "services" as const, label: "Services" },
     ...(isWeb ? [] : [{ id: "sources" as const, label: "Data Sources" }]),
     { id: "appearance" as const, label: "Appearance" },
   ];
-  // Guard against a stale `tab` if the active tab is hidden in web.
-  const activeTab = isWeb && tab === "sources" ? "services" : tab;
+  // Guard against a stale `tab` if the active tab is hidden in this shell.
+  const activeTab =
+    (isWeb && tab === "sources") || (!account && tab === "account") ? "services" : tab;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
@@ -140,6 +147,9 @@ export function Settings({ open, onClose }: SettingsProps) {
         </div>
 
         <div className="overflow-auto px-6 py-4 space-y-6" style={{ maxHeight: "calc(85vh - 100px)" }}>
+          {/* Account Tab (web session only) */}
+          {activeTab === "account" && <AccountSettings />}
+
           {/* Services Tab */}
           {activeTab === "services" && config && (
             <>

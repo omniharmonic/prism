@@ -32,6 +32,8 @@ export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphP
 
 // Collab sharing seam — host shells inject how share links are minted.
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
+export { AccountProvider, useAccount } from "./data/Account";
+export type { AccountClient, AccountProfile } from "./data/Account";
 export { PlatformProvider, usePlatform, useIsWeb, type Platform } from "./data/Platform";
 export { DesktopOnlyNotice } from "./components/ui/DesktopOnlyNotice";
 export type {
@@ -46,11 +48,24 @@ export type {
   PublicationTheme,
   NodeIdentity,
   PeerInfo,
+  PeerEditInfo,
   SpaceInfo,
   SpacePeerGrant,
   PairingCode,
   MirrorRequestInfo,
   VaultSummary,
+  WorkspaceGrant,
+  WorkspaceMember,
+  WorkspaceRole,
+  ViewerIdentity,
+  WorkspaceVaultRef,
+  WorkspacePerson,
+  WorkspaceOverview,
+  WorkspaceEntity,
+  TunnelStatus,
+  TunnelIngress,
+  ServerInfo,
+  IntegrationStatus,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";

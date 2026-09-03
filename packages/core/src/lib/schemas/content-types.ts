@@ -70,13 +70,18 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
     return meta.prism_type as ContentType;
   }
 
-  // 1b. Explicit metadata.type — known renderer types pass through; unknown types
-  // that clearly describe document-like content fall back to "document" rather than
-  // continuing to tag inference (which might incorrectly pick a structural renderer).
+  // 1b. Explicit metadata.type — a known renderer type passes straight through.
+  // An UNRECOGNIZED type does NOT short-circuit: our ingesters use metadata.type
+  // as a semantic sub-type ("promise", "meeting-action-item", "rsvp", "payment"),
+  // none of which name a renderer, and returning "document" here used to beat the
+  // note's own structural tag. That silently sent 715 notes tagged `task` to the
+  // DocumentRenderer instead of the TaskBoardRenderer (audit 2026-08-13). So an
+  // unrecognized type only records the document FALLBACK and lets tag inference
+  // run first — a note tagged `task` is a task whatever its sub-type says.
+  let unknownMetaType = false;
   if (meta && typeof meta.type === "string") {
     if (KNOWN_TYPES.has(meta.type)) return meta.type as ContentType;
-    // Treat any unrecognized type as a document subtype
-    if (meta.type.length > 0) return "document";
+    if (meta.type.length > 0) unknownMetaType = true;
   }
 
   // 2. Tag-based inference — check tags against the mapping table
@@ -88,6 +93,11 @@ export function inferContentType(note: NoteForTypeInference): ContentType {
       }
     }
   }
+
+  // 2b. An unrecognized metadata.type with no structural tag to override it still
+  // means "document-like content" — and stops here rather than falling through to
+  // path/extension sniffing, which is the pre-existing contract for these notes.
+  if (unknownMetaType) return "document";
 
   // 3. Path-based inference — check file extension
   if (note.path) {

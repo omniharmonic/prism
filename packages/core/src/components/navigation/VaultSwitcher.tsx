@@ -7,13 +7,14 @@
 // desktop shell (no listVaults) it returns null, so the footer keeps its plain
 // New button.
 import { useEffect, useRef, useState } from "react";
-import { ChevronsUpDown, Check, Database, Settings2, Plus } from "lucide-react";
-import { useCollabSharing, useVaultChangeSignal, type VaultSummary } from "../../data/CollabSharing";
+import { ChevronsUpDown, Check, Database, Settings2, Plus, Boxes } from "lucide-react";
+import { useCollabSharing, useVaultChangeSignal, type VaultSummary, type WorkspaceEntity } from "../../data/CollabSharing";
 
 export function VaultSwitcher({ onManage }: { onManage: () => void }) {
   const sharing = useCollabSharing();
   const vaultSignal = useVaultChangeSignal();
   const [vaults, setVaults] = useState<VaultSummary[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceEntity[]>([]);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -24,6 +25,10 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
       .listVaults()
       .then((v) => alive && setVaults(v))
       .catch(() => {});
+    // Workspaces (owner only) — for the workspace switcher section.
+    if (sharing.listWorkspaceEntities && sharing.setActiveWorkspace) {
+      sharing.listWorkspaceEntities().then((w) => alive && setWorkspaces(w)).catch(() => {});
+    }
     return () => {
       alive = false;
     };
@@ -55,6 +60,17 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
     setOpen(false);
     if (v.id === active?.id) return;
     sharing.setActiveVault?.(v.id); // persists + reloads
+  };
+
+  const activeWorkspaceId = sharing.getActiveWorkspace?.() ?? null;
+  const showWorkspaces = workspaces.length > 1 && !!sharing.setActiveWorkspace;
+  const switchWorkspace = (w: WorkspaceEntity) => {
+    setOpen(false);
+    if (w.id === activeWorkspaceId) return;
+    // Switch workspace, and land on its first vault (the vault list is scoped to
+    // the workspace server-side, so keep the active vault inside it).
+    sharing.setActiveWorkspace?.(w.id);
+    if (w.vaults[0]) sharing.setActiveVault?.(w.vaults[0].id);
   };
 
   return (
@@ -119,6 +135,31 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
             overflowY: "auto",
           }}
         >
+          {showWorkspaces && (
+            <>
+              <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, color: "var(--text-muted)", padding: "6px 8px 4px" }}>
+                Workspace
+              </div>
+              {workspaces.map((w) => {
+                const isActive = activeWorkspaceId ? w.id === activeWorkspaceId : w.isDefault;
+                return (
+                  <button
+                    key={w.id}
+                    role="menuitem"
+                    onClick={() => switchWorkspace(w)}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", color: "var(--text-primary)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--glass-hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <Boxes size={14} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--text-base)" }}>{w.name}</span>
+                    {isActive && <Check size={14} style={{ flexShrink: 0, color: "var(--color-accent)" }} />}
+                  </button>
+                );
+              })}
+              <div style={{ height: 1, background: "var(--glass-border)", margin: "4px 0" }} />
+            </>
+          )}
           <div
             style={{
               fontSize: 10.5,

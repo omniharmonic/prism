@@ -388,7 +388,9 @@ governance.post("/proposals/:id/withdraw", async (c) => {
   if (proposal.proposal.state !== "open") return c.json({ error: "closed", detail: `proposal is ${proposal.proposal.state}` }, 409);
   const actor = resolveActor(c);
   const me = actor.kind === "user" ? actor.email : "";
-  if (proposal.proposal.openedBy !== me && !actor.isOwner) {
+  // "Owner" here is the vault owner specifically (the pre-role-model `isOwner`),
+  // not any admin — every Actor kind carries `role`, so no narrowing needed.
+  if (proposal.proposal.openedBy !== me && actor.role !== "owner") {
     return c.json({ error: "forbidden", detail: "only the proposer or owner may withdraw" }, 403);
   }
   await setProposalState(vault, proposal.proposal.id, "withdrawn");

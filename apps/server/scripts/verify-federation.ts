@@ -111,9 +111,9 @@ async function main() {
   console.log("\n=== 4. effectiveLevel space-grant matching ===");
   {
     const grants: Grant[] = grantsForPeer(myPubkey);
-    const withSpace = effectiveLevel(grants, { id: noteId, tags: [], spaceIds: [spaceId] }, false);
+    const withSpace = effectiveLevel(grants, { id: noteId, tags: [], spaceIds: [spaceId] }, null);
     ok("grant matches NoteRef carrying the spaceId", withSpace === "edit", `got=${withSpace}`);
-    const withoutSpace = effectiveLevel(grants, { id: noteId, tags: [] }, false);
+    const withoutSpace = effectiveLevel(grants, { id: noteId, tags: [] }, null);
     ok("grant does NOT match NoteRef without the spaceId", withoutSpace === null, `got=${withoutSpace}`);
   }
 

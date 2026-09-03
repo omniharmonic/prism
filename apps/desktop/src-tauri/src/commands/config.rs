@@ -56,6 +56,23 @@ pub struct AppConfig {
     pub matrix_user: String,
     pub matrix_access_token: String,
     pub matrix_device_id: String,
+    /// When true, the desktop does NOT run the background message_sync service —
+    /// the Prism Server ingests Matrix server-side instead (no double-sync). The
+    /// Matrix token stays configured so live messaging / sending still works.
+    #[serde(default)]
+    pub disable_message_sync: bool,
+    /// When true, the desktop skips the FATHOM half of transcript_sync — the Prism
+    /// Server ingests Fathom server-side. Meetily (local SQLite) still syncs on the
+    /// desktop. The Fathom key stays configured so live use still works.
+    #[serde(default)]
+    pub disable_fathom_sync: bool,
+    /// When true, the desktop skips the FIREFLIES half of transcript_sync — the
+    /// Prism Server ingests Fireflies server-side AND deletes each transcript
+    /// from Fireflies once it's confirmed in the vault. Must be true once the
+    /// server owns Fireflies, so the two don't double-ingest or race on delete.
+    /// The Fireflies key stays configured so live use still works.
+    #[serde(default)]
+    pub disable_fireflies_sync: bool,
     pub notion_api_key: String,
     pub google_account_primary: String,
     pub google_account_agent: String,
@@ -130,6 +147,9 @@ impl Default for AppConfig {
             matrix_user: "@prism:localhost".into(),
             matrix_access_token: String::new(),
             matrix_device_id: "PRISM".into(),
+            disable_message_sync: false,
+            disable_fathom_sync: false,
+            disable_fireflies_sync: false,
             notion_api_key: String::new(),
             google_account_primary: String::new(),
             google_account_agent: String::new(),
@@ -735,6 +755,63 @@ pub async fn acl_request(
     serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("acl parse failed: {e}")))
 }
 
+/// Narrow proxy to the Prism Server's `/api` gateway, authenticated with the
+/// desktop COLLAB_TOKEN (Bearer) — the server treats a local Bearer of the
+/// collab/vault token as the owner. Deliberately allowlist-scoped: only the
+/// `/integrations` routes (server-side sync-integration credentials + manual
+/// sync) are reachable, so this never becomes a generic vault passthrough.
+/// Same base-URL derivation + error handling as `acl_request` above.
+#[tauri::command]
+pub async fn api_request(
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    if config.collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No COLLAB_TOKEN configured — set it in prism-config.json to manage integrations from the desktop app".into(),
+        ));
+    }
+    // Allowlist: only the integrations surface. Everything else stays desktop-native.
+    if !path.starts_with("/integrations") {
+        return Err(PrismError::Other(format!(
+            "api path not allowed from the desktop proxy: {path}"
+        )));
+    }
+    // HTTP base of the Prism Server, derived from the collab WS url.
+    let http_base = config
+        .collab_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1)
+        .trim_end_matches("/collab")
+        .trim_end_matches('/')
+        .to_string();
+
+    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
+    let mut req = reqwest::Client::new()
+        .request(m, format!("{http_base}/api{path}"))
+        .bearer_auth(&config.collab_token)
+        .timeout(std::time::Duration::from_secs(60));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("api request failed: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(PrismError::Other(format!("api {method} {path} → {status}")));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("api parse failed: {e}")))
+}
+
 /// Get full config (for Settings UI to populate fields).
 /// Masks sensitive keys for display.
 #[tauri::command]
@@ -864,5 +941,53 @@ pub fn check_google_cli() -> Result<serde_json::Value, PrismError> {
             Ok(serde_json::json!({ "installed": true, "path": path }))
         }
         _ => Ok(serde_json::json!({ "installed": false })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialize the defaults, patch keys the way prism-config.json does, read back.
+    fn config_from(patch: &[(&str, serde_json::Value)]) -> AppConfig {
+        let mut v = serde_json::to_value(AppConfig::default()).expect("serialize defaults");
+        let o = v.as_object_mut().unwrap();
+        for (k, val) in patch {
+            o.insert((*k).to_string(), val.clone());
+        }
+        serde_json::from_value(v).expect("deserialize patched config")
+    }
+
+    /// The desktop's Fireflies sync is disabled by a `#[serde(default)]` bool, so a
+    /// mismatch between the JSON key and the field name would deserialize SILENTLY to
+    /// `false` and quietly resume double-syncing Fireflies alongside the server (which
+    /// also owns deletion). Pin the exact on-disk key name.
+    #[test]
+    fn disable_fireflies_sync_binds_to_the_snake_case_key() {
+        let cfg = config_from(&[("disable_fireflies_sync", serde_json::json!(true))]);
+        assert!(cfg.disable_fireflies_sync, "on-disk key must bind to the field");
+    }
+
+    /// Absent from an older config file the flag defaults to false — the desktop keeps
+    /// syncing. That's why the server cutover REQUIRES writing the key explicitly.
+    #[test]
+    fn disable_fireflies_sync_defaults_to_false_when_absent() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        v.as_object_mut().unwrap().remove("disable_fireflies_sync");
+        let cfg: AppConfig = serde_json::from_value(v).unwrap();
+        assert!(!cfg.disable_fireflies_sync);
+    }
+
+    /// The gate in transcript_sync.rs is `!key.is_empty() && !disable`. A configured key
+    /// PLUS the flag must evaluate to "do not sync" — that pairing is the whole cutover.
+    #[test]
+    fn configured_key_plus_disable_flag_means_no_desktop_sync() {
+        let cfg = config_from(&[
+            ("fireflies_api_key", serde_json::json!("ff_key")),
+            ("disable_fireflies_sync", serde_json::json!(true)),
+        ]);
+        assert!(!cfg.fireflies_api_key.is_empty(), "key stays configured for live use");
+        let would_sync = !cfg.fireflies_api_key.is_empty() && !cfg.disable_fireflies_sync;
+        assert!(!would_sync, "desktop must not sync Fireflies once the server owns it");
     }
 }

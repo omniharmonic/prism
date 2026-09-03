@@ -67,10 +67,12 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS capabilities_resource ON capabilities(resource_type, resource);
   CREATE TABLE IF NOT EXISTS collab_docs (
-    name              TEXT PRIMARY KEY,   -- note id
+    vault_id          TEXT NOT NULL DEFAULT 'primary',  -- the tenant; a note id is only unique WITHIN a vault
+    name              TEXT NOT NULL,      -- note id
     state             BLOB NOT NULL,      -- Yjs encoded state (CRDT continuity)
     source_updated_at INTEGER,            -- Parachute updatedAt at last store (external-edit detection)
-    updated_at        INTEGER NOT NULL
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, name)
   );
   CREATE TABLE IF NOT EXISTS invites (
     token_hash  TEXT PRIMARY KEY,
@@ -162,6 +164,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS federation_outbox_peer ON federation_outbox(peer_pubkey);
 
+  -- Peer-edit audit (Phase 4.3): a row per inbound edit a federated PEER applied
+  -- to one of our shared docs, so the owner can review who edited what and when.
+  CREATE TABLE IF NOT EXISTS peer_edits (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    space_note_key TEXT NOT NULL,
+    local_id       TEXT NOT NULL,
+    peer_pubkey    TEXT NOT NULL,
+    edited_at      INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS peer_edits_time ON peer_edits(edited_at DESC);
+
   -- Durable pending suggestions (Horizon C, suggest-level). A suggest-level peer
   -- (or capability) does NOT merge into the live doc; its proposed change lands
   -- here for the owner to accept/reject, and MUST survive a server restart (the
@@ -220,6 +233,95 @@ db.exec(`
     token      TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+
+  -- ── Workspaces: a workspace groups one or more VAULTS + members + a subdomain
+  -- (the "one server, many workspaces" model). One Node server hosts N of these;
+  -- the public/serving path resolves the active workspace by Host header, and the
+  -- owner admin UI selects one to manage. Backward-compatible: every vault not
+  -- explicitly assigned belongs to the 'default' workspace, so a single-workspace
+  -- deploy is unchanged. Membership/grants stay per-VAULT (a workspace's access is
+  -- the union over its vaults).
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    hostname   TEXT,                    -- subdomain that routes here (nullable until set)
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS vault_workspaces (
+    vault_id     TEXT PRIMARY KEY,      -- each vault belongs to exactly ONE workspace
+    workspace_id TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS vault_workspaces_ws ON vault_workspaces(workspace_id);
+
+  -- ── Multi-tenancy: per-vault workspace membership (Phase 1) ──────────────
+  -- A "tenant" = a vault; membership names WHO belongs to a vault and at what
+  -- workspace ROLE (owner/admin/member/guest — see roles.ts). This is the source
+  -- of truth for workspaceRole(email, vaultId); it sits ABOVE the per-note grants
+  -- table and reconciles with the hub's own user_vaults (the token-authority
+  -- layer). The env OWNER_EMAIL is owner of 'primary' even with no row (bootstrap).
+  CREATE TABLE IF NOT EXISTS memberships (
+    vault_id   TEXT NOT NULL,
+    email      TEXT NOT NULL,
+    role       TEXT NOT NULL,          -- 'owner' | 'admin' | 'member' | 'guest'
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, email)
+  );
+  CREATE INDEX IF NOT EXISTS memberships_email ON memberships(email);
+
+  -- ── Per-tenant integration secrets (Phase 3 server-first runtime) ────────
+  -- Encrypted-at-rest credentials (Matrix/Notion/Fathom/… tokens) keyed by
+  -- (vault, owner, kind). This is the multi-tenant gate: a server-side ingester
+  -- or agent run reads the secret for the tenant it's acting on, never another's.
+  -- ciphertext = AES-256-GCM(secret)||authTag; the master key (SECRETS_KEY) lives
+  -- in the environment, NEVER in this db. See src/secrets.ts.
+  CREATE TABLE IF NOT EXISTS tenant_secrets (
+    vault_id    TEXT NOT NULL,
+    owner_email TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    ciphertext  BLOB NOT NULL,
+    iv          BLOB NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, owner_email, kind)
+  );
+
+  -- ── Member-minted MCP tokens (audit registry) ────────────────────────────
+  -- One row per hub JWT a vault member minted for their agent's MCP access
+  -- (routes/mcp.ts). The TOKEN ITSELF IS NEVER STORED — only its jti (for
+  -- revocation via the hub) and enough context to list "who has standing
+  -- agent access to which vault". revoked_at is our local mark; the hub's
+  -- revocation list is the enforcement point (~60s propagation).
+  CREATE TABLE IF NOT EXISTS mcp_tokens (
+    jti        TEXT PRIMARY KEY,
+    vault_id   TEXT NOT NULL,      -- registry vault id
+    email      TEXT NOT NULL,      -- the member who minted it
+    scope      TEXT NOT NULL,      -- e.g. vault:front-range-commons:write
+    label      TEXT,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS mcp_tokens_vault ON mcp_tokens(vault_id);
+
+  -- ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────
+  -- A mirror converges one path prefix (folder) of a source vault onto a prefix
+  -- in a destination vault ON THIS SERVER — one-way, source-wins, folder
+  -- structure preserved (paths rebased). This is the intra-server sibling of
+  -- federation spaces: no peer, no CRDT transport, just the worker diffing two
+  -- prefixes through the per-vault clients. See src/worker/vault-mirror.ts.
+  CREATE TABLE IF NOT EXISTS vault_mirrors (
+    id          TEXT PRIMARY KEY,
+    src_vault   TEXT NOT NULL,      -- registry vault id
+    src_prefix  TEXT NOT NULL,      -- normalized path prefix (paths.ts)
+    dest_vault  TEXT NOT NULL,
+    dest_prefix TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    delete_mode TEXT NOT NULL DEFAULT 'archive',  -- 'archive' | 'delete' | 'keep'
+    created_by  TEXT,
+    created_at  INTEGER NOT NULL,
+    last_run_at INTEGER,
+    last_result TEXT               -- JSON MirrorRunResult of the last run
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -228,6 +330,11 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "password_hash")) {
     db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+  }
+  // Migration: accounts gained a profile avatar (a small data: URL, bounded at
+  // the API). Used to identify a person on their comments/cursors/edits.
+  if (!cols.some((c) => c.name === "avatar")) {
+    db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
   }
 }
 
@@ -251,6 +358,82 @@ db.exec(`
   }
 }
 
+// ── Multi-tenancy migration (Phase 1): vault_id across every access-control,
+// collab, and federation table. Additive with DEFAULT 'primary' — every existing
+// row belongs to the env primary vault, so a single-vault deploy is byte-identical
+// after the migration. (CREATE TABLE IF NOT EXISTS won't alter an existing table.)
+// `collab_docs` also needs its PRIMARY KEY widened from (name) to (vault_id, name)
+// since a note id is only unique WITHIN a vault — that PK rebuild is a separate,
+// carefully-guarded step (see below); here we just add the column.
+for (const table of [
+  "grants",
+  "capabilities",
+  "publications",
+  "spaces",
+  "federated_notes",
+  "collab_docs",
+  "pending_suggestions",
+  "federation_mirror_requests",
+  "federation_outbox",
+]) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "vault_id")) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN vault_id TEXT NOT NULL DEFAULT 'primary'`);
+  }
+}
+// Composite indexes so per-vault grant lookups stay fast (the hot path: load a
+// subject's grants within the active vault).
+db.exec(`
+  CREATE INDEX IF NOT EXISTS grants_vault_subject  ON grants(vault_id, subject_type, subject);
+  CREATE INDEX IF NOT EXISTS grants_vault_resource ON grants(vault_id, resource_type, resource);
+`);
+
+// TTL / expiry on grants (Phase 4.3): a nullable epoch-ms deadline. NULL = never
+// expires (every existing grant → byte-identical behavior). Today only PEER
+// grants honor it (time-boxed federation access); grantsForPeer filters expired.
+{
+  const cols = db.prepare(`PRAGMA table_info(grants)`).all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "expires_at")) {
+    db.exec(`ALTER TABLE grants ADD COLUMN expires_at INTEGER`);
+  }
+}
+
+// `collab_docs` PRIMARY KEY rebuild: (name) → (vault_id, name). SQLite can't
+// alter a PK in place, so copy-then-swap inside a transaction — the one
+// non-additive migration. Version-gated (runs once) and a no-op when the table
+// is already composite (fresh DBs get the composite PK from CREATE TABLE above).
+// Existing rows carry vault_id='primary' from the ADD COLUMN default, so a
+// single-vault deploy keeps every doc's CRDT state byte-for-byte.
+{
+  // Self-contained settings I/O — this runs at module load, BEFORE the shared
+  // getSetting/setSetting prepared statements below are initialized.
+  const flag = (db.prepare("SELECT value FROM settings WHERE key = ?").get("collab_docs_pk_v2") as { value: string } | undefined)?.value;
+  if (flag !== "done") {
+    const cols = db.prepare(`PRAGMA table_info(collab_docs)`).all() as Array<{ name: string; pk: number }>;
+    const pkCols = cols.filter((c) => c.pk > 0).map((c) => c.name);
+    const alreadyComposite = pkCols.length === 2 && pkCols.includes("vault_id") && pkCols.includes("name");
+    if (cols.length && !alreadyComposite) {
+      const rebuild = db.transaction(() => {
+        db.exec(`CREATE TABLE collab_docs_v2 (
+          vault_id          TEXT NOT NULL DEFAULT 'primary',
+          name              TEXT NOT NULL,
+          state             BLOB NOT NULL,
+          source_updated_at INTEGER,
+          updated_at        INTEGER NOT NULL,
+          PRIMARY KEY (vault_id, name)
+        )`);
+        db.exec(`INSERT INTO collab_docs_v2 (vault_id, name, state, source_updated_at, updated_at)
+                 SELECT COALESCE(vault_id, 'primary'), name, state, source_updated_at, updated_at FROM collab_docs`);
+        db.exec(`DROP TABLE collab_docs`);
+        db.exec(`ALTER TABLE collab_docs_v2 RENAME TO collab_docs`);
+      });
+      rebuild();
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run("collab_docs_pk_v2", "done");
+  }
+}
+db.exec(`CREATE INDEX IF NOT EXISTS collab_docs_vault ON collab_docs(vault_id, name);`);
+
 // ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
 const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
 const upsertSetting = db.prepare(
@@ -261,6 +444,15 @@ function getSetting(key: string): string | null {
 }
 function setSetting(key: string, value: string): void {
   upsertSetting.run({ key, value });
+}
+
+// Worker cursors (Phase 3): the incremental-sync resume token per (vault, kind),
+// e.g. the Matrix /sync next_batch. Persisted in `settings` so a restart resumes.
+export function getWorkerCursor(vaultId: string, kind: string): string | null {
+  return getSetting(`cursor:${kind}:${vaultId}`);
+}
+export function setWorkerCursor(vaultId: string, kind: string, cursor: string): void {
+  setSetting(`cursor:${kind}:${vaultId}`, cursor);
 }
 
 /**
@@ -346,14 +538,245 @@ export function resolveVaultEntry(id?: string | null): VaultEntry {
   return vaultRegistry[0]!;
 }
 
+// ── Member-minted MCP tokens (audit registry) ────────────────────────────────
+export interface McpTokenRow {
+  jti: string;
+  vault_id: string;
+  email: string;
+  scope: string;
+  label: string | null;
+  expires_at: number;
+  created_at: number;
+  revoked_at: number | null;
+}
+
+const insertMcpToken = db.prepare(
+  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at)
+   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at)`,
+);
+const selectMcpTokensForVault = db.prepare("SELECT * FROM mcp_tokens WHERE vault_id = ? ORDER BY created_at DESC");
+const selectMcpToken = db.prepare("SELECT * FROM mcp_tokens WHERE jti = ?");
+const markMcpTokenRevoked = db.prepare("UPDATE mcp_tokens SET revoked_at = ? WHERE jti = ?");
+
+export function recordMcpToken(row: Omit<McpTokenRow, "created_at" | "revoked_at"> & { label?: string | null }): void {
+  // `label` is normalized explicitly rather than by spread-over-default: with
+  // `{ label: null, ...row }` an optional property present-but-undefined wins the
+  // spread and better-sqlite3 throws on binding undefined (and TS flags TS2783).
+  insertMcpToken.run({ ...row, label: row.label ?? null, created_at: Date.now() });
+}
+export function listMcpTokens(vaultId: string): McpTokenRow[] {
+  return selectMcpTokensForVault.all(vaultId) as McpTokenRow[];
+}
+export function getMcpToken(jti: string): McpTokenRow | null {
+  return (selectMcpToken.get(jti) as McpTokenRow | undefined) ?? null;
+}
+export function setMcpTokenRevoked(jti: string): void {
+  markMcpTokenRevoked.run(Date.now(), jti);
+}
+
+// ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────
+export type MirrorDeleteMode = "archive" | "delete" | "keep";
+
+export interface VaultMirror {
+  id: string;
+  src_vault: string;
+  src_prefix: string;
+  dest_vault: string;
+  dest_prefix: string;
+  enabled: boolean;
+  delete_mode: MirrorDeleteMode;
+  created_by: string | null;
+  created_at: number;
+  last_run_at: number | null;
+  last_result: string | null;
+}
+
+const insertMirror = db.prepare(
+  `INSERT INTO vault_mirrors (id, src_vault, src_prefix, dest_vault, dest_prefix, enabled, delete_mode, created_by, created_at)
+   VALUES (@id, @src_vault, @src_prefix, @dest_vault, @dest_prefix, @enabled, @delete_mode, @created_by, @created_at)`,
+);
+const selectMirrors = db.prepare("SELECT * FROM vault_mirrors ORDER BY created_at ASC");
+const selectMirror = db.prepare("SELECT * FROM vault_mirrors WHERE id = ?");
+const updateMirrorStmt = db.prepare("UPDATE vault_mirrors SET enabled = @enabled, delete_mode = @delete_mode WHERE id = @id");
+const deleteMirrorStmt = db.prepare("DELETE FROM vault_mirrors WHERE id = ?");
+const recordMirrorRunStmt = db.prepare("UPDATE vault_mirrors SET last_run_at = @at, last_result = @result WHERE id = @id");
+
+type MirrorRow = Omit<VaultMirror, "enabled"> & { enabled: number };
+const mirrorFromRow = (r: MirrorRow): VaultMirror => ({ ...r, enabled: !!r.enabled });
+
+export function createVaultMirror(m: {
+  src_vault: string;
+  src_prefix: string;
+  dest_vault: string;
+  dest_prefix: string;
+  delete_mode?: MirrorDeleteMode;
+  created_by?: string | null;
+}): VaultMirror {
+  const id = randomUUID();
+  insertMirror.run({
+    id,
+    src_vault: m.src_vault,
+    src_prefix: m.src_prefix,
+    dest_vault: m.dest_vault,
+    dest_prefix: m.dest_prefix,
+    enabled: 1,
+    delete_mode: m.delete_mode ?? "archive",
+    created_by: m.created_by ?? null,
+    created_at: Date.now(),
+  });
+  return getVaultMirror(id)!;
+}
+export function listVaultMirrors(): VaultMirror[] {
+  return (selectMirrors.all() as MirrorRow[]).map(mirrorFromRow);
+}
+export function getVaultMirror(id: string): VaultMirror | null {
+  const row = selectMirror.get(id) as MirrorRow | undefined;
+  return row ? mirrorFromRow(row) : null;
+}
+export function updateVaultMirror(id: string, patch: { enabled?: boolean; delete_mode?: MirrorDeleteMode }): VaultMirror | null {
+  const cur = getVaultMirror(id);
+  if (!cur) return null;
+  updateMirrorStmt.run({
+    id,
+    enabled: (patch.enabled ?? cur.enabled) ? 1 : 0,
+    delete_mode: patch.delete_mode ?? cur.delete_mode,
+  });
+  return getVaultMirror(id);
+}
+export function removeVaultMirror(id: string): void {
+  deleteMirrorStmt.run(id);
+}
+const deleteMirrorsForVaultStmt = db.prepare("DELETE FROM vault_mirrors WHERE src_vault = ? OR dest_vault = ?");
+/** Drop every mirror referencing a vault (called when the vault leaves the
+ *  registry). CRITICAL: an orphaned mirror would silently retarget the PRIMARY
+ *  vault via resolveVaultEntry's fallback — its delete-verify would then 404 on
+ *  every copy and mass-archive/delete the destination. Returns rows removed. */
+export function removeVaultMirrorsForVault(vaultId: string): number {
+  return deleteMirrorsForVaultStmt.run(vaultId, vaultId).changes;
+}
+export function recordMirrorRun(id: string, result: unknown): void {
+  recordMirrorRunStmt.run({ id, at: Date.now(), result: JSON.stringify(result) });
+}
+
+// ── Workspaces (one server, many workspaces) ─────────────────────────────────
+/** The id of the implicit default workspace: every vault not explicitly assigned
+ *  belongs to it, so a single-workspace deploy is unchanged. */
+export const DEFAULT_WORKSPACE_ID = "default";
+
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  hostname: string | null;
+  created_at: number;
+}
+
+const insertWorkspace = db.prepare(
+  `INSERT INTO workspaces (id, name, hostname, created_at) VALUES (@id, @name, @hostname, @created_at)
+   ON CONFLICT(id) DO UPDATE SET name = @name, hostname = @hostname`,
+);
+const selectWorkspaces = db.prepare("SELECT id, name, hostname, created_at FROM workspaces ORDER BY created_at ASC");
+const selectWorkspace = db.prepare("SELECT id, name, hostname, created_at FROM workspaces WHERE id = ?");
+const selectWorkspaceByHost = db.prepare("SELECT id, name, hostname, created_at FROM workspaces WHERE hostname = ? COLLATE NOCASE");
+const deleteWorkspaceStmt = db.prepare("DELETE FROM workspaces WHERE id = ?");
+const upsertVaultWorkspace = db.prepare(
+  `INSERT INTO vault_workspaces (vault_id, workspace_id) VALUES (?, ?)
+   ON CONFLICT(vault_id) DO UPDATE SET workspace_id = excluded.workspace_id`,
+);
+const selectVaultWorkspace = db.prepare("SELECT workspace_id FROM vault_workspaces WHERE vault_id = ?");
+const selectVaultsForWorkspace = db.prepare("SELECT vault_id FROM vault_workspaces WHERE workspace_id = ?");
+const deleteVaultWorkspacesFor = db.prepare("DELETE FROM vault_workspaces WHERE workspace_id = ?");
+
+/** Ensure the implicit default workspace exists (idempotent, run at boot). */
+export function ensureDefaultWorkspace(): void {
+  if (!selectWorkspace.get(DEFAULT_WORKSPACE_ID)) {
+    insertWorkspace.run({ id: DEFAULT_WORKSPACE_ID, name: "Default", hostname: null, created_at: now() });
+  }
+}
+
+export function listWorkspaces(): WorkspaceRow[] {
+  return selectWorkspaces.all() as WorkspaceRow[];
+}
+export function getWorkspace(id: string): WorkspaceRow | null {
+  return (selectWorkspace.get(id) as WorkspaceRow | undefined) ?? null;
+}
+export function createWorkspace(w: { id: string; name: string; hostname?: string | null }): WorkspaceRow {
+  insertWorkspace.run({ id: w.id, name: w.name, hostname: w.hostname ?? null, created_at: now() });
+  return getWorkspace(w.id)!;
+}
+export function updateWorkspace(id: string, patch: { name?: string; hostname?: string | null }): void {
+  const cur = getWorkspace(id);
+  if (!cur) return;
+  insertWorkspace.run({
+    id,
+    name: patch.name ?? cur.name,
+    hostname: patch.hostname !== undefined ? patch.hostname : cur.hostname,
+    created_at: cur.created_at,
+  });
+}
+export function deleteWorkspace(id: string): void {
+  if (id === DEFAULT_WORKSPACE_ID) return; // the default workspace is permanent
+  deleteVaultWorkspacesFor.run(id); // its vaults fall back to 'default'
+  deleteWorkspaceStmt.run(id);
+}
+
+/** Which workspace a vault belongs to (unassigned → the default workspace). */
+export function workspaceForVault(vaultId: string): string {
+  const row = selectVaultWorkspace.get(vaultId) as { workspace_id: string } | undefined;
+  return row?.workspace_id ?? DEFAULT_WORKSPACE_ID;
+}
+/** Vault ids explicitly assigned to a workspace, PLUS (for the default workspace)
+ *  every registry vault with no explicit assignment. */
+export function vaultsForWorkspace(workspaceId: string): string[] {
+  const explicit = (selectVaultsForWorkspace.all(workspaceId) as Array<{ vault_id: string }>).map((r) => r.vault_id);
+  if (workspaceId !== DEFAULT_WORKSPACE_ID) return explicit;
+  const assigned = new Set((db.prepare("SELECT vault_id FROM vault_workspaces").all() as Array<{ vault_id: string }>).map((r) => r.vault_id));
+  const unassigned = getVaultRegistry().map((v) => v.id).filter((id) => !assigned.has(id));
+  return [...new Set([...explicit, ...unassigned])];
+}
+export function assignVaultToWorkspace(vaultId: string, workspaceId: string): void {
+  upsertVaultWorkspace.run(vaultId, workspaceId);
+}
+/** Resolve a workspace by the request Host header's hostname (exact match on the
+ *  configured subdomain). Null when no workspace claims that host. */
+export function workspaceForHostname(hostname: string): WorkspaceRow | null {
+  if (!hostname) return null;
+  return (selectWorkspaceByHost.get(hostname) as WorkspaceRow | undefined) ?? null;
+}
+
+/**
+ * Resolve the ACTIVE workspace for a request. Order: an explicit
+ * `X-Prism-Workspace` header (the owner's admin switcher) wins; else the request
+ * Host's subdomain matched against a workspace's configured hostname (how a
+ * subdomain serves its own workspace); else the default workspace. Unknown
+ * ids/hosts degrade to 'default', so the pre-workspace behavior is unchanged.
+ */
+export function resolveWorkspaceId(opts: { workspaceHeader?: string | null; hostHeader?: string | null }): string {
+  const wh = opts.workspaceHeader?.trim();
+  if (wh && getWorkspace(wh)) return wh;
+  const host = (opts.hostHeader ?? "").split(":")[0]!.trim().toLowerCase();
+  if (host) {
+    const w = workspaceForHostname(host);
+    if (w) return w.id;
+  }
+  return DEFAULT_WORKSPACE_ID;
+}
+// NOTE: ensureDefaultWorkspace() is invoked at the END of this module (after the
+// `now` helper it uses is initialized) — a module-load call here would hit a
+// temporal-dead-zone ReferenceError on `now`.
+
 export type SubjectType = "user" | "link" | "anyone" | "peer";
 // "path" is used ONLY as a publication's resource_type (publish-by-directory);
 // it is never a grant resource_type (path publications are guarded by the
 // path-membership predicate, not by grants — see routes/publish.ts).
-export type ResourceType = "note" | "tag" | "space" | "path";
+// "vault" is a whole-workspace grant (resource = the vault_id): broad access to
+// every note in the vault, distinct from the management RIGHTS a role confers.
+export type ResourceType = "note" | "tag" | "space" | "path" | "vault";
 
 export interface Grant {
   id: string;
+  /** The vault (tenant) this grant belongs to. Defaults to 'primary' so a
+   *  single-vault deploy is unchanged; multi-tenant callers pass the active vault. */
+  vault_id: string;
   subject_type: SubjectType;
   subject: string;
   resource_type: ResourceType;
@@ -361,6 +784,8 @@ export interface Grant {
   level: Level;
   created_by: string | null;
   created_at: number;
+  /** Epoch-ms expiry; NULL = never. Currently honored for peer grants (4.3). */
+  expires_at: number | null;
 }
 
 export interface Session {
@@ -407,11 +832,22 @@ export interface UserRow {
   email: string;
   name: string | null;
   password_hash: string | null;
+  avatar: string | null;
   created_at: number;
 }
-const selectUser = db.prepare("SELECT email, name, password_hash, created_at FROM users WHERE email = ?");
+const selectUser = db.prepare("SELECT email, name, password_hash, avatar, created_at FROM users WHERE email = ?");
 export function getUser(email: string): UserRow | null {
   return (selectUser.get(email) as UserRow | undefined) ?? null;
+}
+
+const updateProfileName = db.prepare("UPDATE users SET name = ? WHERE email = ?");
+const updateProfileAvatar = db.prepare("UPDATE users SET avatar = ? WHERE email = ?");
+/** Update a user's own profile: display name and/or avatar (only the provided
+ *  fields). Email is the account identity (primary key) and is not changed here. */
+export function setUserProfile(email: string, patch: { name?: string; avatar?: string | null }): void {
+  ensureUser(email);
+  if (patch.name !== undefined) updateProfileName.run(patch.name, email);
+  if (patch.avatar !== undefined) updateProfileAvatar.run(patch.avatar, email);
 }
 export function hasAccount(email: string): boolean {
   const u = getUser(email);
@@ -496,71 +932,147 @@ export function consumeMagicLink(tokenHash: string): string | null {
 }
 
 // ---- grants ----
+// Grant input: vault_id is OPTIONAL (defaults to 'primary') so every existing
+// single-vault call site is unchanged; multi-tenant callers pass the active vault.
+type GrantInput = Omit<Grant, "id" | "created_at" | "vault_id" | "expires_at"> & {
+  id?: string;
+  vault_id?: string;
+  expires_at?: number | null;
+};
+
 const insertGrant = db.prepare(
-  `INSERT INTO grants (id, subject_type, subject, resource_type, resource, level, created_by, created_at)
-   VALUES (@id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at)`,
+  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at, expires_at)
+   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at, @expires_at)`,
 );
+// User grants are scoped to the active vault: a member of vault A must not pick up
+// their (or an "anyone") grant from vault B. (anyone grants are per-vault too.)
 const selectGrantsByUser = db.prepare(
-  "SELECT * FROM grants WHERE (subject_type = 'user' AND subject = ?) OR subject_type = 'anyone'",
+  "SELECT * FROM grants WHERE vault_id = ? AND ((subject_type = 'user' AND subject = ?) OR subject_type = 'anyone')",
 );
 const selectGrantsByCapability = db.prepare(
   "SELECT * FROM grants WHERE subject_type = 'link' AND subject = ?",
 );
 const selectGrantsByResource = db.prepare(
-  "SELECT * FROM grants WHERE resource_type = ? AND resource = ?",
+  "SELECT * FROM grants WHERE vault_id = ? AND resource_type = ? AND resource = ?",
 );
 const deleteGrantStmt = db.prepare("DELETE FROM grants WHERE id = ?");
 
-export function addGrant(g: Omit<Grant, "id" | "created_at"> & { id?: string }): Grant {
-  const row: Grant = { ...g, id: g.id ?? randomUUID(), created_at: now() };
+export function addGrant(g: GrantInput): Grant {
+  const row: Grant = { ...g, vault_id: g.vault_id ?? "primary", id: g.id ?? randomUUID(), created_at: now(), expires_at: g.expires_at ?? null };
   insertGrant.run(row);
   return row;
 }
-/** Grants for a signed-in user (their own grants + any "anyone-with-link" grants). */
-export function grantsForUser(email: string): Grant[] {
-  return selectGrantsByUser.all(email) as Grant[];
+/** Grants for a signed-in user IN a vault (their own + any "anyone-with-link"
+ *  grants in that vault). Defaults to the primary vault for single-vault callers. */
+export function grantsForUser(email: string, vaultId = "primary"): Grant[] {
+  return selectGrantsByUser.all(vaultId, email) as Grant[];
 }
-/** Grants attached to a specific capability link. */
+/** Grants attached to a specific capability link (each carries its own vault_id;
+ *  a link is bound to one resource in one vault). */
 export function grantsForCapability(capabilityId: string): Grant[] {
   return selectGrantsByCapability.all(capabilityId) as Grant[];
 }
-export function grantsForResource(type: ResourceType, resource: string): Grant[] {
-  return selectGrantsByResource.all(type, resource) as Grant[];
+export function grantsForResource(type: ResourceType, resource: string, vaultId = "primary"): Grant[] {
+  return selectGrantsByResource.all(vaultId, type, resource) as Grant[];
+}
+/** The distinct vault_ids where this user holds ≥1 direct grant — a guest
+ *  invited to a workspace (via /acl people-sharing) has grants but no membership
+ *  row, yet should still see that one workspace in their switcher (Phase 1.5). */
+const selectGrantVaultsByUser = db.prepare(
+  "SELECT DISTINCT vault_id FROM grants WHERE subject_type = 'user' AND subject = ?",
+);
+export function vaultIdsWithGrantsForUser(email: string): string[] {
+  return (selectGrantVaultsByUser.all(email.toLowerCase()) as Array<{ vault_id: string }>).map((r) => r.vault_id);
 }
 export function removeGrant(id: string): void {
   deleteGrantStmt.run(id);
 }
+// ── grants audit (Phase 2.2): list every grant in a vault, and fetch one by id
+// (so a revoke can be scoped to the admin's OWN vault — no cross-vault deletes).
+const selectGrantsByVault = db.prepare("SELECT * FROM grants WHERE vault_id = ? ORDER BY created_at DESC");
+const selectGrantById = db.prepare("SELECT * FROM grants WHERE id = ?");
+export function listGrantsForVault(vaultId: string): Grant[] {
+  return selectGrantsByVault.all(vaultId) as Grant[];
+}
+export function getGrantById(id: string): Grant | null {
+  return (selectGrantById.get(id) as Grant | undefined) ?? null;
+}
 
 const selectGrantBySubjectResource = db.prepare(
-  `SELECT * FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+  `SELECT * FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
-const updateGrantLevel = db.prepare("UPDATE grants SET level = ? WHERE id = ?");
+const updateGrantLevel = db.prepare("UPDATE grants SET level = ?, expires_at = ? WHERE id = ?");
 
-/** Insert or, if a grant for the same (subject, resource) exists, update its level. */
-export function upsertGrant(g: Omit<Grant, "id" | "created_at">): Grant {
+/** Insert or, if a grant for the same (vault, subject, resource) exists, update
+ *  its level (and expiry — re-granting refreshes/clears the TTL). */
+export function upsertGrant(g: GrantInput): Grant {
+  const vaultId = g.vault_id ?? "primary";
   const existing = selectGrantBySubjectResource.get(
+    vaultId,
     g.subject_type,
     g.subject,
     g.resource_type,
     g.resource,
   ) as Grant | undefined;
   if (existing) {
-    updateGrantLevel.run(g.level, existing.id);
-    return { ...existing, level: g.level };
+    const expires_at = g.expires_at ?? null;
+    updateGrantLevel.run(g.level, expires_at, existing.id);
+    return { ...existing, level: g.level, expires_at };
   }
   return addGrant(g);
 }
 
 const deleteGrantBySubjectResourceStmt = db.prepare(
-  `DELETE FROM grants WHERE subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
+  `DELETE FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
 export function removeGrantBySubjectResource(
   subjectType: SubjectType,
   subject: string,
   resourceType: ResourceType,
   resource: string,
+  vaultId = "primary",
 ): void {
-  deleteGrantBySubjectResourceStmt.run(subjectType, subject, resourceType, resource);
+  deleteGrantBySubjectResourceStmt.run(vaultId, subjectType, subject, resourceType, resource);
+}
+
+// ── Memberships (Phase 1 multi-tenancy) ──────────────────────────────────────
+export interface MembershipRow {
+  vault_id: string;
+  email: string;
+  role: string; // 'owner' | 'admin' | 'member' | 'guest' (validated by roles.ts)
+  created_at: number;
+}
+const upsertMembershipStmt = db.prepare(
+  `INSERT INTO memberships (vault_id, email, role, created_by, created_at)
+   VALUES (@vault_id, @email, @role, @created_by, @created_at)
+   ON CONFLICT(vault_id, email) DO UPDATE SET role = @role`,
+);
+const selectMembershipRole = db.prepare("SELECT role FROM memberships WHERE vault_id = ? AND email = ?");
+const selectMembershipsByVault = db.prepare(
+  "SELECT vault_id, email, role, created_at FROM memberships WHERE vault_id = ? ORDER BY created_at",
+);
+const selectMembershipsByUser = db.prepare(
+  "SELECT vault_id, email, role, created_at FROM memberships WHERE email = ?",
+);
+const deleteMembershipStmt = db.prepare("DELETE FROM memberships WHERE vault_id = ? AND email = ?");
+
+/** The raw membership role string for (email, vault), or null if not a member.
+ *  roles.ts `workspaceRole` wraps this with the OWNER_EMAIL bootstrap fallback. */
+export function getMembershipRole(email: string, vaultId: string): string | null {
+  return (selectMembershipRole.get(vaultId, email) as { role: string } | undefined)?.role ?? null;
+}
+export function setMembership(vaultId: string, email: string, role: string, createdBy: string | null): void {
+  ensureUser(email);
+  upsertMembershipStmt.run({ vault_id: vaultId, email, role, created_by: createdBy, created_at: now() });
+}
+export function removeMembership(vaultId: string, email: string): void {
+  deleteMembershipStmt.run(vaultId, email);
+}
+export function listMemberships(vaultId: string): MembershipRow[] {
+  return selectMembershipsByVault.all(vaultId) as MembershipRow[];
+}
+export function membershipsForUser(email: string): MembershipRow[] {
+  return selectMembershipsByUser.all(email) as MembershipRow[];
 }
 
 // ---- users (listing) ----
@@ -605,20 +1117,23 @@ export interface DocState {
   state: Uint8Array;
   sourceUpdatedAt: number | null;
 }
-const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE name = ?");
+const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE vault_id = ? AND name = ?");
 const upsertDocState = db.prepare(
-  `INSERT INTO collab_docs (name, state, source_updated_at, updated_at)
-   VALUES (@name, @state, @source_updated_at, @updated_at)
-   ON CONFLICT(name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
+  `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, updated_at)
+   VALUES (@vault_id, @name, @state, @source_updated_at, @updated_at)
+   ON CONFLICT(vault_id, name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
 );
 
-export function getDocState(name: string): DocState | null {
-  const row = selectDocState.get(name) as { state: Buffer; source_updated_at: number | null } | undefined;
+/** CRDT doc state, scoped to a vault (a note id is only unique within a vault).
+ *  vaultId defaults to 'primary' so pre-multitenant callers are unaffected. */
+export function getDocState(name: string, vaultId = "primary"): DocState | null {
+  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null } | undefined;
   if (!row) return null;
   return { state: new Uint8Array(row.state), sourceUpdatedAt: row.source_updated_at };
 }
-export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null): void {
+export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId = "primary"): void {
   upsertDocState.run({
+    vault_id: vaultId,
     name,
     state: Buffer.from(state),
     source_updated_at: sourceUpdatedAt,
@@ -627,12 +1142,14 @@ export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: n
 }
 
 // ---- grants (peer subject) ----
+// Expired peer grants (TTL, 4.3) simply don't load → federation access lapses on
+// its own with no sweep needed. NULL expires_at = never expires.
 const selectGrantsByPeer = db.prepare(
-  "SELECT * FROM grants WHERE subject_type = 'peer' AND subject = ?",
+  "SELECT * FROM grants WHERE subject_type = 'peer' AND subject = ? AND (expires_at IS NULL OR expires_at > ?)",
 );
-/** Grants attached to a paired peer (matched by its pubkey). */
+/** Grants attached to a paired peer (matched by its pubkey), excluding expired. */
 export function grantsForPeer(pubkey: string): Grant[] {
-  return selectGrantsByPeer.all(pubkey) as Grant[];
+  return selectGrantsByPeer.all(pubkey, now()) as Grant[];
 }
 
 // ---- publications (Horizon B) ----
@@ -830,6 +1347,7 @@ export interface FederatedNote {
   peer_synced_at: number | null;
   source_updated_at: number | null;
   created_at: number;
+  vault_id: string; // the tenant this hub maps the federated note into (default 'primary')
 }
 const insertFederatedNote = db.prepare(
   `INSERT INTO federated_notes (space_note_key, space_id, local_id, kind, peer_synced_at, source_updated_at, created_at)
@@ -841,10 +1359,23 @@ const selectFederatedByLocal = db.prepare("SELECT * FROM federated_notes WHERE l
 const selectFederatedBySpace = db.prepare("SELECT * FROM federated_notes WHERE space_id = ?");
 const deleteFederatedStmt = db.prepare("DELETE FROM federated_notes WHERE space_note_key = ?");
 
-export function upsertFederatedNote(f: Omit<FederatedNote, "created_at"> & { created_at?: number }): FederatedNote {
-  const row: FederatedNote = { ...f, created_at: f.created_at ?? now() };
-  insertFederatedNote.run(row);
-  return row;
+export function upsertFederatedNote(
+  f: Omit<FederatedNote, "created_at" | "vault_id"> & { created_at?: number; vault_id?: string },
+): FederatedNote {
+  // vault_id is not written by the prepared statement (the DB column defaults to
+  // 'primary'); it's carried on the read shape only. Callers may omit it — and it
+  // must NOT be passed to .run() (better-sqlite3 rejects unknown named params).
+  const created_at = f.created_at ?? now();
+  insertFederatedNote.run({
+    space_note_key: f.space_note_key,
+    space_id: f.space_id,
+    local_id: f.local_id,
+    kind: f.kind,
+    peer_synced_at: f.peer_synced_at,
+    source_updated_at: f.source_updated_at,
+    created_at,
+  });
+  return { ...f, vault_id: f.vault_id ?? "primary", created_at };
 }
 export function getFederatedByKey(key: string): FederatedNote | null {
   return (selectFederatedByKey.get(key) as FederatedNote | undefined) ?? null;
@@ -891,6 +1422,25 @@ export function outboxForPeer(pubkey: string): OutboxItem[] {
 }
 export function clearOutboxItem(id: number): void {
   deleteOutboxStmt.run(id);
+}
+
+// ── peer-edit audit (4.3) ─────────────────────────────────────────────────────
+export interface PeerEdit {
+  id: number;
+  space_note_key: string;
+  local_id: string;
+  peer_pubkey: string;
+  edited_at: number;
+}
+const insertPeerEdit = db.prepare(
+  "INSERT INTO peer_edits (space_note_key, local_id, peer_pubkey, edited_at) VALUES (?, ?, ?, ?)",
+);
+const selectPeerEdits = db.prepare("SELECT * FROM peer_edits ORDER BY edited_at DESC, id DESC LIMIT ?");
+export function recordPeerEdit(spaceNoteKey: string, localId: string, peerPubkey: string): void {
+  insertPeerEdit.run(spaceNoteKey, localId, peerPubkey, now());
+}
+export function listPeerEdits(limit = 200): PeerEdit[] {
+  return selectPeerEdits.all(limit) as PeerEdit[];
 }
 
 // ---- pending suggestions (durable; survive restart) ----
@@ -1010,3 +1560,8 @@ export function setMirrorRequestStatus(id: string, status: MirrorRequest["status
 export function deleteMirrorRequest(id: string): void {
   deleteMirrorReqStmt.run(id);
 }
+
+// Bootstrap the implicit default workspace. Done HERE (module end) so the `now`
+// helper it uses is already initialized (a call up where the functions are
+// defined would hit the temporal dead zone).
+ensureDefaultWorkspace();

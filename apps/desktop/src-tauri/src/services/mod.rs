@@ -80,8 +80,10 @@ impl ServiceManager {
         let parachute_vault = config.parachute_vault.clone();
         let parachute = Arc::new(ParachuteClient::new(&parachute_url, &parachute_vault, parachute_key.clone()));
 
-        // Message sync (Matrix → Parachute) — every 60 seconds
-        if !config.matrix_access_token.is_empty() {
+        // Message sync (Matrix → Parachute) — every 60 seconds. Skipped when
+        // `disable_message_sync` is set: the Prism Server ingests Matrix
+        // server-side instead, so running both would double-append messages.
+        if !config.matrix_access_token.is_empty() && !config.disable_message_sync {
             let matrix = Arc::new(MatrixClient::new(
                 &config.matrix_homeserver,
                 &config.matrix_access_token,
@@ -93,6 +95,8 @@ impl ServiceManager {
             handles.push(tauri::async_runtime::spawn(async move {
                 message_sync::run(matrix, p, rx, status).await;
             }));
+        } else if config.disable_message_sync {
+            log::info!("Message sync disabled: handled server-side (disable_message_sync)");
         } else {
             log::info!("Message sync disabled: no Matrix access token configured");
         }

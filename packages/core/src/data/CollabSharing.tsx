@@ -22,6 +22,118 @@ export interface ShareLink {
   expiresAt: number;
   label?: string | null;
 }
+
+/** Workspace role (Phase 2 multi-tenant). Ordered weakest→strongest:
+ *  guest < member < admin < owner. Distinct from the per-note ShareLevel. */
+export type WorkspaceRole = "guest" | "member" | "admin" | "owner";
+export interface WorkspaceMember {
+  email: string;
+  name: string | null;
+  role: WorkspaceRole;
+  joinedAt: number;
+}
+/** One access grant in the active vault, for the Members panel's audit view. */
+export interface WorkspaceGrant {
+  id: string;
+  subjectType: string; // 'user' | 'link' | 'anyone' | ...
+  subject: string;
+  subjectName: string | null;
+  resourceType: string; // 'note' | 'tag' | 'vault' | ...
+  resource: string;
+  level: ShareLevel;
+  grantedBy: string | null;
+  grantedAt: number;
+}
+/** The signed-in viewer, scoped to the active vault. `role` is what THIS
+ *  workspace grants them; `isServerOwner` is the global operator flag (owner of
+ *  every vault on the box). Backs role-gating of the Network management panels. */
+export interface ViewerIdentity {
+  email: string;
+  role: WorkspaceRole;
+  isServerOwner: boolean;
+  vaultId: string;
+}
+
+// ── Workspace = the whole server: a permission boundary grouping many vaults ──
+/** One vault within the workspace (token never included). */
+export interface WorkspaceVaultRef {
+  id: string;
+  label: string;
+  vault: string;
+}
+/** A person's access across the workspace: per-vault management `role` and/or
+ *  whole-vault access `level`. A vault absent from `access` = no access there. */
+export interface WorkspacePerson {
+  email: string;
+  name: string | null;
+  isServerOwner: boolean;
+  access: Record<string, { role?: WorkspaceRole; level?: ShareLevel }>;
+}
+/** The whole workspace: the vaults on this server + everyone's access matrix.
+ *  Server-owner only (spans all vaults). */
+export interface WorkspaceOverview {
+  vaults: WorkspaceVaultRef[];
+  people: WorkspacePerson[];
+}
+
+// ── Workspace entities (one server, many workspaces) ──
+/** A workspace = a subdomain + one-or-more vaults + members. Distinct from the
+ *  WorkspaceOverview people-matrix above: this is the workspace ENTITY the owner
+ *  creates/configures. Each vault belongs to exactly one workspace. */
+export interface WorkspaceEntity {
+  id: string;
+  name: string;
+  hostname: string | null;
+  isDefault: boolean;
+  vaults: WorkspaceVaultRef[];
+}
+
+/** Cloudflare tunnel status (the pm2 `prism-tunnel` process fronting this box). */
+export interface TunnelStatus {
+  managed: boolean;
+  name?: string;
+  status?: string;
+  restarts?: number;
+  uptime?: number;
+  hostname?: string | null;
+  detail?: string;
+}
+/** Cloudflare tunnel ingress state: workspace subdomains not yet routed + the
+ *  operator commands to create their DNS routes. */
+export interface TunnelIngress {
+  configPath: string;
+  config: string;
+  tunnelId: string | null;
+  /** Workspace hostnames with no ingress rule yet. */
+  missing: string[];
+  /** `cloudflared tunnel route dns …` per missing hostname (DNS is operator-run). */
+  routeDnsCommands: string[];
+}
+/** Server settings + status snapshot (server-owner only). Secret VALUES are
+ *  never included — only whether each is configured. */
+export interface ServerInfo {
+  appOrigin: string;
+  port: number;
+  ownerEmail: string;
+  parachuteUrl: string;
+  parachuteVault: string;
+  vaultCount: number;
+  federationEnabled: boolean;
+  trustLocal: boolean;
+  secretsAvailable: boolean;
+  emailConfigured: boolean;
+  magicFrom: string;
+  integrations: Record<string, boolean>;
+  tunnel: TunnelStatus;
+}
+/** One integration's status in the ACTIVE vault (never the stored value). */
+export interface IntegrationStatus {
+  secretsAvailable: boolean;
+  configured: boolean;
+  /** Non-secret scope fields some kinds echo back (e.g. clickup's teamId /
+   *  spaceIds / assignedOnly) so a re-save can prefill instead of dropping them. */
+  [field: string]: string | boolean | undefined;
+}
 export interface SharePerson {
   email: string;
   level: ShareLevel;
@@ -33,7 +145,7 @@ export interface TagAccess {
   level: ShareLevel;
 }
 export interface NoteAccess {
-  note: { id: string; tags: string[]; title: string };
+  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null };
   people: SharePerson[];
   links: ShareLink[];
   tagAccess: TagAccess[];
@@ -102,6 +214,14 @@ export interface PeerInfo {
   pairedAt: number | null;
   createdAt: number;
 }
+/** One inbound edit a federated peer made to a shared note (audit, 4.3). */
+export interface PeerEditInfo {
+  spaceNoteKey: string;
+  localId: string;
+  peer: string;
+  peerFingerprint: string;
+  editedAt: number;
+}
 /** A shared space = a slice of the vault synced with peers. */
 /** A peer granted access to a space, with its level + the vault's last-synced clock. */
 export interface SpacePeerGrant {
@@ -169,9 +289,93 @@ export interface CollabSharing {
   getAccess?(noteId: string): Promise<NoteAccess>;
   setPerson?(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
   removePerson?(noteId: string, email: string): Promise<void>;
+  /** Private-to-creator (Phase 2.5): mark a note private (only the creator + people
+   *  with an explicit per-note grant can see it) or back to workspace-visible. */
+  setNoteVisibility?(noteId: string, isPrivate: boolean): Promise<void>;
   createLink?(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink>;
   revokeLink?(noteId: string, linkId: string): Promise<void>;
   listUsers?(): Promise<string[]>;
+
+  /** Folder/tag sharing (Phase 2): grant a person access to EVERYTHING carrying a
+   *  tag (≈ "share this folder with this email"). Backs the Share dialog's
+   *  folder-share affordance + the Members panel. */
+  setTagPerson?(tag: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeTagPerson?(tag: string, email: string): Promise<void>;
+  /** Who currently has access to a tag/folder (people + anyone-grants). Backs the
+   *  Share dialog's folder-share panel. */
+  getTagAccess?(tag: string): Promise<TagAccess[]>;
+
+  /** Grants audit (Phase 2.2): every access grant in the active vault, each
+   *  revocable by id. Admin-only server-side; absent → the audit view hides. */
+  listGrants?(): Promise<WorkspaceGrant[]>;
+  revokeGrant?(id: string): Promise<void>;
+
+  /** The signed-in viewer's identity + role FOR THE ACTIVE VAULT. Role is
+   *  per-vault (a member of workspace A may be a guest in B), so this is re-read
+   *  on every vault switch. The management surfaces (Members/Publish/Federate)
+   *  gate on `role` being admin+ so a member never fires admin-only /acl/* calls
+   *  and sees 403 noise. Absent (desktop shell) → treat the local operator as owner. */
+  getViewer?(): Promise<ViewerIdentity>;
+
+  /** Workspace management (server-owner only): the WHOLE server as a permission
+   *  boundary grouping every vault. `getWorkspace` returns the people × vaults
+   *  access matrix; the setters add/revoke a person's whole-vault ACCESS (level)
+   *  or management ROLE in a CHOSEN vault — the "add someone to the workspace →
+   *  access to a chosen vault" flow. Absent → the Workspace surface hides. */
+  getWorkspace?(): Promise<WorkspaceOverview>;
+  setWorkspaceAccess?(email: string, vaultId: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeWorkspaceAccess?(vaultId: string, email: string): Promise<void>;
+  setWorkspaceMemberRole?(email: string, vaultId: string, role: WorkspaceRole): Promise<SetPersonResult>;
+  removeWorkspaceMemberRole?(vaultId: string, email: string): Promise<void>;
+
+  /** Server settings + Cloudflare tunnel management (server-owner only). A config
+   *  snapshot (no secret values), tunnel status + start/stop/restart, and a narrow
+   *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM/RESEND_API_KEY — restart-required).
+   *  Absent → the Server surface hides (desktop / non-server-owner). */
+  getServerInfo?(): Promise<ServerInfo>;
+  controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
+  setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
+  /** Cloudflare tunnel ingress: which workspace subdomains still need routing, the
+   *  DNS-route commands to run, and a guarded apply (adds ingress rules + restarts
+   *  the tunnel, rolling back if it doesn't come back online). */
+  getTunnelIngress?(): Promise<TunnelIngress>;
+  applyTunnelIngress?(): Promise<{ added: string[] }>;
+
+  /** Server-side sync-integration credentials (admin+). `setIntegrationCredential`
+   *  stores/replaces one integration's credential fields (encrypted server-side);
+   *  `syncIntegration` triggers an immediate ingest pass and resolves with the
+   *  server's count payload. Configured-state comes from `getIntegrationStatus`
+   *  (GET /api/integrations/<kind>) — the same vault scope the PUT writes to, and
+   *  admin-accessible (unlike the owner-only ServerInfo snapshot, which reports
+   *  the primary vault only). Stored values are NEVER returned. Absent → the
+   *  panel shows read-only badges. */
+  getIntegrationStatus?(kind: string): Promise<IntegrationStatus>;
+  setIntegrationCredential?(kind: string, fields: Record<string, unknown>): Promise<void>;
+  deleteIntegrationCredential?(kind: string): Promise<void>;
+  syncIntegration?(kind: string): Promise<Record<string, unknown>>;
+
+  /** Workspace entities (server-owner): the "one server, many workspaces" model.
+   *  Create/configure a workspace (name + subdomain), and assign vaults to it.
+   *  Absent → the Workspaces surface hides. */
+  listWorkspaceEntities?(): Promise<WorkspaceEntity[]>;
+  createWorkspaceEntity?(name: string, hostname?: string): Promise<WorkspaceEntity>;
+  updateWorkspaceEntity?(id: string, patch: { name?: string; hostname?: string | null }): Promise<WorkspaceEntity>;
+  deleteWorkspaceEntity?(id: string): Promise<void>;
+  assignVaultToWorkspaceEntity?(workspaceId: string, vaultId: string): Promise<void>;
+  /** The owner's active-workspace switch (scopes the vault list + admin surface to
+   *  one workspace, via X-Prism-Workspace). Absent → single-workspace, no switcher. */
+  getActiveWorkspace?(): string | null;
+  setActiveWorkspace?(id: string): void;
+
+  /** Workspace members & roles (Phase 2 — the team workspace). A member belongs
+   *  to the active vault at a role; `setVaultPerson` grants broad note access
+   *  (a whole-workspace grant) without management rights. Absent → the Members
+   *  panel hides (desktop / non-owner safe). */
+  listMembers?(): Promise<WorkspaceMember[]>;
+  setMember?(email: string, role: WorkspaceRole): Promise<SetPersonResult>;
+  removeMember?(email: string): Promise<void>;
+  setVaultPerson?(email: string, level: ShareLevel): Promise<SetPersonResult>;
+  removeVaultPerson?(email: string): Promise<void>;
 
   /** Publishing — turn a tag into a public, read-only site. Optional so shells
    *  without it (desktop no-op, capability viewers) simply never show the tab. */
@@ -227,6 +431,11 @@ export interface CollabSharing {
   addNoteToSpace?(spaceId: string, noteId: string): Promise<{ space_note_key: string; kind: string }>;
   grantSpacePeer?(spaceId: string, pubkey: string, level: ShareLevel): Promise<void>;
   revokeSpacePeer?(spaceId: string, pubkey: string): Promise<void>;
+  /** "Parachute Sync" (Phase 4.2): mirror ONE note to a paired peer in a single
+   *  action — the server composes create-space + add-note + grant-peer + sync. */
+  mirrorNoteToPeer?(noteId: string, pubkey: string, level: ShareLevel): Promise<{ spaceId: string; spaceNoteKey: string }>;
+  /** Peer-edit audit (4.3): inbound edits federated peers made to shared notes. */
+  listPeerEdits?(limit?: number): Promise<PeerEditInfo[]>;
 
   /** Inbound mirror requests this node has received (owner-reviewed). */
   listMirrorRequests?(status?: "pending" | "accepted" | "rejected"): Promise<MirrorRequestInfo[]>;

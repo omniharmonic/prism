@@ -26,7 +26,15 @@ import { verifyPassword } from "../auth/password";
 
 export const publish = new Hono();
 
-const ref = (n: Note): NoteRef => ({ id: n.id, tags: n.tags ?? [] });
+// Includes `visibility` so a PRIVATE note carrying a published tag is excluded
+// from the public set: effectiveLevel returns null for a private note unless the
+// anon actor holds an explicit per-note grant (it never does). Without this a
+// private note could leak onto a public wiki via a shared tag.
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
 
 /** Local equivalent of api.ts `vaultErr` (not exported there): 404 → 404, else 502/500. */
 function vaultErr(c: Context, e: unknown) {
@@ -108,7 +116,10 @@ function unlocked(c: Context, pub: Publication): boolean {
 function publicationActor(pub: Publication): Actor {
   return {
     kind: "anon",
-    isOwner: false,
+    role: "guest",
+    // Publications are primary-vault-scoped in Phase 1 (publish vault-scoping is a
+    // later step); grantsForResource defaults to the primary vault to match.
+    vaultId: "primary",
     grants: grantsForResource(pub.resource_type, pub.resource).filter((g) => g.subject_type === "anyone"),
   };
 }
@@ -140,7 +151,7 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   }
   const actor = publicationActor(pub);
   const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), false), "view"));
+  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), null), "view"));
 }
 
 /** A short display title derived from a note's content. Handles BOTH shapes the
@@ -354,7 +365,7 @@ publish.get("/:slug/notes/:id", async (c) => {
     (pub.resource_type === "path"
       ? pathInPrefix(note.path, pub.resource)
       : tags.includes(pub.resource) &&
-        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), false), "view"));
+        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), null), "view"));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({

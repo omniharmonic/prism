@@ -21,6 +21,10 @@ import { chunkText, chunkNote, toPlainText } from "../src/rag/chunk";
 import { HashEmbedder, cosine, normalize } from "../src/rag/embedder";
 import { reciprocalRankFusion } from "../src/rag/fusion";
 import { upsertNoteChunks, queryTopK, indexedHash, removeNoteChunks } from "../src/rag/store";
+import { runIndexOnce, indexSweepEnabled } from "../src/worker/scheduler";
+import { getEmbedder } from "../src/rag/embedder";
+import { getWorkerCursor } from "../src/db";
+import { config } from "../src/config";
 
 const OWNER = "owner@test.local"; // matches .env.test OWNER_EMAIL
 
@@ -208,4 +212,145 @@ test("anon semantic search returns nothing (no grants)", async () => {
   const res = await app.request("/api/search/semantic?q=food");
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), []);
+});
+
+// ---- worker index maintenance (audit 2026-08-13, F2) ----
+//
+// Before this existed, the ONLY caller of indexNote was the desktop app pushing
+// to /api/index/notes — so the index advanced only while the desktop was open,
+// and web/mobile silently searched a stale index. These cover the server-owned
+// sweep that replaced that dependency.
+
+test("the worker sweep indexes the whole vault on its first run (no cursor)", async () => {
+  fv.put({ id: "n1", content: "sourdough starter hydration", path: "a", metadata: null, tags: [] });
+  fv.put({ id: "n2", content: "kubernetes ingress controller", path: "b", metadata: null, tags: [] });
+
+  const indexed = await runIndexOnce();
+  assert.equal(indexed, 2, "both notes embedded on the backfill pass");
+
+  const model = getEmbedder().id;
+  assert.ok(indexedHash("n1", model), "n1 has vectors");
+  assert.ok(indexedHash("n2", model), "n2 has vectors");
+  assert.ok(getWorkerCursor("primary", `index-sweep:${model}`), "cursor advanced");
+});
+
+test("a second sweep with nothing changed re-embeds nothing", async () => {
+  fv.put({ id: "n1", content: "sourdough starter hydration", path: "a", metadata: null, tags: [] });
+  await runIndexOnce();
+  assert.equal(await runIndexOnce(), 0, "steady state is free");
+});
+
+test("the sweep picks up a note changed since the cursor", async () => {
+  fv.put({ id: "n1", content: "original body", path: "a", metadata: null, tags: [], updatedAt: "2026-01-01T00:00:00Z" });
+  await runIndexOnce();
+  const model = getEmbedder().id;
+  const before = indexedHash("n1", model);
+
+  fv.put({ id: "n1", content: "a completely different body", path: "a", metadata: null, tags: [], updatedAt: "2026-02-01T00:00:00Z" });
+  assert.equal(await runIndexOnce(), 1, "the changed note was re-embedded");
+  assert.notEqual(indexedHash("n1", model), before, "its content hash moved");
+});
+
+test("the sweep de-indexes a note that vanished from the vault", async () => {
+  fv.put({ id: "n1", content: "still here", path: "a", metadata: null, tags: [] });
+  fv.put({ id: "gone", content: "delete me", path: "b", metadata: null, tags: [] });
+  await runIndexOnce();
+  const model = getEmbedder().id;
+  assert.ok(indexedHash("gone", model), "indexed to begin with");
+
+  fv.notes.delete("gone");
+  await runIndexOnce();
+  assert.equal(indexedHash("gone", model), null, "orphan vectors dropped");
+  assert.ok(indexedHash("n1", model), "the surviving note is untouched");
+});
+
+test("INDEX_INTERVAL_MS=0 disables the sweep (this test env sets it)", () => {
+  // The off-switch is what keeps an unref'd background timer out of the suite;
+  // if it ever defaults back on, cross-test vault traffic returns.
+  assert.equal(config.indexIntervalMs, 0);
+  assert.equal(indexSweepEnabled(), false);
+});
+
+test("concurrent sweeps cannot overlap (in-flight guard)", async () => {
+  // A first-run backfill outlasts the sweep interval, so the timer would
+  // otherwise start a second pass over the same notes mid-flight.
+  fv.put({ id: "n1", content: "one", path: "a", metadata: null, tags: [] });
+  fv.put({ id: "n2", content: "two", path: "b", metadata: null, tags: [] });
+  const [a, b] = await Promise.all([runIndexOnce(), runIndexOnce()]);
+  assert.equal(a + b, 2, "the two notes were embedded exactly once between them");
+  assert.ok(a === 0 || b === 0, "one call short-circuited instead of racing");
+});
+
+test("a note missing from the index is retried on the next sweep (self-healing)", async () => {
+  fv.put({ id: "ok1", content: "fine", path: "a", metadata: null, tags: [] });
+  const model = getEmbedder().id;
+
+  // A note that was unreachable during a sweep ends it with no vectors. Simulate
+  // that end state by indexing while it is absent, then restoring it.
+  const missed = { id: "missed", content: "body", path: "b", metadata: null, tags: [], updatedAt: "2026-03-01T00:00:00Z" };
+  await runIndexOnce();
+  assert.ok(indexedHash("ok1", model), "the reachable note indexed");
+  assert.equal(indexedHash("missed", model), null, "the absent note has no vectors");
+
+  // Restore it. The cursor has already advanced past its updatedAt, so a
+  // timestamp-only sweep would skip it forever. Selection is by what the index
+  // is MISSING, so the next pass must pick it up.
+  fv.put(missed);
+  assert.equal(await runIndexOnce(), 1, "re-selected on the next pass");
+  assert.ok(indexedHash("missed", model), "and now has vectors");
+});
+
+test("the sweep converges: a completed pass leaves no un-indexed note", async () => {
+  for (let i = 0; i < 12; i++) {
+    fv.put({ id: `n${i}`, content: `body ${i}`, path: `p${i}`, metadata: null, tags: [] });
+  }
+  await runIndexOnce();
+  const model = getEmbedder().id;
+  const missing = [...fv.notes.keys()].filter((id) => !indexedHash(id, model));
+  assert.deepEqual(missing, [], "every live note has vectors after one pass");
+  assert.equal(await runIndexOnce(), 0, "and the next pass has nothing to do");
+});
+
+test("a note added after the cursor advanced is still picked up", async () => {
+  fv.put({ id: "first", content: "one", path: "a", metadata: null, tags: [], updatedAt: "2026-05-01T00:00:00Z" });
+  await runIndexOnce();
+  // Backdated on purpose: older than the cursor, so a timestamp-only sweep would
+  // never see it. The missing-from-index clause must catch it anyway.
+  fv.put({ id: "backdated", content: "two", path: "b", metadata: null, tags: [], updatedAt: "2026-01-01T00:00:00Z" });
+  assert.equal(await runIndexOnce(), 1, "indexed despite being older than the cursor");
+  assert.ok(indexedHash("backdated", getEmbedder().id));
+});
+
+test("an empty note is not re-selected forever once the cursor exists", async () => {
+  fv.put({ id: "real", content: "has words", path: "a", metadata: null, tags: [] });
+  fv.put({ id: "blank", content: "", path: "b", metadata: null, tags: [] });
+  await runIndexOnce(); // establishes the cursor and learns "blank" is empty
+  const model = getEmbedder().id;
+  assert.equal(indexedHash("blank", model), null, "an empty note has no vectors, by design");
+
+  // Without the empty-note memo, "missing from the index" would re-fetch it on
+  // every single pass for the life of the process.
+  const callsBefore = fv.calls.length;
+  await runIndexOnce();
+  const refetched = fv.calls.slice(callsBefore).filter((c) => JSON.stringify(c).includes("blank"));
+  assert.equal(refetched.length, 0, "the empty note was not fetched again");
+});
+
+test("deletion cleanup collects orphans left by a PREVIOUS embedder model", async () => {
+  // The exact shape that stranded 2 notes after the nomic switch: a note deleted
+  // from the vault, whose only rows are under the old model. A model-scoped scan
+  // cannot see them, so they survive every sweep forever.
+  const stale = new Float32Array([1, 0, 0, 0]);
+  upsertNoteChunks("ghost-note", "hash-abc", "hash:384", [{ idx: 0, text: "gone", vec: stale }]);
+  assert.ok(db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"), "seeded");
+
+  fv.put({ id: "live", content: "still here", path: "a", metadata: null, tags: [] });
+  await runIndexOnce(); // "ghost-note" is not in the vault → must be collected
+
+  assert.equal(
+    db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"),
+    undefined,
+    "old-model orphan dropped even though the sweep runs a different model",
+  );
+  assert.ok(indexedHash("live", getEmbedder().id), "the live note is untouched");
 });

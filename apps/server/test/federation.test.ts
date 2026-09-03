@@ -34,7 +34,7 @@ import {
   addGrant, createSpace, upsertPeer, removePeer, upsertFederatedNote,
   queueOutbox, outboxForPeer, clearOutboxItem,
   createSuggestion, listSuggestions, getSuggestion,
-  storePairing,
+  storePairing, listSpaces, federatedNotesForSpace, grantsForPeer, upsertGrant, recordPeerEdit, listPeerEdits, upsertMirrorRequest, getMirrorRequest,
 } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { createHash } from "node:crypto";
@@ -130,17 +130,19 @@ test("with FEDERATION disabled the branch is inert (the key is not a real note �
 // ── federationTarget (document routing) ──────────────────────────────────────
 test("federationTarget maps a known key to the local id + pinned kind; unknown passes through", () => {
   upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "spreadsheet", peer_synced_at: null, source_updated_at: null });
-  assert.deepEqual(federationTarget(KEY), { noteId: "local-1", kind: "spreadsheet" });
-  // an ordinary (non-federated) document name is returned untouched.
-  assert.deepEqual(federationTarget("just-a-note-id"), { noteId: "just-a-note-id" });
+  assert.deepEqual(federationTarget(KEY), { noteId: "local-1", vaultId: "primary", kind: "spreadsheet" });
+  // an ordinary (non-federated) document name decodes to the primary vault + bare id.
+  assert.deepEqual(federationTarget("just-a-note-id"), { noteId: "just-a-note-id", vaultId: "primary" });
+  // a vault-prefixed document name decodes to that vault + the bare note id.
+  assert.deepEqual(federationTarget("teamA::42"), { noteId: "42", vaultId: "teamA" });
 });
 
 // ── effectiveLevel space matching (permissions) ──────────────────────────────
 test("a space grant matches a note only via its spaceIds", () => {
   const grants = [{ id: "g", subject_type: "peer", subject: "pk", resource_type: "space", resource: SPACE, level: "edit", created_at: 0 } as const];
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: [SPACE] }, false), "edit");
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: ["other"] }, false), null);
-  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [] }, false), null, "no spaceIds → no match");
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: [SPACE] }, null), "edit");
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [], spaceIds: ["other"] }, null), null);
+  assert.equal(effectiveLevel(grants as never, { id: "n", tags: [] }, null), null, "no spaceIds → no match");
 });
 
 // ── durable outbox ───────────────────────────────────────────────────────────
@@ -233,4 +235,123 @@ test("a suggestion is durable and the owner can accept/reject it", async () => {
 
   // accepting an unknown id → 404.
   assert.equal((await ownerReq("/suggestions/nope/accept", { method: "POST" })).status, 404);
+});
+
+// ── "Parachute Sync": one-action per-note mirror (4.2) ────────────────────────
+const J = { "content-type": "application/json" };
+test("Parachute Sync: POST /notes/:id/mirror composes space+note+peer-grant in one call", async () => {
+  const peer = "PEERPUBKEY_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  fv.put({ id: "n1", content: "# sync me\n\nhi", tags: ["shared"] });
+
+  const r = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "edit" }) });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.ok(body.spaceId && body.spaceNoteKey);
+
+  // Singleton "Parachute Sync" space created, note added, peer granted at edit.
+  assert.equal(listSpaces().find((s) => s.id === body.spaceId)?.title, "Parachute Sync");
+  assert.ok(federatedNotesForSpace(body.spaceId).some((f) => f.local_id === "n1"));
+  assert.equal(grantsForPeer(peer).find((g) => g.resource_type === "space" && g.resource === body.spaceId)?.level, "edit");
+
+  // Idempotent: re-mirroring the same note reuses the space + federated identity
+  // and just updates the peer level (no duplicate space / note / grant).
+  const r2 = await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: peer, level: "view" }) });
+  const body2 = (await r2.json()) as { spaceId: string; spaceNoteKey: string };
+  assert.equal(body2.spaceId, body.spaceId);
+  assert.equal(body2.spaceNoteKey, body.spaceNoteKey, "same federated identity, not a new one");
+  assert.equal(listSpaces().filter((s) => s.title === "Parachute Sync").length, 1);
+  assert.equal(federatedNotesForSpace(body.spaceId).filter((f) => f.local_id === "n1").length, 1);
+  assert.equal(grantsForPeer(peer).find((g) => g.resource === body.spaceId)?.level, "view", "level updated in place");
+});
+
+test("Parachute Sync: unknown peer → 404, bad level → 400, missing note → 404", async () => {
+  fv.put({ id: "n1", content: "x", tags: [] });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "nope", level: "edit" }) })).status, 404);
+  upsertPeer({ pubkey: "p", paired_at: Date.now() });
+  assert.equal((await ownerReq("/notes/n1/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "bogus" }) })).status, 400);
+  assert.equal((await ownerReq("/notes/missing/mirror", { method: "POST", headers: J, body: JSON.stringify({ pubkey: "p", level: "edit" }) })).status, 404);
+});
+
+// ── peer grant TTL / expiry (4.3) ─────────────────────────────────────────────
+test("peer grant TTL: an expired peer grant stops loading + resolving; a future one works", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# Shared" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: KEY, space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+
+  // Granted, but expired 1s ago → doesn't load, doesn't resolve.
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() - 1000 });
+  assert.equal(grantsForPeer(peer).length, 0, "expired grant is filtered out");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), null, "expired → no federation access");
+
+  // Re-grant with a future expiry (upsert refreshes the TTL) → access restored.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: Date.now() + 60_000 });
+  assert.equal(grantsForPeer(peer).length, 1);
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+
+  // Clearing the TTL (null) makes it permanent.
+  upsertGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "edit", created_by: "test", expires_at: null });
+  assert.equal(grantsForPeer(peer)[0]!.expires_at, null);
+});
+
+// ── peer-edit audit (4.3) ─────────────────────────────────────────────────────
+test("peer-edit audit: recordPeerEdit → listPeerEdits (DESC) + GET /acl/federation/peer-edits", async () => {
+  const pk = serverKeyPair().publicKeyB64url;
+  recordPeerEdit("snk-1", "local-1", pk);
+  recordPeerEdit("snk-2", "local-2", pk);
+  const edits = listPeerEdits(10);
+  assert.equal(edits.length, 2);
+  assert.equal(edits[0]!.space_note_key, "snk-2", "newest first");
+
+  const r = await ownerReq("/federation/peer-edits");
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as Array<{ spaceNoteKey: string; localId: string; peer: string; peerFingerprint: string }>;
+  assert.equal(body.length, 2);
+  assert.equal(body[0]!.spaceNoteKey, "snk-2");
+  assert.ok(body[0]!.peerFingerprint.includes(":"), "fingerprint rendered");
+});
+
+test("peer-edit audit endpoint is admin-gated (no session → 403)", async () => {
+  assert.equal((await acl.request("/federation/peer-edits")).status, 403);
+});
+
+// ── per-note level override (4.3) ─────────────────────────────────────────────
+test("per-note override: a note-level peer grant raises the peer above the space default", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  fv.put({ id: "local-1", tags: ["shared"], content: "# n1" });
+  fv.put({ id: "local-2", tags: ["shared"], content: "# n2" });
+  createSpace({ id: SPACE, title: "S", scope_include_tags: '["shared"]', scope_exclude_tags: null, path_prefix: null, created_by: "o" });
+  upsertFederatedNote({ space_note_key: "snk-1", space_id: SPACE, local_id: "local-1", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertFederatedNote({ space_note_key: "snk-2", space_id: SPACE, local_id: "local-2", kind: "document", peer_synced_at: null, source_updated_at: null });
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });   // space default = view
+  addGrant({ subject_type: "peer", subject: peer, resource_type: "note", resource: "local-1", level: "edit", created_by: "t" }); // override n1 → edit
+
+  assert.equal(await resolveLevel("snk-1", signPeerConnToken(SPACE), null), "edit", "overridden note gets the higher level");
+  assert.equal(await resolveLevel("snk-2", signPeerConnToken(SPACE), null), "view", "the other note keeps the space default");
+});
+
+// ── 4.4 coverage: mirror reject + grant downgrade ─────────────────────────────
+test("mirror REJECT: a pending request is rejected and materializes nothing", async () => {
+  const peer = serverKeyPair().publicKeyB64url;
+  upsertPeer({ pubkey: peer, paired_at: Date.now() });
+  const spaceId = "11111111-1111-1111-1111-111111111111";
+  const req = upsertMirrorRequest({ peer_pubkey: peer, space_id: spaceId, space_title: "S", payload: JSON.stringify([{ spaceNoteKey: "22222222-2222-2222-2222-222222222222", kind: "document" }]) });
+
+  const r = await ownerReq(`/federation/mirrors/${req.id}/reject`, { method: "POST" });
+  assert.equal(r.status, 200);
+  assert.equal(getMirrorRequest(req.id)!.status, "rejected");
+  // Nothing materialized: no local space, no federated identity, no peer grant.
+  assert.equal(listSpaces().find((s) => s.id === spaceId), undefined);
+  assert.equal(federatedNotesForSpace(spaceId).length, 0);
+  assert.equal(grantsForPeer(peer).length, 0);
+});
+
+test("grant DOWNGRADE: lowering a peer's space grant edit→view takes effect on the next resolve", async () => {
+  federatedFixture("edit");
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "edit");
+  upsertGrant({ subject_type: "peer", subject: serverKeyPair().publicKeyB64url, resource_type: "space", resource: SPACE, level: "view", created_by: "t" });
+  assert.equal(await resolveLevel(KEY, signPeerConnToken(SPACE), null), "view", "downgrade reflected");
 });
