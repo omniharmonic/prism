@@ -13,7 +13,7 @@ import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { serverKeyPair, fingerprint } from "../auth/peer";
-import { LEVELS, type Level } from "../permissions";
+import { CAPS, LEVELS, isCap, levelForCaps, type Cap, type Level } from "../permissions";
 import { roleAtLeast } from "../roles";
 import {
   ensureUser,
@@ -107,9 +107,12 @@ async function grantAndInvite(
   resource: string,
   owner: string,
   vaultId: string,
+  /** Optional explicit capability list (P1). When present it is authoritative and
+   *  upsertGrant derives the stored `level` from it (the coherence rule). */
+  caps?: Cap[] | null,
 ): Promise<{ invited: boolean; inviteUrl?: string }> {
   ensureUser(email);
-  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner });
+  upsertGrant({ vault_id: vaultId, subject_type: "user", subject: email, resource_type: resourceType, resource, level, created_by: owner, caps });
   if (!hasAccount(email)) {
     // Return the accept URL so the owner can hand it over directly — email may
     // not be configured/paid, and even when it is, "copy invite link" is useful.
@@ -129,6 +132,16 @@ acl.use("*", async (c, next) => {
 
 const isLevel = (x: unknown): x is Level =>
   typeof x === "string" && (LEVELS as readonly string[]).includes(x);
+/**
+ * Optional `caps` on a people-grant (P1). Returns the parsed list, `null` when
+ * absent, or "invalid" when it is not an array of known cap names (→ 400, so a
+ * typo'd capability is never silently dropped into a weaker grant).
+ */
+const parseCapsInput = (x: unknown): Cap[] | null | "invalid" => {
+  if (x === undefined || x === null) return null;
+  if (!Array.isArray(x) || x.length === 0 || !x.every(isCap)) return "invalid";
+  return [...new Set(x as Cap[])];
+};
 const isEmail = (x: unknown): x is string => typeof x === "string" && /.+@.+\..+/.test(x);
 const normEmail = (x: string) => x.trim().toLowerCase();
 
@@ -403,10 +416,15 @@ acl.get("/notes/:id", async (c) => {
 });
 
 acl.put("/notes/:id/people", async (c) => {
-  const { email, level } = await c.req.json<{ email?: string; level?: string }>();
-  if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "note", c.req.param("id"), config.ownerEmail, resolveActor(c).vaultId);
-  return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
+  const { email, level, caps: rawCaps } = await c.req.json<{ email?: string; level?: string; caps?: unknown }>();
+  const caps = parseCapsInput(rawCaps);
+  if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
+  // With caps the level is DERIVED (and may be omitted); without them the level
+  // is required exactly as before.
+  const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
+  if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "note", c.req.param("id"), config.ownerEmail, resolveActor(c).vaultId, caps);
+  return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
 
 acl.delete("/notes/:id/people/:email", (c) => {
@@ -487,10 +505,13 @@ acl.delete("/notes/:id/tags/:tag", async (c) => {
 // Tag-grants: a person can access everything carrying a tag (≈ "share a folder").
 acl.put("/tags/:tag/people", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
-  const { email, level } = await c.req.json<{ email?: string; level?: string }>();
-  if (!isEmail(email) || !isLevel(level)) return c.json({ error: "bad_request" }, 400);
-  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), level, "tag", tag, config.ownerEmail, resolveActor(c).vaultId);
-  return c.json({ ok: true, email: normEmail(email), level, invited, inviteUrl });
+  const { email, level, caps: rawCaps } = await c.req.json<{ email?: string; level?: string; caps?: unknown }>();
+  const caps = parseCapsInput(rawCaps);
+  if (caps === "invalid") return c.json({ error: "bad_request", reason: `caps must be a non-empty subset of: ${CAPS.join(", ")}` }, 400);
+  const lvl: Level | null = isLevel(level) ? level : caps ? levelForCaps(caps) : null;
+  if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
+  const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "tag", tag, config.ownerEmail, resolveActor(c).vaultId, caps);
+  return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
 
 // Who currently has access to a tag/folder in the active vault (backs the Share
@@ -565,6 +586,7 @@ acl.get("/grants", (c) => {
       resourceType: g.resource_type,
       resource: g.resource,
       level: g.level,
+      caps: g.caps ?? null,
       grantedBy: g.created_by,
       grantedAt: g.created_at,
     })),

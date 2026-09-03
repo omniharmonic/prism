@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { config, vaultRegistry, type VaultEntry } from "./config";
-import type { Level } from "./permissions";
+import { isCap, levelForCaps, type Cap, type Level } from "./permissions";
 
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
@@ -395,6 +395,18 @@ db.exec(`
   const cols = db.prepare(`PRAGMA table_info(grants)`).all() as Array<{ name: string }>;
   if (cols.length && !cols.some((c) => c.name === "expires_at")) {
     db.exec(`ALTER TABLE grants ADD COLUMN expires_at INTEGER`);
+  }
+}
+
+// Capability list on grants (P1): a nullable JSON array of Cap names. NULL — the
+// value every existing row keeps — means "derive the caps from `level`", so the
+// whole pre-caps corpus of grants behaves byte-identically. A non-null list is
+// authoritative for the caps path, and the row's `level` is kept coherent with
+// it by upsertGrant/addGrant (level = levelForCaps(caps)).
+{
+  const cols = db.prepare(`PRAGMA table_info(grants)`).all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "caps")) {
+    db.exec(`ALTER TABLE grants ADD COLUMN caps TEXT`);
   }
 }
 
@@ -786,6 +798,13 @@ export interface Grant {
   created_at: number;
   /** Epoch-ms expiry; NULL = never. Currently honored for peer grants (4.3). */
   expires_at: number | null;
+  /**
+   * Explicit capability list (P1), stored as JSON text. NULL/absent = derive from
+   * `level` (the pre-caps behavior of every existing grant). Optional in the TYPE
+   * so a plain `{...level}` grant literal stays valid; the db always materializes
+   * it (null or a parsed array).
+   */
+  caps?: Cap[] | null;
 }
 
 export interface Session {
@@ -941,9 +960,43 @@ type GrantInput = Omit<Grant, "id" | "created_at" | "vault_id" | "expires_at"> &
 };
 
 const insertGrant = db.prepare(
-  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at, expires_at)
-   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at, @expires_at)`,
+  `INSERT INTO grants (id, vault_id, subject_type, subject, resource_type, resource, level, created_by, created_at, expires_at, caps)
+   VALUES (@id, @vault_id, @subject_type, @subject, @resource_type, @resource, @level, @created_by, @created_at, @expires_at, @caps)`,
 );
+
+// ── caps (P1) at the db boundary ─────────────────────────────────────────────
+// Stored as JSON text; every read goes through `hydrate`, which is DEFENSIVE:
+// unparseable text, a non-array, or an array with no known cap names all read
+// back as null (= "derive from level"), so a corrupt/hand-edited row degrades to
+// the pre-caps behavior instead of throwing or granting something unknown.
+function parseCaps(raw: unknown): Cap[] | null {
+  if (typeof raw !== "string" || !raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const caps = [...new Set(parsed.filter(isCap))];
+  return caps.length ? caps : null;
+}
+/** Canonical caps for storage: known names only, deduped; empty → null. */
+const normalizeCaps = (caps: Cap[] | null | undefined): Cap[] | null => {
+  if (!caps) return null;
+  const clean = [...new Set(caps.filter(isCap))];
+  return clean.length ? clean : null;
+};
+const serializeCaps = (caps: Cap[] | null | undefined): string | null => {
+  const clean = normalizeCaps(caps);
+  return clean ? JSON.stringify(clean) : null;
+};
+/** Turn a raw grants row into a Grant (caps JSON text → Cap[] | null). */
+const hydrate = (row: unknown): Grant => {
+  const r = row as Grant & { caps?: unknown };
+  return { ...r, caps: parseCaps(r.caps) };
+};
+const hydrateAll = (rows: unknown[]): Grant[] => rows.map(hydrate);
 // User grants are scoped to the active vault: a member of vault A must not pick up
 // their (or an "anyone") grant from vault B. (anyone grants are per-vault too.)
 const selectGrantsByUser = db.prepare(
@@ -958,22 +1011,35 @@ const selectGrantsByResource = db.prepare(
 const deleteGrantStmt = db.prepare("DELETE FROM grants WHERE id = ?");
 
 export function addGrant(g: GrantInput): Grant {
-  const row: Grant = { ...g, vault_id: g.vault_id ?? "primary", id: g.id ?? randomUUID(), created_at: now(), expires_at: g.expires_at ?? null };
-  insertGrant.run(row);
+  // COHERENCE RULE (P1): when a grant carries explicit caps, its `level` is
+  // DERIVED, never taken from the caller — a caps grant and its ladder projection
+  // can therefore never disagree, so level-based consumers (collab, the older
+  // routes) see a correct, never-inflated view of it.
+  const caps = normalizeCaps(g.caps);
+  const row: Grant = {
+    ...g,
+    vault_id: g.vault_id ?? "primary",
+    id: g.id ?? randomUUID(),
+    created_at: now(),
+    expires_at: g.expires_at ?? null,
+    caps,
+    level: caps ? levelForCaps(caps) : g.level,
+  };
+  insertGrant.run({ ...row, caps: serializeCaps(caps) });
   return row;
 }
 /** Grants for a signed-in user IN a vault (their own + any "anyone-with-link"
  *  grants in that vault). Defaults to the primary vault for single-vault callers. */
 export function grantsForUser(email: string, vaultId = "primary"): Grant[] {
-  return selectGrantsByUser.all(vaultId, email) as Grant[];
+  return hydrateAll(selectGrantsByUser.all(vaultId, email));
 }
 /** Grants attached to a specific capability link (each carries its own vault_id;
  *  a link is bound to one resource in one vault). */
 export function grantsForCapability(capabilityId: string): Grant[] {
-  return selectGrantsByCapability.all(capabilityId) as Grant[];
+  return hydrateAll(selectGrantsByCapability.all(capabilityId));
 }
 export function grantsForResource(type: ResourceType, resource: string, vaultId = "primary"): Grant[] {
-  return selectGrantsByResource.all(vaultId, type, resource) as Grant[];
+  return hydrateAll(selectGrantsByResource.all(vaultId, type, resource));
 }
 /** The distinct vault_ids where this user holds ≥1 direct grant — a guest
  *  invited to a workspace (via /acl people-sharing) has grants but no membership
@@ -992,32 +1058,41 @@ export function removeGrant(id: string): void {
 const selectGrantsByVault = db.prepare("SELECT * FROM grants WHERE vault_id = ? ORDER BY created_at DESC");
 const selectGrantById = db.prepare("SELECT * FROM grants WHERE id = ?");
 export function listGrantsForVault(vaultId: string): Grant[] {
-  return selectGrantsByVault.all(vaultId) as Grant[];
+  return hydrateAll(selectGrantsByVault.all(vaultId));
 }
 export function getGrantById(id: string): Grant | null {
-  return (selectGrantById.get(id) as Grant | undefined) ?? null;
+  const row = selectGrantById.get(id);
+  return row ? hydrate(row) : null;
 }
 
 const selectGrantBySubjectResource = db.prepare(
   `SELECT * FROM grants WHERE vault_id = ? AND subject_type = ? AND subject = ? AND resource_type = ? AND resource = ?`,
 );
-const updateGrantLevel = db.prepare("UPDATE grants SET level = ?, expires_at = ? WHERE id = ?");
+const updateGrantLevel = db.prepare("UPDATE grants SET level = ?, expires_at = ?, caps = ? WHERE id = ?");
 
 /** Insert or, if a grant for the same (vault, subject, resource) exists, update
- *  its level (and expiry — re-granting refreshes/clears the TTL). */
+ *  its level (and expiry — re-granting refreshes/clears the TTL, and likewise
+ *  replaces/clears the caps list: a re-grant states the access in full).
+ *
+ *  COHERENCE RULE (P1): if caps are supplied, the stored `level` is
+ *  `levelForCaps(caps)` — computed HERE, so no caller can desynchronize the two
+ *  columns. A caps-less upsert is byte-identical to the pre-caps behavior. */
 export function upsertGrant(g: GrantInput): Grant {
   const vaultId = g.vault_id ?? "primary";
-  const existing = selectGrantBySubjectResource.get(
+  const existingRow = selectGrantBySubjectResource.get(
     vaultId,
     g.subject_type,
     g.subject,
     g.resource_type,
     g.resource,
-  ) as Grant | undefined;
-  if (existing) {
+  );
+  if (existingRow) {
+    const existing = hydrate(existingRow);
     const expires_at = g.expires_at ?? null;
-    updateGrantLevel.run(g.level, expires_at, existing.id);
-    return { ...existing, level: g.level, expires_at };
+    const caps = normalizeCaps(g.caps);
+    const level = caps ? levelForCaps(caps) : g.level;
+    updateGrantLevel.run(level, expires_at, serializeCaps(caps), existing.id);
+    return { ...existing, level, expires_at, caps };
   }
   return addGrant(g);
 }
@@ -1149,7 +1224,7 @@ const selectGrantsByPeer = db.prepare(
 );
 /** Grants attached to a paired peer (matched by its pubkey), excluding expired. */
 export function grantsForPeer(pubkey: string): Grant[] {
-  return selectGrantsByPeer.all(pubkey, now()) as Grant[];
+  return hydrateAll(selectGrantsByPeer.all(pubkey, now()));
 }
 
 // ---- publications (Horizon B) ----

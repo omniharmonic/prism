@@ -458,3 +458,25 @@ test("storeDocumentState folds a newer external edit in instead of clobbering it
   // And the live doc itself now reflects the external edit (clients would see it).
   assert.match(yDocToHtml(doc), /v2 agent edit/);
 });
+
+test("a view-less caps grant (create-only drop-box) cannot open a collab socket", async () => {
+  // Regression (P1): caps ["create"] projects to level "view" for ladder
+  // consumers, but confers NO read. The HTTP gateway refuses reads; the collab
+  // path must refuse the connection too, or the socket leaks the note.
+  const { addGrant } = await import("../src/db");
+  fv.put({ id: "n1", content: "secret", tags: ["team"] });
+  addGrant({
+    subject_type: "user",
+    subject: "dropbox@test.local",
+    resource_type: "tag",
+    resource: "team",
+    level: "view",
+    caps: ["create"],
+    created_by: "test",
+  });
+  const cc = { readOnly: false };
+  await assert.rejects(
+    () => authorizeConnection("n1", "", sessionCookie(makeSession("dropbox@test.local")), cc),
+    /Forbidden/,
+  );
+});

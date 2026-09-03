@@ -2,12 +2,15 @@
  * P1 gateway verification. Sets up a view-only capability link scoped to a tag,
  * then asserts the gateway enforces it: anonymous sees nothing, the capability
  * sees only its tag's notes, a forbidden note 403s, and a write is denied at
- * "view". Run with the SAME env as the server: node --env-file=.env --import tsx.
+ * "view". A third section drives CAPABILITY grants (create / organize / view-less)
+ * end to end. Run with the SAME env as the server: node --env-file=.env --import tsx.
  */
-import { addGrant, removeGrant } from "../src/db";
+import { addGrant, removeGrant, createSession, destroySession } from "../src/db";
 import { signCapability } from "../src/auth/capability";
+import { randomBytes } from "node:crypto";
 import { vault } from "../src/parachute";
 import { config } from "../src/config";
+import type { Cap } from "../src/permissions";
 
 // Honor the server's configured PORT (.env) instead of hardcoding 8787, so this
 // verifies whatever instance you actually started (matches verify-collab-share.ts).
@@ -249,6 +252,121 @@ const check = (name: string, pass: boolean, detail: string) => checks.push({ nam
       notesLeft = a.length + b.length + cc.length;
     } catch { /* */ }
     check("teardown: no _sec* notes remain in the vault", notesLeft === 0, `remaining=${notesLeft}`);
+  }
+
+  // ==========================================================================
+  // Capability grants (P1). A grant may carry an explicit cap list instead of a
+  // ladder level, so access composes: "may file notes here but not touch what is
+  // already here" (create), "may refile but not rewrite" (organize), and the
+  // degenerate drop-box (no `view` at all) which must read NOTHING.
+  // ==========================================================================
+  const CAPS_TAG = "_seccaps";
+  const CAPS_TAG2 = "_seccaps2";
+  const capsNotes: string[] = [];
+  const capsGrantIds: string[] = [];
+  const capsSessions: string[] = [];
+
+  // A real signed-in, non-owner user (caps checks need actor.kind === "user";
+  // a capability LINK can never create). Sessions/grants are removed in finally.
+  const signIn = (email: string): string => {
+    const sid = randomBytes(16).toString("base64url");
+    createSession(sid, email, 3_600_000);
+    capsSessions.push(sid);
+    return `prism_session=${sid}`;
+  };
+  const withCaps = (email: string, tag: string, caps: Cap[]) => {
+    // level is DERIVED from caps by the db (the coherence rule) — pass the
+    // weakest value; whatever we pass is overwritten.
+    const gr = addGrant({ subject_type: "user", subject: email, resource_type: "tag", resource: tag, level: "view", created_by: "verify", caps });
+    capsGrantIds.push(gr.id);
+    return gr;
+  };
+  const asUser = (cookie: string, path: string, init?: RequestInit) =>
+    j(path, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), cookie, "content-type": "application/json" } });
+
+  try {
+    // Seed one note in each caps tag, authored by SOMEONE ELSE (no prism_creator
+    // for our test users) so creator-based paths can't muddy the assertions.
+    const capsNote = await vault.createNote({ content: "# Caps fixture\n\nowned by the owner", path: "_test/seccaps/a.md" });
+    capsNotes.push(capsNote.id);
+    await vault.addTags(capsNote.id, [CAPS_TAG]);
+    const capsNote2 = await vault.createNote({ content: "# Caps fixture 2\n\nto be refiled", path: "_test/seccaps/b.md" });
+    capsNotes.push(capsNote2.id);
+    await vault.addTags(capsNote2.id, [CAPS_TAG]);
+
+    // --- 1. ["view","create"]: may add notes to the tag, may NOT edit them ---
+    const creatorEmail = "verify-caps-create@prism.invalid";
+    const creatorGrant = withCaps(creatorEmail, CAPS_TAG, ["view", "create"]);
+    check("caps grant stores a coherent, never-inflated level", creatorGrant.level === "view", `level=${creatorGrant.level} caps=${JSON.stringify(creatorGrant.caps)}`);
+    const creatorCookie = signIn(creatorEmail);
+
+    const capsPost = await asUser(creatorCookie, "/api/notes", {
+      method: "POST",
+      body: JSON.stringify({ content: "# Submitted by a create-cap user", path: "_test/seccaps/c.md", tags: [CAPS_TAG] }),
+    });
+    if (capsPost.body?.id) capsNotes.push(capsPost.body.id);
+    check("caps ['view','create'] → POST /api/notes into the tag → 200", capsPost.status === 200 && !!capsPost.body?.id, `status=${capsPost.status}`);
+
+    const capsPatchDenied = await asUser(creatorCookie, `/api/notes/${capsNote.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: "should be denied" }),
+    });
+    check("caps ['view','create'] → PATCH someone else's note → 403", capsPatchDenied.status === 403, `status=${capsPatchDenied.status}`);
+
+    // --- 2. ["view","organize"]: may retag, may NOT edit content ---
+    const orgEmail = "verify-caps-organize@prism.invalid";
+    withCaps(orgEmail, CAPS_TAG, ["view", "organize"]);
+    withCaps(orgEmail, CAPS_TAG2, ["view", "organize"]); // a legal destination scope
+    const orgCookie = signIn(orgEmail);
+
+    const capsRetag = await asUser(orgCookie, `/api/notes/${capsNote2.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ add_tags: [CAPS_TAG2] }),
+    });
+    const retagged = Array.isArray(capsRetag.body?.tags) && capsRetag.body.tags.includes(CAPS_TAG2);
+    check("caps ['view','organize'] → PATCH add_tags → 200 + tag applied", capsRetag.status === 200 && retagged, `status=${capsRetag.status} tags=${JSON.stringify(capsRetag.body?.tags)}`);
+
+    const capsUntag = await asUser(orgCookie, `/api/notes/${capsNote2.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ remove_tags: [CAPS_TAG2] }),
+    });
+    const untagged = Array.isArray(capsUntag.body?.tags) && !capsUntag.body.tags.includes(CAPS_TAG2);
+    check("caps ['view','organize'] → PATCH remove_tags → 200 + tag removed", capsUntag.status === 200 && untagged, `status=${capsUntag.status} tags=${JSON.stringify(capsUntag.body?.tags)}`);
+
+    const capsContent = await asUser(orgCookie, `/api/notes/${capsNote2.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: "should be denied" }),
+    });
+    check("caps ['view','organize'] → PATCH content → 403 (organize is not edit)", capsContent.status === 403, `status=${capsContent.status}`);
+
+    const capsEscalate = await asUser(orgCookie, `/api/notes/${capsNote2.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ add_tags: ["_secgate"] }), // a scope they hold nothing on
+    });
+    check("caps organize → add_tags outside scope → 403 (no retag escalation)", capsEscalate.status === 403, `status=${capsEscalate.status}`);
+
+    // --- 3. a caps grant WITHOUT view reads nothing ---
+    const blindEmail = "verify-caps-blind@prism.invalid";
+    withCaps(blindEmail, CAPS_TAG, ["create"]);
+    const blindCookie = signIn(blindEmail);
+    const blindGet = await asUser(blindCookie, `/api/notes/${capsNote.id}`);
+    const blindList = await asUser(blindCookie, "/api/notes");
+    check(
+      "caps without 'view' → GET note 403 and an empty list (no read access)",
+      blindGet.status === 403 && blindList.status === 200 && Array.isArray(blindList.body) && blindList.body.length === 0,
+      `get=${blindGet.status} listLen=${blindList.body?.length}`,
+    );
+  } catch (e) {
+    check("capability-grants section setup", false, `threw: ${(e as Error).message}`);
+  } finally {
+    for (const id of capsGrantIds) try { removeGrant(id); } catch { /* */ }
+    for (const sid of capsSessions) try { destroySession(sid); } catch { /* */ }
+    for (const id of capsNotes) try { await vault.deleteNote(id); } catch { /* */ }
+    let capsLeft = -1;
+    try {
+      capsLeft = (await vault.listNotes({ tags: [CAPS_TAG] })).length + (await vault.listNotes({ tags: [CAPS_TAG2] })).length;
+    } catch { /* */ }
+    check("teardown: no _seccaps notes remain in the vault", capsLeft === 0, `remaining=${capsLeft}`);
   }
 
   } finally {
