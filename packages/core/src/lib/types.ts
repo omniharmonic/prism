@@ -28,6 +28,19 @@ export interface Note {
   createdAt: string;
   updatedAt: string | null;
   tags: string[] | null;
+  /**
+   * GATEWAY-ONLY annotations, added by the Prism Server for a NON-OWNER actor
+   * (apps/server/src/routes/api.ts). They describe what the signed-in person may
+   * do with this note: `_level` on the old ladder, `_caps` as the composable
+   * capability set.
+   *
+   * ABSENT on every other path — the desktop shell reads the vault directly
+   * through TauriVaultClient, and a web OWNER gets the vault's raw response
+   * through the transparent passthrough. Any UI keyed on these fields is
+   * therefore inert on the desktop and for owners, by construction.
+   */
+  _level?: string;
+  _caps?: string[];
 }
 
 // Lean note shape for tree/index views — matches the Rust `NoteTreeEntry`

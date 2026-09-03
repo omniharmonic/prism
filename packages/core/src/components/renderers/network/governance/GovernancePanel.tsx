@@ -46,6 +46,10 @@ export function GovernancePanel() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // How many open proposals THIS caller may vote on. Reported up from
+  // ProposalsSection (which loads each proposal's evaluation) and shown as the
+  // status header's "N awaiting review" chip.
+  const [reviewCount, setReviewCount] = useState(0);
 
   const load = useCallback(async () => {
     const st = await govApi.state();
@@ -123,6 +127,10 @@ export function GovernancePanel() {
     [state, me, members, tags, users, run, amend],
   );
 
+  // Stable identity: ProposalsSection takes these as effect dependencies, so an
+  // inline arrow would re-run its detail load on every render.
+  const onChanged = useCallback(() => void load(), [load]);
+
   const page: React.CSSProperties = { maxWidth: 900, margin: "0 auto", padding: "8px 4px 48px" };
 
   if (loading) {
@@ -144,7 +152,7 @@ export function GovernancePanel() {
 
   return (
     <div style={page}>
-      <StatusHeader state={state} />
+      <StatusHeader state={state} reviewCount={reviewCount} />
 
       {error && (
         <div style={{ marginBottom: 12 }} data-testid="gov-error">
@@ -161,7 +169,12 @@ export function GovernancePanel() {
 
       <RolesSection ctx={ctx} />
       <PoliciesSection ctx={ctx} />
-      <ProposalsSection ctx={ctx} proposals={proposals} onChanged={() => void load()} />
+      <ProposalsSection
+        ctx={ctx}
+        proposals={proposals}
+        onChanged={onChanged}
+        onReviewCount={setReviewCount}
+      />
       <YourAccess me={me} state={state} />
       <ContentProposeCard ctx={ctx} />
       <HistoryCard ctx={ctx} />

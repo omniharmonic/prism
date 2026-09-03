@@ -242,6 +242,43 @@ export function subjectHoldsRole(
 }
 
 /**
+ * Who may vote on a proposal governed by `policy`, in `ctx` — the roster a
+ * "review requested" notice is addressed to (P4).
+ *
+ * Exactly the set `evaluateProposal` would count an approval from: active
+ * holders of the policy's `eligibleRole`, scope-aware (a gardener-of-#medicine is
+ * not an eligible voter on a #watershed edit). The `proposer` is excluded — you
+ * do not get mail asking you to review your own proposal — and the result is
+ * deduped case-insensitively, preserving the roster's order so the output is
+ * deterministic.
+ *
+ * Pure and I/O-free like the rest of this module: the notifier decides how (and
+ * whether) to reach these addresses; this only answers who they are.
+ */
+export function eligibleVoters(
+  state: GovernanceState,
+  policy: Policy,
+  ctx: ActionContext = {},
+  proposer = "",
+  nowMs = Date.now(),
+): string[] {
+  if (!policy || !policy.eligibleRole) return [];
+  const skip = proposer.trim().toLowerCase();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of state.memberships) {
+    const subject = (m.subject ?? "").trim();
+    if (!subject) continue;
+    const key = subject.toLowerCase();
+    if (key === skip || seen.has(key)) continue;
+    if (!subjectHoldsRole(state, m.subject, policy.eligibleRole, ctx, nowMs)) continue;
+    seen.add(key);
+    out.push(subject);
+  }
+  return out;
+}
+
+/**
  * May `subject` add or remove a membership of `targetRoleRef` DIRECTLY, with no
  * amendment — the `assign_roles` delegation (P2)?
  *

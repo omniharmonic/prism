@@ -15,7 +15,7 @@ import { acl } from "../src/routes/acl";
 import { config } from "../src/config";
 import { addGrant, grantsForResource, type ResourceType } from "../src/db";
 import type { Cap, Level } from "../src/permissions";
-import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
 beforeEach(() => {
@@ -301,4 +301,55 @@ test("a vault grant WITHOUT view still enumerates nothing", async () => {
   const r = await req("/notes", { cookie: login("blind@test.local") });
   assert.equal(r.status, 200);
   assert.deepEqual(await r.json(), []);
+});
+
+// ------------------------------------------------- the `_caps` annotation (P4)
+//
+// The gateway is the only place that knows what a person may do with a note, so
+// it says so on the way out. The client uses it to render the RIGHT affordance
+// (propose-for-review instead of an autosave that can only 403) — which is why
+// who does and does not receive it is a contract worth pinning.
+
+test("a member's note read carries the caps it was authorized by", async () => {
+  fv.put({ id: "n1", content: "body", tags: ["medicine"] });
+  grantCaps("kai@test.local", "tag", "medicine", ["view", "comment", "suggest"]);
+
+  const r = await req("/notes/n1", { cookie: login("kai@test.local") });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { _level: string; _caps: string[] };
+  assert.deepEqual(body._caps.sort(), ["comment", "suggest", "view"]);
+  assert.equal(body._level, "suggest", "the ladder projection travels alongside, unchanged");
+});
+
+test("the list and search paths carry `_caps` too, from the same filter", async () => {
+  fv.put({ id: "n1", content: "findable", tags: ["medicine"] });
+  grantCaps("kai@test.local", "tag", "medicine", ["view", "create"]);
+  const cookie = login("kai@test.local");
+
+  const list = (await (await req("/notes", { cookie })).json()) as Array<{ id: string; _caps: string[] }>;
+  assert.deepEqual(list.map((n) => n.id), ["n1"]);
+  assert.deepEqual(list[0]!._caps.sort(), ["create", "view"]);
+
+  const found = (await (await req("/search?q=findable", { cookie })).json()) as Array<{ _caps: string[] }>;
+  assert.deepEqual(found[0]!._caps.sort(), ["create", "view"]);
+});
+
+test("a capability link is NOT told its caps (the propose path needs a session)", async () => {
+  fv.put({ id: "n1", content: "body", tags: ["team"] });
+  const t = makeCapability("tag", "team", "suggest");
+
+  const body = (await (await req(`/notes/n1?t=${encodeURIComponent(t)}`)).json()) as Record<string, unknown>;
+  assert.equal(body._level, "suggest", "a link still learns its level, as before");
+  assert.ok(!("_caps" in body), "no caps annotation for a link holder");
+
+  const list = (await (await req(`/notes?t=${encodeURIComponent(t)}`)).json()) as Array<Record<string, unknown>>;
+  assert.equal(list.length, 1);
+  assert.ok(!("_caps" in list[0]!), "and none in the list either");
+});
+
+test("the owner's passthrough response is not annotated", async () => {
+  fv.put({ id: "n1", content: "body", tags: ["medicine"] });
+  const body = (await (await req("/notes/n1", { cookie: login(config.ownerEmail) })).json()) as Record<string, unknown>;
+  assert.ok(!("_caps" in body), "the owner gets the vault's raw note, byte for byte");
+  assert.ok(!("_level" in body));
 });

@@ -78,6 +78,14 @@ async function loginAsOwner(page: Page): Promise<void> {
   expect(((await me.json()) as { authenticated: boolean }).authenticated).toBe(true);
 }
 
+// P4 fixtures — the contributor, the page they may improve but not publish.
+const CONTRIBUTOR = "e2e-contributor@test.local";
+const CONTRIBUTOR_PASSWORD = "e2e-contributor-password";
+const GOVERNED_TAG = "medicine";
+const GOVERNED_PATH = "e2e-governed-page";
+const ORIGINAL_HTML = "<p>Original body.</p>";
+const CONTRIBUTION = " Plus a contributor sentence.";
+
 test.describe("commons governance @live", () => {
   test.beforeAll(async () => {
     await resetGovernanceNotes();
@@ -200,6 +208,144 @@ test.describe("commons governance @live", () => {
     await expect(page.getByTestId("gov-audit")).toBeVisible();
     await expect(page.getByTestId("gov-audit-action").first()).toBeVisible();
     await expect(page.getByTestId("gov-audit").getByText(/changed by amendment|set directly/).first()).toBeVisible();
+  });
+
+  /**
+   * P4 — the wiki moderation loop, end to end through the real UI.
+   *
+   * A contributor holds `suggest` (not `edit`) on a governed note. In the app the
+   * editor stays writable but autosave is off: their change leaves as an
+   * `edit_note` PROPOSAL. A steward then sees it in the "Content changes" queue,
+   * beside a diff against the live text, and approving it publishes the change.
+   *
+   * The two halves run in separate browser contexts — the contributor never
+   * borrows the owner's session, so the caps the banner reacts to are the real
+   * ones the gateway computed for them.
+   */
+  test("a contributor proposes from the editor; a steward reviews and it goes live", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    // Start from a blank constitution (the first test leaves a locked one).
+    await resetGovernanceNotes();
+    await loginAsOwner(page);
+
+    // ── a constitution where stewards decide #medicine edits, 1 approval, live on apply ──
+    const gov = async (path: string, payload: unknown) => {
+      const r = await ownerFetch(`/api/governance${path}`, { method: "POST", body: JSON.stringify(payload) });
+      const body = (await r.json()) as { note?: { id: string }; error?: string };
+      expect(r.status, `${path} → ${JSON.stringify(body)}`).toBeLessThan(300);
+      return body;
+    };
+    await gov("/roles", { name: "steward", powers: ["publish", "amend_governance"], capabilities: ["view", "edit"] });
+    const amend = await gov("/policies", { action: "amend_governance", thresholdN: 1, eligibleRole: "steward" });
+    await gov("/policies", {
+      action: "edit_note",
+      scopeType: "tag",
+      scope: GOVERNED_TAG,
+      thresholdN: 1,
+      eligibleRole: "steward",
+      autoPublish: true,
+    });
+    await gov("/memberships", { subject: OWNER_EMAIL, role: "steward" });
+    await gov("/config", {
+      enabled: true,
+      bootstrapOwner: OWNER_EMAIL,
+      amendPolicy: amend.note!.id,
+      defaultEligibleRole: "steward",
+    });
+
+    // ── the governed page itself (HTML body: the editor then needs no md→html trip) ──
+    const created = await ownerFetch(`/api/notes`, {
+      method: "POST",
+      body: JSON.stringify({ content: ORIGINAL_HTML, path: GOVERNED_PATH, tags: [GOVERNED_TAG] }),
+    });
+    expect(created.ok).toBeTruthy();
+    const noteId = ((await created.json()) as { id: string }).id;
+
+    // ── the contributor: suggest, NOT edit (auto-invited by the share) ──
+    const shared = await ownerFetch(`/acl/tags/${GOVERNED_TAG}/people`, {
+      method: "PUT",
+      body: JSON.stringify({ email: CONTRIBUTOR, caps: ["view", "comment", "suggest"] }),
+    });
+    expect(shared.ok).toBeTruthy();
+    const inviteUrl = ((await shared.json()) as { inviteUrl?: string }).inviteUrl;
+
+    const contributorCtx = await browser.newContext();
+    const contributor = await contributorCtx.newPage();
+    if (inviteUrl) {
+      const token = new URL(inviteUrl).searchParams.get("token");
+      const reg = await contributor.request.post(`${BASE_URL}/auth/register`, {
+        data: { token, name: "Contributor", password: CONTRIBUTOR_PASSWORD },
+      });
+      expect(reg.ok(), await reg.text()).toBeTruthy();
+    } else {
+      // Re-run against a vault where the account already exists.
+      const login = await contributor.request.post(`${BASE_URL}/auth/login`, {
+        data: { email: CONTRIBUTOR, password: CONTRIBUTOR_PASSWORD },
+      });
+      expect(login.ok(), await login.text()).toBeTruthy();
+    }
+
+    try {
+      // The gateway tells the client what this person may do — that annotation is
+      // the ONLY thing the review banner keys on (and the only reason the desktop
+      // app is untouched: it never sees it).
+      const seen = await contributor.request.get(`${BASE_URL}/api/notes/${encodeURIComponent(noteId)}`);
+      const caps = ((await seen.json()) as { _caps?: string[] })._caps ?? [];
+      expect(caps.sort()).toEqual(["comment", "suggest", "view"]);
+
+      // ── in the app: open the page from the sidebar and see the review banner ──
+      await contributor.goto("/");
+      await contributor.getByText(GOVERNED_PATH, { exact: true }).click();
+      const banner = contributor.getByTestId("review-banner");
+      await expect(banner).toBeVisible();
+      await expect(banner).toHaveAttribute("data-review-mode", "propose");
+      // The history affordance is right there, and honest about an unedited page.
+      await contributor.getByTestId("review-history-toggle").click();
+      await expect(contributor.getByTestId("review-history")).toContainText("No recorded revisions yet");
+
+      // ── edit locally, then submit for review (autosave is suppressed) ──
+      const editor = contributor.locator(".prose-editor");
+      await editor.click();
+      await contributor.keyboard.press("End");
+      await contributor.keyboard.type(CONTRIBUTION);
+      await contributor.getByTestId("submit-for-review").click();
+      await expect(contributor.getByTestId("review-submitted")).toContainText("Submitted for review");
+
+      // Nothing was written to the note itself — a proposal is not an edit.
+      {
+        const r = await ownerFetch(`/api/notes/${encodeURIComponent(noteId)}`);
+        expect(((await r.json()) as { content: string }).content).not.toContain(CONTRIBUTION);
+      }
+
+      // ── the steward's queue: grouped, counted, diffed ──
+      await page.goto("/governance");
+      await expect(page.getByTestId("gov-group-content")).toBeVisible();
+      await expect(page.getByTestId("gov-group-content-count")).toContainText("1");
+      await expect(page.getByTestId("review-chip")).toContainText("1 awaiting review");
+
+      const card = page.getByTestId("gov-proposal-card").filter({ hasText: "Edit to note" }).first();
+      await expect(card.getByTestId("gov-proposal-title")).toContainText(noteId);
+      // The diff shows the live text beside the contributor's version.
+      await expect(card.getByTestId("gov-proposal-diff")).toContainText("Original body");
+      await expect(card.getByTestId("gov-proposal-diff")).toContainText(CONTRIBUTION);
+      await expect(card.getByTestId("gov-proposal-progress")).toContainText("0 of 1 approvals");
+
+      // ── approve + apply → the rule auto-publishes, so the page really changes ──
+      await card.getByTestId("gov-approve").click();
+      const approved = page.getByTestId("gov-proposal-card").filter({ hasText: "Edit to note" }).first();
+      await expect(approved.getByTestId("gov-proposal-progress")).toContainText("1 of 1 approvals");
+      await approved.getByTestId("gov-apply").click();
+
+      await expect
+        .poll(async () => {
+          const r = await ownerFetch(`/api/notes/${encodeURIComponent(noteId)}`);
+          return ((await r.json()) as { content: string }).content;
+        })
+        .toContain(CONTRIBUTION);
+    } finally {
+      await contributorCtx.close();
+      await ownerFetch(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE" }).catch(() => {});
+    }
   });
 
   test("a stranger cannot reach governance", async ({ page }) => {

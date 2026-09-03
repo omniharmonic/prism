@@ -33,10 +33,28 @@ import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
 import { PageHeader, renamePath, type ContentFont } from "./DocumentChrome";
 import { useUpdateNote } from "../../app/hooks/useParachute";
+import { reviewMode } from "../../lib/governance/review";
+import { ReviewBanner } from "./ReviewBanner";
 
 const lowlightInstance = createLowlight(common);
 
 export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
+  // ── P4 governed-editing gate (WEB, NON-OWNER ONLY) ────────────────────────
+  // `reviewMode` reads the gateway's `_caps` annotation, which the Prism Server
+  // adds ONLY for a non-owner actor. The desktop shell reads the vault directly
+  // through TauriVaultClient, and a web OWNER is served by the transparent
+  // passthrough — neither response carries `_caps`, so `mode` is "none" for them
+  // and every branch below collapses to the pre-P4 behavior. ONE gate, read once
+  // here; nothing further down re-derives it.
+  //   "none"      → unchanged: autosave, editable, no banner.
+  //   "propose"   → editable locally, autosave SUPPRESSED (it could only 403),
+  //                 banner offers "Submit for review".
+  //   "read-only" → editor read-only with a one-line notice.
+  const mode = reviewMode(note);
+  // `readOnly` (published wiki / anonymous surfaces) wins outright: those
+  // responses carry no `_caps` today, and if they ever did, a public reader must
+  // not be offered a submit button.
+  const governed = mode !== "none" && !readOnly;
   const { data: allNotes } = useNotes();
   const [autocompleteState, setAutocompleteState] = useState<WikilinkAutocompleteState | null>(null);
   const [slashState, setSlashState] = useState<SlashCommandState | null>(null);
@@ -49,10 +67,15 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   useEffect(() => {
     setContentFont((note.metadata?.contentFont as ContentFont) || "sans");
   }, [note.id]); // re-sync when switching documents
+  // A governed reader may still flip their own reading font — it just cannot be
+  // PERSISTED to a note they may not write. `persistMetadata` is the single
+  // choke point for that; when `_caps` is absent it is `onMetadataChange`
+  // itself, so the desktop/owner path is untouched.
+  const persistMetadata = governed ? undefined : onMetadataChange;
   const changeFont = useCallback((f: ContentFont) => {
     setContentFont(f);
-    onMetadataChange?.({ contentFont: f });
-  }, [onMetadataChange]);
+    persistMetadata?.({ contentFont: f });
+  }, [persistMetadata]);
 
   // Surface the reading-font control to the shell (bottom bar / More sheet)
   // instead of the document header — keeps the top chrome uncluttered.
@@ -67,12 +90,12 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const updateNote = useUpdateNote();
   const renameTab = useUIStore((s) => s.renameTab);
   const handleRename = useCallback((newName: string) => {
-    if (readOnly) return; // read-only surface: never rename/persist
+    if (readOnly || governed) return; // read-only surface / no edit access: never rename/persist
     const next = renamePath(note.path, newName);
     if (!next) return;
     updateNote.mutate({ id: note.id, path: next });
     renameTab(note.id, newName.trim());
-  }, [note.path, note.id, updateNote, renameTab, readOnly]);
+  }, [note.path, note.id, updateNote, renameTab, readOnly, governed]);
 
   // Wikilink navigation (shared with the collaborative editors).
   const handleWikilinkNavigate = useWikilinkNavigate();
@@ -152,13 +175,21 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // the autosave triggers keeps every downstream call site unchanged while
   // guaranteeing no vault mutation when readOnly is set.
-  const scheduleSave = useCallback(() => { if (!readOnly) rawScheduleSave(); }, [readOnly, rawScheduleSave]);
-  const saveNow = useCallback(() => { if (!readOnly) rawSaveNow(); }, [readOnly, rawSaveNow]);
+  // `governed` joins `readOnly` here: without the `edit` cap every autosave is a
+  // silent 403, so we suppress the write entirely and route the change through
+  // the review banner instead. (`governed` is false whenever `_caps` is absent —
+  // desktop and owners keep the exact previous behavior.)
+  const noWrite = readOnly || governed;
+  const scheduleSave = useCallback(() => { if (!noWrite) rawScheduleSave(); }, [noWrite, rawScheduleSave]);
+  const saveNow = useCallback(() => { if (!noWrite) rawSaveNow(); }, [noWrite, rawSaveNow]);
+  // Editing stays LOCAL in "propose" mode — that is the point: type your change,
+  // then submit it. Only "read-only" (view/comment caps) locks the editor.
+  const notEditable = readOnly || mode === "read-only";
 
   const editor = useEditor({
     extensions,
     content: initialHtml || "",
-    editable: !readOnly,
+    editable: !notEditable,
     editorProps: {
       attributes: {
         class: "prose-editor outline-none min-h-[200px]",
@@ -174,8 +205,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   // Keep the editor's editable state in sync if readOnly flips after creation.
   useEffect(() => {
-    if (editor) editor.setEditable(!readOnly);
-  }, [editor, readOnly]);
+    if (editor) editor.setEditable(!notEditable);
+  }, [editor, notEditable]);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
   const pendingEdit = useUIStore((s) => s.pendingEdit);
@@ -288,7 +319,19 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   return (
     <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
-      {editor && !readOnly && <EditorToolbar editor={editor} />}
+      {editor && !notEditable && <EditorToolbar editor={editor} />}
+
+      {/* Governed note (web, non-owner): the propose-for-review affordance, plus
+          the per-note history. Never rendered when `_caps` is absent. */}
+      {governed && (
+        <div style={{ padding: "10px var(--space-6) 0" }}>
+          <ReviewBanner
+            noteId={note.id}
+            mode={mode as "propose" | "read-only"}
+            getContent={() => editorRef.current?.getHTML() ?? contentRef.current}
+          />
+        </div>
+      )}
 
       {/* Editor */}
       <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
@@ -297,7 +340,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             path={note.path}
             onRename={handleRename}
             icon={note.metadata?.icon as string | undefined}
-            onIconChange={(emoji) => onMetadataChange?.({ icon: emoji })}
+            onIconChange={(emoji) => persistMetadata?.({ icon: emoji })}
           />
           <EditorContent editor={editor} />
         </div>

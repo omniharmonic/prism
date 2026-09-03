@@ -1,12 +1,12 @@
 // The status line — the three facts that change what every other control on this
 // page means: is governance in force, is it locked, and what may YOU do.
-import { Lock, Unlock, ShieldCheck } from "lucide-react";
+import { Lock, Unlock, ShieldCheck, Inbox } from "lucide-react";
 import { Badge } from "../../../ui/Badge";
 import { listWords, powerLabel } from "../../../../lib/governance/prose";
 import type { GovState } from "./api";
 import { row, sentence } from "./ui";
 
-export function StatusHeader({ state }: { state: GovState }) {
+export function StatusHeader({ state, reviewCount = 0 }: { state: GovState; reviewCount?: number }) {
   return (
     <div style={{ marginBottom: 18 }} data-testid="gov-status">
       <h1 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 8px", color: "var(--text-primary)" }}>Governance</h1>
@@ -33,6 +33,17 @@ export function StatusHeader({ state }: { state: GovState }) {
             </Badge>
           )}
         </span>
+        {/* The queue's claim on YOUR attention. Only shown when there is something
+            this caller could actually decide (the count is computed from each
+            proposal's own evaluation — see ProposalsSection), so it is never a
+            badge for work belonging to someone else. */}
+        {reviewCount > 0 && (
+          <span data-testid="review-chip">
+            <Badge variant="warning">
+              <Inbox size={12} /> {reviewCount} awaiting review
+            </Badge>
+          </span>
+        )}
         {state.isBootstrapOwner && (
           <span data-testid="gov-status-bootstrap">
             <Badge variant="info">You are the bootstrap owner</Badge>

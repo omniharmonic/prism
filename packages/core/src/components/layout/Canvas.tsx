@@ -8,6 +8,7 @@ import { useCollabDocumentSeam } from "../../data/CollabDocumentContext";
 import { TagView } from "../navigation/TagView";
 import { TabBar } from "./TabBar";
 import { RendererBoundary } from "./RendererBoundary";
+import { reviewMode } from "../../lib/governance/review";
 import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
 
@@ -79,7 +80,16 @@ export function Canvas() {
   const collab = useCollabDocumentSeam();
   const collabDocId =
     !isVirtual && effectiveNote && contentType && COLLAB_TYPES.has(contentType) ? effectiveNote.id : "";
-  const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "";
+  // ── P4 (WEB, NON-OWNER ONLY) ──────────────────────────────────────────────
+  // A note the actor may PROPOSE on but not edit does not belong in the live
+  // CRDT session: every keystroke there is either refused or lands in a shared
+  // document they have no right to change. Route them to the plain renderer
+  // instead, which offers "Submit for review" (DocumentRenderer + ReviewBanner).
+  // Gated entirely on the gateway's `_caps` annotation, which only a non-owner
+  // web response ever carries — `reviewMode` is "none" for every desktop client
+  // and every owner, so `isLiveDoc` is computed exactly as before for them.
+  const proposeOnly = reviewMode(effectiveNote) === "propose";
+  const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly;
 
   return (
     <div className="flex flex-col h-full">

@@ -35,10 +35,12 @@ import {
   type Membership,
   type Policy,
   type Power,
+  type Proposal,
   type Role,
 } from "../governance";
 import { roleAtLeast } from "../roles";
 import { reconcileGovernanceGrants } from "../governance-grants";
+import { notifyVoters } from "../governance-notify";
 import { expandLevel, isCap, type Cap } from "../permissions";
 import {
   GOV_TAGS,
@@ -381,7 +383,13 @@ governance.post("/proposals", async (c) => {
   if (!action) return c.json({ error: "bad_request", detail: "action required" }, 400);
   if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
   const payload = typeof b.payload === "string" ? b.payload : JSON.stringify(b.payload ?? {});
-  const { id } = await openProposal(vault, { action, target, payload, openedBy: email(c) });
+  const openedBy = email(c);
+  const { id } = await openProposal(vault, { action, target, payload, openedBy });
+  // Tell the people who can decide it. Fire-and-forget by construction (see
+  // governance-notify.ts): the proposal is already durable, and a mail failure
+  // must never turn a successful proposal into an error for the proposer.
+  const state = await loadGovernance(vault, config.ownerEmail);
+  notifyVoters(state, { id, action, target, state: "open", openedBy, openedAt: new Date().toISOString() });
   return c.json({ ok: true, id }, 201);
 });
 
@@ -397,12 +405,20 @@ governance.post("/content/propose", async (c) => {
   if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
 
   const payload: ContentPayload = coerceContentPayload(b);
+  const openedBy = email(c);
+  const resolvedTarget = target || (payload.path ?? "");
   const { id } = await openProposal(vault, {
     action,
-    target: target || (payload.path ?? ""),
+    target: resolvedTarget,
     payload: JSON.stringify(payload),
-    openedBy: email(c),
+    openedBy,
   });
+  // Same fire-and-forget notice as an amendment, but scope-aware: eligibility for
+  // a content change is resolved against the TARGET's tags, so a
+  // gardener-of-#medicine is only told about #medicine.
+  const opened: Proposal = { id, action, target: resolvedTarget, state: "open", openedBy, openedAt: new Date().toISOString() };
+  const state = await loadGovernance(vault, config.ownerEmail);
+  notifyVoters(state, opened, await proposalContext(vault, opened, payload));
   return c.json({ ok: true, id }, 201);
 });
 

@@ -40,8 +40,6 @@ const actorSubject = (a: Actor): string | null =>
 const capsFor = (actor: Actor, note: NoteRef): Set<Cap> =>
   effectiveCaps(actor.grants, note, roleFloor(actor.role), actorSubject(actor));
 
-const can = (actor: Actor, note: NoteRef, cap: Cap): boolean => capsFor(actor, note).has(cap);
-
 /**
  * Transparent proxy to the vault for the OWNER only. Forwards the exact path,
  * query, method, and body with the server-held token, so the owner's web app
@@ -95,6 +93,32 @@ function vaultErr(c: Context, e: unknown) {
 }
 
 /**
+ * Filter a note list to what the actor may VIEW and stamp each survivor with the
+ * caps it was filtered by (`_caps`) — the same annotation `GET /notes/:id`
+ * returns. Free: the view filter has to compute the cap set for every note
+ * anyway, so the list path carries it instead of throwing it away.
+ *
+ * NON-OWNERS ONLY, and SIGNED-IN ones only. The owner/admin short-circuit
+ * returns the vault's raw response through `proxyToVault` and never reaches this
+ * function, so an owner (and every desktop client, which talks to the vault
+ * directly) sees byte-for-byte what it saw before. Capability links are excluded
+ * too: the affordance the annotation drives is "propose this for review", which
+ * needs a session (the governance surface 401s an anonymous link), so telling a
+ * link-holder about their caps could only offer them a button that cannot work.
+ */
+const annotated = (actor: Actor): boolean => actor.kind === "user";
+
+function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> {
+  const stamp = annotated(actor);
+  const out: Array<Note & { _caps?: Cap[] }> = [];
+  for (const n of notes) {
+    const caps = capsFor(actor, ref(n));
+    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : n);
+  }
+  return out;
+}
+
+/**
  * Notes a non-owner may see: union of (notes under each granted tag) and
  * (individually granted notes), then filtered to "holds the `view` cap".
  * Per-tag queries (not a single multi-tag query) avoid AND/OR ambiguity in the
@@ -112,7 +136,7 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
   );
   if (vaultWide) {
     const all = await vc.listNotes({ includeContent });
-    return all.filter((n) => can(actor, ref(n), "view"));
+    return annotate(actor, all);
   }
   const collected = new Map<string, Note>();
   for (const tag of grantedTags(actor.grants)) {
@@ -128,7 +152,7 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
       /* granted note may have been deleted — skip */
     }
   }
-  return [...collected.values()].filter((n) => can(actor, ref(n), "view"));
+  return annotate(actor, [...collected.values()]);
 }
 
 api.get("/health", async (c) => c.json({ vault: await vault.health() }));
@@ -152,11 +176,17 @@ api.get("/notes/:id", async (c) => {
     return vaultErr(c, e);
   }
   const level = effectiveLevel(actor.grants, ref(note), roleFloor(actor.role), actorSubject(actor));
+  const caps = capsFor(actor, ref(note));
   // Read gate on the `view` CAP: for a level-only grant this is exactly
   // atLeast(level, "view"); a caps grant that omits `view` (e.g. ["create"])
   // correctly reads nothing even though its ladder projection floors at "view".
-  if (!can(actor, ref(note), "view")) return c.json({ error: "forbidden" }, 403);
-  return c.json({ ...note, _level: level });
+  if (!caps.has("view")) return c.json({ error: "forbidden" }, 403);
+  // `_caps` (P4) travels beside `_level` so a client can render the RIGHT
+  // affordance instead of discovering a 403 by attempting a write: an actor with
+  // `suggest` but not `edit` gets "propose this change for review" rather than a
+  // silently failing autosave. Non-owner responses only — the owner's requests
+  // are proxied verbatim, so no owner and no desktop client ever sees this field.
+  return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
 api.post("/notes", async (c) => {
@@ -352,7 +382,7 @@ api.get("/search", async (c) => {
     return vaultErr(c, e);
   }
   if (roleAtLeast(actor.role, "admin")) return c.json(results);
-  return c.json(results.filter((n) => can(actor, ref(n), "view")));
+  return c.json(annotate(actor, results));
 });
 
 api.get("/tags", async (c) => {

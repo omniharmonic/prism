@@ -453,10 +453,65 @@ function ProposalCard({
   );
 }
 
-export function ProposalsSection({ ctx, proposals, onChanged }: { ctx: GovCtx; proposals: Proposal[]; onChanged: () => void }) {
+/** The wiki-moderation actions, as opposed to constitutional amendments. */
+const CONTENT_ACTIONS = new Set(["edit_note", "new_entry"]);
+
+/** The governance role NAMES the caller actively holds (memberships name a role
+ *  by id or by name; the policy's `eligibleRole` is always a name). */
+function heldRoleNames(ctx: GovCtx): Set<string> {
+  const out = new Set<string>();
+  for (const m of ctx.me?.memberships ?? []) {
+    const r = ctx.state.roles.find((x) => x.id === m.role || x.name === m.role);
+    if (r) out.add(r.name);
+  }
+  return out;
+}
+
+/** A small "Content changes · 2" divider above each queue. */
+function GroupHeading({ text, count, testId }: { text: string; count: number; testId: string }) {
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0 8px", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}
+      data-testid={testId}
+    >
+      <span>{text}</span>
+      <span
+        style={{
+          fontSize: 11,
+          padding: "1px 7px",
+          borderRadius: 999,
+          border: "1px solid var(--glass-border)",
+          background: "var(--glass)",
+        }}
+      >
+        {count}
+      </span>
+    </div>
+  );
+}
+
+export function ProposalsSection({
+  ctx,
+  proposals,
+  onChanged,
+  onReviewCount,
+}: {
+  ctx: GovCtx;
+  proposals: Proposal[];
+  onChanged: () => void;
+  /** How many OPEN proposals this caller is eligible to vote on — surfaced as
+   *  the status header's "N awaiting review" chip. Reported from here because
+   *  this is where the authoritative per-proposal evaluation is loaded. */
+  onReviewCount?: (n: number) => void;
+}) {
   const [details, setDetails] = useState<Record<string, ProposalDetail>>({});
   const live = useMemo(() => proposals.filter((p) => p.state === "open" || p.state === "approved"), [proposals]);
   const closed = useMemo(() => proposals.filter((p) => p.state !== "open" && p.state !== "approved"), [proposals]);
+  // Two queues, not one list: a content change asks "is this page better?" and an
+  // amendment asks "should the rules change?". Reviewers self-select by which
+  // question they can answer, so the counts carry the triage.
+  const liveContent = useMemo(() => live.filter((p) => CONTENT_ACTIONS.has(p.action)), [live]);
+  const liveAmendments = useMemo(() => live.filter((p) => !CONTENT_ACTIONS.has(p.action)), [live]);
 
   const loadDetails = useCallback(async () => {
     const entries = await Promise.all(
@@ -473,6 +528,18 @@ export function ProposalsSection({ ctx, proposals, onChanged }: { ctx: GovCtx; p
   useEffect(() => {
     void loadDetails();
   }, [loadDetails]);
+
+  // "Awaiting review" = OPEN proposals whose governing policy names a role this
+  // caller holds — exactly the set /proposals/:id/vote would accept from them.
+  const myRoles = heldRoleNames(ctx);
+  const reviewable = live.filter((p) => {
+    if (p.state !== "open") return false;
+    const eligibleRole = details[p.id]?.evaluation?.policy.eligibleRole;
+    return !!eligibleRole && myRoles.has(eligibleRole);
+  }).length;
+  useEffect(() => {
+    onReviewCount?.(reviewable);
+  }, [reviewable, onReviewCount]);
 
   const changed = () => {
     onChanged();
@@ -493,9 +560,24 @@ export function ProposalsSection({ ctx, proposals, onChanged }: { ctx: GovCtx; p
       {ctx.state.locked && <AmendmentComposer ctx={ctx} />}
 
       {live.length === 0 && <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0 }}>Nothing is waiting on a decision.</p>}
-      {live.map((p) => (
-        <ProposalCard key={p.id} proposal={p} detail={details[p.id]} ctx={ctx} onChanged={changed} />
-      ))}
+
+      {liveContent.length > 0 && (
+        <div data-testid="gov-group-content">
+          <GroupHeading text="Content changes" count={liveContent.length} testId="gov-group-content-count" />
+          {liveContent.map((p) => (
+            <ProposalCard key={p.id} proposal={p} detail={details[p.id]} ctx={ctx} onChanged={changed} />
+          ))}
+        </div>
+      )}
+
+      {liveAmendments.length > 0 && (
+        <div data-testid="gov-group-amendments">
+          <GroupHeading text="Amendments" count={liveAmendments.length} testId="gov-group-amendments-count" />
+          {liveAmendments.map((p) => (
+            <ProposalCard key={p.id} proposal={p} detail={details[p.id]} ctx={ctx} onChanged={changed} />
+          ))}
+        </div>
+      )}
 
       {closed.length > 0 && (
         <details style={{ marginTop: 8 }}>
