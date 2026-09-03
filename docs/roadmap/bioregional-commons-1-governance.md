@@ -1,6 +1,15 @@
 # Bioregional Knowledge Commons — Plan 1: Governance & Commons Infrastructure
 
-> Status: research/design (v0). Branch `claude/bioregional-commons-research-imkw2y`.
+> Status: research/design (v0) — **historical**. This is the original design
+> proposal; implementation diverged from it in several places (the powers
+> vocabulary here — `review`, `certify_gardener`, `arbitrate` — was replaced by
+> `assign_roles` and a smaller enforced set; a governance↔grants bridge was added
+> that this draft only gestures at). For the CURRENT architecture read
+> `CLAUDE.md`'s "Bioregional Knowledge Commons" section and `docs/governance.md`;
+> for what shipped per phase read `docs/roadmap/bioregional-commons-PROGRESS.md`.
+> Kept here as a record of the original thinking, not as reference.
+>
+> Branch `claude/bioregional-commons-research-imkw2y`.
 > Companion: **Plan 2 — The Bioregional Graph** (schema/ontology). Read this first.
 >
 > **Premise / what we assume already shipped.** This plan is written on top of the

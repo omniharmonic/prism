@@ -34,16 +34,17 @@ node scripts/commons-init.mjs --config <config.json> [--enable] [--dry-run]
 
 ## The config file
 
-See `docs/commons.config.example.json` — a Front Range commons with an `admin`
-tier (holds `amend_governance`), global `gardener` sign-off, a stricter
-`#medicine` policy (3 gardeners), an auto-publishing `#watershed` policy, an
-owner admin member, and three fixture data sources. Fields:
+See `docs/commons.config.example.json` — a Front Range commons with a `steward`
+tier (holds `amend_governance`), global `gardener` sign-off, a scoped
+`watershed-gardener` role, a stricter `#medicine` policy (3 gardeners), an
+auto-publishing `#watershed` policy, an owner steward member, and three fixture
+data sources. Fields:
 
 ```jsonc
 {
   "name": "…",
   "governance": {
-    "roles":    [{ "name", "powers": [...], "scopeType": "global|tag", "scope" }],
+    "roles":    [{ "name", "powers": [...], "capabilities": [...], "assigns": [...], "scopeType": "global|tag", "scope" }],
     "policies": [{ "action", "scopeType", "scope", "thresholdN", "quorum",
                    "distinctRequired", "eligibleRole", "windowSeconds", "autoPublish" }],
     "members":  [{ "subject", "role" }],

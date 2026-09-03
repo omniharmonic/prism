@@ -126,40 +126,115 @@ in priority order. None of it is plan work; all of it is what stands between the
 engine and a non-technical group using it.
 
 **Landmines (fix first — reachable by clicking):**
-- *Enable & lock* offers `(config default)` as the first amend policy, which
+- ~~*Enable & lock* offers `(config default)` as the first amend policy, which
   synthesizes eligible role `admin`. If the group named their role otherwise,
   nobody can ever vote → governance can never be amended or disabled. Nothing
-  validates that an eligible role + member exist before locking.
-- The `disable` amendment template wipes `bootstrapOwner`; after a disable,
-  nobody can ever re-bootstrap. Recovery is a curl from loopback only.
+  validates that an eligible role + member exist before locking.~~
+  **RESOLVED P0 (`db75c4a`).** `validateRatification` is a pre-flight on the
+  enable transition: it refuses to lock a constitution whose amend policy
+  doesn't resolve, whose eligible role doesn't exist, or that has fewer active
+  eligible members than the amend threshold. The un-amendable-forever state is
+  now unreachable through the API (`mutateGovernance` calls it before any
+  `enabled:true` write lands).
+- ~~The `disable` amendment template wipes `bootstrapOwner`; after a disable,
+  nobody can ever re-bootstrap. Recovery is a curl from loopback only.~~
+  **RESOLVED P0 (`db75c4a`).** `mergeConfig` always inherits `bootstrapOwner`
+  when the incoming config omits it (and inherits `amendPolicy` too, while
+  staying enabled) — a bare `{enabled:false}` can no longer blank the recovery
+  root. The loopback-curl recovery path remains, for the case that predates a
+  bootstrapOwner entirely.
 - `APP_ORIGIN` defaults to `localhost:8787` — misconfigured, every invite link
-  is dead.
+  is dead. **Not addressed by this work** — still open.
 
 **Provisioning / ingest correctness:**
-- `commons-init` and both importers have **no idempotency** — a re-run
-  duplicates every role, policy, member, and note. The documented production
-  flow (dry-run → provision → re-run with `--enable`) triggers exactly this.
+- ~~`commons-init` and both importers have **no idempotency** — a re-run
+  duplicates every role, policy, member, and note.~~ **Governance half RESOLVED
+  P0 (`db75c4a`):** `add_role`/`add_policy`/`add_membership` are now upserts
+  keyed by natural identity (role name; policy action+scopeType+scope;
+  membership subject+role), so re-running `commons-init` against an existing
+  constitution converges instead of duplicating it. **Note/import ingest
+  duplication is untouched** — the importers still have no dedupe, so the
+  documented dry-run → provision → re-run-with-`--enable` flow still duplicates
+  ingested notes on the re-run.
 - `commons-init` verify step 4 is vacuous: it queries `?tag=` on the owner
   passthrough, which ignores `tag`, so it passes if *any* note exists.
+  **Untouched.**
 - Importer opts (`--kind/--sensing/--name-prop`) are silently ignored for
   `gbif-species` and `wbd-watersheds`. Unknown `--source` crashes `commons-init`.
+  **Untouched.**
 - GBIF species import writes no geometry → those notes never appear on the Map.
+  **Untouched.**
 - Murmurations is documented as a working source but has no importer.
+  **Untouched.**
 
 **The missing product surface:**
 - **No bioregion parameter anywhere** — no bbox / HUC / place picker. "Configure
   your bioregion" means hand-downloading GeoJSON and pointing `--file` at it.
+  **Untouched** — out of scope for the governance charter.
 - No ingest UI at any layer; CLI + JSON only. 3 of 11 documented sources exist.
-- Tag-level grants (the "this working group edits #water" primitive) are
-  curl-only — `PUT /acl/tags/:tag/people` has no client. No group/team object.
-- Governance roles grant **zero** editing rights — two disconnected permission
-  systems with overlapping vocabulary and no bridge or explanation.
-- Nothing can be removed or revoked (member/role/policy) in UI *or* API.
-- Post-lock governance is a raw-JSON textarea; content proposals need a
-  hand-typed note id; approval progress ("1 of 2") is never rendered.
+  **Untouched.**
+- ~~Tag-level grants (the "this working group edits #water" primitive) are
+  curl-only — `PUT /acl/tags/:tag/people` has no client.~~ **Partially RESOLVED
+  P1+P2 (`53886c7`, `fb4bed1`).** The route itself is no longer admin-curl-only:
+  `PUT`/`DELETE .../people` on both notes and tags now accept an optional
+  `caps` list, and a non-admin holding the `share` cap on that note/tag can call
+  the route directly (subset-of-own-caps, existing-accounts-only). **Still no
+  dedicated UI** — `ShareDialog` shows tag access read-only and can *publish* a
+  tag publicly, but there is no client control that calls
+  `PUT /acl/tags/:tag/people` to share a tag privately with one person. No
+  group/team object either.
+- ~~Governance roles grant **zero** editing rights — two disconnected permission
+  systems with overlapping vocabulary and no bridge or explanation.~~
+  **RESOLVED P2 (`fb4bed1`).** `governance-grants.ts` compiles active
+  memberships × role `capabilities` into ordinary grant rows, reconciled after
+  every mutation and on a 5-minute worker tick. `effectiveCaps`/`effectiveLevel`
+  stay the only content guard; governance now gates content by writing grants
+  for that guard to read, never as a second check. See CLAUDE.md "THE BRIDGE".
+- ~~Nothing can be removed or revoked (member/role/policy) in UI *or* API.~~
+  **RESOLVED P0+P3 (`db75c4a`, `5e8d7f8`).** API: `remove_role`/`remove_policy`/
+  `remove_membership` (with cascade + the amend-policy protections) plus
+  PATCH/DELETE fixup routes pre-lock. UI: role cards carry member chips with
+  add/remove, and post-lock edits open a pre-filled amendment instead of
+  silently failing.
+- ~~Post-lock governance is a raw-JSON textarea; content proposals need a
+  hand-typed note id; approval progress ("1 of 2") is never rendered.~~
+  **RESOLVED P3 (`5e8d7f8`).** `BootstrapWizard` (3 templates), `RoleEditor` +
+  `PolicyBuilder` (rules rendered as sentences, each slot a control), and
+  `ProposalsPanel` (approvals/needed progress, quorum, window countdown, an
+  edit_note diff view) replace the textarea; amendments still expose an
+  Advanced raw-JSON disclosure for anything the structured form doesn't cover.
 - Parachute is a separate install; `@openparachute/hub` is on npm (0.7.x vs the
-  0.5.x we built against — compatibility unverified).
+  0.5.x we built against — compatibility unverified). **Untouched.**
 
 **Recommended shape for a first public event:** one operator-run hosted
 instance, pre-provisioned, attendees join by invite link. Self-serve clone is a
 later milestone.
+
+---
+
+## 2026-09 Commons Charter — governance P0–P4
+
+A second pass, on top of the readiness audit above: capability-based access
+composable with the level ladder, a real bridge from constitution to content
+grants, an honest powers list with delegated staffing, hardened lifecycle rails
+(ratification pre-flight, protected bootstrap owner, mutable votes, auto-closing
+windows, full CRUD with idempotent upserts), scoped non-admin sharing, and the
+contributor wiki loop (propose-from-editor, review queue, voter notifications).
+Branch `claude/governance-charter`. Architecture detail lives in CLAUDE.md's
+"Bioregional Knowledge Commons" section; the operator/member guide is
+`docs/governance.md`.
+
+| Phase | Commit | What shipped | Tests |
+|---|---|---|---|
+| P0 | `db75c4a` | Full governance lifecycle (`update_role`/`remove_role`/`update_policy`/`remove_policy`/`remove_membership`), adds converted to upserts keyed by natural identity so re-provisioning converges. `validateRatification` pre-flights *Enable & lock* against the constitution's own amend policy (missing policy/role, or too few active eligible members, refuses the lock). `mergeConfig` protects `bootstrapOwner`/`amendPolicy` from a partial `set_config`. Proposing now requires standing (workspace member+, a governance role, or a grant in the vault). Votes are mutable while a proposal is open. Policy windows auto-close an expired open proposal on the next touch. Pre-lock PATCH/DELETE fixup routes reuse the same `mutateGovernance` choke point. | 564 |
+| P1 | `53886c7` | The capability vocabulary: `CAPS` (`view/comment/suggest/edit/create/organize/delete/share`), `expandLevel`, `levelForCaps`, `effectiveCaps` in `permissions.ts`. Grants gain a nullable `caps` column (null = derive from level; every existing grant unaffected). The gateway's write checks split by specific capability (`create`, `edit`+`organize` on PATCH with anti-escalation, `delete`); collab and the ACL people endpoints gain caps awareness. | 601 |
+| P2 | `fb4bed1` | **The bridge**: `governance-grants.ts` compiles enabled-constitution memberships × role capabilities into ordinary grant rows, reconciled after every mutation and every `GOVERNANCE_RECONCILE_MS` (default 5 min). POWERS trimmed to the honest enforced+declarative list (`review`/`arbitrate` cut, `certify_gardener` → `assign_roles`); delegated staffing lets an `assign_roles` holder staff the roles their role `assigns`, never one carrying `amend_governance`. Scoped share: a non-admin `share`-cap holder reaches exactly five people-grant ACL routes, subset-of-own-caps, existing accounts only. | 631 |
+| P3 | `5e8d7f8` | The governance product surface: `BootstrapWizard` with three starting templates (Solo curator / Reviewed commons / Open commons), role cards with a grouped capability matrix, policies rendered as plain-language sentences (`packages/core/src/lib/governance/prose.ts`), proposal cards with approvals/quorum/window progress and a content diff, and `GET /api/governance/me` (first-person access summary). The `governance-config` note's body is regenerated as the human-readable constitution after every mutation. | 643 |
+| P4 | `a3e8b71` | The wiki loop: the gateway annotates non-owner reads with `_caps`; `reviewMode` drives propose-from-editor for suggest-without-edit actors (`ReviewBanner`, submit → `edit_note` proposal, inline revision history); Canvas routes propose-only notes away from the live collab session; a review queue groups proposals by content vs. amendment; `notifyVoters` mails (or logs) the eligible voters when a proposal opens. | 659 |
+
+End-to-end verification: `E2E_FAKE_VAULT=1 ./scripts/e2e-governance.sh` — **6/6**
+across `governance.spec.ts` (bootstrap→lock→self-amend→governed content
+change; a contributor proposes from the editor and a steward reviews it live —
+invite with suggest caps → banner → submit → unchanged vault → steward sees
+diff + 0-of-1 → approve → apply → content live; the stranger-gate),
+`bioregion.spec.ts`, and `import.spec.ts`.
