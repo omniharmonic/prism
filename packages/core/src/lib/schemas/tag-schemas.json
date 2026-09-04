@@ -1188,8 +1188,8 @@
           "indexed": true
         },
         "species": {
-          "type": "string",
-          "description": "Wikilink to the species note, when this entity is a population of one."
+          "type": "array",
+          "description": "Note paths of characteristic/constituent species (array; a single-population entity lists one)."
         },
         "geometry": {
           "type": "object",
