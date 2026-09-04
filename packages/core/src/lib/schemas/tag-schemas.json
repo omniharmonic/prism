@@ -540,6 +540,11 @@
         "confidence": {
           "type": "number",
           "description": "Extraction confidence (0-1)"
+        },
+        "last_verified": {
+          "type": "string",
+          "description": "ISO date this record was last verified against its source. Staleness is the primary failure mode of every directory; surface it.",
+          "indexed": true
         }
       },
       "parent_names": [
@@ -902,7 +907,7 @@
         },
         "capabilities": {
           "type": "array",
-          "description": "Content capabilities every active holder of this role receives (\u2208 view, comment, suggest, edit, create, organize, delete, share). Compiled into ordinary access grants scoped by scope_type/scope; empty means the role is purely procedural and confers no access to notes."
+          "description": "Content capabilities every active holder of this role receives (∈ view, comment, suggest, edit, create, organize, delete, share). Compiled into ordinary access grants scoped by scope_type/scope; empty means the role is purely procedural and confers no access to notes."
         },
         "assigns": {
           "type": "array",
@@ -1131,6 +1136,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       }
     },
@@ -1217,6 +1233,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       },
       "parent_names": [
@@ -1304,6 +1331,21 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
+        },
+        "confusable_with": {
+          "type": "array",
+          "description": "Note paths of taxa this one is dangerously confused with (ID-safety layer, e.g. osha vs poison/water hemlock). Link both directions."
         }
       },
       "parent_names": [
@@ -1377,6 +1419,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       }
     },
@@ -1441,6 +1494,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       },
       "parent_names": [
@@ -1515,6 +1579,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       }
     },
@@ -1581,6 +1656,11 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "last_verified": {
+          "type": "string",
+          "description": "ISO date this record was last verified against its source. Staleness is the primary failure mode of every directory; surface it.",
+          "indexed": true
         }
       }
     },
@@ -1670,6 +1750,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       }
     },
@@ -1895,6 +1986,17 @@
         "indigenous_governed": {
           "type": "boolean",
           "description": "Sovereignty membrane: when true the note is EXCLUDED from public publishing and federation (TK/BC-labeled, partner-controlled). Never index indigenous knowledge; partner by pointer."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": [
+            "public",
+            "generalized",
+            "restricted",
+            "governed"
+          ],
+          "description": "Sensitivity gate: public = precise data ok; generalized = coarse geometry only (>=HUC-8/10km); restricted = no location data may be stored; governed = access per external (TK/BC-labeled) governance. Enum leads with the neutral value (vault default-fills the FIRST enum value on create).",
+          "indexed": true
         }
       }
     },

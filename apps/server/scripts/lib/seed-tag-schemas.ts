@@ -96,6 +96,27 @@ export function loadCanonicalSchemas(): Record<string, TagSchemaEntry> {
   return parsed.tags;
 }
 
+/**
+ * Parachute 0.7.x builds a field index when a schema field carries `indexed:
+ * true`, and the index build 500s for any non-string type (array/number/object)
+ * — worse, the 500 fires AFTER the schema row is written, leaving a stored
+ * schema that re-trips the error on every echo-back PUT. Only strings are
+ * indexable, so strip the flag from everything else before sending.
+ */
+function indexableFields(fields: Record<string, TagFieldDef>): Record<string, TagFieldDef> {
+  const out: Record<string, TagFieldDef> = {};
+  for (const [name, def] of Object.entries(fields)) {
+    const d = def as TagFieldDef & { indexed?: boolean; type?: string };
+    if (d?.indexed && d.type !== "string") {
+      const { indexed: _drop, ...rest } = d;
+      out[name] = rest as TagFieldDef;
+    } else {
+      out[name] = def;
+    }
+  }
+  return out;
+}
+
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
@@ -140,7 +161,7 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
 
   for (const [tag, entry] of Object.entries(desired)) {
     const desiredDescription = isNonEmptyString(entry.description) ? entry.description.trim() : "";
-    const desiredFields = entry.fields ?? {};
+    const desiredFields = indexableFields(entry.fields ?? {});
     const desiredParents = desiredParentNames(entry);
 
     const cur = existing.get(tag);
