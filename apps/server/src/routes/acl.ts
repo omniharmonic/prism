@@ -32,6 +32,7 @@ import {
   getPublicationByResource,
   listPublications,
   excludedNoteIds,
+  publicationVaultId,
   deletePublication,
   storePairing,
   listPeers,
@@ -1161,6 +1162,8 @@ acl.get("/publications", (c) =>
       return {
         slug: p.id,
         kind,
+        // Which vault this publication serves from ('primary' = the default).
+        vaultId: publicationVaultId(p),
         // Keep `tag` populated for tag pubs (existing UI/e2e), add `pathPrefix`
         // for path pubs. Both echo `resource` for their respective kind; the
         // other is empty/null to match core's PublicationInfo contract.
@@ -1182,6 +1185,10 @@ acl.get("/publications", (c) =>
 
 acl.post("/tags/:tag/publish", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
+  // Publications are vault-scoped: the ACTIVE vault (X-Prism-Vault, same
+  // resolution as the gateway) is stamped on the publication row AND its
+  // backing anyone-grant, so the public path serves THIS vault's notes.
+  const vaultId = resolveActor(c).vaultId;
   const body = await c.req
     .json<{ template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string }>()
     .catch(() => ({}) as { template?: string; title?: string; slug?: string; homeNoteId?: string; password?: string });
@@ -1189,14 +1196,15 @@ acl.post("/tags/:tag/publish", async (c) => {
   // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
   const passwordHash = body.password ? hashPassword(body.password) : null;
 
-  // One publication per tag (v1) → idempotent: reuse the existing slug if present.
-  const existing = getPublicationByResource("tag", tag);
+  // One publication per (vault, tag) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("tag", tag, vaultId);
   let slug = existing?.id ?? "";
   if (!existing) {
     slug = (body.slug && slugify(body.slug)) || slugify(tag);
     while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
     createPublication({
       id: slug,
+      vault_id: vaultId,
       resource_type: "tag",
       resource: tag,
       template: body.template || "wiki",
@@ -1211,19 +1219,21 @@ acl.post("/tags/:tag/publish", async (c) => {
     // Re-publishing with a password field present updates the gate (set or clear).
     updatePublication(existing.id, { password_hash: passwordHash });
   }
-  // The publication primitive: an `anyone-with-the-link` grant scoped to the tag.
-  upsertGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
+  // The publication primitive: an `anyone-with-the-link` grant scoped to the tag
+  // IN THE PUBLICATION'S VAULT (a public slice of A must not open the tag in B).
+  upsertGrant({ vault_id: vaultId, subject_type: "anyone", subject: "*", resource_type: "tag", resource: tag, level: "view", created_by: config.ownerEmail });
 
-  // Live count for the UI warning ("this will publish N notes" — and is dynamic).
+  // Live count for the UI warning ("this will publish N notes" — and is dynamic),
+  // counted in the publication's own vault.
   let count = 0;
-  try { count = (await vault.listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
+  try { count = (await vaultClient(vaultId).listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
   return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
 });
 
 /** Set or clear a publication's password (clear by sending an empty/omitted password). */
 acl.put("/tags/:tag/publish/password", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
-  const pub = getPublicationByResource("tag", tag);
+  const pub = getPublicationByResource("tag", tag, resolveActor(c).vaultId);
   if (!pub) return c.json({ error: "not_found" }, 404);
   const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
   updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
@@ -1232,9 +1242,12 @@ acl.put("/tags/:tag/publish/password", async (c) => {
 
 acl.delete("/tags/:tag/publish", (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
-  const pub = getPublicationByResource("tag", tag);
+  const vaultId = resolveActor(c).vaultId;
+  const pub = getPublicationByResource("tag", tag, vaultId);
   if (pub) deletePublication(pub.id);
-  removeGrantBySubjectResource("anyone", "*", "tag", tag);
+  // Drop the backing anyone-grant in THIS vault only — a same-named tag
+  // published from another vault keeps its own grant.
+  removeGrantBySubjectResource("anyone", "*", "tag", tag, vaultId);
   return c.json({ ok: true });
 });
 
@@ -1253,14 +1266,19 @@ acl.post("/publish/path", async (c) => {
   // Optional password: hashed at rest (scrypt). Empty/absent → open publication.
   const passwordHash = body.password ? hashPassword(body.password) : null;
 
-  // One publication per prefix → idempotent: reuse the existing slug if present.
-  const existing = getPublicationByResource("path", prefix);
+  // The active vault (X-Prism-Vault) — stamped on the row; the public path
+  // reads the prefix from THIS vault.
+  const vaultId = resolveActor(c).vaultId;
+
+  // One publication per (vault, prefix) → idempotent: reuse the existing slug if present.
+  const existing = getPublicationByResource("path", prefix, vaultId);
   let slug = existing?.id ?? "";
   if (!existing) {
     slug = (body.slug && slugify(body.slug)) || slugify(prefix);
     while (getPublicationBySlug(slug)) slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
     createPublication({
       id: slug,
+      vault_id: vaultId,
       resource_type: "path",
       resource: prefix,
       template: "wiki",
@@ -1275,11 +1293,12 @@ acl.post("/publish/path", async (c) => {
     updatePublication(existing.id, { password_hash: passwordHash });
   }
 
-  // Live count (and dynamic): notes whose path is inside the prefix. The same
-  // membership predicate the public read path uses — never trust a vault query.
+  // Live count (and dynamic): notes whose path is inside the prefix, counted in
+  // the publication's own vault. The same membership predicate the public read
+  // path uses — never trust a vault query.
   let count = 0;
   try {
-    count = (await vault.listNotes({})).filter((n) => pathInPrefix(n.path, prefix)).length;
+    count = (await vaultClient(vaultId).listNotes({})).filter((n) => pathInPrefix(n.path, prefix)).length;
   } catch {
     /* best-effort */
   }
@@ -1358,7 +1377,9 @@ acl.delete("/publications/:slug", (c) => {
   if (!pub) return c.json({ error: "not_found" }, 404);
   deletePublication(pub.id);
   if (pub.resource_type === "tag") {
-    removeGrantBySubjectResource("anyone", "*", "tag", pub.resource);
+    // The grant lives in the publication's OWN vault — remove it there, never
+    // in whatever vault the caller happens to have active.
+    removeGrantBySubjectResource("anyone", "*", "tag", pub.resource, publicationVaultId(pub));
   }
   return c.json({ ok: true });
 });

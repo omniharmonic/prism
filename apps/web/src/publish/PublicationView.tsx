@@ -1,7 +1,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { GATEWAY_ORIGIN } from "../config";
 import { getTemplate } from "./templates/registry";
-import type { PubGraph, PubNote, PublicationManifest } from "./templates/types";
+import type { PubGraph, PubMapFeature, PubNote, PublicationManifest } from "./templates/types";
 
 /**
  * Public, anonymous, read-only view of a PUBLICATION (Horizon B). The human URL
@@ -27,6 +27,10 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   const [note, setNote] = useState<PubNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [graph, setGraph] = useState<PubGraph | null>(null);
+  // Map features are fetched LAZILY (the payload can be large — watershed
+  // polygons); `mapRequested` flips when the template first opens the map view.
+  const [mapFeatures, setMapFeatures] = useState<PubMapFeature[] | null>(null);
+  const [mapRequested, setMapRequested] = useState(false);
   // Password gate: the server marks `passwordRequired` and, while locked,
   // withholds the nav (notes: []) and 401s the note/graph reads. We surface a
   // prompt; a successful unlock sets an httpOnly cookie, after which we bump
@@ -84,6 +88,29 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
       cancelled = true;
     };
   }, [slug, locked, reloadKey]);
+
+  // Load the publication-scoped, leak-proof map features — but only once the
+  // reader actually opens the map view (`mapRequested`). Best effort: a missing
+  // payload just means an empty map surface.
+  useEffect(() => {
+    if (!mapRequested || locked) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(api(`/${encodeURIComponent(slug)}/map`), { credentials: "include" });
+        if (!r.ok) return;
+        const m = (await r.json()) as { features?: PubMapFeature[] };
+        if (!cancelled) setMapFeatures(Array.isArray(m.features) ? m.features : []);
+      } catch {
+        /* no map without features */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, mapRequested, locked, reloadKey]);
+
+  const onRequestMap = useCallback(() => setMapRequested(true), []);
 
   // Load the active note's content whenever it changes.
   useEffect(() => {
@@ -214,6 +241,8 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
         noteLoading={noteLoading}
         onNavigate={onNavigate}
         graph={graph}
+        mapFeatures={mapFeatures}
+        onRequestMap={onRequestMap}
       />
     </Suspense>
   );

@@ -3,6 +3,7 @@ import { sanitizeHtml } from "@prism/core";
 import type { PublicationTemplateProps } from "./types";
 import { resolveTheme } from "../theme";
 import { WikiGraph } from "./WikiGraph";
+import { WikiMap } from "./WikiMap";
 import {
   buildLinkIndex,
   renderWikiBody,
@@ -28,9 +29,19 @@ export default function WikiTemplate({
   noteLoading,
   onNavigate,
   graph,
+  mapFeatures,
+  onRequestMap,
 }: PublicationTemplateProps) {
   const [query, setQuery] = useState("");
   const [graphOpen, setGraphOpen] = useState(false);
+  // Map view: offered only when the publication actually has geo-bearing notes
+  // (manifest.mapFeatureCount). Opening it triggers the lazy feature fetch.
+  const [mapOpen, setMapOpen] = useState(false);
+  const hasMap = (manifest.mapFeatureCount ?? 0) > 0;
+  const openMap = useCallback(() => {
+    setMapOpen(true);
+    onRequestMap();
+  }, [onRequestMap]);
   const articleRef = useRef<HTMLDivElement>(null);
 
   // Owner-set theme, re-validated here before it touches the page (untrusted on a
@@ -124,6 +135,12 @@ export default function WikiTemplate({
         <span style={{ fontWeight: 600, fontSize: 15, color: "var(--text-primary, #fff)" }}>
           {manifest.title}
         </span>
+        {hasMap && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+            <HeaderTab label="Article" active={!mapOpen} onClick={() => setMapOpen(false)} />
+            <HeaderTab label="Map" active={mapOpen} onClick={openMap} testId="wiki-map-tab" />
+          </div>
+        )}
       </header>
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
@@ -191,7 +208,19 @@ export default function WikiTemplate({
           )}
         </nav>
 
-        {/* Center: article */}
+        {/* Center: article, or the publication-scoped map view */}
+        {mapOpen ? (
+          <main style={{ flex: 1, minWidth: 0, padding: 16 }}>
+            <WikiMap
+              features={mapFeatures}
+              activeId={activeId}
+              onNavigate={(id) => {
+                setMapOpen(false);
+                onNavigate(id);
+              }}
+            />
+          </main>
+        ) : (
         <main style={{ flex: 1, overflowY: "auto", padding: "0 24px" }}>
           <div style={{ maxWidth: 760, margin: "0 auto", padding: "40px 0 96px" }}>
             {note && (
@@ -224,6 +253,7 @@ export default function WikiTemplate({
             </footer>
           </div>
         </main>
+        )}
 
         {/* Right rail: TOC + backlinks */}
         <aside
@@ -331,6 +361,37 @@ export default function WikiTemplate({
         </aside>
       </div>
     </div>
+  );
+}
+
+function HeaderTab({
+  label,
+  active,
+  onClick,
+  testId,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  testId?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testId}
+      style={{
+        padding: "5px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--glass-border, rgba(255,255,255,0.12))",
+        background: active ? "var(--glass-hover, rgba(255,255,255,0.08))" : "transparent",
+        color: active ? "var(--text-primary, #fff)" : "var(--text-secondary, #bbb)",
+        cursor: "pointer",
+        fontSize: 13,
+        fontWeight: active ? 600 : 400,
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

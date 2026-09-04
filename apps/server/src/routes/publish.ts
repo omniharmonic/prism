@@ -16,9 +16,9 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { vault, VaultError, type Note } from "../parachute";
+import { vaultClient, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
-import { getPublicationBySlug, grantsForResource, excludedNoteIds, type Publication } from "../db";
+import { getPublicationBySlug, grantsForResource, excludedNoteIds, publicationVaultId, type Publication } from "../db";
 import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
 import { pathInPrefix } from "../paths";
 import { config } from "../config";
@@ -114,15 +114,21 @@ function unlocked(c: Context, pub: Publication): boolean {
  * keeps the anon actor from ever computing a level above what `anyone` allows.)
  */
 function publicationActor(pub: Publication): Actor {
+  const vaultId = publicationVaultId(pub);
   return {
     kind: "anon",
     role: "guest",
-    // Publications are primary-vault-scoped in Phase 1 (publish vault-scoping is a
-    // later step); grantsForResource defaults to the primary vault to match.
-    vaultId: "primary",
-    grants: grantsForResource(pub.resource_type, pub.resource).filter((g) => g.subject_type === "anyone"),
+    // The publication's OWN vault (stamped at publish time; 'primary' for
+    // pre-multi-vault rows) — its grants are looked up in that vault only, so a
+    // publication of tag T in vault A never picks up grants on tag T in vault B.
+    vaultId,
+    grants: grantsForResource(pub.resource_type, pub.resource, vaultId).filter((g) => g.subject_type === "anyone"),
   };
 }
+
+/** The vault client bound to the publication's own vault — EVERY vault read on
+ *  the public path goes through this, never the primary singleton. */
+const pubVault = (pub: Publication) => vaultClient(publicationVaultId(pub));
 
 /**
  * The note set this publication exposes.
@@ -146,11 +152,11 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   // direct id access too).
   const excluded = new Set(excludedNoteIds(pub));
   if (pub.resource_type === "path") {
-    const notes = await vault.listNotes({ includeContent });
+    const notes = await pubVault(pub).listNotes({ includeContent });
     return notes.filter((n) => !excluded.has(n.id) && pathInPrefix(n.path, pub.resource));
   }
   const actor = publicationActor(pub);
-  const notes = await vault.listNotes({ tags: [pub.resource], includeContent });
+  const notes = await pubVault(pub).listNotes({ tags: [pub.resource], includeContent });
   return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), null), "view"));
 }
 
@@ -236,6 +242,7 @@ publish.get("/:slug", async (c) => {
   let nav: NavNote[] = [];
   let homeNoteId: string | null = null;
   let homeTitle: string | undefined;
+  let mapFeatureCount = 0;
 
   if (!locked) {
     let notes: Note[];
@@ -244,6 +251,13 @@ publish.get("/:slug", async (c) => {
     } catch (e) {
       return vaultErr(c, e);
     }
+
+    // How many in-set notes carry real geometry (or a geo centroid) — lets the
+    // client offer a Map view without fetching the (potentially large) feature
+    // payload up front. Same location predicate as the /map route.
+    mapFeatureCount = notes.filter(
+      (n) => geometryOf(n.metadata as Record<string, unknown> | null) != null || geoOf(n.metadata as Record<string, unknown> | null) != null,
+    ).length;
 
     nav = notes.map((n) => ({
       id: n.id,
@@ -267,6 +281,7 @@ publish.get("/:slug", async (c) => {
     homeNoteId,
     passwordRequired,
     notes: nav,
+    mapFeatureCount,
   });
 });
 
@@ -340,6 +355,93 @@ publish.get("/:slug/graph", async (c) => {
   return c.json({ nodes, edges });
 });
 
+// 1c. Map — geospatial features of the publication's own note set, and NOTHING
+//     else. Built from the same authoritative `publicationNotes` set as the
+//     manifest/graph (excluded ids already dropped, effectiveLevel/tag scoping
+//     applied), so a private or out-of-set note's geometry can never appear.
+//     Emits only what the map needs (id/title/kind/geometry/geo) — never the
+//     full metadata blob.
+
+/** The geo tags that drive a feature's color/legend bucket (mirrors the
+ *  desktop MapRenderer's GEO_TAGS/kindOf). */
+const GEO_TAGS = ["ecological-entity", "species", "watershed", "place", "signal", "resource", "event", "organization"] as const;
+
+const metaStr = (m: Record<string, unknown> | null | undefined, k: string): string => {
+  const v = m?.[k];
+  return typeof v === "string" ? v : "";
+};
+
+/** First real GeoJSON geometry on the note. The field name varies by type
+ *  (geometry | boundaryGeometry | rangeGeometry) and the vault default-fills
+ *  omitted schema'd fields with "" — only an object with a string `type` and
+ *  non-null `coordinates` counts as location. */
+function geometryOf(m: Record<string, unknown> | null | undefined): unknown | null {
+  for (const k of ["geometry", "boundaryGeometry", "rangeGeometry"] as const) {
+    const g = m?.[k] as { type?: unknown; coordinates?: unknown } | null | undefined;
+    if (g && typeof g === "object" && typeof g.type === "string" && g.coordinates != null) return g;
+  }
+  return null;
+}
+
+/** `metadata.geo` centroid ({lat, lon} numbers) — the lightweight point form. */
+function geoOf(m: Record<string, unknown> | null | undefined): { lat: number; lon: number } | null {
+  const g = m?.geo;
+  if (g && typeof g === "object") {
+    const o = g as { lat?: unknown; lon?: unknown };
+    if (typeof o.lat === "number" && typeof o.lon === "number") return { lat: o.lat, lon: o.lon };
+  }
+  return null;
+}
+
+/** The most specific geo tag on the note (color/legend bucket). */
+function kindOf(note: Note): string {
+  const tags = note.tags ?? [];
+  for (const t of GEO_TAGS) if (tags.includes(t)) return t;
+  return "place";
+}
+
+/** Display name for a map feature: schema'd name fields first, else the same
+ *  derived title the nav uses. */
+function featureName(note: Note): string {
+  const m = note.metadata;
+  return (
+    metaStr(m, "name") || metaStr(m, "title") || metaStr(m, "scientificName") || metaStr(m, "hucName") || navTitle(note)
+  );
+}
+
+publish.get("/:slug/map", async (c) => {
+  const pub = getPublicationBySlug(c.req.param("slug"));
+  if (!pub || isExpired(pub)) return c.json({ error: "not_found" }, 404);
+  if (pub.password_hash && !unlocked(c, pub)) return c.json({ error: "locked" }, 401);
+
+  let notes: Note[];
+  try {
+    notes = await publicationNotes(pub, false);
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+
+  const features = notes
+    .map((n) => {
+      const m = n.metadata as Record<string, unknown> | null;
+      const geometry = geometryOf(m);
+      const geo = geoOf(m);
+      if (!geometry && !geo) return null; // no location → not a map feature
+      return {
+        id: n.id,
+        name: featureName(n),
+        kind: kindOf(n),
+        sensing: metaStr(m, "sensing_or_responding"),
+        status: metaStr(m, "status") || metaStr(m, "severity"),
+        geometry,
+        geo,
+      };
+    })
+    .filter((f): f is NonNullable<typeof f> => f !== null);
+
+  return c.json({ features });
+});
+
 // 2. Single note (read-only). Served only if it is part of the publication set:
 //    - tag pubs: effectiveLevel >= "view" AND it carries the publication's tag;
 //    - path pubs: its `path` is inside the publication's prefix.
@@ -351,7 +453,7 @@ publish.get("/:slug/notes/:id", async (c) => {
 
   let note: Note;
   try {
-    note = await vault.getNote(c.req.param("id"));
+    note = await pubVault(pub).getNote(c.req.param("id"));
   } catch (e) {
     return vaultErr(c, e);
   }
