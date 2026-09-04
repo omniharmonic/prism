@@ -1250,6 +1250,11 @@ export function grantsForPeer(pubkey: string): Grant[] {
 // ---- publications (Horizon B) ----
 export interface Publication {
   id: string;
+  /** The vault this publication serves from. Rows from before multi-vault
+   *  publishing carry the migration default 'primary', so they behave
+   *  byte-identically; readers still treat null/undefined as 'primary'
+   *  defensively (a hand-inserted row). */
+  vault_id: string;
   resource_type: ResourceType;
   resource: string;
   template: string;
@@ -1262,13 +1267,15 @@ export interface Publication {
   created_by: string | null;
   created_at: number;
 }
+/** The vault a publication belongs to ('primary' for pre-multi-vault rows). */
+export const publicationVaultId = (pub: Publication): string => pub.vault_id ?? "primary";
 const insertPublication = db.prepare(
-  `INSERT INTO publications (id, resource_type, resource, template, title, home_note_id, excluded_note_ids, password_hash, theme, expires_at, created_by, created_at)
-   VALUES (@id, @resource_type, @resource, @template, @title, @home_note_id, @excluded_note_ids, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
+  `INSERT INTO publications (id, vault_id, resource_type, resource, template, title, home_note_id, excluded_note_ids, password_hash, theme, expires_at, created_by, created_at)
+   VALUES (@id, @vault_id, @resource_type, @resource, @template, @title, @home_note_id, @excluded_note_ids, @password_hash, @theme, @expires_at, @created_by, @created_at)`,
 );
 const selectPublication = db.prepare("SELECT * FROM publications WHERE id = ?");
 const selectPublicationByResource = db.prepare(
-  "SELECT * FROM publications WHERE resource_type = ? AND resource = ? LIMIT 1",
+  "SELECT * FROM publications WHERE vault_id = ? AND resource_type = ? AND resource = ? LIMIT 1",
 );
 const selectPublications = db.prepare("SELECT * FROM publications ORDER BY created_at DESC");
 const deletePublicationStmt = db.prepare("DELETE FROM publications WHERE id = ?");
@@ -1277,9 +1284,13 @@ const updatePublicationStmt = db.prepare(
 );
 
 export function createPublication(
-  p: Omit<Publication, "created_at" | "excluded_note_ids"> & { excluded_note_ids?: string | null },
+  p: Omit<Publication, "created_at" | "excluded_note_ids" | "vault_id"> & {
+    excluded_note_ids?: string | null;
+    /** Defaults to 'primary' — every pre-multi-vault call site is unchanged. */
+    vault_id?: string;
+  },
 ): Publication {
-  const row: Publication = { excluded_note_ids: null, ...p, created_at: now() };
+  const row: Publication = { excluded_note_ids: null, vault_id: "primary", ...p, created_at: now() };
   insertPublication.run(row);
   return row;
 }
@@ -1298,8 +1309,8 @@ export function excludedNoteIds(pub: Publication): string[] {
 export function getPublicationBySlug(slug: string): Publication | null {
   return (selectPublication.get(slug) as Publication | undefined) ?? null;
 }
-export function getPublicationByResource(type: ResourceType, resource: string): Publication | null {
-  return (selectPublicationByResource.get(type, resource) as Publication | undefined) ?? null;
+export function getPublicationByResource(type: ResourceType, resource: string, vaultId = "primary"): Publication | null {
+  return (selectPublicationByResource.get(vaultId, type, resource) as Publication | undefined) ?? null;
 }
 export function listPublications(): Publication[] {
   return selectPublications.all() as Publication[];

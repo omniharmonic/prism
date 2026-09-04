@@ -26,6 +26,9 @@ export interface PublicationManifest {
   homeNoteId: string | null;
   passwordRequired: boolean;
   notes: NavNote[];
+  /** How many in-publication notes carry real geometry — drives whether the
+   *  template offers a Map view (the feature payload itself is fetched lazily). */
+  mapFeatureCount?: number;
 }
 
 export interface PubNote {
@@ -42,6 +45,18 @@ export interface PubGraph {
   edges: { source: string; target: string }[];
 }
 
+/** One geospatial feature from the leak-proof /api/p/:slug/map endpoint —
+ *  shaped to drop straight into core's CommonsMap `MapFeature`. */
+export interface PubMapFeature {
+  id: string;
+  name: string;
+  kind: string;
+  sensing?: string;
+  status?: string;
+  geometry?: unknown | null;
+  geo?: { lat: number; lon: number } | null;
+}
+
 export interface PublicationTemplateProps {
   manifest: PublicationManifest;
   slug: string;
@@ -54,6 +69,11 @@ export interface PublicationTemplateProps {
   onNavigate: (id: string) => void;
   /** Publication-scoped graph (null until loaded / on error). Drives backlinks. */
   graph: PubGraph | null;
+  /** Publication-scoped map features (null until requested/loaded). Fetched
+   *  LAZILY — call `onRequestMap` when the reader opens the map view; the shell
+   *  loads /api/p/:slug/map once and re-renders with the features. */
+  mapFeatures: PubMapFeature[] | null;
+  onRequestMap: () => void;
 }
 
 export type PublicationTemplate = ComponentType<PublicationTemplateProps>;

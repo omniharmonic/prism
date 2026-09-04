@@ -59,6 +59,13 @@ export interface FakeVault {
   /** Force the next note write to 409 (optimistic-concurrency conflict). */
   conflictOnNextWrite: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
+  /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
+   *  store (multi-vault tests). The primary store (`notes`) keeps serving
+   *  /vault/default/api unchanged; vault names never registered here still 404
+   *  ("unreachable"), which some tests assert. Returns the store. */
+  addVault(name: string): Map<string, FakeNote>;
+  /** Seed a note into an additional vault's store (auto-registers the vault). */
+  putIn(vault: string, note: Partial<FakeNote> & { id: string }): FakeNote;
   restore(): void;
 }
 
@@ -88,6 +95,10 @@ function json(body: unknown, status = 200): Response {
  * notes/tags and inspect the calls made.
  */
 export function installFakeVault(): FakeVault {
+  // Per-vault-name note stores. "default" is the primary store (fv.notes); the
+  // handler only serves vault names present here, so an unregistered vault name
+  // stays unreachable (404) exactly as before.
+  const stores = new Map<string, Map<string, FakeNote>>();
   const fv: FakeVault = {
     notes: new Map(),
     tags: [],
@@ -99,10 +110,24 @@ export function installFakeVault(): FakeVault {
       fv.notes.set(n.id, n);
       return n;
     },
+    addVault(name) {
+      let store = stores.get(name);
+      if (!store) {
+        store = new Map();
+        stores.set(name, store);
+      }
+      return store;
+    },
+    putIn(vault, note) {
+      const n = fakeNote(note);
+      fv.addVault(vault).set(n.id, n);
+      return n;
+    },
     restore() {
       globalThis.fetch = realFetch;
     },
   };
+  stores.set("default", fv.notes);
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -129,9 +154,11 @@ export function installFakeVault(): FakeVault {
       return fv.healthy ? json({ ok: true }) : new Response("down", { status: 503 });
     }
 
-    const API = "/vault/default/api";
-    if (!url.pathname.startsWith(API)) return new Response("not found", { status: 404 });
-    const sub = url.pathname.slice(API.length); // "/notes", "/notes/:id", "/tags", ...
+    const apiMatch = url.pathname.match(/^\/vault\/([^/]+)\/api(\/.*)$/);
+    if (!apiMatch) return new Response("not found", { status: 404 });
+    const store = stores.get(decodeURIComponent(apiMatch[1]!));
+    if (!store) return new Response("not found", { status: 404 }); // unregistered vault → unreachable
+    const sub = apiMatch[2]!; // "/notes", "/notes/:id", "/tags", ...
 
     // GET /tags
     if (sub === "/tags" && method === "GET") {
@@ -144,7 +171,7 @@ export function installFakeVault(): FakeVault {
         const q = url.searchParams;
         const tagFilters = q.getAll("tag");
         const search = q.get("search");
-        let list = [...fv.notes.values()];
+        let list = [...store.values()];
         if (tagFilters.length) list = list.filter((n) => tagFilters.every((t) => (n.tags ?? []).includes(t)));
         if (search) list = list.filter((n) => n.content.toLowerCase().includes(search.toLowerCase()));
         return json(list);
@@ -152,7 +179,8 @@ export function installFakeVault(): FakeVault {
       if (method === "POST") {
         const b = (body ?? {}) as Partial<FakeNote>;
         const id = `new-${++seq}`;
-        const n = fv.put({ id, content: b.content ?? "", path: b.path ?? null, metadata: b.metadata ?? null, tags: b.tags ?? [] });
+        const n = fakeNote({ id, content: b.content ?? "", path: b.path ?? null, metadata: b.metadata ?? null, tags: b.tags ?? [] });
+        store.set(n.id, n);
         return json(n);
       }
     }
@@ -161,7 +189,7 @@ export function installFakeVault(): FakeVault {
     const m = sub.match(/^\/notes\/([^/]+)$/);
     if (m) {
       const id = decodeURIComponent(m[1]!);
-      const existing = fv.notes.get(id);
+      const existing = store.get(id);
       if (method === "GET") {
         return existing ? json(existing) : new Response("not found", { status: 404 });
       }
@@ -188,7 +216,7 @@ export function installFakeVault(): FakeVault {
       }
       if (method === "DELETE") {
         if (!existing) return new Response("not found", { status: 404 });
-        fv.notes.delete(id);
+        store.delete(id);
         return json({ ok: true });
       }
     }
