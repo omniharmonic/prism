@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties, type MouseEvent, Suspense, lazy } from "react";
 import { sanitizeHtml } from "@prism/core";
-import type { PublicationTemplateProps } from "./types";
+import type { PubNote, PublicationTemplateProps } from "./types";
 import { resolveTheme } from "../theme";
 import { WikiGraph } from "./WikiGraph";
 import { WikiMap } from "./WikiMap";
@@ -21,6 +21,28 @@ import {
  * "Published via Prism" footer. All note HTML is run through `sanitizeHtml` — it
  * is public/untrusted. Styled with the app's CSS variables so it feels native.
  */
+// The article's own map, mirroring the in-app geo-note editor: a note carrying
+// real GeoJSON (or a geo centroid) shows it drawn above the prose. Lazy, like
+// WikiMap, so text-only readers never pay for MapLibre.
+const ArticleCommonsMap = lazy(() => import("@prism/core").then((m) => ({ default: m.CommonsMap })));
+
+const GEO_KINDS = ["ecological-entity", "species", "watershed", "place", "signal", "organization", "event", "resource"];
+
+function articleFeature(note: PubNote): { id: string; kind: string; name: string; geometry?: unknown; geo?: { lat: number; lon: number } | null } | null {
+  const m = note.metadata ?? {};
+  let geometry: unknown = null;
+  for (const k of ["geometry", "boundaryGeometry", "rangeGeometry"]) {
+    const g = m[k] as { type?: unknown; coordinates?: unknown } | null | undefined;
+    if (g && typeof g === "object" && typeof g.type === "string" && g.coordinates != null) { geometry = g; break; }
+  }
+  const rawGeo = m.geo as { lat?: unknown; lon?: unknown } | null | undefined;
+  const geo = rawGeo && typeof rawGeo === "object" && typeof rawGeo.lat === "number" && typeof rawGeo.lon === "number"
+    ? { lat: rawGeo.lat, lon: rawGeo.lon } : null;
+  if (!geometry && !geo) return null;
+  const kind = (note.tags ?? []).find((t: string) => GEO_KINDS.includes(t)) ?? "place";
+  return { id: note.id, kind, name: (typeof m.name === "string" && m.name) || note.title, geometry, geo };
+}
+
 export default function WikiTemplate({
   manifest,
   slug,
@@ -229,6 +251,13 @@ export default function WikiTemplate({
               </h1>
             )}
             {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
+            {!noteLoading && note && (() => { const f = articleFeature(note); return f ? (
+              <div style={{ margin: "0 0 20px" }}>
+                <Suspense fallback={<div style={{ height: 360, borderRadius: 12, background: "var(--glass, rgba(128,128,128,0.08))" }} />}>
+                  <ArticleCommonsMap features={[f as never]} height={360} showControls={false} testId="article-map" />
+                </Suspense>
+              </div>
+            ) : null; })()}
             {!noteLoading && note && (
               <article
                 ref={articleRef}
