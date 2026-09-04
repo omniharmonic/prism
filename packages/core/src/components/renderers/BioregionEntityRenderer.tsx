@@ -6,13 +6,18 @@
  * fields, and — for signals — the affects/response links that close the
  * sense→respond loop.
  */
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import type { RendererProps } from "./RendererProps";
 import { CommonsMap, type MapFeature } from "../map/CommonsMap";
 import { withBbox } from "../../lib/geo/geojson";
 import { convertApi } from "../../lib/parachute/client";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
+import { reviewMode } from "../../lib/governance/review";
+
+// The real document editor (TipTap + autosave + wikilink autocomplete + slash
+// commands), lazy so the read-only geo view doesn't pay for the editor bundle.
+const DocumentEditor = lazy(() => import("./DocumentRenderer"));
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
@@ -56,7 +61,18 @@ const BODY_CSS = `
 .bioregion-body th, .bioregion-body td { border: 1px solid rgba(128,128,128,0.3); padding: 4px 10px; font-size: 14px; }
 `;
 
-export default function BioregionEntityRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
+const smallBtn: React.CSSProperties = {
+  padding: "4px 12px",
+  borderRadius: 7,
+  border: "1px solid rgba(128,128,128,0.4)",
+  background: "transparent",
+  color: "inherit",
+  cursor: "pointer",
+  font: "12px system-ui",
+  fontWeight: 600,
+};
+
+export default function BioregionEntityRenderer({ note, onSave, onMetadataChange, readOnly }: RendererProps) {
   const m = (note.metadata ?? null) as Record<string, unknown> | null;
   const geometry = (m?.geometry ?? m?.boundaryGeometry ?? m?.rangeGeometry) as { type?: string; coordinates?: unknown } | undefined;
   const sensing = str(m, "sensing_or_responding");
@@ -65,6 +81,33 @@ export default function BioregionEntityRenderer({ note, onMetadataChange, readOn
   const affects = arr(m, "affects");
   const response = arr(m, "response");
   const editable = !!onMetadataChange && !readOnly;
+
+  // ── Edit mode: swap the geo view for the REAL document editor ─────────────
+  // Gating mirrors DocumentRenderer's own: `readOnly` (published wiki /
+  // anonymous surfaces) hides the affordance entirely; a governed "read-only"
+  // actor (view/comment caps, no suggest) gets no button either — the editor
+  // would only lock itself. A "propose" actor DOES get the button:
+  // DocumentRenderer implements the propose-for-review flow (local edits +
+  // submit banner, autosave suppressed). Desktop and web owners carry no
+  // `_caps`, so `mode` is "none" and they get plain editing.
+  const mode = reviewMode(note);
+  const canEditBody = !readOnly && mode !== "read-only";
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [note.id]); // switching notes exits edit mode
+
+  // Hand the editor IDENTITY-STABLE callbacks. Canvas re-creates its onSave /
+  // onMetadataChange on every render (they close over a fresh useMutation
+  // object), and DocumentRenderer keys effects off onMetadataChange identity
+  // (via its font-persist callback). On the web-owner path that unstable
+  // identity + a whole-store subscription re-render feed back into each other
+  // and blow React's update-depth limit — a combination the app never hit
+  // before because web documents route to the collab editor, not this one.
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const onMetadataChangeRef = useRef(onMetadataChange);
+  onMetadataChangeRef.current = onMetadataChange;
+  const stableOnSave = useCallback((content: string) => onSaveRef.current?.(content), []);
+  const stableOnMetadataChange = useCallback((md: Record<string, unknown>) => onMetadataChangeRef.current?.(md), []);
 
   // The body is vault markdown — render it (with clickable [[wikilinks]])
   // instead of dumping the raw source. Conversion goes through convertApi so
@@ -114,11 +157,38 @@ export default function BioregionEntityRenderer({ note, onMetadataChange, readOn
 
   const hasGeo = geometry?.coordinates !== undefined || Boolean(m?.geo);
 
+  if (editing) {
+    // The editor autosaves through the vault mutation (which invalidates the
+    // note query), so by the time "Done" flips back the refetched note.content
+    // feeds the read view. A pending debounce is flushed by the editor's
+    // unmount cleanup.
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }} data-testid="bioregion-entity">
+        <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 20px 0" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 0.4 }}>{tag}</span>
+          <button style={{ ...smallBtn, marginLeft: "auto" }} onClick={() => setEditing(false)} data-testid="bioregion-done" title="Back to the map view">
+            Done
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <Suspense fallback={<div style={{ padding: 24, opacity: 0.6, font: "14px system-ui" }}>Loading editor…</div>}>
+            <DocumentEditor note={note} onSave={stableOnSave} onMetadataChange={stableOnMetadataChange} readOnly={readOnly} />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: 20, fontFamily: "system-ui, sans-serif" }} data-testid="bioregion-entity">
-      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 0.4 }}>{tag}</span>
         {sensing && <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, opacity: 0.7 }}>{sensing}</span>}
+        {canEditBody && (
+          <button style={{ ...smallBtn, marginLeft: "auto" }} onClick={() => setEditing(true)} data-testid="bioregion-edit" title="Edit this note in the document editor">
+            Edit
+          </button>
+        )}
       </div>
 
       {(hasGeo || editable) && (
