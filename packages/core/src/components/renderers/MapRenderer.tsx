@@ -23,7 +23,7 @@ import type { RendererProps } from "./RendererProps";
 /** The tags whose notes are geospatially meaningful (Plan 2 §2). A note need not
  *  carry one of these to appear — geometry is what qualifies it — but querying
  *  these keeps the fetch bounded instead of scanning the whole vault. */
-const GEO_TAGS = ["ecological-entity", "species", "watershed", "place", "signal", "resource", "event"] as const;
+const GEO_TAGS = ["ecological-entity", "species", "watershed", "place", "signal", "resource", "event", "organization"] as const;
 
 const str = (m: Record<string, unknown> | null | undefined, k: string): string => {
   const v = m?.[k];
