@@ -91,12 +91,17 @@ function buildTree(notes: NoteTreeEntry[]): TreeNode[] {
     const parts = normalized.split("/").filter(Boolean);
     let current = root;
 
+    // The personal vault's paths carry a literal "vault/" prefix (desktop
+    // convention); other vaults (e.g. the commons) don't. A folder's OPERATIONAL
+    // path must mirror its notes' real paths, or every folder move/rename
+    // computes garbage prefixes in unprefixed vaults.
+    const rawPrefix = rawPath.startsWith("vault/") ? "vault/" : "";
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       let child = current.children.find((c) => c.name === part && !c.note);
       if (!child) {
         const fp = parts.slice(0, i + 1).join("/");
-        child = { name: part, fullPath: fp, rawPath: "vault/" + fp, children: [] };
+        child = { name: part, fullPath: fp, rawPath: rawPrefix + fp, children: [] };
         current.children.push(child);
       }
       current = child;
@@ -330,7 +335,7 @@ function MoveDialog({
         <div className="max-h-48 overflow-auto space-y-0.5">
           {/* Root option */}
           <button
-            onClick={() => onMove("vault")}
+            onClick={() => onMove("")}
             className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: "var(--text-secondary)" }}
           >
@@ -499,7 +504,7 @@ function BatchMoveDialog({
         <div className="max-h-48 overflow-auto space-y-0.5">
           {/* Root option */}
           <button
-            onClick={() => onMove("vault")}
+            onClick={() => onMove("")}
             className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: "var(--text-secondary)" }}
           >
@@ -605,12 +610,15 @@ export function ProjectTree() {
     try {
       const isFolder = !node.note;
       if (isFolder) {
-        // Rename folder = update path prefix for all notes inside
+        // Rename folder = update path prefix for all notes inside. The prefix
+        // swap must anchor at the START of the path, and a top-level folder's
+        // prefix has no "/" (the old regex silently no-oped there).
         const notesInside = collectNotes(node);
+        const oldPrefix = node.rawPath;
+        const newPrefix = oldPrefix.includes("/") ? oldPrefix.replace(/\/[^/]+$/, `/${newName}`) : newName;
         for (const n of notesInside) {
-          const oldPrefix = node.rawPath;
-          const newPrefix = oldPrefix.replace(/\/[^/]+$/, `/${newName}`);
-          const newPath = n.path!.replace(oldPrefix, newPrefix);
+          if (!n.path?.startsWith(oldPrefix)) continue;
+          const newPath = newPrefix + n.path.slice(oldPrefix.length);
           await updateNote.mutateAsync({ id: n.id, path: newPath });
         }
       } else if (node.note) {
@@ -629,16 +637,21 @@ export function ProjectTree() {
   }, [updateNote, invalidate]);
 
   const handleMove = useCallback(async (node: TreeNode, destPath: string) => {
+    // destPath "" = vault root: keep the moved subtree's own path convention
+    // (a "vault/"-prefixed vault stays prefixed; the commons vault stays bare).
     const isFolder = !node.note;
     if (isFolder) {
+      const rootPrefix = node.rawPath.startsWith("vault/") ? "vault/" : "";
       const notesInside = collectNotes(node);
       for (const n of notesInside) {
-        const relativePath = n.path!.slice(node.rawPath.length);
-        const newPath = `${destPath}/${node.name}${relativePath}`;
+        if (!n.path?.startsWith(node.rawPath)) continue; // never rewrite a path we can't derive
+        const relativePath = n.path.slice(node.rawPath.length);
+        const newPath = destPath ? `${destPath}/${node.name}${relativePath}` : `${rootPrefix}${node.name}${relativePath}`;
         await updateNote.mutateAsync({ id: n.id, path: newPath });
       }
     } else if (node.note) {
-      const newPath = `${destPath}/${node.name}`;
+      const rootPrefix = node.note.path?.startsWith("vault/") ? "vault/" : "";
+      const newPath = destPath ? `${destPath}/${node.name}` : `${rootPrefix}${node.name}`;
       await updateNote.mutateAsync({ id: node.note.id, path: newPath });
     }
     invalidate();
@@ -755,7 +768,8 @@ export function ProjectTree() {
       const note = (notes || []).find(n => n.id === id);
       if (!note) continue;
       const name = (note.path || "Untitled").split("/").pop() || "Untitled";
-      const newPath = `${destPath}/${name}`;
+      const rootPrefix = (note.path || "").startsWith("vault/") ? "vault/" : "";
+      const newPath = destPath ? `${destPath}/${name}` : `${rootPrefix}${name}`;
       await updateNote.mutateAsync({ id, path: newPath });
     }
     setSelectedIds(new Set());
