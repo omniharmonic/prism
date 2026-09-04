@@ -3,8 +3,10 @@
  * Network), NOT a per-note dialog: it is "the map view of the vault" the user
  * asked for. Every note that carries geometry (a drawn Point/Line/Polygon in
  * `metadata.geometry`, or a `metadata.geo` centroid) shows up here on one shared
- * MapLibre map; clicking a feature (or its list row) opens that note as a tab,
- * where the per-note renderer's draw tools let you edit its geometry.
+ * MapLibre map. Clicking a feature SELECTS it (smallest polygon wins under
+ * nesting) and shows a popup whose "Open →" button — like a click on the list
+ * row — opens the note as a tab, where the per-note renderer's draw tools let
+ * you edit its geometry.
  *
  * This is the integration the standalone `/bioregion` route got wrong: geospatial
  * is a *lens over the vault*, reachable from the sidebar, sharing the same tabs,
@@ -132,7 +134,7 @@ export default function MapRenderer(_props: RendererProps) {
           <MapPin size={20} /> Map
         </h1>
         <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "4px 0 0" }}>
-          Every note with a location, on one map. Click a feature to open it — draw or edit its geometry from there.
+          Every note with a location, on one map. Click a feature to select it (smallest wins in nested areas), then Open from its popup — or open it from the list.
         </p>
         {kinds.length > 0 && (
           <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -173,7 +175,8 @@ export default function MapRenderer(_props: RendererProps) {
             <CommonsMap
               features={shown}
               height="100%"
-              onPick={setSelected}
+              onSelect={setSelected}
+              onPick={open}
               selectedId={selected}
               testId="vault-map"
             />

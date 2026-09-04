@@ -10,6 +10,12 @@
  * the MapLibre surface loads the features, the linked list indexes them, the kind
  * legend filters them, and opening a note reveals its cybernetic links.
  *
+ * Map-click UX under test (WebGL runners only): a click SELECTS the smallest
+ * feature under the cursor (nested polygons — a small watershed inside a big
+ * one — resolve to the small one) and shows a popup; the note opens ONLY via
+ * the popup's explicit "Open →" button or a list row — never as a side effect
+ * of clicking the map.
+ *
  * Shares the governance spec's magic-link login (server-log link). Run via
  * scripts/e2e-governance.sh (which also serves this spec's stack).
  */
@@ -77,6 +83,13 @@ test.describe("geospatial commons @live", () => {
       tags: [E2E_TAG, "species"],
       metadata: { name: "Achillea millefolium (e2e)", scientificName: "Achillea millefolium (e2e)", sensing_or_responding: "sense", rangeGeometry: { type: "MultiPolygon", coordinates: [[[[-106, 39], [-105, 39], [-105, 40], [-106, 39]]]] } },
     });
+    // A small watershed NESTED inside St. Vrain — exercises smallest-wins click
+    // resolution (the container polygon must not swallow the click).
+    await seedNote({
+      content: "# Left Hand Creek (e2e)",
+      tags: [E2E_TAG, "watershed"],
+      metadata: { name: "Left Hand (e2e)", hucName: "Left Hand (e2e)", huc12: "101900050102", sensing_or_responding: "sense", boundaryGeometry: { type: "Polygon", coordinates: [[[-105.35, 40.05], [-105.28, 40.05], [-105.28, 40.15], [-105.35, 40.15], [-105.35, 40.05]]] } },
+    });
     await seedNote({
       content: "# Proposed rezoning threat (e2e)",
       tags: [E2E_TAG, "signal"],
@@ -100,7 +113,7 @@ test.describe("geospatial commons @live", () => {
 
     // The linked list indexes all four located notes.
     const list = page.getByTestId("map-list");
-    for (const name of ["Boulder Creek (e2e)", "St. Vrain (e2e)", "Achillea millefolium (e2e)", "Rezoning threat (e2e)"]) {
+    for (const name of ["Boulder Creek (e2e)", "St. Vrain (e2e)", "Left Hand (e2e)", "Achillea millefolium (e2e)", "Rezoning threat (e2e)"]) {
       await expect(list.getByText(name)).toBeVisible();
     }
 
@@ -111,8 +124,9 @@ test.describe("geospatial commons @live", () => {
     await expect
       .poll(async () => (await map.getAttribute("data-map-ready")) ?? (await map.getAttribute("data-map-fallback")), { timeout: 15_000 })
       .toBeTruthy();
-    if ((await map.getAttribute("data-map-ready")) === "true") {
-      expect(Number(await map.getAttribute("data-feature-count"))).toBeGreaterThanOrEqual(4);
+    const mapReady = (await map.getAttribute("data-map-ready")) === "true";
+    if (mapReady) {
+      expect(Number(await map.getAttribute("data-feature-count"))).toBeGreaterThanOrEqual(5);
     }
 
     // Kind legend: toggling 'ecological-entity' off hides the creek from the list.
@@ -130,6 +144,47 @@ test.describe("geospatial commons @live", () => {
     await expect(entity).toBeVisible();
     await expect(entity.getByTestId("cybernetic-links")).toContainText("Affects");
     await expect(entity.getByTestId("cybernetic-links")).toContainText("Boulder Creek (e2e)");
+
+    // ---- Map-click UX: click = select + popup, smallest feature wins; the
+    // note opens ONLY via the popup's explicit "Open →". Needs a real WebGL
+    // map — skipped when the runner degraded to the fallback panel.
+    if (mapReady) {
+      // Back to the Map tab (sidebar item and tab both answer to "Map").
+      await page.getByRole("button", { name: "Map", exact: true }).first().click();
+      await expect(map).toBeVisible();
+      await expect
+        .poll(async () => map.getAttribute("data-map-ready"), { timeout: 15_000 })
+        .toBe("true");
+      await page.waitForTimeout(1200); // the one-time autoFit settles
+
+      const clickLngLat = async (lon: number, lat: number) => {
+        const pt = await page.evaluate(([lng, la]) => {
+          const el = document.querySelector('[data-testid="vault-map"]') as HTMLElement & { __map?: { project(c: [number, number]): { x: number; y: number } } };
+          const p = el.__map!.project([lng, la]);
+          return { x: p.x, y: p.y };
+        }, [lon, lat] as [number, number]);
+        const bb = (await map.boundingBox())!;
+        await page.mouse.click(bb.x + pt.x, bb.y + pt.y);
+      };
+
+      // This point is inside BOTH the nested Left Hand square and its container
+      // St. Vrain: the SMALLEST polygon must win the click.
+      await clickLngLat(-105.33, 40.09);
+      const popup = page.getByTestId("map-popup");
+      await expect(popup).toBeVisible();
+      await expect(popup).toContainText("Left Hand (e2e)");
+      await expect(page.getByTestId("bioregion-entity")).toHaveCount(0); // select ≠ navigate
+
+      // Clicking elsewhere re-selects and moves the popup — nothing to close
+      // first. (Aim below/right of the open popup so the click hits the map,
+      // not the popup's own floating DOM.)
+      await clickLngLat(-105.1, 39.95); // St. Vrain, outside the nested square
+      await expect(popup).toContainText("St. Vrain (e2e)");
+
+      // The explicit affordance is what opens the note.
+      await page.getByTestId("map-popup-open").click();
+      await expect(page.getByTestId("bioregion-entity")).toBeVisible();
+    }
   });
 
   test("a stranger cannot reach the app", async ({ page }) => {

@@ -30,6 +30,11 @@ export class DrawController {
     map.on("dblclick", this.onDblClick);
   }
 
+  /** True while a draw mode is active — the map's select-on-click UX must yield. */
+  get isDrawing(): boolean {
+    return this.mode !== "none";
+  }
+
   private ensureLayers() {
     const map = this.map;
     if (map.getSource(SRC)) return;
