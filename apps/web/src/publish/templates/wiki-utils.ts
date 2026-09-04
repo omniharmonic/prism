@@ -198,6 +198,21 @@ function leafName(n: NavNote): string {
 /** Build a folder tree from note `path`s. Notes without a path become top-level
  *  leaves (the flat fallback). Folders sort before leaves, both alphabetically. */
 export function buildTree(notes: NavNote[]): TreeItem[] {
+  // If EVERY pathed note shares one leading directory (e.g. the whole
+  // publication lives under "wiki/"), strip it — a single all-encompassing root
+  // folder in the nav is pure noise for readers.
+  const pathed = notes.filter((n) => n.path);
+  const firstSeg = (p: string) => p.split("/").filter(Boolean)[0] ?? "";
+  const common = pathed.length > 1 ? firstSeg(pathed[0].path!) : "";
+  const stripCommon =
+    common !== "" &&
+    pathed.every((n) => firstSeg(n.path!) === common) &&
+    pathed.some((n) => n.path!.split("/").filter(Boolean).length > 1);
+  if (stripCommon) {
+    notes = notes.map((n) =>
+      n.path ? { ...n, path: n.path.split("/").filter(Boolean).slice(1).join("/") || n.path } : n,
+    );
+  }
   const root: RawFolder = { folders: new Map(), leaves: [] };
   for (const n of notes) {
     if (!n.path) {

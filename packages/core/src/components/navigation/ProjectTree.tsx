@@ -549,6 +549,8 @@ export function ProjectTree() {
   const [renaming, setRenaming] = useState<TreeNode | null>(null);
   const [newFolder, setNewFolder] = useState<{ parentPath: string } | null>(null);
   const [moveTarget, setMoveTarget] = useState<TreeNode | null>(null);
+  const [moveProgress, setMoveProgress] = useState<{ done: number; total: number } | null>(null);
+  const movingRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
   const [githubSyncPath, setGitForkSyncPath] = useState<string | null>(null);
 
@@ -637,25 +639,37 @@ export function ProjectTree() {
   }, [updateNote, invalidate]);
 
   const handleMove = useCallback(async (node: TreeNode, destPath: string) => {
-    // destPath "" = vault root: keep the moved subtree's own path convention
-    // (a "vault/"-prefixed vault stays prefixed; the commons vault stays bare).
-    const isFolder = !node.note;
-    if (isFolder) {
-      const rootPrefix = node.rawPath.startsWith("vault/") ? "vault/" : "";
-      const notesInside = collectNotes(node);
-      for (const n of notesInside) {
-        if (!n.path?.startsWith(node.rawPath)) continue; // never rewrite a path we can't derive
-        const relativePath = n.path.slice(node.rawPath.length);
-        const newPath = destPath ? `${destPath}/${node.name}${relativePath}` : `${rootPrefix}${node.name}${relativePath}`;
-        await updateNote.mutateAsync({ id: n.id, path: newPath });
+    // Close the dialog IMMEDIATELY and refuse concurrent runs: a folder move is
+    // hundreds of sequential PATCHes, and a stuck-open dialog invited repeat
+    // clicks that stacked whole duplicate move storms into the offline outbox.
+    setMoveTarget(null);
+    if (movingRef.current) return;
+    movingRef.current = true;
+    try {
+      // destPath "" = vault root: keep the moved subtree's own path convention
+      // (a "vault/"-prefixed vault stays prefixed; the commons vault stays bare).
+      const isFolder = !node.note;
+      if (isFolder) {
+        const rootPrefix = node.rawPath.startsWith("vault/") ? "vault/" : "";
+        const notesInside = collectNotes(node).filter((n) => n.path?.startsWith(node.rawPath));
+        setMoveProgress({ done: 0, total: notesInside.length });
+        let done = 0;
+        for (const n of notesInside) {
+          const relativePath = n.path!.slice(node.rawPath.length);
+          const newPath = destPath ? `${destPath}/${node.name}${relativePath}` : `${rootPrefix}${node.name}${relativePath}`;
+          await updateNote.mutateAsync({ id: n.id, path: newPath });
+          setMoveProgress({ done: ++done, total: notesInside.length });
+        }
+      } else if (node.note) {
+        const rootPrefix = node.note.path?.startsWith("vault/") ? "vault/" : "";
+        const newPath = destPath ? `${destPath}/${node.name}` : `${rootPrefix}${node.name}`;
+        await updateNote.mutateAsync({ id: node.note.id, path: newPath });
       }
-    } else if (node.note) {
-      const rootPrefix = node.note.path?.startsWith("vault/") ? "vault/" : "";
-      const newPath = destPath ? `${destPath}/${node.name}` : `${rootPrefix}${node.name}`;
-      await updateNote.mutateAsync({ id: node.note.id, path: newPath });
+    } finally {
+      movingRef.current = false;
+      setMoveProgress(null);
     }
     invalidate();
-    setMoveTarget(null);
   }, [updateNote, invalidate]);
 
   const handleDelete = useCallback(async (node: TreeNode) => {
@@ -795,6 +809,27 @@ export function ProjectTree() {
 
   return (
     <>
+      {/* Folder move progress */}
+      {moveProgress && (
+        <div className="px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <Spinner size={12} />
+            <span style={{ color: "var(--text-secondary)" }}>
+              Moving {moveProgress.done} / {moveProgress.total}
+            </span>
+          </div>
+          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
+            <div
+              className="h-full rounded-full transition-all duration-200"
+              style={{
+                width: `${moveProgress.total ? (moveProgress.done / moveProgress.total) * 100 : 100}%`,
+                background: "var(--color-accent, #3b82f6)",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Batch delete progress */}
       {batchDeleteProgress && (
         <div className="px-3 py-2 border-b text-xs" style={{ background: "var(--glass)", borderColor: "var(--glass-border)" }}>
