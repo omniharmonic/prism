@@ -204,8 +204,14 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   editorRef.current = editor;
 
   // Keep the editor's editable state in sync if readOnly flips after creation.
+  // emitUpdate: false — setEditable's default emits TipTap's `update` event,
+  // which our onUpdate treats as a content change and AUTOSAVES. On mount this
+  // effect runs against the pre-conversion (empty) editor instance, so the
+  // default clobbered the note with "<p></p>" whenever markdown→HTML conversion
+  // finished after the 2s debounce (seen entering edit mode from the bioregion
+  // renderer). Editability changes are not content changes; never emit.
   useEffect(() => {
-    if (editor) editor.setEditable(!notEditable);
+    if (editor) editor.setEditable(!notEditable, false);
   }, [editor, notEditable]);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
