@@ -6,9 +6,13 @@
  * fields, and — for signals — the affects/response links that close the
  * sense→respond loop.
  */
+import { useCallback, useEffect, useState } from "react";
+import DOMPurify from "dompurify";
 import type { RendererProps } from "./RendererProps";
 import { CommonsMap, type MapFeature } from "../map/CommonsMap";
 import { withBbox } from "../../lib/geo/geojson";
+import { convertApi } from "../../lib/parachute/client";
+import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 
 const str = (m: Record<string, unknown> | null, k: string): string => {
   const v = m?.[k];
@@ -22,6 +26,36 @@ const arr = (m: Record<string, unknown> | null, k: string): string[] => {
 // The fields worth surfacing per type — literal upstream terms.
 const FIELDS = ["scientificName", "vernacularName", "family", "gbifTaxonKey", "huc12", "hucName", "ecological_kind", "signal_kind", "severity", "resource_kind", "status", "same_as"];
 
+const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** [[target]] / [[target|label]] → clickable anchors. Runs AFTER markdown
+ *  conversion (wikilinks survive it as literal text — same order as the
+ *  document editor's decoration), so it never depends on raw-HTML passthrough. */
+function linkifyWikilinks(html: string): string {
+  return html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, target: string, label?: string) => {
+    const t = target.trim();
+    const text = (label ?? t.split("/").pop() ?? t).trim();
+    return `<a class="wikilink" data-wikilink-target="${escapeHtml(t)}" data-wikilink-display="${escapeHtml(text)}">${escapeHtml(text)}</a>`;
+  });
+}
+
+const BODY_CSS = `
+.bioregion-body { line-height: 1.65; font-size: 15px; }
+.bioregion-body h1 { font-size: 1.5em; font-weight: 650; margin: 0.2em 0 0.5em; }
+.bioregion-body h2 { font-size: 1.2em; font-weight: 650; margin: 1.1em 0 0.4em; }
+.bioregion-body h3 { font-size: 1.05em; font-weight: 650; margin: 1em 0 0.3em; }
+.bioregion-body p { margin: 0.55em 0; }
+.bioregion-body ul, .bioregion-body ol { margin: 0.55em 0; padding-left: 1.4em; }
+.bioregion-body li { margin: 0.2em 0; }
+.bioregion-body blockquote { margin: 0.7em 0; padding-left: 1em; border-left: 3px solid rgba(128,128,128,0.35); opacity: 0.85; }
+.bioregion-body hr { border: none; border-top: 1px solid rgba(128,128,128,0.25); margin: 1.2em 0; }
+.bioregion-body a { color: var(--color-accent, #2563eb); text-decoration: none; cursor: pointer; }
+.bioregion-body a:hover { text-decoration: underline; }
+.bioregion-body strong { font-weight: 650; }
+.bioregion-body table { border-collapse: collapse; margin: 0.7em 0; }
+.bioregion-body th, .bioregion-body td { border: 1px solid rgba(128,128,128,0.3); padding: 4px 10px; font-size: 14px; }
+`;
+
 export default function BioregionEntityRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   const m = (note.metadata ?? null) as Record<string, unknown> | null;
   const geometry = (m?.geometry ?? m?.boundaryGeometry ?? m?.rangeGeometry) as { type?: string; coordinates?: unknown } | undefined;
@@ -31,6 +65,39 @@ export default function BioregionEntityRenderer({ note, onMetadataChange, readOn
   const affects = arr(m, "affects");
   const response = arr(m, "response");
   const editable = !!onMetadataChange && !readOnly;
+
+  // The body is vault markdown — render it (with clickable [[wikilinks]])
+  // instead of dumping the raw source. Conversion goes through convertApi so
+  // each shell uses its own converter (Rust command / marked shim).
+  const [bodyHtml, setBodyHtml] = useState<string>("");
+  const navigate = useWikilinkNavigate();
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const raw = note.content ?? "";
+      if (!raw.trim()) { setBodyHtml(""); return; }
+      let html: string;
+      try {
+        html = raw.trim().startsWith("<") ? raw : await convertApi.markdownToHtml(raw);
+      } catch {
+        html = `<p>${escapeHtml(raw)}</p>`;
+      }
+      if (!cancelled) setBodyHtml(DOMPurify.sanitize(linkifyWikilinks(html)));
+    })();
+    return () => { cancelled = true; };
+  }, [note.id, note.content]);
+
+  const onBodyClick = useCallback(
+    (e: React.MouseEvent) => {
+      const a = (e.target as HTMLElement).closest("a");
+      if (!a) return;
+      const wl = a.getAttribute("data-wikilink-target");
+      if (wl) { e.preventDefault(); navigate(wl); return; }
+      const href = a.getAttribute("href");
+      if (href && /^https?:/i.test(href)) { e.preventDefault(); window.open(href, "_blank", "noopener,noreferrer"); }
+    },
+    [navigate],
+  );
 
   // Persist a drawn geometry (with a derived bbox) into note metadata; null clears it.
   const saveGeometry = (g: unknown | null) => {
@@ -105,10 +172,17 @@ export default function BioregionEntityRenderer({ note, onMetadataChange, readOn
         </div>
       )}
 
-      {note.content && (
-        <pre style={{ marginTop: 12, whiteSpace: "pre-wrap", fontFamily: "inherit", opacity: 0.9, borderTop: "1px solid rgba(128,128,128,0.2)", paddingTop: 12 }}>
-          {note.content.replace(/<[^>]+>/g, "")}
-        </pre>
+      {bodyHtml && (
+        <>
+          <style>{BODY_CSS}</style>
+          <div
+            className="bioregion-body"
+            data-testid="bioregion-body"
+            onClick={onBodyClick}
+            style={{ marginTop: 12, borderTop: "1px solid rgba(128,128,128,0.2)", paddingTop: 12 }}
+            dangerouslySetInnerHTML={{ __html: bodyHtml }}
+          />
+        </>
       )}
     </div>
   );

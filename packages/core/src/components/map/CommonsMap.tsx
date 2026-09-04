@@ -327,8 +327,8 @@ export function CommonsMap({ features, basemap, height = 460, onPick, selectedId
   const btn = (active: boolean): React.CSSProperties => ({ padding: "5px 9px", borderRadius: 7, border: "1px solid rgba(0,0,0,0.15)", background: active ? "#f59e0b" : "rgba(255,255,255,0.92)", color: active ? "#fff" : "#222", cursor: "pointer", font: "12px system-ui", fontWeight: 600 });
 
   return (
-    <div style={{ position: "relative" }}>
-      <div ref={containerRef} data-testid={testId} style={{ height, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(128,128,128,0.3)" }} />
+    <div style={{ position: "relative", height }}>
+      <div ref={containerRef} data-testid={testId} style={{ height: "100%", minHeight: 280, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(128,128,128,0.3)" }} />
 
       {editable && !webglFailed && (
         <div style={{ position: "absolute", top: 10, left: 10, display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }} data-testid="map-draw-toolbar">

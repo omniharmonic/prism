@@ -31,7 +31,13 @@ const str = (m: Record<string, unknown> | null | undefined, k: string): string =
 };
 
 function geometryOf(m: Record<string, unknown> | null | undefined): unknown | null {
-  return (m?.geometry ?? m?.boundaryGeometry ?? m?.rangeGeometry) ?? null;
+  // The vault default-fills omitted schema'd object fields with "" on create,
+  // so presence is not location — only a real GeoJSON shape counts.
+  for (const k of ["geometry", "boundaryGeometry", "rangeGeometry"] as const) {
+    const g = m?.[k] as { type?: unknown; coordinates?: unknown } | null | undefined;
+    if (g && typeof g === "object" && typeof g.type === "string" && g.coordinates != null) return g;
+  }
+  return null;
 }
 function geoOf(m: Record<string, unknown> | null | undefined): { lat: number; lon: number } | null {
   const g = m?.geo;
@@ -154,7 +160,7 @@ export default function MapRenderer(_props: RendererProps) {
         )}
       </header>
 
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <div style={{ height: "min(72dvh, 900px)", display: "flex" }}>
         {/* The map */}
         <div style={{ flex: 1, minWidth: 0, padding: 16 }}>
           {isLoading ? (
