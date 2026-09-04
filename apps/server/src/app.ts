@@ -67,6 +67,12 @@ export function createApp(): Hono {
   // Only needed when the web app is served from a different origin (e.g. Vite dev
   // on :5173 without a proxy). Same-origin production traffic never triggers CORS.
   const corsMw = cors({ origin: config.appOrigin, credentials: true });
+  // Public publications are anonymous, read-only JSON meant for OTHER sites
+  // (e.g. the bioregional twin's frontend embedding "field notes") — open CORS,
+  // no credentials. Registered BEFORE the credentialed /api/* middleware so the
+  // more specific rule wins for /api/p/*. The password-unlock cookie still
+  // flows same-origin (cookies are sent same-origin regardless of CORS).
+  app.use("/api/p/*", cors({ origin: "*" }));
   app.use("/api/*", corsMw);
   app.use("/auth/*", corsMw);
   app.use("/acl/*", corsMw);
