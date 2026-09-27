@@ -19,7 +19,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } 
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
 import { config, type VaultEntry } from "../config";
 import { vault, vaultClient } from "../parachute";
-import { MatrixClient, ingestMatrix, type IngestVault, type MatrixCreds } from "./matrix";
+import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type MatrixCreds } from "./matrix";
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
@@ -163,6 +163,8 @@ export function ingestFailureState(): Array<{ vaultId: string; source: string; c
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
 let matrixPass = 0;
+const lastMatrixReconcileAt = new Map<string, number>();
+const lastBridgeResyncAt = new Map<string, number>();
 export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   // The workspace's Matrix integration is owned by the operator (config.ownerEmail)
   // for now; a per-member model can key it differently later.
@@ -190,6 +192,37 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   // instead of looking healthy while every new chat since the last join is dropped.
   if (res.invitesPending > 0 && !config.matrixAutoJoin) {
     console.warn(`[worker] matrix ${entry.id}: ${res.invitesPending} pending room invite(s) not joined — their messages are NOT ingested. Set MATRIX_AUTO_JOIN=true to accept them.`);
+  }
+
+  // The repair sweep, bounded to the cursor just persisted so it never overlaps
+  // the next incremental pass. Runs on boot too (the map starts empty) — which
+  // is exactly when a downtime gap needs closing.
+  const now = Date.now();
+  if (res.nextBatch && config.matrixReconcileMs > 0 && now - (lastMatrixReconcileAt.get(entry.id) ?? 0) >= config.matrixReconcileMs) {
+    lastMatrixReconcileAt.set(entry.id, now);
+    try {
+      const r = await reconcileMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
+        upTo: res.nextBatch,
+        maxRepairs: config.matrixReconcilePerSweep,
+      });
+      const line = `[worker] matrix ${entry.id} reconcile: ${r.scanned} rooms scanned, ${r.behind} behind, ${r.repaired} repaired (+${r.messages} msgs), ${r.deferred} deferred`;
+      if (r.behind > 0) console.warn(line);
+      else console.log(line);
+      // Deferred rooms are still missing messages — come back in 5 min, not an hour.
+      if (r.deferred > 0) lastMatrixReconcileAt.set(entry.id, now - config.matrixReconcileMs + 300_000);
+    } catch (e) {
+      console.warn(`[worker] matrix ${entry.id} reconcile failed: ${String(e)}`);
+    }
+  }
+
+  if (config.matrixBridgeResync.length && config.matrixBridgeResyncMs > 0 && now - (lastBridgeResyncAt.get(entry.id) ?? 0) >= config.matrixBridgeResyncMs) {
+    lastBridgeResyncAt.set(entry.id, now);
+    for (const b of config.matrixBridgeResync) {
+      await client.sendText(b.roomId, b.command).then(
+        () => console.log(`[worker] matrix ${entry.id}: bridge resync "${b.command}" → ${b.roomId}`),
+        (e) => console.warn(`[worker] matrix ${entry.id}: bridge resync to ${b.roomId} failed: ${String(e)}`),
+      );
+    }
   }
   return res.messages;
 }

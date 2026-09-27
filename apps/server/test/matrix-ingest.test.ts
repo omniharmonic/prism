@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSync, detectPlatform, ingestMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
+import { parseSync, detectPlatform, ingestMatrix, reconcileMatrix, formatLine, TRIAGE_TAGS, type IngestVault, type SyncResult } from "../src/worker/matrix";
 import type { Note } from "../src/parachute";
 
 test("parseSync extracts name + joined members + messages per room", () => {
@@ -234,4 +234,126 @@ test("ingestMatrix rejects an un-joinable (404) invite so it leaves the queue, b
   await ingestMatrix(client, fakeVault().vault, { autoJoin: true });
   assert.deepEqual(left, ["!dead:hs"]);   // rejected, gone from queue
   assert.deepEqual(joinedIds, ["!ok:hs"]); // still joined after the 404
+});
+
+// ── truncated timelines + the repair sweep ───────────────────────────────────
+
+const msg = (id: string, ts: number, body = id) => ({ sender: "@telegram_1:hs", body, ts, eventId: id });
+
+test("parseSync flags a limited timeline and keeps its prev_batch", () => {
+  const res = parseSync({
+    next_batch: "s3",
+    rooms: { join: { "!busy:hs": { timeline: { limited: true, prev_batch: "p1", events: [] } }, "!calm:hs": { timeline: { events: [] } } } },
+  });
+  const busy = res.rooms.find((r) => r.roomId === "!busy:hs")!;
+  const calm = res.rooms.find((r) => r.roomId === "!calm:hs")!;
+  assert.equal(busy.limited, true);
+  assert.equal(busy.prevBatch, "p1");
+  assert.equal(calm.limited, undefined);
+});
+
+test("ingestMatrix gap-fills a LIMITED room back to the previous cursor (exact `to`)", async () => {
+  const fv = fakeVault([{ id: "n", content: "# T", path: null, tags: ["message-thread"], metadata: { matrixRoomId: "!busy:hs", lastMessageAt: 500 }, createdAt: "", updatedAt: "" }]);
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    sync: async (): Promise<SyncResult> => ({
+      nextBatch: "s9",
+      invites: [],
+      rooms: [{ roomId: "!busy:hs", name: "Techne", memberIds: ["@telegram_1:hs"], displayNames: {}, messages: [msg("$31", 31_000)], limited: true, prevBatch: "p9" }],
+    }),
+    messagesBefore: async (_room: string, o: Record<string, unknown>) => {
+      calls.push(o);
+      return { messages: [msg("$1", 1_000), msg("$2", 2_000), msg("$31", 31_000)], capped: false };
+    },
+  };
+  const res = await ingestMatrix(client, fv.vault, { since: "s8" });
+  assert.deepEqual(calls[0], { from: "p9", to: "s8" });
+  assert.equal(res.messages, 3); // gap + tail, the tail's duplicate event dropped
+  const lines = fv.updates[0]!.content!.split("\n").filter((l) => l.startsWith("["));
+  assert.equal(lines.length, 3);
+  assert.match(lines[0]!, /: \$1$/);
+});
+
+test("ingestMatrix pages a NEWLY JOINED limited room back to its start (bridge backfill predates the cursor)", async () => {
+  const fv = fakeVault([]);
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", invites: [], rooms: [{ roomId: "!new:hs", name: "N", memberIds: [], displayNames: {}, messages: [msg("$9", 9_000)], limited: true, prevBatch: "p9" }] }),
+    messagesBefore: async (_r: string, o: Record<string, unknown>) => { calls.push(o); return { messages: [msg("$1", 1_000)], capped: false }; },
+  };
+  await ingestMatrix({ ...client, joinedMembers: async () => ({ "@telegram_1:hs": "Mathilda" }) }, fv.vault, { since: "s8" });
+  assert.deepEqual(calls[0], { from: "p9", sinceTs: 0 });
+  assert.match(fv.creates[0]!.content, /\] Mathilda: \$1/); // gap senders resolved to names, not numeric ids
+  assert.equal(fv.creates[0]!.content.split("\n").filter((l) => l.startsWith("[")).length, 2);
+});
+
+test("ingestMatrix never rewinds lastMessageAt when a bridge backfills OLD timestamps late", async () => {
+  const existing: Note = { id: "n1", content: "# T", path: null, tags: ["message-thread"], metadata: { matrixRoomId: "!r:hs", lastMessageAt: 50_000, messageCount: 5 }, createdAt: "", updatedAt: "" };
+  const fv = fakeVault([existing]);
+  const client = { sync: async (): Promise<SyncResult> => ({ nextBatch: "s", invites: [], rooms: [{ roomId: "!r:hs", name: null, memberIds: [], displayNames: {}, messages: [msg("$old", 10_000)] }] }) };
+  await ingestMatrix(client, fv.vault);
+  assert.equal(fv.updates[0]!.metadata!.lastMessageAt, 50_000);
+});
+
+test("reconcileMatrix repairs rooms whose newest message is not in the vault — and only those", async () => {
+  const upToDate: Note = { id: "ok", content: "# ok", path: null, tags: ["message-thread"], metadata: { matrixRoomId: "!ok:hs", lastMessageAt: 9_000 }, createdAt: "", updatedAt: "" };
+  const stale: Note = { id: "st", content: "# st\n[1970-01-01 00:00] One: $a", path: null, tags: ["message-thread"], metadata: { matrixRoomId: "!stale:hs", lastMessageAt: 5_000, messageCount: 1 }, createdAt: "", updatedAt: "" };
+  const fv = fakeVault([upToDate, stale]);
+  const history: Record<string, ReturnType<typeof msg>[]> = {
+    "!ok:hs": [msg("$k", 9_000)],
+    "!stale:hs": [msg("$a", 5_000, "$a"), msg("$b", 6_000), msg("$c", 7_000)],
+    "!missing:hs": [msg("$m1", 1_000), msg("$m2", 2_000)],
+    "!empty:hs": [],
+  };
+  const client = {
+    joinedRooms: async () => Object.keys(history),
+    messagesBefore: async (room: string, o: { from?: string; sinceTs?: number; cap?: number }) => {
+      assert.equal(o.from, "cursor");
+      const all = history[room]!;
+      if (o.cap === 1) return { messages: all.slice(-1), capped: false };
+      return { messages: all.filter((m) => m.ts >= (o.sinceTs ?? 0)), capped: false };
+    },
+    joinedMembers: async () => ({ "@telegram_1:hs": "One" }),
+    roomName: async (room: string) => (room === "!missing:hs" ? "Techne Coordination" : null),
+  };
+  const r = await reconcileMatrix(client, fv.vault, { upTo: "cursor" });
+  assert.deepEqual({ scanned: r.scanned, behind: r.behind, repaired: r.repaired, deferred: r.deferred }, { scanned: 4, behind: 2, repaired: 2, deferred: 0 });
+  // The note-less room becomes a new thread, named and platform-detected.
+  assert.equal(fv.creates.length, 1);
+  assert.equal(fv.creates[0]!.path, "vault/messages/telegram/techne-coordination");
+  // The stale room gets only the gap; the boundary line already in the note is not duplicated.
+  assert.equal(fv.updates.length, 1);
+  const appended = fv.updates[0]!.content!.split("\n").filter((l) => l.startsWith("["));
+  assert.equal(appended.length, 3); // 1 existing + 2 new
+  assert.equal(fv.updates[0]!.metadata!.lastMessageAt, 7_000);
+});
+
+test("reconcileMatrix respects the per-sweep repair budget, most-recent first", async () => {
+  const fv = fakeVault([]);
+  const rooms = ["!a:hs", "!b:hs", "!c:hs"];
+  const client = {
+    joinedRooms: async () => rooms,
+    messagesBefore: async (room: string) => ({ messages: [msg(`$${room}`, room === "!b:hs" ? 9_000 : 1_000)], capped: false }),
+    joinedMembers: async () => ({}),
+    roomName: async (room: string) => room,
+  };
+  const r = await reconcileMatrix(client, fv.vault, { upTo: "c", maxRepairs: 1 });
+  assert.equal(r.repaired, 1);
+  assert.equal(r.deferred, 2);
+  assert.equal(fv.creates[0]!.metadata!.matrixRoomId, "!b:hs");
+});
+
+test("ingestMatrix resolves senders' names on an ordinary (non-limited) incremental pass — members, then profile for leavers", async () => {
+  const fv = fakeVault([{ id: "n", content: "# T", path: null, tags: ["message-thread"], metadata: { matrixRoomId: "!t:hs", lastMessageAt: 500 }, createdAt: "", updatedAt: "" }]);
+  const left = { ...msg("$2", 2_000), sender: "@telegram_2:hs" };
+  const client = {
+    sync: async (): Promise<SyncResult> => ({ nextBatch: "s9", invites: [], rooms: [{ roomId: "!t:hs", name: "T", memberIds: [], displayNames: {}, messages: [msg("$1", 1_000), left] }] }),
+    joinedMembers: async () => ({ "@telegram_1:hs": "Kevin Owocki" }),
+    profileName: async (id: string) => (id === "@telegram_2:hs" ? "Lucian" : null),
+  };
+  await ingestMatrix(client, fv.vault, { since: "s8" });
+  const content = fv.updates[0]!.content!;
+  assert.match(content, /\] Kevin Owocki: \$1/);
+  assert.match(content, /\] Lucian: \$2/);
+  assert.doesNotMatch(content, /\] \d+: /);
 });

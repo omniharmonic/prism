@@ -158,6 +158,27 @@ export const config = {
   // (default 10 = Synapse's rc_joins burst; a 429 ends the batch early anyway).
   matrixAutoJoin: process.env.MATRIX_AUTO_JOIN === "true",
   matrixAutoJoinPerRun: Number(process.env.MATRIX_AUTO_JOIN_PER_RUN ?? 10),
+  // Matrix repair sweep (worker/matrix.ts reconcileMatrix): every interval,
+  // probe EVERY joined room's newest message against its thread note and fetch
+  // any gap — the net under the incremental sync. 0 disables. PER_SWEEP caps
+  // repaired rooms per sweep (each one re-queues local-model triage).
+  matrixReconcileMs: Number(process.env.MATRIX_RECONCILE_MS ?? 3_600_000),
+  matrixReconcilePerSweep: Number(process.env.MATRIX_RECONCILE_PER_SWEEP ?? 25),
+  // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-
+  // separated (e.g. `!abc:localhost=sync-chats`), sent every interval. A
+  // bridge only portals chats Telegram/etc. PUSHES updates for; with hundreds of
+  // chats that push is unreliable, and an un-portaled chat is invisible to
+  // Matrix — so ask the bridge to walk its dialog list on a schedule.
+  matrixBridgeResync: (process.env.MATRIX_BRIDGE_RESYNC ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => {
+      const i = x.indexOf("=");
+      return { roomId: x.slice(0, i), command: x.slice(i + 1) };
+    })
+    .filter((x) => x.roomId.startsWith("!") && x.command),
+  matrixBridgeResyncMs: Number(process.env.MATRIX_BRIDGE_RESYNC_MS ?? 10_800_000),
 } as const;
 
 /**

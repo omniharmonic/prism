@@ -29,6 +29,13 @@ export interface RoomBatch {
   /** Joined member id → displayname (from m.room.member state), when known. */
   displayNames: Record<string, string>;
   messages: MatrixMessage[];
+  /**
+   * The homeserver truncated this room's timeline (more events arrived since the
+   * cursor than the filter's limit). `messages` is then only the TAIL — the gap
+   * before it must be fetched from `prevBatch` or it is silently lost.
+   */
+  limited?: boolean;
+  prevBatch?: string;
 }
 export interface SyncResult {
   nextBatch: string;
@@ -117,6 +124,84 @@ export class MatrixClient {
     );
   }
 
+  /**
+   * Paginate a room's m.room.message history BACKWARD from `from` (a sync or
+   * /messages token), stopping at the `to` token when given (exact — the previous
+   * sync cursor), else at the first message with ts <= `sinceTs`. Returned
+   * oldest-first. `cap` bounds a runaway room; hitting it is logged by callers.
+   */
+  async messagesBefore(
+    roomId: string,
+    opts: { from?: string; to?: string; sinceTs?: number; cap?: number },
+  ): Promise<{ messages: MatrixMessage[]; capped: boolean }> {
+    const cap = opts.cap ?? 5000;
+    const filter = encodeURIComponent(JSON.stringify({ types: ["m.room.message"] }));
+    const out: MatrixMessage[] = [];
+    let from = opts.from;
+    for (;;) {
+      const qs = [
+        "dir=b",
+        "limit=100",
+        `filter=${filter}`,
+        from ? `from=${encodeURIComponent(from)}` : "",
+        opts.to ? `to=${encodeURIComponent(opts.to)}` : "",
+      ].filter(Boolean).join("&");
+      const page = (await this.get(
+        `/rooms/${encodeURIComponent(roomId)}/messages?${qs}`,
+      )) as { chunk?: MatrixEvent[]; end?: string };
+      const chunk = page.chunk ?? [];
+      for (const e of chunk) {
+        const m = toMessage(e);
+        if (!m) continue;
+        if (!opts.to && opts.sinceTs !== undefined && m.ts <= opts.sinceTs) {
+          // Keep boundary-equal messages — the caller dedupes them by line.
+          if (m.ts === opts.sinceTs) out.push(m);
+          return { messages: out.reverse(), capped: false };
+        }
+        out.push(m);
+        if (out.length >= cap) return { messages: out.reverse(), capped: true };
+      }
+      if (!chunk.length || !page.end || page.end === from)
+        return { messages: out.reverse(), capped: false };
+      from = page.end;
+    }
+  }
+
+  /** Joined member id → displayname (a room we have no sync state for). */
+  async joinedMembers(roomId: string): Promise<Record<string, string>> {
+    const r = (await this.get(
+      `/rooms/${encodeURIComponent(roomId)}/joined_members`,
+    )) as { joined?: Record<string, { display_name?: string | null }> };
+    const out: Record<string, string> = {};
+    for (const [id, v] of Object.entries(r.joined ?? {}))
+      out[id] = v.display_name?.trim() || "";
+    return out;
+  }
+
+  /** A user's global displayname (senders no longer in the room), or null. */
+  async profileName(userId: string): Promise<string | null> {
+    try {
+      const r = (await this.get(
+        `/profile/${encodeURIComponent(userId)}/displayname`,
+      )) as { displayname?: string | null };
+      return r.displayname?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The room's m.room.name, or null. */
+  async roomName(roomId: string): Promise<string | null> {
+    try {
+      const r = (await this.get(
+        `/rooms/${encodeURIComponent(roomId)}/state/m.room.name`,
+      )) as { name?: string };
+      return typeof r.name === "string" && r.name ? r.name : null;
+    } catch {
+      return null; // 404 = unnamed room (DMs)
+    }
+  }
+
   /** Accept a pending invite. The room's timeline shows up in the NEXT /sync. */
   async join(roomId: string): Promise<void> {
     const r = await this.fetchImpl(
@@ -131,6 +216,23 @@ export class MatrixClient {
       },
     );
     if (!r.ok) throw new Error(`matrix join ${roomId} → ${r.status}`);
+  }
+
+  /** Post a plain-text message (bridge management-room commands). */
+  async sendText(roomId: string, body: string): Promise<void> {
+    const txn = `prism${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+    const r = await this.fetchImpl(
+      this.url(`/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txn}`),
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${this.creds.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ msgtype: "m.text", body }),
+      },
+    );
+    if (!r.ok) throw new Error(`matrix send ${roomId} → ${r.status}`);
   }
 
   /** Reject a pending invite (leave). Removes it from the pending-invite list. */
@@ -161,10 +263,30 @@ interface MatrixSyncResponse {
       string,
       {
         state?: { events?: MatrixEvent[] };
-        timeline?: { events?: MatrixEvent[] };
+        timeline?: {
+          events?: MatrixEvent[];
+          limited?: boolean;
+          prev_batch?: string;
+        };
       }
     >;
     invite?: Record<string, { invite_state?: { events?: MatrixEvent[] } }>;
+  };
+}
+
+/** An m.room.message event → MatrixMessage (null for non-text / empty bodies). */
+function toMessage(e: MatrixEvent): MatrixMessage | null {
+  if (
+    e.type !== "m.room.message" ||
+    typeof e.content?.body !== "string" ||
+    !e.content.body.trim()
+  )
+    return null;
+  return {
+    sender: e.sender ?? "?",
+    body: e.content.body,
+    ts: e.origin_server_ts ?? 0,
+    eventId: e.event_id ?? "",
   };
 }
 
@@ -196,18 +318,8 @@ export function parseSync(data: MatrixSyncResponse): SyncResult {
         )
           displayNames[e.state_key] = e.content.displayname.trim();
       }
-      if (
-        e.type === "m.room.message" &&
-        typeof e.content?.body === "string" &&
-        e.content.body.trim()
-      ) {
-        messages.push({
-          sender: e.sender ?? "?",
-          body: e.content.body as string,
-          ts: e.origin_server_ts ?? 0,
-          eventId: e.event_id ?? "",
-        });
-      }
+      const m = toMessage(e);
+      if (m) messages.push(m);
     }
     rooms.push({
       roomId,
@@ -215,6 +327,9 @@ export function parseSync(data: MatrixSyncResponse): SyncResult {
       memberIds: [...memberIds],
       displayNames,
       messages,
+      ...(room.timeline?.limited
+        ? { limited: true, prevBatch: room.timeline.prev_batch }
+        : {}),
     });
   }
   const invites: SyncResult["invites"] = [];
@@ -341,7 +456,12 @@ export interface IngestResult {
  */
 export async function ingestMatrix(
   client: Pick<MatrixClient, "sync"> &
-    Partial<Pick<MatrixClient, "join" | "pendingInvites" | "joinedRooms" | "leave">>,
+    Partial<
+      Pick<
+        MatrixClient,
+        "join" | "pendingInvites" | "joinedRooms" | "leave" | "messagesBefore" | "joinedMembers" | "profileName"
+      >
+    >,
   vault: IngestVault,
   opts: {
     since?: string;
@@ -418,15 +538,54 @@ export async function ingestMatrix(
   let updated = 0;
   let processed = 0;
   let failed = 0;
+  let gapFilled = 0;
   for (const rb of rooms) {
+    // A limited timeline is only the tail: more than the filter's 30 events
+    // arrived since the cursor (a busy group, or a bridge backfilling a chat).
+    // Fetch the gap back to the previous cursor BEFORE writing, or it is lost.
+    let dedupe = false;
+    if (rb.limited && rb.prevBatch && client.messagesBefore) {
+      try {
+        const note = byRoom.get(rb.roomId);
+        // Exact `to` bound only for a room we already hold: a room joined since
+        // the last pass has its whole history (bridge backfill included) BEFORE
+        // that cursor, so it must page back to the start instead.
+        const exact = Boolean(opts.since && note);
+        const gap = await client.messagesBefore(rb.roomId, {
+          from: rb.prevBatch,
+          ...(exact
+            ? { to: opts.since }
+            : { sinceTs: note ? lastMessageAtOf(note) : 0 }),
+        });
+        if (gap.capped)
+          console.warn(
+            `[worker] matrix: gap-fill for ${rb.roomId} (${rb.name ?? "?"}) hit its cap — oldest messages of the gap skipped`,
+          );
+        const seen = new Set(rb.messages.map((m) => m.eventId));
+        const older = gap.messages.filter((m) => !seen.has(m.eventId));
+        rb.messages = [...older, ...rb.messages];
+        gapFilled += older.length;
+        // Without an exact `to` boundary the gap is timestamp-bounded, so a
+        // boundary message may already be in the note — dedupe by line.
+        dedupe = !exact;
+      } catch (e) {
+        console.warn(
+          `[worker] matrix: gap-fill for ${rb.roomId} failed (tail only): ${String(e)}`,
+        );
+      }
+    }
     if (!rb.messages.length) continue;
     if (opts.maxRooms && processed >= opts.maxRooms) break;
     processed++;
+    // An incremental sync carries member-state DELTAS only, so most senders
+    // arrive with no displayname — without this every line reads as a bare
+    // bridge id (e.g. "251731455" for a Telegram user).
+    await resolveDisplayNames(client, rb);
     messages += rb.messages.length;
     // One bad room must not abort the pass: the cursor still advances past the
     // others, and the failure is named instead of surfacing as a source-wide DOWN.
     try {
-      await ingestRoom(rb, vault, byRoom);
+      await ingestRoom(rb, vault, byRoom, { dedupe });
     } catch (e) {
       failed++;
       console.warn(
@@ -441,6 +600,10 @@ export async function ingestMatrix(
     console.warn(
       `[worker] matrix: ${failed} room(s) failed this pass (see above)`,
     );
+  if (gapFilled)
+    console.log(
+      `[worker] matrix: recovered ${gapFilled} message(s) from truncated sync timelines`,
+    );
   return {
     rooms: processed,
     messages,
@@ -452,17 +615,60 @@ export async function ingestMatrix(
   };
 }
 
+/**
+ * Fill `rb.displayNames` for every sender that lacks one: current members first
+ * (one call), then the global profile for senders who have since left.
+ * Best-effort — a failure leaves the id fallback in place.
+ */
+export async function resolveDisplayNames(
+  client: Partial<Pick<MatrixClient, "joinedMembers" | "profileName">>,
+  rb: Pick<RoomBatch, "roomId" | "messages" | "displayNames">,
+): Promise<void> {
+  const missing = () =>
+    [...new Set(rb.messages.map((m) => m.sender))].filter((id) => !rb.displayNames[id]);
+  if (!missing().length) return;
+  if (client.joinedMembers) {
+    const members = await client.joinedMembers(rb.roomId).catch(() => ({}) as Record<string, string>);
+    for (const [id, n] of Object.entries(members))
+      if (n && !rb.displayNames[id]) rb.displayNames[id] = n;
+  }
+  if (client.profileName)
+    for (const id of missing()) {
+      const n = await client.profileName(id).catch(() => null);
+      if (n) rb.displayNames[id] = n;
+    }
+}
+
 /** Short stable suffix so two rooms with the same display name get distinct paths. */
 const roomSlug = (roomId: string): string =>
   roomId.replace(/^!/, "").replace(/:.*$/, "").slice(0, 8).toLowerCase();
 
+/** A thread note's high-water mark (0 when absent — e.g. hand-made notes). */
+export function lastMessageAtOf(note: Note): number {
+  const v = note.metadata?.lastMessageAt;
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Upsert one room's batch. Returns false when nothing was written (every line
+ * was a duplicate). `dedupe` drops lines already present in the note verbatim —
+ * used by the repair paths, whose timestamp boundary can overlap what the note
+ * already holds.
+ */
 async function ingestRoom(
   rb: RoomBatch,
   vault: IngestVault,
   byRoom: Map<string, Note>,
-): Promise<void> {
+  opts: { dedupe?: boolean } = {},
+): Promise<boolean> {
   const platform = detectPlatform(rb.memberIds);
-  const lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
+  let lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
+  if (opts.dedupe) {
+    const have = new Set((byRoom.get(rb.roomId)?.content ?? "").split("\n"));
+    lines = lines.filter((l) => !have.has(l));
+  }
+  if (!lines.length) return false;
   const lastMessageAt = Math.max(...rb.messages.map((m) => m.ts));
   const participants = rb.memberIds.map(
     (id) => rb.displayNames[id] ?? shortSender(id),
@@ -489,7 +695,9 @@ async function ingestRoom(
         type: "message-thread",
         platform,
         matrixRoomId: rb.roomId,
-        lastMessageAt,
+        // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
+        // must not rewind the high-water mark the repair sweep compares against.
+        lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
         messageCount: prevCount + lines.length,
         ...(mergedParticipants.length
           ? { participants: mergedParticipants }
@@ -533,4 +741,107 @@ async function ingestRoom(
       });
     }
   }
+  return true;
+}
+
+export interface ReconcileResult {
+  scanned: number;
+  /** Joined rooms whose newest message is not in the vault. */
+  behind: number;
+  repaired: number;
+  messages: number;
+  /** Rooms still behind after this sweep (over the per-sweep repair budget). */
+  deferred: number;
+}
+
+/**
+ * The safety net under the incremental sync: for EVERY joined room, compare the
+ * newest m.room.message (as of `upTo`, the sync cursor just persisted) with the
+ * note's lastMessageAt, and fetch any gap. Anything a sync pass ever missed — a
+ * truncated timeline before gap-fill existed, a lost/reset cursor, a failed
+ * vault write, a room joined out-of-band — converges here instead of vanishing.
+ *
+ * Bounded to `upTo` so it never overlaps the next incremental pass. Most-recently
+ * active rooms are repaired first; `maxRepairs` caps writes per sweep (each one
+ * re-queues the thread for the local-model triage skill — pace it).
+ */
+export async function reconcileMatrix(
+  client: Pick<
+    MatrixClient,
+    "joinedRooms" | "messagesBefore" | "joinedMembers" | "roomName"
+  > &
+    Partial<Pick<MatrixClient, "profileName">>,
+  vault: IngestVault,
+  opts: { upTo: string; maxRepairs?: number; cap?: number; concurrency?: number },
+): Promise<ReconcileResult> {
+  const joined = await client.joinedRooms();
+  const existing = await vault.listNotes({
+    tags: ["message-thread"],
+    includeContent: true,
+  });
+  const byRoom = new Map<string, Note>();
+  for (const n of existing) {
+    const rid = n.metadata?.matrixRoomId;
+    if (typeof rid === "string") byRoom.set(rid, n);
+  }
+
+  // Probe: newest message per room (one cheap /messages call each).
+  const behind: Array<{ roomId: string; latest: number; cutoff: number }> = [];
+  const queue = [...joined];
+  const worker = async () => {
+    for (let id = queue.shift(); id; id = queue.shift()) {
+      try {
+        const { messages } = await client.messagesBefore(id, { from: opts.upTo, cap: 1 });
+        const latest = messages[0]?.ts;
+        if (latest === undefined) continue; // no messages ever — nothing to hold
+        const note = byRoom.get(id);
+        const cutoff = note ? lastMessageAtOf(note) : -1;
+        if (latest > cutoff) behind.push({ roomId: id, latest, cutoff: Math.max(cutoff, 0) });
+      } catch (e) {
+        console.warn(`[worker] matrix reconcile: probe ${id} failed: ${String(e)}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: opts.concurrency ?? 8 }, worker));
+
+  behind.sort((a, b) => b.latest - a.latest);
+  const budget = opts.maxRepairs ?? 25;
+  let repaired = 0;
+  let messages = 0;
+  for (const b of behind.slice(0, budget)) {
+    try {
+      const gap = await client.messagesBefore(b.roomId, {
+        from: opts.upTo,
+        sinceTs: b.cutoff,
+        cap: opts.cap ?? 5000,
+      });
+      if (gap.capped)
+        console.warn(`[worker] matrix reconcile: ${b.roomId} gap hit its cap — oldest skipped`);
+      if (!gap.messages.length) continue;
+      const displayNames = await client.joinedMembers(b.roomId);
+      const rb: RoomBatch = {
+        roomId: b.roomId,
+        name: byRoom.has(b.roomId) ? null : await client.roomName(b.roomId),
+        memberIds: Object.keys(displayNames),
+        displayNames: Object.fromEntries(
+          Object.entries(displayNames).filter(([, v]) => v),
+        ),
+        messages: gap.messages,
+      };
+      await resolveDisplayNames(client, rb);
+      if (await ingestRoom(rb, vault, byRoom, { dedupe: true })) {
+        repaired++;
+        messages += gap.messages.length;
+      }
+    } catch (e) {
+      console.warn(`[worker] matrix reconcile: repair ${b.roomId} failed: ${String(e)}`);
+    }
+  }
+  return {
+    scanned: joined.length,
+    behind: behind.length,
+    repaired,
+    messages,
+    deferred: Math.max(0, behind.length - budget),
+  };
 }
