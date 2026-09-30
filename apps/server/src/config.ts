@@ -189,6 +189,23 @@ export const config = {
   // inferring it from the newest email note. GMAIL_INTERVAL_MS = the desktop's 3 min.
   gmailSyncEnabled: process.env.GMAIL_SYNC_ENABLED === "true",
   gmailIntervalMs: Number(process.env.GMAIL_INTERVAL_MS ?? 180_000),
+  // Server Calendar ingest (worker/calendar.ts, Architecture v2 WP1.3) — the port
+  // of the desktop's calendar_sync. It DELETES notes, so three independent gates:
+  //   CALENDAR_SYNC_ENABLED  — OFF by default; the desktop and the server must never
+  //                            both run it (set the desktop's disable_calendar_sync=true FIRST);
+  //   CALENDAR_SHADOW        — fetch + diff + record intents, write NOTHING (wins over
+  //                            ENABLED; safe to run alongside the live desktop sync);
+  //   CALENDAR_DELETE_MODE   — log (default) | archive | delete: what a live pass does
+  //                            with notes whose event vanished from Google. Anything
+  //                            unrecognised falls back to "log".
+  // CALENDAR_INTERVAL_MS = the desktop's 5 min. CALENDAR_MAX_ORPHANS_PER_PASS is a
+  // mass-deletion brake (0 = off): above it, archive/delete apply nothing that pass.
+  calendarSyncEnabled: process.env.CALENDAR_SYNC_ENABLED === "true",
+  calendarShadow: process.env.CALENDAR_SHADOW === "true",
+  calendarDeleteMode: parseCalendarDeleteMode(process.env.CALENDAR_DELETE_MODE),
+  calendarIntervalMs: Number(process.env.CALENDAR_INTERVAL_MS ?? 300_000),
+  calendarIntentsKeep: Number(process.env.CALENDAR_INTENTS_KEEP ?? 500),
+  calendarMaxOrphansPerPass: Number(process.env.CALENDAR_MAX_ORPHANS_PER_PASS ?? 25),
   // How often the worker recompiles the governance constitution into grant rows
   // (governance-grants.ts). The route path already reconciles on every successful
   // mutation, so this is the SAFETY NET, not the mechanism: it catches a
@@ -239,6 +256,7 @@ export const config = {
     fathom: Number(process.env.WORKER_STALE_FATHOM_MS ?? 0), // superseded by Fireflies: failures only
     email: Number(process.env.WORKER_STALE_EMAIL_MS ?? 43_200_000), // 12h: inferred from the newest email note — a quiet night is not an outage
     calendar: Number(process.env.WORKER_STALE_CALENDAR_MS ?? 86_400_000), // 24h: calendar notes only change when events do
+    calendarServer: Number(process.env.WORKER_STALE_CALENDAR_SERVER_MS ?? 3_600_000), // 1h: a server pass succeeds every 5 min
     skills: Number(process.env.WORKER_STALE_SKILLS_MS ?? 21_600_000), // 6h
   },
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
@@ -365,4 +383,15 @@ export function assertConfig(): void {
   if (unique.length) {
     throw new Error(`Prism Server misconfigured — missing env: ${unique.join(", ")}`);
   }
+}
+
+export type CalendarDeleteMode = "log" | "archive" | "delete";
+
+/** CALENDAR_DELETE_MODE → a known mode. Fails SAFE: unset, empty or a typo is
+ *  "log" (nothing deleted), never "delete". */
+export function parseCalendarDeleteMode(v: string | undefined): CalendarDeleteMode {
+  const m = (v ?? "").trim().toLowerCase();
+  if (m === "archive" || m === "delete" || m === "log") return m;
+  if (m) console.warn(`[config] CALENDAR_DELETE_MODE="${v}" is not log|archive|delete — using "log"`);
+  return "log";
 }

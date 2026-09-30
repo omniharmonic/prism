@@ -10,6 +10,7 @@ import { Hono, type Context } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
 import { getSourceHealth } from "../worker/health";
+import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
 import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
@@ -941,6 +942,32 @@ async function tunnelStatus(): Promise<Record<string, unknown>> {
 acl.get("/workers", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   return c.json({ sources: await getSourceHealth(), checkedAt: new Date().toISOString() });
+});
+
+/** Server calendar ingest (WP1.3): the last persisted intents (what the server
+ *  did or WOULD do — create/update/delete/cancel/archive/…) + the last pass
+ *  summary, for comparing against the desktop during the shadow period.
+ *  `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
+ *  `?action=delete,cancel` to filter, `?verify=1` to re-read every note a
+ *  delete/cancel intent named and report what is there NOW (gone / cancelled /
+ *  archived / present) — read-only. Server-owner only. */
+acl.get("/workers/calendar/intents", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.query("vault") || "primary";
+  if (!getVaultRegistry().some((v) => v.id === vaultId)) return c.json({ error: "not_found" }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 200) || 200, 1), 5000);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let intents = readCalendarIntents(vaultId);
+  if (actions.length) intents = intents.filter((i) => actions.includes(i.action));
+  const body: Record<string, unknown> = {
+    mode: calendarMode(),
+    deleteMode: config.calendarDeleteMode,
+    lastPass: readCalendarLastPass(vaultId),
+    total: intents.length,
+    intents: intents.slice(-limit).reverse(),
+  };
+  if (c.req.query("verify") === "1") body.verify = await verifyCalendarIntents(vaultId, intents);
+  return c.json(body);
 });
 
 /** Server config + status snapshot. NEVER returns a secret/token value — only

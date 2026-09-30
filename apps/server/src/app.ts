@@ -22,6 +22,7 @@ import { governance } from "./routes/governance";
 import { agentApi } from "./routes/agent";
 import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
+import { calendar } from "./routes/calendar";
 import { mcp } from "./routes/mcp";
 import { rateLimit } from "./middleware/ratelimit";
 
@@ -138,6 +139,9 @@ export function createApp(): Hono {
   app.route("/api/agent", agentApi);
   app.route("/api/integrations", integrations);
   app.route("/api/sync", sync);
+  // On-demand Google Calendar range sync (WP1.3, replaces calendar_sync_range) —
+  // admin-only, gated by the CALENDAR_* modes; before the gateway like /api/sync.
+  app.route("/api/calendar", calendar);
   // Member self-serve MCP tokens — role-gated in-handler (member+ on the target
   // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
   // /api/mcp to the vault.

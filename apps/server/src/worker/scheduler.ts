@@ -13,8 +13,9 @@
  *     can be worth running on a server that has none. Slower cadence
  *     (INDEX_INTERVAL_MS); 0 disables it.
  *
- * Gmail (gog-backed, GMAIL_SYNC_ENABLED) runs here too when enabled; Calendar +
- * Meetily stay desktop for now (host-bound).
+ * Gmail (gog-backed, GMAIL_SYNC_ENABLED) and Calendar (gog-backed, WP1.3:
+ * CALENDAR_SYNC_ENABLED / CALENDAR_SHADOW) run here too when enabled; Meetily
+ * stays desktop for now (host-bound).
  */
 import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } from "../db";
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
@@ -25,6 +26,7 @@ import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
+import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -690,6 +692,9 @@ async function tick(): Promise<void> {
         // Reported as "email": with GMAIL_SYNC_ENABLED the server is that source's
         // owner (worker/health.ts stops inferring it from desktop notes).
         ...(config.gmailSyncEnabled ? ([["email", runGmailOnce]] as const) : []),
+        // "calendar" when the server owns it (live), "calendar-shadow" while it only
+        // diffs alongside the desktop (worker/calendar.ts). Off → not run at all.
+        ...(calendarMode() !== "off" ? ([[calendarSourceName(), runCalendarOnce]] as const) : []),
       ] as const) {
         try {
           await run(entry);

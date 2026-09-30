@@ -18,7 +18,10 @@
  *     Exception: with SKILLS_ENABLED=true "skills" is a SERVER source, reported
  *     by worker/skills.ts through `runSkillsPass` (authoritative, not inferred).
  *     Likewise with GMAIL_SYNC_ENABLED=true "email" is a SERVER source, reported
- *     by the scheduler's `runGmailOnce` (worker/gmail.ts) per run.
+ *     by the scheduler's `runGmailOnce` (worker/gmail.ts) per run. And with
+ *     CALENDAR_SYNC_ENABLED=true (not shadow) "calendar" is a SERVER source
+ *     (worker/calendar.ts); CALENDAR_SHADOW adds a separate "calendar-shadow"
+ *     server source and leaves "calendar" inferred from the desktop's notes.
  *
  * Status: disabled (not configured / no data ever) | failing (streak >=
  * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
@@ -32,6 +35,7 @@ import { getVaultRegistry, getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret, secretsConfigured } from "../secrets";
 import { vaultClient } from "../parachute";
 import { sendEmail } from "../auth/email";
+import { calendarMode, calendarSourceName } from "./calendar";
 
 export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
 export type SourceKind = "server" | "desktop";
@@ -123,7 +127,13 @@ const DESKTOP: DesktopSpec[] = [
  *  server runs skills itself (worker/skills.ts), so "skills" is reported as an
  *  authoritative SERVER source instead of being guessed from dispatch notes. */
 const desktopSpecs = (): DesktopSpec[] =>
-  DESKTOP.filter((s) => !(s.name === "skills" && config.skillsEnabled) && !(s.name === "email" && config.gmailSyncEnabled));
+  DESKTOP.filter(
+    (s) =>
+      !(s.name === "skills" && config.skillsEnabled) &&
+      !(s.name === "email" && config.gmailSyncEnabled) &&
+      // Only a LIVE server calendar owns the source; a shadow run leaves the desktop inferred.
+      !(s.name === "calendar" && calendarMode() === "live"),
+  );
 
 interface VaultNoteLike {
   path?: string | null;
@@ -237,6 +247,27 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       const staleAfterMs = config.gmailIntervalMs <= 0 ? 0 : config.workerStaleMs.email;
       out.push({
         name: entry.id === "primary" ? "email" : `email@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
+  }
+
+  if (calendarMode() !== "off") {
+    // Server calendar (WP1.3): "calendar" when live (authoritative — the desktop
+    // inference is dropped), "calendar-shadow" while shadowing the desktop.
+    const src = calendarSourceName();
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, src));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, "google");
+      const staleAfterMs = config.calendarIntervalMs <= 0 ? 0 : config.workerStaleMs.calendarServer;
+      out.push({
+        name: entry.id === "primary" ? src : `${src}@${entry.id}`,
         kind: "server",
         vaultId: entry.id,
         lastSuccessAt: iso(r?.lastSuccessAt ?? null),

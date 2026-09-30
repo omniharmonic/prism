@@ -181,6 +181,8 @@ export function vaultClient(vaultId?: string) {
       ifUpdatedAt?: string;
       /** Typed links to add/remove in the same write (add is idempotent). */
       links?: { add?: NoteLinkInput[]; remove?: NoteLinkInput[] };
+      /** Tags to add/remove in the same write (one history version, not two). */
+      tags?: { add?: string[]; remove?: string[] };
     },
   ): Promise<Note> {
     const body: Record<string, unknown> = {};
@@ -188,6 +190,7 @@ export function vaultClient(vaultId?: string) {
     if (params.path !== undefined) body.path = params.path;
     if (params.metadata !== undefined) body.metadata = params.metadata;
     if (params.links !== undefined) body.links = params.links;
+    if (params.tags !== undefined) body.tags = params.tags;
     if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
     if (body.if_updated_at === undefined) body.force = true;
     return (await req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).json() as Promise<Note>;
