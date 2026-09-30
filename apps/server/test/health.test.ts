@@ -81,8 +81,8 @@ test("desktop freshness is inferred from the newest note of each kind, never-see
   const list = async (o: { tags: string[] }) => {
     if (o.tags[0] === "email") {
       return [
-        { path: "vault/messages/email/a-1", updatedAt: iso(50) },
-        { path: "vault/messages/email/b-2", updatedAt: iso(45) }, // newest wins even if unsorted
+        { path: "vault/messages/email/a-1", updatedAt: iso(13 * 60 + 10) },
+        { path: "vault/messages/email/b-2", updatedAt: iso(13 * 60) }, // newest wins even if unsorted
       ];
     }
     if (o.tags[0] === "meeting") {
@@ -95,8 +95,8 @@ test("desktop freshness is inferred from the newest note of each kind, never-see
   };
   const h = await getSourceHealth({ now, list });
   const by = Object.fromEntries(h.map((x) => [x.name, x]));
-  assert.equal(by.email!.status, "stale"); // 45 min > 30
-  assert.equal(by.email!.lastSuccessAt, iso(45));
+  assert.equal(by.email!.status, "stale"); // 13 h > 12 h default
+  assert.equal(by.email!.lastSuccessAt, iso(13 * 60));
   assert.equal(by.email!.kind, "desktop");
   assert.equal(by.calendar!.status, "ok");
   assert.equal(by.calendar!.lastSuccessAt, iso(20));

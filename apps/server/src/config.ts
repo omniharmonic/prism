@@ -172,9 +172,9 @@ export const config = {
     clickup: Number(process.env.WORKER_STALE_CLICKUP_MS ?? 1_800_000),
     fireflies: Number(process.env.WORKER_STALE_FIREFLIES_MS ?? 108_000_000), // 30h: runs at fixed local hours
     fathom: Number(process.env.WORKER_STALE_FATHOM_MS ?? 0), // superseded by Fireflies: failures only
-    email: Number(process.env.WORKER_STALE_EMAIL_MS ?? 1_800_000),
-    calendar: Number(process.env.WORKER_STALE_CALENDAR_MS ?? 3_600_000),
-    skills: Number(process.env.WORKER_STALE_SKILLS_MS ?? 10_800_000),
+    email: Number(process.env.WORKER_STALE_EMAIL_MS ?? 43_200_000), // 12h: inferred from the newest email note — a quiet night is not an outage
+    calendar: Number(process.env.WORKER_STALE_CALENDAR_MS ?? 86_400_000), // 24h: calendar notes only change when events do
+    skills: Number(process.env.WORKER_STALE_SKILLS_MS ?? 21_600_000), // 6h
   },
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
   // new chat portal; an un-joined room never appears in /sync, so its messages
