@@ -45,7 +45,7 @@ export interface TreeEntry {
 }
 
 /** Internal row: the entry plus what the private-note rule needs (never emitted). */
-interface TreeRow extends TreeEntry {
+export interface TreeRow extends TreeEntry {
   creator: string | null;
   visibility: "workspace" | "private";
 }
@@ -96,6 +96,48 @@ interface State {
 
 const states = new Map<string, State>();
 
+// ── change emitter (WP7.2) ──────────────────────────────────────────────────
+// ONE subscribe socket per vault feeds both the projection and the `/api/events`
+// invalidation channel; listeners hang off the same State, never a second socket.
+
+/** A projection change. `prev` is the row's state BEFORE the change (absent = new),
+ *  which lets a listener decide visibility against old AND new state. */
+export type TreeChange =
+  | { kind: "upsert"; row: TreeRow; prev: TreeRow | undefined }
+  | { kind: "remove"; id: string; prev: TreeRow }
+  | { kind: "resync" };
+export type TreeListener = (c: TreeChange) => void;
+const listeners = new Map<string, Set<TreeListener>>();
+
+function notify(vaultId: string, c: TreeChange): void {
+  const set = listeners.get(vaultId);
+  if (!set) return;
+  for (const l of [...set]) {
+    try {
+      l(c);
+    } catch (e) {
+      console.warn(`[tree] listener failed: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Subscribe to a vault's projection changes (starting the projection + its single
+ * subscribe socket if needed). Resolves to an unsubscribe. Rejects if the vault can't
+ * be reached at all — the caller decides what to do (the events route returns 502).
+ */
+export async function subscribeTreeChanges(entry: VaultEntry, l: TreeListener): Promise<() => void> {
+  await ensureTree(entry);
+  let set = listeners.get(entry.id);
+  if (!set) listeners.set(entry.id, (set = new Set()));
+  set.add(l);
+  return () => {
+    const cur = listeners.get(entry.id);
+    cur?.delete(l);
+    if (cur && cur.size === 0) listeners.delete(entry.id);
+  };
+}
+
 const log = (msg: string) => {
   if (opts.log()) console.log(`[tree] ${msg}`);
 };
@@ -135,10 +177,12 @@ function emit(r: TreeRow): TreeEntry {
 function replaceRows(st: State, rows: TreeRow[], src: string, ms: number): void {
   const m = new Map<string, TreeRow>();
   for (const r of rows) m.set(r.id, r);
+  const wasLoaded = st.loaded;
   st.rows = m;
   st.version++;
   st.cache = undefined;
   st.loaded = true;
+  if (wasLoaded) notify(st.entry.id, { kind: "resync" });
   log(`vault=${st.entry.id} src=${src} rows=${m.size} build=${ms}ms`);
   const w = st.waiters.splice(0);
   for (const x of w) x.resolve();
@@ -310,6 +354,7 @@ function stopState(st: State): void {
     /* ignore */
   }
   states.delete(st.entry.id);
+  notify(st.entry.id, { kind: "resync" });
 }
 
 function getState(entry: VaultEntry): State {
@@ -388,12 +433,15 @@ function upsertRow(st: State, r: TreeRow): void {
   st.version++;
   st.cache = undefined;
   if (st.rebuilding) st.rebuildAgain = true; // a list already in flight may predate this write
+  notify(st.entry.id, { kind: "upsert", row: r, prev: old });
 }
 
 function removeRow(st: State, id: string): void {
+  const prev = st.rows.get(id);
   if (st.rows.delete(id)) {
     st.version++;
     st.cache = undefined;
+    if (prev) notify(st.entry.id, { kind: "remove", id, prev });
   }
   if (st.rebuilding) st.rebuildAgain = true;
 }
@@ -474,6 +522,7 @@ export async function treeAfterOwnerWrite(entry: VaultEntry, method: string, pat
 export function resetTreeForTests(): void {
   for (const st of [...states.values()]) stopState(st);
   states.clear();
+  listeners.clear();
   setTreeSocketFactory(null);
 }
 

@@ -7,6 +7,7 @@ import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
 import type { MatrixRoom } from "../../lib/matrix/types";
 import type { RendererProps } from "../renderers/RendererProps";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 function formatRelativeTime(ts: number): string {
   try {
@@ -34,7 +35,7 @@ export default function MessagesDashboard(_props: RendererProps) {
   const { data: rooms, isLoading, isError } = useQuery({
     queryKey: ["matrix", "rooms"],
     queryFn: matrixApi.getRooms,
-    refetchInterval: 10_000,
+    refetchInterval: useLivePollMs(10_000),
     retry: 1,
   });
 

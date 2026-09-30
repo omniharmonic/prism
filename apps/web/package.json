@@ -13,6 +13,7 @@
     "typecheck:e2e": "tsc -p tsconfig.e2e.json",
     "check:sw": "node scripts/check-sw-denylist.mjs",
     "verify:agent": "node --import tsx scripts/verify-agent-reducer.ts",
+    "verify:events": "node --import tsx scripts/verify-events.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

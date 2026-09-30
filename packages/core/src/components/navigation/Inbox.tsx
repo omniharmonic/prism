@@ -6,6 +6,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
 import type { MatrixRoom } from "../../lib/matrix/types";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 interface PlatformGroup {
   platform: string;
@@ -19,7 +20,7 @@ export function Inbox() {
   const { data: rooms, isLoading, isError } = useQuery({
     queryKey: ["matrix", "rooms"],
     queryFn: matrixApi.getRooms,
-    refetchInterval: 10_000,
+    refetchInterval: useLivePollMs(10_000),
     retry: 1,
   });
 
