@@ -1,12 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
-import { fetchMe, initCapability, postLoginTarget } from "./config";
+import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen } from "./auth/NativeSignInScreen";
 import { isNative } from "./transport";
@@ -20,6 +20,8 @@ import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
+import { webPush } from "./push/webPush";
+import { initAgentDeepLink } from "./push/deeplink";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
@@ -216,6 +218,18 @@ async function start() {
   }
 
   startOutboxSync();
+  if (!capability) {
+    initAgentDeepLink(); // push notification → /agent/:id (WP3.3); cold start is handled by agentLink above
+    // Warm start: the app is already open when a notification is tapped — the SW
+    // posts the id, deeplink.ts re-dispatches it; switch the chat to it and open the tab.
+    window.addEventListener("prism:open-agent-session", (e) => {
+      const id = (e as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!id) return;
+      openAgentChat({ sessionId: id });
+    });
+  }
+  // Web Push (WP3.3) is a PWA + server-owner feature; native (APNs) comes with WP5.3.
+  const pushClient = !capability && !isNative && isOwner() ? webPush : null;
   root.render(
     <React.StrictMode>
       <PlatformProvider value="web">
@@ -223,6 +237,7 @@ async function start() {
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
+                <PushProvider value={pushClient}>
                 {/* Server agent sessions (WP3.2). Owner-only server-side; the UI
                     probes and hides itself on 403. None for capability viewers. */}
                 <AgentClientProvider client={capability ? null : httpAgentClient}>
@@ -230,6 +245,7 @@ async function start() {
                 </AgentClientProvider>
                 <OfflineIndicator />
                 {!isNative && <UpdatePrompt />}
+                </PushProvider>
               </CollabDocumentProvider>
             </AccountProvider>
           </CollabSharingProvider>

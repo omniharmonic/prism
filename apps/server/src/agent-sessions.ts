@@ -26,6 +26,7 @@
  * holding prompts, final replies, tool NAMES and touched note ids — never raw
  * tool results.
  */
+import { notifyTurnEnd } from "./push";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -614,6 +615,7 @@ export async function startTurn(
     q.turnEnd.run(status, info.code, error, turnCost, deps.now(), turnId);
     if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
     record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
+    notifyTurnEnd(sessionId, turnId, status); // WP3.3 push seam — fire-and-forget, ids only
     if (deps.transcriptMirror) {
       void mirrorTranscript(sessionId).catch((e) => console.error(`[agent] transcript mirror failed: ${(e as Error).message}`));
     }
@@ -723,6 +725,7 @@ export function bootSweepAgentSessions(): { interrupted: number } {
     const s = getSession(t.session_id);
     if (s && s.status === "running") q.setSessionStatus.run("idle", deps.now(), s.id);
     record(t.session_id, t.id, { t: "status", status: "interrupted", reason: "server restarted during the turn" });
+    notifyTurnEnd(t.session_id, t.id, "interrupted");
   }
   // A session left `running` with no active turn (crash between writes).
   db.prepare(
