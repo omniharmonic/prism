@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History } from "lucide-react";
+  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -9,6 +9,8 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { useDebounce } from "use-debounce";
 import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
 import { invoke } from "@tauri-apps/api/core";
+import { useAgentAvailable } from "../../data/AgentClientContext";
+import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
 
 interface Command {
   id: string;
@@ -26,6 +28,7 @@ export function CommandBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
+  const agentChat = useAgentAvailable();
 
   const { data: searchResults } = useVaultSearch(debouncedQuery);
 
@@ -61,6 +64,7 @@ export function CommandBar() {
 
   const { toggleContextPanel, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
+  const activeIsNote = isAskableNoteId(activeTab?.noteId);
 
   const commands: Command[] = useMemo(() => [
     // Create commands
@@ -82,6 +86,22 @@ export function CommandBar() {
       icon: <Bot size={15} />,
       action: () => { setContextPanelTab("agent"); toggleContextPanel(); closeCommandBar(); },
     },
+    // Server agent sessions (WP3.2) — owner + AgentClient shells only.
+    ...(agentChat ? [
+      {
+        id: "agent-chat", label: "Agent Chat", category: "agent" as const,
+        icon: <Sparkles size={15} />,
+        action: () => { openAgentChat(); closeCommandBar(); },
+      },
+      ...(activeIsNote && activeTab ? [{
+        id: "agent-ask-note", label: "Ask About This Note", category: "agent" as const,
+        icon: <Sparkles size={15} />,
+        action: () => {
+          openAgentChat({ ask: { noteId: activeTab.noteId, noteTitle: activeTab.title } });
+          closeCommandBar();
+        },
+      }] : []),
+    ] : []),
     ...(activeTab && !activeTab.noteId.includes(":") ? [
       {
         id: "version-history", label: "Version History", category: "navigate" as const,
@@ -163,7 +183,7 @@ export function CommandBar() {
         closeCommandBar();
       },
     },
-  ], [createCommand, activeTab, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab]);
+  ], [createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {
@@ -190,7 +210,7 @@ export function CommandBar() {
   }, [searchResults, openTab, closeCommandBar]);
 
   // Total items for keyboard navigation
-  const totalItems = filteredCommands.length + vaultItems.length + (query.trim() ? 1 : 0); // +1 for "Ask Claude"
+  const totalItems = filteredCommands.length + vaultItems.length + (query.trim() && agentChat ? 1 : 0); // +1 for "Ask Claude"
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -217,7 +237,15 @@ export function CommandBar() {
     } else if (selectedIndex < filteredCommands.length + vaultItems.length) {
       vaultItems[selectedIndex - filteredCommands.length].action();
     }
-    // else: Ask Claude — future
+    else askClaude();
+  };
+
+  // "Ask Claude: …" → a new server agent session with that prompt (web owner).
+  const askClaude = () => {
+    const q = query.trim();
+    if (!q || !agentChat) return;
+    openAgentChat({ ask: { prompt: q } });
+    closeCommandBar();
   };
 
   if (!commandBarOpen) return null;
@@ -288,9 +316,10 @@ export function CommandBar() {
         </div>
       )}
 
-      {query.trim() && (
+      {query.trim() && agentChat && (
         <CmdRow
           selected={selectedIndex === askIdx}
+          onClick={askClaude}
           onHover={() => setSelectedIndex(askIdx)}
           icon={<Bot size={15} />}
           label={`Ask Claude: "${query}"`}

@@ -13,6 +13,7 @@ import {
   X,
   FilePlus,
   History,
+  Sparkles,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore } from "../../app/stores/settings";
@@ -20,6 +21,8 @@ import { BottomSheet, type SheetItem } from "../ui/BottomSheet";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { Settings } from "./Settings";
 import { FontSwitch } from "../renderers/DocumentChrome";
+import { useAgentAvailable } from "../../data/AgentClientContext";
+import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
 
 /**
  * The floating glass command pill — the mobile signature. One frosted row of the
@@ -50,6 +53,8 @@ export function MobileActionBar() {
   const [tabsOpen, setTabsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Server agent sessions (WP3.2): full-screen chat instead of the side panel.
+  const agentChat = useAgentAvailable();
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
@@ -67,11 +72,36 @@ export function MobileActionBar() {
       label: "Details & metadata",
       onClick: () => openPanel("metadata"),
     },
-    {
-      icon: <Bot size={19} />,
-      label: "Ask the agent",
-      onClick: () => openPanel("agent"),
-    },
+    ...(agentChat
+      ? [
+          ...(isAskableNoteId(activeTab?.noteId)
+            ? [
+                {
+                  icon: <Sparkles size={19} />,
+                  label: "Ask about this note",
+                  onClick: () => {
+                    setMoreOpen(false);
+                    openAgentChat({ ask: { noteId: activeTab!.noteId, noteTitle: activeTab!.title } });
+                  },
+                } as SheetItem,
+              ]
+            : []),
+          {
+            icon: <Bot size={19} />,
+            label: "Agent chat",
+            onClick: () => {
+              setMoreOpen(false);
+              openAgentChat();
+            },
+          } as SheetItem,
+        ]
+      : [
+          {
+            icon: <Bot size={19} />,
+            label: "Ask the agent",
+            onClick: () => openPanel("agent"),
+          } as SheetItem,
+        ]),
     ...(isRealNote
       ? [
           {

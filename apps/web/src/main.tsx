@@ -1,8 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings, GovernancePanel, type InitialTab } from "@prism/core";
+import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
+import { httpAgentClient } from "./agent/HttpAgentClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, postLoginTarget } from "./config";
@@ -165,8 +166,16 @@ async function start() {
   // integrated replacement for the old standalone /bioregion panel: the map is a
   // lens over the vault, sharing the same tabs/search/renderers as everything else.
   const path = window.location.pathname;
+  // /agent[/<sessionId>] opens the Agent chat (WP3.2; the push deep link of WP3.3).
+  // A client route: the SW denylist stays /api/* + /auth/*.
+  const agentLink = path.match(/^\/agent(?:\/([0-9a-f-]{36}))?\/?$/i);
+  if (agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
   const initialTab: InitialTab | undefined =
-    path === "/map" || path === "/bioregion" ? { id: "map", title: "Map", type: "map" } : undefined;
+    path === "/map" || path === "/bioregion"
+      ? { id: "map", title: "Map", type: "map" }
+      : agentLink
+        ? { id: AGENT_CHAT_TAB, title: "Agent chat", type: AGENT_CHAT_TAB }
+        : undefined;
 
   // The owner setup wizard is Tauri-only (its steps call `invoke()`), so the web
   // shell skips it by DEFAULT for everyone — a capability viewer, an invited
@@ -214,7 +223,11 @@ async function start() {
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
-                <App skipOnboarding={isViewer} initialTab={initialTab} />
+                {/* Server agent sessions (WP3.2). Owner-only server-side; the UI
+                    probes and hides itself on 403. None for capability viewers. */}
+                <AgentClientProvider client={capability ? null : httpAgentClient}>
+                  <App skipOnboarding={isViewer} initialTab={initialTab} />
+                </AgentClientProvider>
                 <OfflineIndicator />
                 {!isNative && <UpdatePrompt />}
               </CollabDocumentProvider>

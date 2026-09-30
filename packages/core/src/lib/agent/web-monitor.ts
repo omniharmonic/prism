@@ -36,11 +36,14 @@ export async function webGetSkills(vault: VaultClient): Promise<AgentSkill[]> {
 }
 
 /** Past + in-flight dispatch runs. `note_id` is the run's report note (its
- *  content is the full output — opened on demand rather than inlined). */
-export async function webGetDispatches(vault: VaultClient): Promise<AgentDispatch[]> {
+ *  content is the full output — opened on demand rather than inlined).
+ *  `excludeSessions` drops the transcript notes of server agent sessions
+ *  (tagged `agent-session` + `agent-dispatch`) when the UI lists sessions live. */
+export async function webGetDispatches(vault: VaultClient, opts: { excludeSessions?: boolean } = {}): Promise<AgentDispatch[]> {
   const notes = await vault.listNotes({ tag: "agent-dispatch", limit: 100 });
   const STATUSES = ["running", "completed", "failed", "cancelled"] as const;
   return notes
+    .filter((n) => !(opts.excludeSessions && n.tags?.includes("agent-session")))
     .map((n): AgentDispatch => {
       const m = (n.metadata ?? {}) as Meta;
       const raw = String(m.status ?? "completed");

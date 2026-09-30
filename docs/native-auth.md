@@ -217,8 +217,9 @@ comments, reconnects with jittered exponential backoff (honoring server `retry:`
 resumes with `Last-Event-ID`, treats 4xx (except 408/425/429) as fatal, and stops on
 `onEvent` returning `"stop"` or on abort. In the web app use
 `streamServerSSE("/api/agent/…", opts)` from `transport.ts` to get origin + bearer. It
-works in both modes. (Nothing used `EventSource` before; the agent chat in WP3.2
-is the first consumer.)
+works in both modes. The agent chat (WP3.2, `apps/web/src/agent/HttpAgentClient.ts`)
+is the first consumer: it streams `/api/agent/sessions/:id/stream?after=N` this way
+(see CLAUDE.md "Agent client seam + chat UI").
 
 ### Collab token
 

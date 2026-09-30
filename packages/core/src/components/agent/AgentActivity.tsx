@@ -9,6 +9,9 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
 import { webGetSkills, webGetDispatches } from "../../lib/agent/web-monitor";
 import type { RendererProps } from "../renderers/RendererProps";
+import { useAgentClient, useAgentAvailable, agentKeys } from "../../data/AgentClientContext";
+import { openAgentChat } from "../../lib/agent/chatStore";
+import type { AgentSessionSummary } from "../../lib/agent/sessions";
 
 function formatDuration(secs: number | null): string {
   if (!secs) return "";
@@ -61,6 +64,15 @@ export default function AgentActivity(_props: RendererProps) {
   const [showSkillConfig, setShowSkillConfig] = useState(false);
   const [showSkillBuilder, setShowSkillBuilder] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
+  // Server agent sessions (WP3.2): the owner's durable chats, listed live.
+  const agentClient = useAgentClient();
+  const agentChat = useAgentAvailable();
+  const { data: sessions } = useQuery({
+    queryKey: agentKeys(agentClient).list(false),
+    queryFn: () => agentClient!.listSessions({ limit: 50 }),
+    enabled: agentChat,
+    refetchInterval: 20_000,
+  });
 
   useEffect(() => {
     if (isWeb) return; // Ollama is a host process — desktop only.
@@ -79,8 +91,8 @@ export default function AgentActivity(_props: RendererProps) {
   });
 
   const { data: dispatches, isLoading } = useQuery({
-    queryKey: ["agent", "dispatches", isWeb ? "web" : "desktop"],
-    queryFn: () => (isWeb ? webGetDispatches(vaultClient) : agentApi.getDispatches()),
+    queryKey: ["agent", "dispatches", isWeb ? "web" : "desktop", agentChat],
+    queryFn: () => (isWeb ? webGetDispatches(vaultClient, { excludeSessions: agentChat }) : agentApi.getDispatches()),
     refetchInterval: isWeb ? 20_000 : 5_000,
   });
 
@@ -136,6 +148,9 @@ export default function AgentActivity(_props: RendererProps) {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-4 space-y-6">
+        {/* Server agent sessions (owner, web) */}
+        {agentChat && <SessionsSection sessions={sessions ?? []} />}
+
         {/* Skills */}
         <div>
           <div className="flex items-center justify-between mb-2">
@@ -209,7 +224,31 @@ export default function AgentActivity(_props: RendererProps) {
         {/* Custom dispatch — running on demand spawns claude -p on the host (desktop only). */}
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>Custom Task</h3>
-          {isWeb ? (
+          {isWeb && agentChat ? (
+            <div className="flex items-end gap-2">
+              <textarea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="Ask the agent on your Prism server…"
+                rows={2}
+                className="flex-1 rounded-lg px-3 py-2 outline-none resize-none"
+                style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontSize: 16 }}
+              />
+              <button
+                onClick={() => {
+                  if (!customPrompt.trim()) return;
+                  openAgentChat({ ask: { prompt: customPrompt.trim() } });
+                  setCustomPrompt("");
+                }}
+                disabled={!customPrompt.trim()}
+                className="p-2 rounded-lg transition-colors disabled:opacity-30"
+                style={{ background: "var(--color-accent)", color: "white" }}
+                title="Start an agent chat"
+              >
+                <Send size={14} />
+              </button>
+            </div>
+          ) : isWeb ? (
             <DesktopOnlyNotice
               feature="Running the agent on demand"
               detail="Triggering a run spawns Claude on the machine hosting your vault. Use the Prism desktop app to run skills or custom tasks; here you can review every past run."
@@ -252,7 +291,7 @@ export default function AgentActivity(_props: RendererProps) {
         )}
 
         {/* Empty state */}
-        {!dispatches?.length && (
+        {!dispatches?.length && !(agentChat && sessions?.length) && (
           <div className="text-center py-8">
             <Bot size={32} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
@@ -261,6 +300,65 @@ export default function AgentActivity(_props: RendererProps) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SessionsSection({ sessions }: { sessions: AgentSessionSummary[] }) {
+  const [open, setOpen] = useState(true);
+  const running = sessions.filter((s) => s.lastTurnStatus === "queued" || s.lastTurnStatus === "running").length;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <button onClick={() => setOpen(!open)} className="flex items-center gap-2 hover:opacity-80" style={{ color: "var(--text-secondary)" }}>
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <span className="text-xs font-semibold uppercase tracking-wider">
+            Chat sessions ({sessions.length}){running ? ` · ${running} running` : ""}
+          </span>
+        </button>
+        <button
+          onClick={() => openAgentChat({ sessionId: null, ask: {} })}
+          className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+          title="New agent chat"
+        >
+          <PlusCircle size={12} style={{ color: "var(--color-accent)" }} />
+        </button>
+      </div>
+      {open && (
+        <div className="space-y-1.5">
+          {sessions.length === 0 && (
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>No chat sessions yet.</div>
+          )}
+          {sessions.slice(0, 12).map((s) => {
+            const live = s.lastTurnStatus === "queued" || s.lastTurnStatus === "running";
+            const color = live
+              ? "var(--color-accent)"
+              : s.lastTurnStatus === "error"
+                ? "var(--color-danger)"
+                : s.lastTurnStatus === "done"
+                  ? "var(--color-success)"
+                  : "var(--text-muted)";
+            return (
+              <button
+                key={s.id}
+                onClick={() => openAgentChat({ sessionId: s.id })}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left hover:bg-[var(--glass-hover)] transition-colors"
+                style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
+                data-testid="activity-session-row"
+              >
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${live ? "animate-pulse" : ""}`} style={{ background: color }} />
+                <span className="text-xs font-medium flex-1 truncate" style={{ color: "var(--text-primary)" }}>
+                  {s.title || "Untitled session"}
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+                  {live ? (s.lastTurnStatus === "queued" ? "queued" : "running") : s.lastTurnAt ? formatTime(new Date(s.lastTurnAt).toISOString()) : ""}
+                  {s.turnCount ? ` · ${s.turnCount} turn${s.turnCount === 1 ? "" : "s"}` : ""}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
