@@ -166,7 +166,16 @@ Format for each package:
   restart pm2 → watch one full cycle of `message-classify` and `clickup-task-triage`. Roll back in reverse. Never run
   both schedulers.
 
-**WP1.2 Server Gmail ingest** · A · WP1.1 · Sonnet (Opus review)
+**WP1.2 Server Gmail ingest** · A · WP1.1 · Sonnet (Opus review) — **MERGED 2026-09-30, Gmail left OFF.**
+- **Live finding: Gmail is not the email pipeline.**
+  - The Google account has no Gmail service (`400 failedPrecondition`).
+  - The desktop Gmail sync has produced nothing since 2026-07-13; now disabled with `disable_email_sync=true`.
+  - All current email (2.2k notes, `metadata.source: proton-bridge`) comes from `omniharmonic_agent/scripts/proton_mail.py`, a 5-min launchd job reading the local Proton Bridge over IMAP.
+- **The load and the 409 storm come from that script, not Prism:**
+  - every run refreshes read/unread flags for about 500 recent messages with one `GET /notes/<path>` each;
+  - its get-by-path → create fallback 409s on existing paths.
+- **Kept from WP1.2:** the index-based `people.ts` linker, `if_exists`/`links` in the vault client, Matrix people-linking (flag off). The Gmail worker is dormant.
+- **Next (proposed WP1.2b):** port Proton IMAP ingest into the Prism server, reusing `people.ts` and a single list-query flag refresh, and retire `proton_mail.py`. Until then, fix the flag refresh in the agent repo.
 - **Build**:
   - `worker/gmail.ts` via the co-located `gog` CLI (like `worker/googledocs.ts`);
   - **identical** note paths and dedupe keys (`vault/messages/email/<slug>-<threadId>`, `metadata.threadId`);
