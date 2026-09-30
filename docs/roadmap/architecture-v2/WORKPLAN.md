@@ -384,6 +384,11 @@ Format for each package:
   and other MCP clients; revoke existing whole-vault member tokens (with notice); docs.
 - **Accept** — no active whole-vault member tokens; a member agent sees exactly their Prism-visible notes.
 
+**WP0.1b Admission metric fix (found live 2026-09-30)** · C · — · Sonnet
+- **Problem:** the memory guard's `swap > 80%` test mis-fires on macOS, which grows swap on demand. On the first server triage run, swap sat at 81–95% while `memory_pressure` reported 27% free, and classification stopped after 1 of 243 notes.
+- **Stopgap:** production runs with `AGENT_SWAP_MAX_PCT=97`.
+- **Fix:** on darwin, gate on `memory_pressure` free% (primary) plus an **absolute** swap-free floor (e.g. `AGENT_SWAP_MIN_FREE_MB=512`); keep the percentage test on Linux. Apply it to both the agent runner and the skills LM Studio admission.
+
 ### Phase 7 — Node protection (lane F, after M0)
 
 **WP7.1 Tree projection** · F · WP0.6 · Sonnet
