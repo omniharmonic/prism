@@ -1,6 +1,15 @@
 # Parachute upgrade plan — hub 0.7.1 → 0.7.19, vault 0.6.1 → 0.7.9
 
-Status: **researched + rehearsed; Prism compatibility + history UX built (branch `claude/parachute-0.7.9-upgrade`).** 2026-09-30. Decision: history ENABLED on every vault (incl. `default`) — made safe by Matrix thread rollover + nightly compaction.
+Status: **EXECUTED 2026-09-30** — hub 0.7.19 + vault 0.7.9 live, history enabled on every vault.
+- Phase 1 (Prism deploy on the old stack): rollover sweep trimmed the two >1 MB Matrix threads into 4 archives, verified
+  line-for-line lossless against the pre-deploy backup.
+- Phase 2 (hub): 2 s to healthy; schema 13→24; JWKS unchanged; existing tokens valid; `parachute doctor` 11/11.
+- Registry tokens: `front-range-commons` (expired 09-26) and `spiritofthefrontrange` re-minted for 1 year and validated
+  before swap; diagnostic tokens revoked.
+- Phase 3 (vault): **3 s** of vault downtime; all 9 vaults schema 22→32 with identical note counts; vault `doctor`
+  0 errors / 0 warnings; Matrix ingest appending with history on; public wikis serving.
+- Backups: `~/parachute-backups/*-{pre-upgrade-baseline,pre-prism-deploy,pre-hub,pre-vault}` (all integrity-checked).
+  Rollback = restore `pre-vault` db files — never run 0.6.1 on the migrated dbs.
 Evidence: `research/` (vault, hub, ecosystem, Prism footprint, sandbox rehearsal) — kept local-only (gitignored), since it quotes private vault contents. Baseline backup:
 `~/parachute-backups/20260930T195002Z-pre-upgrade-baseline` (823 MB, every db `integrity_check=ok`).
 
