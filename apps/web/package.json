@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc -p tsconfig.e2e.json",
     "check:sw": "node scripts/check-sw-denylist.mjs",
+    "verify:agent": "node --import tsx scripts/verify-agent-reducer.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

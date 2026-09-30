@@ -181,13 +181,21 @@ const ownedSession = (c: Context): SessionRow | null => {
   return getOwnedSession(c.req.param("id") ?? "", actor.vaultId, actor.email);
 };
 
-/** Session + its turns (each with the final reply text + tool/touched summary). */
+/** Session + its turns (each with the final reply text + tool/touched summary).
+ *  `firstSeq`/`lastSeq` (per turn, null when it has no persisted events) and the
+ *  session-wide `lastSeq` let a reconnecting client resume the stream exactly:
+ *  it replays the in-flight turn from `firstSeq - 1` and everything else from
+ *  `lastSeq` (WP3.2). */
 function sessionDetail(s: SessionRow) {
+  let lastSeq = 0;
   const turns = listTurns(s.id).map((t) => {
     const evs = turnEvents(t.id);
-    return { ...t, finalText: finalText(evs), ...turnActivity(evs) };
+    const firstSeq = evs.length ? evs[0]!.seq : null;
+    const turnLast = evs.length ? evs[evs.length - 1]!.seq : null;
+    if (turnLast != null && turnLast > lastSeq) lastSeq = turnLast;
+    return { ...t, finalText: finalText(evs), ...turnActivity(evs), firstSeq, lastSeq: turnLast };
   });
-  return { session: s, turns };
+  return { session: s, turns, lastSeq };
 }
 
 type SessionBody = { title?: unknown; noteId?: unknown; profile?: unknown };

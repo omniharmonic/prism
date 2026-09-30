@@ -111,3 +111,22 @@ export { initializeSettings } from "./app/stores/settings";
 // Transport seams (WP2.2): how shared UI reaches the Prism Server in any shell.
 export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/serverFetch";
 export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./lib/transport/sse";
+
+// Agent client seam (Arch v2 WP3.2): durable server-side agent sessions.
+export { AgentClientProvider, useAgentClient, useAgentAvailable, useAgentAvailability, agentKeys, type AgentAvailability } from "./data/AgentClientContext";
+export { createHttpAgentClient, type HttpAgentClientOptions, type AgentFetch } from "./lib/agent/httpAgentClient";
+export { AgentApiError, isTerminalTurn } from "./lib/agent/sessions";
+export type {
+  AgentClient,
+  AgentSession,
+  AgentSessionSummary,
+  AgentSessionDetail,
+  AgentTurn,
+  AgentEvent,
+  AgentStreamMessage,
+  AgentStreamHandlers,
+  AgentProfile,
+  AgentTurnStatus,
+  CreateSessionParams,
+} from "./lib/agent/sessions";
+export { openAgentChat, useAgentChatStore, AGENT_CHAT_TAB } from "./lib/agent/chatStore";

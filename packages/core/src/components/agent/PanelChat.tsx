@@ -1,9 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 import { Send, Loader2, Bot, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAgentClient, useAgentAvailable } from "../../data/AgentClientContext";
+
+// Server agent sessions (WP3.2), loaded only where they apply.
+const AgentPanelChat = lazy(() => import("./AgentChat").then((m) => ({ default: m.AgentPanelChat })));
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -11,7 +15,22 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+/** Context-panel chat. Shells with an AgentClient (web/PWA owner) get durable
+ *  server sessions; the desktop keeps its Tauri `agent_chat` path. */
 export function PanelChat() {
+  const client = useAgentClient();
+  const available = useAgentAvailable();
+  if (client && available) {
+    return (
+      <Suspense fallback={null}>
+        <AgentPanelChat client={client} />
+      </Suspense>
+    );
+  }
+  return <TauriPanelChat />;
+}
+
+function TauriPanelChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);

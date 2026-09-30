@@ -267,9 +267,14 @@ test("create → turn → normalized events persisted with a monotonic seq; delt
 
   const detail = (await (await agentApi.request(`/sessions/${sid}`, { headers: owner() })).json()) as {
     session: { id: string };
-    turns: Array<{ finalText: string; tools: string[]; touched: Array<{ noteId: string }> }>;
+    turns: Array<{ finalText: string; tools: string[]; touched: Array<{ noteId: string }>; firstSeq: number | null; lastSeq: number | null }>;
+    lastSeq: number;
   };
   assert.equal(detail.session.id, sid);
+  // Resume points for a reconnecting client (WP3.2).
+  assert.equal(detail.turns[0]!.firstSeq, 1);
+  assert.equal(detail.turns[0]!.lastSeq, evs.length);
+  assert.equal(detail.lastSeq, evs.length);
   assert.match(detail.turns[0]!.finalText, /created `demo\/pears`/);
   assert.deepEqual(detail.turns[0]!.tools, ["query-notes", "create-note"]);
   assert.deepEqual(detail.turns[0]!.touched, [{ noteId: "n-1", op: "create" }]);
