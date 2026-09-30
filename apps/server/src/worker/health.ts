@@ -15,6 +15,8 @@
  *     (`limit` small, `order_by=updated_at`), cached for WORKER_DESKTOP_PROBE_MS.
  *     Caveat: this measures "newest note", so a genuinely quiet inbox reads as
  *     stale; thresholds are therefore tunable / disableable per source.
+ *     Exception: with SKILLS_ENABLED=true "skills" is a SERVER source, reported
+ *     by worker/skills.ts through `runSkillsPass` (authoritative, not inferred).
  *
  * Status: disabled (not configured / no data ever) | failing (streak >=
  * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
@@ -115,6 +117,10 @@ const DESKTOP: DesktopSpec[] = [
   { name: "calendar", tag: "meeting", pathPrefix: "vault/meetings/", accept: (n) => !!n.metadata?.calendarEventId },
   { name: "skills", tag: "agent-dispatch" },
 ];
+/** Desktop sources still inferred from the vault. With SKILLS_ENABLED=true the
+ *  server runs skills itself (worker/skills.ts), so "skills" is reported as an
+ *  authoritative SERVER source instead of being guessed from dispatch notes. */
+const desktopSpecs = (): DesktopSpec[] => (config.skillsEnabled ? DESKTOP.filter((s) => s.name !== "skills") : DESKTOP);
 
 interface VaultNoteLike {
   path?: string | null;
@@ -150,7 +156,7 @@ async function newestNoteAt(spec: DesktopSpec, list: Lister): Promise<number | n
 async function probeDesktop(list: Lister, now: number): Promise<void> {
   const prev = desktopCache?.byName;
   const byName = new Map<string, DesktopProbe>();
-  for (const spec of DESKTOP) {
+  for (const spec of desktopSpecs()) {
     const before = prev?.get(spec.name);
     try {
       byName.set(spec.name, { newestAt: await newestNoteAt(spec, list), error: null, streak: 0 });
@@ -220,8 +226,23 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
     });
   }
 
+  if (config.skillsEnabled) {
+    const r = records.get(key("primary", "skills"));
+    const staleAfterMs = config.workerStaleMs.skills;
+    out.push({
+      name: "skills",
+      kind: "server",
+      vaultId: "primary",
+      lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+      lastError: r?.lastError ?? null,
+      failureStreak: r?.streak ?? 0,
+      staleAfterMs,
+      status: computeStatus({ configured: true, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+    });
+  }
+
   await ensureDesktop(opts.list, now);
-  for (const spec of DESKTOP) {
+  for (const spec of desktopSpecs()) {
     const p = desktopCache?.byName.get(spec.name);
     const staleAfterMs = config.workerStaleMs[spec.name];
     const newest = p?.newestAt ?? null;

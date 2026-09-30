@@ -32,6 +32,7 @@ import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
+import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -670,9 +671,45 @@ async function tick(): Promise<void> {
     }
   }
 
+  // Background agent skills (WP1.1). Fire-and-forget with an in-flight guard: a
+  // structured classify pass can run for many minutes on the local model and must
+  // never hold up the ingest tick. SKILLS_ENABLED=false → nothing runs or writes.
+  if (config.skillsEnabled && !skillsInFlight) {
+    skillsInFlight = true;
+    void runSkillsPass().finally(() => {
+      skillsInFlight = false;
+    });
+  }
+
   // Staleness alerts last, so this tick's outcomes are already recorded. Never
   // throws; desktop freshness is cached (WORKER_DESKTOP_PROBE_MS).
   await runHealthCheckOnce();
+}
+
+let skillsInFlight = false;
+
+/**
+ * One skills pass with health reporting (source "skills", kind server). A pass
+ * that could not list skills, or a run that FAILED, is an error; a finished run,
+ * an accepted claude dispatch, or an idle pass (nothing due) is a success; a pass
+ * whose only due skills were refused admission records NOTHING — so memory
+ * pressure that persists past WORKER_STALE_SKILLS_MS surfaces as "stale" instead
+ * of a failure storm.
+ */
+export async function runSkillsPass(deps: SkillsDeps = defaultSkillsDeps()): Promise<PassResult | null> {
+  try {
+    const res = await runSkillsOnce(deps, (r) =>
+      recordSourceOutcome("primary", "skills", r.status === "failed" ? new Error(r.error ?? "skill run failed") : null),
+    );
+    if (res.finished.length === 0 && (res.refused.length === 0 || res.dispatched.length > 0)) {
+      recordSourceOutcome("primary", "skills", null);
+    }
+    return res;
+  } catch (e) {
+    console.warn("[worker] skills pass failed:", (e as Error).message);
+    recordSourceOutcome("primary", "skills", e as Error);
+    return null;
+  }
 }
 
 /** A note's content, fetched on its own. The backfill used to pull every note's
@@ -696,7 +733,7 @@ export const historyCompactEnabled = (): boolean => config.historyCompactInterva
  *  POST /acl/mirrors re-invokes this, so creating the first mirror on a
  *  secrets-less server starts the loop without a restart. */
 export function startWorker(intervalMs = 60_000): void {
-  if (timer || (!secretsConfigured() && listVaultMirrors().length === 0 && !indexSweepEnabled())) return;
+  if (timer || (!secretsConfigured() && listVaultMirrors().length === 0 && !indexSweepEnabled() && !config.skillsEnabled)) return;
   timer = setInterval(() => void tick(), intervalMs);
   timer.unref();
   void tick(); // an immediate first pass on boot

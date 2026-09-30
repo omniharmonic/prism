@@ -298,6 +298,13 @@ async fn check_and_dispatch(
             continue;
         }
 
+        // Runner lease (Architecture v2 WP1.1): a skill the Prism Server has taken
+        // over carries `runner: "server"` — never run it here too. (The cutover
+        // still sets `disable_skill_scheduler=true`; this is the belt to that brace.)
+        if meta.get("runner").and_then(|v| v.as_str()) == Some("server") {
+            continue;
+        }
+
         let interval_secs = meta.get("intervalSecs").and_then(|v| v.as_u64()).unwrap_or(3600);
         let run_at_hour = meta.get("runAtHour").and_then(|v| v.as_u64());
         let last_run = meta.get("lastRun").and_then(|v| v.as_str())

@@ -164,6 +164,24 @@ export const config = {
   // skills) are inferred from the newest vault note of each kind, cached for
   // WORKER_DESKTOP_PROBE_MS. One email + vault `alert` note per episode; set
   // WORKER_ALERTS_ENABLED=false for status-only (tests do).
+  // Server skill scheduler (worker/skills.ts, Architecture v2 WP1.1). Runs the
+  // vault's `agent-skill` notes on the worker tick — the port of the desktop's
+  // skill_scheduler. OFF by default: the desktop and the server must never both
+  // run skills (set the desktop's `disable_skill_scheduler=true` FIRST). While on,
+  // the server stamps `metadata.runner: "server"` on every enabled skill note it
+  // takes over (the lease; the desktop skips those). Routing mirrors the desktop's
+  // `effective_routing`: the skill note's `provider`/`model` override these
+  // defaults; provider `local`/`ollama` + a model → LM Studio, else the WP0.1
+  // claude runner. SKILLS_LOAD_FREE_MIN_PCT is the lms-guard threshold: a model
+  // that is NOT already loaded is never JIT-loaded below this free-memory %.
+  skillsEnabled: process.env.SKILLS_ENABLED === "true",
+  skillsDefaultProvider: process.env.SKILLS_DEFAULT_PROVIDER ?? "claude",
+  skillsLocalBaseUrl: (process.env.SKILLS_LOCAL_BASE_URL ?? "http://127.0.0.1:1234/v1").replace(/\/+$/, ""),
+  skillsLocalModel: process.env.SKILLS_LOCAL_MODEL ?? "",
+  skillsLoadFreeMinPct: Number(process.env.SKILLS_LOAD_FREE_MIN_PCT ?? 35),
+  skillsSwapMaxPct: Number(process.env.AGENT_SWAP_MAX_PCT ?? 80),
+  skillsFreeMinPct: Number(process.env.AGENT_FREE_MIN_PCT ?? 15),
+  skillsLocalRunTimeoutMs: Number(process.env.SKILLS_LOCAL_RUN_TIMEOUT_MS ?? 1_500_000),
   workerAlertsEnabled: (process.env.WORKER_ALERTS_ENABLED ?? "true") !== "false",
   workerFailStreak: Number(process.env.WORKER_FAIL_STREAK ?? 3),
   workerDesktopProbeMs: Number(process.env.WORKER_DESKTOP_PROBE_MS ?? 180_000),
