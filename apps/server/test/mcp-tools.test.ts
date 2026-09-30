@@ -98,7 +98,9 @@ async function call(cl: Client, name: string, args: Record<string, unknown> = {}
     return { ok: false, error: "protocol", message: String((e as Error).message) };
   }
 }
-const names = async (cl: Client) => (await cl.listTools()).tools.map((t) => t.name).sort();
+// WP6.4 tools are pinned in mcp-governance.test.ts; this file pins the WP6.2 catalog.
+const WP64 = new Set(["prism_governance_state", "prism_propose_change", "prism_vote", "prism_withdraw_proposal", "prism_note_access", "prism_share", "prism_dashboard_query"]);
+const names = async (cl: Client) => (await cl.listTools()).tools.map((t) => t.name).filter((n) => !WP64.has(n)).sort();
 const ids = (o: Out) => (o.ok ? (o.data.notes as Array<{ id: string }>).map((n) => n.id).sort() : []);
 const must = (o: Out): any => {
   assert.ok(o.ok, `expected success, got ${JSON.stringify(o)}`);
@@ -111,7 +113,7 @@ const ALL_TOOLS = [...READ_TOOLS, "prism_create_note", "prism_delete_note", "pri
 // ── registry + tools/list matrix ────────────────────────────────────────────
 
 test("every registered tool has matching scope/readOnlyHint and the catalog is complete", () => {
-  assert.deepEqual(PRISM_TOOLS.map((t) => t.name).sort(), ALL_TOOLS);
+  assert.deepEqual(PRISM_TOOLS.map((t) => t.name).filter((n) => !WP64.has(n)).sort(), ALL_TOOLS);
   for (const t of PRISM_TOOLS) assert.equal(t.scope === "read", t.annotations.readOnlyHint, t.name);
   assert.equal(PRISM_TOOLS.find((t) => t.name === "prism_delete_note")!.annotations.destructiveHint, true);
 });
@@ -410,7 +412,7 @@ test("version tools honor view/edit: viewer reads history but cannot restore; no
 test("resource prism://note/{id}: Markdown for documents (HTML converted), raw for code, metadata + _caps; respects view", async () => {
   const vw = await connect(pat(VIEWER));
   const templates = await vw.listResourceTemplates();
-  assert.deepEqual(templates.resourceTemplates.map((t) => t.uriTemplate), ["prism://note/{id}"]);
+  assert.deepEqual(templates.resourceTemplates.map((t) => t.uriTemplate).filter((u) => u.startsWith("prism://note")), ["prism://note/{id}"]);
 
   const doc = await vw.readResource({ uri: "prism://note/d1" });
   const body: any = doc.contents[0];
@@ -433,7 +435,7 @@ test("resource prism://note/{id}: Markdown for documents (HTML converted), raw f
     await assert.rejects(vw.readResource({ uri: `prism://note/${id}` }), `${id} must not be readable`);
   }
   // A member with no grants has no resource at all; a read-only PAT still reads.
-  assert.deepEqual((await (await connect(pat(NONE))).listResourceTemplates()).resourceTemplates, []);
+  assert.deepEqual((await (await connect(pat(NONE))).listResourceTemplates()).resourceTemplates.filter((t) => t.uriTemplate.startsWith("prism://note")), []);
   const rd: any = (await (await connect(pat(EDITOR, "read"))).readResource({ uri: "prism://note/g1" })).contents[0];
   assert.equal(rd.text, "hello garden");
 });

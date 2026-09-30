@@ -93,6 +93,71 @@ export async function dispatchAsActor(
 }
 
 /**
+ * The ONLY `/acl` routes an MCP tool may reach (WP6.4): the scoped-share surface.
+ * `dispatchAsActor` stays `/api`-only; sharing is the one family that lives under
+ * `/acl`, so it gets its own entry point with an EXACT method+path allowlist — the
+ * note/tag PEOPLE grant routes plus the per-note access read. Everything else on
+ * `/acl` (members, publish, links, peers, vaults, workspaces, mirrors, tokens…)
+ * is unreachable here by construction, whatever the caller's role.
+ *
+ * The acl router's own gate (admin, or `share` on the addressed resource) and its
+ * `denyEscalation` (subset rule + existing-accounts-only for non-admins) still run
+ * unchanged — this is the same handler, not a reimplementation. Ids are a single
+ * plain path segment (no dots, no slashes, bounded length).
+ */
+const SHARE_ALLOWLIST: ReadonlyArray<{ method: string; re: RegExp }> = [
+  { method: "GET", re: /^\/acl\/notes\/[^/]+$/ },
+  { method: "PUT", re: /^\/acl\/notes\/[^/]+\/people$/ },
+  { method: "DELETE", re: /^\/acl\/notes\/[^/]+\/people\/[^/]+$/ },
+  { method: "PUT", re: /^\/acl\/tags\/[^/]+\/people$/ },
+  { method: "DELETE", re: /^\/acl\/tags\/[^/]+\/people\/[^/]+$/ },
+];
+
+export function safeSharePath(path: string, method: string): string {
+  if (typeof path !== "string" || !path.startsWith("/acl/") || /[?#\\]/.test(path)) {
+    throw new ToolError("invalid_request", "bad path");
+  }
+  for (const seg of path.split("/").slice(1)) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      throw new ToolError("invalid_request", "bad path");
+    }
+    if (!decoded || decoded === "." || decoded === ".." || /[/\\]/.test(decoded) || decoded.length > 300) {
+      throw new ToolError("invalid_request", "bad path");
+    }
+  }
+  if (!SHARE_ALLOWLIST.some((r) => r.method === method && r.re.test(path))) {
+    throw new ToolError("forbidden", "that route is not available through MCP");
+  }
+  return path;
+}
+
+/** Run one of the scoped-share `/acl` routes as the principal's actor. Read-only credentials: GET only. */
+export async function dispatchShareAsActor(
+  app: Hono,
+  principal: Pick<McpPrincipal, "actor" | "readOnly" | "credentialId" | "via">,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const target = safeSharePath(path, method);
+  if (principal.readOnly && !READ_METHODS.has(method)) throw new ToolError("forbidden", "this credential is read-only");
+  const headers = new Headers(init.headers);
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.set("x-prism-vault", principal.actor.vaultId);
+  headers.set("x-forwarded-for", INPROCESS_FORWARD);
+  if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+  return app.request(
+    target,
+    { ...init, method, headers },
+    { [INPROCESS_ACTOR]: principal.actor, [INPROCESS_CLIENT_KEY]: `mcp:${principal.via}:${principal.credentialId}` },
+  );
+}
+
+/**
  * Turn a dispatched route's response into tool data, or throw the ToolError the
  * status maps to (the same vocabulary as mapToolError / the gateway's vaultErr).
  */

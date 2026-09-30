@@ -646,6 +646,7 @@ function coerceContentPayload(obj: unknown): ContentPayload {
   if (o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)) out.metadata = o.metadata as Record<string, unknown>;
   if (Array.isArray(o.tags)) out.tags = o.tags.map(String).filter(Boolean);
   if (typeof o.path === "string" && o.path) out.path = o.path;
+  if (typeof o.rationale === "string" && o.rationale.trim()) out.rationale = o.rationale.trim().slice(0, 2000);
   return out;
 }
 
