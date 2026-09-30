@@ -21,6 +21,22 @@ export interface AccountClient {
   updateProfile(patch: { name?: string; avatar?: string | null }): Promise<void>;
   /** Change password (verifies the current one server-side). */
   changePassword(currentPassword: string, newPassword: string): Promise<void>;
+  /** Native apps signed in to this account via device tokens (optional: a shell
+   *  without the /auth/devices surface omits both, and the section hides). */
+  listDevices?(): Promise<SignedInDevice[]>;
+  /** Revoke one device's token — it is signed out on its next request. */
+  revokeDevice?(id: string): Promise<void>;
+}
+
+/** A native client signed in with a device token (WP2.1). Times are epoch ms. */
+export interface SignedInDevice {
+  id: string;
+  label: string | null;
+  createdAt: number;
+  lastSeenAt: number | null;
+  expiresAt: number;
+  /** True when this request itself came from that device. */
+  current: boolean;
 }
 
 const AccountContext = createContext<AccountClient | null>(null);

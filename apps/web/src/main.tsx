@@ -5,7 +5,7 @@ import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
-import { fetchMe, initCapability } from "./config";
+import { fetchMe, initCapability, postLoginTarget } from "./config";
 import { LoginScreen } from "./auth/LoginScreen";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
@@ -189,6 +189,12 @@ async function start() {
           <LoginScreen notice={notice} />
         </React.StrictMode>,
       );
+      return;
+    }
+    // Already signed in but bounced here by a native sign-in (?next=…): resume it.
+    const resume = postLoginTarget();
+    if (resume) {
+      window.location.replace(resume);
       return;
     }
     // Only a genuine owner, and only when explicitly opted in, sees onboarding.

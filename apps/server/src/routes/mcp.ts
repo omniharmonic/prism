@@ -134,7 +134,10 @@ mcp.post("/token", async (c) => {
     return c.json({ error: "mint_failed" }, 502);
   }
 
-  recordMcpToken({ jti: minted.jti, vault_id: entry.id, email: m.email, scope: minted.scope, label, expires_at: minted.expiresAt });
+  // Minted via a native device token? Tie it to that device: revoking the device
+  // revokes this token too (auth/device.ts revokeDevice).
+  const deviceId = actor.kind === "user" ? (actor.deviceId ?? null) : null;
+  recordMcpToken({ jti: minted.jti, vault_id: entry.id, email: m.email, scope: minted.scope, label, expires_at: minted.expiresAt, device_id: deviceId });
   console.log(`[mcp] minted ${minted.scope} for ${m.email} (jti=${minted.jti}, ${days}d${label ? `, "${label}"` : ""})`);
 
   const url = mcpUrlFor(entry.vault);

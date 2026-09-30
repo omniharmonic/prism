@@ -339,6 +339,54 @@ db.exec(`
     last_run_at INTEGER,
     last_result TEXT               -- JSON MirrorRunResult of the last run
   );
+
+  -- ── Device tokens (WP2.1, auth/device.ts — native sign-in) ───────────────
+  -- A revocable per-device bearer credential for native clients (Tauri laptop /
+  -- iPhone). ONLY the SHA-256 of the secret is stored. It resolves to the same
+  -- user actor a session for \`email\` would (identity, not a vault binding — the
+  -- vault comes from X-Prism-Vault exactly as for a session). Sliding expiry:
+  -- every (throttled) use pushes expires_at out, capped at max_expires_at.
+  CREATE TABLE IF NOT EXISTS device_tokens (
+    id             TEXT PRIMARY KEY,           -- dev_<random>, safe to show/list
+    token_hash     TEXT NOT NULL UNIQUE,       -- sha256(pd_...) hex
+    email          TEXT NOT NULL,
+    label          TEXT,
+    client_id      TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    last_seen_at   INTEGER,
+    expires_at     INTEGER NOT NULL,           -- sliding (idle) expiry
+    max_expires_at INTEGER NOT NULL,           -- absolute cap
+    revoked_at     INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS device_tokens_email ON device_tokens(email);
+
+  -- Short-lived, single-use authorization codes (PKCE S256 only).
+  CREATE TABLE IF NOT EXISTS device_auth_codes (
+    code_hash      TEXT PRIMARY KEY,
+    email          TEXT NOT NULL,
+    client_id      TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    redirect_uri   TEXT NOT NULL,
+    label          TEXT,
+    created_at     INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    used_at        INTEGER,
+    device_id      TEXT                        -- set on redemption (replay → revoke)
+  );
+
+  -- A pending /auth/device/authorize request, held server-side while the user
+  -- signs in, so the params survive the login bounce without ever travelling
+  -- through a client-controlled redirect. Referenced by an httpOnly cookie.
+  CREATE TABLE IF NOT EXISTS device_auth_requests (
+    id             TEXT PRIMARY KEY,
+    client_id      TEXT NOT NULL,
+    redirect_uri   TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    state          TEXT,
+    label          TEXT,
+    created_at     INTEGER NOT NULL,
+    expires_at     INTEGER NOT NULL
+  );
 `);
 
 // Migration: accounts now carry a password. Add the column if an older db
@@ -352,6 +400,15 @@ db.exec(`
   // the API). Used to identify a person on their comments/cursors/edits.
   if (!cols.some((c) => c.name === "avatar")) {
     db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+  }
+}
+
+// Migration (WP2.1 L3): an MCP token minted while authenticated by a native
+// device token records that device, so revoking the device revokes it too.
+{
+  const cols = db.prepare("PRAGMA table_info(mcp_tokens)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "device_id")) {
+    db.exec("ALTER TABLE mcp_tokens ADD COLUMN device_id TEXT");
   }
 }
 
@@ -577,11 +634,13 @@ export interface McpTokenRow {
   expires_at: number;
   created_at: number;
   revoked_at: number | null;
+  /** The native device (device_tokens.id) whose token minted this, if any. */
+  device_id?: string | null;
 }
 
 const insertMcpToken = db.prepare(
-  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at)
-   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at)`,
+  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at, device_id)
+   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at, @device_id)`,
 );
 const selectMcpTokensForVault = db.prepare("SELECT * FROM mcp_tokens WHERE vault_id = ? ORDER BY created_at DESC");
 const selectMcpToken = db.prepare("SELECT * FROM mcp_tokens WHERE jti = ?");
@@ -591,7 +650,11 @@ export function recordMcpToken(row: Omit<McpTokenRow, "created_at" | "revoked_at
   // `label` is normalized explicitly rather than by spread-over-default: with
   // `{ label: null, ...row }` an optional property present-but-undefined wins the
   // spread and better-sqlite3 throws on binding undefined (and TS flags TS2783).
-  insertMcpToken.run({ ...row, label: row.label ?? null, created_at: Date.now() });
+  insertMcpToken.run({ ...row, label: row.label ?? null, device_id: row.device_id ?? null, created_at: Date.now() });
+}
+/** Unrevoked MCP tokens minted through a given native device. */
+export function liveMcpTokensForDevice(deviceId: string): McpTokenRow[] {
+  return db.prepare("SELECT * FROM mcp_tokens WHERE device_id = ? AND revoked_at IS NULL").all(deviceId) as McpTokenRow[];
 }
 export function listMcpTokens(vaultId: string): McpTokenRow[] {
   return selectMcpTokensForVault.all(vaultId) as McpTokenRow[];
@@ -871,6 +934,108 @@ export function getSession(id: string): Session | null {
 }
 export function destroySession(id: string): void {
   deleteSession.run(id);
+}
+
+// ---- device tokens (WP2.1 native sign-in; see auth/device.ts) ----
+export interface DeviceTokenRow {
+  id: string;
+  token_hash: string;
+  email: string;
+  label: string | null;
+  client_id: string;
+  created_at: number;
+  last_seen_at: number | null;
+  expires_at: number;
+  max_expires_at: number;
+  revoked_at: number | null;
+}
+export interface DeviceAuthCodeRow {
+  code_hash: string;
+  email: string;
+  client_id: string;
+  code_challenge: string;
+  redirect_uri: string;
+  label: string | null;
+  created_at: number;
+  expires_at: number;
+  used_at: number | null;
+  device_id: string | null;
+}
+export interface DeviceAuthRequestRow {
+  id: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  state: string | null;
+  label: string | null;
+  created_at: number;
+  expires_at: number;
+}
+
+export function insertDeviceToken(r: Omit<DeviceTokenRow, "last_seen_at" | "revoked_at">): void {
+  db.prepare(
+    `INSERT INTO device_tokens (id, token_hash, email, label, client_id, created_at, last_seen_at, expires_at, max_expires_at, revoked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).run(r.id, r.token_hash, r.email, r.label, r.client_id, r.created_at, r.created_at, r.expires_at, r.max_expires_at);
+}
+export function getDeviceTokenByHash(hash: string): DeviceTokenRow | null {
+  return (db.prepare("SELECT * FROM device_tokens WHERE token_hash = ?").get(hash) as DeviceTokenRow | undefined) ?? null;
+}
+export function getDeviceToken(id: string): DeviceTokenRow | null {
+  return (db.prepare("SELECT * FROM device_tokens WHERE id = ?").get(id) as DeviceTokenRow | undefined) ?? null;
+}
+export function touchDeviceToken(id: string, lastSeen: number, expiresAt: number): void {
+  db.prepare("UPDATE device_tokens SET last_seen_at = ?, expires_at = ? WHERE id = ? AND revoked_at IS NULL").run(lastSeen, expiresAt, id);
+}
+export function revokeDeviceTokenRow(id: string): boolean {
+  return db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(now(), id).changes > 0;
+}
+/** Live (unrevoked, unexpired) devices — for one user, or every user when email is null. */
+export function listLiveDeviceTokens(email: string | null): DeviceTokenRow[] {
+  const t = now();
+  return (
+    email === null
+      ? db.prepare("SELECT * FROM device_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC").all(t)
+      : db.prepare("SELECT * FROM device_tokens WHERE email = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC").all(email, t)
+  ) as DeviceTokenRow[];
+}
+
+export function insertDeviceAuthCode(r: Omit<DeviceAuthCodeRow, "used_at" | "device_id">): void {
+  db.prepare("DELETE FROM device_auth_codes WHERE expires_at < ?").run(now() - 60 * 60_000);
+  db.prepare(
+    `INSERT INTO device_auth_codes (code_hash, email, client_id, code_challenge, redirect_uri, label, created_at, expires_at, used_at, device_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+  ).run(r.code_hash, r.email, r.client_id, r.code_challenge, r.redirect_uri, r.label, r.created_at, r.expires_at);
+}
+export function getDeviceAuthCode(hash: string): DeviceAuthCodeRow | null {
+  return (db.prepare("SELECT * FROM device_auth_codes WHERE code_hash = ?").get(hash) as DeviceAuthCodeRow | undefined) ?? null;
+}
+/** Atomically claim an unused, unexpired code. False = already used / expired / unknown. */
+export function claimDeviceAuthCode(hash: string): boolean {
+  const t = now();
+  return (
+    db.prepare("UPDATE device_auth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?").run(t, hash, t)
+      .changes === 1
+  );
+}
+export function setDeviceAuthCodeDevice(hash: string, deviceId: string): void {
+  db.prepare("UPDATE device_auth_codes SET device_id = ? WHERE code_hash = ?").run(deviceId, hash);
+}
+
+export function insertDeviceAuthRequest(r: DeviceAuthRequestRow): void {
+  db.prepare("DELETE FROM device_auth_requests WHERE expires_at < ?").run(now());
+  db.prepare(
+    `INSERT INTO device_auth_requests (id, client_id, redirect_uri, code_challenge, state, label, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(r.id, r.client_id, r.redirect_uri, r.code_challenge, r.state, r.label, r.created_at, r.expires_at);
+}
+export function getDeviceAuthRequest(id: string): DeviceAuthRequestRow | null {
+  const r = db.prepare("SELECT * FROM device_auth_requests WHERE id = ?").get(id) as DeviceAuthRequestRow | undefined;
+  if (!r || r.expires_at < now()) return null;
+  return r;
+}
+export function deleteDeviceAuthRequest(id: string): void {
+  db.prepare("DELETE FROM device_auth_requests WHERE id = ?").run(id);
 }
 
 // ---- users ----

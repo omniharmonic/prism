@@ -2,7 +2,7 @@
 // owner/member session cookie. Backs the Settings → Account tab. On success it
 // refreshes the cached identity (fetchMe) so collab presence picks up the new
 // name/avatar immediately.
-import type { AccountClient, AccountProfile } from "@prism/core";
+import type { AccountClient, AccountProfile, SignedInDevice } from "@prism/core";
 import { GATEWAY_ORIGIN, fetchMe } from "./config";
 
 async function authFetch(path: string, init: RequestInit): Promise<Response> {
@@ -44,5 +44,14 @@ export const webAccount: AccountClient = {
   },
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
     await authFetch("/change-password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) });
+  },
+  // Native apps signed in via device tokens (WP2.1, /auth/devices).
+  async listDevices(): Promise<SignedInDevice[]> {
+    const r = await authFetch("/devices", { method: "GET" });
+    const j = (await r.json()) as { devices: SignedInDevice[] };
+    return j.devices;
+  },
+  async revokeDevice(id: string): Promise<void> {
+    await authFetch(`/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 };
