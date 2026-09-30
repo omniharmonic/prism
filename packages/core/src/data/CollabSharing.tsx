@@ -134,6 +134,18 @@ export interface ServerInfo {
     status: "ok" | "expiring" | "expired" | "unknown";
   }>;
 }
+/** One ingest source's health (GET /acl/workers, server-owner). Desktop-owned
+ *  sources (email/calendar/skills) are inferred from the newest vault note. */
+export interface WorkerSourceHealth {
+  name: string;
+  kind: "server" | "desktop";
+  vaultId: string;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  failureStreak: number;
+  staleAfterMs: number;
+  status: "ok" | "stale" | "failing" | "disabled";
+}
 /** One integration's status in the ACTIVE vault (never the stored value). */
 export interface IntegrationStatus {
   secretsAvailable: boolean;
@@ -341,6 +353,8 @@ export interface CollabSharing {
    *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM/RESEND_API_KEY — restart-required).
    *  Absent → the Server surface hides (desktop / non-server-owner). */
   getServerInfo?(): Promise<ServerInfo>;
+  /** Per-source ingest health + staleness (server-owner). Absent → card hidden. */
+  getWorkerHealth?(): Promise<{ sources: WorkerSourceHealth[]; checkedAt: string }>;
   controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
   setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
   /** Cloudflare tunnel ingress: which workspace subdomains still need routing, the

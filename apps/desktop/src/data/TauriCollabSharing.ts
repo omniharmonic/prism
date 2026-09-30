@@ -15,6 +15,7 @@ import type {
   ShareLink,
   SpaceInfo,
   TunnelIngress,
+  WorkerSourceHealth,
   TunnelStatus,
   VaultSummary,
 } from "@prism/core";
@@ -97,6 +98,9 @@ export const tauriCollabSharing: CollabSharing = {
   },
   async setServerConfig(key: string, value: string): Promise<{ restartRequired: boolean }> {
     return acl<{ restartRequired: boolean }>("PUT", `/server/config`, { key, value });
+  },
+  async getWorkerHealth(): Promise<{ sources: WorkerSourceHealth[]; checkedAt: string }> {
+    return acl("GET", `/workers`);
   },
   async getTunnelIngress(): Promise<TunnelIngress> {
     return acl<TunnelIngress>("GET", `/server/tunnel/ingress`);

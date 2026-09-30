@@ -114,8 +114,9 @@ export function vaultClient(vaultId?: string) {
   }
 
   return {
-  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean } = {}): Promise<Note[]> {
+  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean; orderBy?: "updated_at" | "created_at" } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
+    if (opts.orderBy) sp.set("order_by", opts.orderBy);
     if (opts.includeContent) sp.set("include_content", "true");
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of opts.tags ?? []) sp.append("tag", t);

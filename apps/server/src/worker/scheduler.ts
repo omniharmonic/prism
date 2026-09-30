@@ -31,6 +31,7 @@ import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
+import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -119,6 +120,7 @@ const ESCALATE_EVERY_MS = 3_600_000; // then at most hourly
 export function noteIngestOutcome(vaultId: string, source: string, err: Error | null): void {
   const key = `${vaultId}:${source}`;
   const prev = ingestFailures.get(key);
+  recordSourceOutcome(vaultId, source, err); // health registry (GET /acl/workers + alerts)
 
   if (!err) {
     if (prev) {
@@ -661,10 +663,16 @@ async function tick(): Promise<void> {
     lastIndexSweepAt = Date.now();
     try {
       await runIndexOnce();
+      recordSourceOutcome("primary", "index", null);
     } catch (e) {
       console.warn("[worker] index primary failed:", (e as Error).message);
+      recordSourceOutcome("primary", "index", e as Error);
     }
   }
+
+  // Staleness alerts last, so this tick's outcomes are already recorded. Never
+  // throws; desktop freshness is cached (WORKER_DESKTOP_PROBE_MS).
+  await runHealthCheckOnce();
 }
 
 /** A note's content, fetched on its own. The backfill used to pull every note's

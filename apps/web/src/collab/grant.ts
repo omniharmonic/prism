@@ -156,6 +156,9 @@ export const webCollabSharing: CollabSharing = {
   async getServerInfo(): Promise<ServerInfo> {
     return (await acl(`/server`)).json();
   },
+  async getWorkerHealth() {
+    return (await acl(`/workers`)).json();
+  },
   async controlTunnel(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }> {
     return (await acl(`/server/tunnel`, { method: "POST", body: JSON.stringify({ action }) })).json();
   },
