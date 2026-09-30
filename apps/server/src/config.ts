@@ -85,6 +85,22 @@ export const config = {
   // re-enables minting.
   memberVaultTokens: process.env.MEMBER_VAULT_TOKENS === "true",
 
+  // ── Prism MCP endpoint (/mcp, Architecture v2 WP6.1 — mcp/*) ──
+  // Hub-JWT subjects (`sub` claim) that may act as the OWNER on /mcp with a
+  // `vault:<primary>:read|write` hub token (comma-separated). A hub token for the
+  // primary vault is otherwise accepted as the owner ONLY when it carries
+  // `vault:<primary>:admin` — a plain read/write vault token is also what vault
+  // members and member-minted agents hold, so audience alone must never make a
+  // caller the owner. Empty (default) → admin-scoped hub tokens only.
+  mcpOwnerHubSubs: (process.env.MCP_OWNER_HUB_SUBS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  // Per-credential request budget on /mcp (per minute), and the per-IP budget of
+  // FAILED authentications (per 10 minutes) before the IP is refused outright.
+  mcpRatePerMinute: Number(process.env.MCP_RATE_PER_MINUTE ?? 120),
+  mcpAuthFailuresPer10Min: Number(process.env.MCP_AUTH_FAILURES_PER_10MIN ?? 20),
+
   // Dedicated owner token for the trusted desktop app's real-time connection.
   // The Tauri webview presents this to /collab to join live docs as the owner —
   // separate from the vault token, so the powerful vault credential stays out of

@@ -21,22 +21,41 @@ function clientKey(c: Context): string {
   );
 }
 
+/**
+ * Count one hit against the fixed-window bucket `key`. Returns null when within
+ * the limit, else the seconds until the window resets. Shared by the IP-keyed
+ * middleware below and callers that key by something else (e.g. the MCP
+ * endpoint's per-credential limit, mcp/router.ts).
+ */
+export function consumeRateLimit(key: string, max: number, windowMs: number): number | null {
+  sweep();
+  const now = Date.now();
+  const b = buckets.get(key);
+  if (!b || b.resetAt < now) {
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+    return null;
+  }
+  b.count++;
+  return b.count > max ? Math.ceil((b.resetAt - now) / 1000) : null;
+}
+
+/** Is `key` currently over `max` WITHOUT counting a hit? (For "only failures count" limits.) */
+export function rateLimited(key: string, max: number): number | null {
+  const b = buckets.get(key);
+  const now = Date.now();
+  return b && b.resetAt >= now && b.count >= max ? Math.ceil((b.resetAt - now) / 1000) : null;
+}
+
+/** The client key (tunnel IP) the IP-keyed limits bucket on. */
+export const rateLimitClientKey = (c: Context): string => clientKey(c);
+
 /** Limit to `max` requests per `windowMs` per client for the routes it's mounted on. */
 export function rateLimit(opts: { max: number; windowMs: number; name: string }): MiddlewareHandler {
   return async (c, next) => {
-    sweep();
-    const key = `${opts.name}:${clientKey(c)}`;
-    const now = Date.now();
-    const b = buckets.get(key);
-    if (!b || b.resetAt < now) {
-      buckets.set(key, { count: 1, resetAt: now + opts.windowMs });
-    } else {
-      b.count++;
-      if (b.count > opts.max) {
-        const retry = Math.ceil((b.resetAt - now) / 1000);
-        c.header("Retry-After", String(retry));
-        return c.json({ error: "rate_limited", retryAfter: retry }, 429);
-      }
+    const retry = consumeRateLimit(`${opts.name}:${clientKey(c)}`, opts.max, opts.windowMs);
+    if (retry !== null) {
+      c.header("Retry-After", String(retry));
+      return c.json({ error: "rate_limited", retryAfter: retry }, 429);
     }
     await next();
   };

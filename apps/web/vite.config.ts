@@ -73,7 +73,9 @@ export default defineConfig(({ mode }) => {
         // includes the public publication JSON at /api/p/*). The human-facing
         // published Wiki URL /p/:slug is a CLIENT route — it intentionally FALLS
         // BACK to index.html (the SPA), which then fetches /api/p/:slug.
-        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/],
+        // /mcp (the Prism MCP endpoint) and /.well-known/ (its RFC 9728
+        // protected-resource metadata) are server-owned too (WP6.1).
+        navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
         runtimeCaching: [
           {
             // Recently-viewed vault content stays available offline (read-only).

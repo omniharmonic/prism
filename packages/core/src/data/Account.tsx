@@ -26,6 +26,44 @@ export interface AccountClient {
   listDevices?(): Promise<SignedInDevice[]>;
   /** Revoke one device's token — it is signed out on its next request. */
   revokeDevice?(id: string): Promise<void>;
+  /** Prism MCP personal access tokens for agents (WP6.1, /auth/pats). Optional:
+   *  a shell without that surface omits all three and the section hides. */
+  listAgentTokens?(): Promise<AgentTokenList>;
+  /** Create a token for the active vault. The secret is in the result ONCE. */
+  createAgentToken?(opts: { label?: string; scope: "read" | "write"; expiresInDays?: number }): Promise<CreatedAgentToken>;
+  /** Revoke a token — the agent's next request is refused. */
+  revokeAgentToken?(id: string): Promise<void>;
+}
+
+/** A Prism MCP access token as listed (never the secret). Times are epoch ms. */
+export interface AgentToken {
+  id: string;
+  /** The first characters of the token (e.g. `pp_Ab3dE6`), to tell tokens apart. */
+  prefix: string;
+  vaultId: string;
+  scope: "read" | "write";
+  label: string | null;
+  createdAt: number;
+  lastUsedAt: number | null;
+  expiresAt: number;
+}
+
+export interface AgentTokenList {
+  tokens: AgentToken[];
+  /** The Prism MCP endpoint URL agents connect to. */
+  mcpUrl: string;
+}
+
+/** A freshly created token: the secret (shown once) plus paste-ready client config. */
+export interface CreatedAgentToken extends AgentToken {
+  token: string;
+  url: string;
+  /** Claude Code `.mcp.json` shape. */
+  mcpJson: unknown;
+  /** Claude Code one-liner (`claude mcp add …`). */
+  claudeCodeCommand: string;
+  /** Claude Desktop `claude_desktop_config.json` shape (via mcp-remote). */
+  claudeDesktopJson: unknown;
 }
 
 /** A native client signed in with a device token (WP2.1). Times are epoch ms. */

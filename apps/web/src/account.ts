@@ -2,8 +2,8 @@
 // owner/member session cookie. Backs the Settings → Account tab. On success it
 // refreshes the cached identity (fetchMe) so collab presence picks up the new
 // name/avatar immediately.
-import type { AccountClient, AccountProfile, SignedInDevice } from "@prism/core";
-import { fetchMe } from "./config";
+import type { AccountClient, AccountProfile, SignedInDevice, AgentTokenList, CreatedAgentToken } from "@prism/core";
+import { fetchMe, vaultHeader } from "./config";
 import { serverFetch } from "./transport";
 
 async function authFetch(path: string, init: RequestInit): Promise<Response> {
@@ -23,6 +23,8 @@ function prettyError(code?: string): string | null {
     case "wrong_password": return "That current password is incorrect.";
     case "invalid_avatar": return "That image is too large — pick a smaller one.";
     case "invalid_name": return "Please enter a valid name.";
+    case "too_many_tokens": return "You have too many agent tokens — revoke one first.";
+    case "forbidden": return "You have no access in this vault.";
     case undefined: return null;
     default: return code.replace(/_/g, " ");
   }
@@ -53,5 +55,18 @@ export const webAccount: AccountClient = {
   },
   async revokeDevice(id: string): Promise<void> {
     await authFetch(`/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+  // Prism MCP access tokens for agents (WP6.1, /auth/pats). A new token is bound
+  // to the ACTIVE vault (X-Prism-Vault).
+  async listAgentTokens(): Promise<AgentTokenList> {
+    const r = await authFetch("/pats", { method: "GET" });
+    return (await r.json()) as AgentTokenList;
+  },
+  async createAgentToken(opts): Promise<CreatedAgentToken> {
+    const r = await authFetch("/pats", { method: "POST", headers: vaultHeader(), body: JSON.stringify(opts) });
+    return (await r.json()) as CreatedAgentToken;
+  },
+  async revokeAgentToken(id: string): Promise<void> {
+    await authFetch(`/pats/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 };
