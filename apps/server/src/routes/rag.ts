@@ -3,22 +3,54 @@
  * so they are NOT swallowed by the owner→vault passthrough (the vault has no
  * semantic endpoint). Authorization is enforced here exactly as in the gateway:
  *
- *  - GET  /api/search/semantic   any actor; non-owners get results filtered to
- *                                effectiveLevel >= view (same guard as /search).
+ *  - GET  /api/search/semantic   any actor; non-admins get results filtered to
+ *                                notes on which they hold the `view` CAP (same
+ *                                guard as the gateway's /notes + /search).
  *  - POST /api/index/notes       OWNER only — the Rust indexer feeds chunks here.
  *  - POST /api/index/rebuild     OWNER only — pull the vault and (re)embed.
  *  - DEL  /api/index/notes/:id   OWNER only.
  *  - GET  /api/index/status      OWNER only.
+ *
+ * PRIMARY VAULT ONLY. The `embeddings` table (rag/store.ts) has no vault column
+ * and is fed exclusively from the primary vault (the worker sweep + the desktop
+ * indexer), and `semanticSearch` hydrates hits through the primary client. So a
+ * request bound to any other vault (X-Prism-Vault, or a capability link whose
+ * grants live in another vault) is refused with 409 on EVERY route here — never
+ * answered from the primary's index. Without that, a member of vault B holding a
+ * grant on tag T would see primary-vault notes tagged T (grants are matched by
+ * tag name, not vault), and an admin of vault B could write or wipe the primary
+ * index. Clients fall back to plain full-text search on the refusal
+ * (useVaultSearch). A per-vault index is a schema migration, deliberately
+ * deferred.
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { resolveActor } from "../auth/actor";
-import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
+import { effectiveCaps, type NoteRef } from "../permissions";
+import { resolveVaultEntry } from "../db";
 import { roleAtLeast, roleFloor } from "../roles";
 import type { Note } from "../parachute";
 import { semanticSearch, indexNote, deindexNote, reindexAll, stats } from "../rag/service";
 
 export const rag = new Hono();
+
+/** The only vault the semantic index covers (see header). */
+export const ragVaultId = (): string => resolveVaultEntry().id;
+
+// Refuse every RAG route for a request bound to a non-primary vault — BEFORE any
+// index read or write. The actor's vaultId is the same one the gateway uses
+// (header for sessions, the grant's own vault for capability links).
+rag.use("/search/semantic", primaryVaultOnly);
+rag.use("/index/*", primaryVaultOnly);
+async function primaryVaultOnly(c: Context, next: () => Promise<void>) {
+  if (resolveActor(c).vaultId !== ragVaultId()) {
+    return c.json(
+      { error: "semantic_index_primary_only", reason: "semantic search indexes the primary vault only" },
+      409,
+    );
+  }
+  await next();
+}
 
 // Carries creator + visibility so semantic search honors private-to-creator:
 // another member's private note must not surface in a non-creator's results.
@@ -44,7 +76,10 @@ rag.get("/search/semantic", async (c) => {
   }
   const visible = roleAtLeast(actor.role, "admin")
     ? hits
-    : hits.filter((h) => atLeast(effectiveLevel(actor.grants, ref(h.note), roleFloor(actor.role), subjectOf(actor)), "view"));
+    : // The `view` CAP, not the level ladder: a caps grant that omits view (e.g. a
+      // ["create"] drop-box) projects to level "view" (levelForCaps) but confers
+      // no read — the ladder check leaked it. Same inputs as api.ts capsFor.
+      hits.filter((h) => effectiveCaps(actor.grants, ref(h.note), roleFloor(actor.role), subjectOf(actor)).has("view"));
   // Shape mirrors /notes entries, plus score + snippet for ranked display.
   return c.json(
     visible.map((h) => ({ ...h.note, _score: h.score, _snippet: h.snippet })),

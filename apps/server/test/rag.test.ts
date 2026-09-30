@@ -23,7 +23,8 @@ import { reciprocalRankFusion } from "../src/rag/fusion";
 import { upsertNoteChunks, queryTopK, indexedHash, removeNoteChunks } from "../src/rag/store";
 import { runIndexOnce, indexSweepEnabled } from "../src/worker/scheduler";
 import { getEmbedder } from "../src/rag/embedder";
-import { getWorkerCursor } from "../src/db";
+import { getWorkerCursor, addGrant, addVaultEntry } from "../src/db";
+import { signCapability } from "../src/auth/capability";
 import { config } from "../src/config";
 
 const OWNER = "owner@test.local"; // matches .env.test OWNER_EMAIL
@@ -212,6 +213,84 @@ test("anon semantic search returns nothing (no grants)", async () => {
   const res = await app.request("/api/search/semantic?q=food");
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), []);
+});
+
+// ---- WP0.2: read gate is the `view` CAP; the index is primary-vault only ----
+
+test("a create-only caps grant gets NO semantic hits (the ladder floor does not leak)", async () => {
+  const app = createApp();
+  await seedAndIndex(app, sessionCookie(makeSession(OWNER)));
+
+  // ["create"] projects to level "view" (levelForCaps) but confers no read.
+  const dropbox = "dropbox@test.local";
+  const g = addGrant({ subject_type: "user", subject: dropbox, resource_type: "tag", resource: "shared", level: "view", caps: ["create"], created_by: "test" });
+  assert.equal(g.level, "view", "precondition: ladder projection floors at view");
+  const res = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie: sessionCookie(makeSession(dropbox)) } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), [], "no hit for a note the actor cannot read");
+  // Same actor, same note, via the gateway: also refused (consistency).
+  const direct = await app.request("/api/notes/doc-food", { headers: { cookie: sessionCookie(makeSession(dropbox)) } });
+  assert.equal(direct.status, 403);
+
+  // Control: adding `view` to the caps makes the same notes appear.
+  const viewer = "viewer@test.local";
+  addGrant({ subject_type: "user", subject: viewer, resource_type: "tag", resource: "shared", level: "view", caps: ["view", "create"], created_by: "test" });
+  const ok = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie: sessionCookie(makeSession(viewer)) } });
+  const ids = ((await ok.json()) as Array<{ id: string }>).map((h) => h.id);
+  assert.ok(ids.includes("doc-food") && !ids.includes("doc-code"));
+});
+
+test("semantic search refuses a non-primary vault (no cross-vault leak via tag-name grants)", async () => {
+  const app = createApp();
+  await seedAndIndex(app, sessionCookie(makeSession(OWNER)));
+  // A second registered vault with its own member, whose grant names the SAME
+  // tag as the primary's indexed notes. Grants match by tag name, so answering
+  // from the (primary-only) index would hand them primary content.
+  addVaultEntry({ id: "frb", label: "Other", url: "http://vault.test", vault: "frb", token: "tok-frb" });
+  fv.addVault("frb");
+  const member = "member-b@test.local";
+  addGrant({ subject_type: "user", subject: member, resource_type: "tag", resource: "shared", level: "view", vault_id: "frb", created_by: "test" });
+  const cookie = sessionCookie(makeSession(member));
+
+  const res = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie, "x-prism-vault": "frb" } });
+  assert.equal(res.status, 409);
+  assert.equal(((await res.json()) as { error: string }).error, "semantic_index_primary_only");
+
+  // A capability link whose grant lives in the other vault is bound to THAT vault
+  // (actor.vaultId comes from the grant, not a header) — also refused.
+  const capId = "cap-frb-shared";
+  addGrant({ subject_type: "link", subject: capId, resource_type: "tag", resource: "shared", level: "view", vault_id: "frb", created_by: "test" });
+  const t = signCapability({ id: capId, exp: Date.now() + 60_000 });
+  const viaLink = await app.request(`/api/search/semantic?q=regenerative+food&t=${encodeURIComponent(t)}`);
+  assert.equal(viaLink.status, 409);
+
+  // The primary-vault path is unchanged for the owner.
+  const primary = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie: sessionCookie(makeSession(OWNER)) } });
+  assert.equal(primary.status, 200);
+});
+
+test("index routes refuse a non-primary vault even for the owner (no cross-vault index writes)", async () => {
+  const app = createApp();
+  addVaultEntry({ id: "frb", label: "Other", url: "http://vault.test", vault: "frb", token: "tok-frb" });
+  fv.addVault("frb");
+  const headers = { cookie: sessionCookie(makeSession(OWNER)), "x-prism-vault": "frb", "content-type": "application/json" };
+  const calls: Array<[string, string]> = [
+    ["POST", "/api/index/notes"],
+    ["POST", "/api/index/rebuild"],
+    ["DELETE", "/api/index/notes/doc-food"],
+    ["GET", "/api/index/status"],
+    ["GET", "/api/search/semantic?q=food"],
+  ];
+  for (const [method, path] of calls) {
+    const r = await app.request(path, {
+      method,
+      headers,
+      ...(method === "POST" ? { body: JSON.stringify({ notes: [{ id: "doc-food", content: "planted" }] }) } : {}),
+    });
+    assert.equal(r.status, 409, `${method} ${path}`);
+  }
+  const n = (db.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number }).n;
+  assert.equal(n, 0, "nothing was written to the primary index");
 });
 
 // ---- worker index maintenance (audit 2026-08-13, F2) ----

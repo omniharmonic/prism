@@ -4,11 +4,11 @@
  * This is the anonymous, read-only path: there is NO actor cookie/capability —
  * we synthesize an anon actor whose grants are exactly the "anyone" grant(s) the
  * owner created for the publication's tag at publish time. From there it reuses
- * the SAME authorization spine as the gateway (api.ts): effectiveLevel is the
+ * the SAME authorization spine as the gateway (api.ts): effectiveCaps is the
  * only guard; the publication's tag merely NARROWS what we fetch.
  *
  * It NEVER calls proxyToVault and never exposes the vault token — it only calls
- * vault.* helpers AFTER an effectiveLevel >= "view" check, and the single-note
+ * vault.* helpers AFTER a `view`-cap (canPublicView) check, and the single-note
  * route additionally requires the note to actually carry the publication's tag
  * (defense-in-depth: a reader must not pull an arbitrary note id by guessing).
  */
@@ -19,7 +19,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { vaultClient, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
 import { getPublicationBySlug, grantsForResource, excludedNoteIds, publicationVaultId, type Publication } from "../db";
-import { effectiveLevel, atLeast, type NoteRef } from "../permissions";
+import { effectiveCaps, type NoteRef } from "../permissions";
 import { pathInPrefix } from "../paths";
 import { config } from "../config";
 import { verifyPassword } from "../auth/password";
@@ -27,7 +27,7 @@ import { verifyPassword } from "../auth/password";
 export const publish = new Hono();
 
 // Includes `visibility` so a PRIVATE note carrying a published tag is excluded
-// from the public set: effectiveLevel returns null for a private note unless the
+// from the public set: effectiveCaps returns nothing for a private note unless the
 // anon actor holds an explicit per-note grant (it never does). Without this a
 // private note could leak onto a public wiki via a shared tag.
 const ref = (n: Note): NoteRef => ({
@@ -97,7 +97,7 @@ function verifyUnlock(slug: string, token: string | undefined): boolean {
  * Whether the request may see this publication's contents: an open (no-password)
  * publication is always unlocked; a password-gated one requires a valid
  * `pub_<slug>` unlock cookie. This is an ADDITIONAL gate layered on top of the
- * effectiveLevel/tag-membership checks — never a replacement for them.
+ * view-cap/tag-membership checks — never a replacement for them.
  */
 function unlocked(c: Context, pub: Publication): boolean {
   if (!pub.password_hash) return true;
@@ -126,6 +126,17 @@ function publicationActor(pub: Publication): Actor {
   };
 }
 
+/**
+ * The public read gate: the anon actor holds the `view` CAP on the note (no role
+ * floor, no subject). Caps, not the level ladder: an `anyone` grant carrying an
+ * explicit cap list without `view` (e.g. ["create"]) projects to level "view"
+ * (permissions.ts levelForCaps) yet confers no read — a ladder check would leak
+ * it onto the public site. For the level-only grant publish creates, caps are
+ * exactly the level's expansion, so this is identical to the old check.
+ */
+export const canPublicView = (grants: Actor["grants"], note: Note): boolean =>
+  effectiveCaps(grants, ref(note), null).has("view");
+
 /** The vault client bound to the publication's own vault — EVERY vault read on
  *  the public path goes through this, never the primary singleton. */
 const pubVault = (pub: Publication) => vaultClient(publicationVaultId(pub));
@@ -134,12 +145,12 @@ const pubVault = (pub: Publication) => vaultClient(publicationVaultId(pub));
  * The note set this publication exposes.
  *
  * - `tag` pubs: notes under the publication's tag, filtered to
- *   effectiveLevel >= "view" against the anon actor's grants. Mirrors
- *   `visibleNotes` in api.ts — tag scoping only narrows; effectiveLevel is the
+ *   the `view` cap (canPublicView) against the anon actor's grants. Mirrors
+ *   `visibleNotes` in api.ts — tag scoping only narrows; effectiveCaps is the
  *   authoritative guard.
  * - `path` pubs: notes whose `path` is inside the publication's prefix. The
  *   path-membership predicate (evaluated on the vault's OWN `path` field) is the
- *   authoritative, read-only, view-level guard — grants/effectiveLevel play no
+ *   authoritative, read-only, view-level guard — grants/caps play no
  *   part. We fetch all notes and filter in-process because Parachute's `?path=`
  *   is an exact match, not a prefix filter; publish.ts must guarantee prefix
  *   membership itself regardless.
@@ -157,7 +168,7 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   }
   const actor = publicationActor(pub);
   const notes = await pubVault(pub).listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => !excluded.has(n.id) && atLeast(effectiveLevel(actor.grants, ref(n), null), "view"));
+  return notes.filter((n) => !excluded.has(n.id) && canPublicView(actor.grants, n));
 }
 
 /** A short display title derived from a note's content. Handles BOTH shapes the
@@ -357,7 +368,7 @@ publish.get("/:slug/graph", async (c) => {
 
 // 1c. Map — geospatial features of the publication's own note set, and NOTHING
 //     else. Built from the same authoritative `publicationNotes` set as the
-//     manifest/graph (excluded ids already dropped, effectiveLevel/tag scoping
+//     manifest/graph (excluded ids already dropped, view-cap/tag scoping
 //     applied), so a private or out-of-set note's geometry can never appear.
 //     Emits only what the map needs (id/title/kind/geometry/geo) — never the
 //     full metadata blob.
@@ -443,7 +454,7 @@ publish.get("/:slug/map", async (c) => {
 });
 
 // 2. Single note (read-only). Served only if it is part of the publication set:
-//    - tag pubs: effectiveLevel >= "view" AND it carries the publication's tag;
+//    - tag pubs: the `view` cap (canPublicView) AND it carries the publication's tag;
 //    - path pubs: its `path` is inside the publication's prefix.
 //    Either way an out-of-set id is forbidden (no id-guessing into private notes).
 publish.get("/:slug/notes/:id", async (c) => {
@@ -467,7 +478,7 @@ publish.get("/:slug/notes/:id", async (c) => {
     (pub.resource_type === "path"
       ? pathInPrefix(note.path, pub.resource)
       : tags.includes(pub.resource) &&
-        atLeast(effectiveLevel(publicationActor(pub).grants, ref(note), null), "view"));
+        canPublicView(publicationActor(pub).grants, note));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   return c.json({
