@@ -59,6 +59,7 @@ import {
 import {
   createGovNote,
   updateGovNote,
+  deleteGovNote,
   verifiedGovNotes,
   verifyGovNote,
   governanceIntegrityEnabled,
@@ -273,12 +274,12 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       if (!match) return notFound("role", change.ref);
       const role = parseRole(match);
-      await vault.deleteNote(match.id);
+      await deleteGovNote(vault, match.id);
       // Cascade: a membership pointing at a deleted role is a dangling grant of
       // powers that no longer resolve. Drop them with the role.
       for (const mn of await govNotes(vault, GOV_TAGS.membership)) {
         const m = parseMembership(mn);
-        if (m.role === role.id || (role.name !== "" && m.role === role.name)) await vault.deleteNote(mn.id);
+        if (m.role === role.id || (role.name !== "" && m.role === role.name)) await deleteGovNote(vault, mn.id);
       }
       return { ok: true, id: match.id };
     }
@@ -326,7 +327,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
           detail: "refusing to delete the constitution's amend policy — no amendment could ever be evaluated again",
         };
       }
-      await vault.deleteNote(match.id);
+      await deleteGovNote(vault, match.id);
       return { ok: true, id: match.id };
     }
 
@@ -355,7 +356,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       const first = matches[0];
       if (!first) return notFound("membership", `${change.subject} → ${change.role}`);
-      for (const n of matches) await vault.deleteNote(n.id);
+      for (const n of matches) await deleteGovNote(vault, n.id);
       return { ok: true, id: first.id };
     }
   }

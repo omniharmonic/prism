@@ -12,6 +12,16 @@
  *                  pointing it at production is always a deliberate act.
  *   --apply        Write. Without it this is a DRY RUN that only lists the plan.
  *   --vault <name> Override PARACHUTE_VAULT (the vault NAME, e.g. "default").
+ *   --ledger-vault <id>  Registry vault id the ledger rows are keyed by
+ *                  (default "primary" — where governance runs).
+ *   --accept-mismatch    Also record notes whose valid sig differs from the
+ *                  ledger's current one (possible replay — review first).
+ *
+ * THE LEDGER. Trust also requires the note's sig to be the CURRENT one recorded
+ * in the server's SQLite `governance_sig_ledger` (anti-replay). This script
+ * writes those rows into the DB named by DB_PATH in the env file (resolved from
+ * the CURRENT directory — run it from apps/server), and refuses if that file
+ * does not exist. Prefer running it with the server stopped.
  *
  * Idempotent: notes that already verify are skipped, so a second --apply writes
  * nothing. Notes with a stale/invalid signature are re-signed; notes carrying two
@@ -54,6 +64,16 @@ async function main() {
   const secret = process.env.GOVERNANCE_SIGNING_SECRET ?? "";
   if (!url || !vaultName || !token) die(`${abs} must define PARACHUTE_URL, PARACHUTE_VAULT (or --vault) and PARACHUTE_TOKEN.`);
 
+  // The ledger lives in the server DB. Resolve it exactly as config.ts will
+  // (relative to cwd) and refuse to create a fresh one by accident.
+  const dbPath = process.env.DB_PATH ?? "./prism-server.db";
+  if (dbPath === ":memory:") die("DB_PATH is :memory: — the ledger would be thrown away.");
+  if (!existsSync(resolve(dbPath))) {
+    die(`server DB not found at ${resolve(dbPath)} (DB_PATH is resolved from the current directory — run from apps/server).`);
+  }
+  const ledgerVault = arg("--ledger-vault") ?? "primary";
+  const acceptMismatch = process.argv.includes("--accept-mismatch");
+
   // Imported AFTER the env file is loaded (config.ts reads env at import time).
   const { MIN_SECRET_LENGTH } = await import("../src/governance-integrity");
   const { signExistingGovernance } = await import("../src/governance-migrate");
@@ -83,22 +103,31 @@ async function main() {
   };
 
   console.log(`${apply ? "APPLYING" : "DRY RUN"} — vault "${vaultName}" at ${url}`);
-  const res = await signExistingGovernance(vault, { secret, apply });
+  console.log(`ledger: ${resolve(dbPath)} (vault id "${ledgerVault}")`);
+  const res = await signExistingGovernance(vault, { secret, apply, vaultId: ledgerVault, acceptMismatch });
 
   const counts = new Map<string, number>();
   for (const i of res.plan) counts.set(i.action, (counts.get(i.action) ?? 0) + 1);
   console.log(`\n${res.plan.length} governance note(s): ${[...counts].map(([a, n]) => `${n} ${a}`).join(", ") || "none"}`);
   for (const i of res.plan) {
-    console.log(`  ${i.action.padEnd(14)} ${i.tag.padEnd(22)} ${i.id}  ${i.summary}`);
+    console.log(`  ${i.action.padEnd(16)} ${i.tag.padEnd(22)} ${i.id}  ${i.summary}`);
   }
   console.log(
     "\nReview memberships and votes above: signing blesses them. Delete anything nobody granted/cast through Prism BEFORE --apply.",
   );
+  if (res.plan.some((i) => i.action === "skip-tombstoned")) {
+    console.log("skip-tombstoned: governance deleted these notes; they exist again only via a vault restore. Delete them from the vault.");
+  }
+  if (res.plan.some((i) => i.action === "skip-mismatch")) {
+    console.log("skip-mismatch: a valid but NOT-current signature (possible replay of an older state). Review; --accept-mismatch records them.");
+  }
   if (!apply) {
-    console.log("\nDry run only — re-run with --apply to write.");
+    console.log(`\nDry run only — would write ${res.ledgerRows} ledger row(s). Re-run with --apply to write.`);
     return;
   }
-  console.log(`\nsigned ${res.written.length} note(s); ${res.remaining} still pending after re-check.`);
+  console.log(
+    `\nsigned ${res.written.length} note(s), wrote ${res.ledgerRows} ledger row(s); ${res.remaining} still pending after re-check.`,
+  );
   if (res.remaining !== 0) process.exit(1);
 }
 

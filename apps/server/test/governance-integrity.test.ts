@@ -35,8 +35,9 @@ import type { GovTag } from "../src/governance-fields";
 import { loadGovernance } from "../src/governance-service";
 import { compileGovernanceGrants, reconcileGovernanceGrants } from "../src/governance-grants";
 import { signExistingGovernance } from "../src/governance-migrate";
+import { GOVERNANCE_VAULT_ID } from "../src/governance-integrity";
 import { vault } from "../src/parachute";
-import { grantsForUser } from "../src/db";
+import { db, getLedgerSig, grantsForUser } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 
 const SECRET = "test-governance-signing-secret-0123456789abcdef";
@@ -502,4 +503,187 @@ test("the sign-existing CLI refuses to run without an explicit --env file", () =
   });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /explicit --env/);
+});
+
+// ── the signature ledger (anti-replay) ────────────────────────────────────────
+// A valid signature proves "the server wrote this state once". Vault history
+// (0.7.9 /restore) can put back any EARLIER signed state, or recreate a deleted
+// note with its old id + sig. The ledger makes only the CURRENT state trusted.
+
+/** Snapshot a note's metadata exactly as a vault version would hold it. */
+const snapshot = (id: string) => structuredClone(fv.notes.get(id)!.metadata!);
+const ledgerCount = () => (db.prepare("SELECT count(*) AS n FROM governance_sig_ledger").get() as { n: number }).n;
+
+/** An UNLOCKED commons (bootstrap owner writes directly): gardener role + a membership. */
+async function unlockedCommons(): Promise<{ roleId: string; membershipId: string }> {
+  const owner = cookieFor(OWNER);
+  const role = await body(
+    await jreq("/roles", owner, "POST", { name: "gardener", scopeType: "tag", scope: "medicine", capabilities: ["view", "edit"] }),
+  );
+  const mem = await body(await jreq("/memberships", owner, "POST", { subject: A1, role: "gardener" }));
+  return { roleId: role.note.id, membershipId: mem.note.id };
+}
+
+test("ledger: every signed write records the note's CURRENT sig", async () => {
+  const { roleId } = await unlockedCommons();
+  assert.equal(getLedgerSig(GOVERNANCE_VAULT_ID, roleId), fv.notes.get(roleId)!.metadata![GOV_SIG_FIELD]);
+  const r = await jreq(`/roles/${roleId}`, cookieFor(OWNER), "PATCH", { capabilities: ["view"] });
+  assert.equal(r.status, 200);
+  const cur = fv.notes.get(roleId)!;
+  assert.equal(getLedgerSig(GOVERNANCE_VAULT_ID, roleId), cur.metadata![GOV_SIG_FIELD], "an update moves the ledger");
+  assert.equal(verifyGovNote(GOV_TAGS.role, cur), true, "normal service updates keep verifying");
+});
+
+test("REPLAY: restoring an older signed state of a role (wider caps) is rejected", async () => {
+  const { roleId } = await unlockedCommons();
+  const older = snapshot(roleId); // capabilities: view + edit, validly signed
+  assert.equal((await jreq(`/roles/${roleId}`, cookieFor(OWNER), "PATCH", { capabilities: ["view"] })).status, 200);
+
+  fv.notes.get(roleId)!.metadata = older; // a vault-history restore
+  assert.equal(govSigStatus(GOV_TAGS.role, fv.notes.get(roleId)!), "valid", "the old signature is cryptographically fine…");
+  const s = await loadState(vault);
+  assert.ok(!s.roles.some((r) => r.id === roleId), "…but it is not the current state, so it is not trusted");
+  assert.ok(warnings.some((w) => w.includes(roleId) && /replay/.test(w)));
+});
+
+test("REPLAY: re-opening an APPLIED proposal from its older signed state is rejected", async () => {
+  await bootstrap(1);
+  const { id } = await body(
+    await jreq("/proposals", cookieFor(A1), "POST", {
+      action: "amend_governance",
+      target: "governance",
+      payload: JSON.stringify({ kind: "add_membership", membership: { subject: FORGER, role: "gardener" } }),
+    }),
+  );
+  await jreq(`/proposals/${id}/vote`, cookieFor(A2), "POST", { vote: "approve" });
+  const openState = snapshot(id);
+  assert.equal((await jreq(`/proposals/${id}/apply`, cookieFor(OWNER), "POST")).status, 200);
+
+  // Governance later revokes the membership…
+  const { id: rid } = await body(
+    await jreq("/proposals", cookieFor(A1), "POST", {
+      action: "amend_governance",
+      target: "governance",
+      payload: JSON.stringify({ kind: "remove_membership", subject: FORGER, role: "gardener" }),
+    }),
+  );
+  await jreq(`/proposals/${rid}/vote`, cookieFor(A2), "POST", { vote: "approve" });
+  assert.equal((await jreq(`/proposals/${rid}/apply`, cookieFor(OWNER), "POST")).status, 200);
+  assert.ok(!(await loadGovernance(vault, OWNER)).memberships.some((m) => m.subject === FORGER));
+
+  // …and an attacker restores the first proposal to "open" to re-apply it.
+  fv.notes.get(id)!.metadata = openState;
+  assert.equal((await jreq(`/proposals/${id}/apply`, cookieFor(OWNER), "POST")).status, 404);
+  assert.ok(!(await loadGovernance(vault, OWNER)).memberships.some((m) => m.subject === FORGER));
+});
+
+test("REPLAY: a changed vote cannot be flipped back by restoring its older signed state", async () => {
+  await bootstrap(2);
+  const { id } = await body(
+    await jreq("/proposals", cookieFor(A1), "POST", {
+      action: "amend_governance",
+      target: "governance",
+      payload: JSON.stringify({ kind: "remove_role", ref: "gardener" }),
+    }),
+  );
+  await jreq(`/proposals/${id}/vote`, cookieFor(A1), "POST", { vote: "approve" });
+  await jreq(`/proposals/${id}/vote`, cookieFor(A2), "POST", { vote: "approve" });
+  const a2 = notesTagged(GOV_TAGS.vote).find((n) => n.metadata?.voter === A2)!;
+  const approved = snapshot(a2.id);
+  await jreq(`/proposals/${id}/vote`, cookieFor(A2), "POST", { vote: "reject" });
+  assert.equal(verifyGovNote(GOV_TAGS.vote, fv.notes.get(a2.id)!), true, "the revised vote verifies");
+
+  fv.notes.get(a2.id)!.metadata = approved;
+  assert.deepEqual((await loadVotesFor(vault, id)).map((v) => v.voter), [A1]);
+  assert.equal((await jreq(`/proposals/${id}/apply`, cookieFor(OWNER), "POST")).status, 409);
+});
+
+test("DELETE then RECREATE with the old id + sig (vault restore) is rejected — tombstone", async () => {
+  const { membershipId } = await unlockedCommons();
+  const saved = { ...fv.notes.get(membershipId)!, metadata: snapshot(membershipId) };
+  const del = await jreq("/memberships", cookieFor(OWNER), "DELETE", { subject: A1, role: "gardener" });
+  assert.equal(del.status, 200);
+  assert.equal(getLedgerSig(GOVERNANCE_VAULT_ID, membershipId), null, "a governance delete writes a tombstone");
+
+  fv.put(saved); // recreated with the original id
+  const s = await loadState(vault);
+  assert.equal(s.memberships.length, 0);
+  assert.ok(warnings.some((w) => w.includes(membershipId) && /DELETED/.test(w)));
+});
+
+test("no ledger row → untrusted (no trust-on-first-use), even with a valid signature", async () => {
+  const { membershipId } = await unlockedCommons();
+  db.prepare("DELETE FROM governance_sig_ledger").run(); // e.g. a fresh or lost prism-server.db
+  assert.equal(govSigStatus(GOV_TAGS.membership, fv.notes.get(membershipId)!), "valid");
+  assert.equal((await loadState(vault)).memberships.length, 0);
+});
+
+test("migration: a lost ledger is rebuilt WITHOUT rewriting notes ('ledger' action), idempotently", async () => {
+  await bootstrap();
+  db.prepare("DELETE FROM governance_sig_ledger").run();
+  assert.equal((await loadGovernance(vault, OWNER)).config.enabled, false, "governance vanishes without its ledger");
+
+  const dry = await signExistingGovernance(vault, { secret: SECRET, apply: false });
+  assert.ok(dry.plan.every((i) => i.action === "ledger"));
+  assert.equal(dry.ledgerRows, dry.plan.length, "the dry run reports the ledger rows it would write");
+  assert.equal(ledgerCount(), 0, "dry run writes no rows");
+
+  const before = patches().length;
+  const res = await signExistingGovernance(vault, { secret: SECRET, apply: true });
+  assert.equal(res.written.length, 0, "no note is rewritten");
+  assert.equal(patches().length, before);
+  assert.equal(res.ledgerRows, res.plan.length);
+  assert.equal(res.remaining, 0);
+  assert.equal((await loadGovernance(vault, OWNER)).config.enabled, true);
+
+  const again = await signExistingGovernance(vault, { secret: SECRET, apply: true });
+  assert.equal(again.ledgerRows, 0);
+  assert.ok(again.plan.every((i) => i.action === "skip-valid"));
+});
+
+test("migration: populates the ledger for every note it signs", async () => {
+  await legacyCommons();
+  const res = await signExistingGovernance(vault, { secret: SECRET, apply: true });
+  assert.ok(res.written.length > 0);
+  for (const id of res.written) {
+    assert.equal(getLedgerSig(GOVERNANCE_VAULT_ID, id), fv.notes.get(id)!.metadata![GOV_SIG_FIELD]);
+  }
+  assert.equal(res.ledgerRows, res.written.length);
+});
+
+test("migration: never blesses a tombstoned recreation or (by default) a replayed older state", async () => {
+  const { roleId, membershipId } = await unlockedCommons();
+  const saved = { ...fv.notes.get(membershipId)!, metadata: snapshot(membershipId) };
+  await jreq("/memberships", cookieFor(OWNER), "DELETE", { subject: A1, role: "gardener" });
+  fv.put(saved);
+
+  const older = snapshot(roleId);
+  await jreq(`/roles/${roleId}`, cookieFor(OWNER), "PATCH", { capabilities: ["view"] });
+  fv.notes.get(roleId)!.metadata = older;
+
+  const res = await signExistingGovernance(vault, { secret: SECRET, apply: true });
+  assert.equal(res.plan.find((i) => i.id === membershipId)!.action, "skip-tombstoned");
+  assert.equal(res.plan.find((i) => i.id === roleId)!.action, "skip-mismatch");
+  assert.equal((await loadState(vault)).roles.length, 0);
+  assert.equal((await loadState(vault)).memberships.length, 0);
+
+  const accepted = await signExistingGovernance(vault, { secret: SECRET, apply: true, acceptMismatch: true });
+  assert.equal(accepted.plan.find((i) => i.id === roleId)!.action, "ledger");
+  assert.equal((await loadState(vault)).roles.length, 1, "an explicitly accepted state is trusted");
+  assert.equal((await loadState(vault)).memberships.length, 0, "a tombstone is never accepted");
+});
+
+test("NO secret: the ledger changes nothing — replays and recreations behave as before", async () => {
+  setGovernanceSigningSecret(null);
+  const { roleId, membershipId } = await unlockedCommons();
+  const older = snapshot(roleId);
+  await jreq(`/roles/${roleId}`, cookieFor(OWNER), "PATCH", { capabilities: ["view"] });
+  fv.notes.get(roleId)!.metadata = older;
+  const saved = { ...fv.notes.get(membershipId)! };
+  await jreq("/memberships", cookieFor(OWNER), "DELETE", { subject: A1, role: "gardener" });
+  fv.put(saved);
+  const s = await loadState(vault);
+  assert.deepEqual(s.roles.find((r) => r.id === roleId)!.capabilities, ["view", "edit"]);
+  assert.equal(s.memberships.length, 1);
+  assert.equal(warnings.length, 0);
 });

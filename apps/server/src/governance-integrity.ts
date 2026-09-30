@@ -36,8 +36,19 @@
  * types), timestamps the vault maintains (`createdAt`/`updatedAt`), `path`, and
  * any metadata key no parser reads.
  *
- * VERIFICATION. With a secret, a note whose `gov_sig` is missing or wrong is
- * EXCLUDED from governance state and logged once per note id. With no secret the
+ * LEDGER (anti-replay). A signature only proves "the server wrote this exact
+ * state of this note at some point". Vault note history (0.7.9 `/restore`) lets
+ * any vault-token holder put back an EARLIER signed state — re-opening an
+ * applied proposal, restoring a role's wider caps — or recreate a deleted note
+ * with its old id + sig. So the server also records each note's CURRENT sig in
+ * SQLite (`governance_sig_ledger`, db.ts): every signed write upserts it, every
+ * governance delete writes a tombstone. A note is trusted only if its sig is
+ * cryptographically valid AND equals the ledger's current sig for (vault, id).
+ * No row → untrusted (no trust-on-first-use); tombstone → untrusted.
+ *
+ * VERIFICATION. With a secret, a note whose `gov_sig` is missing, wrong, or not
+ * the ledger's current one is EXCLUDED from governance state and logged once per
+ * note id. With no secret the
  * module is inert — reads trust every note and writes add nothing — exactly the
  * pre-WP0.3 behaviour, plus one startup warning.
  *
@@ -49,6 +60,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "./config";
 import type { Note } from "./parachute";
+import { getLedgerSig, setLedgerSig } from "./db";
 import { GOV_TAGS, isGovTag, bool, num, str, strArr, type GovTag, type Meta } from "./governance-fields";
 
 export const GOV_SIG_FIELD = "gov_sig";
@@ -74,6 +86,10 @@ export function governanceSigningSecret(): string {
 }
 
 export const governanceIntegrityEnabled = (): boolean => governanceSigningSecret() !== "";
+
+/** The registry vault id governance lives in (governance is primary-vault only;
+ *  matches `reconcileGovernanceGrants("primary", …)`). Ledger rows are keyed by it. */
+export const GOVERNANCE_VAULT_ID = "primary";
 
 // ── canonical form ────────────────────────────────────────────────────────────
 
@@ -256,16 +272,45 @@ const warnedIds = new Set<string>();
  * off (back-compat). Otherwise the signature must verify; a failure is logged
  * LOUDLY, once per note id — id and type only, never content.
  */
+export type TrustStatus = SigStatus | "unledgered" | "tombstoned" | "stale";
+
+/**
+ * Cryptographic check + ledger check. `unledgered` = the server has no record of
+ * ever writing this note; `tombstoned` = governance deleted it (this is a
+ * recreation); `stale` = a real signature, but not the CURRENT one (a replay of
+ * an older state).
+ */
+export function govTrustStatus(
+  tag: GovTag,
+  note: Pick<Note, "id" | "metadata" | "content">,
+  secret = governanceSigningSecret(),
+  vaultId = GOVERNANCE_VAULT_ID,
+): TrustStatus {
+  const status = govSigStatus(tag, note, secret);
+  if (status !== "valid") return status;
+  const ledger = getLedgerSig(vaultId, note.id);
+  if (ledger === undefined) return "unledgered";
+  if (ledger === null) return "tombstoned";
+  return ledger === note.metadata?.[GOV_SIG_FIELD] ? "valid" : "stale";
+}
+
+const REASON: Record<Exclude<TrustStatus, "valid">, string> = {
+  missing: `missing ${GOV_SIG_FIELD} (written outside the governance service)`,
+  invalid: `invalid ${GOV_SIG_FIELD} (altered outside the governance service, or signed with another secret)`,
+  unledgered: `valid ${GOV_SIG_FIELD} but no ledger record (the server never recorded writing it)`,
+  tombstoned: "note was DELETED through governance — this is a recreation (e.g. a vault restore)",
+  stale: `${GOV_SIG_FIELD} is not the current one — an older state was restored (replay)`,
+};
+
 export function verifyGovNote(tag: GovTag, note: Pick<Note, "id" | "metadata" | "content">): boolean {
   const secret = governanceSigningSecret();
   if (!secret) return true;
-  const status = govSigStatus(tag, note, secret);
+  const status = govTrustStatus(tag, note, secret);
   if (status === "valid") return true;
   if (!warnedIds.has(note.id)) {
     warnedIds.add(note.id);
     console.warn(
-      `[governance] INTEGRITY: ignoring ${tag} note ${note.id} — ${status} ${GOV_SIG_FIELD}. ` +
-        `It was written outside the governance service or altered since; it confers nothing ` +
+      `[governance] INTEGRITY: ignoring ${tag} note ${note.id} — ${REASON[status]}. It confers nothing ` +
         `until re-signed (scripts/governance-sign-existing.ts) or rewritten through governance.`,
     );
   }
@@ -309,7 +354,10 @@ export async function createGovNote(
   const created = await vault.createNote({ ...params, metadata: clean });
   // Sign what the vault actually stored (content may be normalized on write).
   const content = typeof created.content === "string" ? created.content : params.content;
-  return vault.updateNote(created.id, { metadata: withGovSig(tag, created.id, clean, content) });
+  const metadata = withGovSig(tag, created.id, clean, content);
+  const updated = await vault.updateNote(created.id, { metadata });
+  setLedgerSig(GOVERNANCE_VAULT_ID, created.id, metadata[GOV_SIG_FIELD] as string);
+  return updated;
 }
 
 /**
@@ -334,7 +382,23 @@ export async function updateGovNote(
   if (patch.metadata === undefined && !projectionUsesContent(tag)) return vault.updateNote(current.id, patch);
   const { [GOV_SIG_FIELD]: _drop, ...merged } = { ...(current.metadata ?? {}), ...(patch.metadata ?? {}) };
   const content = patch.content ?? current.content;
-  return vault.updateNote(current.id, { ...patch, metadata: withGovSig(tag, current.id, merged, content) });
+  const metadata = withGovSig(tag, current.id, merged, content);
+  const updated = await vault.updateNote(current.id, { ...patch, metadata });
+  // The new state is now the ONLY trusted one — every earlier signed state of
+  // this note (still sitting in vault history) stops verifying.
+  setLedgerSig(GOVERNANCE_VAULT_ID, current.id, metadata[GOV_SIG_FIELD] as string);
+  return updated;
+}
+
+/**
+ * Delete a governance note and TOMBSTONE it in the ledger, so a later vault
+ * restore that recreates it (same id, same valid sig) is refused. Tombstones are
+ * written even with integrity off: a note deleted in an off-period must not come
+ * back trusted if integrity is re-enabled.
+ */
+export async function deleteGovNote(vault: { deleteNote(id: string): Promise<void> }, id: string): Promise<void> {
+  await vault.deleteNote(id);
+  setLedgerSig(GOVERNANCE_VAULT_ID, id, null);
 }
 
 // ── startup ───────────────────────────────────────────────────────────────────

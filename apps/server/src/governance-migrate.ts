@@ -4,31 +4,49 @@
  * the fake vault.
  *
  * Turning on GOVERNANCE_SIGNING_SECRET hides every governance note that lacks a
- * valid `gov_sig`, which on an existing commons is ALL of them. This walks every
- * `governance-*` note in a vault and plans (dry run) or applies a signature:
+ * valid `gov_sig` recorded as CURRENT in the signature ledger
+ * (`governance_sig_ledger`), which on an existing commons is ALL of them. This
+ * walks every `governance-*` note in a vault and plans (dry run) or applies:
  *
- *   sign            no gov_sig yet
- *   resign          a gov_sig that does not verify under this secret (older
- *                   secret, or the note was edited outside governance)
- *   skip-valid      already verifies — idempotency: a second run writes nothing
- *   skip-ambiguous  carries MORE than one governance tag; it can only ever verify
- *                   as one type, so a human must decide (and fix the tags) first
+ *   sign             no gov_sig yet → sign the note + record it in the ledger
+ *   resign           a gov_sig that does not verify under this secret (older
+ *                    secret, or edited outside governance) → re-sign + record
+ *   ledger           a valid gov_sig the ledger has no row for (e.g. a restored
+ *                    or fresh prism-server.db) → record it; the note is untouched
+ *   skip-valid       valid AND the ledger's current sig — idempotency: a second
+ *                    run writes nothing
+ *   skip-tombstoned  the ledger says governance DELETED this note; it exists again
+ *                    only because something recreated it (a vault restore). Never
+ *                    blessed — delete it from the vault.
+ *   skip-mismatch    valid, but the ledger holds a DIFFERENT current sig: this is
+ *                    an older state put back (replay), or a write that crashed
+ *                    between vault and ledger. Blessed only with acceptMismatch.
+ *   skip-ambiguous   carries MORE than one governance tag; it can only ever verify
+ *                    as one type, so a human must decide (and fix the tags) first
  *
- * TRUST NOTE: signing is a statement that the owner accepts the note as
- * legitimate governance state. Anything forged BEFORE the migration gets blessed
- * with it — which is why the CLI prints the membership/vote roster for review and
- * is dry-run by default.
+ * TRUST NOTE: signing/recording is a statement that the owner accepts the note
+ * as legitimate governance state. Anything forged BEFORE the migration gets
+ * blessed with it — which is why the CLI prints the roster for review and is
+ * dry-run by default.
  */
 import type { Note } from "./parachute";
 import { GOV_TAG_LIST, type GovTag, str } from "./governance-fields";
-import { GOV_SIG_FIELD, govSigStatus, withGovSig } from "./governance-integrity";
+import { GOV_SIG_FIELD, GOVERNANCE_VAULT_ID, govSigStatus, withGovSig } from "./governance-integrity";
+import { getLedgerSig, setLedgerSig } from "./db";
 
 export interface MigrationVault {
   listNotes(opts: { tags?: string[]; includeContent?: boolean }): Promise<Note[]>;
   updateNote(id: string, params: { metadata?: Record<string, unknown> }): Promise<Note>;
 }
 
-export type SignAction = "sign" | "resign" | "skip-valid" | "skip-ambiguous";
+export type SignAction =
+  | "sign"
+  | "resign"
+  | "ledger"
+  | "skip-valid"
+  | "skip-tombstoned"
+  | "skip-mismatch"
+  | "skip-ambiguous";
 
 export interface SignPlanItem {
   id: string;
@@ -41,9 +59,21 @@ export interface SignPlanItem {
 
 export interface SignResult {
   plan: SignPlanItem[];
+  /** Notes whose vault metadata was (re)signed. */
   written: string[];
-  /** Pending (sign/resign) items after an --apply re-plan; must be empty. */
+  /** Ledger rows written (or, on a dry run, that WOULD be written). */
+  ledgerRows: number;
+  /** Pending items after an --apply re-plan; must be 0. On a dry run: pending now. */
   remaining: number;
+}
+
+export interface SignOptions {
+  secret: string;
+  apply: boolean;
+  /** Registry vault id the ledger rows are keyed by (governance runs on "primary"). */
+  vaultId?: string;
+  /** Record valid-but-mismatched notes too (after a human confirmed them). */
+  acceptMismatch?: boolean;
 }
 
 function summarize(tag: GovTag, m: Note["metadata"]): string {
@@ -82,44 +112,69 @@ async function collect(vault: MigrationVault): Promise<Map<string, { note: Note;
 
 export async function planGovernanceSigning(
   vault: MigrationVault,
-  secret: string,
+  opts: { secret: string; vaultId?: string; acceptMismatch?: boolean },
 ): Promise<{ plan: SignPlanItem[]; notes: Map<string, Note> }> {
-  if (!secret) throw new Error("a signing secret is required");
+  if (!opts.secret) throw new Error("a signing secret is required");
+  const vaultId = opts.vaultId ?? GOVERNANCE_VAULT_ID;
   const byId = await collect(vault);
   const plan: SignPlanItem[] = [];
   const notes = new Map<string, Note>();
   for (const { note, tags } of byId.values()) {
     notes.set(note.id, note);
     const tag = tags[0]!;
+    const summary = summarize(tag, note.metadata);
     if (tags.length > 1) {
       plan.push({ id: note.id, tag, tags, action: "skip-ambiguous", summary: `tagged ${tags.join(" + ")}` });
       continue;
     }
-    const status = govSigStatus(tag, note, secret);
-    const action: SignAction = status === "valid" ? "skip-valid" : status === "missing" ? "sign" : "resign";
-    plan.push({ id: note.id, tag, tags, action, summary: summarize(tag, note.metadata) });
+    const ledger = getLedgerSig(vaultId, note.id);
+    let action: SignAction;
+    if (ledger === null) {
+      action = "skip-tombstoned";
+    } else {
+      const status = govSigStatus(tag, note, opts.secret);
+      if (status === "missing") action = "sign";
+      else if (status === "invalid") action = "resign";
+      else if (ledger === undefined) action = "ledger";
+      else if (ledger === note.metadata?.[GOV_SIG_FIELD]) action = "skip-valid";
+      else action = opts.acceptMismatch ? "ledger" : "skip-mismatch";
+    }
+    // A (re)sign over a note the ledger already had a sig for means the note was
+    // changed outside governance — or an older, unsigned state was put back.
+    // Rotation also lands here. Flag it for the human reading the roster.
+    const flagged =
+      (action === "sign" || action === "resign") && typeof ledger === "string" ? `${summary}  [CHANGED since last signed — review]` : summary;
+    plan.push({ id: note.id, tag, tags, action, summary: flagged });
   }
   plan.sort((a, b) => (a.tag === b.tag ? a.id.localeCompare(b.id) : a.tag.localeCompare(b.tag)));
   return { plan, notes };
 }
 
-const pending = (p: SignPlanItem[]) => p.filter((i) => i.action === "sign" || i.action === "resign");
+const PENDING: ReadonlySet<SignAction> = new Set(["sign", "resign", "ledger"]);
+const pending = (p: SignPlanItem[]) => p.filter((i) => PENDING.has(i.action));
 
 /** Dry run (default) or apply. Idempotent: an applied vault re-plans to zero pending. */
-export async function signExistingGovernance(
-  vault: MigrationVault,
-  opts: { secret: string; apply: boolean },
-): Promise<SignResult> {
-  const { plan, notes } = await planGovernanceSigning(vault, opts.secret);
+export async function signExistingGovernance(vault: MigrationVault, opts: SignOptions): Promise<SignResult> {
+  const vaultId = opts.vaultId ?? GOVERNANCE_VAULT_ID;
+  const { plan, notes } = await planGovernanceSigning(vault, opts);
+  const todo = pending(plan);
   const written: string[] = [];
-  if (!opts.apply) return { plan, written, remaining: pending(plan).length };
+  if (!opts.apply) return { plan, written, ledgerRows: todo.length, remaining: todo.length };
 
-  for (const item of pending(plan)) {
+  let ledgerRows = 0;
+  for (const item of todo) {
     const note = notes.get(item.id)!;
-    const { [GOV_SIG_FIELD]: _old, ...meta } = note.metadata ?? {};
-    await vault.updateNote(item.id, { metadata: withGovSig(item.tag, item.id, meta, note.content, opts.secret) });
-    written.push(item.id);
+    if (item.action === "ledger") {
+      setLedgerSig(vaultId, item.id, note.metadata![GOV_SIG_FIELD] as string);
+    } else {
+      const { [GOV_SIG_FIELD]: _old, ...meta } = note.metadata ?? {};
+      const metadata = withGovSig(item.tag, item.id, meta, note.content, opts.secret);
+      await vault.updateNote(item.id, { metadata });
+      setLedgerSig(vaultId, item.id, metadata[GOV_SIG_FIELD] as string);
+      written.push(item.id);
+    }
+    ledgerRows++;
   }
-  const after = await planGovernanceSigning(vault, opts.secret);
-  return { plan, written, remaining: pending(after.plan).length };
+  const after = await planGovernanceSigning(vault, { ...opts, acceptMismatch: false });
+  return { plan, written, ledgerRows, remaining: pending(after.plan).length };
 }
