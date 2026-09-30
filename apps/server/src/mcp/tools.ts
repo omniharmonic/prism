@@ -23,7 +23,7 @@
  */
 import * as z from "zod/v4";
 import type { Hono } from "hono";
-import { McpServer } from "@modelcontextprotocol/server";
+import { McpServer, ResourceTemplate, ResourceNotFoundError, type CacheHint } from "@modelcontextprotocol/server";
 import type { McpPrincipal } from "./auth";
 import { dispatchAsActor, type Dispatch } from "./dispatch";
 import { ToolError, mapToolError } from "./errors";
@@ -95,6 +95,20 @@ export async function visibleTools(principal: McpPrincipal, tools: readonly Pris
   return out;
 }
 
+/** A resource template the endpoint serves (WP6.2: `prism://note/{id}`). Same access/dispatch model as a tool. */
+export interface PrismResource {
+  name: string;
+  uriTemplate: string;
+  title?: string;
+  description: string;
+  mimeType: string;
+  cacheHint?: CacheHint;
+  /** Registered (and readable) only when true for this principal. */
+  access: (principal: McpPrincipal) => boolean | Promise<boolean>;
+  /** Return the contents, or throw ToolError (forbidden/not_found both surface as "resource not found"). */
+  read: (uri: URL, vars: Record<string, string | string[]>, ctx: ToolContext) => Promise<Array<{ uri: string; mimeType: string; text: string }>>;
+}
+
 const text = (data: unknown): string => JSON.stringify(data, null, 2);
 
 function errorResult(err: ToolError) {
@@ -117,7 +131,12 @@ export const SERVER_INSTRUCTIONS =
  * it may see, each wrapped with the per-call access re-check, error mapping and
  * audit line. Stateless — a fresh instance per HTTP request.
  */
-export async function buildMcpServer(principal: McpPrincipal | undefined, tools: readonly PrismTool[], app: Hono): Promise<McpServer> {
+export async function buildMcpServer(
+  principal: McpPrincipal | undefined,
+  tools: readonly PrismTool[],
+  app: Hono,
+  resources: readonly PrismResource[] = [],
+): Promise<McpServer> {
   const server = new McpServer({ ...SERVER_INFO }, { instructions: SERVER_INSTRUCTIONS });
   if (!principal) return server; // unreachable behind the router's auth gate — expose nothing
   const ctx: ToolContext = {
@@ -148,6 +167,35 @@ export async function buildMcpServer(principal: McpPrincipal | undefined, tools:
           if (err.code === "internal_error") console.error(`[mcp] ${tool.name} failed:`, e);
           audit(principal, tool.name, `error:${err.code}`, started);
           return errorResult(err);
+        }
+      },
+    );
+  }
+  for (const res of resources) {
+    let allowed = false;
+    try {
+      allowed = await res.access(principal);
+    } catch {
+      allowed = false; // fail closed
+    }
+    if (!allowed) continue;
+    server.registerResource(
+      res.name,
+      new ResourceTemplate(res.uriTemplate, { list: undefined }),
+      { title: res.title, description: res.description, mimeType: res.mimeType, cacheHint: res.cacheHint },
+      async (uri, vars) => {
+        const started = Date.now();
+        try {
+          const contents = await res.read(uri, vars as Record<string, string | string[]>, ctx);
+          audit(principal, `resource:${res.name}`, "ok", started);
+          return { contents };
+        } catch (e) {
+          const err = mapToolError(e);
+          if (err.code === "internal_error") console.error(`[mcp] resource ${res.name} failed:`, e);
+          audit(principal, `resource:${res.name}`, `error:${err.code}`, started);
+          // A resource you may not see answers exactly like one that does not exist.
+          if (err.code === "forbidden" || err.code === "not_found") throw new ResourceNotFoundError(uri.href);
+          throw new Error(err.message);
         }
       },
     );

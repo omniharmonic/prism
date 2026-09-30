@@ -143,19 +143,49 @@ device token dies when that device is revoked.
 
 ### Tools
 
-WP6.1 ships the endpoint, auth and registry with one tool, `prism_whoami`. The core note tools,
-collab-safe edits, comments, governance and sharing land in WP6.2–6.4
-(`docs/roadmap/architecture-v2/WORKPLAN.md`). Every tool is defined with a required `access(principal,
-args)` check and a required `scope: "read" | "write"` that must agree with `annotations.readOnlyHint`;
-`tools/list` is filtered per caller, and a hidden tool answers exactly like a nonexistent one.
+Every tool acts as YOUR Prism account: it runs the gateway's own route in-process, so per-note grants,
+capabilities, anti-escalation and private-note rules apply exactly as in the web app. `tools/list` shows
+only what your account could use at all (a viewer sees no write tools; a create-only drop-box holder sees
+just `prism_create_note`; an account with no grants sees just `prism_whoami`); the per-note decision is
+always the gateway's. A hidden tool answers exactly like a nonexistent one. Errors are uniform
+`{error, message, detail?}` with `error` one of `forbidden`, `not_found`, `conflict`, `invalid_request`,
+`rate_limited`, `upstream_error`.
+
+| Tool | Scope | Needs | What it does |
+|---|---|---|---|
+| `prism_whoami` | read | any account | Your account, vault, auth method and capability summary |
+| `prism_query_notes` | read | view | List/search notes you may see: `tag` (incl. child tags), `search`, `path_prefix`, `limit` ≤ 200 (default 50), `include_content` (default false; a 2,000-char preview). Newest first, lean rows with `_caps` |
+| `prism_get_note` | read | view on the note | Content (≤ 100,000 chars, else `contentTruncated`), metadata, tags, path, `_caps`, and `collab: {kind, live}` (editor kind; whether a live collaborative session has it open) |
+| `prism_semantic_search` | read | view | Embedding + full-text search, `limit` ≤ 50. **Primary vault only** — a credential bound to another vault gets an `invalid_request` pointing at `prism_query_notes` |
+| `prism_list_tags` | read | view | Tags + counts you may see |
+| `prism_list_versions` | read | view on the live note | Version history, newest first (no bodies, no provenance) |
+| `prism_get_version` | read | view on the live note | One prior version's content + metadata |
+| `prism_create_note` | write | `create` on the note's tags | `{content, path?, tags[], metadata?}`. A tagless note needs a whole-vault grant; the creator is stamped by the server |
+| `prism_update_note` | write | `edit` (content/metadata), `organize` (path/tags) | `{id, if_updated_at, content?, metadata?, add_tags?, remove_tags?, path?}` |
+| `prism_delete_note` | write (destructive) | creator with `edit`, or `delete` | Permanent delete |
+| `prism_restore_version` | write | `edit` | `{id, version_ix, if_updated_at}`; refused if the version would change who can see the note |
+
+Resource template **`prism://note/{id}`** (read, needs view): a document-kind note as Markdown (collab's HTML
+is converted), any other kind as its raw content; a second content block carries JSON metadata with
+`_caps` and the collab kind. Not-viewable and nonexistent notes fail identically. Results are
+`cacheScope: private`, `ttlMs: 0`.
+
+**Concurrency contract.** `prism_update_note` and `prism_restore_version` REQUIRE `if_updated_at` — the
+note's `updatedAt` from your latest `prism_get_note`. If the note changed since, you get `conflict` with
+`detail.updatedAt` (the current timestamp, never the body): re-read, re-apply, retry. **Live documents:**
+while a note is open in live collaborative editing (`collab.live`), content writes and restores are
+refused with `conflict` (`detail.live`) rather than racing the live document; metadata-, tag- and path-only
+updates still go through. Wait until no one has it open. A collab-safe edit tool comes in WP6.3.
 
 A read-only token is held to reads three times over: only read tools are listed, a write-scope tool is
 refused at call time, and a tool's in-process calls into the gateway may only be `GET`/`HEAD` (plus an
 explicit allowlist of read-only POST routes — empty today). Tools can only reach `/api/…` routes, with
-any `.`/`..` path segment (raw or percent-encoded) refused.
+any `.`/`..` path segment (raw or percent-encoded) refused. Note ids containing `/` are not addressable
+(use the id, not the path).
 
 ### Not yet
 
+- **Collab-safe edits, comments, governance, sharing** — WP6.3–6.4.
 - **OAuth / claude.ai connectors** — waits on hub per-surface audiences (or Prism as a hub module).
 - **Mounting behind the hub** at `/surface/prism/api/mcp` — the router supports it (`mountPrismMcp(app, path)`), not wired.
 
