@@ -8,6 +8,7 @@ import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
 import type { Note } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 interface LinkData {
   sourceId: string;
@@ -62,21 +63,21 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
   const { data: threadNotes, isLoading: threadsLoading } = useQuery({
     queryKey: ["vault", "notes", { tag: "message-thread" }],
     queryFn: () => vaultApi.listNotes({ tag: "message-thread", limit: 500 }),
-    refetchInterval: 30_000,
+    refetchInterval: useLivePollMs(30_000),
   });
 
   // Fetch email notes
   const { data: emailNotes } = useQuery({
     queryKey: ["vault", "notes", { tag: "email" }],
     queryFn: () => vaultApi.listNotes({ tag: "email", limit: 200 }),
-    refetchInterval: 30_000,
+    refetchInterval: useLivePollMs(30_000),
   });
 
   // Fetch person notes (for People view)
   const { data: personNotes } = useQuery({
     queryKey: ["vault", "notes", { tag: "person", limit: 2000 }],
     queryFn: () => vaultApi.listNotes({ tag: "person", limit: 2000 }),
-    refetchInterval: 60_000,
+    refetchInterval: useLivePollMs(60_000),
   });
 
   const allMessages = useMemo(() => [...(threadNotes || []), ...(emailNotes || [])], [threadNotes, emailNotes]);

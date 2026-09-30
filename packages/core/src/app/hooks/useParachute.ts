@@ -4,6 +4,7 @@ import { systemApi, githubSyncApi } from "../../lib/parachute/client";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { queryKeys } from "../../lib/parachute/queries";
 import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 export function useNotes(filters?: NoteFilters) {
   const client = useVaultClient();
@@ -202,7 +203,7 @@ export function useServiceStatus() {
   return useQuery({
     queryKey: queryKeys.services.status(),
     queryFn: systemApi.checkServices,
-    refetchInterval: 30_000,
+    refetchInterval: useLivePollMs(30_000),
   });
 }
 

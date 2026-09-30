@@ -1,5 +1,6 @@
 import { Component, useEffect, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { InvalidationSubscriber } from "./data/InvalidationContext";
 import { Shell } from "./components/layout/Shell";
 import { Onboarding } from "./components/layout/Onboarding";
 import { useUIStore } from "./app/stores/ui";
@@ -94,6 +95,7 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
+        <InvalidationSubscriber />
         {(onboarded || skipOnboarding) ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
       </QueryClientProvider>
     </ErrorBoundary>

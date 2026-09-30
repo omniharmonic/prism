@@ -6,6 +6,7 @@ import { Settings } from "./Settings";
 import { FontSwitch } from "../renderers/DocumentChrome";
 import { useQuery } from "@tanstack/react-query";
 import { serviceApi, type BackgroundServiceStatus } from "../../lib/parachute/client";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 export function StatusBar() {
   const { data: stats } = useVaultStats();
@@ -21,7 +22,7 @@ export function StatusBar() {
   const { data: bgServices } = useQuery({
     queryKey: ["services", "background"],
     queryFn: serviceApi.getStatus,
-    refetchInterval: 30_000,
+    refetchInterval: useLivePollMs(30_000),
   });
 
   return (

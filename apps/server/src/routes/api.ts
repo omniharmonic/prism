@@ -19,6 +19,7 @@ import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
+import { openEventStream } from "../events";
 import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
 
 export const api = new Hono();
@@ -166,6 +167,24 @@ api.get("/tree", compress(), async (c) => {
   const headers = { ETag: etag, "Cache-Control": "private, no-cache", Vary: "Cookie, Authorization, X-Prism-Vault" };
   if (etagMatches(c.req.header("if-none-match"), etag)) return new Response(null, { status: 304, headers });
   return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "application/json" } });
+});
+
+/**
+ * GET /api/events: SSE invalidation channel (WP7.2; see ../events.ts). Ids only,
+ * filtered per connection through the same `view`-cap math as `/tree`. Fed by the
+ * tree projection's single vault subscribe socket + gateway write-through. No
+ * compress() (would buffer the stream). Anon → 401.
+ */
+api.get("/events", async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return c.json({ error: "unauthorized" }, 401);
+  const owner = roleAtLeast(actor.role, "admin");
+  const entry = owner ? resolveVaultEntry(c.req.header("x-prism-vault")) : resolveVaultEntry(actor.vaultId);
+  return openEventStream(c, {
+    entry,
+    principal: actor.kind === "user" ? `u:${actor.email}` : `l:${actor.capabilityId}`,
+    canView: owner ? () => true : (r) => capsFor(actor, r).has("view"),
+  });
 });
 
 // Owner short-circuit: full vault access, token-free. Registered before the

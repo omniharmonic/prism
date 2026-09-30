@@ -1,9 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
+import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
@@ -240,9 +241,11 @@ async function start() {
                 <PushProvider value={pushClient}>
                 {/* Server agent sessions (WP3.2). Owner-only server-side; the UI
                     probes and hides itself on 403. None for capability viewers. */}
+                <InvalidationSourceProvider source={httpInvalidationSource}>
                 <AgentClientProvider client={capability ? null : httpAgentClient}>
                   <App skipOnboarding={isViewer} initialTab={initialTab} />
                 </AgentClientProvider>
+                </InvalidationSourceProvider>
                 <OfflineIndicator />
                 {!isNative && <UpdatePrompt />}
                 </PushProvider>

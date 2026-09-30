@@ -116,6 +116,9 @@ export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./
 
 // Agent client seam (Arch v2 WP3.2): durable server-side agent sessions.
 export { AgentClientProvider, useAgentClient, useAgentAvailable, useAgentAvailability, agentKeys, type AgentAvailability } from "./data/AgentClientContext";
+export { InvalidationSourceProvider, InvalidationSubscriber } from "./data/InvalidationContext";
+export { createInvalidator, parseInvalidationEvent, EXTRA_LIVE_KEYS, type InvalidationEvent, type InvalidationSource, type InvalidationHandlers } from "./lib/events/invalidation";
+export { useLivePollMs, isEventChannelLive, LIVE_FALLBACK_MS } from "./lib/events/channelStatus";
 export { createHttpAgentClient, type HttpAgentClientOptions, type AgentFetch } from "./lib/agent/httpAgentClient";
 export { AgentApiError, isTerminalTurn } from "./lib/agent/sessions";
 export type {

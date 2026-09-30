@@ -12,6 +12,7 @@ import type { RendererProps } from "../renderers/RendererProps";
 import { useAgentClient, useAgentAvailable, agentKeys } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
+import { useLivePollMs } from "../../lib/events/channelStatus";
 
 function formatDuration(secs: number | null): string {
   if (!secs) return "";
@@ -71,7 +72,7 @@ export default function AgentActivity(_props: RendererProps) {
     queryKey: agentKeys(agentClient).list(false),
     queryFn: () => agentClient!.listSessions({ limit: 50 }),
     enabled: agentChat,
-    refetchInterval: 20_000,
+    refetchInterval: useLivePollMs(20_000, 60_000),
   });
 
   useEffect(() => {
@@ -87,13 +88,13 @@ export default function AgentActivity(_props: RendererProps) {
   const { data: skills } = useQuery({
     queryKey: ["agent", "skills", isWeb ? "web" : "desktop"],
     queryFn: () => (isWeb ? webGetSkills(vaultClient) : agentApi.getSkills()),
-    refetchInterval: 30_000,
+    refetchInterval: useLivePollMs(30_000),
   });
 
   const { data: dispatches, isLoading } = useQuery({
     queryKey: ["agent", "dispatches", isWeb ? "web" : "desktop", agentChat],
     queryFn: () => (isWeb ? webGetDispatches(vaultClient, { excludeSessions: agentChat }) : agentApi.getDispatches()),
-    refetchInterval: isWeb ? 20_000 : 5_000,
+    refetchInterval: useLivePollMs(isWeb ? 20_000 : 5_000),
   });
 
   /** Open a skill or dispatch report as a normal note tab (the web monitor's
