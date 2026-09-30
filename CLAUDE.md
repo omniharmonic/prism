@@ -178,6 +178,21 @@ Per-skill routing is stored in `ModelRouter.skill_config` (a `Mutex<HashMap<Stri
 
 The `PRISM_CONTEXT` constant in `commands/agent.rs` is the system prompt prepended to all agent calls — it describes the vault MCP tools and Benjamin's data context.
 
+### Server agent runner (`apps/server/src/agent-exec.ts`, `/api/agent/*`)
+
+Admin/owner-session-only one-shot `claude -p` dispatches against the actor's active vault (hardened in Arch v2 WP0.1). The argv is a fixed template; the client supplies only prompt/skill/noteId. **Isolation flags** (all asserted by `test/agent-exec.test.ts`):
+- `--strict-mcp-config --mcp-config <tmp>` — the ONLY MCP server is `parachute-vault` for the target vault, written per dispatch as a 0600 file in a 0700 `mkdtemp` dir and deleted when the run ends (exit, error, cancel, spawn failure). Without `--strict-mcp-config`, user-scope servers in `~/.claude.json` and the repo `.mcp.json` load too (`--mcp-config` only *adds*).
+- `--tools ""` (no built-in tools at all — no Read/Write/Bash/WebFetch/WebSearch/Task) + `--allowedTools mcp__parachute-vault` + `--permission-mode dontAsk --permission-prompts none` — the vault MCP is auto-approved, everything else denied, nobody is prompted. `--dangerously-skip-permissions` is gone.
+- `--setting-sources ""`, `--no-session-persistence`, cwd = fixed EMPTY `~/.prism/agent-cwd` (`AGENT_CWD`; created 0700 lazily at first run; a **non-empty cwd refuses to run** so a planted CLAUDE.md can't become context).
+- Env is an **allowlist** (`ENV_ALLOWLIST`: HOME/USER/LOGNAME/LANG/LC_*/TMPDIR/TZ + a fixed PATH + `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `DISABLE_AUTOUPDATER`). HOME is what the CLI needs to find the claude.ai subscription login. No server secret (`PARACHUTE_TOKEN`, `SESSION_SECRET`, …, nor `ANTHROPIC_API_KEY`) is ever inherited — an API-key login would need an explicit, deliberate addition.
+- `resolveClaude()`: `which claude` → `~/.local/bin/claude` (native installer) → `~/.npm-global/bin/claude` → bare `claude`.
+
+**Capacity.** Global semaphore `AGENT_MAX_CONCURRENT` (default 1) + memory admission (`AGENT_SWAP_MAX_PCT` 80 / `AGENT_FREE_MIN_PCT` 15; macOS probe = `sysctl vm.swapusage` + `memory_pressure -Q` — **not** `os.freemem()`, which excludes cache and always reads low; Linux = `/proc/meminfo`). Excess or memory-refused dispatches sit in status `queued` with a `queuedReason` and are re-checked every `AGENT_ADMISSION_RETRY_MS` (15 s); only a full queue (`AGENT_MAX_QUEUE`, 20) is refused (503). An unreadable probe fails OPEN (the cap still holds). `GET /api/agent/runner` reports running/queued/last verdict. Optional `AGENT_MAX_BUDGET_USD` adds `--max-budget-usd`. 30-min wall clock (SIGTERM, SIGKILL after 10 s).
+
+**SSE** (`GET /api/agent/stream/:id`): `snapshot` (full dispatch once) → `delta` `{text}` (new output only) / `status` (metadata, no output) → `end` (metadata + `outputLength`), then closes. Never re-send the accumulated output per chunk.
+
+**Live check:** `node --import tsx scripts/verify-agent-exec.ts --env <sandbox.env>` — requires an explicit env file (`AGENT_VERIFY_VAULT_URL/_VAULT/_TOKEN`), refuses :1940/:8787, provisions nothing, and asserts from the CLI's `system/init` (via `src/agent-init-check.ts`) that the tool list is ONLY `mcp__parachute-vault__*`, the only MCP server is `parachute-vault`, permissionMode is `dontAsk`, and cwd is the agent cwd. Tests inject spawner/probe/cwd via `configureAgentRunner` — never let a test fall through to the real spawner or the real `~/.prism`.
+
 ## Configuration
 
 Desktop config loads from the platform app-config dir — on **macOS that is `~/Library/Application Support/prism/prism-config.json`** (Tauri app-data), not `~/.config/prism`. On first launch the file is created with defaults. The Settings UI writes back to it. No external `.env` is required for desktop. (The web/server path uses `apps/server/.env` instead — see *Prism Server* above.)
