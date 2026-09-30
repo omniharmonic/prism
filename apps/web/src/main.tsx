@@ -6,7 +6,9 @@ import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, postLoginTarget } from "./config";
-import { LoginScreen } from "./auth/LoginScreen";
+import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
+import { NativeSignInScreen } from "./auth/NativeSignInScreen";
+import { isNative } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
@@ -17,6 +19,9 @@ import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
+
+// Native shell: no password/magic-link form — the host runs the device-token flow.
+const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
 
 // Importing `@prism/core` pulls in the global design system (tokens/glass/
 // typography) as a side effect, so the login screen is styled too.
@@ -121,7 +126,7 @@ async function start() {
     if (!me.authenticated) {
       root.render(
         <React.StrictMode>
-          <LoginScreen notice="Sign in to access commons governance." />
+          <SignInScreen notice="Sign in to access commons governance." />
         </React.StrictMode>,
       );
       return;
@@ -141,7 +146,7 @@ async function start() {
     if (!me.authenticated) {
       root.render(
         <React.StrictMode>
-          <LoginScreen notice="Sign in to enter the commons." />
+          <SignInScreen notice="Sign in to enter the commons." />
         </React.StrictMode>,
       );
       return;
@@ -186,7 +191,7 @@ async function start() {
             : undefined;
       root.render(
         <React.StrictMode>
-          <LoginScreen notice={notice} />
+          <SignInScreen notice={notice} />
         </React.StrictMode>,
       );
       return;
@@ -211,7 +216,7 @@ async function start() {
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
                 <App skipOnboarding={isViewer} initialTab={initialTab} />
                 <OfflineIndicator />
-                <UpdatePrompt />
+                {!isNative && <UpdatePrompt />}
               </CollabDocumentProvider>
             </AccountProvider>
           </CollabSharingProvider>

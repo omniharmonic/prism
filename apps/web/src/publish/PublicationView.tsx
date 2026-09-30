@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { GATEWAY_ORIGIN } from "../config";
+import { serverFetch } from "../transport";
 import { getTemplate } from "./templates/registry";
 import type { PubGraph, PubMapFeature, PubNote, PublicationManifest } from "./templates/types";
 
@@ -18,7 +18,7 @@ import type { PubGraph, PubMapFeature, PubNote, PublicationManifest } from "./te
  * touching this shell.
  */
 
-const api = (path: string) => `${GATEWAY_ORIGIN}/api/p${path}`;
+const api = (path: string) => `/api/p${path}`;
 
 export function PublicationView({ slug, noteId }: { slug: string; noteId: string | null }) {
   const [manifest, setManifest] = useState<PublicationManifest | null>(null);
@@ -43,7 +43,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}`), { credentials: "include" });
         if (!r.ok) {
           if (!cancelled)
             setError(
@@ -76,7 +76,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}/graph`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/graph`), { credentials: "include" });
         if (!r.ok) return;
         const g = (await r.json()) as PubGraph;
         if (!cancelled) setGraph(g);
@@ -97,7 +97,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}/map`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/map`), { credentials: "include" });
         if (!r.ok) return;
         const m = (await r.json()) as { features?: PubMapFeature[] };
         if (!cancelled) setMapFeatures(Array.isArray(m.features) ? m.features : []);
@@ -122,7 +122,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     setNoteLoading(true);
     (async () => {
       try {
-        const r = await fetch(
+        const r = await serverFetch(
           api(`/${encodeURIComponent(slug)}/notes/${encodeURIComponent(activeId)}`),
           { credentials: "include" },
         );
@@ -153,7 +153,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   const onUnlock = useCallback(
     async (password: string): Promise<boolean> => {
       try {
-        const r = await fetch(api(`/${encodeURIComponent(slug)}/auth`), {
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/auth`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",

@@ -23,10 +23,13 @@ import type {
   NoteVersionPage,
 } from "@prism/core";
 import { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
-import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
+import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getCapabilityToken } from "../config";
 import { enqueue } from "../offline/outbox";
+import { serverFetch } from "../transport";
+import { readThrough } from "../offline/readCache";
 
-// Auth rides the httpOnly session cookie (credentials: "include"); the browser
+// Auth rides the httpOnly session cookie (PWA) or a device bearer token (native
+// build) via serverFetch (../transport); the browser
 // holds no vault token. Capability-link recipients (no session) additionally
 // send Authorization: Capability <token>; the gateway authorizes either way.
 // contextHeaders() names the active vault + workspace (owner switch; empty = default).
@@ -36,12 +39,25 @@ const jsonHeaders = (): Record<string, string> => ({
   ...contextHeaders(),
 });
 
+/** GETs worth keeping for offline reads: notes (single + lists + graph), tags, vault info. */
+const cacheable = (method: string, path: string): boolean =>
+  method === "GET" && /^\/(notes|tags|vault)(\/|\?|$)/.test(path) && !path.includes("search=");
+
+/** Cache scope: server + vault + workspace + capability link, so switching any never leaks entries. */
+function cacheKey(path: string): string {
+  const h = contextHeaders();
+  const cap = getCapabilityToken();
+  return `${apiBase()}|${h["X-Prism-Vault"] ?? ""}|${h["X-Prism-Workspace"] ?? ""}|${cap ? cap.slice(-16) : ""}|${path}`;
+}
+
 async function req(path: string, init?: RequestInit): Promise<Response> {
-  const resp = await fetch(`${apiBase()}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
-  });
+  const method = init?.method ?? "GET";
+  const doFetch = () =>
+    serverFetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
+    });
+  const resp = cacheable(method, path) ? await readThrough(cacheKey(path), doFetch) : await doFetch();
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
@@ -77,7 +93,7 @@ async function writeJson<T>(method: string, path: string, body: unknown, optimis
     return optimistic();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: jsonHeaders(), body: bodyStr });
+    const resp = await serverFetch(`${apiBase()}${path}`, { method, headers: jsonHeaders(), body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     const text = await resp.text();
     return text ? (JSON.parse(text) as T) : optimistic();
@@ -99,7 +115,7 @@ async function mutate<T>(method: string, path: string, body: unknown, result: ()
     return result();
   }
   try {
-    const resp = await fetch(`${apiBase()}${path}`, { method, credentials: "include", headers: jsonHeaders(), body: bodyStr });
+    const resp = await serverFetch(`${apiBase()}${path}`, { method, headers: jsonHeaders(), body: bodyStr });
     if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
     return result();
   } catch (e) {
@@ -202,9 +218,9 @@ export async function semanticSearch(query: string, limit = 20): Promise<Semanti
 // later against a note that moved on.
 
 async function historyReq(path: string, init?: RequestInit): Promise<Response> {
-  const resp = await fetch(`${apiBase()}${path}`, {
+  const resp = await serverFetch(`${apiBase()}${path}`, {
     ...init,
-    credentials: "include",
+   
     headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
   });
   if (resp.ok) return resp;

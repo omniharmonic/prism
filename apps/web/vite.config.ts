@@ -10,11 +10,20 @@ import { VitePWA } from "vite-plugin-pwa";
 // shims: `invoke` routes vault commands to the Parachute REST API and gracefully
 // degrades desktop-only commands; `listen` is a no-op. This lets the entire
 // existing UI run on the web with zero changes to `@prism/core`.
-export default defineConfig({
+//
+// NATIVE BUILD (`vite build --mode native`, i.e. `npm run build:native`): the same
+// UI for a Tauri shell served from tauri://localhost. No PWA plugin / service worker
+// / manifest, output to dist-native/ (never clobbers the PWA `dist/` the server
+// serves), and `import.meta.env.VITE_PRISM_NATIVE` is baked to "1" so the transport
+// (src/transport.ts) uses the configured origin + device bearer token. The PWA build
+// is byte-for-byte the same config as before.
+export default defineConfig(({ mode }) => {
+  const native = mode === "native" || process.env.VITE_PRISM_NATIVE === "1";
+  return {
   plugins: [
     react(),
     tailwindcss(),
-    VitePWA({
+    ...(native ? [] : [VitePWA({
       // PROMPT, not autoUpdate: a loaded session keeps a consistent asset set —
       // the new build is applied only on a user-confirmed reload (see the
       // UpdatePrompt in main.tsx). autoUpdate + skipWaiting used to swap the SW
@@ -89,10 +98,24 @@ export default defineConfig({
         ],
       },
       devOptions: { enabled: false },
-    }),
+    })]),
   ],
+  ...(native
+    ? {
+        build: { outDir: "dist-native" },
+        define: { "import.meta.env.VITE_PRISM_NATIVE": JSON.stringify("1") },
+      }
+    : {}),
   resolve: {
     alias: {
+      ...(native
+        ? {
+            // No service worker in a native shell: keep UpdatePrompt's import inert.
+            "virtual:pwa-register/react": fileURLToPath(
+              new URL("./src/native/pwa-register-stub.ts", import.meta.url),
+            ),
+          }
+        : {}),
       "@tauri-apps/api/core": fileURLToPath(
         new URL("./src/tauri-shim/core.ts", import.meta.url),
       ),
@@ -114,4 +137,5 @@ export default defineConfig({
       "/collab": { target: process.env.PRISM_SERVER ?? "http://localhost:8787", changeOrigin: true, ws: true },
     },
   },
+  };
 });

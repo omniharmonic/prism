@@ -9,6 +9,7 @@
  * typed rest layer.
  */
 import { apiBase, capabilityHeader } from "../config";
+import { serverFetch } from "../transport";
 
 export interface QueuedWrite {
   id?: number;
@@ -84,15 +85,15 @@ export async function flush(): Promise<void> {
   if (flushing || !navigator.onLine) return;
   flushing = true;
   try {
-    // Auth via the session cookie (credentials: "include"); capability-link
+    // Auth via serverFetch (session cookie, or device bearer in native); capability-link
     // recipients also send the Capability header. No vault token.
     const auth = { "Content-Type": "application/json", ...capabilityHeader() };
     for (const item of await allQueued()) {
       let resp: Response;
       try {
-        resp = await fetch(`${apiBase()}${item.path}`, {
+        resp = await serverFetch(`${apiBase()}${item.path}`, {
           method: item.method,
-          credentials: "include",
+         
           headers: auth,
           body: item.body,
         });
@@ -104,7 +105,7 @@ export async function flush(): Promise<void> {
         // Stale precondition — re-send as a forced last-write-wins update.
         const forced = JSON.stringify({ ...JSON.parse(item.body), if_updated_at: undefined, force: true });
         try {
-          resp = await fetch(`${apiBase()}${item.path}`, { method: "PATCH", credentials: "include", headers: auth, body: forced });
+          resp = await serverFetch(`${apiBase()}${item.path}`, { method: "PATCH", headers: auth, body: forced });
         } catch {
           break;
         }

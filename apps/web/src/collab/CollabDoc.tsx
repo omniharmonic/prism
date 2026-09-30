@@ -4,7 +4,8 @@ import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
-import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken, getActiveVault, getMe, fetchMe } from "../config";
+import { serverFetch, collabWsUrl, collabToken } from "../transport";
+import { apiBase, capabilityHeader, getCapabilityToken, getActiveVault, getMe, fetchMe } from "../config";
 
 /** The vault-scoped collab documentName: the primary vault uses a BARE note id
  *  (backward-compatible), every other vault prefixes `${vaultId}::` so the server
@@ -54,8 +55,7 @@ function identityFrom(me: { name?: string | null; email?: string; avatar?: strin
 }
 
 function collabUrl(): string {
-  const base = GATEWAY_ORIGIN || location.origin;
-  return base.replace(/^http/, "ws") + "/collab";
+  return collabWsUrl();
 }
 
 interface PresenceUser {
@@ -134,7 +134,7 @@ export function CollabDoc({
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, {
+        const r = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, {
           credentials: "include",
           headers: capabilityHeader(),
         });
@@ -249,7 +249,7 @@ export function CollabDoc({
       // note overrides this with its space_note_key below.
       let name = vaultDocName(noteId);
       try {
-        const r = await fetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, {
+        const r = await serverFetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, {
           headers: { ...capabilityHeader() },
           credentials: "include",
         });
@@ -264,7 +264,7 @@ export function CollabDoc({
       p = new HocuspocusProvider({
         url: collabUrl(),
         name,
-        token: getCapabilityToken() ?? "session",
+        token: collabToken(getCapabilityToken()),
         document: ydoc,
         onStatus: ({ status }) => setConnected(status === "connected"),
         onSynced: () => setSynced(true),

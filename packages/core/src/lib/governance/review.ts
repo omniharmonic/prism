@@ -7,8 +7,9 @@
  * (/api/governance) that exists only on the web path; teaching `VaultClient`
  * about it would force the desktop's Tauri client to grow methods it can never
  * implement. So this module talks to the gateway directly, with the same
- * conventions as the governance panel's `govApi`: same-origin, plain fetch,
- * `credentials: "include"` (the session cookie), never a token.
+ * conventions as the governance panel's `govApi`: the `serverFetch` transport
+ * seam (same-origin session cookie on the web, bearer device token in a native
+ * shell), never a vault token.
  *
  * ── The gate ──────────────────────────────────────────────────────────────────
  * `_caps` is added by the Prism Server ONLY for a non-owner actor. The desktop
@@ -18,6 +19,7 @@
  * what makes every affordance built on it provably inert outside the governed
  * web path.
  */
+import { serverFetch } from "../transport/serverFetch";
 
 /** What editing this note should offer the current actor. */
 export type ReviewMode =
@@ -71,9 +73,8 @@ export type ReviewResult<T> = { ok: true; data: T } | { ok: false; error: string
 async function call<T>(path: string, method: "GET" | "POST", body?: unknown): Promise<ReviewResult<T>> {
   let res: Response;
   try {
-    res = await fetch(`/api/governance${path}`, {
+    res = await serverFetch(`/api/governance${path}`, {
       method,
-      credentials: "include",
       headers: body !== undefined ? { "content-type": "application/json" } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });

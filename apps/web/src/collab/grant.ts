@@ -24,7 +24,8 @@ import type {
   WorkspaceOverview,
   WorkspaceRole,
 } from "@prism/core";
-import { GATEWAY_ORIGIN, getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders } from "../config";
+import { serverFetch, collabWsUrl } from "../transport";
+import { getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders } from "../config";
 import type { ViewerIdentity } from "@prism/core";
 
 /**
@@ -35,7 +36,7 @@ import type { ViewerIdentity } from "@prism/core";
 async function acl(path: string, init?: RequestInit): Promise<Response> {
   // Bind every management call to the active vault + workspace, so the owner/admin
   // manages the workspace (and vault) they're currently viewing.
-  const r = await fetch(`${GATEWAY_ORIGIN}/acl${path}`, {
+  const r = await serverFetch(`/acl${path}`, {
     ...init,
     credentials: "include",
     headers: {
@@ -51,7 +52,7 @@ async function acl(path: string, init?: RequestInit): Promise<Response> {
 /** Gateway /api/* calls (session cookie, active-vault/workspace scoped) — the
  *  same conventions as acl() for routes mounted under /api (integrations). */
 async function api(path: string, init?: RequestInit): Promise<Response> {
-  const r = await fetch(`${GATEWAY_ORIGIN}/api${path}`, {
+  const r = await serverFetch(`/api${path}`, {
     ...init,
     credentials: "include",
     headers: {
@@ -68,8 +69,7 @@ const enc = encodeURIComponent;
 
 /** This web app's collab WebSocket url — the peer dials this to mirror our spaces. */
 function collabUrl(): string {
-  const base = GATEWAY_ORIGIN || location.origin;
-  return base.replace(/^http/, "ws") + "/collab";
+  return collabWsUrl();
 }
 
 async function createLink(noteId: string, level: ShareLevel, expiresInDays?: number): Promise<ShareLink> {
@@ -105,7 +105,7 @@ export const webCollabSharing: CollabSharing = {
   // global cachedMe) so it's correct right after a vault switch. Powers role-
   // gating of the Network management panels.
   async getViewer(): Promise<ViewerIdentity> {
-    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
+    const r = await serverFetch(`/auth/me`, {
       credentials: "include",
       headers: contextHeaders(),
     });
@@ -376,7 +376,7 @@ export const webCollabSharing: CollabSharing = {
   // ── Multi-vault (Phase 1 owner switcher) ──
   async listVaults(): Promise<VaultSummary[]> {
     // Owner-only gateway route (not under /acl); rides the session cookie.
-    const r = await fetch(`${GATEWAY_ORIGIN}/api/vaults`, { credentials: "include" });
+    const r = await serverFetch(`/api/vaults`, { credentials: "include" });
     if (!r.ok) throw new Error(`GET /api/vaults → ${r.status}`);
     const rows: VaultSummary[] = await r.json();
     // The active flag from the server marks the DEFAULT vault; overlay the
