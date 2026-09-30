@@ -9,7 +9,7 @@
  */
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, existsSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentApi } from "../src/routes/agent";
@@ -20,6 +20,10 @@ import {
   ensureAgentCwd,
   startDispatch,
   ENV_ALLOWLIST,
+  DEFAULT_MAX_BUDGET_USD,
+  runnerBudgetUsd,
+  cliSessionFile,
+  cliSessionSidecar,
   _resetDispatches,
   type SpawnedProc,
   type Spawner,
@@ -35,10 +39,14 @@ import {
   profileAllowedTools,
   buildSessionPrompt,
   transcriptPath,
+  listTurns,
+  purgeCliArtifacts,
+  runAgentMaintenance,
   _resetAgentSessions,
   type SessionVault,
 } from "../src/agent-sessions";
-import { resolveVaultEntry } from "../src/db";
+import { db, resolveVaultEntry, setMembership } from "../src/db";
+import { issueDeviceToken } from "../src/auth/device";
 import type { Note } from "../src/parachute";
 
 const J = { "content-type": "application/json" };
@@ -147,12 +155,34 @@ function setup(opts: { maxConcurrent?: number; maxQueue?: number } = {}) {
     admissionRetryMs: 20,
     maxBudgetUsd: 0.75,
   });
+  minted = [];
+  revoked = [];
+  mintFails = false;
   configureAgentSessions({
     vaultFor: () => fakeVault,
+    cliProjectDir: () => join(root, "cli-project"),
     cliSessionExists: (id) => cliExists.has(id),
     purgeCliSession: (id) => purged.push(id),
+    // NEVER the real `parachute auth mint-token` in tests.
+    mintReadToken: async (_entry, ttl, sub) => {
+      if (mintFails) throw new Error("hub unreachable");
+      const jti = `jti-${minted.length + 1}`;
+      minted.push({ jti, ttl, sub });
+      return { token: `read-token-${jti}`, jti };
+    },
+    revokeToken: async (jti) => {
+      revoked.push(jti);
+    },
+    transcriptMirror: true,
+    sessionBudgetUsd: 10,
+    cliRetentionDays: 14,
+    eventsRetentionDays: 30,
+    now: () => Date.now(),
   });
 }
+let minted: Array<{ jti: string; ttl: number; sub: string }>;
+let revoked: string[];
+let mintFails: boolean;
 
 beforeEach(() => {
   resetDb();
@@ -367,36 +397,74 @@ test("cancel a running turn: SIGTERM, turn cancelled, session idle, terminal sta
   assert.deepEqual(await again.json(), { ok: false });
 });
 
-test("the shared concurrency cap QUEUES a second session's turn (and a dispatch) — cancel while queued never spawns", async () => {
-  const s1 = await newSession();
+test("the shared concurrency cap QUEUES a turn behind a one-shot dispatch — cancel while queued never spawns", async () => {
+  const d = startDispatch(resolveVaultEntry(), { prompt: "x" }); // takes the only slot
+  assert.equal(d.status, "running");
   const s2 = await newSession();
-  await postTurn(s1, { prompt: "a" });
   const r = await postTurn(s2, { prompt: "b" });
   const { turnId, status } = (await r.json()) as { turnId: string; status: string };
   assert.equal(status, "queued");
   const q = eventsAfter(s2, 0).at(-1)!.event as { t: string; status: string; reason?: string };
   assert.equal(q.status, "queued");
   assert.match(q.reason!, /free agent slot/);
-  // A one-shot dispatch waits in the SAME queue.
-  const d = startDispatch(resolveVaultEntry(), { prompt: "x" });
-  assert.equal(d.status, "queued");
+  const d2 = startDispatch(resolveVaultEntry(), { prompt: "y" }); // waits in the SAME queue
+  assert.equal(d2.status, "queued");
   assert.ok((await agentApi.request(`/turns/${turnId}/cancel`, { method: "POST", headers: owner() })).ok);
   assert.equal(getTurn(turnId)!.status, "cancelled");
-  children[0]!.exit(0); // slot frees → the dispatch (not the cancelled turn) starts
+  children[0]!.exit(0); // slot frees → the second dispatch (not the cancelled turn) starts
   assert.equal(calls.length, 2);
   assert.ok(calls[1]!.args.includes("--no-session-persistence"), "the dispatch alias keeps one-shot argv");
 });
 
 test("a queue-full turn is refused 503 and rolled back (no dangling queued turn)", async () => {
   setup({ maxConcurrent: 1, maxQueue: 0 });
-  const s1 = await newSession();
+  startDispatch(resolveVaultEntry(), { prompt: "x" });
   const s2 = await newSession();
-  await postTurn(s1, { prompt: "a" });
   const r = await postTurn(s2, { prompt: "b" });
   assert.equal(r.status, 503);
   const detail = (await (await agentApi.request(`/sessions/${s2}`, { headers: owner() })).json()) as { session: { status: string }; turns: unknown[] };
   assert.equal(detail.turns.length, 0);
   assert.equal(detail.session.status, "idle");
+  // The user slot was released with the rollback: a later turn is not stuck.
+  children[0]!.exit(0);
+  assert.equal((await postTurn(s2, { prompt: "c" })).status, 200);
+});
+
+test("L1: at most ONE active turn per user across sessions — the next waits (FIFO) and starts when the first ends", async () => {
+  setup({ maxConcurrent: 2 });
+  const s1 = await newSession();
+  const s2 = await newSession();
+  const s3 = await newSession();
+  await postTurn(s1, { prompt: "a" });
+  const b = (await (await postTurn(s2, { prompt: "b" })).json()) as { turnId: string; status: string };
+  const c = (await (await postTurn(s3, { prompt: "c" })).json()) as { turnId: string; status: string };
+  assert.equal(b.status, "queued");
+  assert.equal(calls.length, 1, "a free run slot is NOT used by the same user's second turn");
+  const ev = eventsAfter(s2, 0).at(-1)!.event as { status: string; reason?: string };
+  assert.match(ev.reason!, /other agent turn/);
+  // Cancel the waiting b: it is skipped; c is next.
+  assert.ok((await agentApi.request(`/turns/${b.turnId}/cancel`, { method: "POST", headers: owner() })).ok);
+  assert.equal(getTurn(b.turnId)!.status, "cancelled");
+  children[0]!.out(turnFixture("agent-stream-turn1.jsonl", s1));
+  children[0]!.exit(0);
+  await sleep(1);
+  assert.equal(calls.length, 2);
+  assert.equal(getTurn(c.turnId)!.status, "running");
+  assert.equal(flag(calls[1]!.args, "--session-id"), s3);
+});
+
+test("L1: the per-session cumulative budget refuses new turns once reached (409 budget_exceeded); per-turn default cap is $1", async () => {
+  const sid = await newSession();
+  db.prepare("UPDATE agent_sessions SET cost_usd = 10.5 WHERE id = ?").run(sid);
+  const r = await postTurn(sid, { prompt: "more" });
+  assert.equal(r.status, 409);
+  const body = (await r.json()) as { error: string; detail: string };
+  assert.equal(body.error, "budget_exceeded");
+  assert.match(body.detail, /AGENT_SESSION_BUDGET_USD/);
+  assert.equal(calls.length, 0);
+  _resetDispatches(); // back to env defaults (.env.test sets no AGENT_MAX_BUDGET_USD)
+  assert.equal(runnerBudgetUsd(), DEFAULT_MAX_BUDGET_USD);
+  assert.equal(DEFAULT_MAX_BUDGET_USD, 1);
 });
 
 test("a failing turn (non-zero exit + error result + stderr) → status error with a scrubbed message", async () => {
@@ -428,7 +496,7 @@ test("boot sweep: an in-flight turn from a dead process becomes interrupted; its
   assert.deepEqual(bootSweepAgentSessions(), { interrupted: 0 }, "idempotent");
 });
 
-test("profiles: vault-ro allowlists ONLY read tools in argv; vault-rw the whole vault server; bad profile 400", async () => {
+test("profiles: vault-ro allowlists ONLY read tools; vault-rw is an EXPLICIT list without admin tools; bad profile 400", async () => {
   const ro = await newSession({ profile: "vault-ro" });
   await postTurn(ro, { prompt: "read" });
   assert.equal(
@@ -440,10 +508,49 @@ test("profiles: vault-ro allowlists ONLY read tools in argv; vault-rw the whole 
   children[0]!.exit(0);
   const rw = await newSession();
   await postTurn(rw, { prompt: "write" });
-  assert.equal(flag(calls[1]!.args, "--allowedTools"), "mcp__parachute-vault");
-  assert.deepEqual(profileAllowedTools("vault-rw"), ["mcp__parachute-vault"]);
+  const rwList = flag(calls[1]!.args, "--allowedTools")!.split(",");
+  assert.deepEqual(
+    rwList,
+    ["query-notes", "create-note", "update-note", "delete-note", "list-tags", "find-path", "vault-info", "doctor", "read-attachment", "request-attachment-download"].map(
+      (t) => `mcp__parachute-vault__${t}`,
+    ),
+  );
+  assert.ok(!rwList.includes("mcp__parachute-vault"), "never the whole server");
+  for (const admin of ["update-tag", "delete-tag", "rename-tag", "merge-tags", "prune-schema", "manage-token", "request-attachment-upload"]) {
+    assert.ok(!profileAllowedTools("vault-rw").includes(`mcp__parachute-vault__${admin}`), admin);
+  }
   const bad = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ profile: "root" }) });
   assert.equal(bad.status, 400);
+});
+
+test("M4: a vault-ro turn runs on a minted READ-scoped token (in its MCP config), revoked at turn end; a vault-rw turn never mints", async () => {
+  const ro = await newSession({ profile: "vault-ro" });
+  await postTurn(ro, { prompt: "read" });
+  assert.equal(minted.length, 1);
+  assert.equal(minted[0]!.sub, `agent-session:${ro}`);
+  assert.ok(minted[0]!.ttl >= 3600);
+  const mcp = JSON.parse(calls[0]!.mcpJson) as { mcpServers: Record<string, { headers: { Authorization: string } }> };
+  assert.equal(mcp.mcpServers["parachute-vault"]!.headers.Authorization, "Bearer read-token-jti-1");
+  assert.deepEqual(revoked, []);
+  children[0]!.exit(0);
+  await sleep(1);
+  assert.deepEqual(revoked, ["jti-1"]);
+  const rw = await newSession();
+  await postTurn(rw, { prompt: "w" });
+  assert.equal(minted.length, 1);
+  assert.doesNotMatch(calls[1]!.mcpJson, /read-token/);
+});
+
+test("M4: a failed read-token mint fails the vault-ro turn CLOSED (503, rolled back, nothing spawned)", async () => {
+  mintFails = true;
+  const ro = await newSession({ profile: "vault-ro" });
+  const r = await postTurn(ro, { prompt: "read" });
+  assert.equal(r.status, 503);
+  assert.match(((await r.json()) as { detail: string }).detail, /read-only vault token/);
+  assert.equal(calls.length, 0);
+  const d = (await (await agentApi.request(`/sessions/${ro}`, { headers: owner() })).json()) as { turns: unknown[]; session: { status: string } };
+  assert.equal(d.turns.length, 0);
+  assert.equal(d.session.status, "idle");
 });
 
 test("WP0.1 guarantees hold for session turns: strict MCP (0600, target vault only, removed after), no host tools, dontAsk, no settings, env allowlist, budget cap", async () => {
@@ -546,12 +653,176 @@ test("archive: DELETE marks archived, purges the CLI transcript, hides it from t
   assert.equal((await postTurn(sid, { prompt: "more" })).status, 409);
 });
 
-test("archiving a session with a running turn cancels it first", async () => {
+test("archiving a session with a running turn cancels it first, then drops its rows", async () => {
   const sid = await newSession();
   const { turnId } = (await (await postTurn(sid, { prompt: "x" })).json()) as { turnId: string };
   await agentApi.request(`/sessions/${sid}`, { method: "DELETE", headers: owner() });
-  assert.equal(getTurn(turnId)!.status, "cancelled");
   assert.deepEqual(children[0]!.kills, ["SIGTERM"]);
+  assert.equal(getTurn(turnId), null, "turn rows are deleted on archive");
+  assert.equal(getSession(sid)!.status, "archived");
+});
+
+test("M3: a child that outlives the archive (SIGTERM ignored) purges AGAIN at exit — no rows, no events, no transcript overwrite", async () => {
+  const sid = await newSession();
+  await runTurn(sid, "first", "agent-stream-turn1.jsonl");
+  const writesBefore = vaultWrites.length;
+  await postTurn(sid, { prompt: "second" });
+  const c = children[1]!;
+  // Make kill() NOT exit (a real child exits asynchronously).
+  c.proc.kill = (sig?: string) => void c.kills.push(sig ?? "SIGTERM");
+  await agentApi.request(`/sessions/${sid}`, { method: "DELETE", headers: owner() });
+  assert.deepEqual(purged, [sid]);
+  c.out(turnFixture("agent-stream-turn2-resume.jsonl", sid)); // late output
+  c.exit(null);
+  await sleep(5);
+  assert.deepEqual(purged, [sid, sid], "purged again in the turn's onEnd");
+  assert.equal(eventsAfter(sid, 0).length, 0);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(vaultWrites.length, writesBefore, "no transcript write for an archived session");
+  // The per-user slot was released too.
+  const s2 = await newSession();
+  assert.equal((await postTurn(s2, { prompt: "next" })).status, 200);
+});
+
+test("M2: purge removes the CLI transcript AND its sidecar dir; ids are uuid-validated before any fs op", () => {
+  const dir = join(root, "cli-project");
+  const id = "0b7c2f4e-1a2b-4c3d-8e9f-001122334455";
+  mkdirSync(join(dir, id, "tool-results"), { recursive: true });
+  writeFileSync(join(dir, id, "tool-results", "r.txt"), "raw");
+  writeFileSync(join(dir, `${id}.jsonl`), "{}");
+  writeFileSync(join(dir, "keep.jsonl"), "{}");
+  purgeCliArtifacts(dir, id);
+  assert.equal(existsSync(join(dir, id)), false);
+  assert.equal(existsSync(join(dir, `${id}.jsonl`)), false);
+  purgeCliArtifacts(dir, "../keep"); // not a uuid → no-op
+  purgeCliArtifacts(dir, "keep");
+  assert.equal(existsSync(join(dir, "keep.jsonl")), true);
+  assert.throws(() => cliSessionFile(dir, "../../etc/passwd"), /uuid/);
+  assert.throws(() => cliSessionSidecar(dir, "x"), /uuid/);
+});
+
+test("M2 + L3: maintenance sweeps old orphan CLI artifacts (never a live session's, a recent one, or non-uuid names) and prunes old events with seq staying monotonic", async () => {
+  const dir = join(root, "cli-project");
+  mkdirSync(dir, { recursive: true });
+  const live = await newSession();
+  const old = new Date(Date.now() - 20 * 86_400_000);
+  const orphan = "0b7c2f4e-1a2b-4c3d-8e9f-00112233aaaa";
+  const recent = "0b7c2f4e-1a2b-4c3d-8e9f-00112233bbbb";
+  for (const [name, isDir] of [
+    [`${orphan}.jsonl`, false],
+    [orphan, true],
+    [`${live}.jsonl`, false],
+    [`${recent}.jsonl`, false],
+    ["memory", true],
+  ] as const) {
+    const p = join(dir, name);
+    if (isDir) mkdirSync(p, { recursive: true });
+    else writeFileSync(p, "{}");
+    if (name !== `${recent}.jsonl`) utimesSync(p, old, old);
+  }
+  // Old events on the live session.
+  await runTurn(live, "x", "agent-stream-turn1.jsonl");
+  const lastSeq = eventsAfter(live, 0).at(-1)!.seq;
+  db.prepare("UPDATE agent_events SET at = ? WHERE session_id = ?").run(Date.now() - 40 * 86_400_000, live);
+  const r = runAgentMaintenance();
+  assert.equal(r.removedCliArtifacts, 2);
+  assert.ok(r.prunedEvents >= lastSeq);
+  assert.deepEqual(readdirSync(dir).sort(), [`${live}.jsonl`, `${recent}.jsonl`, "memory"].sort());
+  assert.equal(eventsAfter(live, 0).length, 0);
+  await runTurn(live, "y", "agent-stream-turn2-resume.jsonl");
+  assert.equal(eventsAfter(live, 0)[0]!.seq, lastSeq + 1, "seq never restarts after pruning");
+});
+
+test("L3: archive deletes the session's turns + events (session row + transcript note kept)", async () => {
+  const sid = await newSession();
+  await runTurn(sid, "x", "agent-stream-turn1.jsonl");
+  const tx = getSession(sid)!.transcript_note_id;
+  assert.ok(tx);
+  await agentApi.request(`/sessions/${sid}`, { method: "DELETE", headers: owner() });
+  assert.equal(eventsAfter(sid, 0).length, 0);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(getSession(sid)!.transcript_note_id, tx);
+  assert.ok(vaultNotes.has(tx!), "the vault transcript note is not deleted");
+});
+
+test("L3: text events are scrubbed of token-shaped secrets before persist/stream/mirror", async () => {
+  const sid = await newSession();
+  await postTurn(sid, { prompt: "x" });
+  const jwt = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4eCJ9.c2lnbmF0dXJlc2lnbmF0dXJl";
+  const msg = { type: "assistant", message: { id: "m1", content: [{ type: "text", text: `your token is ${jwt}` }] } };
+  children[0]!.out(JSON.stringify(msg) + "\n");
+  children[0]!.exit(0);
+  await sleep(5);
+  const text = eventsAfter(sid, 0).find((e) => e.event.t === "text")!.event as { text: string };
+  assert.doesNotMatch(text.text, /eyJhbGci/);
+  assert.match(text.text, /\[redacted\]/);
+  assert.doesNotMatch(String(vaultWrites.at(-1)!.p.content), /eyJhbGci/);
+});
+
+test("M1: transcript is PRIVATE to the owner (prism_creator + prism_visibility); AGENT_TRANSCRIPT_MIRROR=off writes nothing", async () => {
+  const sid = await newSession();
+  await runTurn(sid, "x", "agent-stream-turn1.jsonl");
+  const meta = vaultWrites[0]!.p.metadata as Record<string, unknown>;
+  assert.equal(meta.prism_creator, config.ownerEmail.toLowerCase());
+  assert.equal(meta.prism_visibility, "private");
+  configureAgentSessions({ transcriptMirror: false });
+  const s2 = await newSession();
+  await runTurn(s2, "y", "agent-stream-turn1.jsonl");
+  assert.equal(vaultWrites.length, 1);
+});
+
+test("H1 (defense in depth): open-note context requires `view` on the note — someone else's PRIVATE note → 403, rolled back", async () => {
+  vaultNotes.set("priv", {
+    id: "priv",
+    content: "PRIVATE BODY",
+    path: "p",
+    metadata: { prism_creator: "someone-else@example.test", prism_visibility: "private" },
+    createdAt: "",
+    updatedAt: null,
+    tags: [],
+  });
+  vaultNotes.set("open", { id: "open", content: "OPEN BODY", path: "o", metadata: null, createdAt: "", updatedAt: null, tags: [] });
+  const s1 = await newSession({ noteId: "priv" });
+  const r = await postTurn(s1, { prompt: "x" });
+  assert.equal(r.status, 403);
+  assert.equal(calls.length, 0);
+  assert.equal(listTurns(s1).length, 0);
+  const s2 = await newSession({ noteId: "open" });
+  assert.equal((await postTurn(s2, { prompt: "x" })).status, 200);
+  assert.match(calls[0]!.args.at(-1)!, /OPEN BODY/);
+  // Internal callers without an access context never inline note content.
+  const s3 = createSession({ vaultId: resolveVaultEntry().id, ownerEmail: "other@example.test", noteId: "open" });
+  children[0]!.exit(0);
+  await startTurn(s3.id, resolveVaultEntry(), { prompt: "y" });
+  assert.doesNotMatch(calls[1]!.args.at(-1)!, /OPEN BODY/);
+  assert.match(calls[1]!.args.at(-1)!, /Active note: open\./);
+});
+
+test("H1: ALL agent routes are SERVER-OWNER only — an admin (and member) gets 403; an owner device token passes", async () => {
+  const vid = resolveVaultEntry().id;
+  setMembership(vid, "admin@example.test", "admin", "test");
+  setMembership(vid, "member@example.test", "member", "test");
+  for (const email of ["admin@example.test", "member@example.test"]) {
+    const h = { cookie: sessionCookie(makeSession(email)) };
+    for (const [path, method] of [
+      ["/dispatch", "POST"],
+      ["/dispatches", "GET"],
+      ["/runner", "GET"],
+      ["/sessions", "POST"],
+      ["/sessions", "GET"],
+      ["/sessions/x/turns", "POST"],
+      ["/sessions/x/stream", "GET"],
+      ["/turns/x/cancel", "POST"],
+      ["/sessions/x", "DELETE"],
+    ] as const) {
+      const r = await agentApi.request(path, { method, headers: { ...J, ...h }, body: method === "POST" ? JSON.stringify({ prompt: "p" }) : undefined });
+      assert.equal(r.status, 403, `${email} ${method} ${path}`);
+    }
+  }
+  assert.equal(calls.length, 0);
+  const dev = issueDeviceToken(config.ownerEmail, "phone", "test-client");
+  const r = await agentApi.request("/sessions", { method: "POST", headers: { ...J, authorization: `Bearer ${dev.token}` }, body: "{}" });
+  assert.equal(r.status, 200);
 });
 
 test("validation: missing prompt 400 (never spawns); unknown session 404", async () => {

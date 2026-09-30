@@ -240,7 +240,8 @@ export class StreamNormalizer {
           const d = asObj(se.delta);
           if (d?.type !== "text_delta" || typeof d.text !== "string" || !d.text) return [];
           const blockId = this.blockAt.get(Number(se.index)) ?? `${this.msgId}:?`;
-          return [{ t: "text_delta", blockId, text: d.text }];
+          // Scrubbed per delta (a token split ACROSS deltas is only caught in the final `text`).
+          return [{ t: "text_delta", blockId, text: scrubSecrets(d.text) }];
         }
         return [];
       }
@@ -253,7 +254,7 @@ export class StreamNormalizer {
           const block = asObj(b);
           if (!block) continue;
           if (block.type === "text" && typeof block.text === "string") {
-            out.push({ t: "text", blockId: this.blockIdFor(this.finalTextIx), text: truncate(block.text, MAX_TEXT) });
+            out.push({ t: "text", blockId: this.blockIdFor(this.finalTextIx), text: truncate(scrubSecrets(block.text), MAX_TEXT) });
           } else if (block.type === "tool_use") {
             const id = str(block.id) ?? "";
             const name = str(block.name) ?? "";

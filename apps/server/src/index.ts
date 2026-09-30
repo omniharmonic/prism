@@ -12,7 +12,7 @@ import { getVaultRegistry } from "./db";
 import { reportRegistryTokens, startTokenExpiryWatch } from "./auth/vault-token";
 import { startWorker } from "./worker/scheduler";
 import { createApp } from "./app";
-import { bootSweepAgentSessions } from "./agent-sessions";
+import { bootSweepAgentSessions, startAgentMaintenance } from "./agent-sessions";
 import { attachCollab } from "./collab";
 import { governanceIntegrityEnabled, reportGovernanceIntegrity } from "./governance-integrity";
 
@@ -23,6 +23,8 @@ assertConfig();
 {
   const { interrupted } = bootSweepAgentSessions();
   if (interrupted > 0) console.log(`[agent] boot sweep: ${interrupted} in-flight turn(s) marked interrupted`);
+  // Retention: old events, orphan CLI session artifacts — now, then daily.
+  startAgentMaintenance();
 }
 
 const app = createApp();

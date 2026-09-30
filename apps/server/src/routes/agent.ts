@@ -1,11 +1,11 @@
 /**
  * Server-side agent dispatch API (Phase 3; hardened in Arch v2 WP0.1). Lets an
- * owner/admin trigger a `claude -p` run against the ACTIVE vault from the
+ * the server owner trigger a `claude -p` run against the ACTIVE vault from the
  * web/mobile app and watch it stream — no desktop required. Mounted under
  * /api/agent BEFORE the gateway so the owner short-circuit never proxies these.
  *
- * SECURITY: admin/owner SESSION only (never capability/anon — this spawns a host
- * process). The dispatch acts on the actor's active vault with that vault's
+ * SECURITY: SERVER-OWNER session/device only (decision D3 — never admin, capability
+ * or anon: this spawns a host process whose vault token bypasses per-note grants). The dispatch acts on the actor's active vault with that vault's
  * scoped token (agent-exec.ts), so it stays tenant-isolated. The argv is a fixed
  * template with no host tools; the client supplies only a prompt.
  *
@@ -19,7 +19,6 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { resolveActor } from "../auth/actor";
-import { roleAtLeast } from "../roles";
 import { resolveVaultEntry } from "../db";
 import {
   startDispatch,
@@ -52,16 +51,23 @@ import {
   TurnConflictError,
   SessionArchivedError,
   SessionNotFoundError,
+  SessionBudgetError,
+  NoteForbiddenError,
+  ReadTokenError,
   type LiveMessage,
   type SessionRow,
 } from "../agent-sessions";
 
 export const agentApi = new Hono();
 
-// Admin/owner session only — never a capability link or anon.
+// SERVER OWNER only (program decision D3: "owner-only until per-actor tokens").
+// The runner acts with the VAULT token, which bypasses per-note grants and
+// private-note rules — so a non-owner admin must never drive it. A signed-in
+// owner session or an owner native-device token (kind "user") passes; admins,
+// members, guests, capability links and anon are all 403.
 agentApi.use("*", async (c, next) => {
   const actor = resolveActor(c);
-  if (actor.kind !== "user" || !roleAtLeast(actor.role, "admin")) {
+  if (actor.kind !== "user" || actor.role !== "owner") {
     return c.json({ error: "forbidden" }, 403);
   }
   await next();
@@ -166,7 +172,7 @@ agentApi.get("/stream/:id", (c) => {
 });
 
 // ── Durable sessions (Arch v2 WP3.1) ─────────────────────────────────────────
-// Same admin/owner-session gate as above (the router-wide middleware). A session
+// Same SERVER-OWNER gate as above (the router-wide middleware). A session
 // is visible only to its creator, in the vault it was created in.
 
 const ownedSession = (c: Context): SessionRow | null => {
@@ -231,18 +237,26 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     return c.json({ error: "bad_request", detail: "prompt required" }, 400);
   }
   if (body.prompt.length > 50_000) return c.json({ error: "bad_request", detail: "prompt too long" }, 400);
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   try {
-    // Only prompt/noteId cross from the client — never runner options.
-    const t = await startTurn(s.id, resolveVaultEntry(s.vault_id), {
-      prompt: body.prompt,
-      noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null,
-    });
+    // Only prompt/noteId cross from the client — never runner options. The
+    // actor's grants gate the open-note context (defense in depth under D3).
+    const t = await startTurn(
+      s.id,
+      resolveVaultEntry(s.vault_id),
+      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null },
+      { grants: actor.grants, role: actor.role, subject: actor.email },
+    );
     return c.json({ turnId: t.id, status: t.status });
   } catch (e) {
     if (e instanceof TurnConflictError) return c.json({ error: "conflict", detail: e.message, turnId: e.turnId }, 409);
     if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);
+    if (e instanceof SessionBudgetError) return c.json({ error: "budget_exceeded", detail: e.message }, 409);
+    if (e instanceof NoteForbiddenError) return c.json({ error: "forbidden", detail: e.message }, 403);
     if (e instanceof SessionNotFoundError) return c.json({ error: "not_found" }, 404);
     if (e instanceof AgentBusyError) return c.json({ error: "busy", detail: e.message }, 503);
+    if (e instanceof ReadTokenError) return c.json({ error: "unavailable", detail: e.message }, 503);
     throw e;
   }
 });

@@ -391,6 +391,7 @@ db.exec(`
     status             TEXT NOT NULL DEFAULT 'idle',       -- idle | running | archived
     transcript_note_id TEXT,
     cost_usd           REAL NOT NULL DEFAULT 0,            -- CLI's cumulative session cost
+    event_seq          INTEGER NOT NULL DEFAULT 0,         -- last assigned agent_events.seq (monotonic even after pruning)
     created_at         INTEGER NOT NULL,
     updated_at         INTEGER NOT NULL
   );

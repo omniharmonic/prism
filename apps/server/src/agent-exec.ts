@@ -95,6 +95,7 @@ const defaultSpawner: Spawner = (cmd, args, opts) =>
 
 const DISPATCH_TIMEOUT_MS = 30 * 60 * 1000; // 30 min wall clock, matches the desktop
 const KILL_GRACE_MS = 10_000; // SIGKILL if a SIGTERM'd child hasn't exited
+export const DEFAULT_MAX_BUDGET_USD = 1;
 const MAX_OUTPUT = 2_000_000; // cap captured output so a runaway can't OOM the server
 
 /** The MCP server name in the per-dispatch config. Tools surface to the model as
@@ -283,14 +284,28 @@ export function ensureAgentCwd(dir: string): string {
  *  also why `--resume` needs the SAME cwd on every turn. The file holds raw tool
  *  results (vault content), so archiving a session deletes it. */
 export function cliSessionFile(cwd: string, sessionId: string, home: string = homedir()): string {
+  if (!isUuid(sessionId)) throw new Error("cli session id must be a uuid");
+  return join(cliProjectDir(cwd, home), `${sessionId}.jsonl`);
+}
+
+/** The CLI's per-session SIDECAR dir (`<slug>/<id>/` — tool-results etc.). */
+export function cliSessionSidecar(cwd: string, sessionId: string, home: string = homedir()): string {
+  if (!isUuid(sessionId)) throw new Error("cli session id must be a uuid");
+  return join(cliProjectDir(cwd, home), sessionId);
+}
+
+/** The CLI's per-cwd project dir: `$HOME/.claude/projects/<slug>`. */
+export function cliProjectDir(cwd: string, home: string = homedir()): string {
   let real = cwd;
   try {
     real = realpathSync(cwd);
   } catch {
     /* not created yet — the slug of the literal path */
   }
-  return join(home, ".claude/projects", real.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`);
+  return join(home, ".claude/projects", real.replace(/[^a-zA-Z0-9]/g, "-"));
 }
+
+export const isUuid = (s: string): boolean => UUID_RE.test(s);
 
 // ── memory admission (injectable probe) ──────────────────────────────────────
 
@@ -405,7 +420,8 @@ export interface RunnerConfig {
 }
 
 function defaultConfig(): RunnerConfig {
-  const budget = num(process.env.AGENT_MAX_BUDGET_USD, NaN);
+  // Default 1.00 USD per turn/process; set AGENT_MAX_BUDGET_USD=0 to disable.
+  const budget = num(process.env.AGENT_MAX_BUDGET_USD, DEFAULT_MAX_BUDGET_USD);
   return {
     spawner: defaultSpawner,
     memoryProbe: defaultMemoryProbe,
@@ -629,6 +645,8 @@ function launch(run: Run): void {
   run.finish = finish;
 
   safe(() => spec.onStart?.());
+  // onStart may have cancelled the run (e.g. its owner went away) — never spawn then.
+  if ((run.state as Run["state"]) === "ended") return;
 
   let child: SpawnedProc;
   try {

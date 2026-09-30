@@ -27,6 +27,8 @@ import {
   admissionVerdict,
   configureAgentRunner,
   startDispatch,
+  enqueueRun,
+  type RunHandle,
   getDispatch,
   listDispatches,
   cancelDispatch,
@@ -532,4 +534,23 @@ test("cliSessionFile: $HOME/.claude/projects/<realpath(cwd), non-alphanumerics �
   assert.equal(cliSessionFile("/nonexistent/x/.prism/agent-cwd", id, "/h"), `/h/.claude/projects/-nonexistent-x--prism-agent-cwd/${id}.jsonl`);
   const f = cliSessionFile(join(cwdRoot, "agent-cwd"), id, "/h");
   assert.ok(f.startsWith("/h/.claude/projects/"), "the session store lives outside the cwd, so the emptiness guard still holds");
+});
+
+test("launch: a run cancelled from inside its own onStart never spawns, and its slot is released", () => {
+  const rec = recordingSpawner();
+  configureAgentRunner({ spawner: rec.spawner });
+  startDispatch(ENTRY, { prompt: "holder" }); // takes the only slot
+  let h: RunHandle | null = null;
+  const ends: Array<{ cancelled: boolean }> = [];
+  h = enqueueRun({
+    entry: ENTRY,
+    args: (m) => buildClaudeArgs("p", m),
+    onStart: () => h!.cancel(),
+    onEnd: (i) => ends.push(i),
+  });
+  assert.equal(h.state(), "queued");
+  rec.children[0]!.exit(0); // slot frees → h launches → onStart cancels it
+  assert.equal(rec.calls.length, 1, "the cancelled run was never spawned");
+  assert.deepEqual(ends, [{ code: null, error: null, cancelled: true }]);
+  assert.equal(runnerStatus().running, 0);
 });

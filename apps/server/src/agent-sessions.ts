@@ -27,14 +27,20 @@
  * tool results.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { db } from "./db";
 import type { VaultEntry } from "./config";
+import type { Grant } from "./db";
 import { vaultClient, type Note } from "./parachute";
+import { effectiveCaps, type NoteRef } from "./permissions";
+import { roleFloor, type Role } from "./roles";
+import { mintVaultToken, revokeVaultToken } from "./mcp-token";
 import {
   VAULT_MCP_ALLOW,
   buildClaudeArgs,
-  cliSessionFile,
+  cliProjectDir,
+  isUuid,
   runnerCwdPath,
   enqueueRun,
   runnerBudgetUsd,
@@ -46,13 +52,31 @@ import { StreamNormalizer, scrubSecrets, vaultToolName, type AgentEvent, type Ag
 
 export type AgentProfile = "vault-ro" | "vault-rw";
 export const PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"];
+/** Vault 0.7.9 tools whose manifest `requiredVerb` is "read". `doctor` is a
+ *  read-only scan (core/src/doctor.ts: "never auto-fixes"; manifest verb read). */
 export const READ_ONLY_TOOLS = ["query-notes", "list-tags", "find-path", "vault-info", "doctor"] as const;
+/** vault-rw is an EXPLICIT allowlist too — never the whole server: the admin-verb
+ *  tools (update-tag, delete-tag, rename-tag, merge-tags, prune-schema,
+ *  manage-token) and request-attachment-upload are never allowed. */
+export const READ_WRITE_TOOLS = [
+  "query-notes",
+  "create-note",
+  "update-note",
+  "delete-note",
+  "list-tags",
+  "find-path",
+  "vault-info",
+  "doctor",
+  "read-attachment",
+  "request-attachment-download",
+] as const;
 
-/** The `--allowedTools` list per profile. vault-ro names each READ tool; the
- *  dontAsk permission mode denies every other vault tool (verified live: a
- *  create-note under vault-ro comes back as a permission-denied tool_result). */
+/** The `--allowedTools` list per profile. The dontAsk permission mode denies
+ *  every vault tool not named here (verified live: a create-note under vault-ro
+ *  comes back as a permission-denied tool_result). */
 export function profileAllowedTools(profile: AgentProfile): string[] {
-  return profile === "vault-ro" ? READ_ONLY_TOOLS.map((t) => `${VAULT_MCP_ALLOW}__${t}`) : [VAULT_MCP_ALLOW];
+  const tools: readonly string[] = profile === "vault-ro" ? READ_ONLY_TOOLS : READ_WRITE_TOOLS;
+  return tools.map((t) => `${VAULT_MCP_ALLOW}__${t}`);
 }
 
 export const isProfile = (p: unknown): p is AgentProfile => typeof p === "string" && (PROFILES as readonly string[]).includes(p);
@@ -123,38 +147,79 @@ export interface SessionVault {
   updateNote(id: string, p: { content?: string; metadata?: Record<string, unknown> }): Promise<Note>;
 }
 
+/** A short-lived, READ-scoped vault token for a vault-ro turn (second layer
+ *  under the tool allowlist: the hub itself refuses writes). */
+export type ReadTokenMinter = (entry: VaultEntry, ttlSeconds: number, sub: string) => Promise<{ token: string; jti: string }>;
+
 export interface SessionDeps {
   vaultFor: (vaultId: string) => SessionVault;
+  /** The CLI's per-cwd project dir (`$HOME/.claude/projects/<slug>`). */
+  cliProjectDir: () => string;
   /** Does the CLI already hold a transcript for this session id? */
   cliSessionExists: (sessionId: string) => boolean;
-  /** Delete the CLI's on-disk transcript (archive). */
+  /** Delete the CLI's on-disk transcript + sidecar dir (archive). */
   purgeCliSession: (sessionId: string) => void;
+  /** null = the read-token layer is off (AGENT_RO_READ_TOKEN=0). */
+  mintReadToken: ReadTokenMinter | null;
+  revokeToken: (jti: string) => Promise<void>;
   now: () => number;
+  /** AGENT_TRANSCRIPT_MIRROR (default on). */
+  transcriptMirror: boolean;
+  /** AGENT_SESSION_BUDGET_USD — cumulative per-session cap (default 10; ≤0 = off). */
+  sessionBudgetUsd: number | null;
+  /** AGENT_CLI_RETENTION_DAYS — orphan CLI artifact sweep (default 14). */
+  cliRetentionDays: number;
+  /** AGENT_EVENTS_RETENTION_DAYS — event pruning for live sessions (default 30). */
+  eventsRetentionDays: number;
 }
 
+const envNum = (k: string, d: number): number => {
+  const v = process.env[k];
+  const n = v == null || v.trim() === "" ? NaN : Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+const envOff = (k: string): boolean => /^(0|false|off|no)$/i.test(process.env[k]?.trim() ?? "");
+
 function defaultDeps(): SessionDeps {
-  return {
+  const d: SessionDeps = {
     vaultFor: (vaultId) => vaultClient(vaultId),
-    cliSessionExists: (id) => {
-      try {
-        return existsSync(cliSessionFile(runnerCwdPath(), id));
-      } catch {
-        return false;
-      }
-    },
-    purgeCliSession: (id) => {
-      try {
-        rmSync(cliSessionFile(runnerCwdPath(), id), { force: true });
-      } catch {
-        /* best effort */
-      }
-    },
+    cliProjectDir: () => cliProjectDir(runnerCwdPath()),
+    cliSessionExists: (id) => isUuid(id) && existsSync(join(deps.cliProjectDir(), `${id}.jsonl`)),
+    purgeCliSession: (id) => purgeCliArtifacts(deps.cliProjectDir(), id),
+    mintReadToken: envOff("AGENT_RO_READ_TOKEN")
+      ? null
+      : async (entry, ttlSeconds, sub) => {
+          const t = await mintVaultToken({ vaultName: entry.vault, verb: "read", expiresInSeconds: ttlSeconds, sub });
+          return { token: t.token, jti: t.jti };
+        },
+    revokeToken: (jti) => revokeVaultToken(jti),
     now: () => Date.now(),
+    transcriptMirror: !envOff("AGENT_TRANSCRIPT_MIRROR"),
+    sessionBudgetUsd: (() => {
+      const b = envNum("AGENT_SESSION_BUDGET_USD", 10);
+      return b > 0 ? b : null;
+    })(),
+    cliRetentionDays: Math.max(1, envNum("AGENT_CLI_RETENTION_DAYS", 14)),
+    eventsRetentionDays: Math.max(1, envNum("AGENT_EVENTS_RETENTION_DAYS", 30)),
   };
+  return d;
 }
 let deps: SessionDeps = defaultDeps();
 export function configureAgentSessions(partial: Partial<SessionDeps>): void {
   deps = { ...deps, ...partial };
+}
+
+/** Remove the CLI's transcript `<id>.jsonl` AND its sidecar dir `<id>/`
+ *  (tool-results etc.) under `projectDir`. Refuses non-uuid ids before any fs op. */
+export function purgeCliArtifacts(projectDir: string, sessionId: string): void {
+  if (!isUuid(sessionId)) return;
+  for (const p of [join(projectDir, `${sessionId}.jsonl`), join(projectDir, sessionId)]) {
+    try {
+      rmSync(p, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 // ── statements ───────────────────────────────────────────────────────────────
@@ -185,7 +250,22 @@ const q = {
   turnRunning: db.prepare("UPDATE agent_turns SET status = 'running', started_at = ? WHERE id = ?"),
   turnPid: db.prepare("UPDATE agent_turns SET pid = ? WHERE id = ?"),
   turnEnd: db.prepare("UPDATE agent_turns SET status = ?, exit_code = ?, error = ?, cost_usd = ?, ended_at = ? WHERE id = ?"),
-  nextSeq: db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM agent_events WHERE session_id = ?"),
+  // A per-session counter (not MAX(seq)+1) so pruning old events never lets a seq
+  // be reused — a client's ?after=N must stay meaningful.
+  nextSeq: db.prepare("UPDATE agent_sessions SET event_seq = event_seq + 1 WHERE id = ? RETURNING event_seq AS n"),
+  deleteEvents: db.prepare("DELETE FROM agent_events WHERE session_id = ?"),
+  deleteTurns: db.prepare("DELETE FROM agent_turns WHERE session_id = ?"),
+  pruneEvents: db.prepare(
+    `DELETE FROM agent_events WHERE at < ? AND session_id IN (SELECT id FROM agent_sessions WHERE status != 'archived')`,
+  ),
+  userActive: db.prepare(
+    `SELECT t.* FROM agent_turns t JOIN agent_sessions s ON s.id = t.session_id
+     WHERE s.owner_email = ? AND t.status IN ('queued','running') AND t.id != ?`,
+  ),
+  liveSessionIds: db.prepare("SELECT id FROM agent_sessions WHERE status != 'archived'"),
+  archivedWithRows: db.prepare(
+    "SELECT id FROM agent_sessions WHERE status = 'archived' AND id IN (SELECT session_id FROM agent_turns)",
+  ),
   insertEvent: db.prepare("INSERT INTO agent_events (session_id, seq, turn_id, type, payload, at) VALUES (?, ?, ?, ?, ?, ?)"),
   eventsAfter: db.prepare("SELECT seq, turn_id, type, payload, at FROM agent_events WHERE session_id = ? AND seq > ? ORDER BY seq"),
   eventsForTurn: db.prepare("SELECT seq, turn_id, type, payload, at FROM agent_events WHERE turn_id = ? ORDER BY seq"),
@@ -233,7 +313,9 @@ function fire(sessionId: string, m: LiveMessage): void {
 
 /** Persist an event (assigning the next seq) and fan it out. */
 function record(sessionId: string, turnId: string, ev: AgentEvent): number {
-  const seq = (q.nextSeq.get(sessionId) as { n: number }).n;
+  const row = q.nextSeq.get(sessionId) as { n: number } | undefined;
+  if (!row) return 0; // session row gone — nothing to record against
+  const seq = row.n;
   q.insertEvent.run(sessionId, seq, turnId, ev.t, JSON.stringify(ev), deps.now());
   fire(sessionId, { seq, turnId, event: ev });
   return seq;
@@ -346,15 +428,77 @@ export function buildSessionPrompt(
   return parts.join("\n\n");
 }
 
+/** Who is asking — used for the open-note `view` check (defense in depth: the
+ *  routes are owner-only today, but the check stays right if access widens). */
+export interface TurnAccess {
+  grants: Grant[];
+  role: Role;
+  subject: string;
+}
+
+const noteRef = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
+
+export class SessionBudgetError extends Error {}
+export class NoteForbiddenError extends Error {}
+export class ReadTokenError extends Error {}
+
+/** vault-ro read tokens outlive the turn's 30-min wall clock plus a queue wait;
+ *  they are revoked at turn end anyway. */
+export const READ_TOKEN_TTL_S = 3 * 3600;
+
+// Per-USER serialization: at most one active (running or run-queued) turn per
+// user across all their sessions. Further turns wait here, in FIFO order, as
+// `queued` (the per-session rule is still a 409).
+const userSlot = new Map<string, string>(); // email → turnId holding the slot
+const userWaiting = new Map<string, Array<{ turnId: string; go: () => void }>>();
+const turnTokens = new Map<string, string>(); // turnId → read-token jti
+
+function dropToken(turnId: string): void {
+  const jti = turnTokens.get(turnId);
+  if (!jti) return;
+  turnTokens.delete(turnId);
+  void deps.revokeToken(jti).catch((e) => console.error(`[agent] read-token revoke failed: ${(e as Error).message}`));
+}
+
+function releaseUserSlot(email: string, turnId: string): void {
+  if (userSlot.get(email) !== turnId) return;
+  userSlot.delete(email);
+  const waiting = userWaiting.get(email) ?? [];
+  while (waiting.length > 0) {
+    const w = waiting.shift()!;
+    if (getTurn(w.turnId)?.status !== "queued") continue; // cancelled while waiting
+    userSlot.set(email, w.turnId);
+    // Deferred a microtask: we are usually inside the previous run's onEnd, before
+    // the run queue has released its slot — enqueueing now would count it as busy.
+    queueMicrotask(w.go);
+    break;
+  }
+  if (waiting.length === 0) userWaiting.delete(email);
+}
+
+/** Wipe a session's turn + event rows (archive; the session row stays). */
+function deleteSessionRows(sessionId: string): void {
+  q.deleteEvents.run(sessionId);
+  q.deleteTurns.run(sessionId);
+}
+
 /**
- * Start a turn. Rejects with TurnConflictError if one is queued/running,
- * AgentBusyError if the run queue is full (the turn is rolled back). Resolves
- * with the turn row (status queued or running).
+ * Start a turn. Throws TurnConflictError (a turn is active in this session),
+ * SessionBudgetError (cumulative cap reached), NoteForbiddenError (no `view` on
+ * the open note), ReadTokenError (vault-ro token mint failed) or AgentBusyError
+ * (run queue full) — each rolls the reserved turn back. Resolves with the turn
+ * row (status queued or running).
  */
 export async function startTurn(
   sessionId: string,
   entry: VaultEntry,
   req: { prompt: string; noteId?: string | null },
+  access?: TurnAccess,
 ): Promise<TurnRow> {
   const s = getSession(sessionId);
   if (!s) throw new SessionNotFoundError("session not found");
@@ -362,26 +506,63 @@ export async function startTurn(
   if (entry.id !== s.vault_id) throw new SessionNotFoundError("session belongs to another vault");
   const busy = activeTurn(sessionId);
   if (busy) throw new TurnConflictError(busy.id);
+  if (deps.sessionBudgetUsd != null && s.cost_usd >= deps.sessionBudgetUsd) {
+    throw new SessionBudgetError(
+      `session budget reached ($${s.cost_usd.toFixed(2)} of $${deps.sessionBudgetUsd.toFixed(2)}, AGENT_SESSION_BUDGET_USD) — start a new session`,
+    );
+  }
 
   const firstTurn = (q.countTurns.get(sessionId) as { n: number }).n === 0;
   const noteId = req.noteId ?? (firstTurn ? s.note_id : null);
   const turnId = randomUUID();
+  const email = s.owner_email;
   // Reserve the turn SYNCHRONOUSLY (before any await) so a concurrent POST sees
   // it and 409s — the note fetch below must not open a race window.
   q.insertTurn.run({ id: turnId, session_id: sessionId, prompt: req.prompt, note_id: noteId, started_at: deps.now() });
   q.setSessionStatus.run("running", deps.now(), sessionId);
+  const rollback = () => {
+    dropToken(turnId);
+    q.deleteTurn.run(turnId);
+    if (getSession(sessionId)?.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
+  };
 
   let note: { id: string; path: string | null; content: string } | null = null;
   if (firstTurn && noteId) {
+    let n: Note | null = null;
     try {
-      const n = await deps.vaultFor(s.vault_id).getNote(noteId);
-      note = { id: n.id, path: n.path, content: n.content ?? "" };
+      n = await deps.vaultFor(s.vault_id).getNote(noteId);
     } catch {
-      note = null; // unreadable → reference only
+      n = null; // unreadable → reference only
+    }
+    if (n) {
+      if (access && !effectiveCaps(access.grants, noteRef(n), roleFloor(access.role), access.subject).has("view")) {
+        rollback();
+        throw new NoteForbiddenError("no view access to that note");
+      }
+      // Without an access context (internal callers) the content is never inlined.
+      if (access) note = { id: n.id, path: n.path, content: n.content ?? "" };
     }
   }
-  // Cancelled (or archived) while the note was being fetched → never spawn.
-  if (getTurn(turnId)?.status !== "queued") return getTurn(turnId)!;
+
+  // vault-ro, second layer: a short-lived READ-scoped hub token, so the hub
+  // itself refuses writes even if the tool allowlist were bypassed.
+  let runEntry = entry;
+  if (s.profile === "vault-ro" && deps.mintReadToken) {
+    try {
+      const t = await deps.mintReadToken(entry, READ_TOKEN_TTL_S, `agent-session:${s.id}`);
+      turnTokens.set(turnId, t.jti);
+      runEntry = { ...entry, token: t.token };
+    } catch (e) {
+      rollback();
+      throw new ReadTokenError(`could not mint a read-only vault token for this vault-ro turn: ${(e as Error).message}`);
+    }
+  }
+  // Cancelled (or archived) while awaiting → never spawn.
+  if (getTurn(turnId)?.status !== "queued") {
+    dropToken(turnId);
+    return getTurn(turnId) ?? ({ id: turnId, status: "cancelled" } as TurnRow);
+  }
+
   const prompt = buildSessionPrompt(req.prompt, { profile: s.profile, firstTurn, note, noteId });
   // --resume iff the CLI already holds this conversation (init seen, or its
   // transcript file exists — a turn-1 that died after init must not re-use
@@ -390,12 +571,58 @@ export async function startTurn(
 
   const norm = new StreamNormalizer();
   let stderrTail = "";
-  let handle: RunHandle;
   const statusEv = (status: AgentTurnStatus, reason?: string): AgentEvent => (reason ? { t: "status", status, reason } : { t: "status", status });
 
-  try {
-    handle = enqueueRun({
-      entry,
+  const handleEvent = (ev: AgentEvent): void => {
+    if (ev.t === "text_delta") {
+      fire(sessionId, { seq: null, turnId, event: ev }); // live only
+      return;
+    }
+    if (ev.t === "init" && ev.cliSessionId) q.setCliSession.run(ev.cliSessionId, deps.now(), sessionId);
+    record(sessionId, turnId, ev);
+  };
+
+  const onEnd = (info: { code: number | null; error: string | null; cancelled: boolean }) => {
+    handles.delete(turnId);
+    dropToken(turnId);
+    releaseUserSlot(email, turnId);
+    // Archived while running: keep NOTHING (rows + CLI artifacts), no mirror.
+    if (getSession(sessionId)?.status === "archived") {
+      deps.purgeCliSession(sessionId);
+      deleteSessionRows(sessionId);
+      return;
+    }
+    for (const ev of norm.end()) handleEvent(ev);
+    const result = norm.result;
+    const status: AgentTurnStatus = info.cancelled ? "cancelled" : info.error || (result && !result.ok) ? "error" : "done";
+    const error =
+      status === "error"
+        ? scrubSecrets(
+            [info.error, result && !result.ok ? result.error : null, stderrTail.trim() ? stderrTail.trim().slice(-500) : null]
+              .filter(Boolean)
+              .join(" — "),
+          ) || "turn failed"
+        : null;
+    // total_cost_usd is CUMULATIVE across --resume (verified) → per-turn = delta.
+    const cur = getSession(sessionId);
+    const prevCost = cur?.cost_usd ?? 0;
+    let turnCost: number | null = null;
+    if (result?.costUsd != null) {
+      turnCost = Math.max(0, result.costUsd - prevCost);
+      if (result.costUsd > prevCost) q.setSessionCost.run(result.costUsd, deps.now(), sessionId);
+    }
+    q.turnEnd.run(status, info.code, error, turnCost, deps.now(), turnId);
+    if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
+    record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
+    if (deps.transcriptMirror) {
+      void mirrorTranscript(sessionId).catch((e) => console.error(`[agent] transcript mirror failed: ${(e as Error).message}`));
+    }
+  };
+
+  /** Hand the turn to the shared run queue (throws AgentBusyError if full). */
+  const go = (): void => {
+    const handle = enqueueRun({
+      entry: runEntry,
       args: (mcpPath) =>
         buildClaudeArgs(prompt, mcpPath, {
           outputFormat: "stream-json",
@@ -419,49 +646,42 @@ export async function startTurn(
         }
         for (const ev of norm.push(chunk)) handleEvent(ev);
       },
-      onEnd: (info) => {
-        for (const ev of norm.end()) handleEvent(ev);
-        handles.delete(turnId);
-        const result = norm.result;
-        const status: AgentTurnStatus = info.cancelled ? "cancelled" : info.error || (result && !result.ok) ? "error" : "done";
-        const error =
-          status === "error"
-            ? scrubSecrets(
-                [info.error, result && !result.ok ? result.error : null, stderrTail.trim() ? stderrTail.trim().slice(-500) : null]
-                  .filter(Boolean)
-                  .join(" — "),
-              ) || "turn failed"
-            : null;
-        // total_cost_usd is CUMULATIVE across --resume (verified) → per-turn = delta.
-        const cur = getSession(sessionId);
-        const prevCost = cur?.cost_usd ?? 0;
-        let turnCost: number | null = null;
-        if (result?.costUsd != null) {
-          turnCost = Math.max(0, result.costUsd - prevCost);
-          if (result.costUsd > prevCost) q.setSessionCost.run(result.costUsd, deps.now(), sessionId);
+      onEnd,
+    });
+    if (handle.state() !== "ended") handles.set(turnId, handle);
+  };
+
+  if (userSlot.has(email)) {
+    // Another of this user's turns is active: wait (FIFO) for it to finish.
+    const list = userWaiting.get(email) ?? [];
+    list.push({
+      turnId,
+      go: () => {
+        if (getTurn(turnId)?.status !== "queued") {
+          releaseUserSlot(email, turnId); // cancelled in the meantime — pass it on
+          return;
         }
-        q.turnEnd.run(status, info.code, error, turnCost, deps.now(), turnId);
-        if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
-        record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
-        void mirrorTranscript(sessionId).catch((e) => console.error(`[agent] transcript mirror failed: ${(e as Error).message}`));
+        try {
+          go();
+        } catch (e) {
+          // The run queue filled while we waited: fail this turn, pass the slot on.
+          onEnd({ code: null, error: `could not start: ${(e as Error).message}`, cancelled: false });
+        }
       },
     });
+    userWaiting.set(email, list);
+    record(sessionId, turnId, statusEv("queued", "waiting for your other agent turn to finish"));
+    return getTurn(turnId)!;
+  }
+  userSlot.set(email, turnId);
+  try {
+    go();
   } catch (e) {
-    q.deleteTurn.run(turnId);
-    q.setSessionStatus.run("idle", deps.now(), sessionId);
+    rollback();
+    releaseUserSlot(email, turnId);
     throw e;
   }
-  if (handle.state() !== "ended") handles.set(turnId, handle);
   return getTurn(turnId)!;
-
-  function handleEvent(ev: AgentEvent): void {
-    if (ev.t === "text_delta") {
-      fire(sessionId, { seq: null, turnId, event: ev }); // live only
-      return;
-    }
-    if (ev.t === "init" && ev.cliSessionId) q.setCliSession.run(ev.cliSessionId, deps.now(), sessionId);
-    record(sessionId, turnId, ev);
-  }
 }
 
 /** Cancel a queued/running turn. */
@@ -470,20 +690,25 @@ export function cancelTurn(turnId: string): boolean {
   if (!t || isTerminal(t.status)) return false;
   const h = handles.get(turnId);
   if (h) return h.cancel();
-  // No live handle (e.g. a stale row) — close it out directly.
+  // No run handle: waiting on the user slot, mid-reservation, or a stale row —
+  // close it out directly (a waiting entry is skipped when the slot frees).
+  dropToken(turnId);
   q.turnEnd.run("cancelled", null, null, null, deps.now(), turnId);
-  q.setSessionStatus.run("idle", deps.now(), t.session_id);
+  if (getSession(t.session_id)?.status === "running") q.setSessionStatus.run("idle", deps.now(), t.session_id);
   record(t.session_id, turnId, { t: "status", status: "cancelled" });
   return true;
 }
 
 /** Archive: cancel any active turn, mark archived, delete the CLI's on-disk
- *  transcript (it holds raw tool results). The vault transcript note is kept. */
+ *  transcript + sidecar (they hold raw tool results) and the session's turn +
+ *  event rows. The session row and the vault transcript note are kept. A turn
+ *  still running (a real child exits asynchronously) purges again in its onEnd. */
 export function archiveSession(sessionId: string): void {
   const active = activeTurn(sessionId);
   if (active) cancelTurn(active.id);
   q.setSessionStatus.run("archived", deps.now(), sessionId);
   deps.purgeCliSession(sessionId);
+  deleteSessionRows(sessionId);
 }
 
 /**
@@ -505,6 +730,67 @@ export function bootSweepAgentSessions(): { interrupted: number } {
      AND id NOT IN (SELECT session_id FROM agent_turns WHERE status IN ('queued','running'))`,
   ).run(deps.now());
   return { interrupted: orphans.length };
+}
+
+// ── retention (boot + daily) ─────────────────────────────────────────────────
+
+const DAY_MS = 24 * 3600 * 1000;
+
+/**
+ * - agent_events older than AGENT_EVENTS_RETENTION_DAYS are pruned for live
+ *   sessions (archived sessions have none — archive deletes them);
+ * - an archived session that still has rows (crash mid-archive) is wiped;
+ * - CLI artifacts (`<uuid>.jsonl` / `<uuid>/`) under the agent-cwd project dir
+ *   older than AGENT_CLI_RETENTION_DAYS that do NOT belong to a non-archived
+ *   session are deleted. Non-uuid names (e.g. `memory/`) are never touched.
+ */
+export function runAgentMaintenance(): { prunedEvents: number; wipedArchived: number; removedCliArtifacts: number } {
+  const now = deps.now();
+  const prunedEvents = q.pruneEvents.run(now - deps.eventsRetentionDays * DAY_MS).changes;
+  const archived = q.archivedWithRows.all() as Array<{ id: string }>;
+  for (const a of archived) deleteSessionRows(a.id);
+  let removed = 0;
+  let dir: string;
+  try {
+    dir = deps.cliProjectDir();
+  } catch {
+    return { prunedEvents, wipedArchived: archived.length, removedCliArtifacts: 0 };
+  }
+  if (existsSync(dir)) {
+    const live = new Set((q.liveSessionIds.all() as Array<{ id: string }>).map((r) => r.id));
+    const cutoff = now - deps.cliRetentionDays * DAY_MS;
+    for (const name of readdirSync(dir)) {
+      const id = name.endsWith(".jsonl") ? name.slice(0, -6) : name;
+      if (!isUuid(id) || live.has(id)) continue;
+      const p = join(dir, name);
+      try {
+        if (statSync(p).mtimeMs >= cutoff) continue;
+        rmSync(p, { recursive: true, force: true });
+        removed++;
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+  return { prunedEvents, wipedArchived: archived.length, removedCliArtifacts: removed };
+}
+
+let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+/** Run maintenance now and then daily (unref'd). Idempotent. */
+export function startAgentMaintenance(): void {
+  const tick = () => {
+    try {
+      const r = runAgentMaintenance();
+      if (r.prunedEvents || r.wipedArchived || r.removedCliArtifacts) console.log(`[agent] maintenance: ${JSON.stringify(r)}`);
+    } catch (e) {
+      console.error(`[agent] maintenance failed: ${(e as Error).message}`);
+    }
+  };
+  tick();
+  if (!maintenanceTimer) {
+    maintenanceTimer = setInterval(tick, DAY_MS);
+    maintenanceTimer.unref();
+  }
 }
 
 // ── transcript mirror ────────────────────────────────────────────────────────
@@ -535,7 +821,9 @@ const STATUS_FOR_ACTIVITY: Record<AgentTurnStatus, string> = {
 };
 
 /** Render the whole session transcript (prompts, final replies, tool names,
- *  touched note ids — never tool inputs or results). */
+ *  touched note ids — never tool inputs or results). The note is PRIVATE to the
+ *  session's owner (prism_creator + prism_visibility), so vault members with
+ *  tag/vault grants never see it through the gateway. */
 export function renderTranscript(s: SessionRow, turns: TurnRow[]): { content: string; metadata: Record<string, unknown> } {
   const lines: string[] = [`# Agent session: ${s.title ?? turns[0]?.prompt.slice(0, 80) ?? "untitled"}`, ""];
   lines.push(`Profile: \`${s.profile}\` · Session: \`${s.id}\``, "");
@@ -569,14 +857,17 @@ export function renderTranscript(s: SessionRow, turns: TurnRow[]): { content: st
       profile: s.profile,
       turns: turns.length,
       costUsd: Math.round(s.cost_usd * 10000) / 10000,
+      prism_creator: s.owner_email,
+      prism_visibility: "private",
     },
   };
 }
 
-/** Upsert the session's vault transcript note (best-effort; logs on failure). */
+/** Upsert the session's vault transcript note (best-effort; logs on failure).
+ *  Never for an archived session (its rows are gone — it would blank the note). */
 export async function mirrorTranscript(sessionId: string): Promise<string | null> {
   const s = getSession(sessionId);
-  if (!s) return null;
+  if (!s || s.status === "archived") return s?.transcript_note_id ?? null;
   const turns = listTurns(sessionId);
   const { content, metadata } = renderTranscript(s, turns);
   const v = deps.vaultFor(s.vault_id);
@@ -603,5 +894,10 @@ export async function mirrorTranscript(sessionId: string): Promise<string | null
 export function _resetAgentSessions(): void {
   listeners.clear();
   handles.clear();
+  userSlot.clear();
+  userWaiting.clear();
+  turnTokens.clear();
+  if (maintenanceTimer) clearInterval(maintenanceTimer);
+  maintenanceTimer = null;
   deps = defaultDeps();
 }
