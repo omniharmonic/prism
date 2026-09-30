@@ -59,6 +59,7 @@ export default defineConfig(({ mode }) => {
           "**/percentages-*",
           "**/subset-shared*",
           "**/createText-*",
+          "**/push-sw.js", // loaded via importScripts, not precached
         ],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Do NOT skipWaiting/clientsClaim: the new SW waits until the user
@@ -66,6 +67,10 @@ export default defineConfig(({ mode }) => {
         // activates + reloads cleanly. This keeps the running session's assets
         // consistent (no mid-session eviction → no "styling disappeared").
         cleanupOutdatedCaches: true,
+        // Web Push (WP3.3): the `push` + `notificationclick` handlers live in
+        // public/push-sw.js and are importScripts'd into the GENERATED worker, so
+        // generateSW (precache, denylist, runtime caching) stays exactly as it was.
+        importScripts: ["push-sw.js"],
         navigateFallback: "index.html",
         // Let server-handled routes reach the network instead of being shadowed
         // by the SPA shell: /auth/* (magic-link callback sets the session cookie

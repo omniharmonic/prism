@@ -1,11 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings, GovernancePanel, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, initializeSettings, GovernancePanel, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
-import { fetchMe, initCapability, postLoginTarget } from "./config";
+import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen } from "./auth/NativeSignInScreen";
 import { isNative } from "./transport";
@@ -19,6 +19,8 @@ import { CommonsNav } from "./commons/CommonsNav";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
+import { webPush } from "./push/webPush";
+import { initAgentDeepLink } from "./push/deeplink";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
@@ -207,6 +209,9 @@ async function start() {
   }
 
   startOutboxSync();
+  if (!capability) initAgentDeepLink(); // push notification → /agent/:id (WP3.3)
+  // Web Push (WP3.3) is a PWA + server-owner feature; native (APNs) comes with WP5.3.
+  const pushClient = !capability && !isNative && isOwner() ? webPush : null;
   root.render(
     <React.StrictMode>
       <PlatformProvider value="web">
@@ -214,9 +219,11 @@ async function start() {
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
+                <PushProvider value={pushClient}>
                 <App skipOnboarding={isViewer} initialTab={initialTab} />
                 <OfflineIndicator />
                 {!isNative && <UpdatePrompt />}
+                </PushProvider>
               </CollabDocumentProvider>
             </AccountProvider>
           </CollabSharingProvider>

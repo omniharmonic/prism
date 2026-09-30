@@ -20,6 +20,7 @@ import { federation } from "./routes/federation";
 import { federated } from "./routes/federated";
 import { governance } from "./routes/governance";
 import { agentApi } from "./routes/agent";
+import { pushApi } from "./routes/push";
 import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
 import { calendar } from "./routes/calendar";
@@ -144,6 +145,7 @@ export function createApp(): Hono {
   // mounted BEFORE the gateway so /api/agent + /api/integrations aren't proxied
   // to the vault by the owner short-circuit.
   app.route("/api/agent", agentApi);
+  app.route("/api/push", pushApi); // WP3.3 Web Push (owner-only), before the gateway
   app.route("/api/integrations", integrations);
   app.route("/api/sync", sync);
   // On-demand Google Calendar range sync (WP1.3, replaces calendar_sync_range) —

@@ -67,6 +67,13 @@ export const config = {
 
   ownerEmail: (process.env.OWNER_EMAIL ?? "").trim().toLowerCase(),
 
+  // Web Push (WP3.3, push.ts). Generate with `npm run gen-vapid -w @prism/server`.
+  // Unset → push is disabled (the routes report it; the turn hook is a no-op).
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY ?? "",
+  vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ?? "",
+  // VAPID `sub` claim (a contact the push service can reach). Default mailto:OWNER_EMAIL.
+  vapidSubject: process.env.VAPID_SUBJECT ?? (process.env.OWNER_EMAIL ? `mailto:${process.env.OWNER_EMAIL.trim()}` : ""),
+
   // Governance integrity (WP0.3, governance-integrity.ts): the HMAC key that signs
   // every governance-* note the governance service writes. Set → notes with a
   // missing/invalid `gov_sig` are IGNORED (a forged membership or vote written

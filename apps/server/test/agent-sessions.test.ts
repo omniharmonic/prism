@@ -832,3 +832,36 @@ test("validation: missing prompt 400 (never spawns); unknown session 404", async
   assert.equal((await postTurn("nope", { prompt: "x" })).status, 404);
   await assert.rejects(() => startTurn("nope", resolveVaultEntry(), { prompt: "x" }));
 });
+
+// ── WP3.3: turn end → exactly one push per subscription, ids only ────────────
+test("push: a finished turn sends one ids-only push per subscription; a failing sender never breaks the turn", async () => {
+  const { configurePush, saveSubscription, _resetPush } = await import("../src/push");
+  const sent: Array<{ endpoint: string; payload: string }> = [];
+  let boom = false;
+  configurePush({
+    keys: { publicKey: "pub", privateKey: "priv", subject: "mailto:o@test.local" },
+    sender: async (sub, payload) => {
+      sent.push({ endpoint: sub.endpoint, payload });
+      if (boom) throw new Error("push service down");
+      return { statusCode: 201 };
+    },
+  });
+  try {
+    for (const n of [1, 2]) saveSubscription({ email: config.ownerEmail, endpoint: `https://push.test/${n}`, p256dh: "k", auth: "a" });
+    const sid = await newSession();
+    const turnId = await runTurn(sid, "SECRET PROMPT TEXT", "agent-stream-turn1.jsonl");
+    await sleep(5);
+    assert.equal(sent.length, 2);
+    for (const s of sent) {
+      assert.deepEqual(JSON.parse(s.payload), { type: "agent-turn", sessionId: sid, turnId, status: "done" });
+      assert.ok(!s.payload.includes("SECRET"));
+    }
+    boom = true;
+    sent.length = 0;
+    await runTurn(sid, "again", "agent-stream-turn2-resume.jsonl");
+    assert.equal(getTurn(turnId)?.status, "done");
+    assert.equal(listTurns(sid).at(-1)?.status, "done"); // turn completed despite the push failure
+  } finally {
+    _resetPush();
+  }
+});
