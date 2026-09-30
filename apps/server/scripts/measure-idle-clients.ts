@@ -85,3 +85,5 @@ for (let c = 0; c < clients; c++) {
 await Promise.allSettled(tasks);
 console.log(`mode=${mode} clients=${clients} window=${seconds}s client->server requests=${requests} (${(requests / seconds).toFixed(2)}/s)`);
 console.log("Now count vault calls in the sandbox server log: grep -c '\\[trace\\]' (PRISM_VAULT_TRACE=1). Owner reads are coalesced (5 s), so compare the vault-side count, not this one.");
+
+export {};
