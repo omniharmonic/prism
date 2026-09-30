@@ -9,6 +9,14 @@ Agent (Claude Code / claude.ai / any MCP client)
 https://<MCP_PUBLIC_URL host>/vault/<name>/mcp     ← Parachute hub (public tunnel)
 ```
 
+> **Frozen (Architecture v2, WP0.3).** Minting is **off by default**: `POST /api/mcp/token`
+> returns `403 {"error":"minting_disabled"}` unless the server sets `MEMBER_VAULT_TOKENS=true`.
+> A whole-vault token bypasses every Prism permission (and, where governance integrity is not
+> yet on, could write governance notes directly — see `docs/governance.md`). Prism MCP credentials
+> that carry the member's Prism permissions will replace it. `GET /api/mcp` reports
+> `mintEnabled: false` plus a `mintDisabledReason`; **listing and revoking existing tokens keep
+> working**, so an owner should review `GET /api/mcp/tokens` and revoke what is no longer needed.
+
 ## The trust boundary (read this first)
 
 A minted token grants **whole-vault read or write directly at the hub**, bypassing Prism's per-note grant gateway. That is exactly right for a vault *member* (they already hold vault-level trust) and exactly wrong for anyone else — so `/api/mcp/token` requires a signed-in account with role ≥ `member` **on the target vault**. Guests, capability links, and anonymous actors can never mint. Each token is scoped to a single vault (`vault:<name>:read|write`); it grants nothing anywhere else.
@@ -18,7 +26,7 @@ A minted token grants **whole-vault read or write directly at the hub**, bypassi
 | Route | Who | What |
 |---|---|---|
 | `GET /api/mcp` | anyone | The active vault's public MCP URL + whether you may mint |
-| `POST /api/mcp/token` | member+ of the target vault | Mint. Body: `{ vaultId?, scope?: "read"\|"write" (default write), expiresInDays? (1–365, default 90), label? }`. Returns the token **once**, plus a paste-ready `.mcp.json` snippet and a `claude mcp add` command |
+| `POST /api/mcp/token` | member+ of the target vault, **and** `MEMBER_VAULT_TOKENS=true` on the server (else 403 `minting_disabled`) | Mint. Body: `{ vaultId?, scope?: "read"\|"write" (default write), expiresInDays? (1–365, default 90), label? }`. Returns the token **once**, plus a paste-ready `.mcp.json` snippet and a `claude mcp add` command |
 | `GET /api/mcp/tokens?vaultId=` | member+ | Audit list (jti/scope/expiry only — never token material). Members see their own; admin+ see all |
 | `DELETE /api/mcp/tokens/:jti` | the minter, or admin+ | Revoke at the hub (`parachute auth revoke-token`; enforced within ~60s) |
 

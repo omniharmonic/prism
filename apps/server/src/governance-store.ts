@@ -5,6 +5,12 @@
  * serialization; the engine does the deciding. Nothing here makes a governance
  * decision — it only turns notes into structures and back.
  *
+ * INTEGRITY (WP0.3): every loader here filters through `verifiedGovNotes`, so
+ * when GOVERNANCE_SIGNING_SECRET is set a note without a valid `gov_sig` (one
+ * written straight to the vault rather than through the governance service)
+ * never reaches the engine. Parsers themselves stay pure and unfiltered — callers
+ * that read single notes must verify (see governance-service.ts).
+ *
  * Note metadata is untrusted `unknown`, so every field is coerced defensively:
  * a malformed governance note degrades to safe defaults (e.g. a policy with a
  * missing threshold reads as threshold 1, distinct-required) rather than throwing
@@ -24,49 +30,18 @@ import type {
 } from "./governance";
 import { POWERS } from "./governance";
 import { isCap, type Cap } from "./permissions";
+import { GOV_TAGS, bool, num, str, strArr } from "./governance-fields";
+import { governanceIntegrityEnabled, verifiedGovNotes } from "./governance-integrity";
 
 /** The minimum vault surface the store needs — satisfied by parachute.ts `vault`. */
 export interface GovernanceVault {
   listNotes(opts: { tags?: string[]; includeContent?: boolean; limit?: number }): Promise<Note[]>;
 }
 
-// ── the governance tag names (single source, mirrors tag-schemas.json) ─────────
-export const GOV_TAGS = {
-  config: "governance-config",
-  role: "governance-role",
-  membership: "governance-membership",
-  policy: "governance-policy",
-  proposal: "governance-proposal",
-  vote: "governance-vote",
-  audit: "governance-audit",
-  revision: "governance-revision",
-} as const;
+// Tag names + defensive coercers live in governance-fields.ts, shared with the
+// integrity signer so a parser can only ever read what the signature covers.
+export { GOV_TAGS } from "./governance-fields";
 
-// ── defensive coercion ────────────────────────────────────────────────────────
-type Meta = Record<string, unknown> | null | undefined;
-
-const str = (m: Meta, k: string, def = ""): string => {
-  const v = m?.[k];
-  return typeof v === "string" ? v : v == null ? def : String(v);
-};
-const num = (m: Meta, k: string, def = 0): number => {
-  const v = m?.[k];
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
-  return def;
-};
-const bool = (m: Meta, k: string, def = false): boolean => {
-  const v = m?.[k];
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") return v === "true" || v === "1";
-  return def;
-};
-const strArr = (m: Meta, k: string): string[] => {
-  const v = m?.[k];
-  if (Array.isArray(v)) return v.map((x) => String(x)).filter((x) => x !== "");
-  if (typeof v === "string" && v.trim() !== "") return v.split(",").map((x) => x.trim()).filter(Boolean);
-  return [];
-};
 const oneOf = <T extends string>(value: string, allowed: readonly T[], fallback: T): T =>
   (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 
@@ -258,11 +233,12 @@ export async function loadState(
   opts: { fallbackOwner?: string } = {},
 ): Promise<GovernanceState> {
   const [configs, roles, memberships, policies] = await Promise.all([
-    vault.listNotes({ tags: [GOV_TAGS.config] }),
-    vault.listNotes({ tags: [GOV_TAGS.role] }),
-    vault.listNotes({ tags: [GOV_TAGS.membership] }),
-    vault.listNotes({ tags: [GOV_TAGS.policy] }),
+    vault.listNotes({ tags: [GOV_TAGS.config] }).then((n) => verifiedGovNotes(GOV_TAGS.config, n)),
+    vault.listNotes({ tags: [GOV_TAGS.role] }).then((n) => verifiedGovNotes(GOV_TAGS.role, n)),
+    vault.listNotes({ tags: [GOV_TAGS.membership] }).then((n) => verifiedGovNotes(GOV_TAGS.membership, n)),
+    vault.listNotes({ tags: [GOV_TAGS.policy] }).then((n) => verifiedGovNotes(GOV_TAGS.policy, n)),
   ]);
+  // Newest VERIFIED config wins — a forged, newer config note is skipped.
   const first = configs[0];
   const config = first ? parseConfig(first) : disabledConfig(opts.fallbackOwner);
   return {
@@ -275,13 +251,13 @@ export async function loadState(
 
 /** Load the votes cast on a given proposal. */
 export async function loadVotesFor(vault: GovernanceVault, proposalId: string): Promise<Vote[]> {
-  const notes = await vault.listNotes({ tags: [GOV_TAGS.vote] });
+  const notes = verifiedGovNotes(GOV_TAGS.vote, await vault.listNotes({ tags: [GOV_TAGS.vote] }));
   return notes.map(parseVote).filter((v) => v.proposal === proposalId);
 }
 
 /** Load the audit trail, newest first — the commons's legible memory (Ostrom #4). */
 export async function listAudit(vault: GovernanceVault, limit = 100): Promise<AuditEntry[]> {
-  const notes = await vault.listNotes({ tags: [GOV_TAGS.audit], limit });
+  const notes = verifiedGovNotes(GOV_TAGS.audit, await vault.listNotes({ tags: [GOV_TAGS.audit], limit }));
   return notes.map(parseAudit).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 }
 
@@ -331,7 +307,12 @@ export function revisionToMetadata(r: Omit<Revision, "id">): Record<string, unkn
 
 /** Revision history for a note, newest first. */
 export async function listRevisionsFor(vault: GovernanceVault, noteId: string): Promise<Revision[]> {
-  const notes = await vault.listNotes({ tags: [GOV_TAGS.revision] });
+  // Content is part of a revision's signature (it is the snapshot that gets
+  // published), so the list must carry it.
+  const notes = verifiedGovNotes(
+    GOV_TAGS.revision,
+    await vault.listNotes({ tags: [GOV_TAGS.revision], includeContent: governanceIntegrityEnabled() }),
+  );
   return notes
     .map(parseRevision)
     .filter((r) => r.note === noteId)

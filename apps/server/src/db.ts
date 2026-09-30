@@ -303,6 +303,23 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS mcp_tokens_vault ON mcp_tokens(vault_id);
 
+  -- ── Governance signature ledger (WP0.3, governance-integrity.ts) ─────────
+  -- The CURRENT gov_sig of every governance note the server wrote, per vault.
+  -- A signature alone proves "the server wrote this state once"; the ledger
+  -- makes it "…and it is the latest state". With GOVERNANCE_SIGNING_SECRET set a
+  -- note is trusted only if its sig verifies AND equals this row's sig — so a
+  -- vault-history restore of an older signed state, or a deleted note recreated
+  -- with its old id + sig, is rejected. sig NULL = tombstone (deleted through
+  -- governance). No row = untrusted (no trust-on-first-use). Populated by the
+  -- service's signed writers and by scripts/governance-sign-existing.ts.
+  CREATE TABLE IF NOT EXISTS governance_sig_ledger (
+    vault_id   TEXT NOT NULL,
+    note_id    TEXT NOT NULL,
+    sig        TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, note_id)
+  );
+
   -- ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────
   -- A mirror converges one path prefix (folder) of a source vault onto a prefix
   -- in a destination vault ON THIS SERVER — one-way, source-wins, folder
@@ -584,6 +601,23 @@ export function getMcpToken(jti: string): McpTokenRow | null {
 }
 export function setMcpTokenRevoked(jti: string): void {
   markMcpTokenRevoked.run(Date.now(), jti);
+}
+
+// ── Governance signature ledger (WP0.3) ──────────────────────────────────────
+const upsertGovSig = db.prepare(
+  `INSERT INTO governance_sig_ledger (vault_id, note_id, sig, updated_at) VALUES (?, ?, ?, ?)
+   ON CONFLICT(vault_id, note_id) DO UPDATE SET sig = excluded.sig, updated_at = excluded.updated_at`,
+);
+const selectGovSig = db.prepare("SELECT sig FROM governance_sig_ledger WHERE vault_id = ? AND note_id = ?");
+
+/** Record a governance note's CURRENT signature, or a tombstone (`null`) on delete. */
+export function setLedgerSig(vaultId: string, noteId: string, sig: string | null): void {
+  upsertGovSig.run(vaultId, noteId, sig, Date.now());
+}
+/** `undefined` = no row; `null` = tombstone; string = the current signature. */
+export function getLedgerSig(vaultId: string, noteId: string): string | null | undefined {
+  const row = selectGovSig.get(vaultId, noteId) as { sig: string | null } | undefined;
+  return row ? row.sig : undefined;
 }
 
 // ── Vault mirrors (single-server vault-to-vault folder sync) ─────────────────

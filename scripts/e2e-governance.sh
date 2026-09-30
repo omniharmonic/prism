@@ -55,6 +55,9 @@ SESSION_SECRET=e2e-session-secret-not-production
 CAPABILITY_SECRET=e2e-capability-secret-not-production
 COLLAB_TOKEN=e2e-collab-token
 OWNER_EMAIL=owner@test.local
+# Governance integrity ON (WP0.3): the flows must work with every governance note
+# signed and verified. Set E2E_GOV_INTEGRITY=0 to exercise the no-secret path.
+$( [ "${E2E_GOV_INTEGRITY:-1}" = "1" ] && echo "GOVERNANCE_SIGNING_SECRET=e2e-governance-signing-secret-not-production-000" )
 EOF
 else
   # Real-vault mode: borrow config (worktree-aware, like governance-sandbox.sh).

@@ -7,6 +7,12 @@
  * `config.enabled` is true, a change is refused unless it rides an
  * `amend_governance` proposal that clears the constitution's own threshold.
  *
+ * INTEGRITY (WP0.3): every governance note this file writes goes through
+ * `createGovNote`/`updateGovNote` (governance-integrity.ts), which stamp
+ * `metadata.gov_sig` when GOVERNANCE_SIGNING_SECRET is set; every note it reads
+ * back is verified first (`govNotes`, `getProposal*`, revisions, votes), so a
+ * note forged straight into the vault is never matched, re-signed, or obeyed.
+ *
  * This layer does I/O (reads/writes notes, writes audit entries) but delegates
  * every DECISION to the pure engine, so the authoritative logic stays testable
  * in isolation and this file stays a thin, auditable choke point.
@@ -50,6 +56,16 @@ import {
   revisionToMetadata,
   type Revision,
 } from "./governance-store";
+import {
+  createGovNote,
+  updateGovNote,
+  deleteGovNote,
+  verifiedGovNotes,
+  verifyGovNote,
+  governanceIntegrityEnabled,
+  GOV_SIG_FIELD,
+} from "./governance-integrity";
+import { isGovTag, type GovTag } from "./governance-fields";
 
 /** The vault surface the service needs (satisfied by parachute.ts `vault`). */
 export type ServiceVault = Pick<VaultHelper, "listNotes" | "createNote" | "updateNote" | "getNote" | "deleteNote">;
@@ -124,7 +140,7 @@ export async function recordAudit(
   entry: { action: string; actor: string; before?: string; after?: string },
 ): Promise<void> {
   try {
-    await vault.createNote({
+    await createGovNote(vault, {
       content: `# Governance audit: ${entry.action}`,
       metadata: auditToMetadata({ ...entry, at: nowIso() }),
       tags: [GOV_TAGS.audit],
@@ -138,7 +154,11 @@ export async function recordAudit(
 /** An effect either wrote a note, or refused with a structured reason. */
 type EffectResult = { ok: true; id: string } | { ok: false; code: MutateErr["code"]; detail: string };
 
-const govNotes = (vault: ServiceVault, tag: string): Promise<Note[]> => vault.listNotes({ tags: [tag] });
+/** The VERIFIED governance notes of one type (all of them when integrity is off).
+ *  Every upsert/match/cascade below works only over these, so a forged note is
+ *  never updated-and-thereby-signed, and never shadows a real one. */
+const govNotes = async (vault: ServiceVault, tag: GovTag): Promise<Note[]> =>
+  verifiedGovNotes(tag, await vault.listNotes({ tags: [tag] }));
 
 const notFound = (what: string, ref: string): EffectResult => ({
   ok: false,
@@ -176,7 +196,7 @@ export async function writeConstitutionProse(vault: ServiceVault, state: Governa
   if (!note) return false;
   const content = renderConstitution(state);
   if (note.content === content) return false;
-  await vault.updateNote(note.id, { content });
+  await updateGovNote(vault, GOV_TAGS.config, note, { content });
   return true;
 }
 
@@ -212,10 +232,10 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       const existing = (await govNotes(vault, GOV_TAGS.config))[0];
       const metadata = configToMetadata(change.config);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata });
+        const n = await updateGovNote(vault, GOV_TAGS.config, existing, { metadata });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({
+      const n = await createGovNote(vault, {
         content: "# Governance Constitution",
         path: "governance/config",
         metadata,
@@ -229,10 +249,10 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       const metadata = roleToMetadata(change.role);
       const content = roleBody(change.role);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata, content });
+        const n = await updateGovNote(vault, GOV_TAGS.role, existing, { metadata, content });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({ content, metadata, tags: [GOV_TAGS.role] });
+      const n = await createGovNote(vault, { content, metadata, tags: [GOV_TAGS.role] });
       return { ok: true, id: n.id };
     }
 
@@ -243,7 +263,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       if (!match) return notFound("role", change.ref);
       const merged: Role = { ...parseRole(match), ...change.role };
-      const n = await vault.updateNote(match.id, { metadata: roleToMetadata(merged), content: roleBody(merged) });
+      const n = await updateGovNote(vault, GOV_TAGS.role, match, { metadata: roleToMetadata(merged), content: roleBody(merged) });
       return { ok: true, id: n.id };
     }
 
@@ -254,12 +274,12 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       if (!match) return notFound("role", change.ref);
       const role = parseRole(match);
-      await vault.deleteNote(match.id);
+      await deleteGovNote(vault, match.id);
       // Cascade: a membership pointing at a deleted role is a dangling grant of
       // powers that no longer resolve. Drop them with the role.
       for (const mn of await govNotes(vault, GOV_TAGS.membership)) {
         const m = parseMembership(mn);
-        if (m.role === role.id || (role.name !== "" && m.role === role.name)) await vault.deleteNote(mn.id);
+        if (m.role === role.id || (role.name !== "" && m.role === role.name)) await deleteGovNote(vault, mn.id);
       }
       return { ok: true, id: match.id };
     }
@@ -272,10 +292,10 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       const metadata = policyToMetadata(change.policy);
       const content = policyBody(change.policy, state);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata, content });
+        const n = await updateGovNote(vault, GOV_TAGS.policy, existing, { metadata, content });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({ content, metadata, tags: [GOV_TAGS.policy] });
+      const n = await createGovNote(vault, { content, metadata, tags: [GOV_TAGS.policy] });
       return { ok: true, id: n.id };
     }
 
@@ -290,7 +310,10 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
           detail: "refusing to retarget the constitution's amend policy away from amend_governance — governance would become un-amendable",
         };
       }
-      const n = await vault.updateNote(match.id, { metadata: policyToMetadata(merged), content: policyBody(merged, state) });
+      const n = await updateGovNote(vault, GOV_TAGS.policy, match, {
+        metadata: policyToMetadata(merged),
+        content: policyBody(merged, state),
+      });
       return { ok: true, id: n.id };
     }
 
@@ -304,7 +327,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
           detail: "refusing to delete the constitution's amend policy — no amendment could ever be evaluated again",
         };
       }
-      await vault.deleteNote(match.id);
+      await deleteGovNote(vault, match.id);
       return { ok: true, id: match.id };
     }
 
@@ -315,10 +338,10 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       const metadata = membershipToMetadata(change.membership);
       if (existing) {
-        const n = await vault.updateNote(existing.id, { metadata });
+        const n = await updateGovNote(vault, GOV_TAGS.membership, existing, { metadata });
         return { ok: true, id: n.id };
       }
-      const n = await vault.createNote({
+      const n = await createGovNote(vault, {
         content: `# Governance membership: ${change.membership.subject} → ${change.membership.role}`,
         metadata,
         tags: [GOV_TAGS.membership],
@@ -333,7 +356,7 @@ async function effect(vault: ServiceVault, state: GovernanceState, change: GovCh
       });
       const first = matches[0];
       if (!first) return notFound("membership", `${change.subject} → ${change.role}`);
-      for (const n of matches) await vault.deleteNote(n.id);
+      for (const n of matches) await deleteGovNote(vault, n.id);
       return { ok: true, id: first.id };
     }
   }
@@ -451,7 +474,7 @@ export async function openProposal(
     openedBy: p.openedBy,
     openedAt: nowIso(),
   };
-  const note = await vault.createNote({
+  const note = await createGovNote(vault, {
     content: `# Proposal: ${p.action} → ${p.target}`,
     metadata: { ...proposalToMetadata(proposal), payload: p.payload },
     tags: [GOV_TAGS.proposal],
@@ -461,7 +484,7 @@ export async function openProposal(
 
 /** Cast a vote. Caller must have verified eligibility via the engine first. */
 export async function castVote(vault: ServiceVault, v: Vote): Promise<{ id: string }> {
-  const note = await vault.createNote({
+  const note = await createGovNote(vault, {
     content: `# Vote: ${v.vote} on ${v.proposal}`,
     metadata: voteToMetadata(v),
     tags: [GOV_TAGS.vote],
@@ -501,7 +524,7 @@ export async function findVoteNote(
 export async function upsertVote(vault: ServiceVault, v: Vote): Promise<{ id: string; updated: boolean }> {
   const existing = await findVoteNote(vault, v.proposal, v.voter);
   if (existing) {
-    const n = await vault.updateNote(existing.id, {
+    const n = await updateGovNote(vault, GOV_TAGS.vote, existing, {
       metadata: { ...(existing.metadata ?? {}), ...voteToMetadata(v) },
     });
     return { id: n.id, updated: true };
@@ -515,6 +538,7 @@ export async function getProposal(vault: ServiceVault, id: string): Promise<Prop
   try {
     const note = await vault.getNote(id);
     if (!(note.tags ?? []).includes(GOV_TAGS.proposal)) return null;
+    if (!verifyGovNote(GOV_TAGS.proposal, note)) return null;
     return parseProposal(note);
   } catch {
     return null;
@@ -528,6 +552,9 @@ export async function getProposalRaw(
 ): Promise<{ proposal: Proposal; payload: unknown } | null> {
   const note = await vault.getNote(id).catch(() => null);
   if (!note || !(note.tags ?? []).includes(GOV_TAGS.proposal)) return null;
+  // A forged (unsigned/tampered) proposal does not exist as far as governance is
+  // concerned: no detail, no votes, no apply.
+  if (!verifyGovNote(GOV_TAGS.proposal, note)) return null;
   const raw = note.metadata?.payload;
   let payload: unknown = raw;
   if (typeof raw === "string") {
@@ -571,6 +598,28 @@ export async function proposalContext(vault: ServiceVault, proposal: Proposal, p
   return {};
 }
 
+/**
+ * Governance notes change only through `mutateGovernance`. A CONTENT proposal
+ * that targets a governance note, or would create one, is refused: it could
+ * never produce a signed note, and a content edit to a signed note would only
+ * invalidate it (a governance-approved way to delete the constitution).
+ */
+export async function assertNotGovernanceContent(
+  vault: Pick<ServiceVault, "getNote">,
+  proposal: Pick<Proposal, "action" | "target">,
+  payload: ContentPayload,
+): Promise<void> {
+  // Only meaningful with integrity on; without it the pre-WP0.3 path is unchanged.
+  if (!governanceIntegrityEnabled()) return;
+  if ((payload.tags ?? []).some(isGovTag)) throw new Error("content proposals cannot create governance notes");
+  if (proposal.action === "edit_note" && proposal.target) {
+    const target = await vault.getNote(proposal.target).catch(() => null);
+    if (target && (target.tags ?? []).some(isGovTag)) {
+      throw new Error("governance notes change only through governance amendments, not content proposals");
+    }
+  }
+}
+
 /** Result of applying a content proposal: either live (published) or staged. */
 export interface ContentApplyResult {
   published: boolean;
@@ -584,7 +633,7 @@ async function createRevisionNote(
   r: Omit<Revision, "id"> & { content: string },
 ): Promise<{ id: string }> {
   const { content, ...meta } = r;
-  const note = await vault.createNote({
+  const note = await createGovNote(vault, {
     content,
     metadata: revisionToMetadata(meta),
     tags: [GOV_TAGS.revision],
@@ -607,6 +656,7 @@ export async function applyContentProposal(
   payload: ContentPayload,
   opts: { author: string; autoPublish: boolean },
 ): Promise<ContentApplyResult> {
+  await assertNotGovernanceContent(vault, proposal, payload);
   const at = nowIso();
   const content = payload.content ?? "";
 
@@ -670,7 +720,10 @@ export async function applyContentProposal(
 
 /** The (unpublished) revision a proposal staged, if any. */
 export async function revisionForProposal(vault: ServiceVault, proposalId: string): Promise<Revision | null> {
-  const notes = await vault.listNotes({ tags: [GOV_TAGS.revision] });
+  const notes = verifiedGovNotes(
+    GOV_TAGS.revision,
+    await vault.listNotes({ tags: [GOV_TAGS.revision], includeContent: governanceIntegrityEnabled() }),
+  );
   const match = notes.map(parseRevision).find((r) => r.proposal === proposalId);
   return match ?? null;
 }
@@ -682,6 +735,7 @@ export async function publishRevision(
   author: string,
 ): Promise<{ noteId: string }> {
   const revNote = await vault.getNote(revisionId);
+  assertVerifiedRevision(revNote);
   const rev = parseRevision(revNote);
   if (rev.published) throw new Error("revision is already published");
 
@@ -704,11 +758,18 @@ export async function publishRevision(
     });
     noteId = n.id;
   }
-  await vault.updateNote(revisionId, {
+  await updateGovNote(vault, GOV_TAGS.revision, revNote, {
     metadata: { ...(revNote.metadata ?? {}), note: noteId, published: true, origin: "publish" },
   });
   await recordAudit(vault, { action: "revision_published", actor: author, after: `${revisionId} → ${noteId}` });
   return { noteId };
+}
+
+/** A revision's content is written LIVE by publish/rollback — only a revision the
+ *  governance service itself wrote (valid signature) may be used. The tag check
+ *  applies only with integrity on, so the no-secret path is unchanged. */
+function assertVerifiedRevision(note: Note): void {
+  if (!verifyGovNote(GOV_TAGS.revision, note)) throw new Error("revision failed its integrity check");
 }
 
 /** Roll a note's live content back to a prior revision (non-destructive: the
@@ -720,6 +781,7 @@ export async function rollbackNote(
   author: string,
 ): Promise<{ revisionId: string }> {
   const revNote = await vault.getNote(revisionId);
+  assertVerifiedRevision(revNote);
   const rev = parseRevision(revNote);
   if (rev.note !== noteId) throw new Error("revision does not belong to this note");
   await vault.updateNote(noteId, { content: revNote.content });
@@ -754,8 +816,11 @@ export async function forkNote(
   by: string,
 ): Promise<{ id: string; forkedFrom: string }> {
   const origin = await vault.getNote(noteId);
+  // A fork is a new note: it never inherits the origin's governance signature
+  // (which is bound to the origin's id anyway and would not verify).
+  const { [GOV_SIG_FIELD]: _sig, ...originMeta } = origin.metadata ?? {};
   const metadata: Record<string, unknown> = {
-    ...(origin.metadata ?? {}),
+    ...originMeta,
     forked_from: origin.id,
     forked_at: nowIso(),
     forked_by: by,
@@ -799,5 +864,6 @@ export async function proposeMerge(
 export async function setProposalState(vault: ServiceVault, id: string, next: Proposal["state"]): Promise<void> {
   const note = await vault.getNote(id).catch(() => null);
   const metadata = { ...(note?.metadata ?? {}), state: next };
-  await vault.updateNote(id, { metadata });
+  // updateGovNote refuses (throws) to re-sign a proposal that does not verify.
+  await updateGovNote(vault, GOV_TAGS.proposal, note ?? { id, metadata: null, content: "" }, { metadata });
 }

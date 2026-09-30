@@ -279,6 +279,142 @@ burst rather than an unbounded one.
 
 ---
 
+## Governance integrity (signed governance notes)
+
+Governance state is stored as ordinary `governance-*` notes in the vault — which
+means anything that can write to the vault directly (the owner's desktop app, an
+agent holding a whole-vault MCP token, a member with a grant on a `governance-*`
+tag) could, until this existed, *write governance*: a hand-made
+`governance-membership` note compiled into a real content grant, and a hand-made
+`governance-vote` counted toward an amendment.
+
+With **`GOVERNANCE_SIGNING_SECRET`** set in `apps/server/.env`, every governance
+note the Prism server writes carries `metadata.gov_sig`, an HMAC-SHA256 over:
+
+- the note's governance **type** (its tag) and its vault **note id** — so a copy
+  of a valid note (new id) or a re-tagged note does not verify;
+- every metadata field the server *reads as governance* for that type, coerced
+  exactly the way the server parses it:
+
+| Type | Signed fields |
+|---|---|
+| config | `enabled`, `bootstrap_owner`, `amend_policy`, `default_threshold_n`, `default_eligible_role` |
+| role | `name`, `powers`, `scope_type`, `scope`, `capabilities`, `assigns` |
+| membership | `subject`, `role`, `granted_by`, `expires_at` |
+| policy | `action`, `scope_type`, `scope`, `threshold_n`, `quorum`, `distinct_required`, `eligible_role`, `window_seconds`, `auto_publish` |
+| proposal | `action`, `target`, `state`, `opened_by`, `opened_at`, `payload` (the proposed change, verbatim) |
+| vote | `proposal`, `voter`, `vote`, `at`, `reason` |
+| audit | `action`, `actor`, `before`, `after`, `at` |
+| revision | `note`, `parent`, `proposal`, `author`, `origin`, `published`, `at`, `payload`, **and a SHA-256 of the note content** (the snapshot that gets published) |
+
+Note *content* is not signed for any other type: it is human-readable prose
+derived from the metadata (the constitution body is regenerated after every
+change), and nothing reads it as authority.
+
+**On read**, a governance note whose `gov_sig` is missing or wrong is ignored —
+it is not part of the constitution, grants nothing, counts as no vote, and a
+proposal in that state 404s. Each such note is logged once
+(`[governance] INTEGRITY: ignoring governance-membership note <id> …` — id and
+type, never content). The server never re-signs a note that fails verification.
+Content proposals may not create or edit governance notes while integrity is on.
+
+**Only the current state is trusted — the signature ledger.** A signature by
+itself only proves the server wrote that state of that note *at some point*.
+The vault keeps note history (Parachute 0.7.9 `POST /notes/:id/restore`), so
+anyone with a vault token could otherwise put back an earlier signed state —
+re-open an applied proposal and apply it again, restore a role's wider
+capabilities or a membership's longer expiry, flip a changed vote back — or
+recreate a deleted governance note with its original id and signature. So the
+server also records each governance note's **current** signature in its own
+database (`governance_sig_ledger` in `prism-server.db`): every governance write
+updates it, and every governance delete leaves a tombstone. A note is trusted
+only if its signature is valid **and** is the ledger's current one. No ledger
+record means untrusted (nothing is trusted on first sight), and a tombstone means
+untrusted.
+
+**Without the secret**, nothing changes from before: every governance note is
+trusted as read, no signatures are written, and the server logs one startup
+warning that integrity is off.
+
+### Turning it on (owner)
+
+1. Back up the vault.
+2. Generate a secret (`openssl rand -base64 48`) and add
+   `GOVERNANCE_SIGNING_SECRET=<it>` to the server's env file.
+3. Stop the server (the migration writes the ledger into the server's database).
+4. Dry-run the migration against that env file, **from `apps/server`**, and
+   **read the roster it prints** — signing blesses every listed membership and
+   vote, so delete anything nobody granted through Prism first:
+   `cd apps/server && node --import tsx scripts/governance-sign-existing.ts --env <env file>`
+5. Apply: same command plus `--apply`. It signs the notes, writes their ledger
+   rows, re-checks, and exits non-zero if anything is still pending. Re-running
+   is a no-op.
+6. Start the server. `GET /api/governance/state` should show the same
+   constitution as before.
+
+The script has no default env file on purpose — it never falls back to the live
+`.env`. It writes the ledger into the database named by `DB_PATH` in that env
+file (resolved from the current directory) and refuses if that file does not
+exist. It never blesses: notes carrying two governance tags (`skip-ambiguous`),
+notes the ledger says governance deleted (`skip-tombstoned` — delete them from the
+vault), or valid-but-not-current signatures (`skip-mismatch`, a likely replay —
+`--accept-mismatch` records them after you have checked). A (re)sign over a note
+the ledger already knew is flagged `CHANGED since last signed — review`.
+
+**Rolling back** is unsetting the secret (verification stops). If governance
+changes while the secret is unset, those notes are unsigned or carry stale
+signatures — re-run the migration (after reviewing the roster) before setting
+the secret again. **Rotating** the secret is the same: set the new one and re-run
+the migration, which re-signs every note.
+
+**The ledger lives in `prism-server.db`, so that file now carries governance
+trust.** If it is lost, replaced, or restored from an older backup, governance
+state disappears (no ledger rows) or partly reverts to whatever was current at
+backup time (newer changes become "not current"), until the migration is re-run —
+which rebuilds missing rows without rewriting notes (`ledger` action), but will
+report newer notes as `skip-mismatch` for you to review. Back it up with the
+vault: `scripts/backup-parachute.sh` already snapshots `apps/server/prism-server.db`
+whole, ledger included. Restore the vault and the server database *together*,
+from the same moment.
+
+### What it does not protect against
+
+Be clear-eyed about the residual risks of anyone who can still write to the
+vault directly:
+
+- **Deletion.** A vault write token can delete governance notes: remove a
+  membership (revoking access), delete a vote, or delete the config note
+  (governance drops to "not bootstrapped" and its grants are torn down on the
+  next reconcile). Deleting a *scoped* policy can also lower a bar — requests in
+  that scope fall back to the constitution's default policy. Deletion is denial
+  of service or a downgrade, never a grant to the forger — but it is not
+  prevented.
+- **Replay is closed by the ledger — as long as the ledger is intact.** Restoring
+  an older signed state, or recreating a deleted note, is rejected. The ledger's
+  own integrity is the server database's: anyone who can write
+  `prism-server.db` already holds far more than governance.
+- **Crash between vault write and ledger write.** A signed write updates the
+  vault first and the ledger right after; a crash in between leaves that one
+  note untrusted (fail-closed) until governance rewrites it or the migration
+  records it (`skip-mismatch` → review → `--accept-mismatch`).
+- **Duplicates are harmless, alterations are not possible.** Copying a signed
+  note produces a new id, which does not verify.
+- **The owner's own hand edits** of a governance note's metadata (desktop
+  metadata editor, an agent holding the owner token) void that note, by design:
+  governance changes go through `/api/governance`.
+- **Prose is unsigned.** The body text of the config, role and policy notes can
+  be edited to say anything; the metadata is what governs, and the prose is
+  rewritten on the next change.
+- **The secret is as sensitive as the vault token** that sits beside it; anyone
+  holding it can forge anything.
+- **Signatures are not bound to a vault name** — only to note ids. Governance
+  runs on the primary vault only today.
+- **Whole-vault tokens still exist** for whoever already holds one. New member
+  whole-vault MCP tokens are frozen (`MEMBER_VAULT_TOKENS`, see
+  `docs/mcp-access.md`); revoke the old ones.
+
+---
+
 ## Recovery
 
 If a constitution is genuinely bricked — locked, with no role that could ever

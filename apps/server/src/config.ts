@@ -67,6 +67,24 @@ export const config = {
 
   ownerEmail: (process.env.OWNER_EMAIL ?? "").trim().toLowerCase(),
 
+  // Governance integrity (WP0.3, governance-integrity.ts): the HMAC key that signs
+  // every governance-* note the governance service writes. Set → notes with a
+  // missing/invalid `gov_sig` are IGNORED (a forged membership or vote written
+  // straight to the vault confers nothing). Empty → integrity is off and every
+  // governance note is trusted as read (the pre-WP0.3 behaviour; logged at
+  // startup). Deliberately NOT derived from another secret: enabling it hides
+  // every unsigned note, so it must be an explicit act paired with
+  // scripts/governance-sign-existing.ts. Generate: `openssl rand -base64 48`.
+  governanceSigningSecret: process.env.GOVERNANCE_SIGNING_SECRET ?? "",
+
+  // Member self-serve WHOLE-VAULT MCP tokens (routes/mcp.ts POST /api/mcp/token).
+  // FROZEN by default: such a token bypasses every Prism grant and — until
+  // governance integrity is on everywhere — could write governance notes. Prism
+  // MCP credentials (Architecture v2 WP6.x) replace it. Listing and revoking
+  // already-minted tokens keep working regardless. MEMBER_VAULT_TOKENS=true
+  // re-enables minting.
+  memberVaultTokens: process.env.MEMBER_VAULT_TOKENS === "true",
+
   // Dedicated owner token for the trusted desktop app's real-time connection.
   // The Tauri webview presents this to /collab to join live docs as the owner —
   // separate from the vault token, so the powerful vault credential stays out of

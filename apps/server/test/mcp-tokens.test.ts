@@ -4,10 +4,14 @@
  * the TARGET vault may mint; guests, links, and anon never can. The CLI minter/
  * revoker are injected (mcp-token.ts seams), so these tests cover the real
  * route auth + audit-registry behavior without a hub.
+ *
+ * Minting is FROZEN by default (WP0.3, MEMBER_VAULT_TOKENS). The pre-freeze
+ * behaviour tests run with the flag forced ON; the freeze tests at the bottom
+ * force it OFF and prove list + revoke still work for cleanup.
  */
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mcp } from "../src/routes/mcp";
+import { mcp, setMemberVaultTokensEnabled, MINT_FROZEN_DETAIL } from "../src/routes/mcp";
 import { config } from "../src/config";
 import { resetDb, makeSession, sessionCookie } from "./helpers";
 import { addVaultEntry, setMembership, listMcpTokens, getMcpToken } from "../src/db";
@@ -27,6 +31,7 @@ let revoked: string[] = [];
 let jtiSeq = 0;
 
 beforeEach(() => {
+  setMemberVaultTokensEnabled(true);
   resetDb();
   minted = [];
   revoked = [];
@@ -47,6 +52,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  setMemberVaultTokensEnabled(undefined);
   setTokenMinter(null);
   setTokenRevoker(null);
 });
@@ -189,4 +195,51 @@ test("GET /api/mcp info reports the URL and mintability", async () => {
 
   const anon = (await (await mcp.request("/", {})).json()) as { canMint: boolean };
   assert.equal(anon.canMint, false);
+});
+
+// ── the WP0.3 freeze ──────────────────────────────────────────────────────────
+
+test("minting is frozen BY DEFAULT: the configured flag is off in tests (no MEMBER_VAULT_TOKENS)", async () => {
+  setMemberVaultTokensEnabled(undefined); // the real config value
+  assert.equal(config.memberVaultTokens, false);
+  setMembership("commons", "m@example.com", "member", "test");
+  const r = await postToken(sessionCookie(makeSession("m@example.com")), { vaultId: "commons" });
+  assert.equal(r.status, 403);
+  const b = (await r.json()) as { error: string; detail: string };
+  assert.equal(b.error, "minting_disabled");
+  assert.equal(b.detail, MINT_FROZEN_DETAIL);
+  assert.match(b.detail, /Prism MCP credentials/);
+  assert.equal(minted.length, 0, "the hub minter is never called");
+});
+
+test("frozen: even the server owner cannot mint; info reports mintEnabled=false with the reason", async () => {
+  setMemberVaultTokensEnabled(false);
+  assert.equal((await postToken(ownerCookie(), {}, "commons")).status, 403);
+  assert.equal(minted.length, 0);
+  const info = (await (await mcp.request("/", { headers: { cookie: ownerCookie(), "X-Prism-Vault": "commons" } })).json()) as {
+    canMint: boolean; mintEnabled: boolean; mintDisabledReason?: string;
+  };
+  assert.equal(info.mintEnabled, false);
+  assert.equal(info.canMint, false);
+  assert.equal(info.mintDisabledReason, MINT_FROZEN_DETAIL);
+});
+
+test("frozen: existing tokens can still be LISTED and REVOKED (owner cleanup)", async () => {
+  setMembership("commons", "a@example.com", "member", "test");
+  const aCookie = sessionCookie(makeSession("a@example.com"));
+  const { jti } = (await (await postToken(aCookie, { vaultId: "commons" })).json()) as { jti: string }; // minted while enabled
+  setMemberVaultTokensEnabled(false);
+
+  const list = (await (await mcp.request("/tokens?vaultId=commons", { headers: { cookie: ownerCookie() } })).json()) as Array<{ jti: string }>;
+  assert.deepEqual(list.map((t) => t.jti), [jti]);
+  assert.equal((await mcp.request(`/tokens/${jti}`, { method: "DELETE", headers: { cookie: ownerCookie() } })).status, 200);
+  assert.deepEqual(revoked, [jti]);
+  assert.ok(getMcpToken(jti)!.revoked_at);
+});
+
+test("MEMBER_VAULT_TOKENS=true re-enables minting (200)", async () => {
+  setMemberVaultTokensEnabled(true);
+  setMembership("commons", "m@example.com", "member", "test");
+  assert.equal((await postToken(sessionCookie(makeSession("m@example.com")), { vaultId: "commons" })).status, 200);
+  assert.equal(minted.length, 1);
 });
