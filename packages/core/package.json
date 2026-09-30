@@ -11,6 +11,7 @@
     "./editor-schema": "./src/editor/collabSchema.ts",
     "./content-types": "./src/lib/schemas/content-types.ts",
     "./governance-prose": "./src/lib/governance/prose.ts",
+    "./collab-access": "./src/lib/collab/access.ts",
     "./styles/*": "./src/styles/*"
   },
   "scripts": {

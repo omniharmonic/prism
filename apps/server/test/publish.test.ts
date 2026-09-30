@@ -549,3 +549,20 @@ test("GET /publications reports kind + pathPrefix/tag for both kinds", async () 
   assert.ok(tagRow && tagRow.tag === "wiki" && (tagRow.pathPrefix ?? null) === null);
   assert.ok(pathRow && pathRow.pathPrefix === "docs/guide" && !pathRow.tag);
 });
+
+// ── WP0.2: the public read gate is the `view` CAP, not the level ladder ──────
+test("a caps-only anyone grant without `view` (e.g. [\"create\"]) exposes nothing publicly", async () => {
+  seedWiki();
+  createPublication({
+    id: "dropbox", resource_type: "tag", resource: "wiki", template: "wiki",
+    title: null, home_note_id: null, password_hash: null, theme: null, expires_at: null, created_by: OWNER,
+  });
+  // Projects to level "view" on the ladder (levelForCaps floors there) but
+  // confers no read — the old effectiveLevel >= view gate leaked it.
+  const g = addGrant({ subject_type: "anyone", subject: "*", resource_type: "tag", resource: "wiki", level: "view", caps: ["create"], created_by: "test" });
+  assert.equal(g.level, "view", "precondition: the ladder projection floors at view");
+
+  const manifest = await readJson(await publish.request("/dropbox"));
+  assert.deepEqual(manifest.notes, [], "no note is listed");
+  assert.equal((await publish.request("/dropbox/notes/n1")).status, 403, "no note is readable by id");
+});

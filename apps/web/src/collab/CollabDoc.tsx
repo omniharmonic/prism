@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { GATEWAY_ORIGIN, apiBase, capabilityHeader, getCapabilityToken, getActiveVault, getMe, fetchMe } from "../config";
 
@@ -187,11 +187,11 @@ export function CollabDoc({
   };
 
   const isSuggestLevel = level === "suggest";
-  const isCommentLevel = level === "comment";
-  const canReview = level === null || level === "edit" || level === "own";
-  const canComment = level !== "view";
-  const editable = level !== "view";
-  const commentOnly = isCommentLevel;
+  // One table (@prism/core collabAffordances) mirrors what the server socket
+  // allows: below "suggest" the connection is read-only, so a "comment"-level
+  // viewer gets NO write affordances — comments need suggest (WP0.2); offering
+  // them would let a comment vanish on reload.
+  const { canReview, canComment, editable } = collabAffordances(level);
   const effectiveSuggesting = isSuggestLevel ? true : suggesting;
 
   useEffect(() => {
@@ -354,15 +354,13 @@ export function CollabDoc({
     ? online
       ? "Connecting…"
       : "Offline · saved locally"
-    : level === "view"
+    : !editable
       ? "View only"
       : !isDocument
         ? "Editing"
-        : commentOnly
-          ? "Commenting"
-          : effectiveSuggesting
-            ? "Suggesting"
-            : "Editing";
+        : effectiveSuggesting
+          ? "Suggesting"
+          : "Editing";
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
@@ -460,7 +458,6 @@ export function CollabDoc({
                 suggesting={effectiveSuggesting}
                 onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
                 canReview={canReview}
-                commentOnly={commentOnly}
                 canComment={canComment}
                 onEditor={setEditor}
                 onCommentActivate={(id) => {

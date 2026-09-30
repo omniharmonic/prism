@@ -78,6 +78,7 @@ export type {
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
 export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
+export { collabAffordances, type CollabAffordances } from "./lib/collab/access";
 export { PageHeader, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";

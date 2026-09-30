@@ -177,7 +177,7 @@ export function levelForCaps(caps: Iterable<Cap>): Level {
 }
 
 /** The caps a single grant confers: its explicit list, else its level's expansion. */
-const grantCaps = (g: Grant): Iterable<Cap> =>
+export const grantCaps = (g: Grant): Iterable<Cap> =>
   g.caps && g.caps.length ? g.caps : expandLevel(g.level);
 
 /**

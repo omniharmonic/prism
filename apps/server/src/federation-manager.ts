@@ -48,7 +48,7 @@ import WebSocket from "ws";
 import { hocuspocus, noteKind, PEER_ORIGIN, type CollabKind } from "./collab";
 import { signPeerConnToken } from "./auth/peer-conn";
 import { vault } from "./parachute";
-import { atLeast, type Level } from "./permissions";
+import { grantCaps, type Level } from "./permissions";
 import {
   listSpaces,
   federatedNotesForSpace,
@@ -238,7 +238,10 @@ export class FederationManager {
 
     for (const space of listSpaces()) {
       const peerGrants = grantsForResource("space", space.id).filter(
-        (g) => g.subject_type === "peer" && atLeast(g.level as Level, "view"),
+        // The `view` CAP, not the ladder (WP0.2): bridging a note to a peer IS a
+        // read. Peer grants are level-only today, so this is identical in
+        // practice; it keeps a caps grant without `view` from exporting content.
+        (g) => g.subject_type === "peer" && [...grantCaps(g)].includes("view"),
       );
       if (peerGrants.length === 0) continue;
       const feds = federatedNotesForSpace(space.id);

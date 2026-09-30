@@ -6,6 +6,14 @@
  *  - onAuthenticate: resolve the connection's level (session cookie OR ?t=
  *    capability) against the note; reject below "view"; mark view/comment
  *    connections read-only (their edits are dropped by Hocuspocus).
+ *    COMMENTS NEED SUGGEST (WP0.2): a comment thread is a write to the shared
+ *    Y.Doc — its anchor is a `comment` MARK in the body fragment and its data a
+ *    `comments` Y.Map — so a "comment"-level socket stays read-only and cannot
+ *    persist comments. A server-side "comments-map-only" update filter is NOT
+ *    safe: the anchor lives in the body, and dropping one of a client's updates
+ *    leaves a gap in its Yjs clock, so every later update from that client pends
+ *    forever. The UI hides the comment affordances below suggest instead
+ *    (@prism/core `collabAffordances`).
  *  - onLoadDocument: seed the Y.Doc server-side from Parachute (so the owner's
  *    browser need not be open), preferring persisted CRDT state unless Parachute
  *    was edited externally since (then re-seed — external edit wins).
@@ -483,7 +491,14 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
         } catch {
           /* unreadable note — match on id/space only */
         }
-        return effectiveLevel(grantsForPeer(claims.pubkey), { id: fed.local_id, tags, spaceIds: [fed.space_id] }, null);
+        // Read gate on the `view` CAP (WP0.2), like the non-peer path below. Peer
+        // grants are level-only today (acl.ts writes no caps for them), so this is
+        // identical in practice — it just keeps a future caps-carrying peer grant
+        // without `view` from opening a read-only socket onto the note.
+        const peerGrants = grantsForPeer(claims.pubkey);
+        const peerRef = { id: fed.local_id, tags, spaceIds: [fed.space_id] };
+        if (!effectiveCaps(peerGrants, peerRef, null).has("view")) return null;
+        return effectiveLevel(peerGrants, peerRef, null);
       }
       // Not a peer-conn token → it's our OWN client opening the federated note by
       // its space_note_key. Authorize exactly like a normal note, against the
@@ -556,7 +571,8 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
 /**
  * Authorize a collab connection against a note. Throws "Forbidden" below
  * "view"; marks the connection read-only below "suggest" (so view/comment
- * peers can watch but their edits are dropped). Returns the effective level.
+ * peers can watch but their edits — INCLUDING comment threads, see the header —
+ * are dropped). Returns the effective level.
  * Extracted from the Hocuspocus hook so it is directly testable.
  */
 export async function authorizeConnection(
