@@ -6,6 +6,7 @@
  * home server; swap for a shared store if it ever scales out.
  */
 import type { Context, MiddlewareHandler } from "hono";
+import { INPROCESS_CLIENT_KEY } from "../auth/actor";
 
 interface Bucket {
   count: number;
@@ -14,6 +15,11 @@ interface Bucket {
 const buckets = new Map<string, Bucket>();
 
 function clientKey(c: Context): string {
+  // An MCP tool's in-process dispatch (mcp/dispatch.ts) is keyed by its
+  // credential via the private env channel — never the shared "unknown" bucket.
+  const env = c.env as Record<symbol, unknown> | undefined;
+  const internal = env && typeof env === "object" ? env[INPROCESS_CLIENT_KEY] : undefined;
+  if (typeof internal === "string" && internal) return internal;
   return (
     c.req.header("cf-connecting-ip") ||
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||

@@ -86,12 +86,11 @@ export const config = {
   memberVaultTokens: process.env.MEMBER_VAULT_TOKENS === "true",
 
   // ── Prism MCP endpoint (/mcp, Architecture v2 WP6.1 — mcp/*) ──
-  // Hub-JWT subjects (`sub` claim) that may act as the OWNER on /mcp with a
-  // `vault:<primary>:read|write` hub token (comma-separated). A hub token for the
-  // primary vault is otherwise accepted as the owner ONLY when it carries
-  // `vault:<primary>:admin` — a plain read/write vault token is also what vault
-  // members and member-minted agents hold, so audience alone must never make a
-  // caller the owner. Empty (default) → admin-scoped hub tokens only.
+  // OPT-IN: hub-JWT subjects (`sub`, exact match, comma-separated) that may act
+  // as the OWNER on /mcp. Empty (default) → hub JWTs are NOT accepted on /mcp at
+  // all. When set, a hub JWT must carry `vault:<primary>:admin` AND an allowlisted
+  // sub — a plain vault token is also what members and member-minted agents hold,
+  // so audience alone must never make a caller the owner.
   mcpOwnerHubSubs: (process.env.MCP_OWNER_HUB_SUBS ?? "")
     .split(",")
     .map((s) => s.trim())

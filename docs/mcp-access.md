@@ -82,17 +82,26 @@ capability links or anonymous callers.
 |---|---|---|---|
 | `pp_…` Prism access token | its account — role + grants recomputed on every request | the token's bound vault (an `X-Prism-Vault` naming another → 403) | token scope: `read` ⇒ only read-only tools |
 | `pd_…` native device token (WP2.1) | its account, exactly like a session | `X-Prism-Vault` (unknown id → 400) | none |
-| owner's hub JWT (`aud=vault.<primary>`) | the server owner | primary only | write verb, else read-only |
+| owner's hub JWT (`aud=vault.<primary>`) — **opt-in, off by default** | the server owner | primary only | none (admin scope required) |
 | `COLLAB_TOKEN` | the server owner — **loopback only** (`TRUST_LOCAL`), inert over the tunnel | `X-Prism-Vault` | none |
 
-**Why the owner's hub JWT, and why so narrowly.** Parachute's backed-surface kit accepts an operator's
-vault token the same way (the hub has no per-surface audiences yet), and the owner already holds
-whole-vault access at the vault — so it adds no power; it just lets the operator's existing agent
-config reach Prism-only data. But a `vault.<primary>` token is *also* what members, member-minted
-agents and tag-scoped workers hold, so the audience alone never makes a caller the owner: the token
-must carry `vault:<primary>:admin`, or its `sub` must be listed in `MCP_OWNER_HUB_SUBS`. Member-minted
-tokens (`sub` `mcp:<email>`, or registered in `mcp_tokens`) and `scoped_tags` tokens are refused. The
-token is validated (scope-guard: signature, issuer, expiry, revocation, audience) and never forwarded.
+**The owner's hub JWT is opt-in, and narrow.** By default **hub JWTs are not accepted on `/mcp` at all**
+(a 401, and the token is not even sent to the verifier). The operator enables it by setting
+`MCP_OWNER_HUB_SUBS` to the hub account id(s) (`sub` claim, comma-separated) whose tokens may act as the
+owner. Then a hub JWT is the owner **only if both** hold: it carries `vault:<primary>:admin`, **and** its
+`sub` exactly matches an allowlisted value. Member-minted tokens (`sub` `mcp:<email>`, or registered in
+`mcp_tokens`) and `scoped_tags` tokens are refused even if allowlisted. The token is validated
+(scope-guard: signature, issuer, expiry, revocation, audience `vault.<primary>`) and never forwarded;
+`prism_whoami` reports its real `exp`.
+
+*Why offer it at all:* Parachute's backed-surface kit accepts an operator's vault token the same way (the
+hub has no per-surface audiences yet), and the owner already holds whole-vault access at the vault, so it
+lets the operator's existing agent config reach Prism-only data without a second secret.
+*The risk you accept by enabling it:* the endpoint is reachable from the internet through the tunnel, so
+a leaked admin hub token for an allowlisted subject becomes a full **owner** credential on Prism too —
+grants, sharing and governance data, not just vault content — and hub revocation takes up to ~60 s to
+bite. Prefer a Prism access token (revocable immediately, shorter-lived; owner/admin write tokens are
+capped at 90 days), and enable the hub-JWT path only when you need it.
 
 A `pp_` token is recognised **only** by `/mcp`; it is not a credential for `/api`, `/acl` or `/auth`,
 and it cannot create or manage tokens.
@@ -126,7 +135,7 @@ Authenticated with a browser session or a native device token (never a PAT).
 | Route | What |
 |---|---|
 | `GET /auth/pats` | your live tokens (id, prefix, vault, scope, label, created/last-used/expires — never the secret). The server owner may add `?all=1`. |
-| `POST /auth/pats` | `Content-Type: application/json` required. Body `{ vaultId?, scope?: "read"\|"write" (default read), expiresInDays? (1–365, default 90), label? }`; `vaultId` defaults to `X-Prism-Vault`, then primary. Needs standing in the vault (member+ or any grant). Max 25 live tokens per account. Returns `201` with the token **once** plus `mcpJson`, `claudeCodeCommand`, `claudeDesktopJson`. |
+| `POST /auth/pats` | `Content-Type: application/json` required. Body `{ vaultId?, scope?: "read"\|"write" (default read), expiresInDays? (1–365, default 90; **owner/admin write tokens: at most 90**), label? }`; `vaultId` defaults to `X-Prism-Vault`, then primary. Needs standing in the vault (member+ or any grant). Max 25 live tokens per account. `/auth/pats` and `/auth/pats/:id` share a rate limit (30 / 10 min per IP). Returns `201` with the token **once** plus `mcpJson`, `claudeCodeCommand`, `claudeDesktopJson`. |
 | `DELETE /auth/pats/:id` | revoke yours (the server owner: any). Immediate — the next request is refused. |
 
 Tokens are `pp_` + 32 random bytes; only the SHA-256 is stored (`mcp_pats` table). A token minted with a
@@ -137,8 +146,13 @@ device token dies when that device is revoked.
 WP6.1 ships the endpoint, auth and registry with one tool, `prism_whoami`. The core note tools,
 collab-safe edits, comments, governance and sharing land in WP6.2–6.4
 (`docs/roadmap/architecture-v2/WORKPLAN.md`). Every tool is defined with a required `access(principal,
-args)` check and a required `readOnlyHint`; `tools/list` is filtered per caller, and a hidden tool answers
-exactly like a nonexistent one.
+args)` check and a required `scope: "read" | "write"` that must agree with `annotations.readOnlyHint`;
+`tools/list` is filtered per caller, and a hidden tool answers exactly like a nonexistent one.
+
+A read-only token is held to reads three times over: only read tools are listed, a write-scope tool is
+refused at call time, and a tool's in-process calls into the gateway may only be `GET`/`HEAD` (plus an
+explicit allowlist of read-only POST routes — empty today). Tools can only reach `/api/…` routes, with
+any `.`/`..` path segment (raw or percent-encoded) refused.
 
 ### Not yet
 

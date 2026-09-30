@@ -9,9 +9,12 @@
  *    existence oracle. `access` is a nicer, earlier error; the route/permission
  *    code the handler reaches (dispatch.ts → the gateway, or effectiveCaps) stays
  *    the authoritative guard.
- *  - `annotations.readOnlyHint` is REQUIRED and load-bearing: a read-only
- *    credential (PAT scope `read`, a read-verb hub JWT) only ever sees tools that
- *    declare `readOnlyHint: true`.
+ *  - `scope: "read" | "write"` is REQUIRED and must agree with
+ *    `annotations.readOnlyHint` (defineTool throws otherwise). A read-only
+ *    credential (PAT scope `read`) is held to read tools THREE times over: they
+ *    are the only ones in its tools/list, a call to a write-scope tool is refused
+ *    at call time, and its dispatches may only be GET/HEAD (dispatch.ts) — so a
+ *    mislabelled tool still cannot write for a read credential.
  *  - Handlers return plain JSON data or throw `ToolError`; everything else is
  *    mapped by `mapToolError` to a uniform `{ error, message }` tool error (never
  *    a stack trace or a vault response body).
@@ -44,8 +47,12 @@ export interface ToolAnnotations {
 
 export type ToolAccess<A> = (principal: McpPrincipal, args?: A) => boolean | Promise<boolean>;
 
+export type ToolScope = "read" | "write";
+
 export interface PrismTool<S extends z.ZodObject = z.ZodObject> {
   name: string;
+  /** REQUIRED: "read" for tools that never change state; must match annotations.readOnlyHint. */
+  scope: ToolScope;
   title?: string;
   description: string;
   inputSchema: S;
@@ -56,20 +63,28 @@ export interface PrismTool<S extends z.ZodObject = z.ZodObject> {
 
 const TOOL_NAME = /^prism_[a-z][a-z0-9_]{0,62}$/;
 
-/** Define a tool. Throws on a missing `access` or `readOnlyHint` — they are not optional. */
+/** Define a tool. Throws on a missing `access`/`scope`/`readOnlyHint`, or a scope that disagrees with readOnlyHint. */
 export function defineTool<S extends z.ZodObject>(def: PrismTool<S>): PrismTool<S> {
   if (!TOOL_NAME.test(def.name)) throw new Error(`defineTool: bad tool name "${def.name}" (want prism_[a-z0-9_]+)`);
   if (typeof def.access !== "function") throw new Error(`defineTool(${def.name}): access is required`);
   if (typeof def.annotations?.readOnlyHint !== "boolean") throw new Error(`defineTool(${def.name}): annotations.readOnlyHint is required`);
+  if (def.scope !== "read" && def.scope !== "write") throw new Error(`defineTool(${def.name}): scope ("read" | "write") is required`);
+  if ((def.scope === "read") !== def.annotations.readOnlyHint) {
+    throw new Error(`defineTool(${def.name}): scope "${def.scope}" disagrees with annotations.readOnlyHint=${def.annotations.readOnlyHint}`);
+  }
   if (typeof def.handler !== "function") throw new Error(`defineTool(${def.name}): handler is required`);
   return def;
 }
+
+/** May this principal use this tool at all, by scope? (Both labels must say "read" for a read principal.) */
+export const scopeAllows = (p: McpPrincipal, t: PrismTool): boolean =>
+  !p.readOnly || (t.scope === "read" && t.annotations.readOnlyHint === true);
 
 /** The tools this principal may see — evaluated fresh per request (no caching across actors). */
 export async function visibleTools(principal: McpPrincipal, tools: readonly PrismTool[]): Promise<PrismTool[]> {
   const out: PrismTool[] = [];
   for (const t of tools) {
-    if (principal.readOnly && !t.annotations.readOnlyHint) continue;
+    if (!scopeAllows(principal, t)) continue;
     try {
       if (await t.access(principal)) out.push(t);
     } catch (e) {
@@ -107,7 +122,8 @@ export async function buildMcpServer(principal: McpPrincipal | undefined, tools:
   if (!principal) return server; // unreachable behind the router's auth gate — expose nothing
   const ctx: ToolContext = {
     principal,
-    dispatch: (path, init) => dispatchAsActor(app, principal.actor, path, init),
+    // The principal (not just its actor) — dispatch enforces its read-only ceiling.
+    dispatch: (path, init) => dispatchAsActor(app, principal, path, init),
   };
   for (const tool of await visibleTools(principal, tools)) {
     server.registerTool(
@@ -121,6 +137,8 @@ export async function buildMcpServer(principal: McpPrincipal | undefined, tools:
       async (args: unknown) => {
         const started = Date.now();
         try {
+          // Call-time scope check: never rely on tools/list alone.
+          if (!scopeAllows(principal, tool)) throw new ToolError("forbidden", "this credential is read-only");
           if (!(await tool.access(principal, args as never))) throw new ToolError("forbidden", "you do not have access to that");
           const data = await tool.handler(args as never, ctx);
           audit(principal, tool.name, "ok", started);

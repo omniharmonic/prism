@@ -112,7 +112,9 @@ export function createApp(): Hono {
   app.use("/api/federation/mirror", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "federation-mirror" }));
 
   // Prism MCP access tokens (WP6.1): self-service create/list/revoke under /auth.
-  app.use("/auth/pats", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-pats" }));
+  // One shared bucket for the collection AND /auth/pats/:id (revoke). Hono's
+  // `/auth/pats/*` matches both, so a single registration covers them.
+  app.use("/auth/pats/*", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-pats" }));
   app.route("/auth", pats);
   app.route("/auth", auth);
   // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon

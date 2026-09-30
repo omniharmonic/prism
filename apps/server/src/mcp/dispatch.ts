@@ -8,22 +8,88 @@
  * in `env` under `INPROCESS_ACTOR` (see auth/actor.ts) — never as a token — and
  * any Cookie/Authorization header is stripped so the request can only ever be
  * that actor.
+ *
+ * Hardening (WP6.1 security review):
+ *  - PATH: only `/api/…` routes, and no `.`/`..` segment — raw or
+ *    percent-encoded — survives to normalization, so a tool can never be steered
+ *    (by an agent-supplied id) onto /acl, /auth, /mcp or another route family.
+ *  - READ-ONLY: a read-only principal may dispatch only GET/HEAD (plus the
+ *    explicit READ_ONLY_POST_ROUTES allowlist) — the read ceiling is enforced
+ *    here too, not just by tool labels.
+ *  - ORIGIN: the request is marked in-process via the private env channel
+ *    (INPROCESS_CLIENT_KEY → rate limiters key on `mcp:<credentialId>`, never a
+ *    shared "unknown" bucket) and carries a forwarding header, so the loopback
+ *    heuristic (`isLocalRequest`) can never treat it as the local owner.
  */
 import type { Hono } from "hono";
-import { INPROCESS_ACTOR, type Actor } from "../auth/actor";
+import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../auth/actor";
+import type { McpPrincipal } from "./auth";
 import { ToolError } from "./errors";
 
 export type Dispatch = (path: string, init?: RequestInit) => Promise<Response>;
 
-/** Run `path` against `app` as `actor`, pinned to the actor's vault. */
-export function dispatchAsActor(app: Hono, actor: Actor, path: string, init: RequestInit = {}): Promise<Response> {
-  if (!path.startsWith("/")) throw new Error("dispatch path must be absolute");
+/**
+ * POST routes that only READ and so may be dispatched by a read-only principal.
+ * Exact path patterns (no query). Empty today — semantic search is a GET. Add a
+ * route here only if it provably never mutates state.
+ */
+export const READ_ONLY_POST_ROUTES: readonly RegExp[] = [];
+
+const READ_METHODS = new Set(["GET", "HEAD"]);
+
+/** Non-routable marker for the forwarding header (never a real client IP). */
+const INPROCESS_FORWARD = "mcp-inprocess";
+
+/**
+ * Validate + normalize a dispatch target. Throws ToolError("invalid_request")
+ * for anything outside `/api/`, any `.`/`..` segment (raw or percent-encoded),
+ * encoded slashes/backslashes, or a path that normalization would change.
+ */
+export function safeApiPath(path: string): string {
+  if (typeof path !== "string" || !path.startsWith("/")) throw new ToolError("invalid_request", "bad path");
+  const q = path.indexOf("?");
+  const rawPath = q === -1 ? path : path.slice(0, q);
+  for (const seg of rawPath.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      throw new ToolError("invalid_request", "bad path");
+    }
+    if (decoded === "." || decoded === ".." || /[/\\]/.test(decoded) || seg.includes("\\")) {
+      throw new ToolError("invalid_request", "bad path");
+    }
+  }
+  const u = new URL(path, "http://x");
+  if (u.pathname !== rawPath || !u.pathname.startsWith("/api/")) throw new ToolError("invalid_request", "bad path");
+  return u.pathname + u.search;
+}
+
+/** Run an `/api/…` route against `app` as the principal's actor, pinned to its vault. */
+export async function dispatchAsActor(
+  app: Hono,
+  principal: Pick<McpPrincipal, "actor" | "readOnly" | "credentialId" | "via">,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const target = safeApiPath(path);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (principal.readOnly && !READ_METHODS.has(method)) {
+    const pathOnly = target.split("?")[0]!;
+    const allowed = method === "POST" && READ_ONLY_POST_ROUTES.some((r) => r.test(pathOnly));
+    if (!allowed) throw new ToolError("forbidden", "this credential is read-only");
+  }
   const headers = new Headers(init.headers);
   headers.delete("cookie");
   headers.delete("authorization");
-  headers.set("x-prism-vault", actor.vaultId);
+  headers.set("x-prism-vault", principal.actor.vaultId);
+  headers.set("x-forwarded-for", INPROCESS_FORWARD);
   if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return Promise.resolve(app.request(path, { ...init, headers }, { [INPROCESS_ACTOR]: actor }));
+  return app.request(
+    target,
+    { ...init, method, headers },
+    { [INPROCESS_ACTOR]: principal.actor, [INPROCESS_CLIENT_KEY]: `mcp:${principal.via}:${principal.credentialId}` },
+  );
 }
 
 /**

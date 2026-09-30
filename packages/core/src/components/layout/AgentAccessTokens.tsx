@@ -144,14 +144,23 @@ export function AgentAccessTokens() {
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <Input placeholder="Label (e.g. laptop agent)" value={label} onChange={(e) => setLabel(e.target.value)} style={{ flex: "1 1 160px" }} />
-        <select value={scope} onChange={(e) => setScope(e.target.value === "write" ? "write" : "read")} style={selectStyle} aria-label="Access">
+        <select
+          value={scope}
+          onChange={(e) => {
+            const s = e.target.value === "write" ? "write" : "read";
+            setScope(s);
+            if (s === "write" && days > 90) setDays(90); // write tokens: ≤ 90 days (server caps admin write tokens)
+          }}
+          style={selectStyle}
+          aria-label="Access"
+        >
           <option value="read">Read only</option>
           <option value="write">Read &amp; write</option>
         </select>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={selectStyle} aria-label="Expires">
           <option value={30}>30 days</option>
           <option value={90}>90 days</option>
-          <option value={365}>1 year</option>
+          <option value={365} disabled={scope === "write"}>1 year</option>
         </select>
         <Button onClick={() => void create()} disabled={busy}><Plus size={13} /> Create token</Button>
       </div>

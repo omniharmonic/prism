@@ -11,7 +11,7 @@
  *  |-------------------|----------------------------------------|-------------------------|----------------|
  *  | `pp_…` PAT        | the PAT's account (role+grants live)   | the PAT's bound vault   | PAT scope      |
  *  | `pd_…` device     | the device's account (as a session)    | X-Prism-Vault (strict)  | none           |
- *  | hub JWT           | the OWNER, primary vault only          | primary                 | JWT write verb |
+ *  | hub JWT (opt-in)  | the OWNER, primary vault only          | primary                 | JWT write verb |
  *  | COLLAB_TOKEN      | the OWNER — loopback only (TRUST_LOCAL) | X-Prism-Vault (strict)  | none           |
  *
  * Deliberately NOT accepted:
@@ -20,12 +20,14 @@
  *  - capability links (`?t=` / `Authorization: Capability …`) and anonymous
  *    callers — MCP needs an account;
  *  - COLLAB_TOKEN over the tunnel (inert exactly as in resolveActor);
- *  - a hub JWT for anyone but the owner. A `vault.<primary>` token is ALSO what
- *    vault members, member-minted agents (`sub = mcp:<email>`) and tag-scoped
- *    workers hold, so audience alone never makes a caller the owner: the token
- *    must carry `vault:<primary>:admin`, or its `sub` must be allowlisted in
- *    MCP_OWNER_HUB_SUBS. Member-minted tokens (registered in `mcp_tokens`, or
- *    `sub` starting `mcp:`) and `scoped_tags` tokens are refused outright.
+ *  - ANY hub JWT unless the operator opts in with MCP_OWNER_HUB_SUBS (default:
+ *    hub JWTs are not accepted on /mcp at all). When set, a hub JWT is the owner
+ *    only if it carries `vault:<primary>:admin` AND its `sub` exactly matches an
+ *    allowlisted subject. A `vault.<primary>` token is ALSO what vault members,
+ *    member-minted agents (`sub = mcp:<email>`) and tag-scoped workers hold, so
+ *    audience alone never makes a caller the owner. Member-minted tokens
+ *    (registered in `mcp_tokens`, or `sub` starting `mcp:`) and `scoped_tags`
+ *    tokens are refused outright.
  *    Why accept a hub JWT at all: Parachute's own backed-surface kit accepts the
  *    operator's vault token the same way (per-surface `aud` does not exist on
  *    the hub yet), and the owner already holds whole-vault access at the vault —
@@ -46,7 +48,7 @@ import type { Actor } from "../auth/actor";
 import { isLocalRequest } from "../auth/local";
 import { DEVICE_TOKEN_PREFIX, verifyDeviceToken, safeEqual } from "../auth/device";
 import { PAT_PREFIX, verifyPat } from "../auth/pat";
-import { verifyVaultToken, type HubJwtClaims } from "../auth/vault-token";
+import { verifyVaultToken, peekTokenClaims, type HubJwtClaims } from "../auth/vault-token";
 
 export type UserActor = Extract<Actor, { kind: "user" }>;
 export type McpVia = "pat" | "device" | "hub-jwt" | "local";
@@ -186,6 +188,9 @@ export async function authenticateMcp(c: Context): Promise<McpAuthResult> {
 }
 
 async function hubJwtOwner(c: Context, token: string): Promise<McpAuthResult> {
+  // OPT-IN (WP6.1 review M2): with no MCP_OWNER_HUB_SUBS, hub JWTs are not
+  // accepted on /mcp at all — and the verifier (JWKS fetch) is never reached.
+  if (config.mcpOwnerHubSubs.length === 0) return fail(401, "invalid_token", "hub tokens are not accepted on this endpoint; use a Prism access token");
   const primary = getVaultRegistry()[0]!;
   let claims: HubJwtClaims;
   try {
@@ -206,10 +211,11 @@ async function hubJwtOwner(c: Context, token: string): Promise<McpAuthResult> {
   if (perms && Array.isArray(perms.scoped_tags) && perms.scoped_tags.length > 0) {
     return fail(403, "insufficient_scope", "tag-scoped tokens are not accepted here");
   }
+  // BOTH gates: the admin scope AND an exactly-allowlisted subject.
   const admin = hasScope(claims.scopes, `vault:${primary.vault}:admin`);
   const allowlisted = !!sub && config.mcpOwnerHubSubs.includes(sub);
-  if (!admin && !allowlisted) {
-    return fail(403, "insufficient_scope", `a hub token must carry vault:${primary.vault}:admin (or an allowlisted subject) to act as the owner`);
+  if (!admin || !allowlisted) {
+    return fail(403, "insufficient_scope", `a hub token must carry vault:${primary.vault}:admin AND an allowlisted subject to act as the owner`);
   }
   const mismatch = pinnedVault(c, primary.id);
   if (mismatch) return mismatch;
@@ -220,7 +226,8 @@ async function hubJwtOwner(c: Context, token: string): Promise<McpAuthResult> {
       via: "hub-jwt",
       credentialId: claims.jti ? `jwt:${claims.jti}` : "jwt",
       readOnly: !hasScope(claims.scopes, `vault:${primary.vault}:write`),
-      expiresAt: null,
+      // The verified token's own exp (the signature was checked above, so peeking is safe).
+      expiresAt: typeof peekTokenClaims(token)?.exp === "number" ? (peekTokenClaims(token)!.exp as number) * 1000 : null,
       vaultBound: true,
     },
   };

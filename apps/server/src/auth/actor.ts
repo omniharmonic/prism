@@ -36,6 +36,8 @@ export type Actor =
  * tool go through the SAME route handlers — and permission code — as the web app.
  */
 export const INPROCESS_ACTOR: unique symbol = Symbol("prism.inprocess-actor");
+/** Same private channel: the rate-limit key of an in-process dispatch (`mcp:<via>:<credentialId>`). */
+export const INPROCESS_CLIENT_KEY: unique symbol = Symbol("prism.inprocess-client-key");
 
 function injectedActor(c: Context): Actor | null {
   const env = c.env as Record<symbol, unknown> | undefined;

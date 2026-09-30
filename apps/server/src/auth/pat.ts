@@ -30,6 +30,8 @@ const sha256hex = (s: string): string => createHash("sha256").update(s).digest("
 export const PAT_PREFIX = "pp_";
 export const PAT_DEFAULT_DAYS = 90;
 export const PAT_MAX_DAYS = 365;
+/** Owner/admin WRITE tokens (a whole-workspace write credential) are capped shorter. */
+export const PAT_ADMIN_WRITE_MAX_DAYS = 90;
 /** Per-account cap on LIVE tokens — bounds row-creation abuse by a signed-in user. */
 export const PAT_MAX_LIVE_PER_ACCOUNT = 25;
 /** last_used_at is written at most this often per token. */

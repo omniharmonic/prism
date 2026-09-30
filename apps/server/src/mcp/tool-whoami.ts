@@ -23,6 +23,7 @@ const ordered = (caps: Iterable<Cap>): Cap[] => {
 
 export const whoamiTool = defineTool({
   name: "prism_whoami",
+  scope: "read",
   title: "Who am I (Prism)",
   description:
     "Describe the Prism account this MCP connection acts as: account email and workspace role, the vault it is bound to, " +

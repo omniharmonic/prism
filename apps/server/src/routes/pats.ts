@@ -29,6 +29,7 @@ import {
   PAT_DEFAULT_DAYS,
   PAT_MAX_DAYS,
   PAT_MAX_LIVE_PER_ACCOUNT,
+  PAT_ADMIN_WRITE_MAX_DAYS,
   type PatScope,
 } from "../auth/pat";
 import { getVaultRegistry, grantsForUser } from "../db";
@@ -90,7 +91,8 @@ pats.post("/pats", async (c) => {
 
   const vaultId = typeof body.vaultId === "string" && body.vaultId ? body.vaultId : c.req.header("x-prism-vault") || getVaultRegistry()[0]!.id;
   if (!getVaultRegistry().some((v) => v.id === vaultId)) return c.json({ error: "unknown_vault" }, 400);
-  const standing = roleAtLeast(workspaceRole(who.email, vaultId), "member") || grantsForUser(who.email, vaultId).length > 0;
+  const role = workspaceRole(who.email, vaultId);
+  const standing = roleAtLeast(role, "member") || grantsForUser(who.email, vaultId).length > 0;
   if (!standing) return c.json({ error: "forbidden", detail: "you have no access in that vault" }, 403);
 
   const scope: PatScope | null = body.scope === undefined || body.scope === "read" ? "read" : body.scope === "write" ? "write" : null;
@@ -103,6 +105,12 @@ pats.post("/pats", async (c) => {
       return c.json({ error: "bad_request", detail: `expiresInDays must be 1–${PAT_MAX_DAYS}` }, 400);
     }
     days = Math.floor(n);
+  }
+
+  // An owner/admin WRITE token is a whole-workspace write credential: cap it
+  // shorter. Read tokens (and everyone else's) keep the longer cap.
+  if (scope === "write" && roleAtLeast(role, "admin") && days > PAT_ADMIN_WRITE_MAX_DAYS) {
+    return c.json({ error: "bad_request", detail: `owner/admin write tokens may last at most ${PAT_ADMIN_WRITE_MAX_DAYS} days` }, 400);
   }
 
   if (listLivePats(who.email).length >= PAT_MAX_LIVE_PER_ACCOUNT) {
