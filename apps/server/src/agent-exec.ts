@@ -26,7 +26,7 @@
  *   - `--no-session-persistence`: a one-shot dispatch leaves no transcript on disk.
  *
  * Capacity: a global semaphore (`AGENT_MAX_CONCURRENT`, default 1) plus a memory
- * admission check (swap used > `AGENT_SWAP_MAX_PCT`% or free < `AGENT_FREE_MIN_PCT`%)
+ * admission check (free < `AGENT_FREE_MIN_PCT`%; macOS also absolute free swap < `AGENT_SWAP_MIN_FREE_MB`; other OS swap used > 80%, or `AGENT_SWAP_MAX_PCT` if set)
  * — excess or memory-refused dispatches wait in status "queued" with a
  * `queuedReason`, and are retried every `AGENT_ADMISSION_RETRY_MS`. They never
  * fail for capacity reasons (only a full queue, `AGENT_MAX_QUEUE`, is refused).
@@ -314,6 +314,10 @@ export interface MemorySample {
   swapUsedPct: number | null;
   /** System free-memory % (null = unknown). */
   freePct: number | null;
+  /** macOS only: absolute free swap in MB (null/undefined = unknown or no swap file).
+   *  Its presence marks a darwin sample: swap is judged by absolute free MB, NOT
+   *  by % of total (macOS grows swap on demand, so % used is meaningless there). */
+  swapFreeMb?: number | null;
 }
 export type MemoryProbe = () => MemorySample | null;
 
@@ -326,6 +330,13 @@ export function parseSwapUsage(s: string): number | null {
   const total = unit(t[1]!, t[2]!);
   if (!(total > 0)) return null; // no swap configured → not a pressure signal
   return (unit(u[1]!, u[2]!) / total) * 100;
+}
+
+/** Parse free swap in MB from `sysctl -n vm.swapusage` (null if unparseable / no swap). */
+export function parseSwapFreeMb(s: string): number | null {
+  const f = /free\s*=\s*([\d.]+)([KMGT])/i.exec(s);
+  if (!f) return null;
+  return Number(f[1]) * ({ K: 1 / 1024, M: 1, G: 1024, T: 1024 * 1024 }[f[2]!.toUpperCase()] ?? 1);
 }
 
 /** Parse `memory_pressure -Q` ("System-wide memory free percentage: 63%"). */
@@ -364,7 +375,11 @@ export const defaultMemoryProbe: MemoryProbe = () => {
   if (process.platform === "darwin") {
     const swap = run("/usr/sbin/sysctl", ["-n", "vm.swapusage"]);
     const mp = run("/usr/bin/memory_pressure", ["-Q"]);
-    const sample = { swapUsedPct: swap ? parseSwapUsage(swap) : null, freePct: mp ? parseMemoryPressure(mp) : null };
+    const sample: MemorySample = {
+      swapUsedPct: swap ? parseSwapUsage(swap) : null,
+      freePct: mp ? parseMemoryPressure(mp) : null,
+      swapFreeMb: swap ? parseSwapFreeMb(swap) : null,
+    };
     return sample.swapUsedPct == null && sample.freePct == null ? null : sample;
   }
   if (process.platform === "linux") {
@@ -384,15 +399,35 @@ export interface AdmissionVerdict {
   sample: MemorySample | null;
 }
 
+/** Default absolute free-swap floor (MB) for darwin samples. */
+export const DEFAULT_SWAP_MIN_FREE_MB = 512;
+/** Default swap-used % ceiling, applied to non-darwin samples only (unless set explicitly). */
+export const DEFAULT_SWAP_MAX_PCT = 80;
+
 /** Decide admission from a sample. An unreadable probe ADMITS (fail-open) — a
- *  broken probe must not wedge the agent forever; the concurrency cap still holds. */
-export function admissionVerdict(sample: MemorySample | null, swapMaxPct: number, freeMinPct: number): AdmissionVerdict {
+ *  broken probe must not wedge the agent forever; the concurrency cap still holds.
+ *
+ *  darwin sample (has `swapFreeMb` field): memory_pressure free% is the primary
+ *  signal, plus an ABSOLUTE free-swap floor (`swapMinFreeMb`). Swap-used % is
+ *  ignored unless `swapMaxPct` is a number (explicit AGENT_SWAP_MAX_PCT opt-in).
+ *  Other platforms: swap-used % vs `swapMaxPct` (null → 80) plus free%. */
+export function admissionVerdict(
+  sample: MemorySample | null,
+  swapMaxPct: number | null,
+  freeMinPct: number,
+  swapMinFreeMb: number = DEFAULT_SWAP_MIN_FREE_MB,
+): AdmissionVerdict {
   if (!sample) return { ok: true, reason: null, sample };
-  if (sample.swapUsedPct != null && sample.swapUsedPct > swapMaxPct) {
-    return { ok: false, reason: `memory pressure: swap ${sample.swapUsedPct.toFixed(0)}% used (> ${swapMaxPct}%)`, sample };
-  }
+  const darwin = sample.swapFreeMb !== undefined;
   if (sample.freePct != null && sample.freePct < freeMinPct) {
     return { ok: false, reason: `memory pressure: ${sample.freePct.toFixed(0)}% free (< ${freeMinPct}%)`, sample };
+  }
+  if (darwin && sample.swapFreeMb != null && sample.swapFreeMb < swapMinFreeMb) {
+    return { ok: false, reason: `swap nearly exhausted: ${sample.swapFreeMb.toFixed(0)} MB free (< ${swapMinFreeMb} MB)`, sample };
+  }
+  const pctLimit = swapMaxPct ?? (darwin ? null : DEFAULT_SWAP_MAX_PCT);
+  if (pctLimit != null && sample.swapUsedPct != null && sample.swapUsedPct > pctLimit) {
+    return { ok: false, reason: `memory pressure: swap ${sample.swapUsedPct.toFixed(0)}% used (> ${pctLimit}%)`, sample };
   }
   return { ok: true, reason: null, sample };
 }
@@ -404,6 +439,12 @@ const num = (v: string | undefined, d: number) => {
   return Number.isFinite(n) ? n : d;
 };
 
+/** Explicit-only numeric env: unset/blank/garbage → null. */
+export const optNum = (v: string | undefined): number | null => {
+  const n = v == null || v.trim() === "" ? NaN : Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 export interface RunnerConfig {
   spawner: Spawner;
   memoryProbe: MemoryProbe;
@@ -412,7 +453,9 @@ export interface RunnerConfig {
   claudePath: () => string;
   maxConcurrent: number;
   maxQueue: number;
-  swapMaxPct: number;
+  /** null = AGENT_SWAP_MAX_PCT unset (darwin: no % guard; linux: 80). */
+  swapMaxPct: number | null;
+  swapMinFreeMb: number;
   freeMinPct: number;
   admissionRetryMs: number;
   timeoutMs: number;
@@ -429,7 +472,8 @@ function defaultConfig(): RunnerConfig {
     claudePath: resolveClaude,
     maxConcurrent: Math.max(1, Math.floor(num(process.env.AGENT_MAX_CONCURRENT, 1))),
     maxQueue: Math.max(0, Math.floor(num(process.env.AGENT_MAX_QUEUE, 20))),
-    swapMaxPct: num(process.env.AGENT_SWAP_MAX_PCT, 80),
+    swapMaxPct: optNum(process.env.AGENT_SWAP_MAX_PCT),
+    swapMinFreeMb: num(process.env.AGENT_SWAP_MIN_FREE_MB, DEFAULT_SWAP_MIN_FREE_MB),
     freeMinPct: num(process.env.AGENT_FREE_MIN_PCT, 15),
     admissionRetryMs: Math.max(250, num(process.env.AGENT_ADMISSION_RETRY_MS, 15_000)),
     timeoutMs: DISPATCH_TIMEOUT_MS,
@@ -604,7 +648,7 @@ function pump(): void {
     } catch {
       sample = null; // a throwing probe is "unknown" → fail-open
     }
-    const verdict = admissionVerdict(sample, cfg.swapMaxPct, cfg.freeMinPct);
+    const verdict = admissionVerdict(sample, cfg.swapMaxPct, cfg.freeMinPct, cfg.swapMinFreeMb);
     lastAdmission = verdict;
     if (!verdict.ok) {
       for (const r of queue) setReason(r, verdict.reason!);

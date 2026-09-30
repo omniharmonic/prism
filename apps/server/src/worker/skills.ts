@@ -138,7 +138,8 @@ export interface SkillsSettings {
   defaultProvider: string;
   localBaseUrl: string;
   localModel: string;
-  swapMaxPct: number;
+  swapMaxPct: number | null;
+  swapMinFreeMb: number;
   freeMinPct: number;
   loadFreeMinPct: number;
   localRunTimeoutMs: number;
@@ -483,10 +484,10 @@ export function localAdmission(
   sample: MemorySample | null,
   status: LocalStatus,
   model: string,
-  s: Pick<SkillsSettings, "swapMaxPct" | "freeMinPct" | "loadFreeMinPct">,
+  s: Pick<SkillsSettings, "swapMaxPct" | "freeMinPct" | "loadFreeMinPct"> & { swapMinFreeMb?: number },
 ): { ok: boolean; reason: string | null } {
   if (!status.reachable) return { ok: false, reason: `local model server unreachable${status.error ? ` (${status.error})` : ""}` };
-  const v = admissionVerdict(sample, s.swapMaxPct, s.freeMinPct);
+  const v = admissionVerdict(sample, s.swapMaxPct, s.freeMinPct, s.swapMinFreeMb);
   if (!v.ok) return { ok: false, reason: v.reason };
   if (status.loaded !== true && sample?.freePct != null && sample.freePct < s.loadFreeMinPct) {
     return {
@@ -684,7 +685,7 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
             today: deps.localParts(now).day,
             deadline: start + deps.settings.localRunTimeoutMs,
             pressure: () => {
-              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.freeMinPct);
+              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.freeMinPct, deps.settings.swapMinFreeMb);
               return v.ok ? null : v.reason;
             },
           });
@@ -849,6 +850,7 @@ export function settingsFromConfig(): SkillsSettings {
     localBaseUrl: config.skillsLocalBaseUrl,
     localModel: config.skillsLocalModel,
     swapMaxPct: config.skillsSwapMaxPct,
+    swapMinFreeMb: config.skillsSwapMinFreeMb,
     freeMinPct: config.skillsFreeMinPct,
     loadFreeMinPct: config.skillsLoadFreeMinPct,
     localRunTimeoutMs: config.skillsLocalRunTimeoutMs,

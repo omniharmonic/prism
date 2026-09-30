@@ -139,6 +139,7 @@ const SETTINGS: SkillsSettings = {
   localBaseUrl: "http://lm.test/v1",
   localModel: "test/model-small",
   swapMaxPct: 80,
+  swapMinFreeMb: 512,
   freeMinPct: 15,
   loadFreeMinPct: 35,
   localRunTimeoutMs: 60_000,

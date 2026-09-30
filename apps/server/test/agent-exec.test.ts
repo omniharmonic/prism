@@ -25,6 +25,7 @@ import {
   parseMemoryPressure,
   parseMeminfo,
   admissionVerdict,
+  parseSwapFreeMb,
   configureAgentRunner,
   startDispatch,
   enqueueRun,
@@ -553,4 +554,43 @@ test("launch: a run cancelled from inside its own onStart never spawns, and its 
   assert.equal(rec.calls.length, 1, "the cancelled run was never spawned");
   assert.deepEqual(ends, [{ code: null, error: null, cancelled: true }]);
   assert.equal(runnerStatus().running, 0);
+});
+
+// ── WP0.1b: platform-aware admission ─────────────────────────────────────────
+
+test("admission darwin: high swap % but healthy memory_pressure free% is admitted", () => {
+  const v = admissionVerdict({ swapUsedPct: 95, freePct: 27, swapFreeMb: 2000 }, null, 15, 512);
+  assert.equal(v.ok, true);
+});
+
+test("admission darwin: low free% refused, reason names memory pressure", () => {
+  const v = admissionVerdict({ swapUsedPct: 10, freePct: 12, swapFreeMb: 4000 }, null, 15, 512);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, "memory pressure: 12% free (< 15%)");
+});
+
+test("admission darwin: low absolute free swap refused, reason names swap", () => {
+  const v = admissionVerdict({ swapUsedPct: 50, freePct: 40, swapFreeMb: 300 }, null, 15, 512);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, "swap nearly exhausted: 300 MB free (< 512 MB)");
+});
+
+test("admission darwin: explicit swapMaxPct is still honoured as an extra guard", () => {
+  const s = { swapUsedPct: 95, freePct: 40, swapFreeMb: 2000 };
+  assert.equal(admissionVerdict(s, 97, 15, 512).ok, true, "stopgap 97 harmless");
+  const v = admissionVerdict(s, 90, 15, 512);
+  assert.equal(v.ok, false);
+  assert.match(v.reason!, /swap 95% used \(> 90%\)/);
+});
+
+test("admission linux (no swapFreeMb): % behaviour unchanged, default 80", () => {
+  assert.equal(admissionVerdict({ swapUsedPct: 85, freePct: 50 }, null, 15).ok, false);
+  assert.equal(admissionVerdict({ swapUsedPct: 75, freePct: 50 }, null, 15).ok, true);
+  assert.equal(admissionVerdict({ swapUsedPct: 85, freePct: 50 }, 90, 15).ok, true);
+});
+
+test("parseSwapFreeMb", () => {
+  assert.equal(parseSwapFreeMb("total = 4096.00M  used = 2597.50M  free = 1498.50M  (encrypted)"), 1498.5);
+  assert.equal(parseSwapFreeMb("total = 2.00G  used = 1.00G  free = 1.00G"), 1024);
+  assert.equal(parseSwapFreeMb("garbage"), null);
 });

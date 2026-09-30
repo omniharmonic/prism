@@ -258,7 +258,9 @@ export const config = {
   skillsLocalBaseUrl: (process.env.SKILLS_LOCAL_BASE_URL ?? "http://127.0.0.1:1234/v1").replace(/\/+$/, ""),
   skillsLocalModel: process.env.SKILLS_LOCAL_MODEL ?? "",
   skillsLoadFreeMinPct: Number(process.env.SKILLS_LOAD_FREE_MIN_PCT ?? 35),
-  skillsSwapMaxPct: Number(process.env.AGENT_SWAP_MAX_PCT ?? 80),
+  // null = unset: darwin uses memory_pressure + absolute free swap, linux falls back to 80%.
+  skillsSwapMaxPct: process.env.AGENT_SWAP_MAX_PCT?.trim() ? Number(process.env.AGENT_SWAP_MAX_PCT) : (null as number | null),
+  skillsSwapMinFreeMb: Number(process.env.AGENT_SWAP_MIN_FREE_MB || 512),
   skillsFreeMinPct: Number(process.env.AGENT_FREE_MIN_PCT ?? 15),
   skillsLocalRunTimeoutMs: Number(process.env.SKILLS_LOCAL_RUN_TIMEOUT_MS ?? 1_500_000),
   workerAlertsEnabled: (process.env.WORKER_ALERTS_ENABLED ?? "true") !== "false",
