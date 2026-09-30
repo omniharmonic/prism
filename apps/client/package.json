@@ -1,0 +1,15 @@
+{
+  "name": "@prism/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prism Client: thin Tauri 2 shell over the native web build; talks only to a Prism Server with a device token.",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build --bundles app",
+    "check": "cd src-tauri && cargo check",
+    "test": "cd src-tauri && cargo test",
+    "verify": "node scripts/verify-client.mjs"
+  }
+}

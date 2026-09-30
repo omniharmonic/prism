@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-server-origin"
+description = "Enables the set_server_origin command without any pre-configured scope."
+commands.allow = ["set_server_origin"]
+
+[[permission]]
+identifier = "deny-set-server-origin"
+description = "Denies the set_server_origin command without any pre-configured scope."
+commands.deny = ["set_server_origin"]

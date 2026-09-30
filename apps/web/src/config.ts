@@ -19,7 +19,10 @@ const STORAGE_KEY = "prism-web-connection";
 /** Build-time defaults so a deployed instance knows which vault it fronts
  *  (set VITE_VAULT_URL / VITE_VAULT_NAME at build time; falls back to local dev). */
 export const DEFAULT_VAULT_URL =
-  (import.meta.env.VITE_VAULT_URL as string | undefined)?.replace(/\/+$/, "") || "http://localhost:1940";
+  (import.meta.env.VITE_VAULT_URL as string | undefined)?.replace(/\/+$/, "") ||
+  // The native client (apps/client) never talks to a vault directly: no
+  // localhost vault default is baked into that build (its CSP forbids it too).
+  (import.meta.env.VITE_PRISM_NATIVE === "1" ? "" : "http://localhost:1940");
 export const DEFAULT_VAULT_NAME =
   (import.meta.env.VITE_VAULT_NAME as string | undefined) || "default";
 

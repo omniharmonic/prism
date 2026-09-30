@@ -4,17 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Prism?
 
-Prism is a universal interface for documents, messages, tasks, calendar, and knowledge management, backed by a Parachute vault (SQLite knowledge graph at localhost:1940). It ships in two shells over one shared React 19 UI core:
+Prism is a universal interface for documents, messages, tasks, calendar, and knowledge management, backed by a Parachute vault (SQLite knowledge graph at localhost:1940). It ships in three shells over one shared React 19 UI core:
 
 - **Desktop** (`apps/desktop`) — Tauri 2.x (Rust backend + React frontend). The trusted, local, full-featured app; talks to Parachute (and Matrix/Google/Claude/Notion) directly.
 - **Web** (`apps/web`) — a static PWA (mobile + desktop browser) for editing the vault from anywhere and **Google-Docs-style sharing**. The browser holds **no vault credentials**; it talks only to the **Prism Server** gateway.
+- **Client** (`apps/client`, Arch v2 WP4.1) — "Prism Client", a thin Tauri 2 shell bundling the **native** web build (`apps/web/dist-native`). It signs in via system-browser PKCE with a loopback redirect, keeps the `pd_…` device token in the Keychain, and talks to ONE configured Prism Server. There is no vault token, no ingest and no CLI spawning, and it exposes just 5 IPC commands. It installs side by side with the legacy desktop (`com.benjaminlife.prism.client`). iOS joins this shell in WP5. **Gotcha:** it is Tauri, but `isDesktop` (`packages/core/src/lib/platform.ts`) is false there because `window.__PRISM_HOST__` is present — keep that check if you touch shell detection. Its CSP allows only the server for connect/img, so external note images and the OpenFreeMap basemap don't load in it (known limit). Docs: `docs/client-app.md`.
 
 ### Monorepo layout (npm workspaces)
 
 ```
 packages/core         Shared React UI: renderers, editor, layout, stores, VaultClient seam
 apps/desktop          Tauri shell (was the repo root; src-tauri lives here)
-apps/web              Vite PWA shell (HttpVaultClient → Prism Server gateway)
+apps/web              Vite PWA shell (HttpVaultClient → Prism Server gateway); `build:native` → dist-native for apps/client
+apps/client           Thin Tauri client shell (native web build + device token + Keychain; macOS now, iOS in WP5)
 apps/server           Prism Server — Node home-server: auth + permission gateway + (P3) collab
 apps/collab-server    Cloudflare Worker (Yjs) — RETIRED, superseded by apps/server collab
 ```
@@ -28,6 +30,11 @@ apps/collab-server    Cloudflare Worker (Yjs) — RETIRED, superseded by apps/se
 cd apps/desktop && npm run tauri dev      # Dev mode with hot reload
 cd apps/desktop && npm run tauri build    # Production bundle
 cd apps/desktop/src-tauri && cargo check  # Rust check
+
+# Prism Client (thin Tauri shell) — run from apps/client; set CARGO_TARGET_DIR in sandboxes
+cd apps/client && npm run tauri build -- --bundles app   # builds apps/web native first → "Prism Client.app"
+cd apps/client/src-tauri && cargo test                   # PKCE / loopback / origin+CSP / token exchange (local fakes)
+node apps/client/scripts/verify-client.mjs               # CSP, capabilities, identity, bundle invariants (--build)
 
 # Web PWA
 npm run build -w @prism/web               # Build static PWA → apps/web/dist

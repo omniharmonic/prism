@@ -148,7 +148,9 @@ validated redirect target is shown prominently beneath it, either the scheme
 ## Client transport (native build of `apps/web`)
 
 The laptop and iPhone shells (Tauri) load the same React UI as the PWA, built in
-**native mode** and served from `tauri://localhost`. It talks to the Prism Server at a
+**native mode** and served from `tauri://localhost`. The shell that implements this is
+`apps/client` ("Prism Client"). It uses the loopback redirect and the Keychain; see
+[client-app.md](client-app.md). It talks to the Prism Server at a
 configured origin with the device token above. Nothing on the server changed for this.
 
 ```bash
