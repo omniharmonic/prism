@@ -41,7 +41,7 @@ const jsonHeaders = (): Record<string, string> => ({
 
 /** GETs worth keeping for offline reads: notes (single + lists + graph), tags, vault info. */
 const cacheable = (method: string, path: string): boolean =>
-  method === "GET" && /^\/(notes|tags|vault)(\/|\?|$)/.test(path) && !path.includes("search=");
+  method === "GET" && /^\/(notes|tags|vault|tree)(\/|\?|$)/.test(path) && !path.includes("search=");
 
 /** Cache scope: server + vault + workspace + capability link, so switching any never leaks entries. */
 function cacheKey(path: string): string {
@@ -140,9 +140,36 @@ export async function listNotes(filters?: NoteFilters): Promise<Note[]> {
   return (await req(`/notes${query}`)).json();
 }
 
+/** The lean row `GET /api/tree` returns (server projection, WP7.1). */
+interface TreeRow {
+  id: string;
+  path: string | null;
+  tags: string[];
+  updatedAt: string | null;
+  type?: string;
+  prismType?: string;
+}
+
+/**
+ * The file tree. Served by the gateway's in-memory projection (`/tree`: a few
+ * hundred KB gzipped, ETag-revalidated by the browser) instead of a ~16 MB
+ * full-vault list. Falls back to the legacy list against an older server that
+ * predates the endpoint (404 via the vault, or 403 from the old catch-all).
+ */
 export async function listTree(): Promise<NoteTreeEntry[]> {
-  // Same endpoint; the response carries extra fields the lean type ignores.
-  return (await req(`/notes${qs({ limit: 50000, sort: "desc" })}`)).json();
+  try {
+    const rows = (await (await req(`/tree`)).json()) as TreeRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      path: r.path,
+      tags: r.tags,
+      // Only the two keys the tree's type/icon inference reads.
+      metadata: r.type || r.prismType ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}) } : null,
+    }));
+  } catch (e) {
+    if (!/ failed: (404|403) /.test((e as Error).message)) throw e;
+    return (await req(`/notes${qs({ limit: 50000, sort: "desc" })}`)).json();
+  }
 }
 
 export async function getNote(id: string): Promise<Note> {

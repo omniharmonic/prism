@@ -14,9 +14,9 @@
 const DB_NAME = "prism-read-cache";
 const MAX_ENTRIES = 300;
 const MAX_BYTES = 64 * 1024 * 1024;
-// 4 MB: the full-vault tree list is ~16 MB on vault 0.7.9 — rewriting that into
-// IndexedDB on every tree reload is too heavy on phones. Notes, tags and filtered
-// lists still cache; the tree becomes cacheable with the lean /api/tree (WP7.1).
+// 4 MB: the legacy full-vault tree list is ~16 MB on vault 0.7.9 — too heavy to
+// rewrite into IndexedDB on every reload, so it (and any other huge body) is not
+// cached. The lean /api/tree projection (WP7.1, ~2-3 MB raw for ~14k notes) fits.
 const MAX_BODY = 4 * 1024 * 1024;
 const USER_KEY = "prism-cache-user";
 
