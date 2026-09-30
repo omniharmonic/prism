@@ -62,13 +62,79 @@ async function proxyToVault(c: Context) {
   if (method !== "GET" && method !== "HEAD") {
     headers["Content-Type"] = "application/json";
     init.body = await c.req.text();
+    // Any write may change what a cached read would return.
+    readCache.clear();
   }
+  const t0 = Date.now();
+  let res: ProxiedResponse;
+  try {
+    res = method === "GET" ? await coalescedGet(target, init) : await forward(target, init);
+  } catch (e) {
+    console.warn(`[gateway] vault ${method} ${path} failed: ${(e as Error).message}`);
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+  if (process.env.PRISM_VAULT_TRACE === "1") {
+    console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
+  }
+  return new Response(res.body, { status: res.status, headers: { "Content-Type": res.contentType } });
+}
+
+interface ProxiedResponse {
+  status: number;
+  body: string;
+  contentType: string;
+}
+
+async function forward(target: string, init: RequestInit): Promise<ProxiedResponse> {
   const resp = await fetch(target, init);
-  const body = await resp.text();
-  return new Response(body, {
+  return {
     status: resp.status,
-    headers: { "Content-Type": resp.headers.get("content-type") ?? "application/json" },
-  });
+    body: await resp.text(),
+    contentType: resp.headers.get("content-type") ?? "application/json",
+  };
+}
+
+/**
+ * Owner-read coalescing. The vault is single-threaded, and on vault ≥0.7.9 a
+ * full-vault list (the tree: ~14k notes, ~16 MB, with per-note schema validation)
+ * costs seconds of its time. Every tab, device and retry asking for the same
+ * thing at once used to queue N copies of that work — and a swapping 16 GB host
+ * turned the queue into minute-long stalls. So identical in-flight GETs share one
+ * vault call, and a 200 is reused for a few seconds. Any write through the
+ * gateway clears the cache, so the owner always reads their own writes; writes
+ * made elsewhere (desktop, agents) show up within the TTL.
+ */
+const inflight = new Map<string, Promise<ProxiedResponse>>();
+const readCache = new Map<string, { expires: number; res: ProxiedResponse }>();
+const READ_TTL_MS = Number(process.env.GATEWAY_READ_TTL_MS ?? 5000);
+
+async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedResponse> {
+  const hit = readCache.get(target);
+  if (hit && hit.expires > Date.now()) return hit.res;
+  const pending = inflight.get(target);
+  if (pending) return pending;
+  const p = (async () => {
+    let res: ProxiedResponse;
+    try {
+      res = await forward(target, init);
+    } catch {
+      // A reused keep-alive socket can be reset by the vault; a GET is idempotent,
+      // so retry once on a fresh request before giving up.
+      res = await forward(target, init);
+    }
+    if (res.status === 200 && READ_TTL_MS > 0) readCache.set(target, { expires: Date.now() + READ_TTL_MS, res });
+    if (readCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of readCache) if (v.expires <= now) readCache.delete(k);
+    }
+    return res;
+  })();
+  inflight.set(target, p);
+  try {
+    return await p;
+  } finally {
+    inflight.delete(target);
+  }
 }
 
 // Owner short-circuit: full vault access, token-free. Registered before the

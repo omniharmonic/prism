@@ -87,10 +87,16 @@ export function vaultClient(vaultId?: string) {
   });
 
   async function req(path: string, init?: RequestInit): Promise<Response> {
+    const t0 = Date.now();
     const resp = await fetch(`${apiBase()}${path}`, {
       ...init,
       headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
     });
+    if (process.env.PRISM_VAULT_TRACE === "1") {
+      // Which server subsystem is calling: first app frame outside this file.
+      const caller = (new Error().stack ?? "").split("\n").find((l) => l.includes("/src/") && !l.includes("parachute.ts"))?.trim().replace(/^at /, "").replace(/\(?\/.*\/src\//, "").replace(/\)$/, "") ?? "?";
+      console.log(`[trace] worker ${init?.method ?? "GET"} ${entry.vault}${path} → ${resp.status} ${Date.now() - t0}ms from ${caller}`);
+    }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       if (resp.status === 409 || resp.status === 428) {
