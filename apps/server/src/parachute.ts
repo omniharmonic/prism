@@ -134,13 +134,16 @@ export function vaultClient(vaultId?: string) {
   }
 
   return {
-  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean; includeLinks?: boolean; orderBy?: "updated_at" | "created_at" } = {}): Promise<Note[]> {
+  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean; includeLinks?: boolean; orderBy?: "updated_at" | "created_at"; includeMetadata?: string[] } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
     if (opts.orderBy) sp.set("order_by", opts.orderBy);
     if (opts.includeContent) sp.set("include_content", "true");
     // Each note then carries `links` ({sourceId,targetId,relationship}[]), hydrated
     // in a constant number of vault queries per page (vault ≥0.7.x).
     if (opts.includeLinks) sp.set("include_links", "true");
+    // Field-filtered metadata (vault ≥0.7.x `include_metadata=a,b`): the tree projection
+    // needs ~4 keys, not every note's full metadata blob.
+    if (opts.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of opts.tags ?? []) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;

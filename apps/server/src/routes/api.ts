@@ -18,6 +18,8 @@ import { vault, vaultClient, VaultError, VaultConflictError, type Note } from ".
 import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveLevel, effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
+import { compress } from "hono/compress";
+import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
 
 export const api = new Hono();
 
@@ -72,6 +74,11 @@ async function proxyToVault(c: Context) {
   } catch (e) {
     console.warn(`[gateway] vault ${method} ${path} failed: ${(e as Error).message}`);
     return c.json({ error: "vault_unreachable" }, 502);
+  }
+  // Keep the WP7.1 tree projection current for the owner's own writes (the vault
+  // subscribe socket covers everyone else's; this makes the writer's next read exact).
+  if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
+    void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
@@ -136,6 +143,30 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
     inflight.delete(target);
   }
 }
+
+/**
+ * GET /api/tree: the lean file-tree projection (WP7.1; see ../tree.ts). Registered
+ * BEFORE the owner short-circuit so owners and non-owners both get it, from memory,
+ * without a full-vault list. Owners get everything; everyone else is filtered through
+ * the SAME `view`-cap math as every other read (`capsFor`), so a path or tag of a
+ * note they cannot view is never emitted. `ETag`/`If-None-Match` gives 304.
+ */
+api.get("/tree", compress(), async (c) => {
+  const actor = resolveActor(c);
+  const owner = roleAtLeast(actor.role, "admin");
+  const entry = owner ? resolveVaultEntry(c.req.header("x-prism-vault")) : resolveVaultEntry(actor.vaultId);
+  let tree;
+  try {
+    tree = await ensureTree(entry);
+  } catch (e) {
+    console.warn(`[gateway] tree build failed: ${(e as Error).message}`);
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+  const { body, etag } = renderTree(tree, owner ? undefined : (r) => capsFor(actor, r).has("view"));
+  const headers = { ETag: etag, "Cache-Control": "private, no-cache", Vary: "Cookie, Authorization, X-Prism-Vault" };
+  if (etagMatches(c.req.header("if-none-match"), etag)) return new Response(null, { status: 304, headers });
+  return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "application/json" } });
+});
 
 // Owner short-circuit: full vault access, token-free. Registered before the
 // authorized routes so the owner bypasses per-note filtering entirely.
@@ -297,7 +328,9 @@ api.post("/notes", async (c) => {
   // overwrite any client-supplied prism_creator with the authenticated subject.
   const metadata = { ...(body.metadata ?? {}), ...(subject ? { prism_creator: subject } : {}) };
   try {
-    return c.json(await vaultClient(actor.vaultId).createNote({ ...body, metadata }));
+    const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
+    treeUpsertNote(resolveVaultEntry(actor.vaultId), created);
+    return c.json(created);
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -413,6 +446,7 @@ api.patch("/notes/:id", async (c) => {
       if (addTags.length) await vc.addTags(id, addTags);
       updated = await vc.getNote(id);
     }
+    treeUpsertNote(resolveVaultEntry(actor.vaultId), updated);
     return c.json(updated);
   } catch (e) {
     return vaultErr(c, e);
@@ -496,7 +530,9 @@ api.post("/notes/:id/restore", async (c) => {
         403,
       );
     }
-    return c.json(await vc.restoreVersion(gate.note.id, ix, body.if_updated_at));
+    const restored = await vc.restoreVersion(gate.note.id, ix, body.if_updated_at);
+    treeUpsertNote(resolveVaultEntry(resolveActor(c).vaultId), restored);
+    return c.json(restored);
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -534,6 +570,7 @@ api.delete("/notes/:id", async (c) => {
   } catch (e) {
     return vaultErr(c, e);
   }
+  treeRemoveNote(resolveVaultEntry(actor.vaultId), id);
   return c.json({ ok: true });
 });
 
