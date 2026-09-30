@@ -31,14 +31,19 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { config } from "../config";
 import { consumeRateLimit, rateLimited, rateLimitClientKey } from "../middleware/ratelimit";
 import { authenticateMcp, type McpAuthFailure, type McpPrincipal } from "./auth";
-import { buildMcpServer, type PrismResource, type PrismTool } from "./tools";
+import { buildMcpServer, type PrismPrompt, type PrismResource, type PrismTool } from "./tools";
 import { whoamiTool } from "./tool-whoami";
 import { NOTE_TOOLS, NOTE_RESOURCES } from "./tool-notes";
+import { GOVERNANCE_TOOLS, GOVERNANCE_RESOURCES, GOVERNANCE_PROMPTS } from "./tool-governance";
+import { SHARING_TOOLS } from "./tool-sharing";
+import { DASHBOARD_TOOLS } from "./tool-dashboard";
 
 /** The v1 tool catalog. WP6.3+ append here. */
-export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS];
+export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS, ...GOVERNANCE_TOOLS, ...SHARING_TOOLS, ...DASHBOARD_TOOLS];
 /** Resource templates (WP6.2: prism://note/{id}). */
-export const PRISM_RESOURCES: PrismResource[] = [...NOTE_RESOURCES];
+export const PRISM_RESOURCES: PrismResource[] = [...NOTE_RESOURCES, ...GOVERNANCE_RESOURCES];
+/** Prompts (WP6.4). */
+export const PRISM_PROMPTS: PrismPrompt[] = [...GOVERNANCE_PROMPTS];
 
 export const MCP_DOCS_URL = "https://github.com/omniharmonic/prism/blob/main/docs/mcp-access.md";
 const PRM_BASE = "/.well-known/oauth-protected-resource";
@@ -49,6 +54,8 @@ export interface MountOptions {
   tools?: readonly PrismTool[];
   /** Resource override (tests). Defaults to PRISM_RESOURCES. */
   resources?: readonly PrismResource[];
+  /** Prompt override (tests). Defaults to PRISM_PROMPTS. */
+  prompts?: readonly PrismPrompt[];
   /** Also serve the metadata at the bare `/.well-known/oauth-protected-resource`. Default: mountPath === "/mcp". */
   rootMetadata?: boolean;
 }
@@ -95,7 +102,7 @@ export function mountPrismMcp(app: Hono, mountPath = "/mcp", opts: MountOptions 
   const tools = () => opts.tools ?? PRISM_TOOLS;
 
   const handler = createMcpHandler(
-    (ctx) => buildMcpServer(ctx.authInfo?.extra?.principal as McpPrincipal | undefined, tools(), app, opts.resources ?? PRISM_RESOURCES),
+    (ctx) => buildMcpServer(ctx.authInfo?.extra?.principal as McpPrincipal | undefined, tools(), app, opts.resources ?? PRISM_RESOURCES, opts.prompts ?? PRISM_PROMPTS),
     { onerror: (e) => console.warn(`[mcp] ${mountPath}: ${e.message}`) },
   );
 

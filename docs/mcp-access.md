@@ -183,9 +183,37 @@ explicit allowlist of read-only POST routes — empty today). Tools can only rea
 any `.`/`..` path segment (raw or percent-encoded) refused. Note ids containing `/` are not addressable
 (use the id, not the path).
 
+### Governance, sharing, dashboards, prompts (WP6.4)
+
+| Tool | Scope | Needs | What it does |
+|---|---|---|---|
+| `prism_governance_state` | read | standing (member, a grant, or a governance role) | Enabled/locked, roles + policies, YOUR powers/roles/grants, the role roster, open proposals |
+| `prism_propose_change` | write | standing; view on the target | `{action: edit_note\|new_entry, target?, content, tags?, path?, rationale}` — opens a CONTENT proposal; changes nothing until eligible members vote. `rationale` is required and shown to voters (stored on the proposal, never on the note) |
+| `prism_vote` | write | the policy's eligible role for that proposal's tags | `{proposal_id, vote: approve\|reject, reason?, apply?}`. After an approval, if the threshold is now met the change is applied (`outcome` = `pending` \| `applied` \| `approved_staged` \| `recorded`); `apply: false` only records. Refused for `amend_governance` proposals and closed proposals |
+| `prism_withdraw_proposal` | write | you opened it | Proposer only (not even the owner, through MCP) |
+| `prism_note_access` | read | `share` on the note (or admin) | Direct grants, tag grants that reach it, visibility/creator, share-link COUNT (never their URLs) |
+| `prism_share` | write (`openWorldHint`) | `share` on the note/tag (or admin) | `{id \| tag, email, level \| caps}`. You can only hand out caps you hold; the recipient must ALREADY have an account — inviting new people is not available through MCP, for anyone |
+| `prism_dashboard_query` | read | view | `{dashboard_id, widget_id?}` runs a saved `dashboard`-tagged note's widgets; or inline `{source, sort?, group_by?, aggregate?, fields?}`. Runs the client's own pure filter engine over ONLY the notes you may view; stat → number, chart/board → grouped counts, list → lean rows (≤ 100) |
+
+**Never available through MCP:** publish/unpublish, members/invites, federation, workspace/server config,
+governance constitution/role/policy edits (amendments), voting on or applying an amendment, publishing a
+staged revision, minting tokens.
+
+Resources: **`prism://governance/constitution`** (the constitution as Markdown, rendered from live state, no emails)
+and **`prism://me`** (who this connection acts as plus your governance standing). Prompts (need standing):
+**`review-open-proposals`** (walk the open content proposals with their proposed text, then `prism_vote`),
+**`summarize-comments {id}`**, **`edit-shared-doc {id}`** (reads your `_caps` on the note and steers you to a direct
+edit, a suggestion, a reviewed proposal, or read-only).
+
+**Sharing transport.** Sharing lives under `/acl`, which tools can never reach in general. `prism_share` /
+`prism_note_access` use one extra entry point whose allowlist is EXACTLY the five scoped-share routes
+(`GET /acl/notes/:id`, `PUT|DELETE /acl/notes/:id/people[/:email]`, `PUT|DELETE /acl/tags/:tag/people[/:email]`); every other
+`/acl` path is refused before dispatch. The acl router's own gate (admin, or `share` on that resource) and anti-escalation
+(subset rule) still run — same handler as the web Share dialog.
+
 ### Not yet
 
-- **Collab-safe edits, comments, governance, sharing** — WP6.3–6.4.
+- **Collab-safe edits and comments** — WP6.3. Governance/sharing/dashboards are above (WP6.4); revoking a share, listing tag access and applying/publishing proposals stay web-only.
 - **OAuth / claude.ai connectors** — waits on hub per-surface audiences (or Prism as a hub module).
 - **Mounting behind the hub** at `/surface/prism/api/mcp` — the router supports it (`mountPrismMcp(app, path)`), not wired.
 

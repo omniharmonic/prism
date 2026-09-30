@@ -575,6 +575,8 @@ export interface ContentPayload {
   metadata?: Record<string, unknown>;
   tags?: string[];
   path?: string;
+  /** Why the proposer wants this (shown to voters; NEVER written to the note). */
+  rationale?: string;
 }
 
 /** The governance actions that carry a ContentPayload (vs. governance amendments). */

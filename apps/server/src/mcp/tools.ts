@@ -25,7 +25,7 @@ import * as z from "zod/v4";
 import type { Hono } from "hono";
 import { McpServer, ResourceTemplate, ResourceNotFoundError, type CacheHint } from "@modelcontextprotocol/server";
 import type { McpPrincipal } from "./auth";
-import { dispatchAsActor, type Dispatch } from "./dispatch";
+import { dispatchAsActor, dispatchShareAsActor, type Dispatch } from "./dispatch";
 import { ToolError, mapToolError } from "./errors";
 
 export { ToolError, mapToolError, type ToolErrorCode } from "./errors";
@@ -34,6 +34,8 @@ export interface ToolContext {
   principal: McpPrincipal;
   /** Call a Prism route in-process AS this principal's actor (see dispatch.ts). */
   dispatch: Dispatch;
+  /** The scoped-share `/acl` routes ONLY (exact allowlist; see dispatch.ts). */
+  dispatchShare: Dispatch;
 }
 
 export interface ToolAnnotations {
@@ -109,6 +111,16 @@ export interface PrismResource {
   read: (uri: URL, vars: Record<string, string | string[]>, ctx: ToolContext) => Promise<Array<{ uri: string; mimeType: string; text: string }>>;
 }
 
+/** An MCP prompt: a guided flow the client can offer. Text only; may read through ctx.dispatch. */
+export interface PrismPrompt<S extends z.ZodObject = z.ZodObject> {
+  name: string;
+  title?: string;
+  description: string;
+  argsSchema: S;
+  access: (principal: McpPrincipal) => boolean | Promise<boolean>;
+  build: (args: z.infer<S>, ctx: ToolContext) => Promise<string>;
+}
+
 const text = (data: unknown): string => JSON.stringify(data, null, 2);
 
 function errorResult(err: ToolError) {
@@ -136,6 +148,7 @@ export async function buildMcpServer(
   tools: readonly PrismTool[],
   app: Hono,
   resources: readonly PrismResource[] = [],
+  prompts: readonly PrismPrompt[] = [],
 ): Promise<McpServer> {
   const server = new McpServer({ ...SERVER_INFO }, { instructions: SERVER_INSTRUCTIONS });
   if (!principal) return server; // unreachable behind the router's auth gate — expose nothing
@@ -143,6 +156,7 @@ export async function buildMcpServer(
     principal,
     // The principal (not just its actor) — dispatch enforces its read-only ceiling.
     dispatch: (path, init) => dispatchAsActor(app, principal, path, init),
+    dispatchShare: (path, init) => dispatchShareAsActor(app, principal, path, init),
   };
   for (const tool of await visibleTools(principal, tools)) {
     server.registerTool(
@@ -195,6 +209,32 @@ export async function buildMcpServer(
           audit(principal, `resource:${res.name}`, `error:${err.code}`, started);
           // A resource you may not see answers exactly like one that does not exist.
           if (err.code === "forbidden" || err.code === "not_found") throw new ResourceNotFoundError(uri.href);
+          throw new Error(err.message);
+        }
+      },
+    );
+  }
+  for (const pr of prompts) {
+    let allowed = false;
+    try {
+      allowed = await pr.access(principal);
+    } catch {
+      allowed = false; // fail closed
+    }
+    if (!allowed) continue;
+    server.registerPrompt(
+      pr.name,
+      { title: pr.title, description: pr.description, argsSchema: pr.argsSchema },
+      async (args: unknown) => {
+        const started = Date.now();
+        try {
+          const body = await pr.build(args as never, ctx);
+          audit(principal, `prompt:${pr.name}`, "ok", started);
+          return { messages: [{ role: "user" as const, content: { type: "text" as const, text: body } }] };
+        } catch (e) {
+          const err = mapToolError(e);
+          if (err.code === "internal_error") console.error(`[mcp] prompt ${pr.name} failed:`, e);
+          audit(principal, `prompt:${pr.name}`, `error:${err.code}`, started);
           throw new Error(err.message);
         }
       },
