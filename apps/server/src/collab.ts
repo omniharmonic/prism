@@ -737,6 +737,16 @@ export const hocuspocus = new Hocuspocus({
   onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),
 });
 
+/**
+ * Is this note's Yjs doc currently LOADED in the Hocuspocus server (someone has
+ * it open, or it has not yet unloaded after the last disconnect)? Read-only
+ * accessor for the MCP tools (WP6.2): a content write through the REST gateway
+ * would race the live CRDT, so they refuse it while this is true.
+ */
+export function isDocLive(vaultId: string, noteId: string): boolean {
+  return hocuspocus.documents.has(docNameFor(vaultId, noteId));
+}
+
 /** Attach the collab WebSocket handler to the Node HTTP server at /collab. */
 export function attachCollab(server: Server): void {
   const wss = new WebSocketServer({ noServer: true });

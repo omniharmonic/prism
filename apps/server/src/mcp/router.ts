@@ -31,11 +31,14 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { config } from "../config";
 import { consumeRateLimit, rateLimited, rateLimitClientKey } from "../middleware/ratelimit";
 import { authenticateMcp, type McpAuthFailure, type McpPrincipal } from "./auth";
-import { buildMcpServer, type PrismTool } from "./tools";
+import { buildMcpServer, type PrismResource, type PrismTool } from "./tools";
 import { whoamiTool } from "./tool-whoami";
+import { NOTE_TOOLS, NOTE_RESOURCES } from "./tool-notes";
 
-/** The v1 tool catalog. WP6.2+ append here. */
-export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool];
+/** The v1 tool catalog. WP6.3+ append here. */
+export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS];
+/** Resource templates (WP6.2: prism://note/{id}). */
+export const PRISM_RESOURCES: PrismResource[] = [...NOTE_RESOURCES];
 
 export const MCP_DOCS_URL = "https://github.com/omniharmonic/prism/blob/main/docs/mcp-access.md";
 const PRM_BASE = "/.well-known/oauth-protected-resource";
@@ -44,6 +47,8 @@ const AUTH_FAIL_WINDOW_MS = 10 * 60_000;
 export interface MountOptions {
   /** Tool catalog override (tests). Defaults to PRISM_TOOLS. */
   tools?: readonly PrismTool[];
+  /** Resource override (tests). Defaults to PRISM_RESOURCES. */
+  resources?: readonly PrismResource[];
   /** Also serve the metadata at the bare `/.well-known/oauth-protected-resource`. Default: mountPath === "/mcp". */
   rootMetadata?: boolean;
 }
@@ -90,7 +95,7 @@ export function mountPrismMcp(app: Hono, mountPath = "/mcp", opts: MountOptions 
   const tools = () => opts.tools ?? PRISM_TOOLS;
 
   const handler = createMcpHandler(
-    (ctx) => buildMcpServer(ctx.authInfo?.extra?.principal as McpPrincipal | undefined, tools(), app),
+    (ctx) => buildMcpServer(ctx.authInfo?.extra?.principal as McpPrincipal | undefined, tools(), app, opts.resources ?? PRISM_RESOURCES),
     { onerror: (e) => console.warn(`[mcp] ${mountPath}: ${e.message}`) },
   );
 
