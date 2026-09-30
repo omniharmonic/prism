@@ -68,6 +68,8 @@ g.DOMParser ??= _win.DOMParser;
 export const FIELD = "default"; // TipTap's default XML fragment name
 const exts = collabExtensions();
 const schema = getSchema(exts);
+/** The shared TipTap/ProseMirror schema (WP6.3 collab-safe MCP ops mark the doc with it). */
+export const collabSchema = () => schema;
 
 /** Markdown/HTML → an empty Y.Doc's encoded state for the shared fragment. */
 export function contentToYUpdate(content: string): Uint8Array {
@@ -232,12 +234,12 @@ export function yDocToCode(doc: Y.Doc): string {
 // Cell-level CRDT: each row is a Y.Array of cell strings, so concurrent edits to
 // different cells/rows merge. Minimal CSV (no quoted-comma handling) to match the
 // existing SpreadsheetRenderer; fidelity is exact for simple comma/newline data.
-function parseCsv(content: string): string[][] {
+export function parseCsv(content: string): string[][] {
   if (!content.trim()) return [[""]];
   return content.split("\n").map((row) => row.split(","));
 }
 
-function serializeCsv(rows: string[][]): string {
+export function serializeCsv(rows: string[][]): string {
   return rows.map((r) => r.join(",")).join("\n");
 }
 
@@ -265,12 +267,12 @@ export function yDocToCsv(doc: Y.Doc): string {
 // different elements merge. appState (zoom/scroll/cursor) is per-viewer and NOT
 // synced; only elements are shared. Persisted as the same scene JSON the
 // non-collab CanvasRenderer reads ({ elements, appState }).
-interface CanvasEl {
+export interface CanvasEl {
   id?: string;
   [k: string]: unknown;
 }
 
-function parseScene(content: string): { elements: CanvasEl[]; appState: Record<string, unknown> } {
+export function parseScene(content: string): { elements: CanvasEl[]; appState: Record<string, unknown> } {
   if (!content || !content.trim()) return { elements: [], appState: {} };
   try {
     const d = JSON.parse(content);
@@ -315,6 +317,22 @@ export const EXTERNAL_ORIGIN = "external-parachute";
 /** Per-doc high-water mark of the Parachute updatedAt we've already folded in,
  *  so we don't re-apply the same external edit on every tick. */
 const lastReconciled = new Map<string, number>();
+
+/**
+ * Record that Parachute's copy at `updatedAtMs` is already reflected in the live
+ * doc (WP6.3). Used after a metadata/tag/path-only write to a LIVE note: the
+ * vault's updatedAt moves but its content does not, and without this the next
+ * reconcile tick would fold that (content-stale) copy back over the live doc —
+ * reverting any human typing not yet stored. Advances ONLY if `prevMs` (the vault
+ * version the write replaced) was itself already absorbed — otherwise an unfolded
+ * external content edit would be skipped. Monotonic; returns whether it advanced.
+ */
+export function markReconciled(documentName: string, prevMs: number, nextMs: number): boolean {
+  const { vaultId, noteId } = federationTarget(documentName);
+  if (prevMs <= 0 || reconcileBaseline(documentName, vaultId, noteId) < prevMs) return false;
+  if (nextMs > (lastReconciled.get(documentName) ?? 0)) lastReconciled.set(documentName, nextMs);
+  return true;
+}
 
 /** Test-only: drop the reconcile high-water marks (module state survives resetDb). */
 export function resetReconcileState(): void {

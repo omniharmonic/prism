@@ -164,6 +164,19 @@ always the gateway's. A hidden tool answers exactly like a nonexistent one. Erro
 | `prism_update_note` | write | `edit` (content/metadata), `organize` (path/tags) | `{id, if_updated_at, content?, metadata?, add_tags?, remove_tags?, path?}` |
 | `prism_delete_note` | write (destructive) | creator with `edit`, or `delete` | Permanent delete |
 | `prism_restore_version` | write | `edit` | `{id, version_ix, if_updated_at}`; refused if the version would change who can see the note |
+| `prism_list_comments` | read | view | `{id, include_resolved?}` — a document note's comment threads (id, quote, resolved, `anchored`, comments with author/text/time) |
+| `prism_add_comment` | write | **suggest** | `{id, text, quote}` starts a thread anchored on the first exact match of `quote` (within one paragraph); `{id, text, thread_id}` replies to an unresolved thread |
+| `prism_resolve_comment` | write | **suggest** | `{id, thread_id, resolved?}` (default `true`; `false` reopens). Clears/restores the highlight for everyone |
+| `prism_suggest_edit` | write | **suggest** | `{id, find, replace}` — a tracked change: the first match of `find` is marked for deletion and `replace` inserted after it, attributed to you; lands in the owner's review queue |
+| `prism_sheet_read` | read | view | `{id, range?}` — A1 (`"B2"`, `"A1:C3"`; omit for the whole sheet, ≤ 10,000 cells). Live document when open, else the saved CSV |
+| `prism_sheet_update` | write | `edit` | `{id, range, values[][], if_updated_at?}` — a single cell anchors `values`; a rectangle must match its shape. Cell-level; no commas/line breaks in cells |
+
+**Comments and suggestions need suggest, via MCP too.** A comment is a write to the shared document (its
+anchor is a mark in the body), and the collaboration socket is read-only below *suggest* — so in the editor a
+comment-level collaborator cannot comment (WP0.2). The MCP tools follow the same rule rather than letting an
+agent do what its own account cannot: a comment-level account gets `forbidden`. Anyone who may comment may
+resolve or reopen any thread (as in the editor). Comments and suggestions are attributed to your account's
+name (or email) followed by "(agent)", and comments carry `agent: true`.
 
 Resource template **`prism://note/{id}`** (read, needs view): a document-kind note as Markdown (collab's HTML
 is converted), any other kind as its raw content; a second content block carries JSON metadata with
@@ -172,10 +185,33 @@ is converted), any other kind as its raw content; a second content block carries
 
 **Concurrency contract.** `prism_update_note` and `prism_restore_version` REQUIRE `if_updated_at` — the
 note's `updatedAt` from your latest `prism_get_note`. If the note changed since, you get `conflict` with
-`detail.updatedAt` (the current timestamp, never the body): re-read, re-apply, retry. **Live documents:**
-while a note is open in live collaborative editing (`collab.live`), content writes and restores are
-refused with `conflict` (`detail.live`) rather than racing the live document; metadata-, tag- and path-only
-updates still go through. Wait until no one has it open. A collab-safe edit tool comes in WP6.3.
+`detail.updatedAt` (the current timestamp, never the body): re-read, re-apply, retry. A `conflict` whose
+`detail.reason` is `path_conflict` means something else: *a note already exists at that path* — pick another
+path (retrying will not help).
+
+**Live documents** (`collab.live` from `prism_get_note`: someone has the note open in the collaborative
+editor). A content change from `prism_update_note` is not written over the vault copy; it is **merged into the
+live document** through Yjs, under the transaction origin `mcp:<your email>`, and then saved by the normal
+collab save path (people with the note open see it immediately):
+
+1. `if_updated_at` must equal the note's current saved `updatedAt`, exactly as for a closed note. If someone's
+   edits were saved since your read → `conflict`; re-read and retry.
+2. The merge base is the saved version you read. Edits people typed *after* that and have not saved yet are
+   **not** a conflict: only what you changed relative to the base is applied, so their edits survive — in the
+   same paragraph or elsewhere — like two people editing at once. Spreadsheets change cell by cell (never a
+   whole-table rewrite); canvases change only the elements you changed (upserted by id, with the Excalidraw
+   `version` bumped) and drop elements you removed.
+3. If the live document has not yet absorbed a very recent external change (so there is no saved base that
+   matches your read), you get `conflict` with `detail: {live: true, retry: true}` — wait a few seconds,
+   re-read, retry.
+
+On a document being typed in continuously, saves land every few seconds, so a slow read→write cycle may keep
+hitting (1). There, prefer the anchor-based tools — `prism_suggest_edit`, `prism_add_comment`,
+`prism_sheet_update` — which need no `if_updated_at` (`prism_sheet_update` takes an optional one).
+Restores (`prism_restore_version`) are still refused while a note is live. Metadata-, tag- and path-only
+updates go straight through and never disturb unsaved typing. Notes nobody has open are written through the
+normal gateway path (a Markdown note stays Markdown). Adding a comment or suggestion to a note that has never
+been opened in the collaborative editor stores its body as the editor's HTML, the same as a first live open.
 
 A read-only token is held to reads three times over: only read tools are listed, a write-scope tool is
 refused at call time, and a tool's in-process calls into the gateway may only be `GET`/`HEAD` (plus an
@@ -185,7 +221,8 @@ any `.`/`..` path segment (raw or percent-encoded) refused. Note ids containing 
 
 ### Not yet
 
-- **Collab-safe edits, comments, governance, sharing** — WP6.3–6.4.
+- **Governance, sharing, dashboards** — WP6.4.
+- **Accept/reject suggestions, canvas element tools, comment deletion** — later (owner review stays in the app).
 - **OAuth / claude.ai connectors** — waits on hub per-surface audiences (or Prism as a hub module).
 - **Mounting behind the hub** at `/surface/prism/api/mcp` — the router supports it (`mountPrismMcp(app, path)`), not wired.
 

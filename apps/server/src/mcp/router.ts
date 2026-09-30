@@ -34,9 +34,10 @@ import { authenticateMcp, type McpAuthFailure, type McpPrincipal } from "./auth"
 import { buildMcpServer, type PrismResource, type PrismTool } from "./tools";
 import { whoamiTool } from "./tool-whoami";
 import { NOTE_TOOLS, NOTE_RESOURCES } from "./tool-notes";
+import { COLLAB_TOOLS } from "./tool-collab";
 
 /** The v1 tool catalog. WP6.3+ append here. */
-export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS];
+export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS, ...COLLAB_TOOLS];
 /** Resource templates (WP6.2: prism://note/{id}). */
 export const PRISM_RESOURCES: PrismResource[] = [...NOTE_RESOURCES];
 
