@@ -12,6 +12,8 @@
  */
 import type { Note } from "../parachute";
 import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "./matrix-rollover";
+import { PeopleIndex } from "./people";
+import type { IfExists, NoteLinkInput } from "../parachute";
 
 export interface MatrixCreds {
   homeserver: string;
@@ -430,10 +432,17 @@ export interface IngestVault {
     path?: string;
     metadata?: Record<string, unknown>;
     tags?: string[];
-  }): Promise<Note>;
+    links?: NoteLinkInput[];
+    ifExists?: IfExists;
+  }): Promise<Note & { existed?: boolean }>;
   updateNote(
     id: string,
-    p: { content?: string; metadata?: Record<string, unknown>; ifUpdatedAt?: string },
+    p: {
+      content?: string;
+      metadata?: Record<string, unknown>;
+      ifUpdatedAt?: string;
+      links?: { add?: NoteLinkInput[] };
+    },
   ): Promise<Note>;
   /** Optional: strip tags (used to clear stale triage verdicts on append). */
   removeTags?(id: string, tags: string[]): Promise<void>;
@@ -511,6 +520,49 @@ export interface IngestResult {
   invitesPending: number;
   /** Invites accepted this pass (0 unless opts.autoJoin). */
   joined: number;
+  /** Thread→person links written this pass (0 unless opts.linkPeople). */
+  peopleLinked: number;
+  /** Person notes created this pass (0 unless opts.linkPeople). */
+  peopleCreated: number;
+}
+
+/** Above this many joined members a room is a group chat, not a relationship:
+ *  known people are still linked, but nobody is CREATED from a group roster
+ *  (message_sync.rs MAX_MEMBERS_FOR_PERSON_CREATION — the ~3.3k junk-stub fix). */
+export const MAX_MEMBERS_FOR_PERSON_CREATION = 3;
+
+/** Bridge bots / appservice ghosts never become people (message_sync.rs rule). */
+export const isBridgeBot = (mxid: string): boolean => mxid.includes("bot:") || mxid.startsWith("@_");
+
+/**
+ * The desktop's `link_participants`, over the index in worker/people.ts: resolve
+ * every joined member (display name, else the mxid) to a person note — created
+ * only in rooms of <= MAX_MEMBERS_FOR_PERSON_CREATION members — and return the
+ * `messages-with` links to write with the thread. Deviation from the desktop:
+ * the sync user itself is skipped (it would link every thread to one hub note).
+ */
+export async function participantLinks(
+  members: Record<string, string>,
+  people: PeopleIndex,
+  vault: Pick<IngestVault, "createNote">,
+  opts: { platform: string; selfUserId?: string | null },
+): Promise<NoteLinkInput[]> {
+  const ids = Object.keys(members);
+  const allowCreate = ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION;
+  const out: NoteLinkInput[] = [];
+  const seen = new Set<string>();
+  for (const mid of ids) {
+    if (isBridgeBot(mid) || mid === opts.selfUserId) continue;
+    const name = members[mid] || mid;
+    const r = await people
+      .findOrCreate(vault, name, { matrixId: mid, platform: opts.platform, allowCreate })
+      .catch(() => null);
+    if (r && !seen.has(r.id)) {
+      seen.add(r.id);
+      out.push({ target: r.id, relationship: "messages-with" });
+    }
+  }
+  return out;
 }
 
 /**
@@ -533,6 +585,10 @@ export async function ingestMatrix(
     autoJoin?: boolean;
     maxJoinsPerRun?: number;
     probeInvites?: boolean;
+    /** MATRIX_LINK_PEOPLE: link each thread to its participants' person notes. */
+    linkPeople?: boolean;
+    /** The sync user's mxid (never linked as a participant). */
+    selfUserId?: string | null;
   } = {},
 ): Promise<IngestResult> {
   const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
@@ -600,6 +656,11 @@ export async function ingestMatrix(
   let processed = 0;
   let failed = 0;
   let gapFilled = 0;
+  let peopleLinked = 0;
+  // Built lazily, once per pass, only when a room actually needs linking.
+  let people: PeopleIndex | null = null;
+  const peopleBefore = () => people?.created ?? 0;
+  const peopleAtStart = peopleBefore();
   for (const rb of rooms) {
     // A limited timeline is only the tail: more than the filter's 30 events
     // arrived since the cursor (a busy group, or a bridge backfilling a chat).
@@ -645,8 +706,25 @@ export async function ingestMatrix(
     messages += rb.messages.length;
     // One bad room must not abort the pass: the cursor still advances past the
     // others, and the failure is named instead of surfacing as a source-wide DOWN.
+    // Person links ride in the thread's own write (idempotent on the vault), so
+    // linking costs no extra PATCH. Full joined membership decides the group
+    // cap — an incremental sync only carries member deltas.
+    let links: NoteLinkInput[] = [];
+    if (opts.linkPeople && client.joinedMembers) {
+      try {
+        const members = await client.joinedMembers(rb.roomId);
+        people ??= await PeopleIndex.load(vault);
+        links = await participantLinks(members, people, vault, {
+          platform: detectPlatform(Object.keys(members)),
+          selfUserId: opts.selfUserId,
+        });
+      } catch (e) {
+        console.warn(`[worker] matrix: people for ${rb.roomId} skipped: ${String(e)}`);
+      }
+    }
     try {
-      await ingestRoom(rb, vault, byRoom, { dedupe });
+      await ingestRoom(rb, vault, byRoom, { dedupe, links });
+      peopleLinked += links.length;
     } catch (e) {
       failed++;
       console.warn(
@@ -673,6 +751,8 @@ export async function ingestMatrix(
     nextBatch,
     invitesPending: invites.length,
     joined,
+    peopleLinked,
+    peopleCreated: peopleBefore() - peopleAtStart,
   };
 }
 
@@ -721,8 +801,9 @@ async function ingestRoom(
   rb: RoomBatch,
   vault: IngestVault,
   byRoom: Map<string, Note>,
-  opts: { dedupe?: boolean } = {},
+  opts: { dedupe?: boolean; links?: NoteLinkInput[] } = {},
 ): Promise<boolean> {
+  const linkAdd = opts.links?.length ? { links: { add: opts.links } } : {};
   const platform = detectPlatform(rb.memberIds);
   let lines = rb.messages.map((m) => formatLine(m, rb.displayNames));
   if (opts.dedupe) {
@@ -775,7 +856,7 @@ async function ingestRoom(
     if (rolled) byRoom.set(rb.roomId, rolled.note);
     else {
       try {
-        await vault.updateNote(note.id, { content, metadata });
+        await vault.updateNote(note.id, { content, metadata, ...linkAdd });
       } catch (e) {
         if (!isTooLarge(e)) throw e;
         // The vault refused the write as too large (history_overflow on ≥0.7.9).
@@ -815,13 +896,18 @@ async function ingestRoom(
         messageCount: lines.length,
         participants,
       },
+      ...(opts.links?.length ? { links: opts.links } : {}),
     };
+    // WP0.6: a same-named room's thread already at `base` (several "Unknown user
+    // (WA)" DMs, say) is known from the listing — take the room-id path up front
+    // instead of eating a 409 first. The catch below stays as the race backstop.
+    const taken = [...byRoom.values()].some((n) => n.path === base);
     try {
-      await vault.createNote({ ...params, path: base });
+      await vault.createNote({ ...params, path: taken ? `${base}-${roomSlug(rb.roomId)}` : base });
     } catch (e) {
       // 409 = a note already lives at that path (another room with the same
       // name — several "Unknown user (WA)" DMs, say). Disambiguate by room id.
-      if (!/409/.test(String(e))) throw e;
+      if (!/409/.test(String(e)) || taken) throw e;
       await vault.createNote({
         ...params,
         path: `${base}-${roomSlug(rb.roomId)}`,

@@ -181,6 +181,14 @@ export const config = {
   // backfill (cursor = max task date_updated), so a 5-minute cadence is cheap.
   // 0 DISABLES it (the on-demand /api/integrations/clickup/sync route still works).
   clickupIntervalMs: Number(process.env.CLICKUP_INTERVAL_MS ?? 300_000),
+  // Server Gmail ingest (worker/gmail.ts, Architecture v2 WP1.2) — the port of the
+  // desktop's email_sync. OFF by default: the desktop and the server must never
+  // both run it (set the desktop's `disable_email_sync=true` FIRST). Needs the
+  // `google` credential ({account}) and the co-located `gog` CLI. While on, the
+  // health registry reports "email" as an authoritative SERVER source instead of
+  // inferring it from the newest email note. GMAIL_INTERVAL_MS = the desktop's 3 min.
+  gmailSyncEnabled: process.env.GMAIL_SYNC_ENABLED === "true",
+  gmailIntervalMs: Number(process.env.GMAIL_INTERVAL_MS ?? 180_000),
   // How often the worker recompiles the governance constitution into grant rows
   // (governance-grants.ts). The route path already reconciles on every successful
   // mutation, so this is the SAFETY NET, not the mechanism: it catches a
@@ -247,6 +255,14 @@ export const config = {
   // repaired rooms per sweep (each one re-queues local-model triage).
   matrixReconcileMs: Number(process.env.MATRIX_RECONCILE_MS ?? 3_600_000),
   matrixReconcilePerSweep: Number(process.env.MATRIX_RECONCILE_PER_SWEEP ?? 25),
+  // Link message-thread notes to person notes (`messages-with`), as the desktop's
+  // message_sync did via person_linker before Matrix ingest moved server-side
+  // (the server ingester never ported it). OFF by default: see CLAUDE.md
+  // "Matrix person linking" — on, it creates person notes for the other side of
+  // DMs (rooms of <=3 joined members, bridge bots skipped) and links existing
+  // people in group rooms; that is the rule that once minted ~3.3k junk stubs
+  // when it had no member cap, so it is opt-in until reviewed against live data.
+  matrixLinkPeople: process.env.MATRIX_LINK_PEOPLE === "true",
   // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-
   // separated (e.g. `!abc:localhost=sync-chats`), sent every interval. A
   // bridge only portals chats Telegram/etc. PUSHES updates for; with hundreds of

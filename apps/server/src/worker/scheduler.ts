@@ -13,7 +13,8 @@
  *     can be worth running on a server that has none. Slower cadence
  *     (INDEX_INTERVAL_MS); 0 disables it.
  *
- * gog-backed Gmail/Calendar + Meetily stay desktop (host-bound).
+ * Gmail (gog-backed, GMAIL_SYNC_ENABLED) runs here too when enabled; Calendar +
+ * Meetily stay desktop for now (host-bound).
  */
 import { getVaultRegistry, getWorkerCursor, setWorkerCursor, listVaultMirrors } from "../db";
 import { getSecret, secretsConfigured, otherSecretOwners } from "../secrets";
@@ -23,6 +24,7 @@ import { MatrixClient, ingestMatrix, reconcileMatrix, type IngestVault, type Mat
 import { FathomClient, ingestFathom } from "./fathom";
 import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type FirefliesVault } from "./fireflies";
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
+import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -172,6 +174,7 @@ export function ingestFailureState(): Array<{ vaultId: string; source: string; c
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
 let matrixPass = 0;
+const matrixSelf = new Map<string, string>();
 const lastMatrixReconcileAt = new Map<string, number>();
 const lastBridgeResyncAt = new Map<string, number>();
 export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
@@ -185,6 +188,15 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   const creds = JSON.parse(raw) as MatrixCreds;
   const client = new MatrixClient(creds);
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
+  // MATRIX_LINK_PEOPLE: the sync user is never linked as a participant.
+  let selfUserId: string | null = null;
+  if (config.matrixLinkPeople) {
+    selfUserId = matrixSelf.get(entry.id) ?? null;
+    if (!selfUserId) {
+      selfUserId = await client.whoami().catch(() => null);
+      if (selfUserId) matrixSelf.set(entry.id, selfUserId);
+    }
+  }
   const res = await ingestMatrix(client, vaultClient(entry.id) as unknown as IngestVault, {
     since,
     autoJoin: config.matrixAutoJoin,
@@ -192,7 +204,10 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
     // Probe the full invite backlog every 10th pass (~10 min) — or every pass
     // while auto-join is draining it.
     probeInvites: config.matrixAutoJoin || matrixPass++ % 10 === 0,
+    linkPeople: config.matrixLinkPeople,
+    selfUserId,
   });
+  if (res.peopleCreated > 0) console.log(`[worker] matrix ${entry.id}: ${res.peopleCreated} person note(s) created (MATRIX_LINK_PEOPLE)`);
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);
   if (res.messages > 0 || res.joined > 0) {
     console.log(`[worker] matrix ${entry.id}: +${res.messages} msgs (${res.created} new threads, ${res.updated} updated, ${res.joined} rooms joined)`);
@@ -302,6 +317,59 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
       (opts.force ? " [forced]" : ` [slot ${slot}]`),
   );
   return res.created + res.updated;
+}
+
+/** Vaults whose Gmail 14-day body backfill already ran in this process (the
+ *  desktop did it once per app launch; the server does it once per boot). */
+const gmailBackfilled = new Set<string>();
+
+/**
+ * Run one Gmail ingest pass for a vault (WP1.2). No-op unless GMAIL_SYNC_ENABLED
+ * and the vault has a `google` credential ({account}). Throttled to one run per
+ * GMAIL_INTERVAL_MS slot (the desktop's 3 min); `force` bypasses the gate.
+ * First pass per process: `in:inbox newer_than:14d` (max 100) — the desktop's
+ * body backfill; after that `in:inbox newer_than:3h` (max 30). Throws on a gog
+ * or vault failure so the health registry sees it; the backfill is retried on
+ * the next pass until one succeeds.
+ */
+export async function runGmailOnce(entry: VaultEntry, opts: { force?: boolean; run?: GogRunner } = {}): Promise<number> {
+  if (!config.gmailSyncEnabled) return 0;
+  const raw = getSecret(entry.id, config.ownerEmail, "google");
+  if (!raw) {
+    warnMissingSecret(entry.id, "google");
+    return 0;
+  }
+  if (config.gmailIntervalMs <= 0 && !opts.force) return 0;
+  const slot = Math.floor(Date.now() / Math.max(1, config.gmailIntervalMs));
+  if (!opts.force) {
+    if (getWorkerCursor(entry.id, "gmail-slot") === String(slot)) return 0;
+    setWorkerCursor(entry.id, "gmail-slot", String(slot)); // claim up front
+  }
+  const { account } = JSON.parse(raw) as { account?: string };
+  if (!account) throw new Error("google credential has no account");
+  const backfill = !gmailBackfilled.has(entry.id);
+  const query = backfill ? "in:inbox newer_than:14d" : "in:inbox newer_than:3h";
+  const client = new GmailClient(account, opts.run);
+  const res = await ingestGmail(client, vaultClient(entry.id) as unknown as GmailVault, {
+    query,
+    max: backfill ? 100 : 30,
+    log: (l) => console.warn(`[worker] gmail ${entry.id}: ${l}`),
+  });
+  gmailBackfilled.add(entry.id);
+  console.log(
+    `[worker] gmail ${entry.id}: ${res.messages} msgs / ${res.threads} threads → +${res.created} created ~${res.updated} updated =${res.unchanged} unchanged` +
+      (res.peopleCreated ? `, ${res.peopleCreated} people created` : "") +
+      (res.failed ? ` !${res.failed} FAILED` : "") +
+      (backfill ? " [14d backfill]" : "") +
+      (opts.force ? " [forced]" : ` [slot ${slot}]`),
+  );
+  if (res.failed && res.failed === res.threads) throw new Error(`gmail: all ${res.failed} thread write(s) failed`);
+  return res.created + res.updated;
+}
+
+/** Forget the per-process backfill marker (tests). */
+export function resetGmailBackfill(): void {
+  gmailBackfilled.clear();
 }
 
 /** Current hour + calendar day in a named timezone (robust to the process TZ),
@@ -619,6 +687,9 @@ async function tick(): Promise<void> {
         ["fathom", runFathomOnce],
         ["fireflies", runFirefliesOnce],
         ["clickup", runClickUpOnce],
+        // Reported as "email": with GMAIL_SYNC_ENABLED the server is that source's
+        // owner (worker/health.ts stops inferring it from desktop notes).
+        ...(config.gmailSyncEnabled ? ([["email", runGmailOnce]] as const) : []),
       ] as const) {
         try {
           await run(entry);
