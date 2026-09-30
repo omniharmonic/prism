@@ -17,6 +17,8 @@
  *     stale; thresholds are therefore tunable / disableable per source.
  *     Exception: with SKILLS_ENABLED=true "skills" is a SERVER source, reported
  *     by worker/skills.ts through `runSkillsPass` (authoritative, not inferred).
+ *     Likewise with GMAIL_SYNC_ENABLED=true "email" is a SERVER source, reported
+ *     by the scheduler's `runGmailOnce` (worker/gmail.ts) per run.
  *
  * Status: disabled (not configured / no data ever) | failing (streak >=
  * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
@@ -120,7 +122,8 @@ const DESKTOP: DesktopSpec[] = [
 /** Desktop sources still inferred from the vault. With SKILLS_ENABLED=true the
  *  server runs skills itself (worker/skills.ts), so "skills" is reported as an
  *  authoritative SERVER source instead of being guessed from dispatch notes. */
-const desktopSpecs = (): DesktopSpec[] => (config.skillsEnabled ? DESKTOP.filter((s) => s.name !== "skills") : DESKTOP);
+const desktopSpecs = (): DesktopSpec[] =>
+  DESKTOP.filter((s) => !(s.name === "skills" && config.skillsEnabled) && !(s.name === "email" && config.gmailSyncEnabled));
 
 interface VaultNoteLike {
   path?: string | null;
@@ -224,6 +227,25 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       staleAfterMs,
       status: computeStatus({ configured: config.indexIntervalMs > 0, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
     });
+  }
+
+  if (config.gmailSyncEnabled) {
+    // Server-owned email (WP1.2): per vault, configured = a `google` credential.
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, "email"));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, "google");
+      const staleAfterMs = config.gmailIntervalMs <= 0 ? 0 : config.workerStaleMs.email;
+      out.push({
+        name: entry.id === "primary" ? "email" : `email@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
   }
 
   if (config.skillsEnabled) {

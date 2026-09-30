@@ -17,6 +17,10 @@ export interface Note {
   createdAt: string;
   updatedAt: string | null;
   tags: string[] | null;
+  /** Present only on list reads with `includeLinks` (see NoteLink). */
+  links?: NoteLink[];
+  /** Lean (no-content) list reads carry the title the vault derived from the body. */
+  displayTitle?: string | null;
 }
 
 /** One captured prior state of a note (vault 0.7.9 note history). */
@@ -32,6 +36,22 @@ export interface VersionRow {
   via?: string | null;
   created_at?: string | null;
   encoding?: string | null;
+}
+
+/** A typed link in a write payload: `target` is a note id or path. */
+export interface NoteLinkInput {
+  target: string;
+  relationship: string;
+}
+
+/** Path-conflict mode for `createNote` (vault#555). */
+export type IfExists = "error" | "ignore" | "update" | "replace";
+
+/** A hydrated link as `include_links` returns it (extra summary fields ignored). */
+export interface NoteLink {
+  sourceId: string;
+  targetId: string;
+  relationship: string;
 }
 
 export class VaultError extends Error {
@@ -114,10 +134,13 @@ export function vaultClient(vaultId?: string) {
   }
 
   return {
-  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean; orderBy?: "updated_at" | "created_at" } = {}): Promise<Note[]> {
+  async listNotes(opts: { tags?: string[]; pathPrefix?: string; limit?: number; includeContent?: boolean; includeLinks?: boolean; orderBy?: "updated_at" | "created_at" } = {}): Promise<Note[]> {
     const sp = new URLSearchParams({ limit: String(opts.limit ?? 50000), sort: "desc" });
     if (opts.orderBy) sp.set("order_by", opts.orderBy);
     if (opts.includeContent) sp.set("include_content", "true");
+    // Each note then carries `links` ({sourceId,targetId,relationship}[]), hydrated
+    // in a constant number of vault queries per page (vault ≥0.7.x).
+    if (opts.includeLinks) sp.set("include_links", "true");
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
     for (const t of opts.tags ?? []) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
@@ -127,23 +150,44 @@ export function vaultClient(vaultId?: string) {
     return (await req(`/notes/${encodeURIComponent(id)}`)).json() as Promise<Note>;
   },
 
+  /**
+   * `ifExists` (vault ≥0.7.9, vault#555) decides what happens when `path` already
+   * names a note: "error" (the vault default — 409 path_conflict), "ignore"
+   * (return the existing note untouched), "update" (content replaces, metadata
+   * RFC-7386-merges, tags/links union) or "replace". With any non-error mode the
+   * response carries `existed`. Ingesters use it so a create can never 409.
+   * `links` are resolved by note id or path, idempotently (INSERT OR IGNORE).
+   */
   async createNote(params: {
     content: string;
     path?: string;
     metadata?: Record<string, unknown>;
     tags?: string[];
-  }): Promise<Note> {
-    return (await req(`/notes`, { method: "POST", body: JSON.stringify(params) })).json() as Promise<Note>;
+    links?: NoteLinkInput[];
+    ifExists?: IfExists;
+  }): Promise<Note & { existed?: boolean }> {
+    const { ifExists, ...rest } = params;
+    const body: Record<string, unknown> = { ...rest };
+    if (ifExists !== undefined) body.if_exists = ifExists;
+    return (await req(`/notes`, { method: "POST", body: JSON.stringify(body) })).json() as Promise<Note & { existed?: boolean }>;
   },
 
   async updateNote(
     id: string,
-    params: { content?: string; path?: string; metadata?: Record<string, unknown>; ifUpdatedAt?: string },
+    params: {
+      content?: string;
+      path?: string;
+      metadata?: Record<string, unknown>;
+      ifUpdatedAt?: string;
+      /** Typed links to add/remove in the same write (add is idempotent). */
+      links?: { add?: NoteLinkInput[]; remove?: NoteLinkInput[] };
+    },
   ): Promise<Note> {
     const body: Record<string, unknown> = {};
     if (params.content !== undefined) body.content = params.content;
     if (params.path !== undefined) body.path = params.path;
     if (params.metadata !== undefined) body.metadata = params.metadata;
+    if (params.links !== undefined) body.links = params.links;
     if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
     if (body.if_updated_at === undefined) body.force = true;
     return (await req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).json() as Promise<Note>;
