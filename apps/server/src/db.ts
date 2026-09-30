@@ -377,6 +377,49 @@ db.exec(`
   -- A pending /auth/device/authorize request, held server-side while the user
   -- signs in, so the params survive the login bounce without ever travelling
   -- through a client-controlled redirect. Referenced by an httpOnly cookie.
+  -- ── Durable agent sessions (Arch v2 WP3.1, agent-sessions.ts) ────────────
+  -- A multi-turn \`claude\` conversation: the server uuid is ALSO the CLI session
+  -- id (--session-id on turn 1, --resume after). Scoped to (vault_id, owner_email).
+  CREATE TABLE IF NOT EXISTS agent_sessions (
+    id                 TEXT PRIMARY KEY,
+    vault_id           TEXT NOT NULL,
+    owner_email        TEXT NOT NULL,
+    title              TEXT,
+    profile            TEXT NOT NULL DEFAULT 'vault-rw',   -- vault-ro | vault-rw
+    note_id            TEXT,                               -- open note (context on turn 1 only)
+    cli_session_id     TEXT,                               -- from system/init (== id)
+    status             TEXT NOT NULL DEFAULT 'idle',       -- idle | running | archived
+    transcript_note_id TEXT,
+    cost_usd           REAL NOT NULL DEFAULT 0,            -- CLI's cumulative session cost
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS agent_sessions_owner ON agent_sessions(vault_id, owner_email, updated_at);
+  CREATE TABLE IF NOT EXISTS agent_turns (
+    id         TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+    prompt     TEXT NOT NULL,
+    note_id    TEXT,
+    status     TEXT NOT NULL,          -- queued|running|done|error|cancelled|interrupted
+    pid        INTEGER,
+    exit_code  INTEGER,
+    error      TEXT,
+    cost_usd   REAL,
+    started_at INTEGER,
+    ended_at   INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS agent_turns_session ON agent_turns(session_id, started_at);
+  -- Normalized AgentEvents (never text_delta — those are coalesced into text).
+  CREATE TABLE IF NOT EXISTS agent_events (
+    session_id TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    turn_id    TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    payload    TEXT NOT NULL,          -- JSON AgentEvent
+    at         INTEGER NOT NULL,
+    PRIMARY KEY (session_id, seq)
+  );
+
   CREATE TABLE IF NOT EXISTS device_auth_requests (
     id             TEXT PRIMARY KEY,
     client_id      TEXT NOT NULL,

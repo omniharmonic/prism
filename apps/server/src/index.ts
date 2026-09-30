@@ -12,10 +12,18 @@ import { getVaultRegistry } from "./db";
 import { reportRegistryTokens, startTokenExpiryWatch } from "./auth/vault-token";
 import { startWorker } from "./worker/scheduler";
 import { createApp } from "./app";
+import { bootSweepAgentSessions } from "./agent-sessions";
 import { attachCollab } from "./collab";
 import { governanceIntegrityEnabled, reportGovernanceIntegrity } from "./governance-integrity";
 
 assertConfig();
+
+// Agent sessions (WP3.1): no child survives a restart — mark every queued/running
+// turn `interrupted` (with a persisted status event) and free its session.
+{
+  const { interrupted } = bootSweepAgentSessions();
+  if (interrupted > 0) console.log(`[agent] boot sweep: ${interrupted} in-flight turn(s) marked interrupted`);
+}
 
 const app = createApp();
 
