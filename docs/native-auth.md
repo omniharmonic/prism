@@ -144,3 +144,95 @@ validated redirect target is shown prominently beneath it, either the scheme
 - Revoking a token blocks new requests and new collab connections at once. A collab
   WebSocket that is already open stays open until it reconnects, the same as for
   sessions.
+
+## Client transport (native build of `apps/web`)
+
+The laptop and iPhone shells (Tauri) load the same React UI as the PWA, built in
+**native mode** and served from `tauri://localhost`. It talks to the Prism Server at a
+configured origin with the device token above. Nothing on the server changed for this.
+
+```bash
+npm run build:native -w @prism/web   # -> apps/web/dist-native/  (no service worker, no manifest)
+npm run verify:native -w @prism/web  # builds it + asserts the invariants below
+node --import tsx apps/web/scripts/verify-sse.ts   # SSE helper behavior
+```
+
+`VITE_PRISM_NATIVE=1` is baked in by `--mode native`. The PWA build (`npm run build`)
+is unchanged: same-origin, session cookie, service worker.
+
+### Host hook: `window.__PRISM_HOST__`
+
+The shell injects this **before the app script runs** (Tauri `initialization_script`):
+
+```ts
+interface PrismHost {
+  apiOrigin?: string;            // "https://prism.example.com"; else VITE_PRISM_API_ORIGIN at build time
+  getToken(): string | null | undefined | Promise<string | null | undefined>; // Keychain/Keystore `pd_…`
+  onUnauthorized?(): void | Promise<void>;  // server returned 401 for our token: drop it (debounced, 1 per 2s)
+  signIn?(): void | Promise<void>;          // run the PKCE flow; falls back to onUnauthorized
+  onSignedOut?(): void | Promise<void>;     // user signed out; token already revoked server-side
+}
+```
+
+- `getToken` is called per request (and per collab reconnect), so a rotated token is
+  picked up without a reload.
+- After a successful sign-in the shell reloads the webview, or dispatches
+  `window.dispatchEvent(new Event("prism:host-token"))`; the sign-in screen reloads on it.
+- **Auth gate:** `main.tsx` calls `/auth/me` with the bearer. No token skips the call.
+  No token or a 401 renders "Sign in to Prism" (`NativeSignInScreen`), whose button calls
+  `host.signIn()`. A 401 also fires `onUnauthorized` and empties the read cache.
+- **Sign-out** (`logout()`): `POST /auth/device/revoke` with the bearer, then
+  `onSignedOut`, then the cache is cleared.
+
+### One request helper: `apps/web/src/transport.ts`
+
+`serverFetch(pathOrUrl, init)` is the only way the app reaches the server.
+
+| | PWA | native |
+|---|---|---|
+| origin | same-origin (`VITE_GATEWAY_URL` in dev) | `host.apiOrigin` |
+| credentials | `include` (session cookie) | `omit`, never cookies |
+| auth | cookie (+ `Capability` header for share links) | `Authorization: Bearer pd_…`, only to the configured origin |
+| 401 | unchanged | `host.onUnauthorized()` |
+
+Routed through it: `parachute/rest.ts` (all note/tag/vault/graph/search/history calls),
+`offline/outbox.ts` replay, `config.ts` (`/auth/me`, login, register, invite-info,
+magic link, logout), `account.ts`, `collab/grant.ts` (`/acl/*`, `/api/*`, `/auth/me`,
+`/api/vaults`), `collab/CollabDoc.tsx` (note read, federated lookup), `publish/PublicationView.tsx`,
+and, through the `@prism/core` seam `setServerFetch()` (`lib/transport/serverFetch.ts`),
+the governance client (`network/governance/api.ts`) and propose-for-review client
+(`lib/governance/review.ts`). Deliberately left on bare `fetch`: the cross-origin
+federation pairing call to a *peer* server, and the legacy public `ShareView`
+(talks to a vault URL directly). `verify:native` fails if a new bare `fetch()` appears.
+
+Native limits: password-gated public `/p/:slug` sites rely on an unlock *cookie*, which a
+native client cannot hold. Open those in the system browser.
+
+### SSE: `streamSSE` / `streamServerSSE`
+
+`EventSource` cannot set `Authorization`, so use
+`streamSSE(url, { headers, lastEventId, onEvent, signal, onOpen, onError, fetch })`
+from `@prism/core` (fetch + `ReadableStream`). It parses CRLF/multi-line events and
+comments, reconnects with jittered exponential backoff (honoring server `retry:`),
+resumes with `Last-Event-ID`, treats 4xx (except 408/425/429) as fatal, and stops on
+`onEvent` returning `"stop"` or on abort. In the web app use
+`streamServerSSE("/api/agent/…", opts)` from `transport.ts` to get origin + bearer. It
+works in both modes. (Nothing used `EventSource` before; the agent chat in WP3.2
+is the first consumer.)
+
+### Collab token
+
+`CollabDoc` opens `HocuspocusProvider({ url: collabWsUrl(), token })`. `collabWsUrl()` is
+the configured origin with `http→ws`. `token` is the capability token if present, else the
+device token as an async function (resolved on every (re)connect) in native, else the
+`"session"` placeholder in the PWA.
+
+### Read-through cache (both modes)
+
+`offline/readCache.ts`, IndexedDB `prism-read-cache`. `rest.ts` routes GETs of
+`/notes*`, `/tags*` and `/vault*` (not searches) through it, network-first. Online: revalidate
+and refresh the entry (403/404/410 evict it). Offline (`navigator.onLine` false or a
+fetch `TypeError`): serve the last good response, else fail as before. The key is
+server + vault + workspace + capability-link + path. Bounded LRU: 300 entries / 64 MB,
+a body over 16 MB is not cached. Cleared on sign-out, on a native 401, and when the signed-in
+email changes. The write outbox (`offline/outbox.ts`) is independent and works in both modes.

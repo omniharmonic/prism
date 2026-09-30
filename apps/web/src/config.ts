@@ -67,10 +67,12 @@ export function getConnection(): Connection {
 // (being-rebuilt) collab route; the main app uses the gateway exclusively.
 // ---------------------------------------------------------------------------
 
-/** Gateway origin. Empty = same-origin (Prism Server serves this app). For dev,
- *  set VITE_GATEWAY_URL=http://localhost:8787. */
-export const GATEWAY_ORIGIN =
-  (import.meta.env.VITE_GATEWAY_URL as string | undefined)?.replace(/\/+$/, "") ?? "";
+// Gateway origin + request plumbing live in ./transport (PWA: same-origin,
+// session cookie; native build: configured origin + device bearer token).
+// For dev, set VITE_GATEWAY_URL=http://localhost:8787.
+import { gatewayOrigin, serverFetch, isNative, getDeviceToken, getHost } from "./transport";
+import { bindCacheUser, clearReadCache } from "./offline/readCache";
+export { gatewayOrigin };
 
 /** Native sign-in (WP2.1): the server bounces a signed-out browser to
  *  `/?next=/auth/device/continue`. That EXACT path is the only `next` we honor —
@@ -78,12 +80,12 @@ export const GATEWAY_ORIGIN =
 const DEVICE_CONTINUE_PATH = "/auth/device/continue";
 export function postLoginTarget(): string | null {
   const next = new URLSearchParams(window.location.search).get("next");
-  return next === DEVICE_CONTINUE_PATH ? `${GATEWAY_ORIGIN}${DEVICE_CONTINUE_PATH}` : null;
+  return next === DEVICE_CONTINUE_PATH ? `${gatewayOrigin()}${DEVICE_CONTINUE_PATH}` : null;
 }
 
 /** Base URL for the gateway REST API. */
 export function apiBase(): string {
-  return `${GATEWAY_ORIGIN}/api`;
+  return `${gatewayOrigin()}/api`;
 }
 
 export interface Me {
@@ -111,12 +113,16 @@ let cachedMe: Me | null = null;
  *  the app is currently viewing (role is per-workspace). */
 export async function fetchMe(): Promise<Me> {
   try {
-    const r = await fetch(`${GATEWAY_ORIGIN}/auth/me`, {
-      credentials: "include",
-      headers: contextHeaders(),
-    });
+    // Native: no device token → not signed in; don't even ask (the sign-in
+    // screen starts the flow). A 401 is routed to the host by serverFetch.
+    if (isNative && !getCapabilityToken() && !(await getDeviceToken())) {
+      cachedMe = { authenticated: false };
+      return cachedMe;
+    }
+    const r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
     if (!r.ok) { cachedMe = { authenticated: false }; return cachedMe; }
     cachedMe = (await r.json()) as Me;
+    void bindCacheUser(cachedMe.email);
     return cachedMe;
   } catch {
     cachedMe = { authenticated: false };
@@ -141,10 +147,9 @@ export function isOwner(): boolean {
 }
 
 async function postJson(path: string, body: unknown): Promise<Response> {
-  return fetch(`${GATEWAY_ORIGIN}${path}`, {
+  return serverFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include",
     body: JSON.stringify(body),
   });
 }
@@ -163,7 +168,7 @@ export interface InviteInfo {
 /** Look up an invite token so the register screen can show the email. */
 export async function fetchInvite(token: string): Promise<InviteInfo> {
   try {
-    const r = await fetch(`${GATEWAY_ORIGIN}/auth/invite-info?token=${encodeURIComponent(token)}`);
+    const r = await serverFetch(`/auth/invite-info?token=${encodeURIComponent(token)}`, { credentials: "same-origin" });
     if (!r.ok) return { valid: false };
     return (await r.json()) as InviteInfo;
   } catch {
@@ -193,10 +198,9 @@ export async function setPassword(password: string, name?: string): Promise<void
  *  reveals whether an address is known). Returns `emailDelivery` — false when
  *  the server has no Resend key, so the link was only printed to its console. */
 export async function requestMagicLink(email: string): Promise<{ emailDelivery: boolean }> {
-  const r = await fetch(`${GATEWAY_ORIGIN}/auth/request`, {
+  const r = await serverFetch("/auth/request", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include",
     body: JSON.stringify({ email }),
   });
   if (!r.ok) throw new Error(`Sign-in request failed (${r.status}).`);
@@ -206,9 +210,19 @@ export async function requestMagicLink(email: string): Promise<{ emailDelivery: 
 
 export async function logout(): Promise<void> {
   try {
-    await fetch(`${GATEWAY_ORIGIN}/auth/logout`, { method: "POST", credentials: "include" });
+    if (isNative) {
+      // Device token: revoke it server-side (POST /auth/device/revoke with an
+      // empty body + the bearer revokes the calling token), then tell the shell
+      // to forget it. The cache is emptied either way.
+      await serverFetch("/auth/device/revoke", { method: "POST" });
+      await Promise.resolve(getHost()?.onSignedOut?.());
+    } else {
+      await serverFetch("/auth/logout", { method: "POST" });
+    }
   } catch {
     /* best-effort */
+  } finally {
+    await clearReadCache();
   }
 }
 

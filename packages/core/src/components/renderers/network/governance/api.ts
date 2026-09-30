@@ -1,11 +1,13 @@
 /**
  * Thin typed client for the commons-governance gateway (/api/governance).
- * Same-origin, session-cookie authed (credentials: "include") — the browser
- * holds no token, exactly like the rest of the web shell. Dependency-free
- * `fetch` on purpose: the governance surface mounts both inside the app shell
- * (Network → Governance) and standalone at /governance, where no query client,
- * VaultClient or provider tree exists.
+ * Routed through the `serverFetch` transport seam: same-origin + session cookie
+ * on the web (the browser holds no token), origin + bearer device token in a
+ * native shell. Provider-free on purpose: the governance surface mounts both
+ * inside the app shell (Network → Governance) and standalone at /governance,
+ * where no query client, VaultClient or provider tree exists.
  */
+import { serverFetch } from "../../../../lib/transport/serverFetch";
+
 export interface GovConfig {
   enabled: boolean;
   bootstrapOwner: string;
@@ -137,9 +139,8 @@ export interface ApiResult<T = unknown> {
 const BASE = "/api/governance";
 
 async function request<T = unknown>(url: string, method = "GET", body?: unknown): Promise<ApiResult<T>> {
-  const res = await fetch(url, {
+  const res = await serverFetch(url, {
     method,
-    credentials: "include",
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });

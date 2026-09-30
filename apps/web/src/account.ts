@@ -3,12 +3,12 @@
 // refreshes the cached identity (fetchMe) so collab presence picks up the new
 // name/avatar immediately.
 import type { AccountClient, AccountProfile, SignedInDevice } from "@prism/core";
-import { GATEWAY_ORIGIN, fetchMe } from "./config";
+import { fetchMe } from "./config";
+import { serverFetch } from "./transport";
 
 async function authFetch(path: string, init: RequestInit): Promise<Response> {
-  const r = await fetch(`${GATEWAY_ORIGIN}/auth${path}`, {
+  const r = await serverFetch(`/auth${path}`, {
     ...init,
-    credentials: "include",
     headers: { "Content-Type": "application/json", ...(init.headers as Record<string, string>) },
   });
   if (!r.ok) {
