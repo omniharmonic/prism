@@ -138,7 +138,14 @@ Format for each package:
     through the existing email sender (Resend) and a vault `alert` note.
 - **Accept** — tests with the fake vault; a simulated stale source triggers exactly one alert per episode.
 
-**WP0.6 Ingest hygiene** · A/F · — · Sonnet
+**WP0.6 Ingest hygiene** · A/F · — · Sonnet — **FOLDED INTO WP1.2 (2026-09-30).**
+- Trace finding: the create-then-409 storm (≈200 per 20k vault requests) is the **desktop** email sync.
+  - For each email it GETs the note (exists), looks up the sender, then POSTs a person note that already exists.
+  - The cause is that `person_linker`'s lookup misses existing people.
+- That code moves to the server in WP1.2, whose port must:
+  - use `if_exists` upserts;
+  - look people up robustly (exact path + normalized email/name index, not a capped list).
+- No separate desktop fix. The original scope below stays as the checklist for WP1.2.
 - **Build**:
   - ingesters that create-then-409 switch to `if_exists: "ignore" | "update"` (find the 409 source first with
     `PRISM_VAULT_TRACE=1`, then fix every create-or-patch ingester);
