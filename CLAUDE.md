@@ -166,6 +166,8 @@ Managed state injected into commands via `State<'_, T>`: `ParachuteClient`, `Mat
 | `notion_task_sync` | background | `notion_api_key` configured |
 | `skill_scheduler` | varies | started via `start_scheduler()` after `DispatchManager` is ready |
 
+**Ingest switch (WP0.4).** Which services start is decided by the pure `plan_services(config)` in `services/mod.rs` (unit-tested); `ServiceManager::start` / `start_scheduler` just act on it, and `get_service_status` overlays `disabled` + `disabled_reason` so the UI tells the truth. `ingest_mode: "host"` (default) | `"client"` in `prism-config.json`: **client starts no services and no skill scheduler** (one log line says so) so a laptop can run as a pure viewer/editor while the Prism Server ingests. Per-service opt-outs (all default false, all `#[serde(default)]`, restart required): `disable_message_sync`, `disable_fathom_sync`, `disable_fireflies_sync`, `disable_meetily_sync` (Meetily half of `transcript_sync` only), `disable_email_sync`, `disable_calendar_sync`, `disable_notion_task_sync`, `disable_embedding_index`, `disable_skill_scheduler`. Settings -> Services -> "Ingest mode" (desktop only) edits the mode and the six WP0.4 flags. `ensure_default_skills` is now **create-only**: it seeds missing default `agent-skill` notes but never rewrites an existing note's prompt or metadata (vault notes are the source of truth). Never run two ingesters for the same source: turn the desktop flag on before enabling the server worker.
+
 `DispatchManager` (`src-tauri/src/services/agent_dispatch.rs`) handles on-demand background agent dispatches — each spawns a `claude -p` process, tracks status, and optionally writes output to a Parachute note.
 
 ## AI / Model Routing

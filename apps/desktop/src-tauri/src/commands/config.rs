@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::PrismError;
 
 /// Default vault name when the config predates the `parachute_vault` field.
+fn default_ingest_mode() -> String {
+    "host".to_string()
+}
+
 fn default_vault_name() -> String {
     "default".into()
 }
@@ -73,6 +77,27 @@ pub struct AppConfig {
     /// The Fireflies key stays configured so live use still works.
     #[serde(default)]
     pub disable_fireflies_sync: bool,
+    /// "host" (default): this machine runs the background ingest services. "client":
+    /// this machine is a pure viewer/editor — NO background service and NO skill
+    /// scheduler starts; the Prism Server does all ingest. Anything other than
+    /// "client" is treated as host. Takes effect on restart.
+    #[serde(default = "default_ingest_mode")]
+    pub ingest_mode: String,
+    /// Per-service opt-outs (all default false = today's behaviour). Each is checked
+    /// where the service starts, alongside the disable_*_sync flags above.
+    #[serde(default)]
+    pub disable_email_sync: bool,
+    #[serde(default)]
+    pub disable_calendar_sync: bool,
+    /// Skips only the Meetily half of transcript_sync (Fathom/Fireflies unaffected).
+    #[serde(default)]
+    pub disable_meetily_sync: bool,
+    #[serde(default)]
+    pub disable_embedding_index: bool,
+    #[serde(default)]
+    pub disable_skill_scheduler: bool,
+    #[serde(default)]
+    pub disable_notion_task_sync: bool,
     pub notion_api_key: String,
     pub google_account_primary: String,
     pub google_account_agent: String,
@@ -150,6 +175,13 @@ impl Default for AppConfig {
             disable_message_sync: false,
             disable_fathom_sync: false,
             disable_fireflies_sync: false,
+            ingest_mode: default_ingest_mode(),
+            disable_email_sync: false,
+            disable_calendar_sync: false,
+            disable_meetily_sync: false,
+            disable_embedding_index: false,
+            disable_skill_scheduler: false,
+            disable_notion_task_sync: false,
             notion_api_key: String::new(),
             google_account_primary: String::new(),
             google_account_agent: String::new(),
@@ -183,6 +215,11 @@ impl AppConfig {
     /// 3. Mirror the active entry back into the legacy `parachute_url` /
     ///    `parachute_vault` / `parachute_api_key` fields so everything that still
     ///    reads those (background services, MCP wiring, etc.) keeps working.
+    /// True when this machine is a pure client (no background ingest at all).
+    pub fn is_client_mode(&self) -> bool {
+        self.ingest_mode.trim().eq_ignore_ascii_case("client")
+    }
+
     pub fn normalize_vaults(&mut self) {
         if self.vaults.is_empty() {
             let label = if self.parachute_vault.is_empty() {
@@ -857,6 +894,13 @@ pub fn get_full_config(
         "local_ai_base_url": config.local_ai_base_url,
         "local_ai_model": config.local_ai_model,
         "background_skill_provider": config.background_skill_provider,
+        "ingest_mode": if config.is_client_mode() { "client" } else { "host" },
+        "disable_email_sync": config.disable_email_sync,
+        "disable_calendar_sync": config.disable_calendar_sync,
+        "disable_meetily_sync": config.disable_meetily_sync,
+        "disable_embedding_index": config.disable_embedding_index,
+        "disable_skill_scheduler": config.disable_skill_scheduler,
+        "disable_notion_task_sync": config.disable_notion_task_sync,
     }))
 }
 
@@ -893,6 +937,16 @@ pub fn update_config(
         if let Some(v) = obj.get("local_ai_base_url").and_then(|v| v.as_str()) { new_config.local_ai_base_url = v.to_string(); }
         if let Some(v) = obj.get("local_ai_model").and_then(|v| v.as_str()) { new_config.local_ai_model = v.to_string(); }
         if let Some(v) = obj.get("background_skill_provider").and_then(|v| v.as_str()) { new_config.background_skill_provider = v.to_string(); }
+        // Ingest switch (restart required — services are started once at launch).
+        if let Some(v) = obj.get("ingest_mode").and_then(|v| v.as_str()) {
+            new_config.ingest_mode = if v.eq_ignore_ascii_case("client") { "client".into() } else { "host".into() };
+        }
+        if let Some(v) = obj.get("disable_email_sync").and_then(|v| v.as_bool()) { new_config.disable_email_sync = v; }
+        if let Some(v) = obj.get("disable_calendar_sync").and_then(|v| v.as_bool()) { new_config.disable_calendar_sync = v; }
+        if let Some(v) = obj.get("disable_meetily_sync").and_then(|v| v.as_bool()) { new_config.disable_meetily_sync = v; }
+        if let Some(v) = obj.get("disable_embedding_index").and_then(|v| v.as_bool()) { new_config.disable_embedding_index = v; }
+        if let Some(v) = obj.get("disable_skill_scheduler").and_then(|v| v.as_bool()) { new_config.disable_skill_scheduler = v; }
+        if let Some(v) = obj.get("disable_notion_task_sync").and_then(|v| v.as_bool()) { new_config.disable_notion_task_sync = v; }
     }
 
     // Keep the ACTIVE vault registry entry in lock-step with any legacy
@@ -989,5 +1043,46 @@ mod tests {
         assert!(!cfg.fireflies_api_key.is_empty(), "key stays configured for live use");
         let would_sync = !cfg.fireflies_api_key.is_empty() && !cfg.disable_fireflies_sync;
         assert!(!would_sync, "desktop must not sync Fireflies once the server owns it");
+    }
+
+    /// An old prism-config.json with none of the WP0.4 keys must load as host mode with
+    /// every per-service flag false — upgrading must not change behaviour.
+    #[test]
+    fn old_config_without_ingest_keys_loads_as_host_with_all_flags_false() {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in [
+            "ingest_mode", "disable_email_sync", "disable_calendar_sync", "disable_meetily_sync",
+            "disable_embedding_index", "disable_skill_scheduler", "disable_notion_task_sync",
+        ] {
+            assert!(o.remove(k).is_some(), "{k} should be a serialized field");
+        }
+        let cfg: AppConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(cfg.ingest_mode, "host");
+        assert!(!cfg.is_client_mode());
+        assert!(!cfg.disable_email_sync && !cfg.disable_calendar_sync && !cfg.disable_meetily_sync);
+        assert!(!cfg.disable_embedding_index && !cfg.disable_skill_scheduler && !cfg.disable_notion_task_sync);
+    }
+
+    #[test]
+    fn ingest_keys_bind_to_their_snake_case_names() {
+        let cfg = config_from(&[
+            ("ingest_mode", serde_json::json!("client")),
+            ("disable_email_sync", serde_json::json!(true)),
+            ("disable_calendar_sync", serde_json::json!(true)),
+            ("disable_meetily_sync", serde_json::json!(true)),
+            ("disable_embedding_index", serde_json::json!(true)),
+            ("disable_skill_scheduler", serde_json::json!(true)),
+            ("disable_notion_task_sync", serde_json::json!(true)),
+        ]);
+        assert!(cfg.is_client_mode());
+        assert!(cfg.disable_email_sync && cfg.disable_calendar_sync && cfg.disable_meetily_sync);
+        assert!(cfg.disable_embedding_index && cfg.disable_skill_scheduler && cfg.disable_notion_task_sync);
+    }
+
+    #[test]
+    fn unknown_ingest_mode_is_treated_as_host() {
+        assert!(!config_from(&[("ingest_mode", serde_json::json!("banana"))]).is_client_mode());
+        assert!(config_from(&[("ingest_mode", serde_json::json!("Client"))]).is_client_mode());
     }
 }

@@ -405,24 +405,23 @@ async fn check_and_dispatch(
     Ok(dispatched)
 }
 
-/// Reconcile the app-managed default skills into the vault.
+/// Seed the app-managed default skills into the vault: CREATE ONLY.
 ///
 /// For each entry in `DEFAULT_SKILLS`:
-/// - **New** (no existing `agent-skill` note with this `skillName`): created with
-///   the full shipped defaults, including `enabled` and `intervalSecs`.
-/// - **Existing**: only the prompt body is updated (when it changed), shipping
-///   prompt fixes to vaults provisioned by older builds. All metadata —
-///   `enabled`, `intervalSecs`, `lastRun`, `runAtHour`, `dependsOn` — is treated
-///   as user-owned operational state and left untouched, so this never flips a
-///   skill the user toggled or rewrites a cadence they tuned.
+/// - **Missing** (no `agent-skill` note with this `skillName`): created with the
+///   full shipped defaults, including `enabled` and `intervalSecs`.
+/// - **Existing**: left completely alone, prompt AND metadata. The vault note is
+///   the source of truth: users (and the server-side scheduler that takes over in
+///   Architecture v2) edit prompts in place, and rewriting them on every launch
+///   silently reverted those edits.
 ///
-/// These are app-managed skills keyed by `skillName`; user-authored skills live
-/// under different names and are never touched.
+/// Never runs in client mode or with `disable_skill_scheduler` (the scheduler that
+/// calls this is not started).
 async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate::error::PrismError> {
     let existing = parachute.list_notes(&ListNotesParams {
         tag: Some("agent-skill".into()),
         limit: Some(200),
-        include_content: true,
+        include_content: false,
         ..Default::default()
     }).await?;
 
@@ -436,34 +435,10 @@ async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate:
     };
 
     let mut created = 0u32;
-    let mut reconciled = 0u32;
 
     for (name, prompt, interval, enabled, description, run_at_hour, depends_on) in DEFAULT_SKILLS {
         match find_existing(name) {
-            Some(note) => {
-                // Ship the latest prompt body to vaults provisioned by an older
-                // build, but treat the note's metadata as user-owned: `enabled`,
-                // `intervalSecs`, `lastRun`, and `runAtHour` are operational
-                // settings the user may have tuned from the Settings UI, so we
-                // never overwrite them here. (A live vault was found running
-                // meeting-processor at intervalSecs=86400 while the shipped
-                // default is 1800 — stomping that would have changed its cadence
-                // 48×.) Only the prompt is app-owned; update it when it changed.
-                if note.content == *prompt {
-                    continue;
-                }
-                if let Err(e) = parachute.update_note(&note.id, &UpdateNoteParams {
-                    content: Some(prompt.to_string()),
-                    path: None,
-                    metadata: None, // preserve all existing operational metadata
-                    force: Some(true),
-                    ..Default::default()
-                }).await {
-                    log::warn!("Skill scheduler: failed to reconcile skill '{}' prompt: {}", name, e);
-                } else {
-                    reconciled += 1;
-                }
-            }
+            Some(_) => continue,
             None => {
                 let path = format!("vault/agent/skills/{}", name);
                 let metadata = serde_json::json!({
@@ -491,8 +466,8 @@ async fn ensure_default_skills(parachute: &ParachuteClient) -> Result<(), crate:
         }
     }
 
-    if created > 0 || reconciled > 0 {
-        log::info!("Skill scheduler: {} skills created, {} reconciled", created, reconciled);
+    if created > 0 {
+        log::info!("Skill scheduler: {} default skills created", created);
     }
 
     Ok(())

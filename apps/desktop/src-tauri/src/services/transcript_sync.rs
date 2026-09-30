@@ -67,8 +67,8 @@ pub async fn run(
         let mut total = 0u64;
         let mut errors_str = Vec::new();
 
-        // Meetily (SQLite)
-        if !config.meetily_db_path.is_empty() {
+        // Meetily (SQLite) — skipped when disable_meetily_sync is set.
+        if !config.meetily_db_path.is_empty() && !config.disable_meetily_sync {
             match sync_meetily(&parachute, &config.meetily_db_path).await {
                 Ok(count) => total += count,
                 Err(e) => {

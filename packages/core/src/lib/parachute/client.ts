@@ -88,6 +88,9 @@ export interface BackgroundServiceStatus {
   last_run: string | null;
   last_error: string | null;
   items_processed: number;
+  /** True when the service is not started on this machine (client mode / flag / not configured). */
+  disabled?: boolean;
+  disabled_reason?: string | null;
 }
 
 export const serviceApi = {
