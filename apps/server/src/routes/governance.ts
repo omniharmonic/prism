@@ -64,12 +64,14 @@ import {
   forkNote,
   proposeMerge,
   isContentAction,
+  assertNotGovernanceContent,
   recordAudit,
   writeConstitutionProse,
   type GovChange,
   type ContentPayload,
   type MutateResult,
 } from "../governance-service";
+import { verifiedGovNotes } from "../governance-integrity";
 
 export const governance = new Hono();
 
@@ -356,7 +358,7 @@ governance.delete("/memberships", async (c) => {
 governance.get("/proposals", async (c) => {
   const wantState = c.req.query("state");
   const notes = await vault.listNotes({ tags: [GOV_TAGS.proposal] });
-  const proposals = notes.map(parseProposal).filter((p) => !wantState || p.state === wantState);
+  const proposals = verifiedGovNotes(GOV_TAGS.proposal, notes).map(parseProposal).filter((p) => !wantState || p.state === wantState);
   return c.json({ proposals });
 });
 
@@ -405,6 +407,11 @@ governance.post("/content/propose", async (c) => {
   if (!hasStanding(c, await loadGovernance(vault, config.ownerEmail))) return noStanding(c);
 
   const payload: ContentPayload = coerceContentPayload(b);
+  try {
+    await assertNotGovernanceContent(vault, { action, target }, payload);
+  } catch (e) {
+    return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
+  }
   const openedBy = email(c);
   const resolvedTarget = target || (payload.path ?? "");
   const { id } = await openProposal(vault, {
@@ -515,6 +522,11 @@ governance.post("/proposals/:id/apply", async (c) => {
         },
         409,
       );
+    }
+    try {
+      await assertNotGovernanceContent(vault, proposal, cp);
+    } catch (e) {
+      return c.json({ error: "bad_payload", detail: (e as Error).message }, 400);
     }
     const result = await applyContentProposal(vault, proposal, cp, { author: me, autoPublish: ev.policy.autoPublish });
     await setProposalState(vault, proposal.id, result.published ? "applied" : "approved");

@@ -12,6 +12,13 @@
  * standing access is listable and revocable (`parachute auth revoke-token`,
  * ~60s hub-side propagation).
  *
+ * FROZEN (WP0.3): minting is OFF unless MEMBER_VAULT_TOKENS=true. A whole-vault
+ * token bypasses every Prism grant — and can write `governance-*` notes directly
+ * (inert only once GOVERNANCE_SIGNING_SECRET is set) — so it is being replaced
+ * by Prism MCP credentials that carry Prism permissions (Architecture v2 WP6).
+ * Listing (`GET /tokens`) and revoking (`DELETE /tokens/:jti`) keep working with
+ * the flag off, so already-issued tokens can be audited and cleaned up.
+ *
  * Mounted under /api BEFORE the gateway (like /api/integrations), so the owner
  * passthrough never swallows it; /api/* is already in the PWA SW denylist.
  */
@@ -25,6 +32,19 @@ import { mintVaultToken, revokeVaultToken } from "../mcp-token";
 export const mcp = new Hono();
 
 const DAY_MS = 86_400_000;
+
+/** Shown when minting is frozen — stable text the UI/docs can point at. */
+export const MINT_FROZEN_DETAIL =
+  "Whole-vault member MCP tokens are frozen on this server: they bypass Prism permissions. " +
+  "Prism MCP credentials (scoped to what you can access in Prism) will replace them. " +
+  "Existing tokens can still be listed and revoked. The server owner can re-enable minting with MEMBER_VAULT_TOKENS=true.";
+
+let mintOverride: boolean | undefined;
+/** Test seam: force minting on/off, or restore the configured flag (undefined). */
+export function setMemberVaultTokensEnabled(v: boolean | undefined): void {
+  mintOverride = v;
+}
+export const memberVaultTokensEnabled = (): boolean => mintOverride ?? config.memberVaultTokens;
 const DEFAULT_DAYS = 90;
 const MAX_DAYS = 365;
 
@@ -61,16 +81,22 @@ mcp.get("/", (c) => {
   const actor = resolveActor(c);
   const entry = resolveVaultEntry(actor.kind === "user" ? actor.vaultId : undefined);
   const m = memberOn(c, entry.id);
+  const enabled = memberVaultTokensEnabled();
   return c.json({
     vaultId: entry.id,
     url: mcpUrlFor(entry.vault),
     publicUrlConfigured: !!config.mcpPublicUrl,
-    canMint: !!m && roleAtLeast(m.role, "member"),
+    mintEnabled: enabled,
+    canMint: enabled && !!m && roleAtLeast(m.role, "member"),
+    ...(enabled ? {} : { mintDisabledReason: MINT_FROZEN_DETAIL }),
   });
 });
 
 /** Mint a scoped token for a vault the requester is a member of. */
 mcp.post("/token", async (c) => {
+  if (!memberVaultTokensEnabled()) {
+    return c.json({ error: "minting_disabled", detail: MINT_FROZEN_DETAIL }, 403);
+  }
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
 
   const actor = resolveActor(c);

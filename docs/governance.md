@@ -279,6 +279,111 @@ burst rather than an unbounded one.
 
 ---
 
+## Governance integrity (signed governance notes)
+
+Governance state is stored as ordinary `governance-*` notes in the vault — which
+means anything that can write to the vault directly (the owner's desktop app, an
+agent holding a whole-vault MCP token, a member with a grant on a `governance-*`
+tag) could, until this existed, *write governance*: a hand-made
+`governance-membership` note compiled into a real content grant, and a hand-made
+`governance-vote` counted toward an amendment.
+
+With **`GOVERNANCE_SIGNING_SECRET`** set in `apps/server/.env`, every governance
+note the Prism server writes carries `metadata.gov_sig`, an HMAC-SHA256 over:
+
+- the note's governance **type** (its tag) and its vault **note id** — so a copy
+  of a valid note (new id) or a re-tagged note does not verify;
+- every metadata field the server *reads as governance* for that type, coerced
+  exactly the way the server parses it:
+
+| Type | Signed fields |
+|---|---|
+| config | `enabled`, `bootstrap_owner`, `amend_policy`, `default_threshold_n`, `default_eligible_role` |
+| role | `name`, `powers`, `scope_type`, `scope`, `capabilities`, `assigns` |
+| membership | `subject`, `role`, `granted_by`, `expires_at` |
+| policy | `action`, `scope_type`, `scope`, `threshold_n`, `quorum`, `distinct_required`, `eligible_role`, `window_seconds`, `auto_publish` |
+| proposal | `action`, `target`, `state`, `opened_by`, `opened_at`, `payload` (the proposed change, verbatim) |
+| vote | `proposal`, `voter`, `vote`, `at`, `reason` |
+| audit | `action`, `actor`, `before`, `after`, `at` |
+| revision | `note`, `parent`, `proposal`, `author`, `origin`, `published`, `at`, `payload`, **and a SHA-256 of the note content** (the snapshot that gets published) |
+
+Note *content* is not signed for any other type: it is human-readable prose
+derived from the metadata (the constitution body is regenerated after every
+change), and nothing reads it as authority.
+
+**On read**, a governance note whose `gov_sig` is missing or wrong is ignored —
+it is not part of the constitution, grants nothing, counts as no vote, and a
+proposal in that state 404s. Each such note is logged once
+(`[governance] INTEGRITY: ignoring governance-membership note <id> …` — id and
+type, never content). The server never re-signs a note that fails verification.
+Content proposals may not create or edit governance notes while integrity is on.
+
+**Without the secret**, nothing changes from before: every governance note is
+trusted as read, no signatures are written, and the server logs one startup
+warning that integrity is off.
+
+### Turning it on (owner)
+
+1. Back up the vault.
+2. Generate a secret (`openssl rand -base64 48`) and add
+   `GOVERNANCE_SIGNING_SECRET=<it>` to the server's env file.
+3. Dry-run the migration against that env file, and **read the roster it
+   prints** — signing blesses every listed membership and vote, so delete
+   anything nobody granted through Prism first:
+   `cd apps/server && node --import tsx scripts/governance-sign-existing.ts --env <env file>`
+4. Apply: same command plus `--apply`. It re-checks and exits non-zero if
+   anything is still unsigned. Re-running is a no-op.
+5. Restart the server. `GET /api/governance/state` should show the same
+   constitution as before.
+
+The script has no default env file on purpose — it never falls back to the live
+`.env`. It skips notes carrying two governance tags (they can only ever verify as
+one type) for a human to fix.
+
+**Rolling back** is unsetting the secret (verification stops). If governance
+changes while the secret is unset, those notes are unsigned or carry stale
+signatures — re-run the migration (after reviewing the roster) before setting
+the secret again. **Rotating** the secret is the same: set the new one and re-run
+the migration, which re-signs every note.
+
+### What it does not protect against
+
+Be clear-eyed about the residual risks of anyone who can still write to the
+vault directly:
+
+- **Deletion.** A vault write token can delete governance notes: remove a
+  membership (revoking access), delete a vote, or delete the config note
+  (governance drops to "not bootstrapped" and its grants are torn down on the
+  next reconcile). Deleting a *scoped* policy can also lower a bar — requests in
+  that scope fall back to the constitution's default policy. Deletion is denial
+  of service or a downgrade, never a grant to the forger — but it is not
+  prevented.
+- **Replay of the same note's older state.** A signature proves the server wrote
+  that exact state of that note *at some point*, not that it is current. Someone
+  with vault write access (including via the vault's own version-history
+  restore) can put back an earlier signed state of the same note — re-opening an
+  applied proposal so it can be applied again, reverting a membership's expiry,
+  or restoring a role's broader earlier capabilities. Closing this needs a
+  server-side record of each note's latest signature (or vault-side private
+  governance tags); it is the most important remaining gap.
+- **Duplicates are harmless, alterations are not possible.** Copying a signed
+  note produces a new id, which does not verify.
+- **The owner's own hand edits** of a governance note's metadata (desktop
+  metadata editor, an agent holding the owner token) void that note, by design:
+  governance changes go through `/api/governance`.
+- **Prose is unsigned.** The body text of the config, role and policy notes can
+  be edited to say anything; the metadata is what governs, and the prose is
+  rewritten on the next change.
+- **The secret is as sensitive as the vault token** that sits beside it; anyone
+  holding it can forge anything.
+- **Signatures are not bound to a vault name** — only to note ids. Governance
+  runs on the primary vault only today.
+- **Whole-vault tokens still exist** for whoever already holds one. New member
+  whole-vault MCP tokens are frozen (`MEMBER_VAULT_TOKENS`, see
+  `docs/mcp-access.md`); revoke the old ones.
+
+---
+
 ## Recovery
 
 If a constitution is genuinely bricked — locked, with no role that could ever

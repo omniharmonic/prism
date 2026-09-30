@@ -112,6 +112,13 @@ async function main() {
     let SESSION_SECRET = gen(48);
     let CAPABILITY_SECRET = gen(48);
     let COLLAB_TOKEN = genCollabToken();
+    // Governance integrity (WP0.3). A fresh install signs governance from day one.
+    // An existing value is ALWAYS preserved (even with --force): rotating it hides
+    // every governance note until scripts/governance-sign-existing.ts re-signs them.
+    let GOVERNANCE_SIGNING_SECRET = gen(48);
+    const hadEnv = existsSync(ENV_FILE);
+    const priorGovSecret = hadEnv ? readEnv(ENV_FILE).GOVERNANCE_SIGNING_SECRET : undefined;
+    if (priorGovSecret) GOVERNANCE_SIGNING_SECRET = priorGovSecret;
     if (DRY_RUN && existsSync(ENV_FILE)) {
       const cur = readEnv(ENV_FILE);
       SESSION_SECRET = cur.SESSION_SECRET ?? SESSION_SECRET;
@@ -128,6 +135,7 @@ async function main() {
       `SESSION_SECRET=${SESSION_SECRET}`,
       `CAPABILITY_SECRET=${CAPABILITY_SECRET}`,
       `COLLAB_TOKEN=${COLLAB_TOKEN}`,
+      `GOVERNANCE_SIGNING_SECRET=${GOVERNANCE_SIGNING_SECRET}`,
       `OWNER_EMAIL=${OWNER_EMAIL}`,
       `RESEND_API_KEY=${RESEND_API_KEY}`,
       `MAGIC_FROM=${MAGIC_FROM}`,
@@ -144,6 +152,12 @@ async function main() {
       writeFileSync(ENV_FILE, envBody, { mode: 0o600 });
       chmodSync(ENV_FILE, 0o600);
       console.log(`\n✓ Wrote ${ENV_FILE} (chmod 600).`);
+      if (hadEnv && !priorGovSecret) {
+        console.log(
+          "  ! New GOVERNANCE_SIGNING_SECRET: if this vault already has governance-* notes, sign them before starting the server:\n" +
+            `    node --import tsx scripts/governance-sign-existing.ts --env ${ENV_FILE}   (then --apply)`,
+        );
+      }
     }
 
     // Seed vault tag schemas (idempotent).
@@ -200,7 +214,7 @@ function readEnv(path: string): Record<string, string> {
 
 /** Mask secret values in a .env preview. */
 function maskSecrets(envBody: string): string {
-  const SECRET_KEYS = new Set(["PARACHUTE_TOKEN", "SESSION_SECRET", "CAPABILITY_SECRET", "COLLAB_TOKEN", "RESEND_API_KEY"]);
+  const SECRET_KEYS = new Set(["PARACHUTE_TOKEN", "SESSION_SECRET", "CAPABILITY_SECRET", "COLLAB_TOKEN", "RESEND_API_KEY", "GOVERNANCE_SIGNING_SECRET"]);
   return envBody
     .split("\n")
     .map((line) => {
