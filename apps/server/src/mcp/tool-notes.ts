@@ -21,13 +21,14 @@
  */
 import * as z from "zod/v4";
 import TurndownService from "turndown";
-import { CAPS, effectiveCaps, grantCaps, type Cap } from "../permissions";
-import { roleAtLeast, roleFloor } from "../roles";
+import { CAPS, effectiveCaps, type Cap } from "../permissions";
+import { roleFloor } from "../roles";
 import { isDocLive, noteKind, type CollabKind } from "../collab";
 import type { Note } from "../parachute";
-import type { McpPrincipal } from "./auth";
+import { canView, hasCapAnywhere, isAdmin } from "./access";
 import { jsonOrToolError } from "./dispatch";
-import { ToolError } from "./errors";
+import { ToolError, isStaleConflict } from "./errors";
+import { afterLiveMetaWrite, liveContentWrite } from "./tool-collab";
 import { defineTool, type PrismResource, type PrismTool, type ToolContext } from "./tools";
 
 // ── bounds ──────────────────────────────────────────────────────────────────
@@ -38,18 +39,6 @@ const LIST_CONTENT_CHARS = 2_000;
 /** Single-note reads are bounded too; `contentTruncated` says so. */
 const NOTE_CONTENT_CHARS = 100_000;
 const TAGS_MAX = 1_000;
-
-// ── access (early gate) ─────────────────────────────────────────────────────
-function hasCapAnywhere(p: McpPrincipal, ...wanted: Cap[]): boolean {
-  if (roleFloor(p.actor.role)) return true; // owner/admin: every cap on every note
-  for (const g of p.actor.grants) {
-    const caps = new Set(grantCaps(g));
-    if (wanted.some((c) => caps.has(c))) return true;
-  }
-  return false;
-}
-const canView = (p: McpPrincipal) => hasCapAnywhere(p, "view");
-const isAdmin = (p: McpPrincipal) => roleAtLeast(p.actor.role, "admin");
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 const enc = encodeURIComponent;
@@ -114,8 +103,8 @@ async function assertNotLive(ctx: ToolContext, id: string, verb: string): Promis
     throw new ToolError(
       "conflict",
       `this note is open in live collaborative editing, so ${verb} is refused to avoid racing the live document. ` +
-        "Wait until no one has it open and retry, or use the collab-safe edit tool when it is available. " +
-        "Metadata-only and tag-only updates are still allowed.",
+        "Wait until no one has it open and retry — or read the version (prism_get_version) and write its content with " +
+        "prism_update_note, which merges into the live document.",
       { live: true },
     );
   }
@@ -126,7 +115,8 @@ async function withConflictHint<T>(ctx: ToolContext, id: string, run: () => Prom
   try {
     return await run();
   } catch (e) {
-    if (e instanceof ToolError && e.code === "conflict") {
+    // Only a STALE-token conflict gets the re-read hint — a path conflict (etc.) keeps its own message.
+    if (isStaleConflict(e)) {
       let current: unknown = undefined;
       try {
         const n = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`);
@@ -283,8 +273,10 @@ export const updateNoteTool = defineTool({
   description:
     "Update a note. `if_updated_at` is REQUIRED (the `updatedAt` from your latest prism_get_note); if the note changed since, " +
     "the call fails with `conflict` — re-read, re-apply, retry. Give any of: content (replaces the body; needs edit), metadata " +
-    "(merged; needs edit), path and add_tags/remove_tags (need organize). Content changes are REFUSED while the note is open in " +
-    "live collaborative editing (see prism_get_note collab.live) to avoid racing live editors; metadata/tag/path-only updates are allowed. " +
+    "(merged; needs edit), path and add_tags/remove_tags (need organize). If the note is open in live collaborative editing " +
+    "(prism_get_note collab.live), a content change is MERGED into the live document (only what you changed is applied, so " +
+    "edits people are typing elsewhere survive; spreadsheets change cell by cell, canvases element by element). A live " +
+    "document may briefly answer `conflict` with detail.retry while it absorbs a very recent change — wait, re-read, retry. " +
     "Previous states stay in version history (prism_list_versions).",
   inputSchema: z.object({
     id: idField,
@@ -302,9 +294,25 @@ export const updateNoteTool = defineTool({
     if (a.content === undefined && a.metadata === undefined && a.path === undefined && !hasTags) {
       throw new ToolError("invalid_request", "nothing to update — provide content, metadata, path, add_tags or remove_tags");
     }
-    if (a.content !== undefined) await assertNotLive(ctx, a.id, "a content write");
+    let ifUpdatedAt = a.if_updated_at;
+    let noteId = a.id;
+    let merged: { live: true; changed: boolean } | undefined;
+    if (a.content !== undefined) {
+      const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`); // view gate first: liveness is never an oracle
+      noteId = note.id;
+      if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
+        // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
+        const r = await liveContentWrite(ctx, note.id, a.content, a.if_updated_at);
+        merged = { live: true, changed: r.changed };
+        const rest = a.metadata !== undefined || a.path !== undefined || hasTags;
+        if (!rest) return { ...listRow(r.note, false), metadata: r.note.metadata ?? {}, collab: merged };
+        // The rest (metadata/path/tags) goes through the gateway against the version our merge produced.
+        ifUpdatedAt = r.note.updatedAt ?? a.if_updated_at;
+      }
+    }
+    const content = merged ? undefined : a.content;
     // The owner/admin passthrough speaks the vault's PATCH dialect; everyone else the gateway's.
-    const body: Record<string, unknown> = { content: a.content, metadata: a.metadata, path: a.path, if_updated_at: a.if_updated_at };
+    const body: Record<string, unknown> = { content, metadata: a.metadata, path: a.path, if_updated_at: ifUpdatedAt };
     if (isAdmin(ctx.principal)) {
       if (hasTags) body.tags = { add: a.add_tags ?? [], remove: a.remove_tags ?? [] };
     } else {
@@ -312,7 +320,10 @@ export const updateNoteTool = defineTool({
       body.remove_tags = a.remove_tags;
     }
     const updated = await withConflictHint(ctx, a.id, () => getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`, { method: "PATCH", ...json(body) }));
-    return { ...listRow(updated, false), metadata: updated.metadata ?? {} };
+    // A metadata/tag/path-only write to a LIVE note: keep the reconciler from folding
+    // the (content-unchanged) vault copy back over unsaved human typing.
+    if (content === undefined) afterLiveMetaWrite(ctx, updated.id ?? noteId, ifUpdatedAt, updated.updatedAt);
+    return { ...listRow(updated, false), metadata: updated.metadata ?? {}, ...(merged ? { collab: merged } : {}) };
   },
 });
 

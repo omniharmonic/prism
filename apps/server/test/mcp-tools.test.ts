@@ -107,8 +107,28 @@ const must = (o: Out): any => {
   return (o as { data: any }).data;
 };
 
-const READ_TOOLS = ["prism_get_note", "prism_get_version", "prism_list_tags", "prism_list_versions", "prism_query_notes", "prism_semantic_search", "prism_whoami"];
-const ALL_TOOLS = [...READ_TOOLS, "prism_create_note", "prism_delete_note", "prism_restore_version", "prism_update_note"].sort();
+const READ_TOOLS = [
+  "prism_get_note",
+  "prism_get_version",
+  "prism_list_comments",
+  "prism_list_tags",
+  "prism_list_versions",
+  "prism_query_notes",
+  "prism_semantic_search",
+  "prism_sheet_read",
+  "prism_whoami",
+];
+const ALL_TOOLS = [
+  ...READ_TOOLS,
+  "prism_add_comment",
+  "prism_create_note",
+  "prism_delete_note",
+  "prism_resolve_comment",
+  "prism_restore_version",
+  "prism_sheet_update",
+  "prism_suggest_edit",
+  "prism_update_note",
+].sort();
 
 // ── registry + tools/list matrix ────────────────────────────────────────────
 
@@ -303,17 +323,14 @@ test("update_note: the owner's tag changes use the vault dialect", async () => {
   assert.deepEqual(r.tags, ["extra"]);
 });
 
-test("LIVE collab doc: content writes and restores are refused; metadata/tag-only updates proceed", async () => {
+test("LIVE collab doc: restores are refused; metadata/tag-only updates proceed (content writes merge — see mcp-collab.test.ts)", async () => {
   const ed = await connect(pat(EDITOR));
   hocuspocus.documents.set(docNameFor("primary", "g1"), {} as never);
-  const refused = await call(ed, "prism_update_note", { id: "g1", content: "race", if_updated_at: "2026-02-01T00:00:00.000Z" });
-  assert.ok(!refused.ok && refused.error === "conflict");
-  assert.match(String(refused.message), /live collaborative editing/);
-  assert.deepEqual(refused.detail, { live: true });
-  assert.equal(fv.notes.get("g1")!.content, "hello garden");
-
   const restore = await call(ed, "prism_restore_version", { id: "g1", version_ix: 0, if_updated_at: "2026-02-01T00:00:00.000Z" });
   assert.ok(!restore.ok && restore.error === "conflict");
+  assert.match(String(restore.message), /live collaborative editing/);
+  assert.deepEqual(restore.detail, { live: true });
+  assert.equal(fv.notes.get("g1")!.content, "hello garden");
 
   const meta = must(await call(ed, "prism_update_note", { id: "g1", metadata: { reviewed: true }, if_updated_at: "2026-02-01T00:00:00.000Z" }));
   assert.ok(meta.updatedAt);

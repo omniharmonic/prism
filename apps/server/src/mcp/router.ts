@@ -37,9 +37,10 @@ import { NOTE_TOOLS, NOTE_RESOURCES } from "./tool-notes";
 import { GOVERNANCE_TOOLS, GOVERNANCE_RESOURCES, GOVERNANCE_PROMPTS } from "./tool-governance";
 import { SHARING_TOOLS } from "./tool-sharing";
 import { DASHBOARD_TOOLS } from "./tool-dashboard";
+import { COLLAB_TOOLS } from "./tool-collab";
 
-/** The v1 tool catalog. WP6.3+ append here. */
-export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS, ...GOVERNANCE_TOOLS, ...SHARING_TOOLS, ...DASHBOARD_TOOLS];
+/** The v1 tool catalog. Later packages append here. */
+export const PRISM_TOOLS: PrismTool[] = [whoamiTool as unknown as PrismTool, ...NOTE_TOOLS, ...COLLAB_TOOLS, ...GOVERNANCE_TOOLS, ...SHARING_TOOLS, ...DASHBOARD_TOOLS];
 /** Resource templates (WP6.2: prism://note/{id}). */
 export const PRISM_RESOURCES: PrismResource[] = [...NOTE_RESOURCES, ...GOVERNANCE_RESOURCES];
 /** Prompts (WP6.4). */

@@ -24,7 +24,7 @@
 import type { Hono } from "hono";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../auth/actor";
 import type { McpPrincipal } from "./auth";
-import { ToolError } from "./errors";
+import { ToolError, conflictError } from "./errors";
 
 export type Dispatch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -177,7 +177,8 @@ export async function jsonOrToolError<T = unknown>(res: Response): Promise<T> {
       throw new ToolError("not_found", "not found");
     case 409:
     case 428:
-      throw new ToolError("conflict", "the note changed since you read it — re-read and retry", body?.current);
+      // Distinguish a stale if_updated_at from a path conflict & co. (errors.ts).
+      throw conflictError(res.status, body);
     case 429:
       throw new ToolError("rate_limited", "too many requests — slow down");
     default:
