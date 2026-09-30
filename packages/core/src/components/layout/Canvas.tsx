@@ -89,6 +89,7 @@ export function Canvas() {
   // web response ever carries — `reviewMode` is "none" for every desktop client
   // and every owner, so `isLiveDoc` is computed exactly as before for them.
   const proposeOnly = reviewMode(effectiveNote) === "propose";
+  const noteRevision = useUIStore((s) => (effectiveNote ? s.noteRevisions[effectiveNote.id] ?? 0 : 0));
   const isLiveDoc = collab.useLiveCollab(collabDocId) && collabDocId !== "" && !proposeOnly;
 
   return (
@@ -108,7 +109,10 @@ export function Canvas() {
             <collab.CollabDocument noteId={effectiveNote.id} note={effectiveNote} />
           </RendererBoundary>
         ) : effectiveNote && Renderer ? (
-          <RendererBoundary key={effectiveNote.id}>
+          // + the note's revision: a version restore remounts the editor on the
+          // restored content (a live collab doc above instead receives it through
+          // the server's reconciler, so it keeps its session).
+          <RendererBoundary key={`${effectiveNote.id}:${noteRevision}`}>
             <Suspense fallback={<LoadingSkeleton />}>
               <Renderer
                 note={effectiveNote}

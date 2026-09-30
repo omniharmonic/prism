@@ -56,3 +56,7 @@ apps/server/.env*
 apps/server/prism-b.db
 apps/server/prism-b.log
 apps/server/.incident-*/
+
+# Parachute upgrade research + probe scripts: local-only (they quote private vault contents)
+docs/roadmap/parachute-upgrade/research/
+docs/roadmap/parachute-upgrade/rehearsal-tools/

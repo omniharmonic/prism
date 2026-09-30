@@ -252,10 +252,14 @@ pub fn vault_create(
         let root = root.strip_suffix("/api").unwrap_or(root).to_string();
         let seed_vault = entry.vault.clone();
         let seed_token = entry.token.clone();
+        // Vault ≥0.7.1 gates schema writes behind vault:<name>:admin; mint a 1h
+        // one for the seed (best-effort — on 0.6.x the write token suffices).
+        let admin_token = mint_ephemeral_admin_token(&seed_vault);
         match tauri::async_runtime::block_on(crate::commands::schema_seed::seed_tag_schemas(
             &root,
             &seed_vault,
             &seed_token,
+            admin_token.as_deref(),
         )) {
             Ok(s) => log::info!(
                 "vault_create('{}'): seeded schemas — {} created, {} updated, {} unchanged",
@@ -339,4 +343,19 @@ pub fn vault_remove(
     cfg.normalize_vaults();
     cfg.save()?;
     Ok(())
+}
+
+/// Best-effort 1h `vault:<name>:admin` token via the operator CLI, for the
+/// schema seed on vault ≥0.7.1. `None` if the CLI is missing or refuses.
+fn mint_ephemeral_admin_token(vault: &str) -> Option<String> {
+    let scope = format!("vault:{vault}:admin");
+    let out = std::process::Command::new("parachute")
+        .args(["auth", "mint-token", "--scope", &scope, "--ephemeral"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    token.starts_with("eyJ").then_some(token)
 }

@@ -6,9 +6,15 @@
  * `contentType` / `precedence` are Prism-side renderer concerns and are NOT seeded —
  * the vault tag schema only stores `description` + `fields`.
  *
- * REST endpoints used (Parachute 0.5.x, base `${vaultUrl}/vault/${vault}/api`):
+ * REST endpoints used (Parachute 0.5.x+, base `${vaultUrl}/vault/${vault}/api`):
  *   - GET  /tags?include_schema=true     → [{ name, count, description, fields, ... }]
  *   - PUT  /tags/:tag  { description, fields }  → upsert (server MERGES fields)
+ *
+ * Auth: vault 0.7.x (≥0.7.1) gates tag-schema writes behind `vault:<name>:admin`
+ * — a `:write` token gets 403 `insufficient_scope`. Pass `adminToken` (e.g. from
+ * `mintEphemeralAdminToken`) for the PUTs; reads keep using `token`. On 0.6.x
+ * the write token suffices, so `adminToken` is optional. Failures surface as a
+ * `SchemaWriteError` with an actionable message instead of a raw status dump.
  *
  * Safety contract (CRITICAL — never destructive):
  *   - absent tag            → create with description + fields
@@ -72,6 +78,8 @@ export interface SeedOptions {
   vaultUrl: string;
   vault: string;
   token: string;
+  /** `vault:<name>:admin` token for the schema PUTs (required on vault ≥0.7.1). */
+  adminToken?: string;
   dryRun?: boolean;
   /** Optional override of the schema source (defaults to the canonical JSON). */
   schemas?: Record<string, TagSchemaEntry>;
@@ -97,17 +105,20 @@ export function loadCanonicalSchemas(): Record<string, TagSchemaEntry> {
 }
 
 /**
- * Parachute 0.7.x builds a field index when a schema field carries `indexed:
- * true`, and the index build 500s for any non-string type (array/number/object)
- * — worse, the 500 fires AFTER the schema row is written, leaving a stored
- * schema that re-trips the error on every echo-back PUT. Only strings are
- * indexable, so strip the flag from everything else before sending.
+ * Vault 0.6.x builds a field index when a schema field carries `indexed: true`,
+ * and the index build 500s for any non-string type — AFTER the schema row is
+ * written. Vault 0.7.x instead rejects non-indexable types cleanly (400
+ * `invalid_indexed_field`; indexable = string/integer/boolean/reference/date).
+ * Fields WE declare are only sent `indexed` when they're strings (safe on
+ * both); fields ECHOED back from the vault keep `indexed` for any type 0.7.x
+ * can index (never un-index a real index) and lose it otherwise.
  */
-function indexableFields(fields: Record<string, TagFieldDef>): Record<string, TagFieldDef> {
+const INDEXABLE_V07 = new Set(["string", "integer", "boolean", "reference", "date"]);
+function stripIndexed(fields: Record<string, TagFieldDef>, keep: (type: string | undefined) => boolean): Record<string, TagFieldDef> {
   const out: Record<string, TagFieldDef> = {};
   for (const [name, def] of Object.entries(fields)) {
     const d = def as TagFieldDef & { indexed?: boolean; type?: string };
-    if (d?.indexed && d.type !== "string") {
+    if (d?.indexed && !keep(d.type)) {
       const { indexed: _drop, ...rest } = d;
       out[name] = rest as TagFieldDef;
     } else {
@@ -116,6 +127,37 @@ function indexableFields(fields: Record<string, TagFieldDef>): Record<string, Ta
   }
   return out;
 }
+const indexableFields = (f: Record<string, TagFieldDef>) => stripIndexed(f, (t) => t === "string");
+const echoableFields = (f: Record<string, TagFieldDef>) => stripIndexed(f, (t) => INDEXABLE_V07.has(t ?? ""));
+
+/** A tag-schema request the vault refused, with an operator-actionable message. */
+export class SchemaWriteError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly errorType: string | null,
+    readonly body: unknown,
+  ) {
+    super(message);
+    this.name = "SchemaWriteError";
+  }
+}
+
+function describeFailure(opts: SeedOptions, method: string, path: string, status: number, body: unknown): string {
+  const b = (body ?? {}) as { error_type?: string; error?: string; violations?: unknown; message?: string };
+  const t = b.error_type ?? "";
+  if (status === 403 && t === "insufficient_scope") {
+    return (
+      `schema writes need vault:${opts.vault}:admin (vault ≥0.7.1 refuses them with a :write token). ` +
+      `Rerun with an admin token — e.g. PARACHUTE_ADMIN_TOKEN=$(parachute auth mint-token --scope vault:${opts.vault}:admin --ephemeral)`
+    );
+  }
+  if (t === "tag_field_conflict" || t === "invalid_indexed_field" || t === "schema_validation") {
+    const detail = b.violations ? ` ${JSON.stringify(b.violations)}` : b.error || b.message ? ` ${b.error ?? b.message}` : "";
+    return `${method} ${path}: vault rejected the schema (${status} ${t}); nothing was written.${detail}`;
+  }
+  return `${method} ${path}: ${status} ${typeof body === "string" ? body : JSON.stringify(body)}`;
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
@@ -123,17 +165,31 @@ function isNonEmptyString(v: unknown): v is string {
 
 async function vaultFetch(opts: SeedOptions, path: string, init?: RequestInit): Promise<Response> {
   const base = `${opts.vaultUrl}/vault/${opts.vault}/api`;
+  const method = init?.method ?? "GET";
+  const token = method === "GET" ? opts.token : (opts.adminToken ?? opts.token);
   const resp = await fetch(`${base}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${opts.token}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`${init?.method ?? "GET"} ${path}: ${resp.status} ${body}`);
+    const text = await resp.text().catch(() => "");
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      /* non-JSON body */
+    }
+    const errorType = (body as { error_type?: unknown })?.error_type;
+    throw new SchemaWriteError(
+      describeFailure(opts, method, path, resp.status, body),
+      resp.status,
+      typeof errorType === "string" ? errorType : null,
+      body,
+    );
   }
   return resp;
 }
@@ -194,7 +250,7 @@ export async function seedTagSchemas(opts: SeedOptions): Promise<SeedResult> {
     }
 
     // Present with a schema → compute additive merge only.
-    const curFields = cur!.fields ?? {};
+    const curFields = echoableFields(cur!.fields ?? {});
     const mergedFields: Record<string, TagFieldDef> = { ...curFields };
     const addedFields: string[] = [];
     for (const [fname, fdef] of Object.entries(desiredFields)) {

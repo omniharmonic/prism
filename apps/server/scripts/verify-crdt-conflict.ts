@@ -7,10 +7,11 @@
  * SAME logical time both survive (Yjs CRDT merge — no lost update / clobber),
  * and BOTH hubs' vaults converge to the identical content.
  *
- *   # Hub A: the live default stack (.env, :8787).  Hub B: the isolated stack
- *   #        from scripts/two-hub-up.sh (.env.b, :8788). Federation must be ON
- *   #        for BOTH (A via the runtime toggle, B via FEDERATION_ENABLED=true).
- *   cd apps/server && node --import tsx scripts/verify-crdt-conflict.ts
+ *   # Hub A: HUB_A_ENV (required — never defaults to the live .env). Hub B:
+ *   #        HUB_B_ENV (default .env.b, the isolated stack from two-hub-up.sh).
+ *   #        Each hub's URL comes from its env's PORT (override HUB_A_URL /
+ *   #        HUB_B_URL). Federation must be ON for BOTH.
+ *   cd apps/server && HUB_A_ENV=.env.mock-a HUB_B_ENV=.env.mock-b node --import tsx scripts/verify-crdt-conflict.ts
  *
  * It is self-contained: it pairs A↔B, mints a space + space_note_key on A,
  * mirrors it to B via the real /api/federation/mirror + accept flow, then opens
@@ -84,8 +85,11 @@ interface Hub {
   peerPub: string;
 }
 const SERVER_DIR = fileURLToPath(new URL("..", import.meta.url));
-function loadHub(name: string, envFile: string, d: { httpUrl: string; collabUrl: string }): Hub {
+function loadHub(name: string, envFile: string, urlOverride?: string): Hub {
   const env = parseEnv(envFile);
+  if (!env.PORT && !urlOverride) throw new Error(`Hub ${name}: no PORT in ${envFile} (set it or pass a URL override)`);
+  const httpUrl = urlOverride ?? `http://localhost:${env.PORT}`;
+  const d = { httpUrl, collabUrl: httpUrl.replace(/^http/, "ws") + "/collab" };
   const peerPriv = env.PEER_SIGNING_KEY ?? "";
   const ownerBearer = env.COLLAB_TOKEN ?? env.PARACHUTE_TOKEN ?? "";
   if (!peerPriv) throw new Error(`Hub ${name}: PEER_SIGNING_KEY missing in ${envFile}`);
@@ -157,8 +161,14 @@ function insertParagraph(doc: Y.Doc, marker: string, where: "start" | "end"): vo
   else frag.push([p]);
 }
 
-const hubA = loadHub("HUB-A", path.resolve(SERVER_DIR, ".env"), { httpUrl: "http://localhost:8787", collabUrl: "ws://localhost:8787/collab" });
-const hubB = loadHub("HUB-B", path.resolve(SERVER_DIR, ".env.b"), { httpUrl: "http://localhost:8788", collabUrl: "ws://localhost:8788/collab" });
+// Hub A must be named explicitly — this script pairs hubs and writes notes, so it
+// never falls back to apps/server/.env (the live stack).
+if (!process.env.HUB_A_ENV) {
+  console.error("✗ Set HUB_A_ENV=<env file> for hub A (refusing to default to the live .env).");
+  process.exit(2);
+}
+const hubA = loadHub("HUB-A", path.resolve(SERVER_DIR, process.env.HUB_A_ENV), process.env.HUB_A_URL);
+const hubB = loadHub("HUB-B", path.resolve(SERVER_DIR, process.env.HUB_B_ENV ?? ".env.b"), process.env.HUB_B_URL);
 
 let aSpaceId = "";
 let snk = "";

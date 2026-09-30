@@ -78,6 +78,17 @@ api.use("*", async (c, next) => {
   await next();
 });
 
+/** The vault's `error_type` from a VaultError message (`<METHOD> <path>: <status> <json body>`). */
+function vaultReason(message: string): string | undefined {
+  const json = message.slice(message.indexOf("{"));
+  try {
+    const body = JSON.parse(json) as { error_type?: string; error?: string };
+    return body.error_type ?? body.error;
+  } catch {
+    return undefined;
+  }
+}
+
 function vaultErr(c: Context, e: unknown) {
   // Optimistic-concurrency conflict: pass the vault's status + current state
   // through so the client can rebase, instead of collapsing it to a 502. (Checked
@@ -87,6 +98,12 @@ function vaultErr(c: Context, e: unknown) {
   }
   if (e instanceof VaultError) {
     if (e.status === 404) return c.json({ error: "not_found" }, 404);
+    // The vault's request-shaped refusals (bad input, payload/history too large,
+    // schema validation) are the client's to fix — pass them through. 401/403 stay
+    // a 502: they describe the SERVER's token, not the caller.
+    if (e.status === 400 || e.status === 413 || e.status === 422) {
+      return c.json({ error: "vault_rejected", status: e.status, reason: vaultReason(e.message) }, e.status);
+    }
     return c.json({ error: "vault_error", status: e.status }, 502);
   }
   return c.json({ error: "server_error" }, 500);
@@ -331,6 +348,89 @@ api.patch("/notes/:id", async (c) => {
       updated = await vc.getNote(id);
     }
     return c.json(updated);
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+});
+
+// ── version history (vault ≥ 0.7.9) ──────────────────────────────────────────
+// Owners reach the vault's own routes through the passthrough. For everyone else:
+// reading history needs `view` on the LIVE note (a deleted note's history is
+// owner-only — the vault likewise hides it from scoped sessions), restoring needs
+// `edit`. Vault attribution (`actor`/`via`) is stripped: every Prism write shares
+// one token, so it names the server, not a person — and scoped vault sessions
+// don't get it either.
+const stripProvenance = <T extends { actor?: unknown; via?: unknown }>(row: T): Omit<T, "actor" | "via"> => {
+  const { actor: _a, via: _v, ...rest } = row;
+  return rest;
+};
+
+/** Metadata keys that decide WHO can see a note. A non-owner restore may not change them. */
+const ACCESS_KEYS = ["prism_creator", "prism_visibility"] as const;
+
+async function viewableNote(c: Context, need: Cap): Promise<{ note: Note } | Response> {
+  const actor = resolveActor(c);
+  let note: Note;
+  try {
+    note = await vaultClient(actor.vaultId).getNote(c.req.param("id")!);
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+  if (!capsFor(actor, ref(note)).has(need)) return c.json({ error: "forbidden" }, 403);
+  return { note };
+}
+
+api.get("/notes/:id/versions", async (c) => {
+  const gate = await viewableNote(c, "view");
+  if (gate instanceof Response) return gate;
+  const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50) || 50));
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
+  try {
+    const page = await vaultClient(resolveActor(c).vaultId).listVersions(gate.note.id, limit, offset);
+    return c.json({ versions: page.versions.map(stripProvenance), total: page.total });
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+});
+
+api.get("/notes/:id/versions/:ix", async (c) => {
+  const gate = await viewableNote(c, "view");
+  if (gate instanceof Response) return gate;
+  const ix = Number(c.req.param("ix"));
+  if (!Number.isInteger(ix) || ix < 0) return c.json({ error: "bad_request", reason: "invalid version" }, 400);
+  try {
+    return c.json(stripProvenance(await vaultClient(resolveActor(c).vaultId).getVersion(gate.note.id, ix)));
+  } catch (e) {
+    return vaultErr(c, e);
+  }
+});
+
+api.post("/notes/:id/restore", async (c) => {
+  const gate = await viewableNote(c, "edit");
+  if (gate instanceof Response) return gate;
+  const body = await c.req.json<{ version_ix?: number; if_updated_at?: string }>().catch(() => ({}) as { version_ix?: number; if_updated_at?: string });
+  const ix = body.version_ix;
+  if (typeof ix !== "number" || !Number.isInteger(ix) || ix < 0) {
+    return c.json({ error: "bad_request", reason: "version_ix is required" }, 400);
+  }
+  if (!body.if_updated_at) {
+    return c.json({ error: "conflict", status: 428, current: gate.note }, 428);
+  }
+  const vc = vaultClient(resolveActor(c).vaultId);
+  try {
+    // Anti-escalation: restore rewrites metadata wholesale, so an old version could
+    // re-share a note that was since made private, or reassign its creator.
+    const version = await vc.getVersion(gate.note.id, ix);
+    const changed = ACCESS_KEYS.filter(
+      (k) => (version.metadata?.[k] ?? null) !== (gate.note.metadata?.[k] ?? null),
+    );
+    if (changed.length) {
+      return c.json(
+        { error: "forbidden", reason: `restoring this version would change who can see the note (${changed.join(", ")}) — ask an admin` },
+        403,
+      );
+    }
+    return c.json(await vc.restoreVersion(gate.note.id, ix, body.if_updated_at));
   } catch (e) {
     return vaultErr(c, e);
   }

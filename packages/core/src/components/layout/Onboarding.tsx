@@ -99,7 +99,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     setSchemaLoading(true);
 
     try {
-      const systemContext = `You are helping set up a new Parachute vault for Prism. The user will describe their use case. Based on that, create appropriate tag schemas using the Parachute MCP tools (mcp__parachute-vault__update-tag). Create 6-12 tags with field schemas appropriate for their use case. Be conversational and friendly. After creating tags, confirm what you've set up.`;
+      const systemContext = `You are helping set up a new Parachute vault for Prism. The user will describe their use case. Based on that, create appropriate tag schemas using the Parachute MCP tools (mcp__parachute-vault__update-tag). Create 6-12 tags with field schemas appropriate for their use case. Be conversational and friendly. After creating tags, confirm what you've set up. Note: on Parachute vault 0.7+ changing tag schemas needs an admin-scoped token, so update-tag may be unavailable in this session — if so, don't retry; instead list the tags and fields you would create as a JSON code block and tell the user Prism's core schemas are already installed and these extras can be applied later from Settings or with the prism-setup-schema skill.`;
 
       const result = await agentApi.chat(
         `${systemContext}\n\nUser: ${message}`

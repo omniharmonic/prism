@@ -19,6 +19,21 @@ export interface Note {
   tags: string[] | null;
 }
 
+/** One captured prior state of a note (vault 0.7.9 note history). */
+export interface VersionRow {
+  note_id: string;
+  version_ix: number;
+  path: string | null;
+  metadata: Record<string, unknown> | null;
+  superseded_at: string;
+  op: string;
+  content_len: number;
+  actor?: string | null;
+  via?: string | null;
+  created_at?: string | null;
+  encoding?: string | null;
+}
+
 export class VaultError extends Error {
   constructor(
     readonly status: number,
@@ -143,6 +158,28 @@ export function vaultClient(vaultId?: string) {
 
   async deleteNote(id: string): Promise<void> {
     await req(`/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  // ---- version history (vault ≥ 0.7.9; a 0.6.x vault 404s these) ----------
+  // Rows are the vault's raw snake_case shape — the gateway forwards them.
+
+  async listVersions(id: string, limit = 50, offset = 0): Promise<{ versions: VersionRow[]; total: number }> {
+    const q = qs({ limit, offset });
+    return (await req(`/notes/${encodeURIComponent(id)}/versions${q}`)).json() as Promise<{ versions: VersionRow[]; total: number }>;
+  },
+
+  async getVersion(id: string, versionIx: number): Promise<VersionRow & { content: string | null }> {
+    return (await req(`/notes/${encodeURIComponent(id)}/versions/${versionIx}`)).json() as Promise<VersionRow & { content: string | null }>;
+  },
+
+  /** Restore requires the reviewed `if_updated_at` (the vault refuses `force`). */
+  async restoreVersion(id: string, versionIx: number, ifUpdatedAt: string): Promise<Note> {
+    return (
+      await req(`/notes/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+        body: JSON.stringify({ version_ix: versionIx, if_updated_at: ifUpdatedAt }),
+      })
+    ).json() as Promise<Note>;
   },
 
   async search(query: string, tags: string[] = [], limit = 50): Promise<Note[]> {

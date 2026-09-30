@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedTagSchemas } from "../apps/server/scripts/lib/seed-tag-schemas.ts";
+import { tryMintEphemeralAdminToken } from "../apps/server/src/mcp-token.ts";
 import { IMPORTERS } from "../apps/server/src/importers/transform.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -59,6 +60,7 @@ const BEARER = env.COLLAB_TOKEN || env.PARACHUTE_TOKEN || "";
 const VAULT_URL = (env.PARACHUTE_URL ?? "http://localhost:1940").replace(/\/+$/, "");
 const VAULT = env.PARACHUTE_VAULT ?? "default";
 const VAULT_TOKEN = env.PARACHUTE_TOKEN ?? "";
+if (env.PARACHUTE_ADMIN_TOKEN && !process.env.PARACHUTE_ADMIN_TOKEN) process.env.PARACHUTE_ADMIN_TOKEN = env.PARACHUTE_ADMIN_TOKEN;
 
 let failed = 0;
 const ok = (name, cond, extra = "") => {
@@ -89,10 +91,12 @@ step("1. Schema — seed canonical tag schemas (incl. parent_names)");
 if (DRY) {
   console.log("  [dry] would seed the canonical tag schema into", `${VAULT_URL}/vault/${VAULT}`);
 } else {
-  const res = await seedTagSchemas({ vaultUrl: VAULT_URL, vault: VAULT, token: VAULT_TOKEN, log: () => {} });
+  // Vault ≥0.7.1: schema writes need vault:<name>:admin (1h ephemeral mint, or PARACHUTE_ADMIN_TOKEN).
+  const ADMIN_TOKEN = await tryMintEphemeralAdminToken(VAULT);
+  const res = await seedTagSchemas({ vaultUrl: VAULT_URL, vault: VAULT, token: VAULT_TOKEN, adminToken: ADMIN_TOKEN, log: () => {} });
   ok("schema seeded", true, `${res.created.length} created, ${res.updated.length} updated, ${res.unchanged.length} unchanged`);
   // idempotency: a second run makes no changes
-  const res2 = await seedTagSchemas({ vaultUrl: VAULT_URL, vault: VAULT, token: VAULT_TOKEN, log: () => {} });
+  const res2 = await seedTagSchemas({ vaultUrl: VAULT_URL, vault: VAULT, token: VAULT_TOKEN, adminToken: ADMIN_TOKEN, log: () => {} });
   ok("schema idempotent", res2.created.length === 0 && res2.updated.length === 0, `2nd run: ${res2.unchanged.length} unchanged`);
 }
 

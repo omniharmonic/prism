@@ -16,6 +16,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { seedTagSchemas, type SeedResult } from "../scripts/lib/seed-tag-schemas";
+import { tryMintEphemeralAdminToken } from "./mcp-token";
 
 const pExecFile = promisify(execFile);
 
@@ -51,7 +52,10 @@ const defaultCreator: VaultCreator = async (name) => {
   return parsed;
 };
 
-const defaultSeeder: VaultSeeder = (opts) => seedTagSchemas(opts);
+// Vault ≥0.7.1 gates schema writes behind vault:<name>:admin; the freshly minted
+// vault token is only :write, so mint a 1h admin token for the seed (best-effort).
+const defaultSeeder: VaultSeeder = async (opts) =>
+  seedTagSchemas({ ...opts, adminToken: await tryMintEphemeralAdminToken(opts.vault) });
 
 let creator: VaultCreator = defaultCreator;
 let seeder: VaultSeeder = defaultSeeder;

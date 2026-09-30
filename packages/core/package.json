@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "diff": "^8.0.4",
     "dompurify": "^3.4.8",
     "emoji-picker-react": "^4.19.1",
     "maplibre-gl": "^4.7.1",

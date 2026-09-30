@@ -272,6 +272,55 @@ impl ParachuteClient {
         Ok(())
     }
 
+    // ---- version history (vault ≥ 0.7.9) ----------------------------------
+    // Rows pass through as raw JSON; the TS client normalizes them. Errors carry
+    // a stable marker the TS side maps to typed errors: `history_unavailable`
+    // (a 0.6.x vault 404s /versions even for a note that exists) and
+    // `history_conflict` (409/428 — the note changed since it was reviewed).
+
+    async fn history_response(resp: reqwest::Response, what: &str) -> Result<serde_json::Value, PrismError> {
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json().await?);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 404 && what == "list" {
+            return Err(PrismError::Parachute("history_unavailable".into()));
+        }
+        if status.as_u16() == 409 || status.as_u16() == 428 {
+            return Err(PrismError::Parachute(format!("history_conflict: {}", body)));
+        }
+        Err(PrismError::Parachute(format!("note history {} failed: {} — {}", what, status, body)))
+    }
+
+    pub async fn list_note_versions(&self, id: &str, limit: u32, offset: u32) -> Result<serde_json::Value, PrismError> {
+        let resp = self
+            .authed(self.client.get(format!("{}/notes/{}/versions", self.base_url(), id)))
+            .query(&[("limit", limit.to_string()), ("offset", offset.to_string())])
+            .send()
+            .await?;
+        Self::history_response(resp, "list").await
+    }
+
+    pub async fn get_note_version(&self, id: &str, version_ix: u32) -> Result<serde_json::Value, PrismError> {
+        let resp = self
+            .authed(self.client.get(format!("{}/notes/{}/versions/{}", self.base_url(), id, version_ix)))
+            .send()
+            .await?;
+        Self::history_response(resp, "get").await
+    }
+
+    /// The vault refuses a restore without the reviewed `if_updated_at` (even with `force`).
+    pub async fn restore_note_version(&self, id: &str, version_ix: u32, if_updated_at: &str) -> Result<Note, PrismError> {
+        let body = serde_json::json!({ "version_ix": version_ix, "if_updated_at": if_updated_at });
+        let resp = self
+            .authed(self.client.post(format!("{}/notes/{}/restore", self.base_url(), id)).json(&body))
+            .send()
+            .await?;
+        let value = Self::history_response(resp, "restore").await?;
+        serde_json::from_value(value).map_err(|e| PrismError::Parachute(format!("restore response: {}", e)))
+    }
+
     /// Search notes. v2: absorbed into `GET /api/notes?search=...`.
     pub async fn search(&self, query: &str, tags: &[String], limit: u32) -> Result<Vec<Note>, PrismError> {
         let url = format!("{}/notes", self.base_url());

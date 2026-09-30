@@ -25,4 +25,7 @@ export const httpVaultClient: VaultClient = {
   getGraph: rest.getGraph,
   getVaultInfo: rest.getVaultInfo,
   updateVaultDescription: rest.updateVaultDescription,
+  listNoteVersions: rest.listNoteVersions,
+  getNoteVersion: rest.getNoteVersion,
+  restoreNoteVersion: rest.restoreNoteVersion,
 };

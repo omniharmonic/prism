@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
   X,
   FilePlus,
+  History,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore } from "../../app/stores/settings";
@@ -54,7 +55,7 @@ export function MobileActionBar() {
   const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
   const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
 
-  const openPanel = (tab: "metadata" | "agent") => {
+  const openPanel = (tab: "metadata" | "agent" | "history") => {
     setContextPanelTab(tab);
     if (!contextPanelOpen) toggleContextPanel();
     setMoreOpen(false);
@@ -71,6 +72,15 @@ export function MobileActionBar() {
       label: "Ask the agent",
       onClick: () => openPanel("agent"),
     },
+    ...(isRealNote
+      ? [
+          {
+            icon: <History size={19} />,
+            label: "Version history",
+            onClick: () => openPanel("history"),
+          } as SheetItem,
+        ]
+      : []),
     {
       icon: <Network size={19} />,
       label: "Open graph view",

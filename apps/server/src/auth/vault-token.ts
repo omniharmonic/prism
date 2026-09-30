@@ -142,5 +142,58 @@ export async function reportRegistryTokens(entries: Array<{ id: string; vault: s
   }
 }
 
+export type TokenExpiryState = "ok" | "expiring" | "expired" | "unknown";
+
+/** Expiry of one registry token — metadata only, NEVER the token itself. */
+export interface TokenExpiry {
+  id: string;
+  vault: string;
+  /** ISO timestamp of the `exp` claim; null for a non-JWT / exp-less token. */
+  expiresAt: string | null;
+  /** Whole days left (negative once expired); null when unknown. */
+  daysLeft: number | null;
+  status: TokenExpiryState;
+}
+
+/**
+ * Expiry status of each registry token (peeked, unverified — this is a UI/ops
+ * signal, not an auth decision). `expiring` = within TOKEN_EXPIRY_WARN_DAYS.
+ * Registry tokens are ~90-day hub JWTs with no auto-renewal, so a lapse would
+ * otherwise only show up as a pipeline silently 401ing (front-range-commons,
+ * 2026-09-26).
+ */
+export function tokenExpiries(entries: Array<{ id: string; vault: string; token: string }>, now = Date.now()): TokenExpiry[] {
+  return entries.map((e) => {
+    const exp = peekTokenClaims(e.token)?.exp;
+    if (typeof exp !== "number") return { id: e.id, vault: e.vault, expiresAt: null, daysLeft: null, status: "unknown" as const };
+    const ms = exp * 1000;
+    const daysLeft = Math.floor((ms - now) / 86_400_000);
+    const status: TokenExpiryState = ms <= now ? "expired" : daysLeft <= TOKEN_EXPIRY_WARN_DAYS ? "expiring" : "ok";
+    return { id: e.id, vault: e.vault, expiresAt: new Date(ms).toISOString(), daysLeft, status };
+  });
+}
+
+/**
+ * Re-check registry token expiry once a day for the life of the process — the
+ * boot report alone is useless on a server that stays up for weeks. Logs only
+ * the expired/expiring ones. The interval is unref'd so it never blocks shutdown.
+ */
+export function startTokenExpiryWatch(
+  entries: () => Array<{ id: string; vault: string; token: string }>,
+  intervalMs = 86_400_000,
+): () => void {
+  const timer = setInterval(() => {
+    for (const t of tokenExpiries(entries())) {
+      if (t.status === "expired") {
+        console.error(`[tokens] ✗ token[${t.id}] (vault ${t.vault}) EXPIRED ${t.expiresAt?.slice(0, 10)} — calls to this vault are failing. Mint a new one: parachute auth mint-token`);
+      } else if (t.status === "expiring") {
+        console.warn(`[tokens] ⚠ token[${t.id}] (vault ${t.vault}) expires in ${t.daysLeft} day(s) — mint a replacement: parachute auth mint-token`);
+      }
+    }
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 export { HubJwtError };
 export type { HubJwtClaims };

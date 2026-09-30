@@ -13,8 +13,16 @@
 //!                   NEVER overwrite an existing field def or a non-empty description
 //!   - already complete → unchanged (no write)
 //!
-//! Only `description` + `fields` are seeded; `contentType` / `precedence` are
-//! Prism-side renderer concerns and are not vault tag-schema state.
+//! Only `description` + `fields` (+ `parent_names`) are seeded; `contentType` /
+//! `precedence` are Prism-side renderer concerns and are not vault tag-schema state.
+//!
+//! Vault compatibility (same rules as the server seeder):
+//!   - `indexed: true` is only sent on `string` fields we declare (vault 0.6.x
+//!     500s — after a partial write — indexing anything else; 0.7.x 400s).
+//!     Fields echoed back from the vault keep `indexed` for the types 0.7.x can
+//!     index (string/integer/boolean/reference/date) and lose it otherwise.
+//!   - vault ≥0.7.1 gates schema writes behind `vault:<name>:admin`; the PUTs
+//!     use `admin_token` when given, and a 403 becomes an actionable error.
 
 use std::collections::HashMap;
 
@@ -38,9 +46,47 @@ struct SchemasFile {
 struct TagEntry {
     #[serde(default)]
     description: Option<String>,
-    /// Field definitions, passed through verbatim to the PUT body.
+    /// Field definitions, passed through (minus non-string `indexed`) to the PUT body.
     #[serde(default)]
     fields: Option<Map<String, Value>>,
+    /// Is-a parents (tag hierarchy), set only when the vault tag has none yet.
+    #[serde(default)]
+    parent_names: Option<Vec<String>>,
+}
+
+/// Types vault 0.7.x can index. Anything else carrying `indexed: true` is rejected.
+const INDEXABLE_V07: [&str; 5] = ["string", "integer", "boolean", "reference", "date"];
+
+/// Drop `indexed` from every field whose `type` fails `keep`.
+fn strip_indexed(fields: &Map<String, Value>, keep: impl Fn(&str) -> bool) -> Map<String, Value> {
+    fields
+        .iter()
+        .map(|(name, def)| {
+            let mut def = def.clone();
+            if let Some(obj) = def.as_object_mut() {
+                let indexed = obj.get("indexed").and_then(Value::as_bool).unwrap_or(false);
+                let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
+                if indexed && !keep(ty) {
+                    obj.remove("indexed");
+                }
+            }
+            (name.clone(), def)
+        })
+        .collect()
+}
+
+/// Turn a failed schema request into an error an operator can act on.
+async fn schema_error(resp: reqwest::Response, what: &str, vault: &str) -> PrismError {
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap_or(Value::Null);
+    let error_type = body.get("error_type").and_then(Value::as_str).unwrap_or("");
+    if status.as_u16() == 403 && error_type == "insufficient_scope" {
+        return PrismError::Parachute(format!(
+            "{what}: schema writes need vault:{vault}:admin (vault ≥0.7.1 refuses them with a write token) — \
+             mint one with `parachute auth mint-token --scope vault:{vault}:admin --ephemeral`"
+        ));
+    }
+    PrismError::Parachute(format!("{what}: {status} {error_type} {body}"))
 }
 
 /// What the seed did, for logging. (Not returned across the IPC boundary.)
@@ -62,7 +108,9 @@ pub async fn seed_tag_schemas(
     server_root: &str,
     vault: &str,
     token: &str,
+    admin_token: Option<&str>,
 ) -> Result<SeedSummary, PrismError> {
+    let write_token = admin_token.unwrap_or(token);
     let desired: SchemasFile = serde_json::from_str(TAG_SCHEMAS_JSON)
         .map_err(|e| PrismError::Config(format!("bundled tag-schemas.json is invalid: {e}")))?;
 
@@ -70,15 +118,16 @@ pub async fn seed_tag_schemas(
     let client = reqwest::Client::new();
 
     // 1. Read existing schemas (name → (description, fields)).
-    let existing_list: Vec<Value> = client
+    let resp = client
         .get(format!("{base}/tags?include_schema=true"))
         .header("Authorization", format!("Bearer {token}"))
         .send()
-        .await?
-        .error_for_status()?
-        .json()
         .await?;
-    let mut existing: HashMap<String, (String, Map<String, Value>)> = HashMap::new();
+    if !resp.status().is_success() {
+        return Err(schema_error(resp, "GET /tags", vault).await);
+    }
+    let existing_list: Vec<Value> = resp.json().await?;
+    let mut existing: HashMap<String, (String, Map<String, Value>, bool)> = HashMap::new();
     for t in existing_list {
         let name = t.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         if name.is_empty() {
@@ -94,7 +143,12 @@ pub async fn seed_tag_schemas(
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        existing.insert(name, (desc, fields));
+        let has_parents = t
+            .get("parent_names")
+            .and_then(Value::as_array)
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        existing.insert(name, (desc, strip_indexed(&fields, |t| INDEXABLE_V07.contains(&t)), has_parents));
     }
 
     let mut summary = SeedSummary::default();
@@ -102,23 +156,26 @@ pub async fn seed_tag_schemas(
     // 2. Per desired tag: create if absent/bare, else additive merge.
     for (tag, entry) in &desired.tags {
         let desired_desc = non_empty(&entry.description).unwrap_or("").to_string();
-        let desired_fields = entry.fields.clone().unwrap_or_default();
+        let desired_fields = strip_indexed(&entry.fields.clone().unwrap_or_default(), |t| t == "string");
+        let desired_parents = entry.parent_names.clone().unwrap_or_default();
 
         let cur = existing.get(tag);
         let has_schema = cur
-            .map(|(d, f)| !d.trim().is_empty() || !f.is_empty())
+            .map(|(d, f, _)| !d.trim().is_empty() || !f.is_empty())
             .unwrap_or(false);
 
-        let (final_desc, final_fields, changed, is_create) = if !has_schema {
+        let (final_desc, final_fields, changed, is_create, send_parents) = if !has_schema {
             // Absent or bare → create. Skip entirely if there's nothing to seed.
-            if desired_desc.is_empty() && desired_fields.is_empty() {
+            if desired_desc.is_empty() && desired_fields.is_empty() && desired_parents.is_empty() {
                 summary.unchanged += 1;
                 continue;
             }
-            (desired_desc, desired_fields, true, true)
+            (desired_desc, desired_fields, true, true, !desired_parents.is_empty())
         } else {
             // Present with a schema → additive merge only.
-            let (cur_desc, cur_fields) = cur.unwrap();
+            let (cur_desc, cur_fields, cur_has_parents) = cur.unwrap();
+            // parent_names: only when the vault tag has none (never clobber a hierarchy).
+            let add_parents = !cur_has_parents && !desired_parents.is_empty();
             let mut merged = cur_fields.clone();
             let mut added_any = false;
             for (fname, fdef) in &desired_fields {
@@ -135,7 +192,7 @@ pub async fn seed_tag_schemas(
             } else {
                 cur_desc_ne.to_string()
             };
-            (final_desc, merged, added_any || fill_desc, false)
+            (final_desc, merged, added_any || fill_desc || add_parents, false, add_parents)
         };
 
         if !changed {
@@ -143,13 +200,19 @@ pub async fn seed_tag_schemas(
             continue;
         }
 
-        client
+        let mut body = json!({ "description": final_desc, "fields": final_fields });
+        if send_parents {
+            body["parent_names"] = json!(desired_parents);
+        }
+        let resp = client
             .put(format!("{}/tags/{}", base, urlencoding::encode(tag)))
-            .header("Authorization", format!("Bearer {token}"))
-            .json(&json!({ "description": final_desc, "fields": final_fields }))
+            .header("Authorization", format!("Bearer {write_token}"))
+            .json(&body)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        if !resp.status().is_success() {
+            return Err(schema_error(resp, &format!("PUT /tags/{tag}"), vault).await);
+        }
 
         if is_create {
             summary.created.push(tag.clone());

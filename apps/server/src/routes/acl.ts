@@ -12,6 +12,7 @@ import { config } from "../config";
 import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
+import { tokenExpiries } from "../auth/vault-token";
 import { serverKeyPair, fingerprint } from "../auth/peer";
 import { CAPS, LEVELS, effectiveCaps, expandLevel, isCap, levelForCaps, type Cap, type Level, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -956,6 +957,9 @@ acl.get("/server", async (c) => {
     magicFrom: config.magicFrom,
     integrations,
     tunnel: await tunnelStatus(),
+    // Vault-token expiry per registry entry — dates + status only, never token
+    // material. Registry tokens are ~90-day hub JWTs with no auto-renewal.
+    tokens: tokenExpiries(getVaultRegistry()),
   });
 });
 

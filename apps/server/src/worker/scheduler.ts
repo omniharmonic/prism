@@ -30,6 +30,7 @@ import { GOV_TAGS } from "../governance-store";
 import { indexNote, deindexNote, type IndexResult } from "../rag/service";
 import { getEmbedder } from "../rag/embedder";
 import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
+import { runHistoryCompactOnce } from "./history-compact";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -37,6 +38,11 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // the in-process throttle (the durable "how far have we indexed" state is the
 // per-model worker cursor, so a restart resumes rather than re-sweeping).
 let lastIndexSweepAt = 0;
+// Note-history compaction (vault ≥0.7.9): nightly-ish, in-process throttle. The
+// first tick after boot waits one interval rather than compacting immediately —
+// every vault also compacts on its own when it (re)starts.
+let lastHistoryCompactAt = Date.now();
+let historyCompactInFlight = false;
 let indexSweepInFlight = false;
 
 // Governance→grants reconcile state. `governanceExists` caches the one question
@@ -636,6 +642,18 @@ async function tick(): Promise<void> {
     }
   }
 
+  // Note-history compaction, on the slowest cadence. Fire-and-forget: a run walks
+  // every vault in short slices with pauses, and must never hold up ingest ticks.
+  if (historyCompactEnabled() && !historyCompactInFlight && Date.now() - lastHistoryCompactAt >= config.historyCompactIntervalMs) {
+    lastHistoryCompactAt = Date.now();
+    historyCompactInFlight = true;
+    void runHistoryCompactOnce()
+      .catch((e) => console.warn("[worker] history-compact failed:", (e as Error).message))
+      .finally(() => {
+        historyCompactInFlight = false;
+      });
+  }
+
   // Semantic index maintenance, on its own slower cadence — embeddings are not
   // latency-critical, and even the lean note list is a whole-vault fetch, so it
   // has no business running on the 60s ingest tick.
@@ -658,6 +676,9 @@ async function noteContent(id: string): Promise<string> {
 
 /** Is periodic index maintenance turned on? (INDEX_INTERVAL_MS=0 disables it.) */
 export const indexSweepEnabled = (): boolean => config.indexIntervalMs > 0;
+
+/** Is periodic history compaction turned on? (HISTORY_COMPACT_INTERVAL_MS=0 disables it.) */
+export const historyCompactEnabled = (): boolean => config.historyCompactIntervalMs > 0;
 
 /** Start the worker loop. No-op if already running, or if there is nothing any
  *  subsystem could ever do: no secrets (→ no ingesters), no mirrors, AND no index

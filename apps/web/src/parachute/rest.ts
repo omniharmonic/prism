@@ -19,7 +19,10 @@ import type {
   VaultLink,
   VaultGraph,
   SemanticHit,
+  NoteVersion,
+  NoteVersionPage,
 } from "@prism/core";
+import { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
 import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
 import { enqueue } from "../offline/outbox";
 
@@ -191,6 +194,47 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
 export async function semanticSearch(query: string, limit = 20): Promise<SemanticHit[]> {
   const sp = new URLSearchParams({ q: query, limit: String(limit) });
   return (await req(`/search/semantic?${sp.toString()}`)).json();
+}
+
+// ---- version history (vault ≥ 0.7.9) ---------------------------------------
+// Straight through for the owner; the gateway authorizes everyone else (view to
+// read, edit to restore). No offline queueing — a restore must never be replayed
+// later against a note that moved on.
+
+async function historyReq(path: string, init?: RequestInit): Promise<Response> {
+  const resp = await fetch(`${apiBase()}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
+  });
+  if (resp.ok) return resp;
+  // A 0.6.x vault has no /versions route: it 404s even for a note that exists.
+  if (resp.status === 404 && path.endsWith("/versions")) throw new HistoryUnavailableError();
+  if (resp.status === 409 || resp.status === 428) throw new HistoryConflictError();
+  const body = await resp.text().catch(() => "");
+  throw new Error(`${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
+}
+
+export async function listNoteVersions(
+  noteId: string,
+  opts?: { limit?: number; offset?: number },
+): Promise<NoteVersionPage> {
+  const page = await (
+    await historyReq(`/notes/${encodeURIComponent(noteId)}/versions${qs({ limit: opts?.limit, offset: opts?.offset })}`)
+  ).json();
+  return { versions: (page.versions ?? []).map(toNoteVersion), total: page.total ?? 0 };
+}
+
+export async function getNoteVersion(noteId: string, versionIx: number): Promise<NoteVersion> {
+  return toNoteVersion(await (await historyReq(`/notes/${encodeURIComponent(noteId)}/versions/${versionIx}`)).json());
+}
+
+export async function restoreNoteVersion(noteId: string, versionIx: number, ifUpdatedAt: string): Promise<Note> {
+  const resp = await historyReq(`/notes/${encodeURIComponent(noteId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ version_ix: versionIx, if_updated_at: ifUpdatedAt }),
+  });
+  return resp.json();
 }
 
 // ---- tags -----------------------------------------------------------------

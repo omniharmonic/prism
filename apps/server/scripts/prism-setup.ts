@@ -18,6 +18,7 @@ import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { seedTagSchemas } from "./lib/seed-tag-schemas";
+import { tryMintEphemeralAdminToken } from "../src/mcp-token";
 import { renderMcp } from "./lib/render-mcp";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -152,6 +153,8 @@ async function main() {
         vaultUrl: PARACHUTE_URL,
         vault: PARACHUTE_VAULT,
         token: PARACHUTE_TOKEN,
+        // Vault ≥0.7.1: schema writes need vault:<name>:admin (1h ephemeral mint).
+        adminToken: DRY_RUN ? undefined : await tryMintEphemeralAdminToken(PARACHUTE_VAULT),
         dryRun: DRY_RUN,
         log: (m) => console.log("  " + m),
       });

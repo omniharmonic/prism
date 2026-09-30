@@ -8,6 +8,7 @@
  *   ...                                                          scripts/seed.ts --dry-run
  */
 import { seedTagSchemas } from "./lib/seed-tag-schemas";
+import { tryMintEphemeralAdminToken } from "../src/mcp-token";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const vaultUrl = process.env.PARACHUTE_URL;
@@ -19,7 +20,11 @@ if (!vaultUrl || !vault || !token) {
   process.exit(1);
 }
 
-seedTagSchemas({ vaultUrl, vault, token, dryRun: DRY_RUN, log: (m) => console.log("  " + m) })
+// Vault ≥0.7.1 gates schema writes behind vault:<name>:admin — mint a 1h one
+// (or honour PARACHUTE_ADMIN_TOKEN); falls back to the write token on 0.6.x.
+const adminToken = DRY_RUN ? undefined : await tryMintEphemeralAdminToken(vault);
+
+seedTagSchemas({ vaultUrl, vault, token, adminToken, dryRun: DRY_RUN, log: (m) => console.log("  " + m) })
   .then((r) => {
     console.log(
       `\n${DRY_RUN ? "[dry-run] " : ""}created:${r.created.length} updated:${r.updated.length} unchanged:${r.unchanged.length} skipped:${r.skipped.length}`,

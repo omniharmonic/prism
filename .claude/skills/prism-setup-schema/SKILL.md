@@ -28,6 +28,21 @@ Step 3 of `prism-setup`. Note: if `prism-setup-server` ran the full
   (`npm run seed` → `scripts/seed.ts`, which calls `seedTagSchemas()` with
   `PARACHUTE_URL` / `PARACHUTE_VAULT` / `PARACHUTE_TOKEN` from the environment.)
 
+- **Admin token (vault ≥0.7.1).** The vault refuses tag-schema writes from a
+  `:write` token (403 `insufficient_scope`; MCP `update-tag` is hidden). The seed
+  mints a 1h `vault:<name>:admin` token itself via
+  `parachute auth mint-token --scope vault:<name>:admin --ephemeral` (needs the
+  operator CLI on this box), or uses `PARACHUTE_ADMIN_TOKEN` if set. On vault
+  0.6.x the write token is enough. If you see
+  `schema writes need vault:<name>:admin`, the mint failed — run it by hand:
+  ```bash
+  PARACHUTE_ADMIN_TOKEN=$(parachute auth mint-token --scope vault:default:admin --ephemeral) npm run seed
+  ```
+- A `tag_field_conflict` / `invalid_indexed_field` error means the vault rejected
+  a field definition and **wrote nothing** (0.7.x validates before writing).
+  Indexable types are string/integer/boolean/reference/date; the seeder only
+  ever sends `indexed` on strings.
+
 ## Config artifact
 
 Vault tag schemas (server-side data, not a file). Source:

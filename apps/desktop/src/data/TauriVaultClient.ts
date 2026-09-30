@@ -1,5 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import { vaultApi, type VaultClient, type SemanticHit } from "@prism/core";
+import {
+  vaultApi,
+  toNoteVersion,
+  HistoryUnavailableError,
+  HistoryConflictError,
+  type Note,
+  type VaultClient,
+  type SemanticHit,
+} from "@prism/core";
+
+/** Map the Rust history error markers (see clients/parachute.rs) onto typed errors. */
+function historyError(e: unknown): never {
+  const msg = String(e);
+  if (msg.includes("history_unavailable")) throw new HistoryUnavailableError();
+  if (msg.includes("history_conflict")) throw new HistoryConflictError();
+  throw e instanceof Error ? e : new Error(msg);
+}
 
 /**
  * Desktop implementation of the {@link VaultClient} seam.
@@ -33,4 +49,17 @@ export const tauriVaultClient: VaultClient = {
   getGraph: (depth, centerId) => vaultApi.getGraph(depth, centerId),
   getVaultInfo: () => vaultApi.getVaultInfo(),
   updateVaultDescription: (description) => vaultApi.updateVaultDescription(description),
+  listNoteVersions: async (id, opts) => {
+    const page = await invoke<{ versions?: Record<string, unknown>[]; total?: number }>(
+      "vault_list_note_versions",
+      { id, limit: opts?.limit, offset: opts?.offset },
+    ).catch(historyError);
+    return { versions: (page.versions ?? []).map(toNoteVersion), total: page.total ?? 0 };
+  },
+  getNoteVersion: async (id, versionIx) =>
+    toNoteVersion(
+      await invoke<Record<string, unknown>>("vault_get_note_version", { id, versionIx }).catch(historyError),
+    ),
+  restoreNoteVersion: (id, versionIx, ifUpdatedAt) =>
+    invoke<Note>("vault_restore_note_version", { id, versionIx, ifUpdatedAt }).catch(historyError),
 };

@@ -34,7 +34,8 @@
             "blocked",
             "done",
             "cancelled"
-          ]
+          ],
+          "default": "todo"
         },
         "priority": {
           "type": "string",
@@ -45,7 +46,8 @@
             "high",
             "critical",
             "low"
-          ]
+          ],
+          "default": "medium"
         },
         "project": {
           "type": "string",
@@ -85,7 +87,8 @@
             "final",
             "presented",
             "archived"
-          ]
+          ],
+          "default": "draft"
         },
         "updated": {
           "type": "date",
@@ -175,7 +178,8 @@
             "raw",
             "cleaned",
             "processed"
-          ]
+          ],
+          "default": "raw"
         },
         "recording_id": {
           "type": "string",
@@ -279,7 +283,8 @@
             "editing",
             "published",
             "archived"
-          ]
+          ],
+          "default": "draft"
         },
         "publication": {
           "type": "string",
@@ -315,7 +320,8 @@
             "in-progress",
             "complete",
             "archived"
-          ]
+          ],
+          "default": "draft"
         },
         "projects": {
           "type": "array",
@@ -344,7 +350,8 @@
             "accepted",
             "rejected",
             "withdrawn"
-          ]
+          ],
+          "default": "draft"
         },
         "audience": {
           "type": "string",
@@ -387,7 +394,8 @@
             "approved",
             "implemented",
             "deprecated"
-          ]
+          ],
+          "default": "draft"
         },
         "version": {
           "type": "number",
@@ -411,7 +419,8 @@
             "final",
             "delivered",
             "archived"
-          ]
+          ],
+          "default": "draft"
         },
         "estimated-duration": {
           "type": "string",
@@ -511,7 +520,8 @@
             "active",
             "inactive",
             "archived"
-          ]
+          ],
+          "default": "active"
         },
         "url": {
           "type": "string",
@@ -567,7 +577,8 @@
             "decided",
             "superseded",
             "deprecated"
-          ]
+          ],
+          "default": "proposed"
         },
         "decision-date": {
           "type": "date",
@@ -593,7 +604,8 @@
             "accepted",
             "rejected",
             "withdrawn"
-          ]
+          ],
+          "default": "draft"
         },
         "org": {
           "type": "string",
@@ -651,7 +663,8 @@
             "draft",
             "complete",
             "archived"
-          ]
+          ],
+          "default": "draft"
         }
       }
     },
@@ -694,7 +707,8 @@
             "paused",
             "completed",
             "archived"
-          ]
+          ],
+          "default": "active"
         },
         "org": {
           "type": "string",
@@ -1016,7 +1030,8 @@
             "rejected",
             "applied",
             "withdrawn"
-          ]
+          ],
+          "default": "open"
         },
         "opened_by": {
           "type": "string",
@@ -1197,8 +1212,7 @@
         },
         "bbox": {
           "type": "array",
-          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering.",
-          "indexed": true
+          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering."
         },
         "geo": {
           "type": "object",
@@ -1287,8 +1301,7 @@
         },
         "gbifTaxonKey": {
           "type": "number",
-          "description": "GBIF backbone usageKey — the stable species id (re-fetch handle).",
-          "indexed": true
+          "description": "GBIF backbone usageKey — the stable species id (re-fetch handle)."
         },
         "inatTaxonId": {
           "type": "number",
@@ -1383,8 +1396,7 @@
         },
         "bbox": {
           "type": "array",
-          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering.",
-          "indexed": true
+          "description": "Derived [minLon,minLat,maxLon,maxLat] for indexed spatial pre-filtering."
         },
         "geo": {
           "type": "object",
@@ -1462,8 +1474,7 @@
         },
         "bbox": {
           "type": "array",
-          "description": "Derived bbox for indexed spatial pre-filtering.",
-          "indexed": true
+          "description": "Derived bbox for indexed spatial pre-filtering."
         },
         "sensing_or_responding": {
           "type": "string",
@@ -1702,6 +1713,7 @@
             "monitoring",
             "resolved"
           ],
+          "default": "active",
           "indexed": true
         },
         "observedAt": {

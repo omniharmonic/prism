@@ -687,8 +687,16 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           : kind === "canvas"
             ? yDocToScene(doc)
             : yDocToHtml(doc);
-    const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
-    sourceUpdatedAt = toMs(updated.updatedAt);
+    if (current && content === current.content) {
+      // Nothing to persist (e.g. the store right after folding an external edit
+      // or a version restore). Skipping matters on vault ≥0.7.9: every write
+      // captures a history version, so an identical re-write would clutter the
+      // note's history with no-change entries and bump updatedAt for nothing.
+      sourceUpdatedAt = toMs(current.updatedAt);
+    } else {
+      const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
+      sourceUpdatedAt = toMs(updated.updatedAt);
+    }
     // G2b: persisted suggestion marks land in the owner's durable review queue.
     if (kind === "document") captureSuggestions(target.noteId, content);
   } catch {

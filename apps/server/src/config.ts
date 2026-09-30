@@ -150,6 +150,13 @@ export const config = {
   // deploy with no governance-config note it costs one cached probe per interval.
   // 0 DISABLES it.
   governanceReconcileMs: Number(process.env.GOVERNANCE_RECONCILE_MS ?? 300_000),
+  // How often the worker asks each vault to compact its note-version history
+  // (vault ≥0.7.9 only; older vaults answer 404 and are skipped). The vault only
+  // compacts on its own at startup, so without this a long-running vault keeps a
+  // full snapshot per update of every big, frequently-appended note. Needs a
+  // `vault:<name>:admin` token: minted 1h-ephemeral per run via the operator CLI,
+  // or PARACHUTE_ADMIN_TOKEN. 0 DISABLES it.
+  historyCompactIntervalMs: Number(process.env.HISTORY_COMPACT_INTERVAL_MS ?? 86_400_000),
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
   // new chat portal; an un-joined room never appears in /sync, so its messages
   // are invisible to the ingester). Off by default — on a long-lived bridge the

@@ -62,6 +62,9 @@ interface UIStore {
 
   // Ghost text: agent-generated content waiting for accept/reject
   ghostText: { noteId: string; content: string; position: "cursor" | "end" } | null;
+  /** Bumped when a note's content is replaced out-of-band (a version restore) —
+   *  Canvas keys the renderer on it so the editor remounts on the new content. */
+  noteRevisions: Record<string, number>;
 
   // Actions
   toggleSidebar: () => void;
@@ -102,6 +105,7 @@ interface UIStore {
   clearPendingEdit: () => void;
 
   setGhostText: (ghost: { noteId: string; content: string; position: "cursor" | "end" }) => void;
+  bumpNoteRevision: (noteId: string) => void;
   acceptGhostText: () => void;
   rejectGhostText: () => void;
 }
@@ -126,6 +130,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   docFontSetter: null,
   pendingEdit: null,
   ghostText: null,
+  noteRevisions: {},
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(400, width)) }),
@@ -252,6 +257,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   clearPendingEdit: () => set({ pendingEdit: null }),
 
   setGhostText: (ghost) => set({ ghostText: ghost }),
+  bumpNoteRevision: (noteId) =>
+    set((st) => ({ noteRevisions: { ...st.noteRevisions, [noteId]: (st.noteRevisions[noteId] ?? 0) + 1 } })),
   acceptGhostText: () => {
     const { ghostText } = get();
     if (ghostText) {

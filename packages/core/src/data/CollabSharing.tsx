@@ -125,6 +125,14 @@ export interface ServerInfo {
   magicFrom: string;
   integrations: Record<string, boolean>;
   tunnel: TunnelStatus;
+  /** Expiry of each vault token the server holds (metadata only — never the token). */
+  tokens?: Array<{
+    id: string;
+    vault: string;
+    expiresAt: string | null;
+    daysLeft: number | null;
+    status: "ok" | "expiring" | "expired" | "unknown";
+  }>;
 }
 /** One integration's status in the ACTIVE vault (never the stored value). */
 export interface IntegrationStatus {

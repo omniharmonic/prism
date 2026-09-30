@@ -22,6 +22,9 @@ After the vault step, or standalone to (re)provision the server.
    cd apps/server
    node --import tsx scripts/prism-setup.ts --dry-run    # preview the .env + seed plan
    node --import tsx scripts/prism-setup.ts              # write .env, seed, render .mcp.json
+   # On vault ≥0.7.1 the seed step mints a 1h vault:<name>:admin token via the
+   # operator CLI (schema writes are admin-only there); set PARACHUTE_ADMIN_TOKEN
+   # to supply one yourself. See prism-setup-schema.
    ```
    (Or `npm run setup` from the repo root — it calls `setup:full` in the server
    workspace.) Use `--force` only to **rotate** secrets on an existing `.env`.

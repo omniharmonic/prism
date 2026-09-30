@@ -1,6 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUpdateNote } from "./useParachute";
 
+/**
+ * Every mounted autosave, by note id — so an out-of-band write (restoring a
+ * version) can first FLUSH the user's pending edits into the vault (they become
+ * a version themselves, never lost) and then DISCARD the stale editor state, so
+ * the unmount flush below can't write old content back over the restore.
+ */
+interface PendingSaveHandle {
+  flush: () => Promise<void>;
+  discard: () => void;
+}
+const pendingSaves = new Map<string, Set<PendingSaveHandle>>();
+
+/** Save any debounced-but-unsent edits to `noteId` now. */
+export async function flushPendingSaves(noteId: string): Promise<void> {
+  await Promise.all([...(pendingSaves.get(noteId) ?? [])].map((h) => h.flush()));
+}
+
+/** Drop any unsent edits to `noteId` (after flushing — see above). */
+export function discardPendingSaves(noteId: string): void {
+  for (const h of pendingSaves.get(noteId) ?? []) h.discard();
+}
+
 export function useAutoSave(
   noteId: string,
   getContent: () => string,
@@ -43,6 +65,27 @@ export function useAutoSave(
     if (timerRef.current) clearTimeout(timerRef.current);
     doSave();
   }, [doSave]);
+
+  useEffect(() => {
+    const handle: PendingSaveHandle = {
+      flush: async () => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        if (pendingRef.current) await doSave();
+      },
+      discard: () => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        pendingRef.current = false;
+        lastContentRef.current = getContent();
+      },
+    };
+    const set = pendingSaves.get(noteId) ?? new Set<PendingSaveHandle>();
+    set.add(handle);
+    pendingSaves.set(noteId, set);
+    return () => {
+      set.delete(handle);
+      if (set.size === 0) pendingSaves.delete(noteId);
+    };
+  }, [noteId, doSave, getContent]);
 
   // Cleanup timer on unmount; flush if pending
   useEffect(() => {

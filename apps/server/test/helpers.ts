@@ -58,6 +58,10 @@ export interface FakeVault {
   healthy: boolean;
   /** Force the next note write to 409 (optimistic-concurrency conflict). */
   conflictOnNextWrite: boolean;
+  /** Vault ≥0.7.9 note history: prior states captured on every PATCH, newest
+   *  last. Set `historySupported = false` to emulate a 0.6.x vault (404s). */
+  versions: Map<string, FakeVersion[]>;
+  historySupported: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
   /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
    *  store (multi-vault tests). The primary store (`notes`) keeps serving
@@ -67,6 +71,19 @@ export interface FakeVault {
   /** Seed a note into an additional vault's store (auto-registers the vault). */
   putIn(vault: string, note: Partial<FakeNote> & { id: string }): FakeNote;
   restore(): void;
+}
+
+export interface FakeVersion {
+  note_id: string;
+  version_ix: number;
+  content: string;
+  path: string | null;
+  metadata: Record<string, unknown> | null;
+  superseded_at: string;
+  op: string;
+  content_len: number;
+  actor: string | null;
+  via: string | null;
 }
 
 let seq = 0;
@@ -105,6 +122,8 @@ export function installFakeVault(): FakeVault {
     calls: [],
     healthy: true,
     conflictOnNextWrite: false,
+    versions: new Map(),
+    historySupported: true,
     put(note) {
       const n = fakeNote(note);
       fv.notes.set(n.id, n);
@@ -128,6 +147,23 @@ export function installFakeVault(): FakeVault {
     },
   };
   stores.set("default", fv.notes);
+
+  function captureVersion(n: FakeNote, op: string): void {
+    const list = fv.versions.get(n.id) ?? [];
+    list.push({
+      note_id: n.id,
+      version_ix: list.length,
+      content: n.content,
+      path: n.path,
+      metadata: n.metadata,
+      superseded_at: new Date(2026, 5, 1, 0, 0, seq++).toISOString(),
+      op,
+      content_len: n.content.length,
+      actor: "hub-user-owner",
+      via: "token:prism",
+    });
+    fv.versions.set(n.id, list);
+  }
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -185,6 +221,36 @@ export function installFakeVault(): FakeVault {
       }
     }
 
+    // /notes/:id/versions[/:ix] and /restore (vault ≥0.7.9 history)
+    const h = sub.match(/^\/notes\/([^/]+)\/(versions|restore)(?:\/(\d+))?$/);
+    if (h) {
+      if (!fv.historySupported) return json({ error: "Not found" }, 404);
+      const id = decodeURIComponent(h[1]!);
+      const existing = store.get(id);
+      if (!existing) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const list = fv.versions.get(id) ?? [];
+      if (h[2] === "versions" && h[3] === undefined && method === "GET") {
+        const rows = [...list].reverse().map(({ content: _c, ...row }) => row);
+        return json({ versions: rows, total: rows.length });
+      }
+      if (h[2] === "versions" && h[3] !== undefined && method === "GET") {
+        const v = list.find((x) => x.version_ix === Number(h[3]));
+        return v ? json(v) : json({ error: "Not found", error_type: "not_found" }, 404);
+      }
+      if (h[2] === "restore" && method === "POST") {
+        const b = (body ?? {}) as { version_ix?: number; if_updated_at?: string };
+        if (!b.if_updated_at) return json({ error: "precondition_required" }, 428);
+        if (b.if_updated_at !== existing.updatedAt) return json({ error: "conflict", error_type: "conflict" }, 409);
+        const v = list.find((x) => x.version_ix === b.version_ix);
+        if (!v) return json({ error: "Not found", error_type: "not_found" }, 404);
+        captureVersion(existing, "restore");
+        existing.content = v.content;
+        existing.metadata = v.metadata;
+        existing.updatedAt = new Date(2026, 5, 1, 0, 0, seq++).toISOString();
+        return json({ ...existing, restored_from: v.version_ix, recreated: false });
+      }
+    }
+
     // /notes/:id item
     const m = sub.match(/^\/notes\/([^/]+)$/);
     if (m) {
@@ -200,6 +266,7 @@ export function installFakeVault(): FakeVault {
           return new Response("conflict", { status: 409 });
         }
         const b = (body ?? {}) as Record<string, unknown>;
+        captureVersion(existing, "update");
         // tag add/remove form
         const tagsOp = b.tags as { add?: string[]; remove?: string[] } | undefined;
         if (tagsOp) {

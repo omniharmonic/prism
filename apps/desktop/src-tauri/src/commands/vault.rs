@@ -194,6 +194,36 @@ pub async fn vault_delete_note(
 }
 
 #[tauri::command]
+pub async fn vault_list_note_versions(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<serde_json::Value, PrismError> {
+    client.list_note_versions(&id, limit.unwrap_or(50), offset.unwrap_or(0)).await
+}
+
+#[tauri::command]
+pub async fn vault_get_note_version(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    version_ix: u32,
+) -> Result<serde_json::Value, PrismError> {
+    client.get_note_version(&id, version_ix).await
+}
+
+#[tauri::command]
+pub async fn vault_restore_note_version(
+    client: State<'_, ParachuteClient>,
+    id: String,
+    version_ix: u32,
+    if_updated_at: String,
+) -> Result<Note, PrismError> {
+    let note = client.restore_note_version(&id, version_ix, &if_updated_at).await?;
+    Ok(enrich_note(note))
+}
+
+#[tauri::command]
 pub async fn vault_batch_delete(
     app: AppHandle,
     client: State<'_, ParachuteClient>,

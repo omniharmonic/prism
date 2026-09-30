@@ -9,7 +9,7 @@
 import { serve } from "@hono/node-server";
 import { config, assertConfig, emailEnabled, embeddingsConfigured } from "./config";
 import { getVaultRegistry } from "./db";
-import { reportRegistryTokens } from "./auth/vault-token";
+import { reportRegistryTokens, startTokenExpiryWatch } from "./auth/vault-token";
 import { startWorker } from "./worker/scheduler";
 import { createApp } from "./app";
 import { attachCollab } from "./collab";
@@ -38,6 +38,9 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.bin
   // blocks or fails boot (a bad token is logged, not fatal — wiring strict
   // rejection is a later, flag-gated step once every deploy sets the hub origin).
   void reportRegistryTokens(getVaultRegistry());
+  // …and re-check daily: a long-lived server otherwise only learns a vault token
+  // lapsed when that vault's pipeline starts 401ing.
+  startTokenExpiryWatch(getVaultRegistry);
   // Phase 3: the Node worker (per-tenant ingesters). No-op unless SECRETS_KEY is
   // set and a vault has an integration secret; interval is unref'd.
   startWorker();

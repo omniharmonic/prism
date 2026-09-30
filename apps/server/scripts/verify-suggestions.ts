@@ -12,10 +12,13 @@
  *      live note (insertions kept unmarked, deletions removed)
  *   4. reject applies the inverse (insertions removed, deletions kept)
  *
- * Stack-agnostic: HUB_ENV (default apps/server/.env) + HUB_URL/HUB_COLLAB.
- * Works against the mock stack too:
+ * Stack-agnostic, and NEVER implicitly live: the target stack comes from
+ * HUB_ENV (an env file) or, like verify-gateway, from `--env-file=<file>`
+ * (process.env). With neither it refuses to run — it creates and deletes notes.
+ * HUB_URL/HUB_COLLAB override the URL derived from that env's PORT.
  *   ./scripts/two-hub-mock.sh --keep
  *   cd apps/server && HUB_ENV=.env.mock-a node --import tsx scripts/verify-suggestions.ts
+ *   cd apps/server && node --env-file=<sandbox .env> --import tsx scripts/verify-suggestions.ts
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -54,8 +57,16 @@ function parseEnv(file: string): Record<string, string> {
   return out;
 }
 
-const env = parseEnv(process.env.HUB_ENV ?? path.resolve(SERVER_DIR, ".env"));
-const BASE = process.env.HUB_URL ?? `http://localhost:${env.PORT ?? "8787"}`;
+// Env source: HUB_ENV file, else process.env (populated by --env-file). There is
+// deliberately NO fallback to apps/server/.env — that is the live stack.
+const env: Record<string, string | undefined> = process.env.HUB_ENV
+  ? parseEnv(path.resolve(SERVER_DIR, process.env.HUB_ENV))
+  : process.env;
+if (!env.PORT && !process.env.HUB_URL) {
+  console.error("✗ No target stack: set HUB_ENV=<env file> or run with --env-file=<file> (refusing to default to the live .env).");
+  process.exit(2);
+}
+const BASE = process.env.HUB_URL ?? `http://localhost:${env.PORT}`;
 const COLLAB = process.env.HUB_COLLAB ?? BASE.replace(/^http/, "ws") + "/collab";
 const BEARER = env.COLLAB_TOKEN || env.PARACHUTE_TOKEN || "";
 if (!BEARER) throw new Error("COLLAB_TOKEN/PARACHUTE_TOKEN missing (set HUB_ENV)");

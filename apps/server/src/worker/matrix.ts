@@ -11,6 +11,7 @@
  *   metadata: { type:"message-thread", platform, matrixRoomId, lastMessageAt }.
  */
 import type { Note } from "../parachute";
+import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "./matrix-rollover";
 
 export interface MatrixCreds {
   homeserver: string;
@@ -421,6 +422,7 @@ export const TRIAGE_TAGS = [
 export interface IngestVault {
   listNotes(opts: {
     tags?: string[];
+    pathPrefix?: string;
     includeContent?: boolean;
   }): Promise<Note[]>;
   createNote(p: {
@@ -431,10 +433,72 @@ export interface IngestVault {
   }): Promise<Note>;
   updateNote(
     id: string,
-    p: { content?: string; metadata?: Record<string, unknown> },
+    p: { content?: string; metadata?: Record<string, unknown>; ifUpdatedAt?: string },
   ): Promise<Note>;
   /** Optional: strip tags (used to clear stale triage verdicts on append). */
   removeTags?(id: string, tags: string[]): Promise<void>;
+  /** Optional: re-read one note (thread rollover retries on a 409 with it). */
+  getNote?(id: string): Promise<Note>;
+}
+
+/**
+ * room id → thread note. Archives (message-archive, `archiveOf`) are never
+ * adopted, even if a tag hierarchy or a hand edit ever put them in the listing.
+ */
+function threadsByRoom(notes: Note[]): Map<string, Note> {
+  const byRoom = new Map<string, Note>();
+  for (const n of notes) {
+    if (isArchiveNote(n)) continue;
+    const rid = n.metadata?.matrixRoomId;
+    if (typeof rid === "string") byRoom.set(rid, n);
+  }
+  return byRoom;
+}
+
+/**
+ * Roll over every thread already past MATRIX_THREAD_MAX_BYTES (the pre-upgrade
+ * sweep: on vault ≥0.7.9 a >2 MB thread can no longer be updated at all, so this
+ * must have run on 0.6.1 first). Piggybacks on the full thread listing each pass
+ * already loads — no extra reads unless a thread is actually oversized. Updates
+ * `byRoom` in place so the same pass appends to the trimmed note.
+ */
+export async function sweepOversizedThreads(
+  vault: IngestVault,
+  byRoom: Map<string, Note>,
+  opts: { maxPerPass?: number } = {},
+): Promise<{ rolled: number; archives: number }> {
+  const { maxBytes } = rolloverLimits();
+  let rolled = 0;
+  let archives = 0;
+  for (const [roomId, note] of byRoom) {
+    if (rolled >= (opts.maxPerPass ?? 10)) break;
+    if (byteLen(note.content ?? "") <= maxBytes) continue;
+    try {
+      const out = await rolloverThread(vault, note);
+      if (!out) continue;
+      byRoom.set(roomId, out.note);
+      rolled++;
+      archives += out.created;
+      console.log(
+        `[worker] matrix: rolled over ${note.path ?? note.id} (${byteLen(note.content ?? "")} bytes) → ${out.created} new archive note(s)${out.recovered ? `, ${out.recovered} already-archived message(s) trimmed` : ""}`,
+      );
+    } catch (e) {
+      logRolloverFailure(note, e);
+    }
+  }
+  return { rolled, archives };
+}
+
+function logRolloverFailure(note: Note, e: unknown): void {
+  const size = byteLen(note.content ?? "");
+  if (isTooLarge(e))
+    console.error(
+      `[worker] matrix: ERROR thread ${note.path ?? note.id} (${size} bytes) cannot be updated — the vault refused it (413). ` +
+        `With note history on, a note over 2 MB can't be written at all, so it can't even be trimmed. Remedy: set ` +
+        `\`history:\\n  enabled: false\` in that vault's vault.yaml, restart the vault, let this rollover run once, then re-enable history. ` +
+        `Until then new messages for this room are NOT being stored (reconcileMatrix back-fills them afterwards). ${String(e)}`,
+    );
+  else console.error(`[worker] matrix: ERROR rollover of ${note.path ?? note.id} (${size} bytes) failed: ${String(e)}`);
 }
 
 export interface IngestResult {
@@ -527,11 +591,8 @@ export async function ingestMatrix(
     tags: ["message-thread"],
     includeContent: true,
   });
-  const byRoom = new Map<string, Note>();
-  for (const n of existing) {
-    const rid = n.metadata?.matrixRoomId;
-    if (typeof rid === "string") byRoom.set(rid, n);
-  }
+  const byRoom = threadsByRoom(existing);
+  await sweepOversizedThreads(vault, byRoom);
 
   let messages = 0;
   let created = 0;
@@ -688,22 +749,48 @@ async function ingestRoom(
     const mergedParticipants = [
       ...new Set([...prevParticipants, ...participants]),
     ];
-    await vault.updateNote(note.id, {
-      content: `${note.content.trimEnd()}\n${lines.join("\n")}`,
-      metadata: {
-        ...prev,
-        type: "message-thread",
-        platform,
-        matrixRoomId: rb.roomId,
-        // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
-        // must not rewind the high-water mark the repair sweep compares against.
-        lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
-        messageCount: prevCount + lines.length,
-        ...(mergedParticipants.length
-          ? { participants: mergedParticipants }
-          : {}),
-      },
-    });
+    const metadata = {
+      ...prev,
+      type: "message-thread",
+      platform,
+      matrixRoomId: rb.roomId,
+      // Monotonic: a bridge backfilling a gap posts OLD timestamps late, and
+      // must not rewind the high-water mark the repair sweep compares against.
+      lastMessageAt: Math.max(lastMessageAt, lastMessageAtOf(note)),
+      messageCount: prevCount + lines.length,
+      ...(mergedParticipants.length
+        ? { participants: mergedParticipants }
+        : {}),
+    };
+    const content = `${note.content.trimEnd()}\n${lines.join("\n")}`;
+    // Past the size limit, append + archive the oldest messages in ONE live
+    // write (archives first — see matrix-rollover.ts).
+    const rolled =
+      byteLen(content) > rolloverLimits().maxBytes
+        ? await rolloverThread(vault, note, { appendEntries: lines, metadata }).catch((e) => {
+            logRolloverFailure(note, e);
+            throw e;
+          })
+        : null;
+    if (rolled) byRoom.set(rb.roomId, rolled.note);
+    else {
+      try {
+        await vault.updateNote(note.id, { content, metadata });
+      } catch (e) {
+        if (!isTooLarge(e)) throw e;
+        // The vault refused the write as too large (history_overflow on ≥0.7.9).
+        // Say so loudly, then try to shed the oldest messages in the same write.
+        console.error(
+          `[worker] matrix: ERROR vault refused append to ${note.path ?? note.id} for room ${rb.roomId} (${byteLen(content)} bytes, 413) — attempting rollover`,
+        );
+        const out = await rolloverThread(vault, note, { appendEntries: lines, metadata, force: true }).catch((re) => {
+          logRolloverFailure(note, re);
+          throw re;
+        });
+        if (!out) throw e;
+        byRoom.set(rb.roomId, out.note);
+      }
+    }
     const stale = TRIAGE_TAGS.filter((t) => note.tags?.includes(t));
     if (stale.length && vault.removeTags) {
       await vault
@@ -779,11 +866,8 @@ export async function reconcileMatrix(
     tags: ["message-thread"],
     includeContent: true,
   });
-  const byRoom = new Map<string, Note>();
-  for (const n of existing) {
-    const rid = n.metadata?.matrixRoomId;
-    if (typeof rid === "string") byRoom.set(rid, n);
-  }
+  const byRoom = threadsByRoom(existing);
+  await sweepOversizedThreads(vault, byRoom);
 
   // Probe: newest message per room (one cheap /messages call each).
   const behind: Array<{ roomId: string; latest: number; cutoff: number }> = [];

@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2,
-} from "lucide-react";
+  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -83,6 +82,17 @@ export function CommandBar() {
       icon: <Bot size={15} />,
       action: () => { setContextPanelTab("agent"); toggleContextPanel(); closeCommandBar(); },
     },
+    ...(activeTab && !activeTab.noteId.includes(":") ? [
+      {
+        id: "version-history", label: "Version History", category: "navigate" as const,
+        icon: <History size={15} />,
+        action: () => {
+          setContextPanelTab("history");
+          if (!useUIStore.getState().contextPanelOpen) toggleContextPanel();
+          closeCommandBar();
+        },
+      },
+    ] : []),
     // Sync commands (only show when a note is open)
     ...(activeTab ? [
       {

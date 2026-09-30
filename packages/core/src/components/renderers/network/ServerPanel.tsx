@@ -343,6 +343,36 @@ export function ServerPanel() {
         )}
       </div>
 
+      {/* Vault tokens — hub JWTs with no auto-renewal: an expired one silently
+          breaks every sync into that vault, so surface it before it lapses. */}
+      {info?.tokens && info.tokens.length > 0 && (
+        <div style={cardStyle}>
+          <div style={labelStyle}>Vault access tokens</div>
+          {info.tokens.map((tk, i) => (
+            <div key={tk.id} style={{ ...rowStyle, borderBottom: i === info.tokens!.length - 1 ? "none" : rowStyle.borderBottom }}>
+              <span style={{ color: "var(--text-secondary)" }}>{tk.vault}</span>
+              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {tk.expiresAt && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{new Date(tk.expiresAt).toLocaleDateString()}</span>}
+                {tk.status === "expired" ? (
+                  <Badge variant="error">expired</Badge>
+                ) : tk.status === "expiring" ? (
+                  <Badge variant="warning">{tk.daysLeft} days left</Badge>
+                ) : tk.status === "ok" ? (
+                  <Badge variant="success">valid</Badge>
+                ) : (
+                  <Badge>unknown</Badge>
+                )}
+              </span>
+            </div>
+          ))}
+          {info.tokens.some((tk) => tk.status === "expired" || tk.status === "expiring") && (
+            <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 8 }}>
+              Re-mint with <code>parachute auth mint-token --scope vault:&lt;name&gt;:write</code> and update the vault's entry.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Integrations — known kinds merged with what the server reports, so a
           kind the running server predates (e.g. clickup) is still configurable.
           Configured-state prefers the per-kind vault-scoped status (matches
