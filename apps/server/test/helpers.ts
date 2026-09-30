@@ -303,7 +303,8 @@ export function resetDb(): void {
     "DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
       // Horizon B/C tables — kept in sync so every test file starts from a clean db.
       "DELETE FROM publications; DELETE FROM peers; DELETE FROM peer_pairings; DELETE FROM spaces; DELETE FROM federated_notes; DELETE FROM federation_outbox; DELETE FROM pending_suggestions; DELETE FROM federation_mirror_requests; DELETE FROM settings; DELETE FROM prism_vaults; DELETE FROM workspaces; DELETE FROM vault_workspaces; DELETE FROM vault_mirrors; DELETE FROM mcp_tokens; DELETE FROM governance_sig_ledger;" +
-      "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;",
+      "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +
+      "DELETE FROM agent_events; DELETE FROM agent_turns; DELETE FROM agent_sessions;",
   );
 }
 

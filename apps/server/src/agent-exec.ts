@@ -37,7 +37,17 @@
 import { spawn as realSpawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { freemem, homedir, tmpdir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import type { VaultEntry } from "./config";
@@ -73,6 +83,8 @@ export interface SpawnedProc {
   on(ev: "exit", cb: (code: number | null) => void): void;
   on(ev: "error", cb: (err: Error) => void): void;
   kill(signal?: string): void;
+  /** OS pid (node children expose it; fakes may omit it). */
+  pid?: number;
 }
 export type Spawner = (cmd: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => SpawnedProc;
 
@@ -83,6 +95,7 @@ const defaultSpawner: Spawner = (cmd, args, opts) =>
 
 const DISPATCH_TIMEOUT_MS = 30 * 60 * 1000; // 30 min wall clock, matches the desktop
 const KILL_GRACE_MS = 10_000; // SIGKILL if a SIGTERM'd child hasn't exited
+export const DEFAULT_MAX_BUDGET_USD = 1;
 const MAX_OUTPUT = 2_000_000; // cap captured output so a runaway can't OOM the server
 
 /** The MCP server name in the per-dispatch config. Tools surface to the model as
@@ -99,12 +112,34 @@ export interface ArgOptions {
   outputFormat?: OutputFormat;
   /** Optional per-run spend cap (`AGENT_MAX_BUDGET_USD`). */
   maxBudgetUsd?: number | null;
+  /** Durable session turn (WP3.1): `resume=false` → `--session-id <id>` (turn 1),
+   *  `resume=true` → `--resume <id>`. Absent → one-shot `--no-session-persistence`.
+   *  The id is ALWAYS a server-minted uuid (validated), never client text. */
+  session?: { id: string; resume: boolean } | null;
+  /** stream-json only: `--include-partial-messages` (live text deltas). */
+  includePartial?: boolean;
+  /** Tool allowlist (default: the whole vault MCP server). Every entry must be
+   *  the vault server or one of its tools — anything else is refused. */
+  allowedTools?: readonly string[];
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VAULT_TOOL_RE = new RegExp(`^${VAULT_MCP_ALLOW}(__[a-z][a-z0-9-]*)?$`);
 
 /** The fixed claude argv. The prompt is the LAST arg after `--`; everything else
  *  is a constant template — the client never injects flags. */
 export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: ArgOptions = {}): string[] {
   const fmt = opts.outputFormat ?? "text";
+  const allowed = opts.allowedTools ?? [VAULT_MCP_ALLOW];
+  if (allowed.length === 0 || allowed.some((t) => !VAULT_TOOL_RE.test(t))) {
+    throw new Error("allowedTools may only name the vault MCP server or its tools");
+  }
+  if (opts.session && !UUID_RE.test(opts.session.id)) throw new Error("session id must be a uuid");
+  const persistence = opts.session
+    ? opts.session.resume
+      ? ["--resume", opts.session.id]
+      : ["--session-id", opts.session.id]
+    : ["--no-session-persistence"];
   const args = [
     "-p",
     "--model",
@@ -112,7 +147,8 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
     "--output-format",
     fmt,
     ...(fmt === "stream-json" ? ["--verbose"] : []),
-    "--no-session-persistence",
+    ...(fmt === "stream-json" && opts.includePartial ? ["--include-partial-messages"] : []),
+    ...persistence,
     // ONLY the per-dispatch vault MCP — ignore ~/.claude.json + repo .mcp.json servers.
     "--strict-mcp-config",
     "--mcp-config",
@@ -121,8 +157,9 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
     "--tools",
     "",
     // Auto-approve exactly the vault MCP; dontAsk denies everything else; nobody is prompted.
+    // (A comma-joined list is one argv element — verified against CLI 2.1.x.)
     "--allowedTools",
-    VAULT_MCP_ALLOW,
+    allowed.join(","),
     "--permission-mode",
     "dontAsk",
     "--permission-prompts",
@@ -219,6 +256,9 @@ export function dispatchEnv(src: NodeJS.ProcessEnv = process.env, claudePath = r
   env.PATH = [...new Set(dirs)].join(":");
   env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = "300000";
   env.DISABLE_AUTOUPDATER = "1"; // a web-triggered run must never self-update the CLI
+  // Auto-memory would read/write ~/.claude/projects/<cwd-slug>/memory/ — a context
+  // source OUTSIDE the (checked-empty) cwd. Off (verified: init.memory_paths null).
+  env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   return env;
 }
 
@@ -236,6 +276,36 @@ export function ensureAgentCwd(dir: string): string {
   if (entries.length > 0) throw new Error(`agent cwd ${dir} is not empty (${entries.length} entries) — refusing to run`);
   return dir;
 }
+
+/** Where the CLI persists a session transcript (WP3.1 finding, verified against
+ *  CLI 2.1.x): NOT in the cwd — the cwd stays empty — but in
+ *  `$HOME/.claude/projects/<slug>/<sessionId>.jsonl`, where <slug> is the
+ *  realpath of the cwd with every non-alphanumeric char replaced by `-`. That is
+ *  also why `--resume` needs the SAME cwd on every turn. The file holds raw tool
+ *  results (vault content), so archiving a session deletes it. */
+export function cliSessionFile(cwd: string, sessionId: string, home: string = homedir()): string {
+  if (!isUuid(sessionId)) throw new Error("cli session id must be a uuid");
+  return join(cliProjectDir(cwd, home), `${sessionId}.jsonl`);
+}
+
+/** The CLI's per-session SIDECAR dir (`<slug>/<id>/` — tool-results etc.). */
+export function cliSessionSidecar(cwd: string, sessionId: string, home: string = homedir()): string {
+  if (!isUuid(sessionId)) throw new Error("cli session id must be a uuid");
+  return join(cliProjectDir(cwd, home), sessionId);
+}
+
+/** The CLI's per-cwd project dir: `$HOME/.claude/projects/<slug>`. */
+export function cliProjectDir(cwd: string, home: string = homedir()): string {
+  let real = cwd;
+  try {
+    real = realpathSync(cwd);
+  } catch {
+    /* not created yet — the slug of the literal path */
+  }
+  return join(home, ".claude/projects", real.replace(/[^a-zA-Z0-9]/g, "-"));
+}
+
+export const isUuid = (s: string): boolean => UUID_RE.test(s);
 
 // ── memory admission (injectable probe) ──────────────────────────────────────
 
@@ -350,7 +420,8 @@ export interface RunnerConfig {
 }
 
 function defaultConfig(): RunnerConfig {
-  const budget = num(process.env.AGENT_MAX_BUDGET_USD, NaN);
+  // Default 1.00 USD per turn/process; set AGENT_MAX_BUDGET_USD=0 to disable.
+  const budget = num(process.env.AGENT_MAX_BUDGET_USD, DEFAULT_MAX_BUDGET_USD);
   return {
     spawner: defaultSpawner,
     memoryProbe: defaultMemoryProbe,
@@ -374,7 +445,264 @@ export function configureAgentRunner(partial: Partial<RunnerConfig>): void {
   cfg = { ...cfg, ...partial };
 }
 
-// ── registry + queue + dispatch ──────────────────────────────────────────────
+
+/** The runner's fixed cwd as currently configured (prepared lazily). Falls back
+ *  to the default path if preparing it throws (e.g. it is non-empty) — callers
+ *  only need the PATH (to locate the CLI's per-cwd session store). */
+export function runnerCwdPath(): string {
+  try {
+    return cfg.cwd();
+  } catch {
+    return defaultAgentCwd();
+  }
+}
+
+/** The runner's current per-run spend cap (callers building argv read it). */
+export function runnerBudgetUsd(): number | null {
+  return cfg.maxBudgetUsd;
+}
+
+// ── generic run queue (shared by one-shot dispatches and session turns) ─────
+//
+// ONE semaphore + memory-admission queue for every `claude` process this server
+// spawns: a one-shot dispatch and a session turn compete for the same slots, so
+// the concurrency cap and the memory guard hold across both.
+
+export interface RunEndInfo {
+  /** Process exit code (null: killed / never spawned). */
+  code: number | null;
+  /** Spawn failure, process error, timeout, or non-zero exit (null on success / cancel). */
+  error: string | null;
+  /** The run was cancelled via its handle (queued or running). */
+  cancelled: boolean;
+}
+
+export interface RunSpec {
+  entry: VaultEntry;
+  /** Build the argv, given the per-run 0600 MCP config path. */
+  args: (mcpConfigPath: string) => string[];
+  spawner?: Spawner;
+  /** The run is waiting (called when the reason changes). */
+  onQueued?: (reason: string) => void;
+  /** A slot + memory admitted the run; called just BEFORE spawning. */
+  onStart?: () => void;
+  /** The child was spawned (pid when the spawner exposes one). */
+  onSpawned?: (pid: number | null) => void;
+  onData?: (chunk: string, stream: "stdout" | "stderr") => void;
+  /** Called exactly once, whatever happens (including a queued cancel). */
+  onEnd: (info: RunEndInfo) => void;
+}
+
+export interface RunHandle {
+  readonly id: string;
+  state(): "queued" | "running" | "ended";
+  /** Cancel a queued (dropped) or running (SIGTERM, SIGKILL after grace) run. */
+  cancel(): boolean;
+}
+
+interface Run {
+  id: string;
+  spec: RunSpec;
+  state: "queued" | "running" | "ended";
+  reason: string | null;
+  child: SpawnedProc | null;
+  cancelled: boolean;
+  timedOut: boolean;
+  finish: ((info: RunEndInfo) => void) | null;
+}
+
+const queue: Run[] = [];
+let running = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let lastAdmission: AdmissionVerdict | null = null;
+let generation = 0; // bumped by _resetDispatches so a stale child can't touch new state
+
+/** Thrown when the waiting queue is full (the routes map it to 503). */
+export class AgentBusyError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = "AgentBusyError";
+  }
+}
+
+/** Accept a run. It starts now (slot free + memory admitted) or waits queued.
+ *  Throws AgentBusyError only when the waiting queue is full. */
+export function enqueueRun(spec: RunSpec): RunHandle {
+  // Only a run that could start right now (empty queue + free slot) bypasses the
+  // bound — so memory-refused runs can't grow the queue without limit.
+  const startsNow = queue.length === 0 && running < cfg.maxConcurrent;
+  if (!startsNow && queue.length >= cfg.maxQueue) {
+    throw new AgentBusyError(`agent queue full (${queue.length} waiting)`);
+  }
+  const run: Run = {
+    id: randomUUID(),
+    spec,
+    state: "queued",
+    reason: null,
+    child: null,
+    cancelled: false,
+    timedOut: false,
+    finish: null,
+  };
+  queue.push(run);
+  pump();
+  return {
+    id: run.id,
+    state: () => run.state,
+    cancel: () => cancelRun(run),
+  };
+}
+
+function cancelRun(run: Run): boolean {
+  if (run.state === "ended") return false;
+  run.cancelled = true;
+  if (run.state === "queued") {
+    const i = queue.indexOf(run);
+    if (i >= 0) queue.splice(i, 1);
+    run.state = "ended";
+    safe(() => run.spec.onEnd({ code: null, error: null, cancelled: true }));
+    return true;
+  }
+  const child = run.child;
+  if (!child) {
+    run.finish?.({ code: null, error: null, cancelled: true });
+    return true;
+  }
+  child.kill("SIGTERM");
+  // The slot is released on exit; if SIGTERM is ignored, force it.
+  if ((run.state as Run["state"]) !== "ended") {
+    setTimeout(() => run.state !== "ended" && child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+  }
+  return true;
+}
+
+function safe(fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[agent] run callback threw: ${(e as Error).message}`);
+  }
+}
+
+function setReason(run: Run, reason: string): void {
+  if (run.reason === reason) return;
+  run.reason = reason;
+  safe(() => run.spec.onQueued?.(reason));
+}
+
+/** Start as many queued runs as slots + memory allow; otherwise record why each
+ *  waits and (for memory refusals) schedule a re-check. */
+function pump(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  while (queue.length > 0 && running < cfg.maxConcurrent) {
+    let sample: MemorySample | null = null;
+    try {
+      sample = cfg.memoryProbe();
+    } catch {
+      sample = null; // a throwing probe is "unknown" → fail-open
+    }
+    const verdict = admissionVerdict(sample, cfg.swapMaxPct, cfg.freeMinPct);
+    lastAdmission = verdict;
+    if (!verdict.ok) {
+      for (const r of queue) setReason(r, verdict.reason!);
+      retryTimer = setTimeout(pump, cfg.admissionRetryMs);
+      retryTimer.unref();
+      return;
+    }
+    launch(queue.shift()!);
+  }
+  for (const r of queue) setReason(r, `waiting for a free agent slot (${running}/${cfg.maxConcurrent} running)`);
+}
+
+function launch(run: Run): void {
+  const { spec } = run;
+  running++;
+  run.state = "running";
+  run.reason = null;
+  const gen = generation;
+  let mcpDir: string | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  const finish = (info: RunEndInfo) => {
+    if (run.state === "ended") return;
+    run.state = "ended";
+    if (timeout) clearTimeout(timeout);
+    if (mcpDir) {
+      try {
+        rmSync(mcpDir, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+    safe(() => spec.onEnd(info));
+    if (gen !== generation) return;
+    running--;
+    pump();
+  };
+  run.finish = finish;
+
+  safe(() => spec.onStart?.());
+  // onStart may have cancelled the run (e.g. its owner went away) — never spawn then.
+  if ((run.state as Run["state"]) === "ended") return;
+
+  let child: SpawnedProc;
+  try {
+    const cwd = cfg.cwd();
+    // 0700 dir from mkdtemp + 0600 file: only this server user can read the token.
+    mcpDir = mkdtempSync(join(tmpdir(), "prism-agent-"));
+    const mcpPath = join(mcpDir, "mcp.json");
+    writeFileSync(mcpPath, JSON.stringify(vaultMcpConfig(spec.entry)), { mode: 0o600 });
+    const claude = cfg.claudePath();
+    const args = spec.args(mcpPath);
+    child = (spec.spawner ?? cfg.spawner)(claude, args, { cwd, env: dispatchEnv(process.env, claude) });
+  } catch (e) {
+    finish({ code: null, error: `failed to spawn claude: ${(e as Error).message}`, cancelled: run.cancelled });
+    return;
+  }
+  run.child = child;
+  safe(() => spec.onSpawned?.(typeof child.pid === "number" ? child.pid : null));
+
+  child.stdout?.on("data", (c) => spec.onData?.(c.toString(), "stdout"));
+  child.stderr?.on("data", (c) => spec.onData?.(c.toString(), "stderr"));
+
+  timeout = setTimeout(() => {
+    if (run.state !== "running") return;
+    run.timedOut = true;
+    child.kill("SIGTERM");
+    setTimeout(() => run.state !== "ended" && child.kill("SIGKILL"), KILL_GRACE_MS).unref();
+  }, cfg.timeoutMs);
+  timeout.unref(); // never keep the process alive just for a pending run timeout
+
+  child.on("error", (err) => {
+    finish({ code: null, error: err.message, cancelled: run.cancelled });
+  });
+  child.on("exit", (code) => {
+    const error = run.cancelled
+      ? null
+      : run.timedOut
+        ? "timed out after 30m"
+        : code === 0
+          ? null
+          : `claude exited ${code}`;
+    finish({ code, error, cancelled: run.cancelled });
+  });
+}
+
+/** Runner snapshot for the status endpoint (no run contents). */
+export function runnerStatus(): {
+  running: number;
+  queued: number;
+  maxConcurrent: number;
+  maxQueue: number;
+  admission: AdmissionVerdict | null;
+} {
+  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission };
+}
+
+// ── one-shot dispatches (the /api/agent/dispatch alias + the skill scheduler) ─
 
 export interface DispatchOptions {
   /** Per-dispatch spawner override (else the runner's). */
@@ -383,20 +711,8 @@ export interface DispatchOptions {
   outputFormat?: OutputFormat;
 }
 
-interface Job {
-  d: Dispatch;
-  entry: VaultEntry;
-  prompt: string;
-  opts: DispatchOptions;
-}
-
 const dispatches = new Map<string, Dispatch>();
-const procs = new Map<string, SpawnedProc>();
-const queue: Job[] = [];
-let running = 0;
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
-let lastAdmission: AdmissionVerdict | null = null;
-let generation = 0; // bumped by _resetDispatches so a stale child can't touch new state
+const handles = new Map<string, RunHandle>();
 type Listener = (ev: DispatchEvent) => void;
 const listeners = new Map<string, Set<Listener>>();
 
@@ -405,14 +721,6 @@ function fire(id: string, ev: DispatchEvent): void {
 }
 function emitStatus(d: Dispatch): void {
   fire(d.id, { type: "status", dispatch: d });
-}
-
-/** Thrown when the waiting queue is full (the route maps it to 503). */
-export class AgentBusyError extends Error {
-  constructor(msg: string) {
-    super(msg);
-    this.name = "AgentBusyError";
-  }
 }
 
 export function getDispatch(id: string): Dispatch | null {
@@ -434,39 +742,17 @@ export function subscribe(id: string, cb: Listener): () => void {
   return () => set!.delete(cb);
 }
 
-/** Runner snapshot for the status endpoint (no dispatch contents). */
-export function runnerStatus(): {
-  running: number;
-  queued: number;
-  maxConcurrent: number;
-  maxQueue: number;
-  admission: AdmissionVerdict | null;
-} {
-  return { running, queued: queue.length, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, admission: lastAdmission };
-}
-
 export function cancelDispatch(id: string): boolean {
   const d = dispatches.get(id);
-  if (!d) return false;
-  if (d.status === "queued") {
-    const i = queue.findIndex((j) => j.d.id === id);
-    if (i >= 0) queue.splice(i, 1);
-    d.status = "cancelled";
-    d.queuedReason = null;
-    d.endedAt = Date.now();
-    emitStatus(d);
-    return true;
-  }
-  if (d.status !== "running") return false;
-  const p = procs.get(id);
+  const h = handles.get(id);
+  if (!d || !h) return false;
+  if (d.status !== "queued" && d.status !== "running") return false;
+  // Mark first so the run's onEnd (sync for a queued/fake child) is a no-op.
   d.status = "cancelled";
+  d.queuedReason = null;
   d.endedAt = Date.now();
   emitStatus(d);
-  if (p) {
-    p.kill("SIGTERM");
-    // The slot is released on exit; if SIGTERM is ignored, force it.
-    if (procs.has(id)) setTimeout(() => procs.has(id) && p.kill("SIGKILL"), KILL_GRACE_MS).unref();
-  }
+  h.cancel();
   return true;
 }
 
@@ -478,12 +764,6 @@ export function startDispatch(
   req: { prompt: string; skill?: string | null; noteId?: string | null },
   opts: DispatchOptions = {},
 ): Dispatch {
-  // Only a dispatch that could start right now (empty queue + free slot) bypasses
-  // the bound — so memory-refused dispatches can't grow the queue without limit.
-  const startsNow = queue.length === 0 && running < cfg.maxConcurrent;
-  if (!startsNow && queue.length >= cfg.maxQueue) {
-    throw new AgentBusyError(`agent queue full (${queue.length} waiting)`);
-  }
   const d: Dispatch = {
     id: randomUUID(),
     vaultId: entry.id,
@@ -497,129 +777,44 @@ export function startDispatch(
     runStartedAt: null,
     endedAt: null,
   };
+  const prompt = buildPrompt(req.prompt, d.skill, d.noteId);
   dispatches.set(d.id, d);
-  queue.push({ d, entry, prompt: buildPrompt(req.prompt, d.skill, d.noteId), opts });
-  pump();
-  return d;
-}
-
-function setQueuedReason(d: Dispatch, reason: string): void {
-  if (d.queuedReason === reason) return;
-  d.queuedReason = reason;
-  emitStatus(d);
-}
-
-/** Start as many queued jobs as slots + memory allow; otherwise record why each
- *  waits and (for memory refusals) schedule a re-check. */
-function pump(): void {
-  if (retryTimer) {
-    clearTimeout(retryTimer);
-    retryTimer = null;
-  }
-  while (queue.length > 0 && running < cfg.maxConcurrent) {
-    let sample: MemorySample | null = null;
-    try {
-      sample = cfg.memoryProbe();
-    } catch {
-      sample = null; // a throwing probe is "unknown" → fail-open
-    }
-    const verdict = admissionVerdict(sample, cfg.swapMaxPct, cfg.freeMinPct);
-    lastAdmission = verdict;
-    if (!verdict.ok) {
-      for (const j of queue) setQueuedReason(j.d, verdict.reason!);
-      retryTimer = setTimeout(pump, cfg.admissionRetryMs);
-      retryTimer.unref();
-      return;
-    }
-    launch(queue.shift()!);
-  }
-  for (const j of queue) setQueuedReason(j.d, `waiting for a free agent slot (${running}/${cfg.maxConcurrent} running)`);
-}
-
-function launch(job: Job): void {
-  const { d, entry, prompt, opts } = job;
-  running++;
-  d.status = "running";
-  d.queuedReason = null;
-  d.runStartedAt = Date.now();
-  emitStatus(d);
-
-  let mcpDir: string | null = null;
-  let released = false;
-  const gen = generation;
-  const release = () => {
-    if (released) return;
-    released = true;
-    if (mcpDir) {
-      try {
-        rmSync(mcpDir, { recursive: true, force: true });
-      } catch {
-        /* best effort */
-      }
-    }
-    if (gen !== generation) return;
-    procs.delete(d.id);
-    running--;
-    pump();
-  };
-  const fail = (msg: string) => {
-    if (d.status === "running") {
-      d.status = "error";
-      d.error = msg;
-      d.endedAt = Date.now();
-      emitStatus(d);
-    }
-    release();
-  };
-
-  let child: SpawnedProc;
+  let h: RunHandle;
   try {
-    const cwd = cfg.cwd();
-    // 0700 dir from mkdtemp + 0600 file: only this server user can read the token.
-    mcpDir = mkdtempSync(join(tmpdir(), "prism-agent-"));
-    const mcpPath = join(mcpDir, "mcp.json");
-    writeFileSync(mcpPath, JSON.stringify(vaultMcpConfig(entry)), { mode: 0o600 });
-    const claude = cfg.claudePath();
-    const args = buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd });
-    child = (opts.spawner ?? cfg.spawner)(claude, args, { cwd, env: dispatchEnv(process.env, claude) });
+    h = enqueueRun({
+      entry,
+      spawner: opts.spawner,
+      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd }),
+      onQueued: (reason) => {
+        if (d.status !== "queued") return;
+        d.queuedReason = reason;
+        emitStatus(d);
+      },
+      onStart: () => {
+        d.status = "running";
+        d.queuedReason = null;
+        d.runStartedAt = Date.now();
+        emitStatus(d);
+      },
+      onData: (text) => {
+        if (d.output.length >= MAX_OUTPUT) return;
+        d.output += text;
+        fire(d.id, { type: "output", text });
+      },
+      onEnd: ({ code, error }) => {
+        if (d.status !== "running") return; // cancelled (already marked)
+        d.status = code === 0 && !error ? "done" : "error";
+        if (d.status === "error") d.error = error ?? `claude exited ${code}`;
+        d.endedAt = Date.now();
+        emitStatus(d);
+      },
+    });
   } catch (e) {
-    fail(`failed to spawn claude: ${(e as Error).message}`);
-    return;
+    dispatches.delete(d.id);
+    throw e;
   }
-  procs.set(d.id, child);
-
-  const append = (chunk: Buffer | string) => {
-    if (d.output.length >= MAX_OUTPUT) return;
-    const text = chunk.toString();
-    d.output += text;
-    fire(d.id, { type: "output", text });
-  };
-  child.stdout?.on("data", append);
-  child.stderr?.on("data", append);
-
-  const timeout = setTimeout(() => {
-    if (d.status === "running") {
-      d.error = "timed out after 30m";
-      child.kill("SIGTERM");
-      setTimeout(() => procs.has(d.id) && child.kill("SIGKILL"), KILL_GRACE_MS).unref();
-    }
-  }, cfg.timeoutMs);
-  timeout.unref(); // never keep the process alive just for a pending dispatch timeout
-
-  child.on("error", (err) => {
-    clearTimeout(timeout);
-    fail(err.message);
-  });
-  child.on("exit", (code) => {
-    clearTimeout(timeout);
-    if (d.status === "running") {
-      d.status = code === 0 && !d.error ? "done" : "error";
-      if (d.status === "error" && !d.error) d.error = `claude exited ${code}`;
-      d.endedAt = Date.now();
-      emitStatus(d);
-    }
-    release();
-  });
+  handles.set(d.id, h);
+  return d;
 }
 
 /** Test-only: clear the in-memory registry + queue and restore default config. */
@@ -627,7 +822,7 @@ export function _resetDispatches(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   dispatches.clear();
-  procs.clear();
+  handles.clear();
   listeners.clear();
   queue.length = 0;
   running = 0;

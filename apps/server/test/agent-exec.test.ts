@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   buildClaudeArgs,
+  cliSessionFile,
   vaultMcpConfig,
   buildPrompt,
   dispatchEnv,
@@ -26,6 +27,8 @@ import {
   admissionVerdict,
   configureAgentRunner,
   startDispatch,
+  enqueueRun,
+  type RunHandle,
   getDispatch,
   listDispatches,
   cancelDispatch,
@@ -211,12 +214,13 @@ test("dispatchEnv is an allowlist: no server secrets, no nested-session marker, 
     DYLD_INSERT_LIBRARIES: "/evil.dylib",
   };
   const env = dispatchEnv(src, "/home/u/.local/bin/claude");
-  const allowed = new Set<string>([...ENV_ALLOWLIST, "PATH", "CLAUDE_STREAM_IDLE_TIMEOUT_MS", "DISABLE_AUTOUPDATER"]);
+  const allowed = new Set<string>([...ENV_ALLOWLIST, "PATH", "CLAUDE_STREAM_IDLE_TIMEOUT_MS", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"]);
   for (const k of Object.keys(env)) assert.ok(allowed.has(k), `unexpected env var ${k}`);
   for (const v of Object.values(env)) assert.doesNotMatch(String(v), /secret-|evil/);
   assert.equal(env.HOME, "/home/u");
   assert.equal(env.USER, "u");
   assert.equal(env.CLAUDECODE, undefined);
+  assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1", "auto-memory (a context source outside the cwd) is off");
   assert.ok(env.PATH!.startsWith("/home/u/.local/bin:"), "claude's own dir first");
   assert.ok(env.PATH!.split(":").includes("/usr/bin"));
 });
@@ -252,7 +256,7 @@ test("spawn: fixed cwd, allowlisted env, 0600 strict MCP config holding only the
   assert.equal(call.cmd, FAKE_CLAUDE);
   assert.equal(call.cwd, join(cwdRoot, "agent-cwd"));
   assert.equal(statSync(call.cwd).mode & 0o777, 0o700);
-  const allowed = new Set<string>([...ENV_ALLOWLIST, "PATH", "CLAUDE_STREAM_IDLE_TIMEOUT_MS", "DISABLE_AUTOUPDATER"]);
+  const allowed = new Set<string>([...ENV_ALLOWLIST, "PATH", "CLAUDE_STREAM_IDLE_TIMEOUT_MS", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"]);
   for (const k of Object.keys(call.env)) assert.ok(allowed.has(k), `unexpected env var ${k}`);
   assert.equal(call.env.PARACHUTE_TOKEN, undefined);
   assert.equal(call.env.SESSION_SECRET, undefined);
@@ -503,4 +507,50 @@ test("a queued dispatch emits status events as it moves to running", () => {
   rec.children[0]!.exit(0);
   rec.children[1]!.exit(0);
   assert.deepEqual(statuses, ["running", "done"]);
+});
+
+// ── WP3.1: session argv + the CLI's per-cwd session store ────────────────────
+
+test("argv (sessions): --session-id / --resume replace --no-session-persistence; ids must be uuids; allowlist is vault-only", () => {
+  const id = "0b7c2f4e-1a2b-4c3d-8e9f-001122334455";
+  const first = buildClaudeArgs("p", "/m", { outputFormat: "stream-json", includePartial: true, session: { id, resume: false } });
+  assert.equal(flagValue(first, "--session-id"), id);
+  assert.ok(!first.includes("--no-session-persistence") && !first.includes("--resume"));
+  assert.ok(first.includes("--include-partial-messages"));
+  const next = buildClaudeArgs("p", "/m", { outputFormat: "stream-json", session: { id, resume: true } });
+  assert.equal(flagValue(next, "--resume"), id);
+  assert.ok(!next.includes("--session-id"));
+  assert.ok(!buildClaudeArgs("p", "/m", { includePartial: true }).includes("--include-partial-messages"), "partials need stream-json");
+  assert.throws(() => buildClaudeArgs("p", "/m", { session: { id: "--dangerously-skip-permissions", resume: true } }), /uuid/);
+  assert.throws(() => buildClaudeArgs("p", "/m", { allowedTools: ["Bash"] }), /vault MCP/);
+  assert.throws(() => buildClaudeArgs("p", "/m", { allowedTools: ["mcp__other-vault__query-notes"] }), /vault MCP/);
+  assert.throws(() => buildClaudeArgs("p", "/m", { allowedTools: [] }), /vault MCP/);
+  const ro = buildClaudeArgs("p", "/m", { allowedTools: ["mcp__parachute-vault__query-notes", "mcp__parachute-vault__list-tags"] });
+  assert.equal(flagValue(ro, "--allowedTools"), "mcp__parachute-vault__query-notes,mcp__parachute-vault__list-tags");
+});
+
+test("cliSessionFile: $HOME/.claude/projects/<realpath(cwd), non-alphanumerics → '-'>/<id>.jsonl — NOT inside the cwd", () => {
+  const id = "0b7c2f4e-1a2b-4c3d-8e9f-001122334455";
+  assert.equal(cliSessionFile("/nonexistent/x/.prism/agent-cwd", id, "/h"), `/h/.claude/projects/-nonexistent-x--prism-agent-cwd/${id}.jsonl`);
+  const f = cliSessionFile(join(cwdRoot, "agent-cwd"), id, "/h");
+  assert.ok(f.startsWith("/h/.claude/projects/"), "the session store lives outside the cwd, so the emptiness guard still holds");
+});
+
+test("launch: a run cancelled from inside its own onStart never spawns, and its slot is released", () => {
+  const rec = recordingSpawner();
+  configureAgentRunner({ spawner: rec.spawner });
+  startDispatch(ENTRY, { prompt: "holder" }); // takes the only slot
+  let h: RunHandle | null = null;
+  const ends: Array<{ cancelled: boolean }> = [];
+  h = enqueueRun({
+    entry: ENTRY,
+    args: (m) => buildClaudeArgs("p", m),
+    onStart: () => h!.cancel(),
+    onEnd: (i) => ends.push(i),
+  });
+  assert.equal(h.state(), "queued");
+  rec.children[0]!.exit(0); // slot frees → h launches → onStart cancels it
+  assert.equal(rec.calls.length, 1, "the cancelled run was never spawned");
+  assert.deepEqual(ends, [{ code: null, error: null, cancelled: true }]);
+  assert.equal(runnerStatus().running, 0);
 });
