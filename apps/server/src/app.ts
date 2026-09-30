@@ -24,6 +24,8 @@ import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
 import { calendar } from "./routes/calendar";
 import { mcp } from "./routes/mcp";
+import { pats } from "./routes/pats";
+import { mountPrismMcp } from "./mcp/router";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -110,6 +112,11 @@ export function createApp(): Hono {
   // row; rate-limit it as defense-in-depth against a paired peer flooding requests.
   app.use("/api/federation/mirror", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "federation-mirror" }));
 
+  // Prism MCP access tokens (WP6.1): self-service create/list/revoke under /auth.
+  // One shared bucket for the collection AND /auth/pats/:id (revoke). Hono's
+  // `/auth/pats/*` matches both, so a single registration covers them.
+  app.use("/auth/pats/*", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-pats" }));
+  app.route("/auth", pats);
   app.route("/auth", auth);
   // Public, anonymous publication JSON (Horizon B) and peer federation (Horizon
   // C) are mounted under /api but BEFORE the gateway `api` group — like `rag` —
@@ -159,6 +166,13 @@ export function createApp(): Hono {
     const ok = await vault.health();
     return c.json({ ok, vault: ok }, ok ? 200 : 503);
   });
+
+  // Prism MCP (WP6.1): stateless Streamable-HTTP at /mcp + its RFC 9728
+  // protected-resource metadata under /.well-known/. Bearer-only (PAT, device
+  // token, owner hub JWT, loopback COLLAB_TOKEN), rate-limited per credential in
+  // the router. MUST be above the SPA fallback, and both prefixes are in the web
+  // service worker's navigateFallbackDenylist (apps/web/vite.config.ts).
+  mountPrismMcp(app, "/mcp");
 
   // Static web app + SPA fallback (relative to cwd = apps/server).
   // Cache strategy: Vite content-hashes everything under /assets, so those are

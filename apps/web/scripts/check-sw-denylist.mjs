@@ -25,7 +25,7 @@ const VITE_CONFIG = resolve(__dirname, "../vite.config.ts");
 /** Route prefixes the SERVER owns. Each must be in navigateFallbackDenylist or
  *  it will be shadowed by the SPA shell in the browser. Keep in sync with the
  *  server mounts in apps/server/src/app.ts (`app.route("/auth"...)`, etc.). */
-const SERVER_ROUTE_PREFIXES = ["/auth", "/api", "/health"];
+const SERVER_ROUTE_PREFIXES = ["/auth", "/api", "/health", "/mcp", "/.well-known"];
 
 /** The public publication JSON path. It must live under one of the denylisted
  *  prefixes (it's /api/p/*), NOT be its own un-denylisted prefix like /p. */
@@ -59,7 +59,7 @@ const denylistBody = m[1];
  *  prefix's first path segment — so `^\/api\/` covers `/api` AND `/api/p`. */
 function covered(prefix) {
   const seg = prefix.replace(/^\//, "").split("/")[0]; // "auth" from "/auth"
-  const normalized = denylistBody.replace(/\\\//g, "/"); // \/  →  /
+  const normalized = denylistBody.replace(/\\\//g, "/").replace(/\\\./g, "."); // \/ → /, \. → .
   return normalized.includes(`^/${seg}`);
 }
 

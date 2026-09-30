@@ -433,6 +433,30 @@ db.exec(`
   );
 `);
 
+// ── Prism MCP personal access tokens (WP6.1, auth/pat.ts) ────────────────────
+// Bearer credentials for agents calling the Prism MCP endpoint (/mcp). ONLY the
+// SHA-256 of the `pp_…` secret is stored. Each PAT is bound to ONE vault and
+// resolves to its owner's ordinary user actor (role + grants recomputed per
+// request), capped by `scope` (read → read-only tools only). Accepted on the MCP
+// endpoint only — never as a general web credential. Row access lives in pat.ts.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_pats (
+    id           TEXT PRIMARY KEY,             -- pat_<random>, safe to show/list
+    token_hash   TEXT NOT NULL UNIQUE,         -- sha256(pp_...) hex
+    prefix       TEXT NOT NULL,                -- first chars of the token, for recognition in lists
+    email        TEXT NOT NULL,                -- the subject (account) the PAT acts as
+    vault_id     TEXT NOT NULL,                -- registry vault id the PAT is bound to
+    scope        TEXT NOT NULL,                -- 'read' | 'write'
+    label        TEXT,
+    device_id    TEXT,                         -- native device that minted it (dies with the device)
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER,
+    expires_at   INTEGER NOT NULL,
+    revoked_at   INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS mcp_pats_email ON mcp_pats(email);
+`);
+
 // Migration: accounts now carry a password. Add the column if an older db
 // predates it (CREATE TABLE IF NOT EXISTS won't alter an existing table).
 {

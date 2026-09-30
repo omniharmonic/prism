@@ -25,7 +25,31 @@ export type Actor =
   | { kind: "link"; capabilityId: string; role: "guest"; vaultId: string; grants: Grant[] }
   | { kind: "anon"; role: "guest"; vaultId: string; grants: Grant[] };
 
+/**
+ * In-process actor injection (WP6.1, mcp/dispatch.ts). An MCP tool calls the
+ * gateway's own routes IN-PROCESS via `app.request(path, init, env)`, passing the
+ * already-authenticated actor in `env` under this module-private symbol. Nothing
+ * that arrives over HTTP can set it: `c.env` is populated by the runtime adapter
+ * (node-server: `{ incoming, outgoing }`), never from request data, and a unique
+ * `Symbol()` (not `Symbol.for`) cannot be named from outside this process. This
+ * is what keeps a PAT from becoming a web credential while still letting every
+ * tool go through the SAME route handlers — and permission code — as the web app.
+ */
+export const INPROCESS_ACTOR: unique symbol = Symbol("prism.inprocess-actor");
+/** Same private channel: the rate-limit key of an in-process dispatch (`mcp:<via>:<credentialId>`). */
+export const INPROCESS_CLIENT_KEY: unique symbol = Symbol("prism.inprocess-client-key");
+
+function injectedActor(c: Context): Actor | null {
+  const env = c.env as Record<symbol, unknown> | undefined;
+  if (!env || typeof env !== "object") return null;
+  const a = env[INPROCESS_ACTOR] as Actor | undefined;
+  return a && typeof a === "object" && typeof a.kind === "string" ? a : null;
+}
+
 export function resolveActor(c: Context): Actor {
+  const injected = injectedActor(c);
+  if (injected) return injected;
+
   // The active vault: the X-Prism-Vault header resolved against the registry
   // (unknown/absent → primary, byte-identical to the single-vault default).
   const vaultId = resolveVaultEntry(c.req.header("x-prism-vault")).id;

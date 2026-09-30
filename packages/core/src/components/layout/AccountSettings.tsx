@@ -9,6 +9,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Badge } from "../ui/Badge";
 import { useAccount, type AccountProfile, type SignedInDevice } from "../../data/Account";
+import { AgentAccessTokens } from "./AgentAccessTokens";
 
 /** Downscale a picked image to a small square avatar (data URL) so it stays well
  *  under the server's size cap and renders crisply at cursor/comment sizes. */
@@ -227,6 +228,9 @@ export function AccountSettings() {
           </p>
         </div>
       )}
+
+      {/* Agent access tokens: Prism MCP PATs (WP6.1) */}
+      <AgentAccessTokens />
     </div>
   );
 }
