@@ -9,6 +9,7 @@
 import { Hono, type Context } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
+import { getSourceHealth } from "../worker/health";
 import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
@@ -934,6 +935,13 @@ async function tunnelStatus(): Promise<Record<string, unknown>> {
     return { managed: false, hostname, detail: "pm2 not available on this host" };
   }
 }
+
+/** Per-source ingest health (server workers + desktop-owned sources inferred from
+ *  the vault). Server-owner only; error text is scrubbed in worker/health.ts. */
+acl.get("/workers", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  return c.json({ sources: await getSourceHealth(), checkedAt: new Date().toISOString() });
+});
 
 /** Server config + status snapshot. NEVER returns a secret/token value — only
  *  whether each is configured. */

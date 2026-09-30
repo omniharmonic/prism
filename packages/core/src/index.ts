@@ -74,6 +74,7 @@ export type {
   TunnelStatus,
   TunnelIngress,
   ServerInfo,
+  WorkerSourceHealth,
   IntegrationStatus,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";

@@ -157,6 +157,25 @@ export const config = {
   // `vault:<name>:admin` token: minted 1h-ephemeral per run via the operator CLI,
   // or PARACHUTE_ADMIN_TOKEN. 0 DISABLES it.
   historyCompactIntervalMs: Number(process.env.HISTORY_COMPACT_INTERVAL_MS ?? 86_400_000),
+  // Worker health + staleness alerts (worker/health.ts). A source is "stale" when
+  // nothing succeeded within its threshold, "failing" after WORKER_FAIL_STREAK
+  // consecutive errors. A threshold of 0 turns the STALENESS check off for that
+  // source (failure streaks still count). Desktop-owned sources (email, calendar,
+  // skills) are inferred from the newest vault note of each kind, cached for
+  // WORKER_DESKTOP_PROBE_MS. One email + vault `alert` note per episode; set
+  // WORKER_ALERTS_ENABLED=false for status-only (tests do).
+  workerAlertsEnabled: (process.env.WORKER_ALERTS_ENABLED ?? "true") !== "false",
+  workerFailStreak: Number(process.env.WORKER_FAIL_STREAK ?? 3),
+  workerDesktopProbeMs: Number(process.env.WORKER_DESKTOP_PROBE_MS ?? 180_000),
+  workerStaleMs: {
+    matrix: Number(process.env.WORKER_STALE_MATRIX_MS ?? 900_000),
+    clickup: Number(process.env.WORKER_STALE_CLICKUP_MS ?? 1_800_000),
+    fireflies: Number(process.env.WORKER_STALE_FIREFLIES_MS ?? 108_000_000), // 30h: runs at fixed local hours
+    fathom: Number(process.env.WORKER_STALE_FATHOM_MS ?? 0), // superseded by Fireflies: failures only
+    email: Number(process.env.WORKER_STALE_EMAIL_MS ?? 1_800_000),
+    calendar: Number(process.env.WORKER_STALE_CALENDAR_MS ?? 3_600_000),
+    skills: Number(process.env.WORKER_STALE_SKILLS_MS ?? 10_800_000),
+  },
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
   // new chat portal; an un-joined room never appears in /sync, so its messages
   // are invisible to the ingester). Off by default — on a long-lived bridge the

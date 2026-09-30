@@ -11,7 +11,7 @@ import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, Che
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
-import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress } from "../../../data/CollabSharing";
+import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress, type WorkerSourceHealth } from "../../../data/CollabSharing";
 
 const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[] = [
   { key: "APP_ORIGIN", label: "App origin (public URL)", help: "The public https origin — must match the tunnel hostname. Changing it affects cookies; restart required." },
@@ -201,6 +201,15 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
   );
 }
 
+function ago(iso: string | null): string {
+  if (!iso) return "never";
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
+  if (m < 1) return "just now";
+  if (m < 90) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+
 export function ServerPanel() {
   const sharing = useCollabSharing();
   const vaultSignal = useVaultChangeSignal();
@@ -215,6 +224,7 @@ export function ServerPanel() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const [ingress, setIngress] = useState<TunnelIngress | null>(null);
+  const [workers, setWorkers] = useState<WorkerSourceHealth[] | null>(null);
   const refresh = useCallback(async () => {
     if (!sharing?.getServerInfo && !sharing?.getIntegrationStatus) return;
     setError(null);
@@ -223,6 +233,7 @@ export function ServerPanel() {
       try {
         setInfo(await sharing.getServerInfo());
         if (sharing.getTunnelIngress) setIngress(await sharing.getTunnelIngress().catch(() => null));
+        if (sharing.getWorkerHealth) setWorkers((await sharing.getWorkerHealth().catch(() => null))?.sources ?? null);
       } catch (e) {
         setInfo(null);
         infoError = e instanceof Error ? e.message : "Couldn't load server settings.";
@@ -342,6 +353,31 @@ export function ServerPanel() {
           </div>
         )}
       </div>
+
+      {/* Ingest health — server workers + desktop-owned sources (email, calendar,
+          skills), the latter inferred from the newest vault note of each kind. */}
+      {workers && (
+        <div style={cardStyle}>
+          <div style={labelStyle}>Ingest health</div>
+          {workers.filter((w) => w.status !== "disabled").map((w, i, arr) => (
+            <div key={`${w.vaultId}:${w.name}`} style={{ ...rowStyle, flexDirection: "column", gap: 2, borderBottom: i === arr.length - 1 ? "none" : rowStyle.borderBottom }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span>{w.name} <span style={{ color: "var(--text-muted)", fontSize: 11 }}>({w.kind})</span></span>
+                <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{ago(w.lastSuccessAt)}</span>
+                  <Badge variant={w.status === "ok" ? "success" : w.status === "stale" ? "warning" : "error"}>{w.status}</Badge>
+                </span>
+              </div>
+              {w.lastError && w.failureStreak > 0 && (
+                <span style={{ color: "var(--color-warning)", fontSize: 12 }}>{w.failureStreak} failure(s) in a row: {w.lastError}</span>
+              )}
+            </div>
+          ))}
+          {workers.every((w) => w.status === "disabled") && (
+            <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: 0 }}>No sources configured.</p>
+          )}
+        </div>
+      )}
 
       {/* Vault tokens — hub JWTs with no auto-renewal: an expired one silently
           breaks every sync into that vault, so surface it before it lapses. */}
