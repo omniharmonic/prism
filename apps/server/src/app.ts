@@ -5,7 +5,7 @@
  * from index.ts (process startup: assertConfig + serve + collab) so the full
  * request pipeline can be constructed and tested without binding a port.
  */
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { config } from "./config";
@@ -66,7 +66,20 @@ export function createApp(): Hono {
 
   // Only needed when the web app is served from a different origin (e.g. Vite dev
   // on :5173 without a proxy). Same-origin production traffic never triggers CORS.
-  const corsMw = cors({ origin: config.appOrigin, credentials: true });
+  const credentialedCors = cors({ origin: config.appOrigin, credentials: true });
+  // Native shells (WP2.1): the Tauri webview's origin (tauri://localhost,
+  // http://tauri.localhost) gets CORS WITHOUT credentials — it authenticates with
+  // an `Authorization: Bearer pd_…` device token, never a cookie, so the
+  // cookie-bearing CORS rule above is not loosened for it.
+  const nativeCors = cors({
+    origin: (o) => (config.nativeOrigins.includes(o) ? o : null),
+    credentials: false,
+    allowMethods: ["GET", "HEAD", "PUT", "POST", "PATCH", "DELETE"],
+  });
+  const corsMw: MiddlewareHandler = (c, next) => {
+    const origin = c.req.header("origin");
+    return origin && config.nativeOrigins.includes(origin) ? nativeCors(c, next) : credentialedCors(c, next);
+  };
   // Public publications are anonymous, read-only JSON meant for OTHER sites
   // (e.g. the bioregional twin's frontend embedding "field notes") — open CORS,
   // no credentials. Registered BEFORE the credentialed /api/* middleware so the
@@ -82,6 +95,11 @@ export function createApp(): Hono {
   app.use("/auth/login", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-login" }));
   app.use("/auth/register", rateLimit({ max: 10, windowMs: 10 * 60_000, name: "auth-register" }));
   app.use("/auth/request", rateLimit({ max: 5, windowMs: 10 * 60_000, name: "auth-request" }));
+  // Native sign-in: code → token exchange (code/verifier guessing), and the
+  // anon-reachable authorize/revoke endpoints (row-creation spam).
+  app.use("/auth/device/token", rateLimit({ max: 20, windowMs: 10 * 60_000, name: "auth-device-token" }));
+  app.use("/auth/device/authorize", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-device-authorize" }));
+  app.use("/auth/device/revoke", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-device-revoke" }));
   app.use("/auth/callback", rateLimit({ max: 30, windowMs: 10 * 60_000, name: "auth-callback" }));
   // The peer-pairing endpoint is anon-reachable and consumes a single-use code;
   // the 144-bit code already makes guessing infeasible, but rate-limit it too as

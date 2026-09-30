@@ -72,6 +72,15 @@ export function getConnection(): Connection {
 export const GATEWAY_ORIGIN =
   (import.meta.env.VITE_GATEWAY_URL as string | undefined)?.replace(/\/+$/, "") ?? "";
 
+/** Native sign-in (WP2.1): the server bounces a signed-out browser to
+ *  `/?next=/auth/device/continue`. That EXACT path is the only `next` we honor —
+ *  anything else goes to the app root, so `next` can never be an open redirect. */
+const DEVICE_CONTINUE_PATH = "/auth/device/continue";
+export function postLoginTarget(): string | null {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next === DEVICE_CONTINUE_PATH ? `${GATEWAY_ORIGIN}${DEVICE_CONTINUE_PATH}` : null;
+}
+
 /** Base URL for the gateway REST API. */
 export function apiBase(): string {
   return `${GATEWAY_ORIGIN}/api`;

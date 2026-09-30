@@ -4,11 +4,11 @@
 // The name + avatar feed collab presence so a person's cursor/comments/edits are
 // identifiable. Same surface for the owner and for workspace members.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { User, Camera, Save, KeyRound, Check } from "lucide-react";
+import { User, Camera, Save, KeyRound, Check, Smartphone, X } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Badge } from "../ui/Badge";
-import { useAccount, type AccountProfile } from "../../data/Account";
+import { useAccount, type AccountProfile, type SignedInDevice } from "../../data/Account";
 
 /** Downscale a picked image to a small square avatar (data URL) so it stays well
  *  under the server's size cap and renders crisply at cursor/comment sizes. */
@@ -40,8 +40,20 @@ export function AccountSettings() {
   const [newPw, setNewPw] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
 
+  const [devices, setDevices] = useState<SignedInDevice[] | null>(null);
+
+  const loadDevices = useCallback(async () => {
+    if (!account?.listDevices) return;
+    try {
+      setDevices(await account.listDevices());
+    } catch {
+      setDevices(null); // older server without /auth/devices — hide the section
+    }
+  }, [account]);
+
   const load = useCallback(async () => {
     if (!account) return;
+    void loadDevices();
     try {
       const p = await account.getProfile();
       setProfile(p);
@@ -94,7 +106,22 @@ export function AccountSettings() {
     }
   }, [account, curPw, newPw]);
 
+  const revokeDevice = useCallback(async (d: SignedInDevice) => {
+    if (!account?.revokeDevice) return;
+    if (!window.confirm(`Sign out "${d.label ?? "this device"}"? It will need to sign in again.`)) return;
+    setError(null);
+    try {
+      await account.revokeDevice(d.id);
+      setNotice("Device signed out.");
+      await loadDevices();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't revoke that device.");
+    }
+  }, [account, loadDevices]);
+
   if (!account) return null;
+
+  const fmt = (ms: number | null) => (ms ? new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "never");
 
   const cardStyle = { border: "1px solid var(--glass-border)", borderRadius: 10, padding: 16, marginBottom: 16, background: "var(--glass-bg)" } as const;
   const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
@@ -163,6 +190,43 @@ export function AccountSettings() {
           <KeyRound size={13} /> {profile?.hasPassword ? "Change password" : "Set password"}
         </Button>
       </div>
+
+      {/* Signed-in devices: native Prism apps holding a device token */}
+      {devices && (
+        <div style={cardStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <Smartphone size={14} />
+            <div style={labelStyle}>Signed-in devices</div>
+          </div>
+          {devices.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: "var(--text-muted)", margin: 0 }}>
+              No Prism apps are signed in to this account.
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {devices.map((d) => (
+                <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", border: "1px solid var(--glass-border)", borderRadius: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.label ?? "Prism app"}
+                      {d.current && <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 6 }}>(this device)</span>}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+                      Last seen {fmt(d.lastSeenAt)} · signed in {fmt(d.createdAt)}
+                    </div>
+                  </div>
+                  <Button variant="ghost" onClick={() => void revokeDevice(d)} title="Sign this device out">
+                    <X size={13} /> Revoke
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "10px 0 0" }}>
+            Each app signs in through your browser and gets its own key. Revoking signs that device out immediately.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

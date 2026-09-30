@@ -20,8 +20,24 @@ import { createInvite, inviteForToken, consumeInvite } from "../auth/invite";
 import { hashPassword, verifyPassword, passwordProblem } from "../auth/password";
 import { getUser, setAccount, setUserPassword, ensureUser, setUserProfile, resolveWorkspaceId, getWorkspace } from "../db";
 import { resolveActor } from "../auth/actor";
+import { DEVICE_TOKEN_PREFIX, bearerFromHeader, verifyDeviceToken } from "../auth/device";
+import { deviceAuth, pendingDeviceRequest, DEVICE_CONTINUE_PATH } from "./device";
+import type { Context } from "hono";
 
 export const auth = new Hono();
+
+// Native sign-in (WP2.1): /auth/device/* + /auth/devices — see routes/device.ts.
+auth.route("/", deviceAuth);
+
+/** The signed-in email from a browser session, else from a native device token
+ *  (`Authorization: Bearer pd_…`). Used by the self-service account routes a
+ *  native client needs; bootstrap-only routes (/set-password) stay session-only. */
+function accountEmail(c: Context): string | null {
+  const s = readSession(c);
+  if (s) return s.email;
+  const b = bearerFromHeader(c.req.header("authorization"));
+  return b?.startsWith(DEVICE_TOKEN_PREFIX) ? (verifyDeviceToken(b)?.email ?? null) : null;
+}
 
 const norm = (e: string) => e.trim().toLowerCase();
 const validEmail = (e?: string): e is string => !!e && /.+@.+\..+/.test(e);
@@ -74,8 +90,9 @@ auth.post("/set-password", async (c) => {
 // identity (primary key) and is NOT changed here. Same endpoint for owner + members.
 const MAX_AVATAR_CHARS = 350_000; // ~256KB as a data: URL (client resizes small)
 auth.put("/profile", async (c) => {
-  const s = readSession(c);
-  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const email = accountEmail(c);
+  if (!email) return c.json({ error: "unauthorized" }, 401);
+  const s = { email };
   const { name, avatar } = await c.req.json<{ name?: string; avatar?: string | null }>().catch(() => ({}) as { name?: string; avatar?: string | null });
   const patch: { name?: string; avatar?: string | null } = {};
   if (name !== undefined) {
@@ -102,8 +119,9 @@ auth.put("/profile", async (c) => {
 // this requires the existing password, so a hijacked session can't silently
 // change it. If the account has no password yet, falls back to just setting one.
 auth.post("/change-password", async (c) => {
-  const s = readSession(c);
-  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const email = accountEmail(c);
+  if (!email) return c.json({ error: "unauthorized" }, 401);
+  const s = { email };
   const { currentPassword, newPassword } = await c.req.json<{ currentPassword?: string; newPassword?: string }>().catch(() => ({}) as { currentPassword?: string; newPassword?: string });
   const pwErr = passwordProblem(newPassword ?? "");
   if (pwErr) return c.json({ error: pwErr }, 400);
@@ -144,6 +162,8 @@ auth.get("/callback", (c) => {
   if (!email || norm(email) !== config.ownerEmail) return c.redirect("/?login=expired");
   ensureUser(email);
   startSession(c, email);
+  // Native sign-in in progress in this browser (WP2.1)? Resume its consent page.
+  if (pendingDeviceRequest(c)) return c.redirect(DEVICE_CONTINUE_PATH);
   // First-time owner (no password yet) → nudge them to set one for password login.
   return c.redirect(getUser(email)?.password_hash ? "/" : "/set-password");
 });
@@ -154,8 +174,9 @@ auth.post("/logout", (c) => {
 });
 
 auth.get("/me", (c) => {
-  const s = readSession(c);
-  if (!s) return c.json({ authenticated: false }, 401);
+  const email = accountEmail(c);
+  if (!email) return c.json({ authenticated: false }, 401);
+  const s = { email };
   const u = getUser(s.email);
   // The viewer's role is PER-VAULT (the X-Prism-Vault header, resolved by
   // resolveActor). `isOwner` stays the global server-owner flag; `role` is what

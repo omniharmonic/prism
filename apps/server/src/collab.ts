@@ -30,6 +30,7 @@ import { vaultClient } from "./parachute";
 import { verifyCapability } from "./auth/capability";
 import { verifyPeerConnToken } from "./auth/peer-conn";
 import { isLocalRequest } from "./auth/local";
+import { deviceEmail } from "./auth/device";
 import {
   getSession,
   grantsForUser,
@@ -505,7 +506,9 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     return "own";
   }
 
-  const email = sessionEmailFromCookie(cookieHeader);
+  // A session cookie (browser), else a native device token passed as the
+  // Hocuspocus `token` param (WP2.1) — same user, same effectiveLevel semantics.
+  const email = sessionEmailFromCookie(cookieHeader) ?? deviceEmail(token);
   let grants: Grant[] = [];
   let role: Role = "guest";
   if (email) {

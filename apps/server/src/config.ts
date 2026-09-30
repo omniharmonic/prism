@@ -91,6 +91,27 @@ export const config = {
   // the webview. Shared between this .env and the desktop's prism-config.json.
   collabToken: process.env.COLLAB_TOKEN ?? "",
 
+  // ── Native sign-in / device tokens (WP2.1, auth/device.ts) ──
+  // Exact-match allowlist of redirect URIs a native client may use with
+  // /auth/device/authorize (comma-separated). Loopback redirects
+  // (http://127.0.0.1:<any port>/… or http://[::1]:<port>/…, RFC 8252 §7.3) are
+  // additionally accepted unless DEVICE_ALLOW_LOOPBACK=false.
+  deviceRedirectUris: (process.env.DEVICE_REDIRECT_URIS ?? "prism://auth/callback")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  deviceAllowLoopback: process.env.DEVICE_ALLOW_LOOPBACK !== "false",
+  // Sliding idle expiry and absolute lifetime of a device token, in days.
+  deviceTokenIdleDays: Number(process.env.DEVICE_TOKEN_IDLE_DAYS ?? 90),
+  deviceTokenMaxDays: Number(process.env.DEVICE_TOKEN_MAX_DAYS ?? 365),
+  // Browser origins of native shells (Tauri iOS/macOS = tauri://localhost,
+  // Windows/Android = http://tauri.localhost). They get NON-credentialed CORS on
+  // /api, /auth, /acl — bearer device tokens only; cookies stay same-origin.
+  nativeOrigins: (process.env.NATIVE_ORIGINS ?? "tauri://localhost,http://tauri.localhost")
+    .split(",")
+    .map((s) => s.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+
   // ── Parachute-to-Parachute federation (Horizon C) ──
   // This server's Ed25519 PRIVATE signing key as a base64url-encoded 32-byte
   // seed. Used to sign federation requests/connections to peer hubs; only the

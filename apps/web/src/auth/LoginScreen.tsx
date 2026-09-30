@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { login, requestMagicLink } from "../config";
+import { login, requestMagicLink, postLoginTarget } from "../config";
 
 /**
  * Sign-in screen. Prism is invite-only: people log in with the email + password
@@ -27,7 +27,9 @@ export function LoginScreen({ notice }: { notice?: string }) {
         setStatus("linksent");
       } else {
         await login(email.trim().toLowerCase(), password);
-        window.location.assign("/"); // re-enter the app with a session
+        // Re-enter the app with a session — or, mid native sign-in, resume the
+        // device consent page (postLoginTarget only ever returns that fixed path).
+        window.location.assign(postLoginTarget() ?? "/");
       }
     } catch (err) {
       setStatus("error");

@@ -1,7 +1,8 @@
 /**
  * Actor resolution — turn an incoming request into "who is this, and what may
  * they touch." Order: a valid session cookie wins (a signed-in person); else a
- * capability token (?t= query, or `Authorization: Capability <token>`); else
+ * native device token (`Authorization: Bearer pd_…`, same user actor as a
+ * session); else the loopback-only owner token; else a capability token (?t= query, or `Authorization: Capability <token>`); else
  * anonymous. The actor carries its grants so the permission layer can compute an
  * effective level per note. The owner (OWNER_EMAIL) is flagged for the "own"
  * short-circuit. Capability/anon actors are never the owner.
@@ -11,6 +12,7 @@ import { config } from "../config";
 import { readSession } from "./session";
 import { verifyCapability } from "./capability";
 import { isLocalRequest } from "./local";
+import { DEVICE_TOKEN_PREFIX, verifyDeviceToken } from "./device";
 import { grantsForUser, grantsForCapability, resolveVaultEntry, type Grant } from "../db";
 import { workspaceRole, type Role } from "../roles";
 
@@ -41,14 +43,36 @@ export function resolveActor(c: Context): Actor {
     };
   }
 
+  const bearer = bearerToken(c);
+
+  // Native device token (WP2.1): `Authorization: Bearer pd_…` minted by the
+  // /auth/device PKCE flow. Resolves to EXACTLY the actor a session for that
+  // email would — same per-vault role, same grants — and, unlike the owner-token
+  // path below, is honored over the public tunnel (it is a per-user, hashed,
+  // revocable credential, not a host secret). The `pd_` prefix is checked first
+  // so a device token can never be mistaken for (or fall into) the loopback
+  // COLLAB_TOKEN branch; an invalid/revoked one falls through to capability/anon.
+  if (bearer?.startsWith(DEVICE_TOKEN_PREFIX)) {
+    const dev = verifyDeviceToken(bearer);
+    if (dev) {
+      return {
+        kind: "user",
+        email: dev.email,
+        role: workspaceRole(dev.email, vaultId),
+        vaultId,
+        grants: grantsForUser(dev.email, vaultId),
+      };
+    }
+  }
+
   // Desktop owner path: the trusted Tauri app (talking to localhost) presents the
   // dedicated COLLAB_TOKEN (or vault token) as a Bearer token to authenticate as
   // the owner for HTTP routes (e.g. /acl share-link creation). LOCAL-ONLY: a token
   // presented over the public tunnel is ignored, so even a leaked token can't grant
   // owner access from the internet. The local operator owns every vault they target.
-  const bearer = bearerToken(c);
   if (
     bearer &&
+    !bearer.startsWith(DEVICE_TOKEN_PREFIX) &&
     isLocalRequest((k) => c.req.header(k)) &&
     ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))
   ) {
