@@ -19,7 +19,9 @@ import { workspaceRole, type Role } from "../roles";
 // Every actor carries the vault (tenant) the request is bound to, so the gateway
 // reads/writes the RIGHT vault and the permission math uses vault-scoped grants.
 export type Actor =
-  | { kind: "user"; email: string; role: Role; vaultId: string; grants: Grant[] }
+  // `deviceId` is set only when authenticated by a native device token (WP2.1),
+  // so credentials minted through it can be tied to — and die with — the device.
+  | { kind: "user"; email: string; role: Role; vaultId: string; grants: Grant[]; deviceId?: string }
   | { kind: "link"; capabilityId: string; role: "guest"; vaultId: string; grants: Grant[] }
   | { kind: "anon"; role: "guest"; vaultId: string; grants: Grant[] };
 
@@ -61,6 +63,7 @@ export function resolveActor(c: Context): Actor {
         role: workspaceRole(dev.email, vaultId),
         vaultId,
         grants: grantsForUser(dev.email, vaultId),
+        deviceId: dev.id,
       };
     }
   }

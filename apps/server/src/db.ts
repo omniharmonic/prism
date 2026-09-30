@@ -403,6 +403,15 @@ db.exec(`
   }
 }
 
+// Migration (WP2.1 L3): an MCP token minted while authenticated by a native
+// device token records that device, so revoking the device revokes it too.
+{
+  const cols = db.prepare("PRAGMA table_info(mcp_tokens)").all() as Array<{ name: string }>;
+  if (cols.length && !cols.some((c) => c.name === "device_id")) {
+    db.exec("ALTER TABLE mcp_tokens ADD COLUMN device_id TEXT");
+  }
+}
+
 // Migration: peers gained a collab_url (the peer hub's /collab WS URL) so the
 // FederationManager can self-discover endpoints instead of taking them from the
 // caller. Add the column to an older db.
@@ -625,11 +634,13 @@ export interface McpTokenRow {
   expires_at: number;
   created_at: number;
   revoked_at: number | null;
+  /** The native device (device_tokens.id) whose token minted this, if any. */
+  device_id?: string | null;
 }
 
 const insertMcpToken = db.prepare(
-  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at)
-   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at)`,
+  `INSERT INTO mcp_tokens (jti, vault_id, email, scope, label, expires_at, created_at, device_id)
+   VALUES (@jti, @vault_id, @email, @scope, @label, @expires_at, @created_at, @device_id)`,
 );
 const selectMcpTokensForVault = db.prepare("SELECT * FROM mcp_tokens WHERE vault_id = ? ORDER BY created_at DESC");
 const selectMcpToken = db.prepare("SELECT * FROM mcp_tokens WHERE jti = ?");
@@ -639,7 +650,11 @@ export function recordMcpToken(row: Omit<McpTokenRow, "created_at" | "revoked_at
   // `label` is normalized explicitly rather than by spread-over-default: with
   // `{ label: null, ...row }` an optional property present-but-undefined wins the
   // spread and better-sqlite3 throws on binding undefined (and TS flags TS2783).
-  insertMcpToken.run({ ...row, label: row.label ?? null, created_at: Date.now() });
+  insertMcpToken.run({ ...row, label: row.label ?? null, device_id: row.device_id ?? null, created_at: Date.now() });
+}
+/** Unrevoked MCP tokens minted through a given native device. */
+export function liveMcpTokensForDevice(deviceId: string): McpTokenRow[] {
+  return db.prepare("SELECT * FROM mcp_tokens WHERE device_id = ? AND revoked_at IS NULL").all(deviceId) as McpTokenRow[];
 }
 export function listMcpTokens(vaultId: string): McpTokenRow[] {
   return selectMcpTokensForVault.all(vaultId) as McpTokenRow[];

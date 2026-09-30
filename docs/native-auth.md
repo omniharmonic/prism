@@ -43,19 +43,33 @@ app                               system browser                         Prism S
 | `GET /auth/devices` | session or device token | Your live devices: `{devices:[{id,label,email,createdAt,lastSeenAt,expiresAt,current}]}`. The server owner may add `?all=1`. |
 | `DELETE /auth/devices/:id` | session or device token | Revoke your device (the owner may revoke any). Someone else's device returns 404. |
 
-Errors before the redirect URI is validated are **never redirected**. An
-unregistered `redirect_uri` or an unknown `client_id` gets a 400 error page, and
-nothing is parked or set as a cookie. After validation, PKCE and parameter errors
-redirect back with `error=invalid_request&state=…`.
+Errors before consent are **never redirected**, whatever caused them: an
+unregistered `redirect_uri`, an unknown `client_id`, `plain` or a missing PKCE
+challenge, a bad `response_type`, or an over-long `state`. Each gets a 400 error
+page, and nothing is parked or set as a cookie. Error parameters are never added
+to a URL the requester supplied. Only a completed consent redirects: `code` on
+Approve, `error=access_denied` on Deny.
 
 ### Redirect URIs
 
-- Exact match against `DEVICE_REDIRECT_URIS`, comma-separated (default
-  `prism://auth/callback`). Add a universal link (an `https://…` URL your app
-  claims) here for the stronger iOS option.
-- Desktop loopback (RFC 8252 §7.3): `http://127.0.0.1:<any port>/<path>` or
-  `http://[::1]:<port>/<path>`. `localhost` is not accepted. Set
-  `DEVICE_ALLOW_LOOPBACK=false` to disable.
+- Exact string match against `DEVICE_REDIRECT_URIS`, comma-separated (default
+  `prism://auth/callback`). No query and no trailing slash variants are accepted.
+  Add a universal link (an `https://…` URL your app claims) here for the stronger
+  iOS option.
+- Desktop loopback (RFC 8252 §7.3): exactly `http://127.0.0.1:<port>/callback` or
+  `http://127.0.0.1:<port>/`, or the same with `[::1]`.
+  - The port must be explicit and at least 1024.
+  - The URI may not contain a query, fragment or userinfo.
+  - `localhost` is not accepted.
+  - Set `DEVICE_ALLOW_LOOPBACK=false` to disable loopback redirects.
+
+### Consent page
+
+The `label` is chosen by the client, so the page presents it as a claim: *An
+app calling itself "<label>" wants to sign in to Prism as <email>*. The
+validated redirect target is shown prominently beneath it, either the scheme
+(`prism://auth/callback`, "an app on this device") or `127.0.0.1:<port>/callback`
+("an app on this computer").
 
 ## Using the token
 
@@ -88,6 +102,26 @@ redirect back with `error=invalid_request&state=…`.
 - Authorization codes: 5-minute lifetime, single use, bound to `client_id`,
   `redirect_uri` and the S256 challenge. Any redemption attempt burns the code. A
   replayed code also **revokes the token it already produced** (RFC 6749 §4.1.2).
+
+## Passwords and credentials created through a device
+
+- **`/auth/change-password` with a device token** always requires the current
+  password. If the account has no password yet (an owner who signs in only by
+  magic link), a device token gets `403 password_setup_requires_browser`: the
+  first password can only be set from a browser session. A stolen device token
+  therefore cannot create a new way to log in.
+- **A successful password change revokes the account's other device tokens.** The
+  calling device stays signed in. A change made from a browser session revokes
+  every device. The response carries `revokedDevices: <n>`.
+- **MCP tokens** minted through `/api/mcp/token` while authenticated by a device
+  token record that device (`mcp_tokens.device_id`). Revoking the device, whether
+  by id, by token, through a replayed code, or by a password change, also revokes
+  those hub tokens through the `mcp-token` revoker (the hub enforces it within
+  about 60s). If a hub revoke fails, it is logged, and the token stays unrevoked
+  and visible in the MCP token list so it can be revoked by hand.
+- **Capability (share) links** created through a device **persist** after the
+  device is revoked. They are standalone shares owned by the account, the same as
+  links created from a browser session. Remove them in the Share dialog.
 
 ## Notes for client implementers
 

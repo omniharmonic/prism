@@ -43,6 +43,7 @@ import {
   isValidVerifier,
   issueDeviceToken,
   randomId,
+  revokeDevice,
   s256,
   safeEqual,
   sanitizeLabel,
@@ -60,7 +61,6 @@ import {
   insertDeviceAuthCode,
   insertDeviceAuthRequest,
   listLiveDeviceTokens,
-  revokeDeviceTokenRow,
   setDeviceAuthCodeDevice,
   type DeviceAuthRequestRow,
 } from "../db";
@@ -120,10 +120,19 @@ function sessionIdOf(c: Context): string | null {
 
 function consentPage(c: Context, req: DeviceAuthRequestRow, email: string, sessionId: string) {
   const csrf = consentCsrf(req.id, sessionId);
+  // The label is CLIENT-CHOSEN — present it as a claim, never as fact. The
+  // redirect target is the server-validated part, so show it prominently.
   let target = req.redirect_uri;
+  let targetNote = "";
   try {
     const u = new URL(req.redirect_uri);
-    target = u.protocol === "http:" ? `${u.host} (this computer)` : `${u.protocol}//${u.host}`;
+    if (u.protocol === "http:") {
+      target = `${u.host}${u.pathname}`;
+      targetNote = " — an app on this computer";
+    } else {
+      target = `${u.protocol}//${u.host}${u.pathname}`;
+      targetNote = " — an app on this device";
+    }
   } catch {
     /* keep raw */
   }
@@ -131,10 +140,11 @@ function consentPage(c: Context, req: DeviceAuthRequestRow, email: string, sessi
     c,
     200,
     "Sign in Prism",
-    `<h1>Sign in Prism on ${esc(req.label ?? "Prism app")}?</h1>` +
-      `<p>This will let the Prism app on <strong>${esc(req.label ?? "this device")}</strong> act as <strong>${esc(email)}</strong> — ` +
-      `it will see and edit exactly what you can.</p>` +
-      `<p class="muted">Only approve if you just started signing in from the Prism app yourself. The app will receive a sign-in code at <code>${esc(target)}</code>. ` +
+    `<h1>Allow an app to sign in as you?</h1>` +
+      `<p>An app calling itself “${esc(req.label ?? "Prism app")}” wants to sign in to Prism as <strong>${esc(email)}</strong>. ` +
+      `If you approve, it will see and edit exactly what you can.</p>` +
+      `<p>The sign-in will be sent to:<br><code style="font-size:14px;font-weight:600">${esc(target)}</code>${esc(targetNote)}</p>` +
+      `<p class="muted">Only approve if you just started signing in from the Prism app yourself. ` +
       `You can revoke this device anytime in Settings → Account.</p>` +
       `<form method="post" action="/auth/device/approve">` +
       `<input type="hidden" name="req" value="${esc(req.id)}"><input type="hidden" name="csrf" value="${esc(csrf)}">` +
@@ -184,14 +194,15 @@ deviceAuth.get("/device/authorize", (c) => {
   if (q.client_id !== NATIVE_CLIENT_ID) return errorPage(c, 400, "Unknown client.");
   const redirectUri = q.redirect_uri;
   const state = q.state;
-  const bounce = (error: string, description: string) =>
-    c.redirect(withParams(redirectUri, { error, error_description: description, state }));
-  if (state !== undefined && state.length > 512) return bounce("invalid_request", "state too long");
-  if (q.response_type !== undefined && q.response_type !== "code") return bounce("unsupported_response_type", "only response_type=code");
+  // Pre-consent errors are NEVER bounced back to the redirect URI (no error
+  // params appended to a URL the requester shaped) — they render a 400 page.
+  // Only a completed consent (approve/deny) redirects.
+  if (state !== undefined && state.length > 512) return errorPage(c, 400, "Invalid request (state too long).");
+  if (q.response_type !== undefined && q.response_type !== "code") return errorPage(c, 400, "Unsupported response_type (only 'code').");
   // 2. PKCE: S256 only (plain is refused — it offers no protection if the
   //    authorization request is observed).
-  if (q.code_challenge_method !== "S256") return bounce("invalid_request", "code_challenge_method must be S256");
-  if (!isValidChallenge(q.code_challenge)) return bounce("invalid_request", "invalid code_challenge");
+  if (q.code_challenge_method !== "S256") return errorPage(c, 400, "Invalid request (code_challenge_method must be S256).");
+  if (!isValidChallenge(q.code_challenge)) return errorPage(c, 400, "Invalid request (bad code_challenge).");
 
   // 3. Park the request server-side; this browser holds only an opaque id.
   const now = Date.now();
@@ -269,7 +280,7 @@ deviceAuth.post("/device/token", async (c) => {
   if (!row) return oauthError(c, 400, "invalid_grant");
   if (row.used_at !== null) {
     // Replay of a redeemed code: someone else may hold it — kill what it minted.
-    if (row.device_id) revokeDeviceTokenRow(row.device_id);
+    if (row.device_id) await revokeDevice(row.device_id);
     return oauthError(c, 400, "invalid_grant", "code already used");
   }
   // Claim BEFORE checking the verifier: any attempt burns the code (no retries).
@@ -293,7 +304,7 @@ deviceAuth.post("/device/revoke", async (c) => {
   if (f.token) {
     if (f.token.startsWith(DEVICE_TOKEN_PREFIX)) {
       const row = getDeviceTokenByHash(sha256hex(f.token));
-      if (row) revokeDeviceTokenRow(row.id);
+      if (row) await revokeDevice(row.id);
     }
     return c.json({ ok: true });
   }
@@ -305,7 +316,7 @@ deviceAuth.post("/device/revoke", async (c) => {
   if (!id) return c.json({ error: "bad_request" }, 400);
   const row = getDeviceToken(id);
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
-  revokeDeviceTokenRow(row.id);
+  await revokeDevice(row.id);
   return c.json({ ok: true });
 });
 
@@ -328,12 +339,12 @@ deviceAuth.get("/devices", (c) => {
   });
 });
 
-deviceAuth.delete("/devices/:id", (c) => {
+deviceAuth.delete("/devices/:id", async (c) => {
   const who = identity(c);
   if (!who) return c.json({ error: "unauthorized" }, 401);
   const row = getDeviceToken(c.req.param("id"));
   // 404 (not 403) for someone else's device: don't confirm it exists.
   if (!row || (row.email !== who.email && who.email !== config.ownerEmail)) return c.json({ error: "not_found" }, 404);
-  revokeDeviceTokenRow(row.id);
+  await revokeDevice(row.id);
   return c.json({ ok: true });
 });

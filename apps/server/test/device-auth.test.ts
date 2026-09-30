@@ -16,9 +16,11 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { createApp } from "../src/app";
 import { config } from "../src/config";
-import { db, setAccount, storeMagicLink } from "../src/db";
+import { db, setAccount, storeMagicLink, getUser, getMcpToken } from "../src/db";
 import { hashPassword } from "../src/auth/password";
-import { issueDeviceToken, isAllowedRedirectUri } from "../src/auth/device";
+import { issueDeviceToken, isAllowedRedirectUri, consentCsrf } from "../src/auth/device";
+import { setMemberVaultTokensEnabled } from "../src/routes/mcp";
+import { setTokenMinter, setTokenRevoker } from "../src/mcp-token";
 import { authorizeConnection } from "../src/collab";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
@@ -82,7 +84,7 @@ async function approveAs(email: string, challenge: string, extra: Record<string,
   const a = await app.request(authorizeUrl({ code_challenge: challenge, ...extra }), { headers: { cookie: sessionCookie(sid), ...tunnel() } });
   assert.equal(a.status, 200, "signed-in user sees the consent page");
   const html = await a.text();
-  assert.match(html, /Sign in Prism on Test iPhone\?/);
+  assert.match(html, /An app calling itself “Test iPhone” wants to sign in/);
   const reqCookie = cookieVal(a.headers.get("set-cookie"), "prism_device_req");
   assert.ok(reqCookie);
   const { req, csrf } = consentFields(html);
@@ -183,24 +185,58 @@ test("redirect_uri not allowlisted → error page BEFORE any login; never redire
   assert.equal(r.status, 400);
 });
 
-test("RFC 8252 loopback redirects are allowed for desktop clients (IP literals only)", () => {
+test("RFC 8252 loopback redirects: IP literal, port ≥ 1024, path /callback or /, no query (L1)", () => {
   assert.equal(isAllowedRedirectUri("http://127.0.0.1:53123/callback"), true);
+  assert.equal(isAllowedRedirectUri("http://127.0.0.1:53123/"), true);
   assert.equal(isAllowedRedirectUri("http://[::1]:53123/callback"), true);
-  assert.equal(isAllowedRedirectUri("https://127.0.0.1:53123/callback"), false);
-  assert.equal(isAllowedRedirectUri("http://localhost:53123/callback"), false);
-  assert.equal(isAllowedRedirectUri("http://127.0.0.1:53123/cb#frag"), false);
   assert.equal(isAllowedRedirectUri(REDIRECT), true);
+  for (const bad of [
+    "https://127.0.0.1:53123/callback",
+    "http://localhost:53123/callback",
+    "http://127.0.0.1:53123/cb#frag",
+    "http://127.0.0.1:53123/cb", // other paths
+    "http://127.0.0.1:53123/callback/extra",
+    "http://127.0.0.1:53123/./callback", // parser-normalized
+    "http://127.0.0.1:53123/callback?x=1", // any query
+    "http://127.0.0.1:53123/?next=evil",
+    "http://127.0.0.1:53123/callback?",
+    "http://127.0.0.1:80/callback", // privileged ports
+    "http://127.0.0.1:1023/callback",
+    "http://127.0.0.1/callback", // implicit port 80
+    "prism://auth/callback?x=1", // custom scheme: exact match only
+    "prism://auth/callback/",
+  ]) {
+    assert.equal(isAllowedRedirectUri(bad), false, bad);
+  }
 });
 
-test("PKCE plain (or a missing challenge) is refused with an OAuth error redirect carrying state", async () => {
+test("pre-consent errors (plain PKCE, missing challenge, bad response_type, long state) render a 400 page — NO redirect (L1)", async () => {
   const { challenge } = pkce();
-  const plain = await app.request(authorizeUrl({ code_challenge: challenge, code_challenge_method: "plain" }), { headers: tunnel() });
-  assert.equal(plain.status, 302);
-  const loc = new URL(plain.headers.get("location")!);
-  assert.equal(loc.searchParams.get("error"), "invalid_request");
-  assert.equal(loc.searchParams.get("state"), "st-123");
-  const missing = await app.request(authorizeUrl({}), { headers: tunnel() });
-  assert.equal(new URL(missing.headers.get("location")!).searchParams.get("error"), "invalid_request");
+  const cases = [
+    authorizeUrl({ code_challenge: challenge, code_challenge_method: "plain" }),
+    authorizeUrl({}),
+    authorizeUrl({ code_challenge: challenge, response_type: "token" }),
+    authorizeUrl({ code_challenge: challenge, state: "s".repeat(600) }),
+    authorizeUrl({ code_challenge: challenge, redirect_uri: "http://127.0.0.1:53123/callback?evil=1" }),
+  ];
+  for (const u of cases) {
+    const r = await app.request(u, { headers: tunnel() });
+    assert.equal(r.status, 400, u);
+    assert.equal(r.headers.get("location"), null, `no redirect for ${u}`);
+    assert.equal(cookieVal(r.headers.get("set-cookie"), "prism_device_req"), null);
+  }
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM device_auth_requests").get() as { n: number }).n, 0);
+});
+
+test("consent page presents the label as a CLAIM and shows the redirect target prominently (L4)", async () => {
+  const { challenge } = pkce();
+  const sid = makeSession(MEMBER);
+  const a = await app.request(authorizeUrl({ code_challenge: challenge, label: "Owner's <b>Laptop</b>" }), { headers: { cookie: sessionCookie(sid), ...tunnel() } });
+  const html = await a.text();
+  assert.ok(html.includes("An app calling itself “Owner&#39;s &lt;b&gt;Laptop&lt;/b&gt;” wants to sign in to Prism as <strong>member@test.local</strong>"), html);
+  assert.match(html, /<code[^>]*>prism:\/\/auth\/callback<\/code>/);
+  const loop = await app.request(authorizeUrl({ code_challenge: challenge, redirect_uri: "http://127.0.0.1:53123/callback" }), { headers: { cookie: sessionCookie(sid), ...tunnel() } });
+  assert.match(await loop.text(), /<code[^>]*>127\.0\.0\.1:53123\/callback<\/code> — an app on this computer/);
 });
 
 test("signed out → bounced to the web login with a FIXED return path; password login → /continue → consent", async () => {
@@ -310,7 +346,7 @@ test("redirect_uri / client_id / grant_type must match", async () => {
   const code = (await approveAs(MEMBER, challenge)).searchParams.get("code")!;
   assert.equal((await exchange({ code, code_verifier: verifier, grant_type: "password" })).status, 400);
   assert.equal((await exchange({ code, code_verifier: verifier, client_id: "evil" })).status, 401);
-  const mismatch = await exchange({ code, code_verifier: verifier, redirect_uri: "http://127.0.0.1:9999/cb" });
+  const mismatch = await exchange({ code, code_verifier: verifier, redirect_uri: "http://127.0.0.1:9999/callback" });
   assert.equal(mismatch.status, 400);
   assert.equal(((await mismatch.json()) as { error: string }).error, "invalid_grant");
 });
@@ -497,4 +533,104 @@ test("CORS: native origins get NON-credentialed CORS; APP_ORIGIN keeps credentia
   assert.equal(me.status, 200);
   assert.equal(me.headers.get("access-control-allow-origin"), "tauri://localhost");
   assert.equal(me.headers.get("access-control-allow-credentials"), null);
+});
+
+// ------------------------------------------------------------- L2: passwords
+
+const changePw = (headers: Record<string, string>, body: Record<string, string>) =>
+  app.request("/auth/change-password", { method: "POST", headers: { "content-type": "application/json", ...headers, ...tunnel() }, body: JSON.stringify(body) });
+
+test("L2: a device token can NOT set a first password (magic-link-only account); a session still can", async () => {
+  const dev = issueDeviceToken(OWNER, "phone", "prism-native");
+  const r = await changePw(bearer(dev.token), { newPassword: "a brand new passphrase" });
+  assert.equal(r.status, 403);
+  assert.equal(((await r.json()) as { error: string }).error, "password_setup_requires_browser");
+  assert.equal(getUser(OWNER)?.password_hash ?? null, null, "no password was set");
+
+  const viaSession = await changePw({ cookie: sessionCookie(makeSession(OWNER)) }, { newPassword: "a brand new passphrase" });
+  assert.equal(viaSession.status, 200);
+  assert.ok(getUser(OWNER)?.password_hash);
+});
+
+test("L2: a device token must supply the current password; success revokes the account's OTHER devices, keeps the caller", async () => {
+  setAccount(MEMBER, "Member", hashPassword("old passphrase here"));
+  const caller = issueDeviceToken(MEMBER, "phone", "prism-native");
+  const other = issueDeviceToken(MEMBER, "laptop", "prism-native");
+  const stranger = issueDeviceToken(OTHER, "theirs", "prism-native");
+
+  assert.equal((await changePw(bearer(caller.token), { newPassword: "new passphrase here" })).status, 403, "missing current");
+  assert.equal((await changePw(bearer(caller.token), { currentPassword: "wrong", newPassword: "new passphrase here" })).status, 403);
+  assert.equal((await app.request("/auth/me", { headers: { ...bearer(other.token), ...tunnel() } })).status, 200, "failed attempts revoke nothing");
+
+  const ok = await changePw(bearer(caller.token), { currentPassword: "old passphrase here", newPassword: "new passphrase here" });
+  assert.equal(ok.status, 200);
+  assert.equal(((await ok.json()) as { revokedDevices: number }).revokedDevices, 1);
+  const me = (h: Record<string, string>) => app.request("/auth/me", { headers: { ...h, ...tunnel() } });
+  assert.equal((await me(bearer(caller.token))).status, 200, "the calling device stays signed in");
+  assert.equal((await me(bearer(other.token))).status, 401, "other devices are evicted");
+  assert.equal((await me(bearer(stranger.token))).status, 200, "another account's devices are untouched");
+
+  // A browser-session password change evicts every device of the account.
+  const third = issueDeviceToken(MEMBER, "tablet", "prism-native");
+  const viaSession = await changePw({ cookie: sessionCookie(makeSession(MEMBER)) }, { currentPassword: "new passphrase here", newPassword: "third passphrase here" });
+  assert.equal(viaSession.status, 200);
+  assert.equal((await me(bearer(caller.token))).status, 401);
+  assert.equal((await me(bearer(third.token))).status, 401);
+});
+
+// ------------------------------------------------------------- L3: minted credentials die with the device
+
+test("L3: MCP tokens minted via a device token are recorded with it and revoked (via the revoker seam) when the device is revoked", async () => {
+  const revoked: string[] = [];
+  let seq = 0;
+  setMemberVaultTokensEnabled(true);
+  setTokenMinter(async (opts) => {
+    const jti = `jti-dev-${++seq}`;
+    return { token: `fake.${jti}.sig`, jti, expiresAt: Date.now() + 86_400_000, scope: `vault:${opts.vaultName}:${opts.verb}` };
+  });
+  setTokenRevoker(async (jti) => {
+    revoked.push(jti);
+  });
+  try {
+    const dev = issueDeviceToken(OWNER, "phone", "prism-native");
+    const viaDevice = await app.request("/api/mcp/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...bearer(dev.token), ...tunnel() },
+      body: JSON.stringify({ scope: "read" }),
+    });
+    assert.equal(viaDevice.status, 200);
+    const { jti } = (await viaDevice.json()) as { jti: string };
+    assert.equal(getMcpToken(jti)?.device_id, dev.id);
+
+    // One minted from a browser session is NOT tied to any device.
+    const viaSession = await app.request("/api/mcp/token", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: sessionCookie(makeSession(OWNER)), ...tunnel() },
+      body: JSON.stringify({ scope: "read" }),
+    });
+    const sessionJti = ((await viaSession.json()) as { jti: string }).jti;
+    assert.equal(getMcpToken(sessionJti)?.device_id ?? null, null);
+
+    const del = await app.request(`/auth/devices/${dev.id}`, { method: "DELETE", headers: { cookie: sessionCookie(makeSession(OWNER)), ...tunnel() } });
+    assert.equal(del.status, 200);
+    assert.deepEqual(revoked, [jti], "only the device's token is revoked at the hub");
+    assert.ok(getMcpToken(jti)?.revoked_at);
+    assert.equal(getMcpToken(sessionJti)?.revoked_at, null);
+  } finally {
+    setMemberVaultTokensEnabled(undefined);
+    setTokenMinter(null);
+    setTokenRevoker(null);
+  }
+});
+
+// ------------------------------------------------------------- Info-3
+
+test("consent CSRF refuses to run without SESSION_SECRET (no constant fallback key)", () => {
+  const saved = config.sessionSecret;
+  (config as { sessionSecret: string }).sessionSecret = "";
+  try {
+    assert.throws(() => consentCsrf("req", "sid"), /SESSION_SECRET/);
+  } finally {
+    (config as { sessionSecret: string }).sessionSecret = saved;
+  }
 });

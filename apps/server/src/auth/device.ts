@@ -27,8 +27,13 @@ import {
   insertDeviceToken,
   getDeviceTokenByHash,
   touchDeviceToken,
+  revokeDeviceTokenRow,
+  listLiveDeviceTokens,
+  liveMcpTokensForDevice,
+  setMcpTokenRevoked,
   type DeviceTokenRow,
 } from "../db";
+import { revokeVaultToken } from "../mcp-token";
 
 export const DEVICE_TOKEN_PREFIX = "pd_";
 export const NATIVE_CLIENT_ID = "prism-native";
@@ -61,11 +66,13 @@ export function safeEqual(a: string, b: string): boolean {
 /**
  * Is `uri` an allowed native redirect? Either an EXACT match against
  * DEVICE_REDIRECT_URIS (default `prism://auth/callback`), or — for desktop
- * clients, RFC 8252 §7.3 — an http loopback IP literal on any port. `localhost`
- * is deliberately NOT accepted (§8.3: it can resolve off-box / be firewalled
- * differently). No userinfo, no fragment. Anything else is refused BEFORE any
- * login happens and is never redirected to.
+ * clients, RFC 8252 §7.3 — an http loopback IP literal (127.0.0.1 / [::1]) on an
+ * explicit unprivileged port (≥ 1024) with path exactly `/callback` or `/`, and
+ * no query, userinfo or fragment. `localhost` is deliberately NOT accepted
+ * (§8.3). Anything else is refused BEFORE any login happens and is never
+ * redirected to — not even with an error.
  */
+const LOOPBACK_PATHS = new Set(["/callback", "/"]);
 export function isAllowedRedirectUri(uri: unknown): uri is string {
   if (typeof uri !== "string" || !uri || uri.length > 512) return false;
   if (config.deviceRedirectUris.includes(uri)) return true;
@@ -78,8 +85,13 @@ export function isAllowedRedirectUri(uri: unknown): uri is string {
   }
   if (u.protocol !== "http:") return false;
   if (u.hostname !== "127.0.0.1" && u.hostname !== "[::1]") return false;
-  if (u.username || u.password || u.hash || uri.includes("#")) return false;
-  return true;
+  if (u.username || u.password || u.hash || uri.includes("#") || uri.includes("?") || u.search) return false;
+  const port = Number(u.port);
+  if (!u.port || !Number.isInteger(port) || port < 1024 || port > 65535) return false;
+  if (!LOOPBACK_PATHS.has(u.pathname)) return false;
+  // Reject anything the URL parser normalized (e.g. `/./callback`, `%2f`): the
+  // string must be exactly what we'd build from the parts.
+  return uri === `http://${u.host}${u.pathname}`;
 }
 
 /** Clamp a client-supplied device label to something safe to store + display. */
@@ -97,7 +109,9 @@ export function withParams(redirectUri: string, params: Record<string, string | 
 
 /** CSRF token for the consent form: bound to the pending request AND the session. */
 export function consentCsrf(requestId: string, sessionId: string): string {
-  return createHmac("sha256", config.sessionSecret || "prism-device-consent").update(`device-consent:${requestId}:${sessionId}`).digest("base64url");
+  // No fallback key: a constant would make the CSRF token forgeable.
+  if (!config.sessionSecret) throw new Error("SESSION_SECRET is not set — device consent is unavailable");
+  return createHmac("sha256", config.sessionSecret).update(`device-consent:${requestId}:${sessionId}`).digest("base64url");
 }
 
 export const randomId = (bytes = 32): string => randomBytes(bytes).toString("base64url");
@@ -150,4 +164,36 @@ export function deviceEmail(token: string | null | undefined): string | null {
 /** `Authorization: Bearer <x>` → x. */
 export function bearerFromHeader(h: string | null | undefined): string | undefined {
   return h?.startsWith("Bearer ") ? h.slice("Bearer ".length).trim() : undefined;
+}
+
+/**
+ * Revoke a device AND every credential minted through it (WP2.1 L3): MCP hub
+ * tokens recorded with this device_id are revoked via the mcp-token revoker
+ * seam (the hub enforces within ~60s). The device row is revoked first and
+ * unconditionally; a failed hub revoke is logged and left unmarked, so it stays
+ * visible (and revocable) in the MCP token list. Capability links created via
+ * the device are NOT revoked — like a session's, they are standalone shares.
+ */
+export async function revokeDevice(id: string): Promise<boolean> {
+  const changed = revokeDeviceTokenRow(id);
+  for (const t of liveMcpTokensForDevice(id)) {
+    try {
+      await revokeVaultToken(t.jti);
+      setMcpTokenRevoked(t.jti);
+    } catch (e) {
+      console.error(`[device] revoking MCP token ${t.jti} of device ${id} failed:`, (e as Error).message);
+    }
+  }
+  return changed;
+}
+
+/** Revoke all of an account's devices except `keepId` (e.g. after a password change). */
+export async function revokeOtherDevices(email: string, keepId: string | null): Promise<number> {
+  let n = 0;
+  for (const d of listLiveDeviceTokens(email)) {
+    if (d.id === keepId) continue;
+    await revokeDevice(d.id);
+    n++;
+  }
+  return n;
 }
