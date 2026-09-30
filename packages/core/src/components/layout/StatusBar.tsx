@@ -79,7 +79,8 @@ function StatusDot({ ok, label }: { ok: boolean; label: string }) {
 
 function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
   const [expanded, setExpanded] = useState(false);
-  const running = services.filter((s) => s.running);
+  const active = services.filter((s) => !s.disabled);
+  const running = active.filter((s) => s.running);
   const hasErrors = services.some((s) => s.last_error);
 
   return (
@@ -87,7 +88,7 @@ function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-1 hover:opacity-80 transition-opacity"
-        title={`Sync services: ${running.length}/${services.length} running`}
+        title={`Sync services: ${running.length}/${active.length} running`}
       >
         <RefreshCw
           size={10}
@@ -97,7 +98,7 @@ function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
             animationDuration: "3s",
           }}
         />
-        <span>Sync {running.length}/{services.length}</span>
+        <span>{active.length === 0 && services.length > 0 ? "Client mode" : `Sync ${running.length}/${active.length}`}</span>
       </button>
 
       {expanded && (
@@ -117,7 +118,9 @@ function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
               <span
                 className="w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0"
                 style={{
-                  background: svc.last_error
+                  background: svc.disabled
+                    ? "var(--text-muted)"
+                    : svc.last_error
                     ? "var(--color-danger)"
                     : svc.running
                     ? "var(--color-success)"
@@ -127,11 +130,16 @@ function SyncIndicator({ services }: { services: BackgroundServiceStatus[] }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
                   <span className="font-medium" style={{ color: "var(--text-primary)" }}>{svc.name}</span>
-                  <span style={{ color: "var(--text-muted)" }}>{svc.items_processed} items</span>
+                  <span style={{ color: "var(--text-muted)" }}>{svc.disabled ? "disabled" : `${svc.items_processed} items`}</span>
                 </div>
                 {svc.last_run && (
                   <div style={{ color: "var(--text-muted)", fontSize: "9px" }}>
                     Last: {new Date(svc.last_run).toLocaleTimeString()}
+                  </div>
+                )}
+                {svc.disabled && svc.disabled_reason && (
+                  <div style={{ color: "var(--text-muted)", fontSize: "9px" }} title={svc.disabled_reason}>
+                    {svc.disabled_reason}
                   </div>
                 )}
                 {svc.last_error && (

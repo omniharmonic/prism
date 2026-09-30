@@ -94,6 +94,19 @@ export function Settings({ open, onClose }: SettingsProps) {
     setTimeout(() => setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
   };
 
+  // Boolean/enum config (ingest switch). update_config reads real JSON bools for these.
+  const handleSaveRaw = async (key: string, value: boolean | string) => {
+    setSaving(key);
+    try {
+      await invoke("update_config", { updates: { [key]: value } });
+      setSavedKeys((prev) => new Set(prev).add(key));
+      await loadConfig();
+    } finally {
+      setSaving(null);
+    }
+    setTimeout(() => setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
+  };
+
   const handleDiscoverMeetily = async () => {
     const result = await invoke<{ found: boolean; path?: string }>("discover_meetily_path");
     if (result.found && result.path) {
@@ -356,6 +369,8 @@ export function Settings({ open, onClose }: SettingsProps) {
                 </Row>
               </Section>
 
+              {!isWeb && <IngestSettings config={config} onSave={handleSaveRaw} saving={saving} savedKeys={savedKeys} />}
+
               <Section title="AI Models">
                 <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
                   Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
@@ -538,6 +553,94 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return <div className="flex items-center justify-between py-1.5"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
+}
+
+// ─── Ingest mode (host vs client) ────────────────────────────
+
+const INGEST_FLAGS: Array<{ key: string; label: string; desc: string }> = [
+  { key: "disable_email_sync", label: "Email sync", desc: "Gmail to vault (every 3 min)" },
+  { key: "disable_calendar_sync", label: "Calendar sync", desc: "Google Calendar to vault (every 5 min)" },
+  { key: "disable_meetily_sync", label: "Meetily sync", desc: "Local Meetily transcripts only (Fathom/Fireflies have their own switches)" },
+  { key: "disable_notion_task_sync", label: "Notion task sync", desc: "Notion databases to vault tasks" },
+  { key: "disable_embedding_index", label: "Embedding index", desc: "Semantic-search indexing (the Prism server also sweeps this)" },
+  { key: "disable_skill_scheduler", label: "Skill scheduler", desc: "Runs recurring agent skills on this machine" },
+];
+
+function IngestSettings({ config, onSave, saving, savedKeys }: {
+  config: Record<string, unknown>;
+  onSave: (key: string, value: boolean | string) => void;
+  saving: string | null;
+  savedKeys: Set<string>;
+}) {
+  const mode = config.ingest_mode === "client" ? "client" : "host";
+  const isClient = mode === "client";
+
+  return (
+    <Section title="Ingest mode">
+      <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
+        Only one machine should run background ingest, otherwise mail, calendar and messages are
+        imported twice. Changes take effect on restart.
+      </p>
+      <div className="flex rounded-lg overflow-hidden mb-2" style={{ border: "1px solid var(--glass-border)" }}>
+        {([
+          ["host", "Host", "This machine runs background sync"],
+          ["client", "Client", "This machine only views and edits; background work runs on the Prism server"],
+        ] as const).map(([val, label, desc]) => (
+          <button
+            key={val}
+            onClick={() => mode !== val && onSave("ingest_mode", val)}
+            disabled={saving === "ingest_mode"}
+            title={desc}
+            className="flex-1 px-3 py-2 text-xs text-left"
+            style={{
+              background: mode === val ? "var(--glass-active)" : "transparent",
+              color: mode === val ? "var(--text-primary)" : "var(--text-muted)",
+            }}
+          >
+            <div className="font-medium">{label}</div>
+            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{desc}</div>
+          </button>
+        ))}
+      </div>
+      {savedKeys.has("ingest_mode") && (
+        <div className="flex items-center gap-1 text-[10px] mb-2" style={{ color: "var(--color-success)" }}>
+          <Check size={10} /> Saved. Restart Prism to apply.
+        </div>
+      )}
+
+      <div style={{ opacity: isClient ? 0.5 : 1 }}>
+        <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
+          {isClient
+            ? "Client mode turns every service off. The switches below only apply in Host mode."
+            : "Turn individual services off on this machine (for example once the server owns them)."}
+        </p>
+        {INGEST_FLAGS.map((f) => {
+          const disabled = config[f.key] === true;
+          return (
+            <Row key={f.key} label={f.label}>
+              <span className="flex items-center gap-2">
+                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{f.desc}</span>
+                <button
+                  onClick={() => onSave(f.key, !disabled)}
+                  disabled={isClient || saving === f.key}
+                  className="px-2 py-0.5 rounded text-[10px] font-medium"
+                  style={{
+                    background: disabled ? "transparent" : "var(--color-accent)",
+                    color: disabled ? "var(--text-muted)" : "white",
+                    border: "1px solid var(--glass-border)",
+                  }}
+                  title={disabled ? "Disabled on this machine. Click to enable." : "Runs on this machine. Click to disable."}
+                >
+                  {disabled ? "Off" : "On"}
+                </button>
+                {savedKeys.has(f.key) && <Check size={10} style={{ color: "var(--color-success)" }} />}
+              </span>
+            </Row>
+          );
+        })}
+      </div>
+    </Section>
+  );
 }
 
 // ─── Local AI (recurring-skill provider) ─────────────────────
