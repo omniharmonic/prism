@@ -71,23 +71,33 @@ impl AppState {
         Ok(())
     }
 
-    /// Delete the token from memory and the keychain; returns what was there.
-    pub async fn forget_token(&self) -> Result<Option<String>, String> {
-        let mut cache = self.token.lock().await;
-        let previous = if cache.loaded {
-            cache.token.take()
-        } else {
-            None
-        };
+    /// The token to revoke on sign-out: the in-memory copy, else whatever the
+    /// keychain holds. Best effort: a keychain error yields `None`, never an
+    /// early return, so sign-out still proceeds.
+    pub async fn known_token(&self) -> Option<String> {
+        let cache = self.token.lock().await;
+        if cache.loaded {
+            if let Some(t) = &cache.token {
+                return Some(t.clone());
+            }
+        }
+        drop(cache);
         let (service, account) = (self.service.clone(), self.origin.as_str().to_string());
-        let stored = blocking(move || {
-            let t = secure_store::get(&service, &account).ok().flatten();
-            secure_store::delete(&service, &account).map(|_| t)
-        })
-        .await?;
+        blocking(move || secure_store::get(&service, &account))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Forget the token: memory first (so this process stops sending it no
+    /// matter what), then the keychain. A keychain failure is returned so the
+    /// UI can report it; the in-memory copy is gone either way.
+    pub async fn forget_token(&self) -> Result<(), String> {
+        let mut cache = self.token.lock().await;
         cache.token = None;
         cache.loaded = true;
-        Ok(previous.or(stored))
+        let (service, account) = (self.service.clone(), self.origin.as_str().to_string());
+        blocking(move || secure_store::delete(&service, &account)).await
     }
 
     /// Register a new sign-in attempt, cancelling any previous one (e.g. the
@@ -107,16 +117,11 @@ impl AppState {
         g
     }
 
-    /// Consume the grant: valid once, within the TTL.
+    /// Consume the grant. ANY presentation uses it up (right or wrong), so it
+    /// can be tried once; valid only within the TTL.
     pub fn take_settings_grant(&self, presented: &str) -> bool {
-        let mut slot = self.settings_grant.lock().unwrap();
-        match slot.as_ref() {
-            Some((g, at)) if at.elapsed() < SETTINGS_GRANT_TTL && ct_eq(g, presented) => {
-                *slot = None;
-                true
-            }
-            _ => false,
-        }
+        let taken = self.settings_grant.lock().unwrap().take();
+        matches!(taken, Some((g, at)) if at.elapsed() < SETTINGS_GRANT_TTL && ct_eq(&g, presented))
     }
 }
 
@@ -147,6 +152,8 @@ mod tests {
         assert!(!s.take_settings_grant(""), "no grant minted");
         let g = s.mint_settings_grant();
         assert!(!s.take_settings_grant("wrong"));
+        assert!(!s.take_settings_grant(&g), "a wrong guess burns the grant");
+        let g = s.mint_settings_grant();
         assert!(s.take_settings_grant(&g));
         assert!(!s.take_settings_grant(&g), "single use");
         let g1 = s.mint_settings_grant();
@@ -155,7 +162,9 @@ mod tests {
             !s.take_settings_grant(&g1),
             "a newer grant replaces the older one"
         );
-        assert!(s.take_settings_grant(&g2));
+        assert!(!s.take_settings_grant(&g2), "and the failed try burned it");
+        let g3 = s.mint_settings_grant();
+        assert!(s.take_settings_grant(&g3));
     }
 
     #[test]

@@ -11,6 +11,7 @@ fn main() {
             "sign_out",
             "get_server_origin",
             "set_server_origin",
+            "open_external",
         ]),
     ))
     .expect("failed to run tauri-build");

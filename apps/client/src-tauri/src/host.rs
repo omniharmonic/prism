@@ -45,6 +45,7 @@ mod tests {
             "\"sign_in\"",
             "\"sign_out\"",
             "\"set_server_origin\"",
+            "\"open_external\"",
         ] {
             assert!(js.contains(cmd));
         }

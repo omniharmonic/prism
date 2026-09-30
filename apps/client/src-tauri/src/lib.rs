@@ -12,6 +12,7 @@
 
 mod auth;
 mod commands;
+mod confirm;
 mod host;
 #[cfg(desktop)]
 mod loopback;
@@ -67,6 +68,7 @@ pub fn run() {
             commands::sign_out,
             commands::get_server_origin,
             commands::set_server_origin,
+            commands::open_external,
         ])
         .setup(|app| {
             #[cfg(desktop)]

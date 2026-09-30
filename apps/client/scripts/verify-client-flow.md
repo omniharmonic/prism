@@ -34,7 +34,9 @@ directory. Do not copy it into /Applications yet.
   - `https://x.com/path`
   - `http://127.0.0.1:1940`
 - [ ] In the console, `__TAURI_INTERNALS__.invoke("set_server_origin",{origin:"https://evil.example",grant:"x"})` is **rejected** with "Open Server settings from the Prism menu…".
-- [ ] Saving a valid origin restarts the app, and the new origin persists across a quit and relaunch (check `client-settings.json`).
+- [ ] Saving a valid origin shows a **native** dialog, "Point Prism Client at <normalized origin>?", with Cancel as the default button.
+- [ ] **Cancel**: nothing is saved, the in-page dialog closes, and a second Save needs the menu again (the grant is spent).
+- [ ] **Change Server**: the app restarts, and the new origin persists across a quit and relaunch (check `client-settings.json`).
 
 ## 3. Sign-in (loopback PKCE)
 
@@ -51,6 +53,7 @@ directory. Do not copy it into /Applications yet.
 - [ ] Click Sign in, close the tab, and click Sign in again. A fresh browser tab opens (the old attempt was cancelled), and completing it works.
 - [ ] During an attempt, run `curl "http://127.0.0.1:<port>/callback?code=x&state=forged"`. It gets a 400, and the real approval still succeeds afterwards.
 - [ ] `curl http://127.0.0.1:<port>/favicon.ico` gets a 404, and the flow continues.
+- [ ] During an attempt, hold idle connections (`for i in 1 2 3; do nc 127.0.0.1 <port> & done`), then approve in the browser. The sign-in completes immediately.
 - [ ] After a successful sign-in, `curl http://127.0.0.1:<port>/callback` is refused (the port is closed).
 
 ## 5. Signed-in use (WP4.1 acceptance)
@@ -58,7 +61,13 @@ directory. Do not copy it into /Applications yet.
 - [ ] Browse notes, edit a document and see it saved (via the gateway).
 - [ ] Collab: open a shared doc in a browser and in the client, and both see live edits (WSS to the same origin).
 - [ ] Agent chat streams (fetch-based SSE).
-- [ ] Clicking an external link in a note opens the **system browser**, and the app stays put.
+- [ ] Clicking an external link in a note shows a **native** "Open this link in your browser?" dialog with the URL. **Open** opens the system browser; **Cancel** does nothing. The app never navigates away.
+- [ ] A `mailto:` link asks "Write an email?" before opening Mail.
+- [ ] Navigation lock:
+  - In the console, `location = "https://example.com/?t=x"` does nothing: no browser, no dialog, and the app stays.
+  - `window.open("javascript:alert(1)")` does nothing.
+  - `__TAURI_INTERNALS__.invoke("open_external",{url:"file:///etc/passwd"})` is rejected.
+- [ ] A website note containing `<meta http-equiv="refresh" content="0;url=https://example.com">` opens nothing: no browser, no dialog.
 - [ ] External images in notes do **not** load. This is a known limit (CSP img-src). A server-hosted attachment does load.
 - [ ] Calendar dashboard shows no desktop-only affordances (`isDesktop` is false).
 - [ ] `ps` shows no ingest, `claude`, `gog` or `parachute` child processes of Prism Client, and `/acl/workers` is unchanged.

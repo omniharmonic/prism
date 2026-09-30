@@ -10,7 +10,7 @@
  *  2. CSP (tauri.conf.json): no localhost / :1940 / :1939, no wildcard http(s)/ws(s) sources,
  *     connect-src is exactly 'self' + Tauri IPC + one https origin + its wss twin;
  *  3. the frontend is the native web build (no devUrl, no localhost dev server);
- *  4. capabilities grant only the shell's five commands (no core:*, fs, shell, opener, http, remote);
+ *  4. capabilities grant only the shell's six commands (no core:*, fs, shell, opener, http, remote);
  *  5. Rust: no process spawning, no vault port, no fs/shell/http/sql plugins;
  *  6. dist-native: no service worker; the only `localhost:1940` strings are the known inert
  *     UI placeholders/defaults of the shared UI (desktop vault-switcher, server-side hub hint) —
@@ -80,7 +80,7 @@ check(JSON.stringify(conf.build).includes("build:native"), "before{Dev,Build}Com
 
 // 4. capabilities
 const capFiles = readdirSync(join(tauriDir, "capabilities")).filter((f) => f.endsWith(".json"));
-const allowed = new Set(["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin"]);
+const allowed = new Set(["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external"]);
 for (const f of capFiles) {
   const cap = JSON.parse(readFileSync(join(tauriDir, "capabilities", f), "utf8"));
   const perms = (cap.permissions ?? []).map((p) => (typeof p === "string" ? p : p.identifier));

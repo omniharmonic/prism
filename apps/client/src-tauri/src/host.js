@@ -89,15 +89,60 @@
     },
     onSignedOut: function () {
       // The app already revoked the token server-side (POST /auth/device/revoke).
-      return ipc("sign_out", { revoke: false }).catch(function () {});
+      return ipc("sign_out", { revoke: false }).catch(function (e) {
+        toast(errText(e));
+      });
     },
   };
   Object.defineProperty(window, "__PRISM_HOST__", { value: Object.freeze(host), writable: false, configurable: false });
 
+  // ---- external links ------------------------------------------------------
+  // The shell cancels every navigation away from the bundle (window.rs), so
+  // links and window.open() to http(s)/mailto are routed here instead: the
+  // shell shows a NATIVE confirmation with the URL before opening anything.
+  function isExternal(href) {
+    return /^(https?:|mailto:)/i.test(href) && !/^https?:\/\/tauri\.localhost(\/|$)/i.test(href);
+  }
+  function openExternal(href) {
+    return ipc("open_external", { url: href }).catch(function (e) {
+      toast(errText(e));
+    });
+  }
+  document.addEventListener(
+    "click",
+    function (e) {
+      if (e.defaultPrevented || e.button !== 0) return;
+      var t = e.target;
+      var a = t && t.closest ? t.closest("a[href]") : null;
+      if (!a) return;
+      var href = a.href; // resolved absolute URL
+      if (!isExternal(href)) return;
+      e.preventDefault();
+      openExternal(href);
+    },
+    true
+  );
+  var nativeOpen = window.open;
+  window.open = function (url) {
+    var href = "";
+    try {
+      href = url == null ? "" : new URL(String(url), window.location.href).href;
+    } catch (err) {
+      href = "";
+    }
+    if (isExternal(href)) {
+      openExternal(href);
+      return null;
+    }
+    return nativeOpen.apply(window, arguments);
+  };
+
   // ---- shell-only UI driven from the native menu ----------------------------
   // "Server settings…" opens this. `grant` is a single-use nonce the shell
-  // minted for this menu click; set_server_origin refuses without it, so page
-  // script alone can't repoint the app at another server.
+  // minted for this menu click; set_server_origin refuses without it. It is
+  // NOT the security boundary (page script could alter what this form
+  // submits): the shell always shows a native confirmation with the exact
+  // origin it will save, and saves only on the user's click there.
   function showServerSettings(grant) {
     var existing = document.getElementById("prism-host-settings");
     if (existing) existing.parentNode.removeChild(existing);
@@ -159,8 +204,15 @@
           err.textContent = "Saved " + normalized + ". Restarting…";
         },
         function (e2) {
-          save.disabled = false;
-          err.textContent = errText(e2);
+          var msg = errText(e2);
+          // Past validation the grant is spent (confirmed or not): close.
+          if (/^(Server not changed|Open Server Settings)/.test(msg)) {
+            close();
+            toast(msg);
+            return;
+          }
+          save.disabled = false; // a validation error: fix the address and retry
+          err.textContent = msg;
         }
       );
     };

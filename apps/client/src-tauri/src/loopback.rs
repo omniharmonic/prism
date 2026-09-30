@@ -10,9 +10,11 @@
 
 use std::time::Duration;
 
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::pkce::{parse_callback_query, CallbackOutcome};
 
@@ -21,7 +23,11 @@ pub const CALLBACK_PATH: &str = "/callback";
 /// Max bytes read from one request (request line + headers).
 const MAX_REQUEST: usize = 8 * 1024;
 /// A single local connection gets this long to send its request.
-const PER_CONNECTION: Duration = Duration::from_secs(10);
+const PER_CONNECTION: Duration = Duration::from_secs(2);
+/// At most this many connections are served at once; extra ones are dropped.
+/// Each is its own task, so a slow or idle local connection can never hold up
+/// the browser's callback.
+const MAX_CONCURRENT: usize = 8;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoopbackError {
@@ -90,16 +96,30 @@ impl LoopbackListener {
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
         tokio::pin!(cancel);
+        let slots = Arc::new(Semaphore::new(MAX_CONCURRENT));
+        let (done_tx, mut done_rx) = mpsc::channel::<Result<String, LoopbackError>>(MAX_CONCURRENT);
+        let state: Arc<str> = Arc::from(expected_state);
         loop {
             tokio::select! {
                 _ = &mut deadline => return Err(LoopbackError::TimedOut),
                 _ = &mut cancel => return Err(LoopbackError::Cancelled),
+                // The first connection that ends the flow wins; returning drops
+                // the listener, so the port closes (single shot).
+                Some(done) = done_rx.recv() => return done,
                 accepted = self.listener.accept() => {
                     let Ok((stream, _peer)) = accepted else { continue };
-                    match tokio::time::timeout(PER_CONNECTION, handle(stream, expected_state)).await {
-                        Ok(Some(done)) => return done,
-                        Ok(None) | Err(_) => continue, // not ours / too slow: keep waiting
-                    }
+                    let Ok(permit) = slots.clone().try_acquire_owned() else {
+                        drop(stream); // over the limit: refuse, keep listening
+                        continue;
+                    };
+                    let (tx, state) = (done_tx.clone(), state.clone());
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        // not ours / too slow: the task just ends
+                        if let Ok(Some(done)) = tokio::time::timeout(PER_CONNECTION, handle(stream, &state)).await {
+                            let _ = tx.send(done).await;
+                        }
+                    });
                 }
             }
         }
@@ -366,5 +386,33 @@ mod tests {
         let ok = get(port, "/callback?code=c&state=the-state").await;
         assert!(ok.starts_with("HTTP/1.1 200"));
         assert_eq!(waiter.await.unwrap(), Ok("c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn idle_connections_do_not_delay_the_callback() {
+        let l = LoopbackListener::bind().await.unwrap();
+        let port = l.port();
+        let (_tx, rx) = oneshot::channel();
+        let waiter =
+            tokio::spawn(async move { l.wait_for_code(ST, Duration::from_secs(30), rx).await });
+        // A local process opens several connections and sends nothing / half a request.
+        let mut idle = Vec::new();
+        for i in 0..5 {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            if i % 2 == 0 {
+                c.write_all(b"GET /callback?code=").await.unwrap();
+            }
+            idle.push(c);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        let ok = get(port, "/callback?code=real&state=the-state").await;
+        assert!(ok.starts_with("HTTP/1.1 200"));
+        assert_eq!(waiter.await.unwrap(), Ok("real".to_string()));
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "served without waiting on idle sockets"
+        );
+        drop(idle);
     }
 }

