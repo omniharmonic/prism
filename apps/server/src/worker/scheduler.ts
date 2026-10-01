@@ -27,6 +27,7 @@ import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type 
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
+import { protonMode, runProtonOnce } from "./proton";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -324,7 +325,6 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
 /** Vaults whose Gmail 14-day body backfill already ran in this process (the
  *  desktop did it once per app launch; the server does it once per boot). */
 const gmailBackfilled = new Set<string>();
-
 /**
  * Run one Gmail ingest pass for a vault (WP1.2). No-op unless GMAIL_SYNC_ENABLED
  * and the vault has a `google` credential ({account}). Throttled to one run per
@@ -695,6 +695,8 @@ async function tick(): Promise<void> {
         // "calendar" when the server owns it (live), "calendar-shadow" while it only
         // diffs alongside the desktop (worker/calendar.ts). Off → not run at all.
         ...(calendarMode() !== "off" ? ([[calendarSourceName(), runCalendarOnce]] as const) : []),
+        // Proton Bridge mail (WP1.2b): "proton" while shadowing OR live. Off → not run.
+        ...(protonMode() !== "off" ? ([["proton", runProtonOnce]] as const) : []),
       ] as const) {
         try {
           await run(entry);

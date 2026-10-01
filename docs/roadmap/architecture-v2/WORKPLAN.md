@@ -176,6 +176,29 @@ Format for each package:
   - its get-by-path → create fallback 409s on existing paths.
 - **Kept from WP1.2:** the index-based `people.ts` linker, `if_exists`/`links` in the vault client, Matrix people-linking (flag off). The Gmail worker is dormant.
 - **Next (proposed WP1.2b):** port Proton IMAP ingest into the Prism server, reusing `people.ts` and a single list-query flag refresh, and retire `proton_mail.py`. Until then, fix the flag refresh in the agent repo.
+
+**WP1.2b Server Proton ingest** · A · WP1.2 · Opus 🔒 (email + a mail credential) — **BUILT on `arch/wp1.2b`, OFF by default.**
+- **What it does:**
+  - `worker/proton.ts` + `worker/proton-parse.ts` port `proton_mail.py sync` byte-for-byte. Parity is pinned against fixtures produced by the script's own functions on synthetic mail.
+  - Each pass makes one lean vault list and one header-only IMAP fetch. Full sources are fetched only for new messages.
+  - The flag refresh sends `{isUnread, labels}` PATCHes with `if_updated_at`.
+  - Creates use `if_exists: "ignore"`. There are no deletes and no content rewrites.
+- **Credential:** kind `proton-bridge`. Loopback host only, and the cert pin is required. The pin is checked before LOGIN.
+- **Gates:** `PROTON_SYNC_ENABLED` and `PROTON_SHADOW`. Shadow means zero writes, with persisted intents at `GET /acl/workers/proton/intents?verify=1`.
+- **Health:** `proton` server source. `assertConfig` refuses Gmail and Proton both live.
+- **Security review fixes (5f1012f → follow-up):**
+  - **C1:** linear HTML scanners replace the quadratic regexes, plus a 500 KB cap per text part.
+  - **H1:** the Gmail stand-down is replaced by the `assertConfig` refusal.
+  - **M1:** the credential routes are server-owner only, a repoint needs the password again, and a concurrent sync gets 409.
+  - **M2:** messages are size-capped by RFC822.SIZE, QP decodes into a preallocated buffer, and the body cut walks code points.
+  - **M3:** real loopback TLS pin tests.
+  - **L1–L4:** RFC 2231 parameters decode without a spread, skip lists cover poison, oversize and collision UIDs, a dropped connection during mailbox select fails the pass, and intents and logs carry no paths.
+- **Roll out / back:** see `docs/runbook/proton-ingest.md`.
+  - Run shadow ≥24 h next to the script.
+  - Then `launchctl bootout` + `disable` the `com.omniharmonic.proton-mail` agent.
+  - Then go live and run the duplicate check on `metadata.messageId`.
+  - Roll back with the flag off and `launchctl bootstrap` of the agent.
+- **Follow-up in the agent repo** (not this WP): repoint `check_oauth.py`'s 6 h staleness alert at `GET /acl/workers`.
 - **Build**:
   - `worker/gmail.ts` via the co-located `gog` CLI (like `worker/googledocs.ts`);
   - **identical** note paths and dedupe keys (`vault/messages/email/<slug>-<threadId>`, `metadata.threadId`);

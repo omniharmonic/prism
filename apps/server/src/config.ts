@@ -228,6 +228,33 @@ export const config = {
   calendarIntervalMs: Number(process.env.CALENDAR_INTERVAL_MS ?? 300_000),
   calendarIntentsKeep: Number(process.env.CALENDAR_INTENTS_KEEP ?? 500),
   calendarMaxOrphansPerPass: Number(process.env.CALENDAR_MAX_ORPHANS_PER_PASS ?? 25),
+  // Server Proton Mail ingest (worker/proton.ts, Architecture v2 WP1.2b) — the port
+  // of the agent's `proton_mail.py sync` (Proton Mail Bridge IMAP on loopback).
+  //   PROTON_SYNC_ENABLED — OFF by default; the script's launchd job and the server
+  //                         must never both write (unload the launchd job FIRST);
+  //   PROTON_SHADOW       — connect + fetch + diff + record intents, write NOTHING
+  //                         (wins over ENABLED; safe alongside the live script).
+  // Credential kind `proton-bridge` = {host, port, username, password, security,
+  // certSha256}. Cadence/window/cap default to the script's (300 s, 7 days, 200).
+  // PROTON_TIMEZONE = the zone for the note's `date` (the script used the host's);
+  // empty = this process's zone. PROTON_LINK_PEOPLE links a NEW note to an EXISTING
+  // person note (`email-from`) — never creates people; the script never linked.
+  protonSyncEnabled: process.env.PROTON_SYNC_ENABLED === "true",
+  protonShadow: process.env.PROTON_SHADOW === "true",
+  protonIntervalMs: Number(process.env.PROTON_INTERVAL_MS ?? 300_000),
+  protonSinceDays: Number(process.env.PROTON_SINCE_DAYS ?? 7),
+  protonMaxPerPass: Number(process.env.PROTON_MAX_PER_PASS ?? 200),
+  protonMailboxes: (process.env.PROTON_MAILBOXES ?? "INBOX")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  protonTimezone: process.env.PROTON_TIMEZONE ?? "",
+  protonIntentsKeep: Number(process.env.PROTON_INTENTS_KEEP ?? 500),
+  protonLinkPeople: process.env.PROTON_LINK_PEOPLE === "true",
+  protonImapTimeoutMs: Number(process.env.PROTON_IMAP_TIMEOUT_MS ?? 30_000),
+  // Messages over this RFC822.SIZE are never downloaded (intent skip-too-large, no
+  // note) — bounds per-message memory; 0 = no cap.
+  protonMaxMessageBytes: Number(process.env.PROTON_MAX_MESSAGE_BYTES ?? 10_485_760),
   // How often the worker recompiles the governance constitution into grant rows
   // (governance-grants.ts). The route path already reconciles on every successful
   // mutation, so this is the SAFETY NET, not the mechanism: it catches a
@@ -283,6 +310,7 @@ export const config = {
     email: Number(process.env.WORKER_STALE_EMAIL_MS ?? 43_200_000), // 12h: inferred from the newest email note — a quiet night is not an outage
     calendar: Number(process.env.WORKER_STALE_CALENDAR_MS ?? 86_400_000), // 24h: calendar notes only change when events do
     calendarServer: Number(process.env.WORKER_STALE_CALENDAR_SERVER_MS ?? 3_600_000), // 1h: a server pass succeeds every 5 min
+    proton: Number(process.env.WORKER_STALE_PROTON_MS ?? 3_600_000), // 1h: a pass succeeds every 5 min even with no new mail
     skills: Number(process.env.WORKER_STALE_SKILLS_MS ?? 21_600_000), // 6h
   },
   // Matrix: accept pending room invites (mautrix bridges INVITE the user to every
@@ -408,6 +436,13 @@ export function assertConfig(): void {
   const unique = [...new Set(missing)];
   if (unique.length) {
     throw new Error(`Prism Server misconfigured — missing env: ${unique.join(", ")}`);
+  }
+  // Two live writers of vault/messages/email/ (WP1.2b). Shadow writes nothing, so
+  // GMAIL_SYNC_ENABLED + PROTON_SHADOW is allowed.
+  if (config.gmailSyncEnabled && config.protonSyncEnabled && !config.protonShadow) {
+    throw new Error(
+      "Prism Server misconfigured — GMAIL_SYNC_ENABLED and PROTON_SYNC_ENABLED are both true: both would write email notes under vault/messages/email/. Turn one off (email comes from Proton Bridge; Gmail is not provisioned on the account).",
+    );
   }
 }
 
