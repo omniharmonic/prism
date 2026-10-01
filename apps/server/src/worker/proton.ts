@@ -113,6 +113,21 @@ export interface ProtonCredential {
   security: ProtonSecurity;
   /** SHA-256 of Bridge's DER certificate, 64 hex chars (the script's `certFingerprint`). */
   certSha256: string;
+  /** WP1.5 live actions (sending): Bridge's SMTP listener. Defaults: port 1025,
+   *  STARTTLS, and the SAME cert pin as IMAP (Bridge serves one cert for both). */
+  smtpPort?: number;
+  smtpSecurity?: ProtonSecurity;
+  smtpCertSha256?: string;
+}
+
+/** The SMTP view of a credential, defaults applied (live actions, WP1.5). */
+export function smtpSettingsOf(cred: ProtonCredential): { host: string; port: number; security: ProtonSecurity; certSha256: string } {
+  return {
+    host: cred.host,
+    port: cred.smtpPort ?? 1025,
+    security: cred.smtpSecurity ?? "starttls",
+    certSha256: cred.smtpCertSha256 ?? cred.certSha256,
+  };
 }
 
 export const isLoopbackHost = (h: string): boolean => ["127.0.0.1", "::1", "localhost"].includes(h.trim().toLowerCase());
@@ -140,7 +155,24 @@ export function validateProtonCredential(v: unknown): ProtonCredential {
   if (security !== "starttls" && security !== "tls") throw new Error('proton-bridge credential: security must be "starttls" or "tls"');
   const fp = typeof o.certSha256 === "string" ? normalizeFingerprint(o.certSha256) : "";
   if (!/^[0-9a-f]{64}$/.test(fp)) throw new Error("proton-bridge credential: certSha256 (64 hex chars, SHA-256 of Bridge's DER certificate) required");
-  return { host, port, username: o.username, password: o.password, security, certSha256: fp };
+  const out: ProtonCredential = { host, port, username: o.username, password: o.password, security, certSha256: fp };
+  // Optional SMTP settings (WP1.5). Only stored when given, so an IMAP-only
+  // credential round-trips byte-identically.
+  if (o.smtpPort !== undefined && o.smtpPort !== null && o.smtpPort !== "") {
+    const sp = Number(o.smtpPort);
+    if (!Number.isInteger(sp) || sp < 1 || sp > 65535) throw new Error("proton-bridge credential: smtpPort must be an integer 1-65535");
+    out.smtpPort = sp;
+  }
+  if (o.smtpSecurity !== undefined && o.smtpSecurity !== null && o.smtpSecurity !== "") {
+    if (o.smtpSecurity !== "starttls" && o.smtpSecurity !== "tls") throw new Error('proton-bridge credential: smtpSecurity must be "starttls" or "tls"');
+    out.smtpSecurity = o.smtpSecurity;
+  }
+  if (typeof o.smtpCertSha256 === "string" && o.smtpCertSha256) {
+    const sfp = normalizeFingerprint(o.smtpCertSha256);
+    if (!/^[0-9a-f]{64}$/.test(sfp)) throw new Error("proton-bridge credential: smtpCertSha256 must be 64 hex chars");
+    out.smtpCertSha256 = sfp;
+  }
+  return out;
 }
 
 /** Remove the password, any long opaque token and email-note paths (their slug
@@ -331,92 +363,107 @@ const toFlags = (f: unknown): string[] => (f instanceof Set ? [...f] : Array.isA
 export function imapflowSource(cred: ProtonCredential, opts: { timeoutMs?: number } = {}): ImapSource {
   return {
     async connect() {
-      if (!isLoopbackHost(cred.host)) throw new Error("proton-bridge: refusing a non-loopback host");
-      const { ImapFlow } = await import("imapflow");
-      const timeout = opts.timeoutMs ?? config.protonImapTimeoutMs;
-      let pinChecked = false;
-      class PinnedImapFlow extends ImapFlow {
-        async authenticate(): Promise<boolean> {
-          const sock = (this as unknown as { socket?: unknown }).socket;
-          if (!(sock instanceof tls.TLSSocket)) throw new Error("proton-bridge: connection is not TLS-protected — refusing to send credentials");
-          const seen = certFingerprintOf(sock.getPeerCertificate()?.raw);
-          if (seen !== cred.certSha256) {
-            throw new Error(`proton-bridge: TLS certificate fingerprint mismatch (pinned ${cred.certSha256.slice(0, 16)}…, seen ${seen.slice(0, 16) || "none"}…) — refusing to log in`);
-          }
-          pinChecked = true;
-          // imapflow's authenticate() is internal; typed loosely on purpose.
-          return (ImapFlow.prototype as unknown as { authenticate(this: unknown): Promise<boolean> }).authenticate.call(this);
-        }
+      const client = await connectPinnedImap(cred, opts);
+      return imapSessionOf(client);
+    },
+  };
+}
+
+/**
+ * Connect + log in to Bridge's IMAP with the cert pin verified BEFORE the LOGIN
+ * that carries the password (see imapflowSource). Shared by the ingest and the
+ * WP1.5 live actions (archive / mark-read), so both get the same guarantees.
+ * The caller owns the returned client (logout / close).
+ */
+export async function connectPinnedImap(cred: ProtonCredential, opts: { timeoutMs?: number } = {}): Promise<import("imapflow").ImapFlow> {
+  if (!isLoopbackHost(cred.host)) throw new Error("proton-bridge: refusing a non-loopback host");
+  const { ImapFlow } = await import("imapflow");
+  const timeout = opts.timeoutMs ?? config.protonImapTimeoutMs;
+  let pinChecked = false;
+  class PinnedImapFlow extends ImapFlow {
+    async authenticate(): Promise<boolean> {
+      const sock = (this as unknown as { socket?: unknown }).socket;
+      if (!(sock instanceof tls.TLSSocket)) throw new Error("proton-bridge: connection is not TLS-protected — refusing to send credentials");
+      const seen = certFingerprintOf(sock.getPeerCertificate()?.raw);
+      if (seen !== cred.certSha256) {
+        throw new Error(`proton-bridge: TLS certificate fingerprint mismatch (pinned ${cred.certSha256.slice(0, 16)}…, seen ${seen.slice(0, 16) || "none"}…) — refusing to log in`);
       }
-      const client = new PinnedImapFlow({
-        host: cred.host,
-        port: cred.port,
-        secure: cred.security === "tls",
-        ...(cred.security === "starttls" ? { doSTARTTLS: true } : {}),
-        auth: { user: cred.username, pass: cred.password },
-        // Self-signed loopback cert: verified by the pin above instead of a CA.
-        tls: { rejectUnauthorized: false },
-        logger: false,
-        emitLogs: false,
-        disableAutoIdle: true,
-        connectionTimeout: timeout,
-        greetingTimeout: timeout,
-        socketTimeout: timeout * 4,
-      } as ConstructorParameters<typeof ImapFlow>[0]);
-      client.on("error", () => {}); // surfaced through the awaited calls; never crash the worker
+      pinChecked = true;
+      // imapflow's authenticate() is internal; typed loosely on purpose.
+      return (ImapFlow.prototype as unknown as { authenticate(this: unknown): Promise<boolean> }).authenticate.call(this);
+    }
+  }
+  const client = new PinnedImapFlow({
+    host: cred.host,
+    port: cred.port,
+    secure: cred.security === "tls",
+    ...(cred.security === "starttls" ? { doSTARTTLS: true } : {}),
+    auth: { user: cred.username, pass: cred.password },
+    // Self-signed loopback cert: verified by the pin above instead of a CA.
+    tls: { rejectUnauthorized: false },
+    logger: false,
+    emitLogs: false,
+    disableAutoIdle: true,
+    connectionTimeout: timeout,
+    greetingTimeout: timeout,
+    socketTimeout: timeout * 4,
+  } as ConstructorParameters<typeof ImapFlow>[0]);
+  client.on("error", () => {}); // surfaced through the awaited calls; never crash the worker
+  try {
+    await client.connect();
+  } catch (e) {
+    client.close();
+    const err = e as { authenticationFailed?: boolean; code?: string; message?: string };
+    // The pin / TLS refusals are ours and already safe to surface verbatim.
+    if (/^proton-bridge: (TLS certificate fingerprint mismatch|connection is not TLS-protected)/.test(err.message ?? "")) throw new Error(err.message);
+    if (err.authenticationFailed) throw new Error("proton-bridge: Bridge rejected the login (the Bridge password changes when the account is re-added in Bridge)");
+    throw new Error(scrubProtonError(`proton-bridge: cannot connect to Bridge at ${cred.host}:${cred.port} (${err.code ?? ""} ${err.message ?? ""})`, cred));
+  }
+  if (!pinChecked) {
+    client.close();
+    throw new Error("proton-bridge: certificate pin was not verified before login — refusing to continue");
+  }
+  return client;
+}
+
+function imapSessionOf(client: import("imapflow").ImapFlow): ImapSession {
+  return {
+    async openMailbox(name) {
       try {
-        await client.connect();
+        const box = await client.mailboxOpen(name, { readOnly: true });
+        return { uidValidity: String(box.uidValidity) };
       } catch (e) {
-        client.close();
-        const err = e as { authenticationFailed?: boolean; code?: string; message?: string };
-        // The pin / TLS refusals are ours and already safe to surface verbatim.
-        if (/^proton-bridge: (TLS certificate fingerprint mismatch|connection is not TLS-protected)/.test(err.message ?? "")) throw new Error(err.message);
-        if (err.authenticationFailed) throw new Error("proton-bridge: Bridge rejected the login (the Bridge password changes when the account is re-added in Bridge)");
-        throw new Error(scrubProtonError(`proton-bridge: cannot connect to Bridge at ${cred.host}:${cred.port} (${err.code ?? ""} ${err.message ?? ""})`, cred));
+        // Only a server refusal (tagged NO, e.g. [NONEXISTENT]) means "skip this
+        // mailbox". A dropped socket / timeout must FAIL the pass, not pass as success.
+        const err = e as { responseStatus?: string; serverResponseCode?: string };
+        if (err.responseStatus === "NO" || err.serverResponseCode === "NONEXISTENT") return null;
+        throw e;
       }
-      if (!pinChecked) {
-        client.close();
-        throw new Error("proton-bridge: certificate pin was not verified before login — refusing to continue");
+    },
+    async searchSince(since) {
+      const r = await client.search({ since }, { uid: true });
+      return Array.isArray(r) ? r : [];
+    },
+    async fetchRefs(uids) {
+      if (!uids.length) return [];
+      const out: ImapRef[] = [];
+      for await (const m of client.fetch(uids.join(","), { uid: true, flags: true, size: true, headers: ["message-id"] }, { uid: true })) {
+        const hdrs = m.headers ? Buffer.concat([m.headers, Buffer.from("\r\n")]) : Buffer.from("\r\n");
+        out.push({ uid: m.uid, flags: toFlags(m.flags), messageId: messageIdOf(parseMime(hdrs)), ...(typeof m.size === "number" ? { size: m.size } : {}) });
       }
-      return {
-        async openMailbox(name) {
-          try {
-            const box = await client.mailboxOpen(name, { readOnly: true });
-            return { uidValidity: String(box.uidValidity) };
-          } catch (e) {
-            // Only a server refusal (tagged NO, e.g. [NONEXISTENT]) means "skip this
-            // mailbox". A dropped socket / timeout must FAIL the pass, not pass as success.
-            const err = e as { responseStatus?: string; serverResponseCode?: string };
-            if (err.responseStatus === "NO" || err.serverResponseCode === "NONEXISTENT") return null;
-            throw e;
-          }
-        },
-        async searchSince(since) {
-          const r = await client.search({ since }, { uid: true });
-          return Array.isArray(r) ? r : [];
-        },
-        async fetchRefs(uids) {
-          if (!uids.length) return [];
-          const out: ImapRef[] = [];
-          for await (const m of client.fetch(uids.join(","), { uid: true, flags: true, size: true, headers: ["message-id"] }, { uid: true })) {
-            const hdrs = m.headers ? Buffer.concat([m.headers, Buffer.from("\r\n")]) : Buffer.from("\r\n");
-            out.push({ uid: m.uid, flags: toFlags(m.flags), messageId: messageIdOf(parseMime(hdrs)), ...(typeof m.size === "number" ? { size: m.size } : {}) });
-          }
-          return out;
-        },
-        async fetchSource(uid) {
-          const m = await client.fetchOne(String(uid), { uid: true, flags: true, source: true }, { uid: true });
-          if (!m || !m.source) return null;
-          return { source: m.source, flags: toFlags(m.flags) };
-        },
-        async close() {
-          try {
-            await client.logout();
-          } catch {
-            client.close();
-          }
-        },
-      };
+      return out;
+    },
+    async fetchSource(uid) {
+      const m = await client.fetchOne(String(uid), { uid: true, flags: true, source: true }, { uid: true });
+      if (!m || !m.source) return null;
+      return { source: m.source, flags: toFlags(m.flags) };
+    },
+    async close() {
+      try {
+        await client.logout();
+      } catch {
+        client.close();
+      }
     },
   };
 }

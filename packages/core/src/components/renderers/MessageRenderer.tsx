@@ -4,6 +4,7 @@ import { AlertTriangle, Bell, MessageSquare, Clock, Check, ChevronDown } from "l
 import type { RendererProps } from "./RendererProps";
 import { matrixApi } from "../../lib/matrix/client";
 import { vaultApi } from "../../lib/parachute/client";
+import { useLiveActions } from "../../data/LiveActionsContext";
 import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
 import { PlatformBadge } from "../comms/PlatformBadge";
@@ -91,11 +92,15 @@ export default function MessageRenderer({ note }: RendererProps) {
     staleTime: 30_000,
   });
 
+  // Web/native: send through the server (WP1.5 live actions) when it offers
+  // Matrix actions; desktop (no provider) keeps its Tauri command.
+  const live = useLiveActions("matrix");
   const handleSend = useCallback(async (body: string) => {
     if (!roomId) return;
-    await matrixApi.sendMessage(roomId, body);
+    if (live) await live.matrixSend(roomId, body);
+    else await matrixApi.sendMessage(roomId, body);
     queryClient.invalidateQueries({ queryKey: ["matrix", "messages", roomId] });
-  }, [roomId, queryClient]);
+  }, [roomId, queryClient, live]);
 
   // Prefer live Matrix data when it arrives (richer: real event IDs, is_outgoing).
   // Fall back to vault content immediately so the thread renders even if Matrix is unavailable.

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox, Check } from "lucide-react";
 import { vaultApi } from "../../lib/parachute/client";
 import { matrixApi } from "../../lib/matrix/client";
+import { useLiveActions } from "../../data/LiveActionsContext";
 import { useUIStore } from "../../app/stores/ui";
 import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
@@ -498,6 +499,7 @@ function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; on
   const [composeChannel, setComposeChannel] = useState("");
   const [composeBody, setComposeBody] = useState("");
   const [sending, setSending] = useState(false);
+  const liveMatrix = useLiveActions("matrix");
 
   const handleSend = async () => {
     if (!composeBody.trim() || !composeChannel) return;
@@ -514,7 +516,8 @@ function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; on
         : p.channels[composeChannel];
 
       if (roomId) {
-        await matrixApi.sendMessage(roomId, composeBody.trim());
+        if (liveMatrix) await liveMatrix.matrixSend(roomId, composeBody.trim());
+        else await matrixApi.sendMessage(roomId, composeBody.trim());
         setComposeBody("");
         setComposing(false);
       }

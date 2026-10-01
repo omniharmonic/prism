@@ -126,6 +126,38 @@ export function resolveActor(c: Context): Actor {
   return { kind: "anon", role: "guest", vaultId, grants: [] };
 }
 
+/**
+ * HOW the request authenticated (WP1.5 live actions): the same resolution order
+ * as `resolveActor`, reporting the path instead of the actor.
+ *  - `mcp`         — an in-process dispatch from a Prism MCP tool (an agent);
+ *  - `session`     — the httpOnly browser session cookie (a person at the web UI);
+ *  - `device`      — a native app's `pd_` device token (a person at the app);
+ *  - `local-token` — the loopback COLLAB_TOKEN / vault-token owner path (desktop
+ *                    or a script on the host — not provably a person);
+ *  - `capability` / `anon`.
+ * Nothing a client sends can make a request look more human than it is: the
+ * in-process marker is a private symbol, and the session/device paths need a
+ * real credential.
+ */
+export type RequestVia = "mcp" | "session" | "device" | "local-token" | "capability" | "anon";
+export function requestVia(c: Context): RequestVia {
+  if (injectedActor(c)) return "mcp";
+  if (readSession(c)) return "session";
+  const bearer = bearerToken(c);
+  if (bearer?.startsWith(DEVICE_TOKEN_PREFIX) && verifyDeviceToken(bearer)) return "device";
+  if (
+    bearer &&
+    !bearer.startsWith(DEVICE_TOKEN_PREFIX) &&
+    isLocalRequest((k) => c.req.header(k)) &&
+    ((config.collabToken && bearer === config.collabToken) || (config.parachuteToken && bearer === config.parachuteToken))
+  ) {
+    return "local-token";
+  }
+  const token = c.req.query("t") ?? capabilityHeader(c);
+  if (token && verifyCapability(token)) return "capability";
+  return "anon";
+}
+
 function capabilityHeader(c: Context): string | undefined {
   const h = c.req.header("authorization");
   return h?.startsWith("Capability ") ? h.slice("Capability ".length) : undefined;

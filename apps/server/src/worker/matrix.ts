@@ -238,6 +238,32 @@ export class MatrixClient {
     if (!r.ok) throw new Error(`matrix send ${roomId} → ${r.status}`);
   }
 
+  /**
+   * Send an event with a CALLER-chosen transaction id (WP1.5 live actions). The
+   * homeserver dedupes a repeated txnId for the same access token, so a retry
+   * with the same id never posts twice. Returns the event id.
+   */
+  async sendEvent(roomId: string, eventType: "m.room.message" | "m.reaction", txnId: string, content: Record<string, unknown>): Promise<string> {
+    const r = await this.fetchImpl(
+      this.url(`/rooms/${encodeURIComponent(roomId)}/send/${eventType}/${encodeURIComponent(txnId)}`),
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(content),
+        // A stalled homeserver must not hold the request (and its idempotency
+        // key) forever; a timeout is reported as outcome-unknown by the caller.
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!r.ok) {
+      const err = new Error(`matrix send ${eventType} → ${r.status}`) as Error & { status?: number };
+      err.status = r.status;
+      throw err;
+    }
+    const j = (await r.json().catch(() => ({}))) as { event_id?: string };
+    return typeof j.event_id === "string" ? j.event_id : "";
+  }
+
   /** Reject a pending invite (leave). Removes it from the pending-invite list. */
   async leave(roomId: string): Promise<void> {
     const r = await this.fetchImpl(this.url(`/rooms/${encodeURIComponent(roomId)}/leave`), {

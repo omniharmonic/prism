@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef } from "react";
-import { Send, Reply, Mail, Clock, User, Check, X } from "lucide-react";
+import { Send, Reply, Mail, Clock, User, Check, X, Archive, MailOpen } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { gmailApi } from "../../lib/matrix/client";
 import { Button } from "../ui/Button";
+import { useLiveActions } from "../../data/LiveActionsContext";
+import { liveActionErrorText, type LiveActionsClient } from "../../lib/actions/client";
 
 type SendStatus = "idle" | "sending" | "sent" | "error";
 
@@ -30,13 +32,30 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
   const account = (meta?.account as string) || "synergy@benjaminlife.one";
   const threadId = (meta?.threadId as string) || (meta?.gmail_id as string) || (meta?.thread_id as string) || "";
   const [showReply, setShowReply] = useState(false);
+  // Web/native: Proton Bridge via the server (WP1.5 live actions) when it offers
+  // email actions and this note is a stored message (it has a Message-ID).
+  // Desktop has no provider → `live` is null → the existing Tauri path.
+  const liveEmail = useLiveActions("email");
+  const live = liveEmail && typeof meta?.messageId === "string" ? liveEmail : null;
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [read, setRead] = useState<boolean>(!isUnread);
+  const runAction = useCallback(async (fn: () => Promise<unknown>, ok: string) => {
+    setActionMsg(null);
+    try {
+      await fn();
+      setActionMsg(ok);
+    } catch (e) {
+      setActionMsg(liveActionErrorText(e));
+    }
+  }, []);
 
   // Parse the note content — email_sync stores it as markdown with "# Subject" header
   // and "**From:** ...\n**Date:** ...\n\n---" per message
   const messages = parseEmailContent(note.content, from, date);
 
   // Build reply metadata
-  const replyTo = extractEmail(from);
+  // Reply-To wins when stored (the server applies the same rule).
+  const replyTo = extractEmail((typeof meta?.replyTo === "string" && meta.replyTo) || from);
   const replySubject = subject.startsWith("Re: ") ? subject : `Re: ${subject}`;
 
   return (
@@ -71,6 +90,20 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
           {replyTo && (
             <Button size="sm" variant="ghost" icon={<Reply size={14} />}
               onClick={() => setShowReply(true)}>Reply</Button>
+          )}
+          {live && (
+            <>
+              <Button size="sm" variant="ghost" icon={<Archive size={14} />}
+                onClick={() => runAction(() => live.emailArchive({ noteId: note.id }), "Archived")}>Archive</Button>
+              <Button size="sm" variant="ghost" icon={<MailOpen size={14} />}
+                onClick={() => runAction(async () => {
+                  await live.emailMarkRead({ noteId: note.id }, !read);
+                  setRead(!read);
+                }, read ? "Marked unread" : "Marked read")}>{read ? "Mark unread" : "Mark read"}</Button>
+            </>
+          )}
+          {actionMsg && (
+            <span className="text-xs self-center" style={{ color: "var(--text-muted)" }}>{actionMsg}</span>
           )}
         </div>
         {labels.length > 0 && (
@@ -121,6 +154,8 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
           to={replyTo}
           subject={replySubject}
           threadId={threadId}
+          live={live}
+          noteId={note.id}
           onSent={() => {}}
           onClose={() => setShowReply(false)}
         />
@@ -131,10 +166,26 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
 
 /** Extract a bare email address from a "Name <email>" or plain "email" string. */
 function extractEmail(raw: string): string {
-  const match = raw.match(/<([^>]+)>/);
-  if (match) return match[1];
+  // The LAST angle-addr outside quoted strings / comments, so a display name like
+  // `"Eve <eve@evil>" <real@example>` yields the real address (mirrors the
+  // server's RFC 5322 parser; the server re-derives and refuses a mismatch).
+  let inQuote = false;
+  let depth = 0;
+  let start = -1;
+  let last = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "\\") { i++; continue; }
+    if (inQuote) { if (ch === '"') inQuote = false; continue; }
+    if (ch === '"') inQuote = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && depth > 0) depth--;
+    else if (depth === 0 && ch === "<") start = i + 1;
+    else if (depth === 0 && ch === ">" && start >= 0) { last = raw.slice(start, i).trim(); start = -1; }
+  }
+  if (last) return last;
   // Already a bare email?
-  if (raw.includes("@")) return raw.trim();
+  if (raw.includes("@") && !raw.includes("<")) return raw.trim();
   return "";
 }
 
@@ -144,6 +195,8 @@ function EmailReplyBar({
   to,
   subject,
   threadId,
+  live,
+  noteId,
   onSent,
   onClose,
 }: {
@@ -151,20 +204,26 @@ function EmailReplyBar({
   to: string;
   subject: string;
   threadId: string;
+  /** Server live actions (web/native): the server builds recipients + threading from the note. */
+  live?: LiveActionsClient | null;
+  noteId?: string;
   onSent: () => void;
   onClose: () => void;
 }) {
   const [body, setBody] = useState("");
   const [sendStatus, setSendStatus] = useState<SendStatus>("idle");
+  const [errorText, setErrorText] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = useCallback(async () => {
     const trimmed = body.trim();
     if (!trimmed) return;
     setSendStatus("sending");
+    setErrorText(null);
     try {
       const recipient = extractEmail(to) || to;
-      await gmailApi.send(account, [recipient], subject, trimmed, undefined, threadId || undefined);
+      if (live && noteId) await live.emailReply({ noteId, expectTo: [recipient], body: trimmed });
+      else await gmailApi.send(account, [recipient], subject, trimmed, undefined, threadId || undefined);
       setSendStatus("sent");
       setBody("");
       onSent();
@@ -173,11 +232,12 @@ function EmailReplyBar({
         setSendStatus("idle");
         onClose();
       }, 1500);
-    } catch {
+    } catch (e) {
       setSendStatus("error");
+      if (live) setErrorText(liveActionErrorText(e));
       setTimeout(() => setSendStatus("idle"), 2500);
     }
-  }, [account, to, subject, threadId, body, onSent, onClose]);
+  }, [account, to, subject, threadId, body, onSent, onClose, live, noteId]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -208,6 +268,9 @@ function EmailReplyBar({
           <X size={14} />
         </button>
       </div>
+      {errorText && (
+        <div className="text-xs" style={{ color: "var(--color-danger, var(--text-muted))" }}>{errorText}</div>
+      )}
 
       {/* Textarea + send */}
       <div className="flex items-end gap-2">
@@ -300,16 +363,25 @@ function EmailComposer({ note }: { note: RendererProps["note"] }) {
   const [body, setBody] = useState(note.content || "");
   const [account, setAccount] = useState((meta?.account as string) || "synergy@benjaminlife.one");
   const [sending, setSending] = useState(false);
+  // Web/native: send via the server's Proton Bridge path (WP1.5) — always from
+  // the Bridge account, whatever the From picker says. Desktop: Tauri as before.
+  const liveEmail = useLiveActions("email");
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const handleSend = useCallback(async () => {
     setSending(true);
+    setSendError(null);
     try {
       const recipients = to.split(",").map((s) => s.trim()).filter(Boolean);
-      await gmailApi.send(account, recipients, subject, body);
+      if (liveEmail) await liveEmail.emailSend({ to: recipients, subject, body });
+      else await gmailApi.send(account, recipients, subject, body);
+    } catch (e) {
+      if (!liveEmail) throw e;
+      setSendError(liveActionErrorText(e));
     } finally {
       setSending(false);
     }
-  }, [account, to, subject, body]);
+  }, [account, to, subject, body, liveEmail]);
 
   return (
     <div className="flex flex-col h-full">
@@ -344,6 +416,7 @@ function EmailComposer({ note }: { note: RendererProps["note"] }) {
       </div>
       <div className="flex justify-end px-6 py-3" style={{ borderTop: "1px solid var(--glass-border)" }}>
         <Button variant="primary" icon={<Send size={14} />} onClick={handleSend} loading={sending}>Send</Button>
+        {sendError && <span className="text-xs" style={{ color: "var(--text-muted)" }}>{sendError}</span>}
       </div>
     </div>
   );

@@ -4,6 +4,8 @@ import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, Exter
 import { calendarApi } from "../../lib/sync/client";
 import { vaultApi } from "../../lib/parachute/client";
 import { isDesktop } from "../../lib/platform";
+import { useLiveActions } from "../../data/LiveActionsContext";
+import { liveActionErrorText, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -17,6 +19,8 @@ type CalEvent = {
   description?: string;
   hangoutLink?: string;
   meetUrl?: string;
+  /** Set on events synced from Google (vault `meeting` notes with a calendarEventId). */
+  htmlLink?: string | null;
   attendees?: Array<{ email: string; displayName?: string; responseStatus?: string }>;
 };
 
@@ -77,6 +81,10 @@ export default function CalendarDashboard(_props: RendererProps) {
   const [createDate, setCreateDate] = useState<Date | null>(null);
   const [editingEvent, setEditingEvent] = useState<CalEvent | null>(null);
   const queryClient = useQueryClient();
+  // Web/native: create + RSVP through the server (WP1.5 live actions, gog) when
+  // it offers calendar actions. Desktop keeps its Tauri commands (isDesktop).
+  const liveCal = useLiveActions("calendar");
+  const canCreate = isDesktop || !!liveCal;
   const openTab = useUIStore((s) => s.openTab);
 
   // Compute date range based on current view
@@ -242,7 +250,7 @@ export default function CalendarDashboard(_props: RendererProps) {
               Syncing...
             </span>
           )}
-          {isDesktop && (
+          {canCreate && (
             <button
               onClick={() => handleCreateClick()}
               className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
@@ -294,11 +302,13 @@ export default function CalendarDashboard(_props: RendererProps) {
               onDelete={() => selectedEvent.id && handleDeleteEvent(selectedEvent.id)}
               onOpenNotes={() => handleOpenMeetingNote(selectedEvent)}
               onOpenTranscript={(noteId, label) => openTab(noteId, label, "document")}
+              live={liveCal}
             />
           ) : showCreateForm ? (
             <EventFormPanel
               event={editingEvent}
               defaultDate={createDate}
+              live={isDesktop ? null : liveCal}
               onClose={() => { setShowCreateForm(false); setEditingEvent(null); }}
               onSaved={() => { setShowCreateForm(false); setEditingEvent(null); refreshEvents(); }}
             />
@@ -308,7 +318,7 @@ export default function CalendarDashboard(_props: RendererProps) {
                 <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                   {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
                 </div>
-                {isDesktop && (
+                {canCreate && (
                   <button onClick={() => handleCreateClick(selectedDate)} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Add event">
                     <Plus size={14} style={{ color: "var(--color-accent)" }} />
                   </button>
@@ -506,15 +516,31 @@ function EventCard({ event }: { event: CalEvent }) {
 
 // ─── Event Detail Panel ──────────────────────────────────────
 
-function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpenTranscript }: {
+function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpenTranscript, live }: {
   event: CalEvent;
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onOpenNotes: () => void;
   onOpenTranscript: (noteId: string, label: string) => void;
+  /** Server live actions (web/native): RSVP to a Google-synced invitation. */
+  live?: LiveActionsClient | null;
 }) {
   const meetUrl = event.hangoutLink || event.meetUrl;
+  // RSVP only for events that came from Google (they carry an htmlLink) and
+  // have guests; the id is then the Google event id.
+  const canRsvp = !!live && !!event.id && !!event.htmlLink && (event.attendees?.length ?? 0) > 0;
+  const [rsvpMsg, setRsvpMsg] = useState<string | null>(null);
+  const rsvp = async (response: RsvpResponse) => {
+    if (!live) return;
+    setRsvpMsg(null);
+    try {
+      await live.calendarRsvp(event.id ?? "", response);
+      setRsvpMsg(response === "accepted" ? "Accepted" : response === "declined" ? "Declined" : "Marked tentative");
+    } catch (e) {
+      setRsvpMsg(liveActionErrorText(e));
+    }
+  };
 
   // Check for linked transcript
   const dateStr = (event.start?.dateTime || event.start?.date || "").slice(0, 10);
@@ -660,18 +686,32 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
           </>
         )}
       </div>
+      {canRsvp && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>RSVP</span>
+          {(["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
+            <button key={r} onClick={() => rsvp(r)} className="px-2 py-1 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
+            </button>
+          ))}
+          {rsvpMsg && <span className="text-xs" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Event Form Panel (Create / Edit) ───────────────────────
 
-function EventFormPanel({ event, defaultDate, onClose, onSaved }: {
+function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   event: CalEvent | null; // null = create, non-null = edit
   defaultDate: Date | null;
   onClose: () => void;
   onSaved: () => void;
+  /** Server live actions (web/native, create only). */
+  live?: LiveActionsClient | null;
 }) {
+  const [saveError, setSaveError] = useState<string | null>(null);
   const isEdit = !!event;
   const dateStr = defaultDate ? `${defaultDate.getFullYear()}-${String(defaultDate.getMonth() + 1).padStart(2, "0")}-${String(defaultDate.getDate()).padStart(2, "0")}` : new Date().toISOString().slice(0, 10);
 
@@ -682,6 +722,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved }: {
   const [locationVal, setLocationVal] = useState(event?.location || "");
   const [descVal, setDescVal] = useState(event?.description || "");
   const [attendeesVal, setAttendeesVal] = useState("");
+  const [notifyAttendees, setNotifyAttendees] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -691,14 +732,27 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved }: {
       const start = `${date}T${startTime}:00`;
       const end = `${date}T${endTime}:00`;
 
+      setSaveError(null);
       if (isEdit && event?.id) {
         await calendarApi.updateEvent(event.id, summary, start, end, attendeesVal ? attendeesVal.split(",").map((s) => s.trim()) : undefined, descVal || undefined);
+      } else if (live) {
+        // The server wants RFC 3339 with an offset: the form's local wall time → UTC.
+        await live.calendarCreate({
+          title: summary.trim(),
+          start: new Date(start).toISOString(),
+          end: new Date(end).toISOString(),
+          attendees: attendeesVal ? attendeesVal.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+          description: descVal || undefined,
+          location: locationVal || undefined,
+          notify: notifyAttendees,
+        });
       } else {
         await calendarApi.createEvent(summary, start, end, attendeesVal ? attendeesVal.split(",").map((s) => s.trim()) : undefined, descVal || undefined, locationVal || undefined);
       }
       onSaved();
     } catch (e) {
       console.error("Failed to save event:", e);
+      if (live) setSaveError(liveActionErrorText(e));
     } finally {
       setSaving(false);
     }
@@ -750,6 +804,12 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved }: {
           className="w-full rounded px-2 py-1.5 text-xs outline-none"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
         />
+        {live && !isEdit && attendeesVal.trim() && (
+          <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+            <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
+            {notifyAttendees ? "Attendees will be emailed an invite" : "Don't email attendees an invite"}
+          </label>
+        )}
 
         <textarea
           value={descVal}
@@ -769,6 +829,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved }: {
       >
         {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
       </button>
+      {saveError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{saveError}</div>}
     </div>
   );
 }

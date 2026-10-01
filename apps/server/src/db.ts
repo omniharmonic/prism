@@ -432,6 +432,37 @@ db.exec(`
     failures   INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS push_subscriptions_email ON push_subscriptions(email);
+  -- Live actions audit (Arch v2 WP1.5, actions/store.ts). One row per action
+  -- attempt that passed the server-owner gate. NEVER a message body, subject or
+  -- plain recipient address: targets are ids (note/room/event/calendar ids) and
+  -- short SHA-256 hashes. error is scrubbed + capped.
+  CREATE TABLE IF NOT EXISTS action_audit (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              INTEGER NOT NULL,
+    actor_email     TEXT NOT NULL,
+    via             TEXT NOT NULL,      -- session | device | local-token | mcp
+    origin          TEXT NOT NULL,      -- human | agent
+    action          TEXT NOT NULL,      -- e.g. email.send, matrix.react
+    vault_id        TEXT NOT NULL,
+    target          TEXT NOT NULL,      -- JSON: ids + hashes only
+    idempotency_key TEXT,
+    status          TEXT NOT NULL,      -- ok | failed | refused | replayed
+    error           TEXT
+  );
+  CREATE INDEX IF NOT EXISTS action_audit_ts ON action_audit(ts);
+  -- Idempotency ledger: (actor, key) → the first outcome, replayed on retry so a
+  -- retried request never sends twice. request_hash binds the key to one body.
+  CREATE TABLE IF NOT EXISTS action_idempotency (
+    actor_email  TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    state        TEXT NOT NULL,         -- pending | done
+    http_status  INTEGER,
+    response     TEXT,                  -- JSON (never a body/address)
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (actor_email, key)
+  );
   -- Normalized AgentEvents (never text_delta — those are coalesced into text).
   CREATE TABLE IF NOT EXISTS agent_events (
     session_id TEXT NOT NULL,
