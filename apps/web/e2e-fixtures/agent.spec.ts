@@ -164,3 +164,28 @@ test("finished streamed turn refreshes the open conversation's spending summary"
   await page.evaluate(() => (window as any).prismAgentFixture.completeTurn());
   await expect(page.getByRole("status", { name: "Session spend" })).toHaveText("0.06");
 });
+
+test("working document and draft stay pinned while reading references, expanding and reloading", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?context");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  const working = page.getByTestId("agent-working-document");
+  await expect(working).toContainText("Draft brief");
+  await input.fill("Revise the brief using this reference");
+  await page.getByRole("button", { name: "Open reference", exact: true }).click();
+  await expect(working).toContainText("Draft brief");
+  await expect(input).toHaveValue("Revise the brief using this reference");
+  await page.getByRole("button", { name: "Open in Agent tab" }).click();
+  await expect(working).toContainText("Draft brief");
+  await expect(input).toHaveValue("Revise the brief using this reference");
+  await page.reload();
+  await expect(working).toContainText("Draft brief");
+  await page.getByRole("button", { name: "Open reference", exact: true }).click();
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(working).toContainText("Reference note");
+  await expect(input).toHaveValue("");
+  await page.getByRole("button", { name: "Morgan", exact: true }).click();
+  await expect(working).toContainText("Reference note");
+  await page.getByRole("button", { name: "Alex", exact: true }).click();
+  await expect(working).toContainText("Reference note");
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
+});

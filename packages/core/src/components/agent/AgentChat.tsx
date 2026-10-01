@@ -7,7 +7,7 @@
  * full-screen conversation over the command pill with the composer pinned above
  * the keyboard (visualViewport) and safe-area insets; inputs are 16px (no iOS zoom).
  */
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -29,7 +29,7 @@ import {
 import { useAgentClient, useAgentAvailability, useAgentLimits, agentKeys } from "../../data/AgentClientContext";
 import { AgentBudgetLine } from "./AgentBudget";
 import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
-import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk } from "../../lib/agent/chatStore";
+import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk, type AgentDraftContext } from "../../lib/agent/chatStore";
 import { useComposerDraft } from "../../lib/agent/useComposerDraft";
 import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
@@ -148,10 +148,7 @@ function Unavailable({ text }: { text: string }) {
 }
 
 /** A new (not yet created) session: it is created on the first send. */
-interface Draft {
-  noteId?: string;
-  noteTitle?: string;
-}
+type Draft = AgentDraftContext;
 
 function AgentChatView({ client }: { client: AgentClient }) {
   const isMobile = useIsMobile();
@@ -159,7 +156,8 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
   const pendingAsk = useAgentChatStore((s) => s.pendingAsk);
   const setPendingAsk = useAgentChatStore((s) => s.setPendingAsk);
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const draft = useAgentChatStore((s) => s.draft);
+  const setDraft = useAgentChatStore((s) => s.setDraft);
   const [autoPrompt, setAutoPrompt] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const keys = agentKeys(client);
@@ -208,7 +206,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
     }
     setActiveSession(null);
     setDraft({});
-  }, [pendingAsk, sessions, setPendingAsk, setActiveSession]);
+  }, [pendingAsk, sessions, setPendingAsk, setActiveSession, setDraft]);
 
   const startNew = () => {
     setActiveSession(null);
@@ -232,7 +230,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const showingConversation = !!activeSessionId || !!draft;
   const conversation = showingConversation ? (
     <Conversation
-      key={activeSessionId ?? "draft"}
+      key={activeSessionId ?? `draft:${draft?.noteId ?? "new"}`}
       client={client}
       sessionId={activeSessionId}
       draft={draft}
@@ -627,7 +625,6 @@ export function Conversation({
         <br />
         It keeps working if you close the app.
       </p>
-      {noteId && <NoteChip noteId={noteId} label={draft?.noteTitle} />}
     </div>
   );
 
@@ -742,9 +739,10 @@ export function Conversation({
           <Spinner size={18} />
         </div>
       )}
-      {!isDraft && noteId && conv.state.turns.length > 0 && (
-        <div className="mb-3 flex justify-center">
-          <NoteChip noteId={noteId} />
+      {noteId && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs" data-testid="agent-working-document" style={{ color: "var(--text-muted)" }}>
+          <span>Working document</span>
+          <NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} />
         </div>
       )}
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -923,20 +921,28 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
 export function AgentPanelChat({ client }: { client: AgentClient }) {
   const activeSessionId = useAgentChatStore((s) => s.activeSessionId);
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
-  const { openTabs, activeTabId } = useUIStore();
-  const tab = openTabs.find((t) => t.id === activeTabId);
+  const draft = useAgentChatStore((s) => s.draft);
+  const setDraft = useAgentChatStore((s) => s.setDraft);
+  const scope = useAgentChatStore((s) => s.scope);
+  const tab = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId));
   const noteId = isAskableNoteId(tab?.noteId) ? tab!.noteId : undefined;
-  const draft = useMemo(() => (activeSessionId ? null : { noteId, noteTitle: noteId ? tab?.title : undefined }), [activeSessionId, noteId, tab?.title]);
+  const noteTitle = noteId ? tab?.title : undefined;
+  // Capture once. Reading a citation or expanding the panel must never retarget
+  // an unsent request. Only an explicit New action chooses another document.
+  useEffect(() => {
+    if (scope && !activeSessionId && !draft) setDraft({ noteId, noteTitle });
+  }, [scope, activeSessionId, draft, noteId, noteTitle, setDraft]);
+  const startNew = () => { setActiveSession(null); setDraft({ noteId, noteTitle }); };
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-shrink-0 items-center justify-end gap-1 px-2 py-1" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <button onClick={() => setActiveSession(null)} className="interactive flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="interactive focus-ring flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
           <Plus size={12} /> New
         </button>
       </div>
       <div className="min-h-0 flex-1">
         <Conversation
-          key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${noteId ?? ""}`}`}
+          key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${draft?.noteId ?? ""}`}`}
           client={client}
           sessionId={activeSessionId}
           draft={draft}

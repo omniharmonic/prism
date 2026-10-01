@@ -1,13 +1,17 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AgentClientProvider, createHttpAgentClient, useAgentChatStore, type AgentClient, type AgentSession, type AgentPermissionMode } from "@prism/core";
+import { AgentClientProvider, VaultClientProvider, createHttpAgentClient, useAgentChatStore, useUIStore, type VaultClient, type Note, type AgentClient, type AgentSession, type AgentPermissionMode } from "@prism/core";
 import { fetchMe, agentScope, setActiveVault, setActiveWorkspace } from "../src/config";
 import { httpAgentClient } from "../src/agent/HttpAgentClient";
 import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAgentConversation";
-import { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
+import AgentChat, { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
 
 const permissionsFixture = new URLSearchParams(location.search).has("permissions");
+const contextFixture = new URLSearchParams(location.search).has("context");
+const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
+const vault = { getNote: async (id: string) => fixtureNote(id) } as VaultClient;
+if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
 const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, completeTurn: () => {} };
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -55,12 +59,14 @@ function BudgetProbe() {
 function Fixture() {
   const [visible, setVisible] = useState(true);
   const [, update] = useState(0);
+  const expanded = useUIStore((s) => s.activeTabId === "agent-chat");
   const switchTo = (owner: string) => { scope = audience(owner); useAgentChatStore.getState().bindScope(scope); update((n) => n + 1); };
-  return <QueryClientProvider client={query}><AgentClientProvider client={client}>
+  return <QueryClientProvider client={query}><VaultClientProvider client={vault}><AgentClientProvider client={client}>
     <div style={{ height: "100dvh", maxWidth: 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
-      {new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && <AgentPanelChat client={client} />}
+      {contextFixture && <button onClick={() => useUIStore.getState().openTab("document-b", "Reference note", "document")}>Open reference</button>}
+      {new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && (contextFixture && expanded ? <AgentChat note={fixtureNote("agent-chat")} /> : <AgentPanelChat client={client} />)}
     </div>
-  </AgentClientProvider></QueryClientProvider>;
+  </AgentClientProvider></VaultClientProvider></QueryClientProvider>;
 }
 createRoot(document.getElementById("root")!).render(<React.StrictMode><Fixture /></React.StrictMode>);
