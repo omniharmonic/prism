@@ -19,3 +19,5 @@
 .agent-markdown th, .agent-markdown td { border: 1px solid var(--glass-border); padding: .4em .65em; text-align: left; }
 .agent-markdown th { font-weight: 600; background: var(--bg-surface); }
 .agent-markdown hr { margin: 1em 0; border: 0; border-top: 1px solid var(--glass-border); }
+.agent-source-preview { width: min(720px, calc(100vw - 24px)); max-height: 85dvh; margin: auto; padding: 0; color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--glass-border); border-radius: 14px; box-shadow: 0 24px 80px #0003; }
+.agent-source-preview::backdrop { background: #1115; }

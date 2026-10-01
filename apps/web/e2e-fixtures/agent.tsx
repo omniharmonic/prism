@@ -12,9 +12,9 @@ const permissionsFixture = new URLSearchParams(location.search).has("permissions
 const contextFixture = new URLSearchParams(location.search).has("context");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
-const vault = { getNote: async (id: string) => fixtureNote(id) } as VaultClient;
+const vault = { getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
-const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, archived: [] as string[], completeTurn: () => {} };
+const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {} };
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const audience = (owner: string) => JSON.stringify(["https://fixture.example.test/api", "workspace", "vault", owner]);

@@ -237,3 +237,31 @@ test("agent Markdown renders lists and tables while keeping HTML, URLs and remot
   await expect(reply.locator("pre code")).toContainText("const complete = true;");
   await expect(reply.locator("p")).toHaveText("Done.");
 });
+
+test("source preview preserves the draft and refuses cached text after access is denied", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/agent.html?context");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await input.fill("Keep this thought while I inspect the source");
+  const chip = page.getByTestId("agent-working-document").getByRole("button", { name: "Draft brief" });
+  await chip.click();
+  const preview = page.getByRole("dialog", { name: "Source preview" });
+  await expect(preview.getByText("Fixture", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.keyboard.press("Escape");
+  await expect(preview).toHaveCount(0);
+  await expect(chip).toBeFocused();
+  await expect(input).toHaveValue("Keep this thought while I inspect the source");
+  await page.evaluate(() => { (window as any).prismAgentFixture.denySource = true; });
+  await chip.click();
+  await expect(preview.getByRole("alert")).toContainText("This source is unavailable");
+  await expect(preview.getByText("Fixture", { exact: true })).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Open document" })).toHaveCount(0);
+  await page.evaluate(() => { (window as any).prismAgentFixture.denySource = false; });
+  await preview.getByRole("button", { name: "Try again" }).click();
+  await expect(preview.getByText("Fixture", { exact: true })).toBeVisible();
+  await preview.getByRole("button", { name: "Open document" }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(input).toHaveValue("Keep this thought while I inspect the source");
+  await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
+});

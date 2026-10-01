@@ -38,10 +38,10 @@ import type { AgentClient, AgentProfile, AgentPermissionMode, AgentSessionSummar
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
-import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
 import { PrismMark } from "../brand/PrismMark";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentSourcePreview } from "./AgentSourcePreview";
 import type { RendererProps } from "../renderers/RendererProps";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -863,18 +863,18 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   );
 }
 
-/** A note the agent touched (or the session's note): click opens it in a tab. */
+/** Inspect a source without replacing the working document or active tab. */
 function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: string }) {
   const deleted = op === "delete";
-  const { data: note } = useNote(deleted ? null : noteId);
-  const openTab = useUIStore((s) => s.openTab);
-  const name = label || note?.path?.split("/").pop() || noteId.slice(0, 10);
+  const { data: note, isError } = useNote(deleted ? null : noteId);
+  const [preview, setPreview] = useState(false);
+  const name = isError ? "Unavailable note" : label || note?.path?.split("/").pop() || noteId.slice(0, 10);
   const verb = op === "create" ? "Created" : op === "update" ? "Updated" : op === "delete" ? "Deleted" : null;
-  const clickable = !deleted && !!note;
   return (
+    <>
     <button
-      disabled={!clickable}
-      onClick={() => note && openTab(note.id, name, inferContentType(note))}
+      disabled={deleted}
+      onClick={() => setPreview(true)}
       data-testid="agent-note-chip"
       className="flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs disabled:cursor-default"
       style={{
@@ -888,6 +888,8 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
       {verb && <span style={{ opacity: 0.75 }}>{verb}</span>}
       <span className="truncate">{name}</span>
     </button>
+    {preview && <AgentSourcePreview noteId={noteId} onClose={() => setPreview(false)} />}
+    </>
   );
 }
 
