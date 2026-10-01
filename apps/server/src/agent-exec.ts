@@ -436,14 +436,18 @@ export function admissionVerdict(
   swapMaxPct: number | null,
   freeMinPct: number,
   swapMinFreeMb: number = DEFAULT_SWAP_MIN_FREE_MB,
+  /** darwin: refuse at or above this kernel pressure level (2 = warn, 4 = critical).
+   *  Admission uses 2; a run already in flight with its model resident uses 4 —
+   *  a 7 GB model on a 16 GB host sits at "warn" while it infers. */
+  refuseAtLevel: number = 2,
 ): AdmissionVerdict {
   if (!sample) return { ok: true, reason: null, sample };
   const darwin = sample.swapFreeMb !== undefined;
   if (sample.freePct != null && sample.freePct < freeMinPct) {
     return { ok: false, reason: `memory pressure: ${sample.freePct.toFixed(0)}% free (< ${freeMinPct}%)`, sample };
   }
-  if (darwin && sample.pressureLevel != null && sample.pressureLevel >= 2) {
-    return { ok: false, reason: `memory pressure: kernel level ${sample.pressureLevel === 2 ? "warn" : "critical"}`, sample };
+  if (darwin && sample.pressureLevel != null && sample.pressureLevel >= refuseAtLevel) {
+    return { ok: false, reason: `memory pressure: kernel level ${sample.pressureLevel >= 4 ? "critical" : "warn"}`, sample };
   }
   // Low free swap on macOS is only a signal when the swap volume can't grow it
   // (2026-10-01: 466 MB "free" of a 6 GB swap with 159 GB of disk free and 73% free

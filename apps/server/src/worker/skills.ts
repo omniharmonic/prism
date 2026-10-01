@@ -689,7 +689,7 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
             today: deps.localParts(now).day,
             deadline: start + deps.settings.localRunTimeoutMs,
             pressure: () => {
-              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.runFreeMinPct ?? deps.settings.freeMinPct, deps.settings.swapMinFreeMb);
+              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.runFreeMinPct ?? deps.settings.freeMinPct, deps.settings.swapMinFreeMb, 4);
               return v.ok ? null : v.reason;
             },
           });

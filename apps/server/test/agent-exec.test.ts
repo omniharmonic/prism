@@ -597,7 +597,9 @@ test("admission darwin: kernel pressure warn/critical refuses", () => {
   assert.equal(w.ok, false);
   assert.equal(w.reason, "memory pressure: kernel level warn");
   const c = admissionVerdict({ swapUsedPct: 10, freePct: 40, swapFreeMb: 4000, swapDiskFreeMb: 100_000, pressureLevel: 4 }, null, 15, 512);
-  assert.equal(c.reason, "memory pressure: kernel level critical");
+  assert.equal(c.reason, "memory pressure: kernel level critical");  // In-flight runs pass refuseAtLevel = 4: warn tolerated, critical still stops.
+  assert.equal(admissionVerdict({ swapUsedPct: 10, freePct: 40, swapFreeMb: 4000, swapDiskFreeMb: 100_000, pressureLevel: 2 }, null, 15, 512, 4).ok, true);
+  assert.equal(admissionVerdict({ swapUsedPct: 10, freePct: 40, swapFreeMb: 4000, swapDiskFreeMb: 100_000, pressureLevel: 4 }, null, 15, 512, 4).ok, false);
 });
 
 test("admission linux (no swapFreeMb): % behaviour unchanged, default 80", () => {
