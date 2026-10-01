@@ -252,6 +252,9 @@ export const config = {
   protonIntentsKeep: Number(process.env.PROTON_INTENTS_KEEP ?? 500),
   protonLinkPeople: process.env.PROTON_LINK_PEOPLE === "true",
   protonImapTimeoutMs: Number(process.env.PROTON_IMAP_TIMEOUT_MS ?? 30_000),
+  // Messages over this RFC822.SIZE are never downloaded (intent skip-too-large, no
+  // note) — bounds per-message memory; 0 = no cap.
+  protonMaxMessageBytes: Number(process.env.PROTON_MAX_MESSAGE_BYTES ?? 10_485_760),
   // How often the worker recompiles the governance constitution into grant rows
   // (governance-grants.ts). The route path already reconciles on every successful
   // mutation, so this is the SAFETY NET, not the mechanism: it catches a
@@ -431,6 +434,13 @@ export function assertConfig(): void {
   const unique = [...new Set(missing)];
   if (unique.length) {
     throw new Error(`Prism Server misconfigured — missing env: ${unique.join(", ")}`);
+  }
+  // Two live writers of vault/messages/email/ (WP1.2b). Shadow writes nothing, so
+  // GMAIL_SYNC_ENABLED + PROTON_SHADOW is allowed.
+  if (config.gmailSyncEnabled && config.protonSyncEnabled && !config.protonShadow) {
+    throw new Error(
+      "Prism Server misconfigured — GMAIL_SYNC_ENABLED and PROTON_SYNC_ENABLED are both true: both would write email notes under vault/messages/email/. Turn one off (email comes from Proton Bridge; Gmail is not provisioned on the account).",
+    );
   }
 }
 

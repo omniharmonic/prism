@@ -70,6 +70,15 @@
  *   8. The Bridge cert pin is REQUIRED in the credential (`certSha256`, same
  *      format as the script's `certFingerprint`): no trust-on-first-use, so a
  *      lost pin fails closed instead of open. The host must be loopback.
+ *   9. Bounded work (security review C1/M2): messages whose RFC822.SIZE exceeds
+ *      PROTON_MAX_MESSAGE_BYTES (10 MB) are never downloaded — intent
+ *      `skip-too-large`, no note (chosen over a bodystructure partial fetch,
+ *      which would rebuild the note from IMAP's re-encoded part metadata and
+ *      break byte-parity for every message, to save only the rare >10 MB one);
+ *      each text part is cut at 500 KB before parsing; the HTML stripper is a
+ *      linear scanner. A message that fails to parse 3 times, an oversized one
+ *      and a path collision are remembered per (mailbox, UIDVALIDITY) so they
+ *      are not re-downloaded every pass.
  *
  * GATES: PROTON_SYNC_ENABLED (default off) runs it; PROTON_SHADOW=true connects,
  * fetches and diffs but makes ZERO vault writes (it wins over ENABLED) and
@@ -128,10 +137,14 @@ export function validateProtonCredential(v: unknown): ProtonCredential {
   return { host, port, username: o.username, password: o.password, security, certSha256: fp };
 }
 
-/** Remove the password (and any long opaque token) from an error message. */
+/** Remove the password, any long opaque token and email-note paths (their slug
+ *  is the subject) from an error / log message. Input is capped first so the
+ *  scrub itself stays cheap. */
 export function scrubProtonError(msg: string, cred?: Pick<ProtonCredential, "password"> | null): string {
   let s = String(msg ?? "");
-  if (cred?.password) s = s.split(cred.password).join("[redacted]");
+  if (cred?.password) s = s.split(cred.password).join("[redacted]"); // before the cap: never leave half a password
+  s = s.slice(0, 4000);
+  s = s.replace(/vault\/messages\/email\/[^\s"'`,)]*/g, "<email-note>");
   return s.replace(/\b[A-Za-z0-9+/_-]{24,}={0,2}/g, "[redacted]").slice(0, 300);
 }
 
@@ -142,6 +155,8 @@ export interface ImapRef {
   flags: string[];
   /** Normalized like the script (`.strip().strip("<>")`); "" when absent. */
   messageId: string;
+  /** RFC822.SIZE in bytes (fetched with the refs, so oversize mail is never downloaded). */
+  size?: number;
 }
 
 export interface ImapSession {
@@ -228,8 +243,12 @@ export function imapflowSource(cred: ProtonCredential, opts: { timeoutMs?: numbe
           try {
             const box = await client.mailboxOpen(name, { readOnly: true });
             return { uidValidity: String(box.uidValidity) };
-          } catch {
-            return null;
+          } catch (e) {
+            // Only a server refusal (tagged NO, e.g. [NONEXISTENT]) means "skip this
+            // mailbox". A dropped socket / timeout must FAIL the pass, not pass as success.
+            const err = e as { responseStatus?: string; serverResponseCode?: string };
+            if (err.responseStatus === "NO" || err.serverResponseCode === "NONEXISTENT") return null;
+            throw e;
           }
         },
         async searchSince(since) {
@@ -239,9 +258,9 @@ export function imapflowSource(cred: ProtonCredential, opts: { timeoutMs?: numbe
         async fetchRefs(uids) {
           if (!uids.length) return [];
           const out: ImapRef[] = [];
-          for await (const m of client.fetch(uids.join(","), { uid: true, flags: true, headers: ["message-id"] }, { uid: true })) {
+          for await (const m of client.fetch(uids.join(","), { uid: true, flags: true, size: true, headers: ["message-id"] }, { uid: true })) {
             const hdrs = m.headers ? Buffer.concat([m.headers, Buffer.from("\r\n")]) : Buffer.from("\r\n");
-            out.push({ uid: m.uid, flags: toFlags(m.flags), messageId: messageIdOf(parseMime(hdrs)) });
+            out.push({ uid: m.uid, flags: toFlags(m.flags), messageId: messageIdOf(parseMime(hdrs)), ...(typeof m.size === "number" ? { size: m.size } : {}) });
           }
           return out;
         },
@@ -264,10 +283,16 @@ export function imapflowSource(cred: ProtonCredential, opts: { timeoutMs?: numbe
 
 // ── intents ──────────────────────────────────────────────────────────────────
 
-export type ProtonIntentAction = "create" | "update-flags" | "skip-collision";
+export type ProtonIntentAction = "create" | "update-flags" | "skip-collision" | "skip-too-large" | "skip-poison";
 /** `shadow` (nothing written), `applied`, `logged` (decided not to write), `failed`. */
 export type ProtonIntentEffect = "shadow" | "applied" | "logged" | "failed";
 
+/**
+ * One intended / performed write. Deliberately holds NO subject, body, address,
+ * path slug or Message-ID: notes are identified by vault id, the 8-hex hash
+ * suffix of their path (`pathHash`, = sha256(Message-ID)[:8]) and a hash of the
+ * Message-ID (`messageIdSha`) — enough to correlate and verify, nothing to read.
+ */
 export interface ProtonIntent {
   at: string;
   mode: "shadow" | "live";
@@ -276,7 +301,8 @@ export interface ProtonIntent {
   mailbox: string;
   uid: number;
   noteId?: string;
-  path?: string;
+  pathHash?: string;
+  messageIdSha?: string;
   /** create: SHA-256 of the content we would write / wrote (never the text). */
   contentSha256?: string;
   /** create: per-metadata-key short hashes, so verify can name a differing KEY
@@ -290,6 +316,21 @@ export interface ProtonIntent {
 const sha = (s: string): string => crypto.createHash("sha256").update(s, "utf8").digest("hex");
 const keyHashes = (md: Record<string, unknown>): Record<string, string> =>
   Object.fromEntries(Object.entries(md).map(([k, v]) => [k, sha(JSON.stringify(v ?? null)).slice(0, 12)]));
+/** The 8-hex suffix of a note path (the Message-ID hash) — never the subject slug. */
+export const pathHashOf = (path: string | null | undefined): string | undefined => {
+  const m = /-([0-9a-f]{8})$/.exec(path ?? "");
+  return m ? m[1] : undefined;
+};
+export const messageIdShaOf = (mid: string): string => sha(mid).slice(0, 16);
+
+/** A failure reason safe to persist / log: vault errors reduced to their status
+ *  (their bodies can echo paths), anything else stripped of note paths. */
+function reasonOf(e: unknown): string {
+  const status = (e as { status?: number })?.status;
+  if (typeof status === "number") return `vault HTTP ${status}`;
+  return redactPaths(String((e as Error)?.message ?? e)).slice(0, 200);
+}
+const redactPaths = (s: string): string => s.replace(/vault\/messages\/email\/[^\s"'`,)]*/g, "<email-note>");
 
 // ── the pass ─────────────────────────────────────────────────────────────────
 
@@ -310,6 +351,20 @@ export interface ProtonVault extends PeopleVault {
 /** The metadata keys the lean listing asks for — dedupe + flag diffing only. */
 export const LIST_METADATA_KEYS = ["source", "messageId", "mailbox", "uid", "isUnread", "labels"];
 
+/**
+ * UIDs a pass must not fetch again, per mailbox, valid for one UIDVALIDITY:
+ * `too-large` (over the byte cap), `collision` (path held by a foreign note),
+ * `poison` (failed to parse POISON_ATTEMPTS times), `parse-error` (still being
+ * retried). Persisted by the runner, so one bad message cannot fail — or be
+ * downloaded — every pass for the whole window.
+ */
+export interface MailboxSkips {
+  uidValidity: string;
+  uids: Record<string, { reason: "too-large" | "collision" | "poison" | "parse-error"; attempts: number }>;
+}
+export const POISON_ATTEMPTS = 3;
+const SKIPS_CAP = 5000;
+
 export interface ProtonPassOptions {
   mailboxes: string[];
   sinceDays: number;
@@ -319,9 +374,13 @@ export interface ProtonPassOptions {
   /** IANA zone for the `date` field / `**Date:**` line (the script used the host's). */
   tz?: string;
   linkPeople?: boolean;
+  /** Messages larger than this (RFC822.SIZE) are never downloaded. */
+  maxMessageBytes?: number;
   now?: number;
   /** Last UIDVALIDITY seen per mailbox (in/out; informational). */
   uidValidity?: Record<string, string>;
+  /** Per-mailbox skip lists (in/out). */
+  skips?: Record<string, MailboxSkips>;
   log?: (line: string) => void;
 }
 
@@ -335,6 +394,9 @@ export interface ProtonPassResult {
   flagUpdates: number;
   unchanged: number;
   collisions: number;
+  tooLarge: number;
+  /** Fresh UIDs not fetched because a skip list names them. */
+  skipped: number;
   failed: number;
   deferred: number;
   linked: number;
@@ -349,18 +411,21 @@ export function sinceDate(now: number, days: number): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+class ParseFailure extends Error {}
+
 /**
  * One pass: one IMAP connection, one lean vault list (only when a window is
  * non-empty), a header-only fetch per mailbox, full sources only for messages
- * with no note, PATCHes only where read/unread (or the stored uid) changed.
- * Throws when the connection or the listing fails; one bad message never aborts
- * the pass (counted in `failed`).
+ * with no note (and under the byte cap), PATCHes only where read/unread (or the
+ * stored uid) changed. Throws when the connection, a mailbox select (other than
+ * a server NO) or the listing fails; one bad message never aborts the pass.
  */
 export async function syncProton(source: ImapSource, vault: ProtonVault, opts: ProtonPassOptions): Promise<ProtonPassResult> {
   const now = opts.now ?? Date.now();
   const at = new Date(now).toISOString();
   const mode = opts.shadow ? "shadow" : "live";
   const since = sinceDate(now, opts.sinceDays);
+  const maxBytes = opts.maxMessageBytes ?? config.protonMaxMessageBytes;
   const res: ProtonPassResult = {
     mode,
     window: { since: since.toISOString().slice(0, 10) },
@@ -370,6 +435,8 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
     flagUpdates: 0,
     unchanged: 0,
     collisions: 0,
+    tooLarge: 0,
+    skipped: 0,
     failed: 0,
     deferred: 0,
     linked: 0,
@@ -412,6 +479,10 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
       const uidValidityChanged = prevValidity !== undefined && prevValidity !== box.uidValidity;
       if (uidValidityChanged) log(`${mailbox}: UIDVALIDITY changed — notes are matched by Message-ID, nothing is re-fetched`);
       if (opts.uidValidity) opts.uidValidity[mailbox] = box.uidValidity;
+      let skips = opts.skips?.[mailbox];
+      if (!skips || skips.uidValidity !== box.uidValidity) skips = { uidValidity: box.uidValidity, uids: {} };
+      if (opts.skips) opts.skips[mailbox] = skips;
+      const sk = skips;
 
       const window = [...new Set(await session.searchSince(since))].sort((a, b) => a - b);
       const stat = { name: mailbox, window: window.length, new: 0, known: 0, ...(uidValidityChanged ? { uidValidityChanged } : {}) };
@@ -427,11 +498,20 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
         if (!prev || r.uid > prev.uid) refs.set(mid, r);
       }
 
-      let fresh: number[] = [];
+      let fresh: ImapRef[] = [];
       for (const [mid, ref] of refs) {
         const known = idx.byMid.get(mid);
         if (!known) {
-          fresh.push(ref.uid);
+          const s = sk.uids[String(ref.uid)];
+          if (s && s.reason !== "parse-error") {
+            res.skipped++;
+            continue;
+          }
+          if (typeof ref.size === "number" && maxBytes > 0 && ref.size > maxBytes) {
+            tooLarge(sk, mailbox, ref.uid, ref.size);
+            continue;
+          }
+          fresh.push(ref);
           continue;
         }
         stat.known++;
@@ -439,31 +519,46 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
           await refreshFlags(known, ref, mailbox);
         } catch (e) {
           res.failed++;
-          intent({ action: "update-flags", effect: "failed", mailbox, uid: ref.uid, noteId: known.id, path: known.path ?? undefined, reason: String((e as Error).message ?? e).slice(0, 200) });
+          intent({ action: "update-flags", effect: "failed", mailbox, uid: ref.uid, noteId: known.id, pathHash: pathHashOf(known.path), reason: reasonOf(e) });
         }
       }
 
-      fresh.sort((a, b) => a - b);
+      fresh.sort((a, b) => a.uid - b.uid);
       if (opts.maxPerMailbox > 0 && fresh.length > opts.maxPerMailbox) {
         log(`${mailbox}: ${fresh.length} new in window, taking the ${opts.maxPerMailbox} newest (next pass picks up the rest)`);
         res.deferred += fresh.length - opts.maxPerMailbox;
-        fresh = fresh.sort((a, b) => b - a).slice(0, opts.maxPerMailbox);
+        fresh = fresh.sort((a, b) => b.uid - a.uid).slice(0, opts.maxPerMailbox);
       }
       stat.new = fresh.length;
-      for (const uid of fresh) {
+      for (const ref of fresh) {
         try {
-          await ingestNew(uid, mailbox, idx);
+          await ingestNew(ref.uid, mailbox, idx, sk);
         } catch (e) {
           res.failed++;
-          intent({ action: "create", effect: "failed", mailbox, uid, reason: String((e as Error).message ?? e).slice(0, 200) });
-          log(`${mailbox}/${uid}: write failed — ${String((e as Error).message ?? e).slice(0, 200)}`);
+          if (e instanceof ParseFailure) {
+            const prev = sk.uids[String(ref.uid)];
+            const attempts = (prev?.attempts ?? 0) + 1;
+            const poison = attempts >= POISON_ATTEMPTS;
+            sk.uids[String(ref.uid)] = { reason: poison ? "poison" : "parse-error", attempts };
+            if (poison) intent({ action: "skip-poison", effect: "logged", mailbox, uid: ref.uid, reason: `unparseable after ${attempts} attempts: ${reasonOf(e)}` });
+          }
+          intent({ action: "create", effect: "failed", mailbox, uid: ref.uid, reason: reasonOf(e) });
+          log(`${mailbox}/${ref.uid}: write failed — ${reasonOf(e)}`);
         }
       }
+      capSkips(sk);
     }
   } finally {
     await session.close().catch(() => {});
   }
   return res;
+
+  function tooLarge(sk: MailboxSkips, mailbox: string, uid: number, size: number): void {
+    res.tooLarge++;
+    sk.uids[String(uid)] = { reason: "too-large", attempts: 0 };
+    intent({ action: "skip-too-large", effect: "logged", mailbox, uid, reason: `${size} bytes > PROTON_MAX_MESSAGE_BYTES ${maxBytes}` });
+    log(`${mailbox}/${uid}: ${size} bytes is over PROTON_MAX_MESSAGE_BYTES — not downloaded (no note)`);
+  }
 
   /** Read/unread (and a stale uid) → one metadata PATCH, or nothing. */
   async function refreshFlags(known: Note, ref: ImapRef, mailbox: string): Promise<void> {
@@ -483,7 +578,7 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
       return;
     }
     const change = { ...(patch.isUnread !== undefined ? { isUnread: patch.isUnread as boolean } : {}), ...(patch.uid !== undefined ? { uid: patch.uid as number } : {}) };
-    const base = { action: "update-flags" as const, mailbox, uid: ref.uid, noteId: known.id, path: known.path ?? undefined, change };
+    const base = { action: "update-flags" as const, mailbox, uid: ref.uid, noteId: known.id, pathHash: pathHashOf(known.path), change };
     if (opts.shadow) {
       res.flagUpdates++;
       intent({ ...base, effect: "shadow" });
@@ -506,20 +601,32 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
     intent({ ...base, effect: "applied" });
   }
 
-  async function ingestNew(uid: number, mailbox: string, idx: { byMid: Map<string, Note>; byPath: Map<string, Note> }): Promise<void> {
+  async function ingestNew(uid: number, mailbox: string, idx: { byMid: Map<string, Note>; byPath: Map<string, Note> }, sk: MailboxSkips): Promise<void> {
     const fetched = await session.fetchSource(uid);
     if (!fetched) return;
-    const m = parseMessage(fetched.source, fetched.flags, mailbox, uid, now);
+    if (maxBytes > 0 && fetched.source.length > maxBytes) {
+      tooLarge(sk, mailbox, uid, fetched.source.length); // the server under-reported RFC822.SIZE
+      return;
+    }
+    let m: ReturnType<typeof parseMessage>, path: string, content: string, metadata: Record<string, unknown>;
+    try {
+      m = parseMessage(fetched.source, fetched.flags, mailbox, uid, now);
+      path = notePath(m);
+      content = noteContent(m, opts.tz);
+      metadata = noteMetadata(m, opts.account, opts.tz);
+    } catch (e) {
+      throw new ParseFailure(String((e as Error)?.message ?? e));
+    }
+    delete sk.uids[String(uid)]; // parsed fine: forget earlier parse errors
     if (idx.byMid.has(m.messageId)) return; // header fetch disagreed with the full parse; the note exists
-    const path = notePath(m);
-    const content = noteContent(m, opts.tz);
-    const metadata = noteMetadata(m, opts.account, opts.tz);
+    const ids = { pathHash: pathHashOf(path), messageIdSha: messageIdShaOf(m.messageId) };
     const hashes = { contentSha256: sha(content), metadataHashes: keyHashes(metadata) };
 
     const atPath = idx.byPath.get(path);
     if (atPath) {
       res.collisions++;
-      intent({ action: "skip-collision", effect: opts.shadow ? "shadow" : "logged", mailbox, uid, noteId: atPath.id, path, reason: "path held by a note without this Message-ID" });
+      sk.uids[String(uid)] = { reason: "collision", attempts: 0 };
+      intent({ action: "skip-collision", effect: opts.shadow ? "shadow" : "logged", mailbox, uid, noteId: atPath.id, ...ids, reason: "path held by a note without this Message-ID" });
       return;
     }
 
@@ -534,22 +641,30 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
 
     if (opts.shadow) {
       res.created++;
-      intent({ action: "create", effect: "shadow", mailbox, uid, path, ...hashes });
+      intent({ action: "create", effect: "shadow", mailbox, uid, ...ids, ...hashes });
       return;
     }
     const note = await vault.createNote({ content, path, metadata, tags: ["email"], ...(links ? { links } : {}), ifExists: "ignore" });
     if (note.existed) {
       // Lost a race (e.g. the script still running): the note at the path stands.
       res.collisions++;
-      intent({ action: "skip-collision", effect: "logged", mailbox, uid, noteId: note.id, path, reason: "created concurrently by another writer" });
+      intent({ action: "skip-collision", effect: "logged", mailbox, uid, noteId: note.id, ...ids, reason: "created concurrently by another writer" });
     } else {
       res.created++;
       if (links) res.linked++;
-      intent({ action: "create", effect: "applied", mailbox, uid, noteId: note.id, path, ...hashes });
+      intent({ action: "create", effect: "applied", mailbox, uid, noteId: note.id, ...ids, ...hashes });
     }
     idx.byMid.set(m.messageId, note);
     idx.byPath.set(path, note);
   }
+}
+
+/** Keep the skip list bounded: the highest (newest) UIDs win. */
+function capSkips(sk: MailboxSkips): void {
+  const keys = Object.keys(sk.uids);
+  if (keys.length <= SKIPS_CAP) return;
+  const keep = new Set(keys.map(Number).sort((a, b) => b - a).slice(0, SKIPS_CAP).map(String));
+  for (const k of keys) if (!keep.has(k)) delete sk.uids[k];
 }
 
 // ── modes, persistence, runner ───────────────────────────────────────────────
@@ -565,6 +680,7 @@ export function protonMode(): ProtonMode {
 const INTENTS_KEY = "proton-intents";
 const LAST_PASS_KEY = "proton-last-pass";
 const UIDVALIDITY_KEY = "proton-uidvalidity";
+const SKIPS_KEY = "proton-skips";
 
 export function readProtonIntents(vaultId: string): ProtonIntent[] {
   try {
@@ -585,6 +701,15 @@ export function readProtonLastPass(vaultId: string): unknown {
   }
 }
 
+function readJsonCursor<T extends object>(vaultId: string, key: string): T {
+  try {
+    const v = JSON.parse(getWorkerCursor(vaultId, key) ?? "{}") as unknown;
+    return (v && typeof v === "object" ? v : {}) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
 function persistPass(vaultId: string, res: ProtonPassResult): void {
   const keep = Math.max(0, config.protonIntentsKeep);
   if (res.intents.length && keep) {
@@ -594,17 +719,10 @@ function persistPass(vaultId: string, res: ProtonPassResult): void {
   setWorkerCursor(vaultId, LAST_PASS_KEY, JSON.stringify({ at: new Date().toISOString(), ...summary, intentCount: intents.length }));
 }
 
-const locks = new Map<string, Promise<unknown>>();
-async function withLock<T>(vaultId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = locks.get(vaultId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(fn);
-  locks.set(vaultId, next);
-  try {
-    return await next;
-  } finally {
-    if (locks.get(vaultId) === next) locks.delete(vaultId);
-  }
-}
+/** Vaults with a pass in progress. A forced sync while one runs is refused (409),
+ *  a worker tick skips — passes never queue up behind each other. */
+const running = new Set<string>();
+export const protonPassRunning = (vaultId: string): boolean => running.has(vaultId);
 
 let testSource: ((cred: ProtonCredential) => ImapSource) | null = null;
 /** Tests only: route the worker/route through a fake IMAP source. Never Bridge in tests. */
@@ -619,6 +737,8 @@ export function summarizeProton(tag: string, res: ProtonPassResult): string {
   return (
     `[proton] ${tag} since ${res.window.since} [${res.mode}]: ${boxes || "no mailboxes"} → +${res.created} created ~${res.flagUpdates} flags =${res.unchanged} unchanged` +
     (res.collisions ? `, ${res.collisions} collisions` : "") +
+    (res.tooLarge ? `, ${res.tooLarge} too large` : "") +
+    (res.skipped ? `, ${res.skipped} skip-listed` : "") +
     (res.deferred ? `, ${res.deferred} deferred` : "") +
     (res.linked ? `, ${res.linked} linked` : "") +
     (res.failed ? ` !${res.failed} FAILED` : "") +
@@ -630,12 +750,17 @@ export function summarizeProton(tag: string, res: ProtonPassResult): string {
  * One background pass for a vault (worker tick). No-op when PROTON_SYNC_ENABLED
  * and PROTON_SHADOW are both off, or the vault has no `proton-bridge` credential.
  * Throttled to one pass per PROTON_INTERVAL_MS slot; `force` bypasses that.
+ * While a pass runs, a tick returns 0 and a forced call throws `code: "busy"`.
  * Throws (with a scrubbed message) when Bridge or the vault listing fails, or
  * every new message failed, so the health registry sees it.
  */
 export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; source?: ImapSource; now?: number } = {}): Promise<number> {
   const mode = protonMode();
   if (mode === "off") return 0;
+  if (running.has(entry.id)) {
+    if (opts.force) throw Object.assign(new Error("proton: a pass is already running"), { code: "busy" });
+    return 0;
+  }
   const raw = getSecret(entry.id, config.ownerEmail, PROTON_CREDENTIAL);
   if (!raw) {
     if (!loggedNoCred.has(entry.id)) {
@@ -651,20 +776,17 @@ export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; 
     if (getWorkerCursor(entry.id, "proton-slot") === String(slot)) return 0;
     setWorkerCursor(entry.id, "proton-slot", String(slot)); // claim up front
   }
+  running.add(entry.id);
   let cred: ProtonCredential | null = null;
   try {
     cred = validateProtonCredential(JSON.parse(raw));
     const c = cred;
     const source = opts.source ?? testSource?.(c) ?? imapflowSource(c);
-    const uidValidity = (() => {
-      try {
-        return JSON.parse(getWorkerCursor(entry.id, UIDVALIDITY_KEY) ?? "{}") as Record<string, string>;
-      } catch {
-        return {};
-      }
-    })();
-    const res = await withLock(entry.id, () =>
-      syncProton(source, vaultClient(entry.id) as unknown as ProtonVault, {
+    const uidValidity = readJsonCursor<Record<string, string>>(entry.id, UIDVALIDITY_KEY);
+    const skips = readJsonCursor<Record<string, MailboxSkips>>(entry.id, SKIPS_KEY);
+    let res: ProtonPassResult;
+    try {
+      res = await syncProton(source, vaultClient(entry.id) as unknown as ProtonVault, {
         mailboxes: config.protonMailboxes,
         sinceDays: config.protonSinceDays,
         maxPerMailbox: config.protonMaxPerPass,
@@ -672,11 +794,17 @@ export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; 
         account: c.username,
         tz: config.protonTimezone || undefined,
         linkPeople: config.protonLinkPeople,
+        maxMessageBytes: config.protonMaxMessageBytes,
         now,
         uidValidity,
+        skips,
         log: (l) => console.log(`[proton] ${entry.id}: ${scrubProtonError(l, c)}`),
-      }),
-    );
+      });
+    } finally {
+      // Skip lists learned before a later failure still count (a poison message
+      // must not be re-downloaded because a later step threw).
+      setWorkerCursor(entry.id, SKIPS_KEY, JSON.stringify(skips));
+    }
     setWorkerCursor(entry.id, UIDVALIDITY_KEY, JSON.stringify(uidValidity));
     persistPass(entry.id, res);
     console.log(summarizeProton(entry.id, res));
@@ -685,46 +813,74 @@ export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; 
     return res.created + res.flagUpdates;
   } catch (e) {
     throw new Error(scrubProtonError((e as Error)?.message ?? String(e), cred));
+  } finally {
+    running.delete(entry.id);
   }
 }
+
+type VerifyRow = {
+  action: ProtonIntentAction;
+  effect: ProtonIntentEffect;
+  at: string;
+  uid: number;
+  noteId?: string;
+  pathHash?: string;
+  now: "match" | "differs" | "missing" | "unknown";
+  differs?: string[];
+};
 
 /**
  * For the overseer's shadow comparison: re-read what the script actually wrote
  * for each intent and report — never content or values, only whether it
- * matches. `create` → the note at that path: `match` (content + every metadata
- * key identical), `differs` (+ which: "content" and/or metadata KEY names),
- * `missing` (the script has not written it). `update-flags` → `match` when the
- * note's isUnread now equals the intended value. Read-only. Newest first.
+ * matches. `create` → the note carrying that Message-ID (found through one lean
+ * listing, by hash): `match` (content + every metadata key identical),
+ * `differs` (+ which: "content" and/or metadata KEY names), `missing` (the
+ * script has not written it). `update-flags` → `match` when the note's isUnread
+ * (and uid) now equal the intended values. Read-only. Newest first.
  */
 export async function verifyProtonIntents(
   vaultId: string,
   intents: ProtonIntent[],
-  vault: Pick<ProtonVault, "getNote"> = vaultClient(vaultId),
+  vault: Pick<ProtonVault, "getNote" | "listNotes"> = vaultClient(vaultId),
   limit = 100,
-): Promise<Array<{ action: ProtonIntentAction; effect: ProtonIntentEffect; at: string; uid: number; path?: string; noteId?: string; now: "match" | "differs" | "missing" | "unknown"; differs?: string[] }>> {
-  const out: Awaited<ReturnType<typeof verifyProtonIntents>> = [];
+): Promise<VerifyRow[]> {
+  const out: VerifyRow[] = [];
   const done = new Set<string>();
+  let byMidSha: Map<string, string> | null = null;
+  const lookup = async (midSha: string): Promise<string | undefined> => {
+    if (!byMidSha) {
+      byMidSha = new Map();
+      for (const n of await vault.listNotes({ tags: ["email"], pathPrefix: `${NOTE_DIR}/`, includeMetadata: ["messageId"] })) {
+        const mid = n.metadata?.messageId;
+        if (typeof mid === "string" && mid && !byMidSha.has(messageIdShaOf(mid))) byMidSha.set(messageIdShaOf(mid), n.id);
+      }
+    }
+    return byMidSha.get(midSha);
+  };
   for (const i of [...intents].reverse()) {
     if (out.length >= limit) break;
-    const key = i.action === "create" ? `c:${i.path}` : `u:${i.noteId}`;
-    if ((i.action !== "create" && i.action !== "update-flags") || done.has(key) || (i.action === "create" && !i.path) || (i.action === "update-flags" && !i.noteId)) continue;
+    if (i.action !== "create" && i.action !== "update-flags") continue;
+    const key = i.action === "create" ? `c:${i.messageIdSha}` : `u:${i.noteId}`;
+    if (done.has(key) || (i.action === "create" && !i.messageIdSha) || (i.action === "update-flags" && !i.noteId)) continue;
     done.add(key);
-    const row = { action: i.action, effect: i.effect, at: i.at, uid: i.uid, path: i.path, noteId: i.noteId };
+    const row = { action: i.action, effect: i.effect, at: i.at, uid: i.uid, noteId: i.noteId, pathHash: i.pathHash };
     try {
-      const n = await vault.getNote(i.action === "create" ? i.path! : i.noteId!);
+      const id = i.action === "create" ? await lookup(i.messageIdSha!) : i.noteId!;
+      if (!id) {
+        out.push({ ...row, now: "missing" });
+        continue;
+      }
+      const n = await vault.getNote(id);
+      const differs: string[] = [];
       if (i.action === "create") {
-        const differs: string[] = [];
         if (i.contentSha256 && sha(n.content ?? "") !== i.contentSha256) differs.push("content");
         const theirs = keyHashes((n.metadata ?? {}) as Record<string, unknown>);
         for (const [k, h] of Object.entries(i.metadataHashes ?? {})) if (theirs[k] !== h) differs.push(k);
-        out.push({ ...row, now: differs.length ? "differs" : "match", ...(differs.length ? { differs } : {}) });
       } else {
-        const want = i.change?.isUnread;
-        const ok = want === undefined || Boolean(n.metadata?.isUnread) === want;
-        const okUid = i.change?.uid === undefined || n.metadata?.uid === i.change.uid;
-        const differs = [...(ok ? [] : ["isUnread"]), ...(okUid ? [] : ["uid"])];
-        out.push({ ...row, now: differs.length ? "differs" : "match", ...(differs.length ? { differs } : {}) });
+        if (i.change?.isUnread !== undefined && Boolean(n.metadata?.isUnread) !== i.change.isUnread) differs.push("isUnread");
+        if (i.change?.uid !== undefined && n.metadata?.uid !== i.change.uid) differs.push("uid");
       }
+      out.push({ ...row, noteId: id, now: differs.length ? "differs" : "match", ...(differs.length ? { differs } : {}) });
     } catch (e) {
       const status = (e as { status?: number }).status;
       out.push({ ...row, now: status === 404 || /\b404\b/.test(String(e)) ? "missing" : "unknown" });
@@ -732,3 +888,4 @@ export async function verifyProtonIntents(
   }
   return out;
 }
+

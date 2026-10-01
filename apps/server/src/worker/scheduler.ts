@@ -325,8 +325,6 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
 /** Vaults whose Gmail 14-day body backfill already ran in this process (the
  *  desktop did it once per app launch; the server does it once per boot). */
 const gmailBackfilled = new Set<string>();
-let gmailProtonWarned = false;
-
 /**
  * Run one Gmail ingest pass for a vault (WP1.2). No-op unless GMAIL_SYNC_ENABLED
  * and the vault has a `google` credential ({account}). Throttled to one run per
@@ -338,16 +336,6 @@ let gmailProtonWarned = false;
  */
 export async function runGmailOnce(entry: VaultEntry, opts: { force?: boolean; run?: GogRunner } = {}): Promise<number> {
   if (!config.gmailSyncEnabled) return 0;
-  // Gmail dedupes by metadata.threadId over the WHOLE email set, and Proton notes
-  // carry threadIds too: with both on, a Gmail pass would rewrite Proton notes in
-  // place. Proton (WP1.2b) is the real email source, so it wins.
-  if (protonMode() !== "off") {
-    if (!gmailProtonWarned) {
-      gmailProtonWarned = true;
-      console.warn("[worker] gmail: GMAIL_SYNC_ENABLED ignored while the Proton ingest is on (both would write vault/messages/email/)");
-    }
-    return 0;
-  }
   const raw = getSecret(entry.id, config.ownerEmail, "google");
   if (!raw) {
     warnMissingSecret(entry.id, "google");

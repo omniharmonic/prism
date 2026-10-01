@@ -12,7 +12,7 @@ import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
 import { runMatrixOnce, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
-import { PROTON_CREDENTIAL, protonMode, runProtonOnce, validateProtonCredential } from "../worker/proton";
+import { PROTON_CREDENTIAL, normalizeFingerprint, protonMode, protonPassRunning, runProtonOnce, validateProtonCredential } from "../worker/proton";
 
 export const integrations = new Hono();
 
@@ -191,6 +191,21 @@ integrations.post("/clickup/sync", async (c) => {
 // certSha256}, validated by validateProtonCredential (loopback host only, pinned
 // cert required). Status echoes the NON-secret fields (never the password) so a
 // re-save can keep them; a PUT without `password` keeps the stored one.
+// SERVER-OWNER only (not any vault admin): this credential reads the owner's whole
+// mailbox — the same check as /acl/workers/proton/intents.
+const isServerOwner = (c: Parameters<typeof resolveActor>[0]): boolean => {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail;
+};
+integrations.use("/proton-bridge", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
+integrations.use("/proton-bridge/*", async (c, next) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
+
 integrations.get("/proton-bridge", (c) => {
   const actor = resolveActor(c);
   const available = secretsConfigured();
@@ -217,6 +232,21 @@ integrations.put("/proton-bridge", async (c) => {
   } catch {
     prev = {};
   }
+  // The stored password may only be reused for a NO-CHANGE re-save: re-pointing
+  // host/port/security/username/pin without re-entering it could hand the stored
+  // password to a different listener or account.
+  if (!body.password) {
+    const norm = (o: Record<string, unknown>) => ({
+      host: typeof o.host === "string" && o.host ? o.host.trim().toLowerCase() : "127.0.0.1",
+      port: Number(o.port ?? 1143),
+      security: o.security ?? "starttls",
+      username: o.username,
+      certSha256: typeof o.certSha256 === "string" ? normalizeFingerprint(o.certSha256) : o.certSha256,
+    });
+    if (!prev.password || JSON.stringify(norm(body)) !== JSON.stringify(norm(prev))) {
+      return c.json({ error: "bad_request", detail: "password required (it may only be omitted when nothing else changes)" }, 400);
+    }
+  }
   try {
     const cred = validateProtonCredential({ ...body, password: body.password || prev.password });
     putSecret(actor.vaultId, config.ownerEmail, PROTON_CREDENTIAL, JSON.stringify(cred));
@@ -236,10 +266,12 @@ integrations.delete("/proton-bridge", (c) => {
 integrations.post("/proton-bridge/sync", async (c) => {
   if (protonMode() === "off") return c.json({ error: "disabled", detail: "PROTON_SYNC_ENABLED and PROTON_SHADOW are both off" }, 409);
   const actor = resolveActor(c);
+  if (protonPassRunning(actor.vaultId)) return c.json({ error: "busy", detail: "a proton pass is already running" }, 409);
   try {
     const written = await runProtonOnce(resolveVaultEntry(actor.vaultId), { force: true });
     return c.json({ ok: true, mode: protonMode(), written });
   } catch (e) {
+    if ((e as { code?: string }).code === "busy" || /already running/.test((e as Error).message)) return c.json({ error: "busy", detail: "a proton pass is already running" }, 409);
     return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
   }
 });

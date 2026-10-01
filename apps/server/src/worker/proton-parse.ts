@@ -41,14 +41,32 @@ import { decodeHTML } from "entities";
 export const NOTE_DIR = "vault/messages/email";
 export const SOURCE = "proton-bridge";
 export const MAX_BODY_CHARS = 20_000;
+/** Decoded bytes kept per text/plain or text/html part before any parsing. */
+export const MAX_PART_BYTES = 500_000;
 
 // ── Python string helpers ────────────────────────────────────────────────────
 
 /** Python `str.isspace()` set (Unicode White_Space + the \x1c-\x1f separators). */
 const PY_WS = "\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
-const PY_STRIP_RE = new RegExp(`^[${PY_WS}]+|[${PY_WS}]+$`, "g");
-/** Python `str.strip()` with no argument. */
-export const pyStrip = (s: string): string => s.replace(PY_STRIP_RE, "");
+/** Same set as code points, for the linear scanners (no regex backtracking). */
+const isPyWs = (c: number): boolean =>
+  (c >= 0x09 && c <= 0x0d) || (c >= 0x1c && c <= 0x20) || c === 0x85 || c === 0xa0 || c === 0x1680 ||
+  (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000;
+/** Python `str.strip()` with no argument. A char loop: the `[ws]+$` regex form is
+ *  quadratic on long interior whitespace runs (ReDoS on attacker-controlled text). */
+export function pyStrip(s: string): string {
+  let a = 0;
+  let b = s.length;
+  while (a < b && isPyWs(s.charCodeAt(a))) a++;
+  while (b > a && isPyWs(s.charCodeAt(b - 1))) b--;
+  return a === 0 && b === s.length ? s : s.slice(a, b);
+}
+/** Python `str.rstrip()` (get_boundary's), as a char loop. */
+function pyRstrip(s: string): string {
+  let b = s.length;
+  while (b > 0 && isPyWs(s.charCodeAt(b - 1))) b--;
+  return s.slice(0, b);
+}
 /** Python `str.split()` with no argument. */
 const pySplit = (s: string): string[] => pyStrip(s).split(new RegExp(`[${PY_WS}]+`)).filter(Boolean);
 /** Python `str.strip(chars)`. */
@@ -68,7 +86,20 @@ const pySplitLines = (s: string): string[] => {
   if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
   return parts;
 };
-const codePoints = (s: string): string[] => Array.from(s);
+/** Python `s[:n]` in code points (Python `len`), walking only as far as needed —
+ *  never materialising the whole string as an array. null when s has ≤ n. */
+function sliceCodePoints(s: string, n: number): string | null {
+  if (s.length <= n) return null; // ≤ n UTF-16 units ⇒ ≤ n code points
+  let units = 0;
+  let count = 0;
+  while (units < s.length) {
+    if (count === n) return s.slice(0, units);
+    const c = s.charCodeAt(units);
+    units += c >= 0xd800 && c <= 0xdbff && units + 1 < s.length && (s.charCodeAt(units + 1) & 0xfc00) === 0xdc00 ? 2 : 1;
+    count++;
+  }
+  return null;
+}
 
 /**
  * Compile a regex written in Python syntax with Python 3's Unicode semantics:
@@ -121,13 +152,14 @@ export function decodeCharset(buf: Buffer, charset: string | null | undefined): 
 /** binascii.a2b_qp (header=False): `=XX` hex (either case), `=` + line break =
  *  soft break, a trailing `=` dropped, anything else literal. */
 export function decodeQuotedPrintable(input: Buffer): Buffer {
-  const out: number[] = [];
-  const hex = (b: number | undefined) =>
-    b !== undefined && ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66));
+  // Output is never longer than the input: decode into one preallocated buffer
+  // (a number[] of a multi-MB part costs ~8 bytes per byte).
+  const out = Buffer.allocUnsafe(input.length);
+  let o = 0;
   for (let i = 0; i < input.length; i++) {
     const c = input[i]!;
     if (c !== 0x3d) {
-      out.push(c);
+      out[o++] = c;
       continue;
     }
     const a = input[i + 1];
@@ -145,14 +177,24 @@ export function decodeQuotedPrintable(input: Buffer): Buffer {
       i += 1;
       continue;
     }
-    if (hex(a) && hex(b)) {
-      out.push(parseInt(String.fromCharCode(a, b!), 16));
+    const hi = hexVal(a);
+    const lo = hexVal(b);
+    if (hi >= 0 && lo >= 0) {
+      out[o++] = (hi << 4) | lo;
       i += 2;
       continue;
     }
-    out.push(c);
+    out[o++] = c;
   }
-  return Buffer.from(out);
+  return out.subarray(0, o);
+}
+
+function hexVal(b: number | undefined): number {
+  if (b === undefined || Number.isNaN(b)) return -1;
+  if (b >= 0x30 && b <= 0x39) return b - 0x30;
+  if (b >= 0x41 && b <= 0x46) return b - 0x37;
+  if (b >= 0x61 && b <= 0x66) return b - 0x57;
+  return -1;
 }
 
 // ── RFC 2047 encoded words ───────────────────────────────────────────────────
@@ -164,16 +206,18 @@ function decodeEncodedWord(charset: string, enc: string, text: string): string {
   let bytes: Buffer;
   if (enc.toLowerCase() === "b") bytes = Buffer.from(text, "base64");
   else {
-    const t = text.replace(/_/g, " ");
-    const out: number[] = [];
-    for (let i = 0; i < t.length; i++) {
-      const m = /^[0-9a-fA-F]{2}$/.test(t.slice(i + 1, i + 3));
-      if (t[i] === "=" && m) {
-        out.push(parseInt(t.slice(i + 1, i + 3), 16));
+    const out = Buffer.allocUnsafe(text.length);
+    let o = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      const hi = ch === 0x3d ? hexVal(text.charCodeAt(i + 1)) : -1;
+      const lo = ch === 0x3d ? hexVal(text.charCodeAt(i + 2)) : -1;
+      if (hi >= 0 && lo >= 0) {
+        out[o++] = (hi << 4) | lo;
         i += 2;
-      } else out.push(t.charCodeAt(i) & 0xff);
+      } else out[o++] = ch === 0x5f ? 0x20 : ch & 0xff; // "_" → space
     }
-    bytes = Buffer.from(out);
+    bytes = out.subarray(0, o);
   }
   return decodeCharset(bytes, cs);
 }
@@ -272,7 +316,7 @@ export function parseMime(raw: Buffer, depth = 0): MimeEntity {
   const ctype = contentType(ent);
   if (ctype.startsWith("multipart/")) {
     const boundary = getParam(ent, "content-type", "boundary");
-    if (boundary !== null) ent.children = splitMultipart(body, boundary.replace(/[ \t\r\n]+$/, "")).map((p) => parseMime(p, depth + 1));
+    if (boundary !== null) ent.children = splitMultipart(body, pyRstrip(boundary)).map((p) => parseMime(p, depth + 1));
   } else if (ctype === "message/rfc822") {
     ent.children = [parseMime(body, depth + 1)];
   }
@@ -364,7 +408,9 @@ function parseParams(value: string): { main: string; params: Map<string, string>
   for (const [name, list] of ext) {
     list.sort((a, b) => a.ix - b.ix);
     let charset = "us-ascii";
-    const bytes: number[] = [];
+    // Chunks + one concat: spreading a long segment into push() overflows the
+    // stack (~100 KB parameter), and per-byte arrays cost 8× memory.
+    const chunks: Buffer[] = [];
     list.forEach((seg, n) => {
       let v = seg.v;
       if (seg.enc) {
@@ -376,15 +422,28 @@ function parseParams(value: string): { main: string; params: Map<string, string>
             v = v.slice(q2 + 1);
           }
         }
+        // %XX → byte; everything else → its UTF-8 bytes (≤ 3 bytes per UTF-16 unit).
+        const out = Buffer.allocUnsafe(v.length * 3);
+        let o = 0;
+        let lit = 0; // start of the pending literal run
+        const flush = (end: number) => {
+          if (end > lit) o += out.write(v.slice(lit, end), o, "utf8");
+        };
         for (let i = 0; i < v.length; i++) {
-          if (v[i] === "%" && /^[0-9a-fA-F]{2}$/.test(v.slice(i + 1, i + 3))) {
-            bytes.push(parseInt(v.slice(i + 1, i + 3), 16));
-            i += 2;
-          } else bytes.push(...Buffer.from(v[i]!, "utf8"));
+          if (v.charCodeAt(i) !== 0x25) continue;
+          const hi = hexVal(v.charCodeAt(i + 1));
+          const lo = hexVal(v.charCodeAt(i + 2));
+          if (hi < 0 || lo < 0) continue;
+          flush(i);
+          out[o++] = (hi << 4) | lo;
+          i += 2;
+          lit = i + 1;
         }
-      } else bytes.push(...Buffer.from(v, "utf8"));
+        flush(v.length);
+        chunks.push(out.subarray(0, o));
+      } else chunks.push(Buffer.from(v, "utf8"));
     });
-    params.set(name, decodeCharset(Buffer.from(bytes), charset));
+    params.set(name, decodeCharset(Buffer.concat(chunks), charset));
   }
   return { main, params };
 }
@@ -448,10 +507,71 @@ export function pyUnescape(s: string): string {
   });
 }
 
+/** A–Z → a–z only: length-preserving, so indices map 1:1 onto the original. */
+const lowerAscii = (s: string): string => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
+
+/**
+ * `re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", s)` as a LINEAR scan. The
+ * regex form re-scans to EOF from every unmatched opener (quadratic: 640 KB of
+ * "<" took minutes). Semantics kept: the opener ends at its first ">", the block
+ * at the first `</same-tag>` after it; a kind whose close tag never appears again
+ * can never match later either, so it is retired after one forward miss.
+ */
+export function stripScriptStyle(s: string): string {
+  const low = lowerAscii(s);
+  const kinds = ["script", "style"] as const;
+  const next: Record<string, number> = { script: low.indexOf("<script"), style: low.indexOf("<style") };
+  const dead: Record<string, boolean> = { script: false, style: false };
+  let out = "";
+  let pos = 0;
+  let i = 0;
+  for (;;) {
+    let k: (typeof kinds)[number] | null = null;
+    for (const kind of kinds) {
+      if (dead[kind]) continue;
+      if (next[kind]! !== -1 && next[kind]! < i) next[kind] = low.indexOf(`<${kind}`, i);
+      if (next[kind]! !== -1 && (k === null || next[kind]! < next[k]!)) k = kind;
+    }
+    if (k === null) break;
+    const start = next[k]!;
+    const gt = low.indexOf(">", start + 1 + k.length);
+    if (gt < 0) break; // no ">" after the earliest opener → nothing later can match
+    const close = low.indexOf(`</${k}>`, gt + 1);
+    if (close < 0) {
+      dead[k] = true;
+      i = start + 1;
+      continue;
+    }
+    out += s.slice(pos, start) + " ";
+    pos = i = close + k.length + 3;
+  }
+  return pos === 0 ? s : out + s.slice(pos);
+}
+
+/** `re.sub(r"(?s)<[^>]+>", " ", s)` as a linear scan (same quadratic trap). */
+export function replaceTags(s: string): string {
+  let out = "";
+  let pos = 0;
+  let i = s.indexOf("<");
+  while (i >= 0) {
+    const gt = s.indexOf(">", i + 1);
+    if (gt < 0) break; // an unclosed "<" — and every later one — stays literal
+    if (gt === i + 1) {
+      i = s.indexOf("<", i + 1); // "<>" is not a tag ([^>]+ needs one char)
+      continue;
+    }
+    out += s.slice(pos, i) + " ";
+    pos = gt + 1;
+    i = s.indexOf("<", pos);
+  }
+  return pos === 0 ? s : out + s.slice(pos);
+}
+
 export function htmlToText(markup: string): string {
-  let text = markup.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ");
+  let text = stripScriptStyle(markup);
+  // Linear: `\s*` can only span the whitespace right after one "<br".
   text = text.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/tr>/gi, "\n");
-  text = text.replace(/<[^>]+>/g, " ");
+  text = replaceTags(text);
   text = pyUnescape(text).replace(/\xa0/g, " ");
   text = text.replace(/[ \t]{2,}/g, " ");
   text = pySplitLines(text).map(pyStrip).join("\n");
@@ -470,12 +590,15 @@ export function extractBody(msg: MimeEntity): string {
     if (ctype !== "text/plain" && ctype !== "text/html") continue;
     const payload = payloadBytes(part);
     if (!payload.length) continue;
-    const text = decodeCharset(payload, contentCharset(part));
+    // Bounded work per part (deviation: the script decoded parts whole). The note
+    // keeps 20 000 chars, so this only matters for HTML whose first 500 KB yields
+    // less text than that.
+    const text = decodeCharset(payload.length > MAX_PART_BYTES ? payload.subarray(0, MAX_PART_BYTES) : payload, contentCharset(part));
     (ctype === "text/plain" ? plain : html).push(text);
   }
   let body = pyStrip(plain.join("\n\n")) || htmlToText(html.join("\n\n"));
-  const cps = codePoints(body);
-  if (cps.length > MAX_BODY_CHARS) body = cps.slice(0, MAX_BODY_CHARS).join("") + "\n\n[… truncated …]";
+  const cut = sliceCodePoints(body, MAX_BODY_CHARS);
+  if (cut !== null) body = cut + "\n\n[… truncated …]";
   return body;
 }
 
@@ -801,7 +924,21 @@ const NOREPLY_LOCALPART = pyRe(
     "reply-[0-9a-f]{6,})\\b",
   "i",
 );
-const VIA_SENDER = pyRe("\\(via [^)]+\\)\\s*$", "i");
+/**
+ * `re.search(r"(?i)\(via [^)]+\)\s*$", s)` without the regex: unanchored, the
+ * regex re-scans `[^)]+` to EOF from every "(via " (quadratic on "(via (via …").
+ * Equivalent: after trailing whitespace s ends in ")", and some "(via " lies
+ * after the previous ")" with at least one char before the final ")".
+ */
+export function viaSender(s: string): boolean {
+  let end = s.length;
+  while (end > 0 && /\s/u.test(s[end - 1]!)) end--;
+  if (end === 0 || s[end - 1] !== ")") return false;
+  const close = end - 1;
+  const prev = s.lastIndexOf(")", close - 1);
+  const i = lowerAscii(s.slice(prev + 1, close)).indexOf("(via ");
+  return i >= 0 && prev + 1 + i + 5 < close;
+}
 const BOUNCE_LOCALPART = pyRe("^(bounce\\w*|msprvs\\d*|prvs|return|reject)\\b", "i");
 const SOCIAL_CATEGORY = pyRe(
   "(reaction|comment|follow|mention|subscription-notification|free-welcome|chat-thread|messages?-request|live-stream|recommendation)",
@@ -879,7 +1016,7 @@ export function deriveLabels(msg: MimeEntity, mailbox: string, isUnread: boolean
   const automated = AUTO_SUBMITTED.test(hdr(msg, "Auto-Submitted")) || AUTO_PRECEDENCE.test(hdr(msg, "Precedence")) || AUTO_HEADERS.some((h) => !!hdr(msg, h));
   const esp = ESP_HEADERS.some((h) => !!hdr(msg, h));
   const verp = !!rpLocal && (rpLocal.includes("=") || BOUNCE_LOCALPART.test(rpLocal) || rpDomain.split(".").includes("bounce"));
-  const machineSender = NOREPLY_LOCALPART.test(local) || VIA_SENDER.test(renderAddressHeader(getHeader(msg, "from"))) || verp;
+  const machineSender = NOREPLY_LOCALPART.test(local) || viaSender(renderAddressHeader(getHeader(msg, "from"))) || verp;
 
   if (bulk) labels.push("BULK");
   if (automated) labels.push("AUTOMATED");

@@ -972,8 +972,9 @@ acl.get("/workers/calendar/intents", async (c) => {
 });
 
 /** Server Proton Bridge ingest (WP1.2b): the last persisted intents (what the
- *  server wrote or WOULD write — create / update-flags / skip-collision; never a
- *  subject, body or address, only paths, uids and hashes) + the last pass
+ *  server wrote or WOULD write — create / update-flags / skip-*; never a subject,
+ *  body, address or path slug: only note ids, uids, the 8-hex path hash and
+ *  hashes) + the last pass
  *  summary, for comparing against the agent's proton_mail.py during the shadow
  *  period. `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
  *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the

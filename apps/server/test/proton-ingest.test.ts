@@ -51,7 +51,8 @@ import {
   senderAddress,
   slugify,
 } from "../src/worker/proton-parse";
-import { config } from "../src/config";
+import { assertConfig, config } from "../src/config";
+import { setMembership } from "../src/db";
 import { resetDb, installFakeVault, makeSession, sessionCookie, type FakeVault } from "./helpers";
 import { putSecret } from "../src/secrets";
 import { getVaultRegistry } from "../src/db";
@@ -128,6 +129,7 @@ interface FakeMsg {
   flags: string[];
   source: Buffer;
   messageId: string;
+  size?: number;
 }
 
 function fakeImap(msgs: FakeMsg[], opts: { selectable?: boolean; uidValidity?: string } = {}) {
@@ -144,7 +146,7 @@ function fakeImap(msgs: FakeMsg[], opts: { selectable?: boolean; uidValidity?: s
     },
     async fetchRefs(uids) {
       calls.refs++;
-      return state.msgs.filter((m) => uids.includes(m.uid)).map((m): ImapRef => ({ uid: m.uid, flags: [...m.flags], messageId: m.messageId }));
+      return state.msgs.filter((m) => uids.includes(m.uid)).map((m): ImapRef => ({ uid: m.uid, flags: [...m.flags], messageId: m.messageId, ...(m.size !== undefined ? { size: m.size } : {}) }));
     },
     async fetchSource(uid) {
       calls.sources.push(uid);
@@ -428,7 +430,8 @@ test("shadow: fetch + diff, ZERO vault writes, every intended write recorded wit
   assert.equal(r.mode, "shadow");
   const create = r.intents.find((i) => i.action === "create")!;
   assert.equal(create.effect, "shadow");
-  assert.equal(create.path, missing.expected.path);
+  assert.equal(create.pathHash, missing.expected.path.slice(-8), "only the hash suffix of the path");
+  assert.equal((create as unknown as Record<string, unknown>).path, undefined);
   assert.match(create.contentSha256!, /^[0-9a-f]{64}$/);
   assert.equal(Object.keys(create.metadataHashes!).length, Object.keys(missing.expected.metadata).length);
   const flag = r.intents.find((i) => i.action === "update-flags")!;
@@ -437,6 +440,7 @@ test("shadow: fetch + diff, ZERO vault writes, every intended write recorded wit
   // Intents never carry message text, subjects or addresses.
   const blob = JSON.stringify(r.intents);
   assert.ok(!blob.includes("example.org") && !blob.includes("Casey") && !blob.includes("quick brown fox"));
+  assert.ok(!blob.includes("daily-report") && !blob.includes("vault/messages/email/"), "no subject slug / path in intents");
 
   // Verify: before the script writes → missing; after it writes the same note → match; a different note → differs (+ key names).
   assert.equal((await verifyProtonIntents("primary", r.intents, v.vault)).find((x) => x.action === "create")!.now, "missing");
@@ -572,21 +576,25 @@ test("credential validation: loopback only, pinned cert required, messages never
   assert.equal(ok.certSha256, "ab".repeat(32), "colon/uppercase fingerprints normalise to the script's format");
 });
 
-test("Gmail stands down while the Proton ingest is on (both would write vault/messages/email/)", async () => {
+test("assertConfig refuses GMAIL_SYNC_ENABLED + PROTON_SYNC_ENABLED (two live email writers); shadow never affects Gmail", async () => {
+  await withConfig({ gmailSyncEnabled: true, protonSyncEnabled: true }, async () => {
+    assert.throws(() => assertConfig(), /GMAIL_SYNC_ENABLED and PROTON_SYNC_ENABLED/);
+  });
   await withConfig({ gmailSyncEnabled: true, protonShadow: true }, async () => {
+    assert.doesNotThrow(() => assertConfig());
+    // Gmail still runs normally next to a Proton shadow.
     putSecret("primary", config.ownerEmail, "google", JSON.stringify({ account: "someone@example.test" }));
     let ran = 0;
-    const n = await runGmailOnce(getVaultRegistry()[0]!, {
+    await runGmailOnce(getVaultRegistry()[0]!, {
       force: true,
       run: async () => {
         ran++;
-        return "{}";
+        return JSON.stringify({ messages: [] });
       },
     });
-    assert.equal(n, 0);
-    assert.equal(ran, 0);
-    assert.equal(fv.calls.length, 0);
+    assert.equal(ran, 1);
   });
+  await withConfig({ protonSyncEnabled: true }, async () => assert.doesNotThrow(() => assertConfig()));
 });
 
 test("the pin hook relies on ImapFlow.prototype.authenticate (guard against an imapflow refactor)", () => {
@@ -643,9 +651,353 @@ test("integrations: proton-bridge credential is stored encrypted, the password i
   assert.equal(st.username, ACCOUNT);
   assert.equal(st.password, undefined);
   assert.ok(!JSON.stringify(st).includes(SECRET_PW));
-  // Re-save without the password keeps the stored one.
-  assert.equal((await integrations.request("/proton-bridge", { method: "PUT", headers: J, body: JSON.stringify({ ...CRED, password: undefined, port: 1144 }) })).status, 200);
+  // A no-change re-save may omit the password; any repoint must re-enter it.
+  assert.equal((await integrations.request("/proton-bridge", { method: "PUT", headers: J, body: JSON.stringify({ ...CRED, password: undefined }) })).status, 200);
+  for (const change of [{ port: 1144 }, { host: "::1" }, { security: "tls" }, { username: "other@example.test" }, { certSha256: "cd".repeat(32) }]) {
+    const r = await integrations.request("/proton-bridge", { method: "PUT", headers: J, body: JSON.stringify({ ...CRED, password: undefined, ...change }) });
+    assert.equal(r.status, 400, JSON.stringify(change));
+  }
+  assert.equal((await integrations.request("/proton-bridge", { method: "PUT", headers: J, body: JSON.stringify({ ...CRED, port: 1144 }) })).status, 200, "with the password it may change");
   assert.equal((await integrations.request("/proton-bridge/sync", { method: "POST", headers: J })).status, 409, "off → refused");
   await integrations.request("/proton-bridge", { method: "DELETE", headers: J });
   assert.equal(((await (await integrations.request("/proton-bridge", { headers: J })).json()) as { configured: boolean }).configured, false);
+});
+
+// ── security review fixes (C1, M1, M2, M3, L1–L4) ────────────────────────────
+
+test("C1: the linear HTML scanners agree with the original regexes on random tag soup", () => {
+  // The pre-fix regexes, kept ONLY as an oracle (on short inputs they are fine).
+  const oracleStrip = (s: string) => s.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ");
+  const oracleTags = (s: string) => s.replace(/<[^>]+>/g, " ");
+  const toks = ["<", ">", "<>", "script", "SCRIPT", "style", "StYlE", "</script>", "</style>", "</SCRIPT>", "<script", "<style", "a", " ", "\n", "<br>", "<BR/>", "</p>", "&amp;", "/", "x"];
+  let seed = 42;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let n = 0; n < 3000; n++) {
+    let s = "";
+    const len = 1 + Math.floor(rnd() * 14);
+    for (let i = 0; i < len; i++) s += toks[Math.floor(rnd() * toks.length)];
+    assert.equal(stripScriptStyle(s), oracleStrip(s), `strip ${JSON.stringify(s)}`);
+    assert.equal(replaceTags(s), oracleTags(s), `tags ${JSON.stringify(s)}`);
+  }
+});
+
+test("C1: viaSender matches the original regex and is linear", () => {
+  const oracle = /\(via [^)]+\)\s*$/i;
+  for (const s of ["Sam (via Docs)", "x (VIA y) ", "(via )", "(via a)b", "a) (via b)", "(via (via x)", "(via x) (via y)", "(via", "", "x(via z)\n"]) {
+    assert.equal(viaSender(s), oracle.test(s), JSON.stringify(s));
+  }
+  timed("'(via ' × N + ')x'", () => viaSender("(via ".repeat(MB / 5) + ")x"));
+  timed("'(via ' × N + ')'", () => viaSender("(via ".repeat(MB / 5) + ")"));
+});
+
+const MB = 1024 * 1024;
+function timed(label: string, fn: () => unknown, boundMs = 300): void {
+  const t0 = performance.now();
+  fn();
+  const ms = performance.now() - t0;
+  assert.ok(ms < boundMs, `${label}: ${ms.toFixed(0)} ms (bound ${boundMs} ms)`);
+}
+
+test("C1: pathological HTML / text is linear (each well under the bound)", () => {
+  timed("1 MB of '<'", () => htmlToText("<".repeat(MB)));
+  timed("'<script>' × N, never closed", () => htmlToText("<script>".repeat(MB / 8)));
+  timed("'<style' × N, no '>'", () => htmlToText("<style".repeat(MB / 6)));
+  timed("'<script>' + '</style>' × N", () => htmlToText("<script>" + "</style><style>".repeat(MB / 15)));
+  timed("'<a' + 1 MB of spaces", () => htmlToText("<a" + " ".repeat(MB)));
+  timed("'<br' + spaces × N", () => htmlToText(("<br" + " ".repeat(64)).repeat(MB / 67)));
+  timed("'&#' + 1 MB of digits", () => htmlToText("&#" + "9".repeat(MB)));
+  timed("'&' × 1 MB", () => htmlToText("&".repeat(MB)));
+  timed("interior whitespace run (strip)", () => htmlToText("x" + " \t".repeat(MB / 2) + "x"));
+});
+
+/** A synthetic message whose headers / parts are adversarial. */
+function hostileMessage(): Buffer {
+  const big = 200_000;
+  const hdr = [
+    `From: ${"(via ".repeat(big / 5)} <a@example.org>`,
+    `To: ${"a@example.org, ".repeat(big / 15)}`,
+    `Subject: ${"=?".repeat(big / 2)}`,
+    `References: ${"<x@example.org> ".repeat(big / 16)}`,
+    `Return-Path: <${"=".repeat(big)}@example.org>`,
+    `Precedence: ${" ".repeat(big)}bulk!`,
+    `Date: ${"Tue, ".repeat(big / 5)}`,
+    `Message-ID: <hostile@example.org>`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="B${" ".repeat(big)}"`,
+    "",
+    "--B",
+    `Content-Type: text/plain; charset=utf-8`,
+    `Content-Transfer-Encoding: quoted-printable`,
+    "",
+    "=".repeat(MB) + "=4" + "=3D".repeat(1000),
+    "--B",
+    `Content-Type: application/octet-stream`,
+    `Content-Disposition: attachment; filename*=utf-8''${"%C3%A9".repeat(big / 6)}`,
+    "",
+    "x",
+    "--B",
+    `Content-Type: text/html`,
+    "",
+    "<".repeat(MB),
+    "--B--",
+    "",
+  ];
+  return Buffer.from(hdr.join("\r\n"), "utf8");
+}
+
+test("C1/L1: a hostile message (huge headers, 100 KB+ RFC 2231 param, 1 MB QP of '=', 1 MB of '<') parses fast, no stack overflow", () => {
+  const raw = hostileMessage();
+  let p!: ReturnType<typeof parseMessage>;
+  timed("parseMessage(hostile)", () => (p = parseMessage(raw, [], "INBOX", 1, NOW)), 1500);
+  assert.equal(p.messageId, "hostile@example.org");
+  assert.equal(p.attachments.length, 1);
+  assert.ok(p.attachments[0]!.startsWith("éé"));
+  assert.ok(p.body.endsWith("[… truncated …]") || p.body.length <= 20_000 + 20);
+  timed("noteContent/noteMetadata", () => {
+    noteContent(p, TZ);
+    noteMetadata(p, ACCOUNT, TZ);
+  });
+});
+
+test("M2: the body cut walks code points (astral chars count once, never split)", () => {
+  const emoji = String.fromCodePoint(0x1f600);
+  const src = Buffer.from(`Message-ID: <e@example.org>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${emoji.repeat(20_010)}\r\n`, "utf8");
+  const p = parseMessage(src, [], "INBOX", 1, NOW);
+  assert.equal(p.body, emoji.repeat(20_000) + "\n\n[… truncated …]");
+});
+
+test("M2: oversize messages are never downloaded — skip-too-large, remembered per UIDVALIDITY", async () => {
+  const msgs = fixtureImap().slice(0, 2);
+  msgs[1]!.size = 50 * MB;
+  const imap = fakeImap(msgs);
+  const v = fakeVault();
+  const skips = {};
+  const r = await syncProton(imap.source, v.vault, passOpts({ maxMessageBytes: 10 * MB, skips }));
+  assert.equal(r.created, 1);
+  assert.equal(r.tooLarge, 1);
+  assert.deepEqual(imap.calls.sources, [msgs[0]!.uid], "the big one is never fetched");
+  assert.ok(r.intents.some((i) => i.action === "skip-too-large" && i.uid === msgs[1]!.uid));
+  const r2 = await syncProton(imap.source, v.vault, passOpts({ maxMessageBytes: 10 * MB, skips }));
+  assert.equal(r2.tooLarge, 0, "not re-reported");
+  assert.equal(r2.skipped, 1);
+  // A new UIDVALIDITY forgets the skip list.
+  const imap2 = fakeImap(msgs, { uidValidity: "2" });
+  const r3 = await syncProton(imap2.source, v.vault, passOpts({ maxMessageBytes: 10 * MB, skips }));
+  assert.equal(r3.tooLarge, 1);
+});
+
+test("L1: a message that fails to parse is retried, then skip-listed as poison (no re-download every pass)", async () => {
+  const boom = new Proxy(Buffer.from("x"), {
+    get(t, p) {
+      if (p === "length") return 1;
+      throw new Error("synthetic parser crash");
+    },
+  }) as Buffer;
+  const msgs: FakeMsg[] = [{ uid: 500, flags: [], source: boom, messageId: "poison@example.org" }];
+  const imap = fakeImap(msgs);
+  const v = fakeVault();
+  const skips: Record<string, { uidValidity: string; uids: Record<string, { reason: string; attempts: number }> }> = {};
+  for (let i = 1; i <= 3; i++) {
+    const r = await syncProton(imap.source, v.vault, passOpts({ skips: skips as never }));
+    assert.equal(r.failed, 1);
+  }
+  assert.equal(skips.INBOX!.uids["500"]!.reason, "poison");
+  const r4 = await syncProton(imap.source, v.vault, passOpts({ skips: skips as never }));
+  assert.equal(r4.failed, 0);
+  assert.equal(r4.skipped, 1);
+  assert.equal(imap.calls.sources.length, 3, "fetched 3 times, then never again");
+});
+
+test("L3: a skip-collision is remembered — the message is not re-downloaded every pass", async () => {
+  const m = byName("plain-direct");
+  const imap = fakeImap(fixtureImap().filter((x) => x.uid === m.uid));
+  const v = fakeVault([{ id: "foreign", path: m.expected.path, content: "hand-written", metadata: { other: true }, tags: ["email"] }]);
+  const skips = {};
+  await syncProton(imap.source, v.vault, passOpts({ skips }));
+  const r2 = await syncProton(imap.source, v.vault, passOpts({ skips }));
+  assert.equal(imap.calls.sources.length, 1);
+  assert.equal(r2.skipped, 1);
+  assert.equal(r2.collisions, 0);
+});
+
+test("L2: a mailbox select that fails at the connection level fails the pass (not a silent 'skipped')", async () => {
+  const src: ImapSource = {
+    async connect() {
+      const s = fakeImap([]).source;
+      const sess = await s.connect();
+      return {
+        ...sess,
+        async openMailbox() {
+          throw Object.assign(new Error("Socket closed unexpectedly"), { code: "NoConnection" });
+        },
+      };
+    },
+  };
+  await assert.rejects(syncProton(src, fakeVault().vault, passOpts()), /Socket closed/);
+});
+
+test("L4: failure reasons never carry a note path or a vault response body", async () => {
+  const imap = fakeImap(fixtureImap().slice(0, 1));
+  const v = fakeVault();
+  v.vault.createNote = async () => {
+    throw Object.assign(new Error(`POST /notes: 500 {"error":"x","path":"vault/messages/email/quarterly-check-in-notes-next-steps-f5ff057b"}`), { status: 500 });
+  };
+  const lines: string[] = [];
+  const r = await syncProton(imap.source, v.vault, passOpts({ log: (l) => lines.push(l) }));
+  const blob = JSON.stringify(r.intents) + lines.join("\n");
+  assert.ok(blob.includes("vault HTTP 500"));
+  assert.ok(!blob.includes("quarterly"), blob);
+  assert.ok(!scrubProtonError("GET /notes/vault/messages/email/secret-subject-1234abcd: 404").includes("secret-subject"));
+});
+
+test("M1: /proton-bridge* is SERVER-owner only — a vault admin gets 403 everywhere", async () => {
+  setMembership("primary", "admin@example.test", "admin", config.ownerEmail);
+  const cookie = sessionCookie(makeSession("admin@example.test"));
+  const J = { "content-type": "application/json", cookie };
+  assert.equal((await integrations.request("/proton-bridge", { headers: J })).status, 403);
+  assert.equal((await integrations.request("/proton-bridge", { method: "PUT", headers: J, body: JSON.stringify(CRED) })).status, 403);
+  assert.equal((await integrations.request("/proton-bridge", { method: "DELETE", headers: J })).status, 403);
+  assert.equal((await integrations.request("/proton-bridge/sync", { method: "POST", headers: J })).status, 403);
+  // …while the same admin still reaches the other integrations.
+  assert.equal((await integrations.request("/google", { headers: J })).status, 200);
+});
+
+test("M1: a forced sync while a pass runs is refused (409), never queued", async () => {
+  await withConfig({ protonShadow: true }, async () => {
+    putCred();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow: ImapSource = {
+      async connect() {
+        await gate;
+        return fakeImap([]).source.connect();
+      },
+    };
+    const entry = getVaultRegistry()[0]!;
+    const first = runProtonOnce(entry, { source: slow, force: true });
+    await assert.rejects(runProtonOnce(entry, { source: slow, force: true }), (e: Error & { code?: string }) => e.code === "busy");
+    assert.equal(await runProtonOnce(entry, { source: slow, now: NOW + 9e9 }), 0, "a worker tick just skips");
+    const r = await integrations.request("/proton-bridge/sync", { method: "POST", headers: { cookie: ownerCookie() } });
+    assert.equal(r.status, 409);
+    assert.equal(((await r.json()) as { error: string }).error, "busy");
+    release();
+    await first;
+  });
+});
+
+// ── M3: real loopback TLS against a stub IMAP server ─────────────────────────
+
+import net from "node:net";
+import tls from "node:tls";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
+import { imapflowSource } from "../src/worker/proton";
+import { replaceTags, stripScriptStyle, viaSender } from "../src/worker/proton-parse";
+
+function selfSigned(): { key: string; cert: string; sha: string } | null {
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proton-tls-"));
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", `${dir}/k.pem`, "-out", `${dir}/c.pem`, "-days", "1", "-subj", "/CN=127.0.0.1"], { stdio: "ignore" });
+    const key = fs.readFileSync(`${dir}/k.pem`, "utf8");
+    const cert = fs.readFileSync(`${dir}/c.pem`, "utf8");
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { key, cert, sha: crypto.createHash("sha256").update(new crypto.X509Certificate(cert).raw).digest("hex") };
+  } catch {
+    return null;
+  }
+}
+const TLS = selfSigned();
+
+/** Minimal IMAP stub: greets, answers CAPABILITY / STARTTLS, refuses LOGIN, and
+ *  records every byte it receives (decrypted, for TLS). */
+async function stubImap(mode: "starttls" | "tls" | "no-starttls") {
+  const received: Buffer[] = [];
+  const sockets = new Set<net.Socket>();
+  const serve = (sock: net.Socket, secure: boolean) => {
+    let buf = "";
+    const onData = (d: Buffer) => {
+      received.push(d);
+      buf += d.toString("latin1");
+      let i: number;
+      while ((i = buf.indexOf("\r\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        const [tag, cmdRaw] = line.split(" ");
+        const cmd = (cmdRaw ?? "").toUpperCase();
+        if (cmd === "CAPABILITY") {
+          const caps = secure ? "IMAP4rev1" : mode === "starttls" ? "IMAP4rev1 STARTTLS LOGINDISABLED" : "IMAP4rev1";
+          sock.write(`* CAPABILITY ${caps}\r\n${tag} OK done\r\n`);
+        } else if (cmd === "STARTTLS" && mode === "starttls" && !secure) {
+          sock.removeListener("data", onData);
+          sock.pause(); // hold the client hello until the TLS wrapper is attached
+          sock.write(`${tag} OK begin TLS\r\n`, () => {
+            const t = new tls.TLSSocket(sock, { isServer: true, key: TLS!.key, cert: TLS!.cert });
+            t.on("error", () => {});
+            serve(t, true);
+          });
+          return;
+        } else if (cmd === "LOGIN" || cmd === "AUTHENTICATE") sock.write(`${tag} NO [AUTHENTICATIONFAILED] stub refuses\r\n`);
+        else if (cmd === "LOGOUT") sock.end(`* BYE\r\n${tag} OK bye\r\n`);
+        else sock.write(`${tag} BAD unsupported\r\n`);
+      }
+    };
+    sock.on("data", onData);
+    sock.on("error", () => {});
+  };
+  const onConn = (secure: boolean) => (sock: net.Socket) => {
+    sockets.add(sock);
+    sock.write("* OK stub ready\r\n");
+    serve(sock, secure);
+  };
+  const server = mode === "tls" ? tls.createServer({ key: TLS!.key, cert: TLS!.cert }, onConn(true)) : net.createServer(onConn(false));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as net.AddressInfo).port;
+  return {
+    port,
+    text: () => Buffer.concat(received).toString("latin1"),
+    close: () =>
+      new Promise<void>((r) => {
+        for (const s of sockets) s.destroy();
+        server.close(() => r());
+      }),
+  };
+}
+
+const TLS_PW = "stub-only-password-not-real";
+const tlsCred = (port: number, security: "starttls" | "tls", pin: string) =>
+  validateProtonCredential({ host: "127.0.0.1", port, username: "u@example.test", password: TLS_PW, security, certSha256: pin });
+
+for (const security of ["starttls", "tls"] as const) {
+  test(`M3 ${security}: wrong pin ⇒ zero LOGIN/AUTHENTICATE bytes; right pin ⇒ LOGIN reaches the stub`, { skip: TLS ? false : "openssl unavailable" }, async () => {
+    const stub = await stubImap(security);
+    try {
+      await assert.rejects(imapflowSource(tlsCred(stub.port, security, "00".repeat(32)), { timeoutMs: 5000 }).connect(), /fingerprint mismatch/);
+      assert.doesNotMatch(stub.text(), /LOGIN|AUTHENTICATE/i);
+      assert.ok(!stub.text().includes(TLS_PW));
+    } finally {
+      await stub.close();
+    }
+    const stub2 = await stubImap(security);
+    try {
+      await assert.rejects(imapflowSource(tlsCred(stub2.port, security, TLS!.sha), { timeoutMs: 5000 }).connect(), (e: Error) => {
+        assert.match(e.message, /Bridge rejected the login/);
+        assert.ok(!e.message.includes(TLS_PW));
+        return true;
+      });
+      assert.match(stub2.text(), /\bLOGIN\b/, "the pinned connection proceeds to LOGIN");
+    } finally {
+      await stub2.close();
+    }
+  });
+}
+
+test("M3: a server without STARTTLS is refused before any credential is sent", { skip: TLS ? false : "openssl unavailable" }, async () => {
+  const stub = await stubImap("no-starttls");
+  try {
+    await assert.rejects(imapflowSource(tlsCred(stub.port, "starttls", TLS!.sha), { timeoutMs: 5000 }).connect());
+    assert.doesNotMatch(stub.text(), /LOGIN|AUTHENTICATE/i);
+    assert.ok(!stub.text().includes(TLS_PW));
+  } finally {
+    await stub.close();
+  }
 });

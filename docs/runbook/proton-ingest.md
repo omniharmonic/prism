@@ -63,6 +63,19 @@ All of them write less, read less, or fail closed.
    **existing** person note. Person notes are never created.
 8. **The cert pin is required** in the credential. There is no trust-on-first-use,
    so a lost pin fails closed. The host must be loopback.
+9. **Bounded work** (security review).
+   - Messages over `PROTON_MAX_MESSAGE_BYTES` (10 MB, by RFC822.SIZE) are never
+     downloaded. They get a `skip-too-large` intent and **no note**. The script did
+     ingest them; raise the cap if that matters. We skip them rather than fetch only
+     the text parts, because rebuilding a note from IMAP's re-encoded part metadata
+     would break byte-parity for every message, to save only the rare large one.
+   - Each text part is cut at 500 KB before parsing. The note keeps 20 000 chars,
+     so this only matters for HTML whose first 500 KB yields less text than that.
+   - The HTML stripper and all whitespace strips are linear scanners. The regex
+     forms were quadratic: a crafted mail could block the server for minutes.
+   - A message that fails to parse 3 times is skip-listed per (mailbox, UIDVALIDITY),
+     and so are oversize messages and path collisions. None of them is re-downloaded
+     every pass.
 
 The parser follows Python's `email` package semantics wherever the stored output
 depends on them. The parity tests pin this. Remaining gaps are exotic header edge
@@ -85,13 +98,15 @@ rewrite, because existing notes are matched by Message-ID.
 | `PROTON_LINK_PEOPLE` | `false` | See deviation 7. |
 | `PROTON_INTENTS_KEEP` | `500` | Intents kept for the comparison. |
 | `PROTON_IMAP_TIMEOUT_MS` | `30000` | Connection and greeting timeout. The socket timeout is 4× this. |
+| `PROTON_MAX_MESSAGE_BYTES` | `10485760` | Larger messages are not downloaded (`skip-too-large`). `0` = no cap. |
 | `WORKER_STALE_PROTON_MS` | `3600000` | Health goes stale after this long with no successful pass. |
 
 ### Credential
 
 Credential kind `proton-bridge`. It is encrypted with `SECRETS_KEY`, like the
 `google` and `clickup` credentials, and is per vault. It is set by
-`PUT /api/integrations/proton-bridge` (admin session):
+`PUT /api/integrations/proton-bridge`. All `/proton-bridge*` routes are
+**server-owner only**; a vault admin gets 403.
 
 ```json
 { "host": "127.0.0.1", "port": 1143, "username": "<bridge account address>",
@@ -107,20 +122,29 @@ Credential kind `proton-bridge`. It is encrypted with `SECRETS_KEY`, like the
   `curl --data-binary @file`, then delete the file. The password is the per-account
   Bridge password: Bridge → account → Mailbox details.
 - `GET` reports `configured` and the non-secret fields. It never returns the
-  password. A `PUT` without `password` keeps the stored one.
+  password.
+- A `PUT` may omit `password` only when nothing else changes. Changing host, port,
+  security, username or `certSha256` requires the password again, otherwise 400.
 - `POST /api/integrations/proton-bridge/sync` forces one pass. It honours shadow
-  mode and returns 409 while the ingest is off.
+  mode. It returns 409 while the ingest is off, and 409 `busy` while a pass is
+  running; passes never queue.
 
 The pin is checked inside imapflow's `authenticate()`. That runs after the TLS
 handshake and **before** the LOGIN that carries the password, so a mismatch aborts
-the connection without sending it. A test guards that hook in case imapflow is
-refactored. Errors and log lines are scrubbed of the password.
+the connection without sending it. Tests prove this against a real loopback TLS
+stub IMAP server, over both STARTTLS and direct TLS:
+- with a wrong pin, and with a server that lacks STARTTLS, the stub receives zero
+  LOGIN or AUTHENTICATE bytes;
+- with the right pin, the connection reaches LOGIN.
+
+Errors, log lines and intents are scrubbed of the password and of note paths, whose
+slug is the subject. Intents carry only ids, UIDs and hashes.
 
 ## Cutover runbook (overseer only)
 
-0. **Precondition.** `GMAIL_SYNC_ENABLED` stays off. The Gmail worker also stands
-   down by itself while Proton is on: both would write `vault/messages/email/`, and
-   Gmail would rewrite Proton notes in place through their `threadId`.
+0. **Precondition.** `GMAIL_SYNC_ENABLED` stays off. `assertConfig` refuses to start
+   the server with both `GMAIL_SYNC_ENABLED` and `PROTON_SYNC_ENABLED` set, because
+   both would write `vault/messages/email/`. Shadow mode never affects Gmail.
    Back up first with `scripts/backup-parachute.sh proton-cutover`.
 
 1. **Shadow for at least 24 h alongside the script.**

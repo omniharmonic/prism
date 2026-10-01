@@ -185,7 +185,14 @@ Format for each package:
   - Creates use `if_exists: "ignore"`. There are no deletes and no content rewrites.
 - **Credential:** kind `proton-bridge`. Loopback host only, and the cert pin is required. The pin is checked before LOGIN.
 - **Gates:** `PROTON_SYNC_ENABLED` and `PROTON_SHADOW`. Shadow means zero writes, with persisted intents at `GET /acl/workers/proton/intents?verify=1`.
-- **Health:** `proton` server source. Gmail stands down while Proton is on.
+- **Health:** `proton` server source. `assertConfig` refuses Gmail and Proton both live.
+- **Security review fixes (5f1012f → follow-up):**
+  - **C1:** linear HTML scanners replace the quadratic regexes, plus a 500 KB cap per text part.
+  - **H1:** the Gmail stand-down is replaced by the `assertConfig` refusal.
+  - **M1:** the credential routes are server-owner only, a repoint needs the password again, and a concurrent sync gets 409.
+  - **M2:** messages are size-capped by RFC822.SIZE, QP decodes into a preallocated buffer, and the body cut walks code points.
+  - **M3:** real loopback TLS pin tests.
+  - **L1–L4:** RFC 2231 parameters decode without a spread, skip lists cover poison, oversize and collision UIDs, a dropped connection during mailbox select fails the pass, and intents and logs carry no paths.
 - **Roll out / back:** see `docs/runbook/proton-ingest.md`.
   - Run shadow ≥24 h next to the script.
   - Then `launchctl bootout` + `disable` the `com.omniharmonic.proton-mail` agent.
