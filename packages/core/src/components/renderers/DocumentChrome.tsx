@@ -268,12 +268,13 @@ export function PageHeader({
       style={{
         marginBottom: "var(--space-6)",
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "flex-start",
         justifyContent: "space-between",
         gap: 16,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: "1 1 320px" }}>
         {(icon || onIconChange) && (
           <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />
         )}
@@ -303,7 +304,7 @@ export function PageHeader({
           <h1 style={titleStyle}>{name}</h1>
         )}
       </div>
-      {right && <div style={{ flexShrink: 0 }}>{right}</div>}
+      {right && <div style={{ maxWidth: "100%" }}>{right}</div>}
     </header>
   );
 }

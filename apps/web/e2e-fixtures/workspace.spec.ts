@@ -20,6 +20,19 @@ test("mobile workspace fits the viewport and opens navigation", async ({ page })
   await page.screenshot({ path: "test-results/workspace-mobile.png", fullPage: true, animations: "disabled" });
 });
 
+test("mobile collaborative title keeps full width with presence and comment controls", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/workspace.html?header");
+  const title = page.getByRole("heading", { name: "prism-native-workspace-20261001" });
+  const titleBox = await title.boundingBox();
+  const statusBox = await page.getByText("Live · Editing", { exact: true }).boundingBox();
+  expect(titleBox!.width).toBeGreaterThan(300);
+  expect(statusBox!.y).toBeGreaterThan(titleBox!.y + titleBox!.height);
+  await expect(page.getByRole("button", { name: "Comments" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("mobile-collaborative-title.png") });
+});
+
 test("mobile agent panel fills the screen and restores navigation focus", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/workspace.html");
