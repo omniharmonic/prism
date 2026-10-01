@@ -302,6 +302,19 @@ db.exec(`
     revoked_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS mcp_tokens_vault ON mcp_tokens(vault_id);
+  -- Audit of owner-run revocations of legacy member tokens (WP6.5,
+  -- routes/mcp.ts). Never token material: jti + who + outcome only.
+  CREATE TABLE IF NOT EXISTS mcp_token_revocations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,
+    actor      TEXT NOT NULL,      -- the owner who ran it
+    jti        TEXT NOT NULL,
+    email      TEXT NOT NULL,      -- the token's minter
+    vault_id   TEXT NOT NULL,
+    outcome    TEXT NOT NULL,      -- revoked | failed
+    notified   INTEGER NOT NULL DEFAULT 0,
+    error      TEXT
+  );
 
   -- ── Governance signature ledger (WP0.3, governance-integrity.ts) ─────────
   -- The CURRENT gov_sig of every governance note the server wrote, per vault.
@@ -791,6 +804,21 @@ export function getMcpToken(jti: string): McpTokenRow | null {
 }
 export function setMcpTokenRevoked(jti: string): void {
   markMcpTokenRevoked.run(Date.now(), jti);
+}
+/** Every unrevoked, unexpired member whole-vault token across all vaults (WP6.5). */
+export function listActiveMcpTokens(now = Date.now()): McpTokenRow[] {
+  return db.prepare("SELECT * FROM mcp_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC").all(now) as McpTokenRow[];
+}
+export function recordMcpTokenRevocation(r: { actor: string; jti: string; email: string; vault_id: string; outcome: "revoked" | "failed"; notified: boolean; error?: string | null }): void {
+  db.prepare("INSERT INTO mcp_token_revocations (ts, actor, jti, email, vault_id, outcome, notified, error) VALUES (?,?,?,?,?,?,?,?)").run(
+    Date.now(), r.actor, r.jti, r.email, r.vault_id, r.outcome, r.notified ? 1 : 0, r.error ?? null,
+  );
+}
+export function markMcpRevocationNotified(jti: string): void {
+  db.prepare("UPDATE mcp_token_revocations SET notified = 1 WHERE jti = ? AND outcome = 'revoked'").run(jti);
+}
+export function listMcpTokenRevocations(limit = 200): Array<{ ts: number; actor: string; jti: string; email: string; vault_id: string; outcome: string; notified: number; error: string | null }> {
+  return db.prepare("SELECT ts, actor, jti, email, vault_id, outcome, notified, error FROM mcp_token_revocations ORDER BY id DESC LIMIT ?").all(limit) as never;
 }
 
 // ── Governance signature ledger (WP0.3) ──────────────────────────────────────

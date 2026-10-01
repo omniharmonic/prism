@@ -27,11 +27,15 @@ handshake, no `Mcp-Session-Id`; `server/discover` is supported). 2025-era client
 `initialize` are served by a stateless fallback, so current Claude Code / Claude Desktop work as-is.
 Server: `@modelcontextprotocol/server` 2.x (`createMcpHandler`, one server instance per request).
 
-### Connect an agent
+### Connect your agent
 
-1. In Prism: **Settings → Account → Agent access tokens → Create token**. Pick *Read only* or
-   *Read & write* and an expiry (30 days – 1 year). The token is bound to the **vault you have open**.
-2. Copy the token **now** — it is shown once. The panel also shows paste-ready config:
+1. In Prism: **Settings → Account → Connect your agent**. Pick the **vault** (only vaults you can access
+   are offered), *Read only* or *Read & write*, and an expiry (30 days – 1 year; write ≤ 90 days), then
+   **Create token**.
+2. Copy the token **now** — it is shown once, held only in the page's memory (never `localStorage`) and
+   discarded when you press *Done* or leave the panel. The panel also shows paste-ready config for
+   Claude Code, Claude Desktop and any other MCP client (below), and a **Test connection** button that
+   sends `tools/list` to `/mcp` with the new token and reports how many tools it exposes.
 
 **Claude Code** (terminal):
 
@@ -286,3 +290,33 @@ Operations notes: minting shells out to `parachute auth mint-token` under the ho
 only works on the box that runs the hub); `MCP_PUBLIC_URL` is the hub's public origin; the audit
 registry is the `mcp_tokens` table (tokens themselves are never stored); the hub's own registry
 (`parachute-vault tokens list --vault <name>`) shows these tokens with identity `mcp:<email>`.
+
+---
+
+## Migrating members off legacy whole-vault tokens (WP6.5)
+
+Owner-only (server owner), in **Network → Server → Legacy agent tokens (whole-vault)** — the card appears only
+while active legacy tokens exist. API (also owner-only, JSON-only, never returns a token):
+
+| Route | What |
+|---|---|
+| `GET /api/mcp/legacy-tokens` | Active (unrevoked, unexpired) `mcp_tokens` across all vaults: who, vault, scope, created, expires — plus the last 50 audit rows |
+| `POST /api/mcp/legacy-tokens/revoke` | Body `{ jtis?, notify?, dryRun? }`. **`dryRun` defaults to true** — it lists `affected` members/tokens and does nothing. `dryRun:false` revokes each token through the hub revoker (`parachute auth revoke-token`, ~60 s to enforce); `jtis` omitted = all active; `notify:true` emails each member once (Resend, or a console line without a key) after at least one of their tokens was revoked, pointing at *Settings → Account → Connect your agent* |
+
+Idempotent (only unrevoked tokens are touched). A token whose hub revoke fails stays active and is retried
+by the next call; its member is not emailed. A mail failure never undoes a revocation (reported in
+`notifyFailed`). Every attempt is audited in `mcp_token_revocations` (actor, jti, member, vault, outcome,
+notified) — never token material. Members who were emailed once are not emailed again by a repeat call.
+
+### Runbook (overseer)
+
+1. **Dry run.** As the server owner: `POST /api/mcp/legacy-tokens/revoke` with `{"notify":true}` (or open the
+   card and press *Revoke all + notify*, which shows the same dry-run summary in its confirm dialog). Review
+   `wouldRevoke` and `affected`.
+2. **Owner approval.** Get the owner's explicit go-ahead on that list. Nothing runs automatically.
+3. **Revoke all + notify.** `POST` `{"dryRun":false,"notify":true}`. Check `failed` is empty (re-run to retry),
+   and `notified` lists every member.
+4. **Verify.** `GET /api/mcp/legacy-tokens` returns `tokens: []`, and `GET /api/mcp/tokens?vaultId=<id>` shows every
+   row with `revokedAt` set. Allow ~60 s for the hub cache. Optionally confirm in the hub
+   (`parachute-vault tokens list --vault <name>`).
+5. Leave `MEMBER_VAULT_TOKENS` unset so no new whole-vault token can be minted.

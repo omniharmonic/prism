@@ -11,7 +11,7 @@ import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, Che
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
-import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress, type WorkerSourceHealth } from "../../../data/CollabSharing";
+import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress, type WorkerSourceHealth, type LegacyMcpToken } from "../../../data/CollabSharing";
 
 const EDITABLE: { key: string; label: string; help: string }[] = [
   { key: "MAGIC_FROM", label: "Email 'from' address", help: "Sender for magic-link / invite emails: you@example.com or Name <you@example.com> (must be a Resend-verified domain)." },
@@ -372,6 +372,8 @@ export function ServerPanel() {
   const [newToken, setNewToken] = useState("");
   const [ingress, setIngress] = useState<TunnelIngress | null>(null);
   const [workers, setWorkers] = useState<WorkerSourceHealth[] | null>(null);
+  // Legacy whole-vault member MCP tokens (WP6.5): null = seam absent / not the owner.
+  const [legacy, setLegacy] = useState<LegacyMcpToken[] | null>(null);
   const refresh = useCallback(async () => {
     if (!sharing?.getServerInfo && !sharing?.getIntegrationStatus) return;
     setError(null);
@@ -380,6 +382,7 @@ export function ServerPanel() {
       try {
         setInfo(await sharing.getServerInfo());
         if (sharing.getTunnelIngress) setIngress(await sharing.getTunnelIngress().catch(() => null));
+        if (sharing.getLegacyMcpTokens) setLegacy((await sharing.getLegacyMcpTokens().catch(() => null))?.tokens ?? null);
         if (sharing.getWorkerHealth) setWorkers((await sharing.getWorkerHealth().catch(() => null))?.sources ?? null);
       } catch (e) {
         setInfo(null);
@@ -404,6 +407,26 @@ export function ServerPanel() {
     // A non-owner admin can't read /acl/server (owner-only 403) but can still
     // manage integrations — don't surface that as a page-level error then.
     if (infoError && !statuses) setError(infoError);
+  }, [sharing]);
+
+  const revokeLegacy = useCallback(async (opts: { jtis?: string[]; notify: boolean }) => {
+    if (!sharing?.revokeLegacyMcpTokens) return;
+    setBusy("legacy");
+    setError(null);
+    try {
+      const dry = await sharing.revokeLegacyMcpTokens({ ...opts, dryRun: true });
+      const who = (dry.affected ?? []).map((a) => `${a.email} (${a.tokens.length})`).join(", ") || "nobody";
+      if (!dry.wouldRevoke) { setNotice("No active legacy tokens."); return; }
+      const msg = `Revoke ${dry.wouldRevoke} token(s) for: ${who}?` + (opts.notify ? "\n\nEach affected member will be emailed." : "") + "\n\nThe hub enforces revocation within about a minute. This cannot be undone.";
+      if (!window.confirm(msg)) return;
+      const res = await sharing.revokeLegacyMcpTokens({ ...opts, dryRun: false });
+      setNotice(`Revoked ${res.revoked?.length ?? 0}${res.failed?.length ? `, ${res.failed.length} failed` : ""}${opts.notify ? `; notified ${res.notified?.length ?? 0} member(s)` : ""}.`);
+      setLegacy((await sharing.getLegacyMcpTokens?.().catch(() => null))?.tokens ?? null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't revoke tokens.");
+    } finally {
+      setBusy(null);
+    }
   }, [sharing]);
 
   const applyIngress = useCallback(async () => {
@@ -540,6 +563,30 @@ export function ServerPanel() {
           {workers.every((w) => w.status === "disabled") && (
             <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: 0 }}>No sources configured.</p>
           )}
+        </div>
+      )}
+
+      {/* Legacy whole-vault member MCP tokens (WP6.5) — superseded by Prism access
+          tokens ("Connect your agent"). Owner reviews, then revokes (optionally
+          emailing each member). Never lists token material. */}
+      {legacy && legacy.length > 0 && (
+        <div style={cardStyle}>
+          <div style={labelStyle}>Legacy agent tokens (whole-vault)</div>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 8px" }}>
+            These bypass Prism permissions. Members should switch to Settings → Account → Connect your agent.
+          </p>
+          {legacy.map((t, i) => (
+            <div key={t.jti} style={{ ...rowStyle, flexWrap: "wrap", borderBottom: i === legacy.length - 1 ? "none" : rowStyle.borderBottom }}>
+              <span>{t.email} <span style={{ color: "var(--text-muted)", fontSize: 11 }}>· {t.vaultLabel} · {t.scope}</span></span>
+              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ color: "var(--text-muted)", fontSize: 12 }}>created {new Date(t.createdAt).toLocaleDateString()} · expires {new Date(t.expiresAt).toLocaleDateString()}</span>
+                <Button variant="ghost" disabled={busy === "legacy"} onClick={() => void revokeLegacy({ jtis: [t.jti], notify: false })}>Revoke</Button>
+              </span>
+            </div>
+          ))}
+          <div style={{ marginTop: 10 }}>
+            <Button disabled={busy === "legacy"} onClick={() => void revokeLegacy({ notify: true })}>Revoke all + notify</Button>
+          </div>
         </div>
       )}
 

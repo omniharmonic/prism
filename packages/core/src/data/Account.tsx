@@ -30,7 +30,12 @@ export interface AccountClient {
    *  a shell without that surface omits all three and the section hides. */
   listAgentTokens?(): Promise<AgentTokenList>;
   /** Create a token for the active vault. The secret is in the result ONCE. */
-  createAgentToken?(opts: { label?: string; scope: "read" | "write"; expiresInDays?: number }): Promise<CreatedAgentToken>;
+  createAgentToken?(opts: { label?: string; scope: "read" | "write"; expiresInDays?: number; vaultId?: string }): Promise<CreatedAgentToken>;
+  /** Vaults the user may bind an agent token to (WP6.5 picker). Absent → the active vault only. */
+  listAgentVaults?(): Promise<Array<{ id: string; label: string; active: boolean }>>;
+  /** "Test connection": call the MCP endpoint's tools/list with the new token and
+   *  return how many tools it exposes. Throws with a readable message on failure. */
+  testAgentConnection?(token: string): Promise<{ toolCount: number }>;
   /** Revoke a token — the agent's next request is refused. */
   revokeAgentToken?(id: string): Promise<void>;
 }

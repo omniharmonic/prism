@@ -177,6 +177,12 @@ export const webCollabSharing: CollabSharing = {
   async getWorkerHealth() {
     return (await acl(`/workers`)).json();
   },
+  async getLegacyMcpTokens() {
+    return (await api(`/mcp/legacy-tokens`)).json();
+  },
+  async revokeLegacyMcpTokens(opts) {
+    return (await api(`/mcp/legacy-tokens/revoke`, { method: "POST", body: JSON.stringify(opts) })).json();
+  },
   async controlTunnel(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }> {
     return (await acl(`/server/tunnel`, { method: "POST", body: JSON.stringify({ action }) })).json();
   },
