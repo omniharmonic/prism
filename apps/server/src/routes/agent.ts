@@ -20,6 +20,7 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { resolveActor } from "../auth/actor";
 import { resolveVaultEntry } from "../db";
+import { getBillingMode } from "../agent-billing";
 import {
   startDispatch,
   getDispatch,
@@ -47,7 +48,11 @@ import {
   eventsAfter,
   subscribeSession,
   isTerminal,
-  isProfile,
+  budgetStatus,
+  isSessionProfile,
+  availableSessionProfiles,
+  DailyBudgetError,
+  ProfileUnavailableError,
   TurnConflictError,
   SessionArchivedError,
   SessionNotFoundError,
@@ -102,7 +107,22 @@ agentApi.get("/dispatches", (c) => {
 });
 
 /** Runner capacity snapshot (running/queued counts + last admission verdict). */
-agentApi.get("/runner", (c) => c.json(runnerStatus()));
+agentApi.get("/runner", (c) => c.json({ ...runnerStatus(), billing: getBillingMode() }));
+
+/** Billing mode + budgets + selectable profiles (WP3.4). Budgets are server
+ *  config; the UI shows them read-only. `billing` says how to label cost figures:
+ *  "subscription" = API-equivalent estimate, not a charge. */
+agentApi.get("/limits", (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
+  c.header("Cache-Control", "no-store");
+  return c.json({
+    billing: getBillingMode(),
+    ...budgetStatus(actor.email),
+    profiles: availableSessionProfiles(),
+    defaultProfile: "vault-ro",
+  });
+});
 
 agentApi.get("/dispatches/:id", (c) => {
   const actor = resolveActor(c);
@@ -203,15 +223,15 @@ agentApi.post("/sessions", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   const body = await c.req.json<SessionBody>().catch(() => ({}) as SessionBody);
-  if (body.profile !== undefined && !isProfile(body.profile)) {
-    return c.json({ error: "bad_request", detail: "profile must be vault-ro or vault-rw" }, 400);
+  if (body.profile !== undefined && !isSessionProfile(body.profile)) {
+    return c.json({ error: "bad_request", detail: `profile must be one of ${availableSessionProfiles().join(", ")}` }, 400);
   }
   const s = createSession({
     vaultId: actor.vaultId,
     ownerEmail: actor.email,
     title: typeof body.title === "string" ? body.title : null,
     noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null,
-    profile: isProfile(body.profile) ? body.profile : "vault-rw",
+    profile: isSessionProfile(body.profile) ? body.profile : "vault-rw",
   });
   return c.json({ sessionId: s.id, session: s });
 });
@@ -261,6 +281,8 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     if (e instanceof TurnConflictError) return c.json({ error: "conflict", detail: e.message, turnId: e.turnId }, 409);
     if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);
     if (e instanceof SessionBudgetError) return c.json({ error: "budget_exceeded", detail: e.message }, 409);
+    if (e instanceof DailyBudgetError) return c.json({ error: "daily_budget_exceeded", detail: e.message }, 409);
+    if (e instanceof ProfileUnavailableError) return c.json({ error: "profile_unavailable", detail: e.message }, 409);
     if (e instanceof NoteForbiddenError) return c.json({ error: "forbidden", detail: e.message }, 403);
     if (e instanceof SessionNotFoundError) return c.json({ error: "not_found" }, 404);
     if (e instanceof AgentBusyError) return c.json({ error: "busy", detail: e.message }, 503);

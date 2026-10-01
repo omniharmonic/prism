@@ -37,8 +37,19 @@ import { vaultClient, type Note } from "./parachute";
 import { effectiveCaps, type NoteRef } from "./permissions";
 import { roleFloor, type Role } from "./roles";
 import { mintVaultToken, revokeVaultToken } from "./mcp-token";
+import { config } from "./config";
+import { issueInternalPat, revokePat, revokeInternalPats } from "./auth/pat";
 import {
-  VAULT_MCP_ALLOW,
+  isPrismProfile,
+  isReadOnlyProfile,
+  prismMcpConfig,
+  prismProfileScope,
+  prismProfilesEnabled,
+  profileAllowedTools,
+  profileServer,
+  type AgentProfile,
+} from "./agent-profiles";
+import {
   buildClaudeArgs,
   cliProjectDir,
   isUuid,
@@ -49,38 +60,19 @@ import {
 } from "./agent-exec";
 import { StreamNormalizer, scrubSecrets, vaultToolName, type AgentEvent, type AgentTurnStatus } from "./agent-events";
 
-// ── profiles ─────────────────────────────────────────────────────────────────
+// ── profiles (agent-profiles.ts; re-exported for existing importers) ─────────
 
-export type AgentProfile = "vault-ro" | "vault-rw";
-export const PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"];
-/** Vault 0.7.9 tools whose manifest `requiredVerb` is "read". `doctor` is a
- *  read-only scan (core/src/doctor.ts: "never auto-fixes"; manifest verb read). */
-export const READ_ONLY_TOOLS = ["query-notes", "list-tags", "find-path", "vault-info", "doctor"] as const;
-/** vault-rw is an EXPLICIT allowlist too — never the whole server: the admin-verb
- *  tools (update-tag, delete-tag, rename-tag, merge-tags, prune-schema,
- *  manage-token) and request-attachment-upload are never allowed. */
-export const READ_WRITE_TOOLS = [
-  "query-notes",
-  "create-note",
-  "update-note",
-  "delete-note",
-  "list-tags",
-  "find-path",
-  "vault-info",
-  "doctor",
-  "read-attachment",
-  "request-attachment-download",
-] as const;
-
-/** The `--allowedTools` list per profile. The dontAsk permission mode denies
- *  every vault tool not named here (verified live: a create-note under vault-ro
- *  comes back as a permission-denied tool_result). */
-export function profileAllowedTools(profile: AgentProfile): string[] {
-  const tools: readonly string[] = profile === "vault-ro" ? READ_ONLY_TOOLS : READ_WRITE_TOOLS;
-  return tools.map((t) => `${VAULT_MCP_ALLOW}__${t}`);
-}
-
-export const isProfile = (p: unknown): p is AgentProfile => typeof p === "string" && (PROFILES as readonly string[]).includes(p);
+export {
+  PROFILES,
+  READ_ONLY_TOOLS,
+  READ_WRITE_TOOLS,
+  SKILL_TOOLS,
+  profileAllowedTools,
+  isProfile,
+  isSessionProfile,
+  availableSessionProfiles,
+  type AgentProfile,
+} from "./agent-profiles";
 
 // ── rows ─────────────────────────────────────────────────────────────────────
 
@@ -168,6 +160,13 @@ export interface SessionDeps {
   transcriptMirror: boolean;
   /** AGENT_SESSION_BUDGET_USD — cumulative per-session cap (default 10; ≤0 = off). */
   sessionBudgetUsd: number | null;
+  /** AGENT_DAILY_BUDGET_USD — per-user spend cap since local midnight (default 25; <=0 = off). */
+  dailyBudgetUsd: number | null;
+  /** Mint/revoke the per-turn Prism PAT of a prism-* profile (tests inject fakes). */
+  mintPrismToken: (p: { email: string; vaultId: string; scope: "read" | "write"; turnId: string }) => { token: string; id: string };
+  revokePrismToken: (id: string) => void;
+  /** Port of THIS server's /mcp (prism-* profiles reach it over loopback). */
+  prismPort: () => number;
   /** AGENT_CLI_RETENTION_DAYS — orphan CLI artifact sweep (default 14). */
   cliRetentionDays: number;
   /** AGENT_EVENTS_RETENTION_DAYS — event pruning for live sessions (default 30). */
@@ -200,6 +199,16 @@ function defaultDeps(): SessionDeps {
       const b = envNum("AGENT_SESSION_BUDGET_USD", 10);
       return b > 0 ? b : null;
     })(),
+    dailyBudgetUsd: (() => {
+      const b = envNum("AGENT_DAILY_BUDGET_USD", 25);
+      return b > 0 ? b : null;
+    })(),
+    mintPrismToken: (p) => {
+      const { token, row } = issueInternalPat({ email: p.email, vaultId: p.vaultId, scope: p.scope, turnId: p.turnId, ttlMs: READ_TOKEN_TTL_S * 1000 });
+      return { token, id: row.id };
+    },
+    revokePrismToken: (id) => void revokePat(id),
+    prismPort: () => config.port,
     cliRetentionDays: Math.max(1, envNum("AGENT_CLI_RETENTION_DAYS", 14)),
     eventsRetentionDays: Math.max(1, envNum("AGENT_EVENTS_RETENTION_DAYS", 30)),
   };
@@ -270,6 +279,9 @@ const q = {
   insertEvent: db.prepare("INSERT INTO agent_events (session_id, seq, turn_id, type, payload, at) VALUES (?, ?, ?, ?, ?, ?)"),
   eventsAfter: db.prepare("SELECT seq, turn_id, type, payload, at FROM agent_events WHERE session_id = ? AND seq > ? ORDER BY seq"),
   eventsForTurn: db.prepare("SELECT seq, turn_id, type, payload, at FROM agent_events WHERE turn_id = ? ORDER BY seq"),
+  insertCost: db.prepare("INSERT OR REPLACE INTO agent_cost_log (turn_id, owner_email, cost_usd, at) VALUES (?, ?, ?, ?)"),
+  spentSince: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS n FROM agent_cost_log WHERE owner_email = ? AND at >= ?"),
+  pruneCost: db.prepare("DELETE FROM agent_cost_log WHERE at < ?"),
   orphanTurns: db.prepare("SELECT * FROM agent_turns WHERE status IN ('queued','running')"),
 };
 
@@ -410,9 +422,11 @@ export function buildSessionPrompt(
   o: { profile: AgentProfile; firstTurn: boolean; note?: { id: string; path: string | null; content: string } | null; noteId?: string | null },
 ): string {
   const rules = [
-    "You are Prism's agent, operating ONLY on the user's Parachute vault via the parachute-vault MCP tools.",
+    isPrismProfile(o.profile)
+      ? "You are Prism's agent, operating ONLY through the prism MCP tools (prism_*), which act with the user's own Prism permissions."
+      : "You are Prism's agent, operating ONLY on the user's Parachute vault via the parachute-vault MCP tools.",
     "You have NO host file, shell, or web access.",
-    o.profile === "vault-ro"
+    isReadOnlyProfile(o.profile)
       ? "This session is READ-ONLY: you can query the vault but cannot create, update, or delete notes."
       : "Report concisely what you changed.",
   ].join(" ");
@@ -445,6 +459,8 @@ const noteRef = (n: Note): NoteRef => ({
 });
 
 export class SessionBudgetError extends Error {}
+export class DailyBudgetError extends Error {}
+export class ProfileUnavailableError extends Error {}
 export class NoteForbiddenError extends Error {}
 export class ReadTokenError extends Error {}
 
@@ -458,6 +474,48 @@ export const READ_TOKEN_TTL_S = 3 * 3600;
 const userSlot = new Map<string, string>(); // email → turnId holding the slot
 const userWaiting = new Map<string, Array<{ turnId: string; go: () => void }>>();
 const turnTokens = new Map<string, string>(); // turnId → read-token jti
+const turnPats = new Map<string, string>(); // turnId → per-turn Prism PAT id (prism-* profiles)
+
+/** Revoke a turn's per-turn Prism PAT. Idempotent; called at turn end, on
+ *  rollback, and on cancel — the credential never outlives the turn. */
+function dropPat(turnId: string): void {
+  const id = turnPats.get(turnId);
+  if (!id) return;
+  turnPats.delete(turnId);
+  try {
+    deps.revokePrismToken(id);
+  } catch (e) {
+    console.error(`[agent] prism token revoke failed: ${(e as Error).message}`);
+  }
+}
+
+/** Local midnight (ms) of the day containing `now`. */
+export function localMidnight(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+/** A user's agent spend since local midnight (the daily-budget ledger). */
+export function dailySpentUsd(email: string, now = deps.now()): number {
+  return (q.spentSince.get(email.toLowerCase(), localMidnight(now)) as { n: number }).n;
+}
+/** Budgets + spend for a user (GET /api/agent/limits). */
+export function budgetStatus(
+  email: string,
+  now = deps.now(),
+): {
+  session: { limitUsd: number | null };
+  daily: { limitUsd: number | null; spentUsd: number; remainingUsd: number | null; resetsAt: number };
+} {
+  const spent = dailySpentUsd(email, now);
+  const lim = deps.dailyBudgetUsd;
+  const next = new Date(localMidnight(now));
+  next.setDate(next.getDate() + 1);
+  return {
+    session: { limitUsd: deps.sessionBudgetUsd },
+    daily: { limitUsd: lim, spentUsd: spent, remainingUsd: lim == null ? null : Math.max(0, lim - spent), resetsAt: next.getTime() },
+  };
+}
 
 function dropToken(turnId: string): void {
   const jti = turnTokens.get(turnId);
@@ -513,6 +571,18 @@ export async function startTurn(
     );
   }
 
+  if (deps.dailyBudgetUsd != null) {
+    const spent = dailySpentUsd(s.owner_email);
+    if (spent >= deps.dailyBudgetUsd) {
+      throw new DailyBudgetError(
+        `daily agent budget reached ($${spent.toFixed(2)} of $${deps.dailyBudgetUsd.toFixed(2)}, AGENT_DAILY_BUDGET_USD) — resets at local midnight`,
+      );
+    }
+  }
+  if (isPrismProfile(s.profile) && !prismProfilesEnabled()) {
+    throw new ProfileUnavailableError(`profile ${s.profile} is disabled (AGENT_PRISM_PROFILES)`);
+  }
+
   const firstTurn = (q.countTurns.get(sessionId) as { n: number }).n === 0;
   const noteId = req.noteId ?? (firstTurn ? s.note_id : null);
   const turnId = randomUUID();
@@ -523,12 +593,13 @@ export async function startTurn(
   q.setSessionStatus.run("running", deps.now(), sessionId);
   const rollback = () => {
     dropToken(turnId);
+    dropPat(turnId);
     q.deleteTurn.run(turnId);
     if (getSession(sessionId)?.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
   };
 
   let note: { id: string; path: string | null; content: string } | null = null;
-  if (firstTurn && noteId) {
+  if (firstTurn && noteId && s.profile !== "skill") {
     let n: Note | null = null;
     try {
       n = await deps.vaultFor(s.vault_id).getNote(noteId);
@@ -586,6 +657,7 @@ export async function startTurn(
   const onEnd = (info: { code: number | null; error: string | null; cancelled: boolean }) => {
     handles.delete(turnId);
     dropToken(turnId);
+    dropPat(turnId);
     releaseUserSlot(email, turnId);
     // Archived while running: keep NOTHING (rows + CLI artifacts), no mirror.
     if (getSession(sessionId)?.status === "archived") {
@@ -613,6 +685,7 @@ export async function startTurn(
       if (result.costUsd > prevCost) q.setSessionCost.run(result.costUsd, deps.now(), sessionId);
     }
     q.turnEnd.run(status, info.code, error, turnCost, deps.now(), turnId);
+    if (turnCost != null && turnCost > 0) q.insertCost.run(turnId, email, turnCost, deps.now());
     if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
     record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
     notifyTurnEnd(sessionId, turnId, status); // WP3.3 push seam — fire-and-forget, ids only
@@ -625,11 +698,22 @@ export async function startTurn(
   const go = (): void => {
     const handle = enqueueRun({
       entry: runEntry,
+      // prism-* profiles: the per-run config points at THIS server's /mcp with a
+      // per-turn PAT minted at SPAWN time (never for a run cancelled while queued),
+      // revoked in onEnd. No vault token is ever written for these profiles.
+      mcpConfig: isPrismProfile(s.profile)
+        ? () => {
+            const m = deps.mintPrismToken({ email, vaultId: s.vault_id, scope: prismProfileScope(s.profile), turnId });
+            turnPats.set(turnId, m.id);
+            return prismMcpConfig(m.token, deps.prismPort());
+          }
+        : undefined,
       args: (mcpPath) =>
         buildClaudeArgs(prompt, mcpPath, {
           outputFormat: "stream-json",
           includePartial: true,
           session: { id: s.id, resume },
+          server: profileServer(s.profile),
           allowedTools: profileAllowedTools(s.profile),
           maxBudgetUsd: runnerBudgetUsd(),
         }),
@@ -695,6 +779,7 @@ export function cancelTurn(turnId: string): boolean {
   // No run handle: waiting on the user slot, mid-reservation, or a stale row —
   // close it out directly (a waiting entry is skipped when the slot frees).
   dropToken(turnId);
+  dropPat(turnId);
   q.turnEnd.run("cancelled", null, null, null, deps.now(), turnId);
   if (getSession(t.session_id)?.status === "running") q.setSessionStatus.run("idle", deps.now(), t.session_id);
   record(t.session_id, turnId, { t: "status", status: "cancelled" });
@@ -719,6 +804,9 @@ export function archiveSession(sessionId: string): void {
  * with a persisted status event so a reconnecting client sees why.
  */
 export function bootSweepAgentSessions(): { interrupted: number } {
+  // Nothing survives a restart: any per-turn Prism PAT left live (crash mid-turn)
+  // is revoked now rather than waiting out its 3 h expiry.
+  revokeInternalPats(deps.now());
   const orphans = q.orphanTurns.all() as TurnRow[];
   for (const t of orphans) {
     q.turnEnd.run("interrupted", null, "server restarted during the turn", null, deps.now(), t.id);
@@ -750,6 +838,7 @@ const DAY_MS = 24 * 3600 * 1000;
 export function runAgentMaintenance(): { prunedEvents: number; wipedArchived: number; removedCliArtifacts: number } {
   const now = deps.now();
   const prunedEvents = q.pruneEvents.run(now - deps.eventsRetentionDays * DAY_MS).changes;
+  q.pruneCost.run(now - 60 * DAY_MS);
   const archived = q.archivedWithRows.all() as Array<{ id: string }>;
   for (const a of archived) deleteSessionRows(a.id);
   let removed = 0;
@@ -900,6 +989,7 @@ export function _resetAgentSessions(): void {
   userSlot.clear();
   userWaiting.clear();
   turnTokens.clear();
+  turnPats.clear();
   if (maintenanceTimer) clearInterval(maintenanceTimer);
   maintenanceTimer = null;
   deps = defaultDeps();

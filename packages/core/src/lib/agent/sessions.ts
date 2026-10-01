@@ -12,7 +12,18 @@
  * server code. Field names follow the wire format exactly (snake_case rows).
  */
 
-export type AgentProfile = "vault-ro" | "vault-rw";
+export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw";
+/** How the server's `claude` runner is billed: a subscription login reports an API-equivalent ESTIMATE. */
+export type AgentBilling = "subscription" | "api" | "unknown";
+
+/** `GET /api/agent/limits` (WP3.4): billing mode, budgets (server config, read-only here) and the selectable profiles. */
+export interface AgentLimits {
+  billing: AgentBilling;
+  session: { limitUsd: number | null };
+  daily: { limitUsd: number | null; spentUsd: number; remainingUsd: number | null; resetsAt: number };
+  profiles: AgentProfile[];
+  defaultProfile: AgentProfile;
+}
 export type AgentSessionStatus = "idle" | "running" | "archived";
 export type AgentTurnStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
 
@@ -126,6 +137,8 @@ export interface AgentClient {
   streamSession(sessionId: string, afterSeq: number, handlers: AgentStreamHandlers): () => void;
   cancelTurn(turnId: string): Promise<boolean>;
   archiveSession(sessionId: string): Promise<void>;
+  /** Billing mode + budgets + selectable profiles (WP3.4). Optional: older servers 404. */
+  getLimits?(): Promise<AgentLimits>;
   /** Cache scope (e.g. the active vault) so sessions of different vaults never share a query key. */
   scope?(): string;
 }

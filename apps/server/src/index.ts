@@ -13,6 +13,7 @@ import { reportRegistryTokens, startTokenExpiryWatch } from "./auth/vault-token"
 import { startWorker } from "./worker/scheduler";
 import { createApp } from "./app";
 import { bootSweepAgentSessions, startAgentMaintenance } from "./agent-sessions";
+import { startBillingProbe } from "./agent-billing";
 import { attachCollab } from "./collab";
 import { governanceIntegrityEnabled, reportGovernanceIntegrity } from "./governance-integrity";
 
@@ -25,6 +26,8 @@ assertConfig();
   if (interrupted > 0) console.log(`[agent] boot sweep: ${interrupted} in-flight turn(s) marked interrupted`);
   // Retention: old events, orphan CLI session artifacts — now, then daily.
   startAgentMaintenance();
+  // Billing mode (subscription vs API key) for cost labelling; skipped under test.
+  if (process.env.NODE_ENV !== "test") startBillingProbe();
 }
 
 const app = createApp();

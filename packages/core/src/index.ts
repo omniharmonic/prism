@@ -115,12 +115,13 @@ export { serverFetch, setServerFetch, type ServerFetch } from "./lib/transport/s
 export { streamSSE, SSEParser, type SSEMessage, type StreamSSEOptions } from "./lib/transport/sse";
 
 // Agent client seam (Arch v2 WP3.2): durable server-side agent sessions.
-export { AgentClientProvider, useAgentClient, useAgentAvailable, useAgentAvailability, agentKeys, type AgentAvailability } from "./data/AgentClientContext";
+export { AgentClientProvider, useAgentClient, useAgentAvailable, useAgentAvailability, useAgentLimits, agentKeys, type AgentAvailability } from "./data/AgentClientContext";
 export { InvalidationSourceProvider, InvalidationSubscriber } from "./data/InvalidationContext";
 export { createInvalidator, parseInvalidationEvent, EXTRA_LIVE_KEYS, type InvalidationEvent, type InvalidationSource, type InvalidationHandlers } from "./lib/events/invalidation";
 export { useLivePollMs, isEventChannelLive, LIVE_FALLBACK_MS } from "./lib/events/channelStatus";
 export { createHttpAgentClient, type HttpAgentClientOptions, type AgentFetch } from "./lib/agent/httpAgentClient";
 export { AgentApiError, isTerminalTurn } from "./lib/agent/sessions";
+export { formatAgentCost, formatAgentBudget, fmtUsd, PROFILE_LABELS, SUBSCRIPTION_COST_TOOLTIP } from "./lib/agent/cost";
 export type {
   AgentClient,
   AgentSession,
@@ -131,6 +132,8 @@ export type {
   AgentStreamMessage,
   AgentStreamHandlers,
   AgentProfile,
+  AgentBilling,
+  AgentLimits,
   AgentTurnStatus,
   CreateSessionParams,
 } from "./lib/agent/sessions";

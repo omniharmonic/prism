@@ -103,6 +103,11 @@ const MAX_OUTPUT = 2_000_000; // cap captured output so a runaway can't OOM the 
  *  `mcp__parachute-vault__<tool>`; the allowlist is the server-level rule. */
 export const VAULT_MCP_NAME = "parachute-vault";
 export const VAULT_MCP_ALLOW = `mcp__${VAULT_MCP_NAME}`;
+/** The Prism-MCP server name (prism-* profiles, WP3.4): the server's OWN /mcp. */
+export const PRISM_MCP_NAME = "prism";
+export const PRISM_MCP_ALLOW = `mcp__${PRISM_MCP_NAME}`;
+/** Which MCP server a run's allowlist may name. One server per run, never both. */
+export type McpServerKind = "vault" | "prism";
 
 // ── public: argv + MCP config (pure, unit-testable) ──────────────────────────
 
@@ -122,18 +127,24 @@ export interface ArgOptions {
   /** Tool allowlist (default: the whole vault MCP server). Every entry must be
    *  the vault server or one of its tools — anything else is refused. */
   allowedTools?: readonly string[];
+  /** Which server the allowlist is for (default "vault"). "prism" = the server's
+   *  own /mcp (prism-* profiles); entries must then be that server's tools. */
+  server?: McpServerKind;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VAULT_TOOL_RE = new RegExp(`^${VAULT_MCP_ALLOW}(__[a-z][a-z0-9-]*)?$`);
+const PRISM_TOOL_RE = new RegExp(`^${PRISM_MCP_ALLOW}(__[a-z][a-z0-9_]*)?$`);
 
 /** The fixed claude argv. The prompt is the LAST arg after `--`; everything else
  *  is a constant template — the client never injects flags. */
 export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: ArgOptions = {}): string[] {
   const fmt = opts.outputFormat ?? "text";
-  const allowed = opts.allowedTools ?? [VAULT_MCP_ALLOW];
-  if (allowed.length === 0 || allowed.some((t) => !VAULT_TOOL_RE.test(t))) {
-    throw new Error("allowedTools may only name the vault MCP server or its tools");
+  const server = opts.server ?? "vault";
+  const allowed = opts.allowedTools ?? [server === "prism" ? PRISM_MCP_ALLOW : VAULT_MCP_ALLOW];
+  const toolRe = server === "prism" ? PRISM_TOOL_RE : VAULT_TOOL_RE;
+  if (allowed.length === 0 || allowed.some((t) => !toolRe.test(t))) {
+    throw new Error(`allowedTools may only name the ${server} MCP server or its tools`);
   }
   if (opts.session && !UUID_RE.test(opts.session.id)) throw new Error("session id must be a uuid");
   const persistence = opts.session
@@ -554,6 +565,10 @@ export interface RunEndInfo {
 
 export interface RunSpec {
   entry: VaultEntry;
+  /** Override the per-run MCP config (default: the vault MCP for `entry`). Called
+   *  at SPAWN time, so a credential minted inside is never created for a run that
+   *  is cancelled while queued. */
+  mcpConfig?: () => object;
   /** Build the argv, given the per-run 0600 MCP config path. */
   args: (mcpConfigPath: string) => string[];
   spawner?: Spawner;
@@ -729,7 +744,7 @@ function launch(run: Run): void {
     // 0700 dir from mkdtemp + 0600 file: only this server user can read the token.
     mcpDir = mkdtempSync(join(tmpdir(), "prism-agent-"));
     const mcpPath = join(mcpDir, "mcp.json");
-    writeFileSync(mcpPath, JSON.stringify(vaultMcpConfig(spec.entry)), { mode: 0o600 });
+    writeFileSync(mcpPath, JSON.stringify(spec.mcpConfig ? spec.mcpConfig() : vaultMcpConfig(spec.entry)), { mode: 0o600 });
     const claude = cfg.claudePath();
     const args = spec.args(mcpPath);
     child = (spec.spawner ?? cfg.spawner)(claude, args, { cwd, env: dispatchEnv(process.env, claude) });
@@ -784,6 +799,9 @@ export interface DispatchOptions {
   spawner?: Spawner;
   /** Server-internal (never from the route): see ArgOptions.outputFormat. */
   outputFormat?: OutputFormat;
+  /** Server-internal: restrict the run to these vault tools (the `skill` profile).
+   *  Default: the whole vault MCP server (legacy one-shot behaviour). */
+  allowedTools?: readonly string[];
 }
 
 const dispatches = new Map<string, Dispatch>();
@@ -859,7 +877,7 @@ export function startDispatch(
     h = enqueueRun({
       entry,
       spawner: opts.spawner,
-      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd }),
+      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd, allowedTools: opts.allowedTools }),
       onQueued: (reason) => {
         if (d.status !== "queued") return;
         d.queuedReason = reason;

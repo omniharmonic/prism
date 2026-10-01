@@ -23,6 +23,10 @@ import {
   type ConversationState,
 } from "../../../packages/core/src/lib/agent/sessionReducer.ts";
 import { streamSessionEvents } from "../../../packages/core/src/lib/agent/httpAgentClient.ts";
+import { formatAgentCost, formatAgentBudget, SUBSCRIPTION_COST_TOOLTIP, PROFILE_LABELS, isReadOnlyProfile } from "../../../packages/core/src/lib/agent/cost.ts";
+import { createHttpAgentClient } from "../../../packages/core/src/lib/agent/httpAgentClient.ts";
+import { agentErrorText } from "../../../packages/core/src/lib/agent/useAgentConversation.ts";
+import { AgentApiError } from "../../../packages/core/src/lib/agent/sessions.ts";
 import { streamSSE } from "../../../packages/core/src/lib/transport/sse.ts";
 import type { AgentSessionDetail, AgentStreamMessage, AgentTurn } from "../../../packages/core/src/lib/agent/sessions.ts";
 
@@ -242,6 +246,41 @@ const sse = (path: string, o: Parameters<typeof streamSSE>[1]) => streamSSE(`${o
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(closes, 1);
   ok("stream: unsubscribe is idempotent");
+}
+
+{
+  // WP3.4: cost labelling. A subscription's figure is an API-equivalent ESTIMATE.
+  assert.deepEqual(formatAgentCost(0.0077, "subscription"), { text: "≈$0.0077 API-equiv.", title: SUBSCRIPTION_COST_TOOLTIP });
+  assert.deepEqual(formatAgentCost(0.02, "subscription"), { text: "≈$0.02 API-equiv.", title: SUBSCRIPTION_COST_TOOLTIP });
+  assert.deepEqual(formatAgentCost(0.02, "api"), { text: "$0.02" }, "api key: a real charge, plain");
+  assert.equal(formatAgentCost(0.02, "unknown")!.text, "≈$0.02 API-equiv.", "unknown is labelled like a subscription");
+  assert.equal(formatAgentCost(0.02, undefined)!.text, "≈$0.02 API-equiv.", "older server (no limits): labelled as an estimate");
+  assert.equal(formatAgentCost(undefined, "api"), null);
+  assert.equal(formatAgentCost(NaN, "api"), null);
+  assert.match(SUBSCRIPTION_COST_TOOLTIP, /Claude subscription.*API prices.*not billed/);
+  assert.equal(formatAgentBudget(25, "subscription").text, "≈$25.00 API-equiv.");
+  assert.equal(formatAgentBudget(25, "api").text, "$25.00");
+  ok("cost: subscription = '≈$X API-equiv.' + tooltip; api = plain $X");
+
+  assert.equal(PROFILE_LABELS["prism-ro"].label, "Prism read-only");
+  assert.ok(isReadOnlyProfile("vault-ro") && isReadOnlyProfile("prism-ro") && !isReadOnlyProfile("prism-rw") && !isReadOnlyProfile("vault-rw"));
+  ok("profiles: labels + read-only classification");
+
+  assert.match(agentErrorText(new AgentApiError(409, "daily_budget_exceeded", "x")), /today's agent budget/);
+  assert.match(agentErrorText(new AgentApiError(409, "profile_unavailable", "x")), /turned off/);
+  ok("errors: daily_budget_exceeded / profile_unavailable copy");
+
+  const seen: string[] = [];
+  const limits = { billing: "subscription", session: { limitUsd: 10 }, daily: { limitUsd: 25, spentUsd: 1, remainingUsd: 24, resetsAt: 1 }, profiles: ["vault-ro", "vault-rw"], defaultProfile: "vault-ro" };
+  const client = createHttpAgentClient({
+    fetch: async (path) => {
+      seen.push(path);
+      return new Response(JSON.stringify(limits), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  assert.deepEqual(await client.getLimits!(), limits);
+  assert.deepEqual(seen, ["/api/agent/limits"]);
+  ok("client: getLimits → GET /api/agent/limits");
 }
 
 server.close();
