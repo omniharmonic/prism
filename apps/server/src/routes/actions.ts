@@ -105,7 +105,10 @@ type OwnerActor = Extract<Actor, { kind: "user" }>;
 const isServerOwner = (a: Actor): a is OwnerActor => a.kind === "user" && a.email === config.ownerEmail;
 
 actionsApi.use("*", async (c, next) => {
-  if (!isServerOwner(resolveActor(c))) return c.json({ error: "forbidden" }, 403);
+  const actor = resolveActor(c);
+  if (!isServerOwner(actor)) return c.json({ error: "forbidden" }, 403);
+  const expectedActor = c.req.header("X-Prism-Write-Actor");
+  if (expectedActor && expectedActor !== `user:${actor.email}`) return c.json({ error: "write_actor_changed" }, 409);
   await next();
 });
 

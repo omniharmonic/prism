@@ -9,13 +9,14 @@
  */
 import { createHttpLiveActionsClient } from "@prism/core";
 import { serverFetch } from "../transport";
-import { contextHeaders } from "../config";
+import { contextHeaders, agentScope, getMe } from "../config";
 
 export const httpLiveActionsClient = createHttpLiveActionsClient({
   fetch: (path, init) => serverFetch(path, init),
-  headers: () => contextHeaders(),
-  scope: () => {
-    const h = contextHeaders();
-    return `${h["X-Prism-Workspace"] ?? ""}/${h["X-Prism-Vault"] ?? ""}`;
+  headers: () => {
+    if (!agentScope()) throw new Error("Reconnect to your workspace before using live actions.");
+    const me = getMe()!;
+    return { ...contextHeaders(), "X-Prism-Workspace": me.workspace!.id, "X-Prism-Vault": me.vaultId!, "X-Prism-Write-Actor": `user:${me.email}` };
   },
+  scope: () => agentScope() ?? "",
 });

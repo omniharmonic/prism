@@ -190,6 +190,16 @@ test("gate: anon, capability link, guest, member, admin, another vault-role owne
   assert.equal(auditRows().length, 0);
 });
 
+test("a pinned actor mismatch refuses every live action before side effects", async () => {
+  for (const [path, body] of ROUTES) {
+    const response = await post(path, body, { ...owner(), "X-Prism-Write-Actor": "user:other@example.test", "idempotency-key": freshKey() });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json() as { error: string }).error, "write_actor_changed");
+  }
+  assert.equal(sent.length + gogCalls.length + mxEvents.length + mboxCalls.length, 0);
+  assert.equal(auditRows().length, 0);
+});
+
 test("flags default off → 503 actions_disabled for the owner (nothing sent)", async () => {
   setCfg({ actionsEmailEnabled: false, actionsCalendarEnabled: false, actionsMatrixEnabled: false });
   for (const [p, b] of ROUTES) {

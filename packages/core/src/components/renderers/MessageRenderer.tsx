@@ -5,8 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bell, MessageSquare, Clock, Check, ChevronDown } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { matrixApi } from "../../lib/matrix/client";
-import { vaultApi } from "../../lib/parachute/client";
-import { useLiveActions } from "../../data/LiveActionsContext";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useLiveActions, useLiveActionsClient } from "../../data/LiveActionsContext";
 import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
 import { PlatformBadge } from "../comms/PlatformBadge";
@@ -19,6 +19,13 @@ const TRIAGE_OPTIONS = [
 ] as const;
 
 export default function MessageRenderer({ note }: RendererProps) {
+  const actionClient = useLiveActionsClient();
+  const scope = actionClient?.scope?.() || null;
+  return <ScopedMessageRenderer key={JSON.stringify([scope, note.id])} note={note} scope={scope} />;
+}
+
+function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { scope: string | null }) {
+  const vault = useVaultClient();
   const meta = note.metadata as Record<string, unknown> | null;
   const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || "";
   const platform = (meta?.platform as string) || "matrix";
@@ -57,9 +64,9 @@ export default function MessageRenderer({ note }: RendererProps) {
       const oldTags = ["urgent", "action-required", "informational", "social", "handled"];
       // Add the new value before removing old values; a partial failure leaves
       // a visible classification to reconcile, not a silently untagged thread.
-      await vaultApi.addTags(note.id, [newTag]);
+      await vault.addTags(note.id, [newTag]);
       const toRemove = (note.tags || []).filter((tag) => oldTags.includes(tag) && tag !== newTag);
-      if (toRemove.length) await vaultApi.removeTags(note.id, toRemove);
+      if (toRemove.length) await vault.removeTags(note.id, toRemove);
       setTriageStatus(newTag);
       setShowTriageMenu(false);
       setSent(false);
@@ -69,12 +76,12 @@ export default function MessageRenderer({ note }: RendererProps) {
       setTriagePending(false);
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
     }
-  }, [note.id, note.tags, queryClient, triagePending]);
+  }, [note.id, note.tags, queryClient, triagePending, vault]);
 
   // Live Matrix fetch is best-effort. No retries (avoids the "load forever" symptom
   // when Synapse is offline or slow), and we never gate render on it.
   const { data: liveData } = useQuery({
-    queryKey: ["matrix", "messages", roomId],
+    queryKey: ["matrix", "messages", scope, roomId],
     queryFn: () => matrixApi.getMessages(roomId, 50),
     enabled: !!roomId,
     retry: false,
@@ -84,12 +91,15 @@ export default function MessageRenderer({ note }: RendererProps) {
   // Web/native: send through the server (WP1.5 live actions) when it offers
   // Matrix actions; desktop (no provider) keeps its Tauri command.
   const live = useLiveActions("matrix");
-  const handleSend = useCallback(async (body: string) => {
+  const handleSend = useCallback(async (body: string, requestId?: string) => {
     if (!roomId || (isWeb && !live)) throw new Error("Messaging is unavailable for this thread");
-    if (live) await live.matrixSend(roomId, body);
+    if (live) {
+      if (!scope || live.scope?.() !== scope) throw new Error("Workspace changed. Reopen this thread before sending.");
+      await live.matrixSend(roomId, body, { idempotencyKey: requestId });
+    }
     else await matrixApi.sendMessage(roomId, body);
-    queryClient.invalidateQueries({ queryKey: ["matrix", "messages", roomId] });
-  }, [roomId, queryClient, live, isWeb]);
+    queryClient.invalidateQueries({ queryKey: ["matrix", "messages", scope, roomId] });
+  }, [roomId, queryClient, live, isWeb, scope]);
 
   // Imported history has no reliable source IDs. Do not pretend a live tail
   // replaces or can be deduplicated against the complete saved transcript.
@@ -103,11 +113,11 @@ export default function MessageRenderer({ note }: RendererProps) {
     <div className="flex flex-col h-full min-h-0">
       {/* Header with triage status */}
       <div
-        className="flex items-center gap-2 px-4 py-2 flex-shrink-0"
+        className="flex flex-wrap items-center gap-2 px-4 py-2 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
         <PlatformBadge platform={platform} />
-        <span className="text-sm font-medium flex-1" style={{ color: "var(--text-primary)" }}>
+        <span className="text-sm font-medium min-w-0 flex-1 break-words" style={{ color: "var(--text-primary)", overflowWrap: "anywhere" }}>
           {note.path?.split("/").pop()?.replace(/-/g, " ") || "Chat"}
         </span>
 
@@ -159,8 +169,8 @@ export default function MessageRenderer({ note }: RendererProps) {
       <MessageThread messages={messages} />
       {sent && (triageStatus === "urgent" || triageStatus === "action-required") && <div className="px-4 py-2 text-xs">Reply sent. <button type="button" disabled={triagePending} className="underline" onClick={() => void handleTriageChange("handled")}>Mark handled</button></div>}
       {(!roomId || (isWeb && !live)) && <p className="px-4 py-2 text-xs" role="status">Replying is unavailable for this thread on this connection.</p>}
-      <MessageComposer disabled={!roomId || (isWeb && !live)} onSend={async (body) => {
-        await handleSend(body);
+      <MessageComposer draftScope={scope} draftKey={`matrix:${roomId || note.id}`} retrySafe={!!live} disabled={!roomId || (isWeb && !live)} onSend={async (body, options) => {
+        await handleSend(body, options.requestId);
         setSent(true);
         setView("live");
       }} />

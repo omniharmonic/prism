@@ -62,3 +62,75 @@ test("saved thread renders all lines and unavailable reply cannot clear a draft"
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeDisabled();
   await expect(page.getByText("Replying is unavailable for this thread on this connection.")).toBeVisible();
 });
+
+test("message drafts follow their account and destination through navigation and reload", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html");
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill("Alex's reply for Room A");
+  await page.getByRole("button", { name: "Room B", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await input.fill("A different room draft");
+  await page.getByRole("button", { name: "Room A", exact: true }).click();
+  await expect(input).toHaveValue("Alex's reply for Room A");
+  await page.getByRole("button", { name: "Morgan account", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await page.reload();
+  await expect(input).toHaveValue("Alex's reply for Room A");
+  expect(await page.evaluate(() => (window as any).prismMessagesFixture.attempts)).toBe(0);
+});
+
+test("a lost message acknowledgement reuses its original request after reload", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html?lost");
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill("Send this message once");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("lost response after acceptance");
+  await page.reload();
+  await expect(input).toHaveValue("Send this message once");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(input).toHaveValue("");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-message-accepted") ?? "[]"))).toHaveLength(1);
+});
+
+test("expired message receipts cannot silently outlive server deduplication", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html?lost");
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill("An old unconfirmed send");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("lost response after acceptance");
+  await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((key) => key.startsWith("prism:message-request:"))!;
+    const receipt = JSON.parse(localStorage.getItem(key)!);
+    receipt.createdAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    localStorage.setItem(key, JSON.stringify(receipt));
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("too old to retry safely");
+  await expect(input).toHaveValue("An old unconfirmed send");
+  expect(await page.evaluate(() => (window as any).prismMessagesFixture.attempts)).toBe(0);
+});
+
+test("live action retries and late acknowledgements cannot cross audiences", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html");
+  const result = await page.evaluate(async () => {
+    let scope = "first-owner-vault";
+    let attempts = 0;
+    const factory = (window as any).prismActionsFactory;
+    const client = factory({ scope: () => scope, fetch: async () => { attempts++; scope = "second-owner-vault"; throw new TypeError("Connection dropped"); } });
+    let retryError = "";
+    try { await client.matrixSend("room-a", "private draft"); } catch (error) { retryError = (error as Error).message; }
+    scope = "first-owner-vault";
+    const late = factory({ scope: () => scope, fetch: async () => ({ ok: true, json: async () => { scope = "second-owner-vault"; return { eventId: "accepted" }; } }) });
+    let lateError = "";
+    try { await late.matrixSend("room-a", "private draft"); } catch (error) { lateError = (error as Error).message; }
+    const malformed = factory({ fetch: async () => ({ ok: true, json: async () => { throw new SyntaxError("Incomplete acknowledgement"); } }) });
+    let malformedError = "";
+    try { await malformed.matrixSend("room-a", "private draft"); } catch (error) { malformedError = (error as Error).message; }
+    return { attempts, retryError, lateError, malformedError };
+  });
+  expect(result.attempts).toBe(1);
+  expect(result.retryError).toContain("Workspace changed");
+  expect(result.lateError).toContain("Workspace changed");
+  expect(result.malformedError).toContain("Incomplete acknowledgement");
+});
