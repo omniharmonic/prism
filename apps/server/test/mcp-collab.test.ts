@@ -447,7 +447,8 @@ test("comments: add (anchored) → reply → resolve round trip, visible to an e
 test("suggest_edit: deletion + insertion marks attributed to the actor, captured in the review queue", { timeout: 20000 }, async () => {
   const hd = await human("d1");
   const sg = await connectMcp(SUGGESTER);
-  must(await call(sg, "prism_suggest_edit", { id: "d1", find: "beta", replace: "gamma" }));
+  const proposed = must(await call(sg, "prism_suggest_edit", { id: "d1", find: "beta", replace: "gamma" }));
+  assert.match(proposed.suggestion_id, /^[a-f0-9-]{36}$/);
   await settle();
   const pm = yXmlFragmentToProseMirrorRootNode(hd.getXmlFragment("default"), collabSchema());
   const marks: Array<[string, string, string]> = [];
@@ -459,6 +460,8 @@ test("suggest_edit: deletion + insertion marks attributed to the actor, captured
     ["insertion", "gamma", `${SUGGESTER} (agent)`],
   ]);
   const html = fv.notes.get("d1")!.content;
+  assert.equal((html.match(new RegExp(`data-suggestion-id="${proposed.suggestion_id}"`, "g")) ?? []).length, 2);
+  assert.match(html, /data-actor-id="suggester@test.local"/);
   assert.match(html, /data-suggestion="delete"[^>]*data-user="suggester@test\.local \(agent\)"/);
   const queued = suggestionsForNote("d1").filter((s) => s.status === "pending");
   assert.deepEqual(queued.map((s) => s.author), [`${SUGGESTER} (agent)`], "the owner's review queue has it");

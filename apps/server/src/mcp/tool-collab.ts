@@ -143,7 +143,7 @@ const originOf = (ctx: ToolContext) => `mcp:${ctx.principal.actor.email}`;
 function authorOf(ctx: ToolContext): CollabAuthor {
   const email = ctx.principal.actor.email;
   const name = getUser(email)?.name?.trim() || email;
-  return { name: `${name} (agent)`, color: colorFor(email) };
+  return { name: `${name} (agent)`, color: colorFor(email), actorId: email, turnId: ctx.principal.agentTurnId };
 }
 
 /**
@@ -360,6 +360,7 @@ export const suggestEditTool = defineTool({
     const t = await target(ctx, id, "suggest");
     requireDocument(t);
     const who = authorOf(ctx);
+    let suggestionId: string | undefined;
     await withDoc(ctx, t.docName, (doc) => {
       let r;
       try {
@@ -368,8 +369,9 @@ export const suggestEditTool = defineTool({
         opError(e);
       }
       if (!r) throw new ToolError("invalid_request", "`find` was not found in the document (it must match exactly, within one paragraph)");
+      suggestionId = r.suggestionId;
     });
-    return { ok: true, id: t.note.id, suggested_by: who.name };
+    return { ok: true, id: t.note.id, suggestion_id: suggestionId, suggested_by: who.name };
   },
 });
 

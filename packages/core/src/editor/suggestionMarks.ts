@@ -12,11 +12,25 @@ import { Mark } from "@tiptap/core";
  * format, mirrored in renderHTML.
  */
 
+/** Optional provenance; legacy human marks remain readable with null IDs. */
+const identityAttributes = () => Object.fromEntries(
+  [["suggestionId", "data-suggestion-id"], ["actorId", "data-actor-id"], ["turnId", "data-turn-id"]].map(([name, attribute]) => [name!, {
+    default: null,
+    parseHTML: (element: { getAttribute(name: string): string | null }) => element.getAttribute(attribute!) || null,
+  }]),
+);
+const identityHtml = (attrs: Record<string, unknown>) => ({
+  ...(attrs.suggestionId ? { "data-suggestion-id": attrs.suggestionId } : {}),
+  ...(attrs.actorId ? { "data-actor-id": attrs.actorId } : {}),
+  ...(attrs.turnId ? { "data-turn-id": attrs.turnId } : {}),
+});
+
 export const InsertionMark = Mark.create({
   name: "insertion",
   inclusive: true,
   addAttributes() {
     return {
+      ...identityAttributes(),
       user: { default: null, parseHTML: (el: { getAttribute(name: string): string | null }) => el.getAttribute("data-user") || null },
       color: { default: "#22c55e", parseHTML: (el: { getAttribute(name: string): string | null }) => el.getAttribute("data-color") || "#22c55e" },
     };
@@ -32,6 +46,7 @@ export const InsertionMark = Mark.create({
         "data-suggestion": "insert",
         "data-user": mark.attrs.user ?? "",
         "data-color": color,
+        ...identityHtml(mark.attrs),
         style: `color:${color};text-decoration:underline;text-decoration-color:${color};`,
       },
       0,
@@ -44,6 +59,7 @@ export const DeletionMark = Mark.create({
   inclusive: true,
   addAttributes() {
     return {
+      ...identityAttributes(),
       user: { default: null, parseHTML: (el: { getAttribute(name: string): string | null }) => el.getAttribute("data-user") || null },
       color: { default: "#ef4444", parseHTML: (el: { getAttribute(name: string): string | null }) => el.getAttribute("data-color") || "#ef4444" },
     };
@@ -59,6 +75,7 @@ export const DeletionMark = Mark.create({
         "data-suggestion": "delete",
         "data-user": mark.attrs.user ?? "",
         "data-color": color,
+        ...identityHtml(mark.attrs),
         style: `color:${color};text-decoration:line-through;text-decoration-color:${color};`,
       },
       0,

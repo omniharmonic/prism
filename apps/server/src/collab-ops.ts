@@ -23,6 +23,7 @@
  *  - SHEET RANGES are A1 ranges over the Y.Array<Y.Array<string>> rows, written
  *    per cell with the client's own delete+insert idiom (CollabSpreadsheet).
  */
+import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import type { Node as PMNode, Mark as PMMark } from "@tiptap/pm/model";
 import { Transform } from "@tiptap/pm/transform";
@@ -347,6 +348,8 @@ export function colorFor(seed: string): string {
 
 /** Who an MCP write is attributed to, in the editor's own vocabulary. */
 export interface CollabAuthor {
+  actorId?: string;
+  turnId?: string;
   /** Display label — the account's name (or email) + " (agent)". */
   name: string;
   color: string;
@@ -475,7 +478,7 @@ export function setThreadResolved(ydoc: Y.Doc, threadId: string, resolved: boole
  * `find` gets a `deletion` mark and `replace` is inserted right after it with an
  * `insertion` mark — both attributed to `who`. Null if `find` is not found.
  */
-export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: CollabAuthor, origin: string): { from: number; to: number } | null {
+export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: CollabAuthor, origin: string): { from: number; to: number; suggestionId: string } | null {
   const schema = collabSchema();
   const { doc } = initProseMirrorDoc(ydoc.getXmlFragment(FIELD), schema);
   const matches = findTextRanges(doc, find);
@@ -487,7 +490,8 @@ export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: 
     if (node.marks.some((mark) => mark.type.name === "insertion" || mark.type.name === "deletion")) overlaps = true;
   });
   if (overlaps) throw new CollabConflictError("This passage already has a pending suggestion. Review it before proposing another change here.");
-  const attrs = { user: who.name, color: who.color };
+  const suggestionId = randomUUID();
+  const attrs = { user: who.name, color: who.color, suggestionId, actorId: who.actorId ?? null, turnId: who.turnId ?? null };
   ydoc.transact(() => {
     editFragment(ydoc, (d) => {
       const tr = new Transform(d);
@@ -501,5 +505,5 @@ export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: 
       return tr.doc;
     });
   }, origin);
-  return range;
+  return { ...range, suggestionId };
 }
