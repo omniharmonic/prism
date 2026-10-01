@@ -311,3 +311,34 @@ test("GET /api/vaults: a capability link is forbidden (no workspace identity)", 
   const res = await vaultsRoute.request("/vaults", { headers: { authorization: `Capability ${tok}` } });
   assert.equal(res.status, 403);
 });
+
+// ── PUT /acl/vaults/:id/token — write-only rotation (docs/credentials.md) ────
+test("token rotation: server-owner only, probes the NEW token, stores it, never echoes either token", async () => {
+  addVaultEntry({ id: "extra", label: "Extra", url: "http://vault.test", vault: "default", token: "old-token" });
+  const put = (body: unknown, cookie?: string) =>
+    acl.request("/vaults/extra/token", { method: "PUT", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+
+  assert.equal((await put({ token: "new-token" })).status, 403, "anon");
+  setMembership("primary", "admin@x.co", "admin", OWNER);
+  assert.equal((await put({ token: "new-token" }, sessionCookie(makeSession("admin@x.co")))).status, 403, "vault admin");
+  assert.equal(getVaultEntry("extra")!.token, "old-token");
+
+  assert.equal((await put({}, ownerCookie())).status, 400, "token required");
+  const ok = await put({ token: "new-token" }, ownerCookie());
+  assert.equal(ok.status, 200);
+  const text = await ok.text();
+  assert.ok(!text.includes("new-token") && !text.includes("old-token"), "no token material in the response");
+  assert.equal(getVaultEntry("extra")!.token, "new-token");
+  assert.ok(fv.calls.some((c) => c.path === "/vault/default/api/tags" && c.authorization === "Bearer new-token"), "probed with the new token");
+});
+
+test("token rotation: a token the vault doesn't accept is refused (old one kept); env vaults and unknown ids refused", async () => {
+  addVaultEntry({ id: "gone", label: "Gone", url: "http://vault.test", vault: "no-such-vault", token: "old-token" });
+  const r = await ownerReq(acl, "/vaults/gone/token", { method: "PUT", body: JSON.stringify({ token: "new-token" }) });
+  assert.equal(r.status, 400);
+  assert.equal(getVaultEntry("gone")!.token, "old-token");
+  const env = await ownerReq(acl, "/vaults/primary/token", { method: "PUT", body: JSON.stringify({ token: "x" }) });
+  assert.equal(env.status, 400);
+  assert.equal(((await env.json()) as { error: string }).error, "env_configured");
+  assert.equal((await ownerReq(acl, "/vaults/nope/token", { method: "PUT", body: JSON.stringify({ token: "x" }) })).status, 404);
+});

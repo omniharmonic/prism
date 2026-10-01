@@ -87,6 +87,7 @@
  * `GET /acl/workers/proton/intents[?verify=1]`. This WP never deletes anything.
  */
 import crypto from "node:crypto";
+import net from "node:net";
 import tls from "node:tls";
 import type { IfExists, Note, NoteLinkInput } from "../parachute";
 import { vaultClient } from "../parachute";
@@ -116,6 +117,11 @@ export interface ProtonCredential {
 
 export const isLoopbackHost = (h: string): boolean => ["127.0.0.1", "::1", "localhost"].includes(h.trim().toLowerCase());
 export const normalizeFingerprint = (s: string): string => s.replace(/:/g, "").trim().toLowerCase();
+/** The pin format: lowercase hex SHA-256 of the peer's DER certificate (the
+ *  script's `certFingerprint`). ONE helper for the login-time pin check and the
+ *  owner-driven detect below, so the two can never disagree. */
+export const certFingerprintOf = (raw: Buffer | undefined | null): string =>
+  raw && raw.length ? crypto.createHash("sha256").update(raw).digest("hex") : "";
 
 /**
  * Validate a credential object. Throws a message that never contains the
@@ -146,6 +152,126 @@ export function scrubProtonError(msg: string, cred?: Pick<ProtonCredential, "pas
   s = s.slice(0, 4000);
   s = s.replace(/vault\/messages\/email\/[^\s"'`,)]*/g, "<email-note>");
   return s.replace(/\b[A-Za-z0-9+/_-]{24,}={0,2}/g, "[redacted]").slice(0, 300);
+}
+
+// ── certificate detection (owner-driven, deliberate TOFU on loopback) ───────
+
+export interface DetectedBridgeCert {
+  /** Same format as the stored pin (`certFingerprintOf`). */
+  certSha256: string;
+  subject?: string;
+  issuer?: string;
+  validFrom?: string;
+  validTo?: string;
+}
+
+export class BridgeCertDetectError extends Error {
+  constructor(message: string, readonly code: "bad_request" | "unreachable" | "no_starttls" | "tls_failed" | "timeout") {
+    super(message);
+  }
+}
+
+const dn = (o: unknown): string | undefined => {
+  if (!o || typeof o !== "object") return undefined;
+  const s = Object.entries(o as Record<string, unknown>)
+    .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("+") : String(v)}`)
+    .join(", ");
+  return s ? s.slice(0, 200) : undefined;
+};
+
+/**
+ * Read the certificate a LOOPBACK IMAP listener (Proton Bridge) presents, for
+ * the owner to confirm and pin. It speaks only what TLS needs: wait for the
+ * greeting, send `A1 STARTTLS` (starttls mode — nothing at all in tls mode),
+ * complete the handshake, read the peer certificate, and destroy the socket. No
+ * CAPABILITY, no LOGIN/AUTHENTICATE, and no credential is ever loaded or sent —
+ * this function never sees one. Non-loopback hosts are refused before any socket
+ * is opened, so it can't be pointed at the network (no SSRF / port scan beyond
+ * the box). CA validation is off on purpose: Bridge's cert is self-signed, and
+ * the trust decision is the owner's explicit confirmation of the fingerprint
+ * (trust-on-first-use, but deliberate and loopback-only; the worker itself still
+ * never trusts anything it hasn't been given as a pin).
+ */
+export function detectBridgeCert(opts: { host?: unknown; port?: unknown; security?: unknown; timeoutMs?: number }): Promise<DetectedBridgeCert> {
+  const host = typeof opts.host === "string" && opts.host.trim() ? opts.host.trim().toLowerCase() : "127.0.0.1";
+  if (!isLoopbackHost(host)) return Promise.reject(new BridgeCertDetectError("host must be a loopback address (127.0.0.1, ::1 or localhost)", "bad_request"));
+  const port = opts.port === undefined || opts.port === null || opts.port === "" ? 1143 : Number(opts.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.reject(new BridgeCertDetectError("port must be an integer 1-65535", "bad_request"));
+  const security = opts.security === undefined || opts.security === null || opts.security === "" ? "starttls" : opts.security;
+  if (security !== "starttls" && security !== "tls") return Promise.reject(new BridgeCertDetectError('security must be "starttls" or "tls"', "bad_request"));
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+
+  return new Promise<DetectedBridgeCert>((resolve, reject) => {
+    let done = false;
+    const sockets: net.Socket[] = [];
+    const finish = (err: BridgeCertDetectError | null, val?: DetectedBridgeCert) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      // Destroy only the OUTERMOST socket (a TLS wrapper owns the raw one), and
+      // not from inside its own event callback — tearing down a TLSWrap and its
+      // underlying socket synchronously inside secureConnect can crash Node.
+      const outer = sockets[sockets.length - 1];
+      setImmediate(() => outer?.destroy());
+      if (err) reject(err);
+      else resolve(val!);
+    };
+    const timer = setTimeout(() => finish(new BridgeCertDetectError(`no TLS certificate from ${host}:${port} within ${Math.round(timeoutMs / 1000)} s`, "timeout")), timeoutMs);
+
+    const onSecure = (t: tls.TLSSocket) => () => {
+      const cert = t.getPeerCertificate();
+      const certSha256 = certFingerprintOf(cert?.raw);
+      if (!certSha256) return finish(new BridgeCertDetectError("the listener presented no certificate", "tls_failed"));
+      finish(null, { certSha256, subject: dn(cert.subject), issuer: dn(cert.issuer), validFrom: cert.valid_from || undefined, validTo: cert.valid_to || undefined });
+    };
+    const startTls = (socket?: net.Socket) => {
+      // Self-signed loopback cert: we only READ it; nothing is sent over this channel.
+      const t = socket
+        ? tls.connect({ socket, rejectUnauthorized: false })
+        : tls.connect({ host, port, rejectUnauthorized: false });
+      sockets.push(t);
+      t.once("secureConnect", onSecure(t));
+      t.on("error", (e) => finish(new BridgeCertDetectError(`TLS handshake with ${host}:${port} failed (${(e as NodeJS.ErrnoException).code ?? e.message})`, socket ? "tls_failed" : "unreachable")));
+    };
+
+    if (security === "tls") return startTls();
+
+    const sock = net.connect({ host, port });
+    sockets.push(sock);
+    sock.on("error", (e) => finish(new BridgeCertDetectError(`cannot connect to ${host}:${port} (${(e as NodeJS.ErrnoException).code ?? e.message})`, "unreachable")));
+    let buf = "";
+    let stage: "greeting" | "starttls" = "greeting";
+    const onData = (d: Buffer) => {
+      buf += d.toString("latin1");
+      if (buf.length > 8192) return finish(new BridgeCertDetectError("the listener does not speak IMAP (oversized greeting)", "no_starttls"));
+      let i: number;
+      while ((i = buf.indexOf("\r\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (stage === "greeting") {
+          if (/^\* OK\b/i.test(line)) {
+            stage = "starttls";
+            sock.write("A1 STARTTLS\r\n");
+          } else if (/^\* (BYE|PREAUTH)\b/i.test(line)) {
+            return finish(new BridgeCertDetectError("the listener refused the connection (no IMAP OK greeting)", "no_starttls"));
+          } else if (!line.startsWith("*")) {
+            return finish(new BridgeCertDetectError("the listener does not speak IMAP", "no_starttls"));
+          }
+        } else if (/^A1 /i.test(line)) {
+          if (!/^A1 OK\b/i.test(line)) return finish(new BridgeCertDetectError("the listener refused STARTTLS — try security \"tls\"", "no_starttls"));
+          sock.removeListener("data", onData);
+          sock.pause();
+          // Hand the socket to TLS outside its own 'data' callback.
+          setImmediate(() => {
+            if (!done) startTls(sock);
+          });
+          return;
+        }
+      }
+    };
+    sock.on("data", onData);
+    sock.once("end", () => finish(new BridgeCertDetectError(`${host}:${port} closed the connection before TLS`, "no_starttls")));
+  });
 }
 
 // ── IMAP seam ────────────────────────────────────────────────────────────────
@@ -198,8 +324,7 @@ export function imapflowSource(cred: ProtonCredential, opts: { timeoutMs?: numbe
         async authenticate(): Promise<boolean> {
           const sock = (this as unknown as { socket?: unknown }).socket;
           if (!(sock instanceof tls.TLSSocket)) throw new Error("proton-bridge: connection is not TLS-protected — refusing to send credentials");
-          const raw = sock.getPeerCertificate()?.raw;
-          const seen = raw ? crypto.createHash("sha256").update(raw).digest("hex") : "";
+          const seen = certFingerprintOf(sock.getPeerCertificate()?.raw);
           if (seen !== cred.certSha256) {
             throw new Error(`proton-bridge: TLS certificate fingerprint mismatch (pinned ${cred.certSha256.slice(0, 16)}…, seen ${seen.slice(0, 16) || "none"}…) — refusing to log in`);
           }

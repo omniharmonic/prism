@@ -1001,3 +1001,80 @@ test("M3: a server without STARTTLS is refused before any credential is sent", {
     await stub.close();
   }
 });
+
+// ── detect-cert: owner-driven Bridge certificate read (docs/credentials.md) ──
+
+import { BridgeCertDetectError, certFingerprintOf, detectBridgeCert } from "../src/worker/proton";
+
+const detect = (body: Record<string, unknown>, cookie = ownerCookie()) =>
+  integrations.request("/proton-bridge/detect-cert", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify(body) });
+
+for (const security of ["starttls", "tls"] as const) {
+  test(`detect-cert ${security}: returns the pin the worker accepts; the listener receives no auth bytes and no credential`, { skip: TLS ? false : "openssl unavailable" }, async () => {
+    putCred(); // a stored credential exists — detect must never load or send it
+    const stub = await stubImap(security);
+    try {
+      const r = await detect({ host: "127.0.0.1", port: stub.port, security });
+      assert.equal(r.status, 200);
+      const body = (await r.json()) as { certSha256: string; subject?: string; validTo?: string };
+      assert.equal(body.certSha256, TLS!.sha, "same format + value as the pin the M3 tests log in with");
+      assert.match(body.subject ?? "", /CN=127\.0\.0\.1/);
+      assert.ok(body.validTo);
+      // Plaintext before STARTTLS = exactly the STARTTLS command; decrypted app
+      // data after the handshake = nothing at all (no CAPABILITY/LOGIN/LOGOUT).
+      assert.equal(stub.text(), security === "starttls" ? "A1 STARTTLS\r\n" : "");
+      assert.doesNotMatch(stub.text(), /LOGIN|AUTHENTICATE/i);
+      assert.ok(!stub.text().includes(SECRET_PW) && !stub.text().includes(ACCOUNT));
+    } finally {
+      await stub.close();
+    }
+    // …and the detected value is a valid pin for the real login path.
+    const stub2 = await stubImap(security);
+    try {
+      await assert.rejects(imapflowSource(tlsCred(stub2.port, security, TLS!.sha), { timeoutMs: 5000 }).connect(), /Bridge rejected the login/);
+    } finally {
+      await stub2.close();
+    }
+  });
+}
+
+test("detect-cert: non-loopback hosts are refused before any socket opens; bad port/security → 400", async () => {
+  for (const host of ["imap.example.test", "10.0.0.1", "192.168.1.10", "0.0.0.0"]) {
+    const r = await detect({ host, port: 1143 });
+    assert.equal(r.status, 400, host);
+    assert.equal(((await r.json()) as { error: string }).error, "bad_request");
+  }
+  assert.equal((await detect({ port: 70000 })).status, 400);
+  assert.equal((await detect({ security: "plain" })).status, 400);
+  await assert.rejects(detectBridgeCert({ host: "example.test" }), (e: BridgeCertDetectError) => e.code === "bad_request");
+});
+
+test("detect-cert: SERVER-owner only — a vault admin and anon get 403", async () => {
+  setMembership("primary", "admin@example.test", "admin", config.ownerEmail);
+  const r = await detect({ host: "127.0.0.1" }, sessionCookie(makeSession("admin@example.test")));
+  assert.equal(r.status, 403);
+  assert.equal((await integrations.request("/proton-bridge/detect-cert", { method: "POST" })).status, 403);
+});
+
+test("detect-cert: a listener without STARTTLS fails cleanly; a silent one times out", { skip: TLS ? false : "openssl unavailable" }, async () => {
+  const stub = await stubImap("no-starttls");
+  try {
+    await assert.rejects(detectBridgeCert({ port: stub.port, timeoutMs: 5000 }), (e: BridgeCertDetectError) => e.code === "no_starttls");
+    assert.equal(stub.text(), "A1 STARTTLS\r\n");
+  } finally {
+    await stub.close();
+  }
+  const silent = net.createServer(() => {});
+  await new Promise<void>((r) => silent.listen(0, "127.0.0.1", () => r()));
+  try {
+    const port = (silent.address() as net.AddressInfo).port;
+    await assert.rejects(detectBridgeCert({ port, timeoutMs: 300 }), (e: BridgeCertDetectError) => e.code === "timeout");
+  } finally {
+    silent.close();
+  }
+});
+
+test("certFingerprintOf: lowercase hex SHA-256 of the DER; empty → empty", { skip: TLS ? false : "openssl unavailable" }, () => {
+  assert.equal(certFingerprintOf(new crypto.X509Certificate(TLS!.cert).raw), TLS!.sha);
+  assert.equal(certFingerprintOf(undefined), "");
+});

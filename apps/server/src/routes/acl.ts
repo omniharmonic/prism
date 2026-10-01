@@ -62,6 +62,8 @@ import {
   getFederationEnabled,
   setFederationEnabled,
   addVaultEntry,
+  getVaultEntry,
+  updateVaultEntryToken,
   getVaultRegistry,
   removeVaultEntry,
   listMemberships,
@@ -391,6 +393,28 @@ acl.post("/vaults", async (c) => {
   }
 
   return c.json({ error: "bad_request", detail: "mode must be 'link' or 'create'" }, 400);
+});
+
+// Rotate an owner-ADDED vault's token (write-only: the old and new tokens are
+// never returned). SERVER-owner only — the token is a whole-vault credential.
+// Env-configured vaults (PARACHUTE_TOKEN / PRISM_VAULTS) are host config and are
+// rotated in .env, never from a browser (docs/credentials.md). The new token is
+// probed first, so a typo can't silently break every sync into that vault.
+acl.put("/vaults/:id/token", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  if (vaultRegistry.some((v) => v.id === id)) {
+    return c.json({ error: "env_configured", detail: "this vault's token comes from the server .env (PARACHUTE_TOKEN / PRISM_VAULTS); rotate it there and restart" }, 400);
+  }
+  const entry = getVaultEntry(id);
+  if (!entry) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({}) as { token?: unknown });
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  if (!token || token.length > 8192) return c.json({ error: "bad_request", detail: "token required" }, 400);
+  if (!(await probeVault(entry.url, entry.vault, token))) return c.json({ error: "unreachable", detail: "the vault did not accept this token" }, 400);
+  updateVaultEntryToken(id, token);
+  const [expiry] = tokenExpiries([{ id, vault: entry.vault, token }]);
+  return c.json({ ok: true, expiry });
 });
 
 // Remove an owner-ADDED vault. Env-configured vaults (e.g. "primary") are not in
@@ -1022,7 +1046,8 @@ acl.get("/server", async (c) => {
     tunnel: await tunnelStatus(),
     // Vault-token expiry per registry entry — dates + status only, never token
     // material. Registry tokens are ~90-day hub JWTs with no auto-renewal.
-    tokens: tokenExpiries(getVaultRegistry()),
+    // `rotatable` = owner-added (PUT /acl/vaults/:id/token); env vaults rotate in .env.
+    tokens: tokenExpiries(getVaultRegistry()).map((t) => ({ ...t, rotatable: !vaultRegistry.some((v) => v.id === t.id) })),
   });
 });
 
