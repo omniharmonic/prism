@@ -14,6 +14,7 @@ const notes: Note[] = [
 const writes: Array<Record<string, unknown>> = [];
 const controls = { rejectWrite: false };
 Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls });
+notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram" }, createdAt: date, updatedAt: date });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -48,6 +49,6 @@ await fetchMe();
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}>
-    <App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} />
+    <App skipOnboarding initialTab={location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />
   </VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

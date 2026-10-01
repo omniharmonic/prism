@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useIsWeb } from "../../data/Platform";
+import { parseLegacyThread } from "../../lib/messages/legacyThread";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bell, MessageSquare, Clock, Check, ChevronDown } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
@@ -8,7 +10,6 @@ import { useLiveActions } from "../../data/LiveActionsContext";
 import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
 import { PlatformBadge } from "../comms/PlatformBadge";
-import type { MatrixMessage } from "../../lib/matrix/types";
 
 const TRIAGE_OPTIONS = [
   { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)" },
@@ -17,34 +18,6 @@ const TRIAGE_OPTIONS = [
   { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)" },
 ] as const;
 
-// Parse the vault note's text content (lines like "[YYYY-MM-DD HH:MM] sender: body")
-// into MatrixMessage[]. The vault is the canonical source — Matrix is optional live data.
-const LINE_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s+([^:]+):\s(.*)$/;
-
-function parseThreadContent(content: string | null | undefined): MatrixMessage[] {
-  if (!content) return [];
-  const messages: MatrixMessage[] = [];
-  const lines = content.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const m = LINE_RE.exec(lines[i]);
-    if (!m) continue;
-    const [, timeStr, sender, body] = m;
-    const ts = Date.parse(timeStr.replace(" ", "T"));
-    messages.push({
-      event_id: `vault-${i}`,
-      sender,
-      sender_name: sender,
-      body,
-      msg_type: "m.text",
-      timestamp: Number.isNaN(ts) ? 0 : ts,
-      is_outgoing: false,
-      media_url: null,
-      media_info: null,
-    });
-  }
-  return messages;
-}
-
 export default function MessageRenderer({ note }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
   const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || "";
@@ -52,7 +25,13 @@ export default function MessageRenderer({ note }: RendererProps) {
   const queryClient = useQueryClient();
 
   // Vault content is the source of truth — parse it once for instant render.
-  const vaultMessages = useMemo(() => parseThreadContent(note.content), [note.content]);
+  const imported = useMemo(() => parseLegacyThread(note.content), [note.content]);
+  const vaultMessages = imported.messages;
+  const [view, setView] = useState<"saved" | "live">("saved");
+  const [triageError, setTriageError] = useState<string | null>(null);
+  const [triagePending, setTriagePending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const isWeb = useIsWeb();
 
   // Determine current triage status from tags
   const currentTriage = useMemo(() => {
@@ -68,19 +47,29 @@ export default function MessageRenderer({ note }: RendererProps) {
   const [triageStatus, setTriageStatus] = useState(currentTriage);
   const [showTriageMenu, setShowTriageMenu] = useState(false);
 
+  useEffect(() => setTriageStatus(currentTriage), [currentTriage]);
+
   const handleTriageChange = useCallback(async (newTag: string) => {
-    // Remove old triage tags, add new one
-    const oldTags = ["urgent", "action-required", "informational", "social", "handled"];
-    const currentTags = note.tags || [];
-    const tagsToRemove = currentTags.filter((t) => oldTags.includes(t));
-    if (tagsToRemove.length > 0) {
-      await vaultApi.removeTags(note.id, tagsToRemove);
+    if (triagePending) return;
+    setTriagePending(true);
+    setTriageError(null);
+    try {
+      const oldTags = ["urgent", "action-required", "informational", "social", "handled"];
+      // Add the new value before removing old values; a partial failure leaves
+      // a visible classification to reconcile, not a silently untagged thread.
+      await vaultApi.addTags(note.id, [newTag]);
+      const toRemove = (note.tags || []).filter((tag) => oldTags.includes(tag) && tag !== newTag);
+      if (toRemove.length) await vaultApi.removeTags(note.id, toRemove);
+      setTriageStatus(newTag);
+      setShowTriageMenu(false);
+      setSent(false);
+    } catch {
+      setTriageError("The status update was not confirmed. Refresh this thread before trying again.");
+    } finally {
+      setTriagePending(false);
+      void queryClient.invalidateQueries({ queryKey: ["vault"] });
     }
-    await vaultApi.addTags(note.id, [newTag]);
-    setTriageStatus(newTag);
-    setShowTriageMenu(false);
-    queryClient.invalidateQueries({ queryKey: ["vault"] });
-  }, [note.id, note.tags, queryClient]);
+  }, [note.id, note.tags, queryClient, triagePending]);
 
   // Live Matrix fetch is best-effort. No retries (avoids the "load forever" symptom
   // when Synapse is offline or slow), and we never gate render on it.
@@ -96,26 +85,22 @@ export default function MessageRenderer({ note }: RendererProps) {
   // Matrix actions; desktop (no provider) keeps its Tauri command.
   const live = useLiveActions("matrix");
   const handleSend = useCallback(async (body: string) => {
-    if (!roomId) return;
+    if (!roomId || (isWeb && !live)) throw new Error("Messaging is unavailable for this thread");
     if (live) await live.matrixSend(roomId, body);
     else await matrixApi.sendMessage(roomId, body);
     queryClient.invalidateQueries({ queryKey: ["matrix", "messages", roomId] });
-  }, [roomId, queryClient, live]);
+  }, [roomId, queryClient, live, isWeb]);
 
-  // Prefer live Matrix data when it arrives (richer: real event IDs, is_outgoing).
-  // Fall back to vault content immediately so the thread renders even if Matrix is unavailable.
-  const messages = useMemo(() => {
-    if (liveData?.messages && liveData.messages.length > 0) {
-      return [...liveData.messages].reverse();
-    }
-    return vaultMessages;
-  }, [liveData, vaultMessages]);
+  // Imported history has no reliable source IDs. Do not pretend a live tail
+  // replaces or can be deduplicated against the complete saved transcript.
+  const showLive = view === "live" || vaultMessages.length === 0;
+  const messages = showLive && liveData?.messages?.length ? [...liveData.messages].reverse() : vaultMessages;
 
   // Determine the triage option for display
   const triageOption = TRIAGE_OPTIONS.find((o) => o.tag === triageStatus);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* Header with triage status */}
       <div
         className="flex items-center gap-2 px-4 py-2 flex-shrink-0"
@@ -129,6 +114,7 @@ export default function MessageRenderer({ note }: RendererProps) {
         {/* Triage status dropdown */}
         <div className="relative">
           <button
+            aria-label="Thread status" aria-expanded={showTriageMenu} disabled={triagePending}
             onClick={() => setShowTriageMenu(!showTriageMenu)}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors hover:bg-[var(--glass-hover)]"
             style={{
@@ -149,7 +135,8 @@ export default function MessageRenderer({ note }: RendererProps) {
               {TRIAGE_OPTIONS.map((opt) => (
                 <button
                   key={opt.tag}
-                  onClick={() => handleTriageChange(opt.tag)}
+                  disabled={triagePending}
+                  onClick={() => void handleTriageChange(opt.tag)}
                   className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-[var(--glass-hover)] transition-colors"
                   style={{ color: opt.color }}
                 >
@@ -163,29 +150,20 @@ export default function MessageRenderer({ note }: RendererProps) {
         </div>
       </div>
 
-      {/* Messages */}
-      <MessageThread
-        messages={messages}
-        hasMore={liveData?.has_more}
-      />
-
-      {/* Composer with auto-suggest handled */}
-      <MessageComposer
-        onSend={async (body) => {
-          await handleSend(body);
-          // Auto-suggest: if message was urgent/action-required, prompt to mark handled
-          if (triageStatus === "urgent" || triageStatus === "action-required") {
-            // Show a brief toast-like suggestion
-            setTriageStatus("handled");
-            // Actually update the tags
-            const oldTags = ["urgent", "action-required", "informational", "social"];
-            const tagsToRemove = (note.tags || []).filter((t) => oldTags.includes(t));
-            if (tagsToRemove.length > 0) vaultApi.removeTags(note.id, tagsToRemove).catch(() => {});
-            vaultApi.addTags(note.id, ["handled"]).catch(() => {});
-            queryClient.invalidateQueries({ queryKey: ["vault"] });
-          }
-        }}
-      />
+      {triageError && <p role="alert" className="px-4 py-2 text-xs">{triageError}</p>}
+      {vaultMessages.length > 0 && liveData?.messages?.length ? <div className="flex flex-wrap items-center gap-3 px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <span>{showLive ? `Latest ${messages.length} live messages` : "Saved conversation history"}</span>
+        <button type="button" className="underline" onClick={() => setView(showLive ? "saved" : "live")}>{showLive ? "View saved history" : "View latest messages"}</button>
+      </div> : null}
+      {imported.preamble && <details className="px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}><summary>Imported thread details</summary><pre className="whitespace-pre-wrap break-words mt-2">{imported.preamble}</pre></details>}
+      <MessageThread messages={messages} />
+      {sent && (triageStatus === "urgent" || triageStatus === "action-required") && <div className="px-4 py-2 text-xs">Reply sent. <button type="button" disabled={triagePending} className="underline" onClick={() => void handleTriageChange("handled")}>Mark handled</button></div>}
+      {(!roomId || (isWeb && !live)) && <p className="px-4 py-2 text-xs" role="status">Replying is unavailable for this thread on this connection.</p>}
+      <MessageComposer disabled={!roomId || (isWeb && !live)} onSend={async (body) => {
+        await handleSend(body);
+        setSent(true);
+        setView("live");
+      }} />
     </div>
   );
 }
