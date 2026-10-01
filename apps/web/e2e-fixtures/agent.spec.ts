@@ -212,3 +212,28 @@ test("conversation identifies its authors and archive is a separate keyboard act
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("document-conversation-mobile.png") });
 });
+
+test("agent Markdown renders lists and tables while keeping HTML, URLs and remote images inert", async ({ page }) => {
+  const external: string[] = [];
+  await page.route("https://untrusted.example.test/**", (route) => { external.push(route.request().url()); return route.abort(); });
+  await page.goto("/e2e-fixtures/agent.html?markdown");
+  const input = page.getByRole("textbox", { name: "Fixture Markdown" });
+  const reply = page.getByRole("region", { name: "Rendered reply" });
+  await input.fill('## Review\n\n- First **point**\n- Second point\n\n1. Read\n2. Discuss\n\n| Mode | Access |\n| --- | --- |\n| Read | View |\n\n> A quoted passage\n\n[Reference](https://example.test/source)\n\n[Unsafe](javascript:alert(1))\n\n![Tracking image](https://untrusted.example.test/pixel.png)\n\n<img src="https://untrusted.example.test/raw.png" onerror="window.prismUnexpectedScript = true">\n\n<script>window.prismUnexpectedScript = true</script>');
+  await expect(reply.getByRole("heading", { name: "Review" })).toBeVisible();
+  await expect(reply.getByRole("listitem")).toHaveCount(4);
+  await expect(reply.locator("ul")).toHaveCSS("list-style-type", "disc");
+  await expect(reply.getByRole("cell", { name: "View", exact: true })).toBeVisible();
+  await expect(reply.getByRole("link", { name: "Reference" })).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(reply.getByRole("link", { name: "Unsafe" })).toHaveCount(0);
+  await expect(reply.locator("img, script, iframe")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismUnexpectedScript)).toBeUndefined();
+  expect(external).toEqual([]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await input.fill('```js\nconst long = "' + 'x'.repeat(300));
+  await expect(reply.locator("pre code")).toContainText("const long");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await input.fill('```js\nconst complete = true;\n```\n\nDone.');
+  await expect(reply.locator("pre code")).toContainText("const complete = true;");
+  await expect(reply.locator("p")).toHaveText("Done.");
+});

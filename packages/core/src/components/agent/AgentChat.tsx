@@ -7,7 +7,7 @@
  * full-screen conversation over the command pill with the composer pinned above
  * the keyboard (visualViewport) and safe-area insets; inputs are 16px (no iOS zoom).
  */
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -41,6 +41,7 @@ import { useNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
 import { PrismMark } from "../brand/PrismMark";
+import { AgentMarkdown } from "./AgentMarkdown";
 import type { RendererProps } from "../renderers/RendererProps";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -64,40 +65,6 @@ function fmtDuration(ms: number | undefined): string | null {
 }
 
 const isRunning = (s: string | null | undefined) => s === "queued" || s === "running";
-
-/** Minimal, injection-free markdown: ``` fences, `code`, **bold**; the rest pre-wrapped. */
-function RichText({ text }: { text: string }) {
-  const parts = text.split(/```/);
-  return (
-    <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <pre
-            key={i}
-            className="my-2 overflow-x-auto rounded-lg px-3 py-2 text-[13px]"
-            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", fontFamily: "var(--font-mono, monospace)" }}
-          >
-            {part.replace(/^[a-z0-9-]*\n/i, "")}
-          </pre>
-        ) : (
-          <span key={i} className="whitespace-pre-wrap">
-            {part.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((tok, j) =>
-              tok.startsWith("`") && tok.endsWith("`") && tok.length > 2 ? (
-                <code key={j} className="rounded px-1 text-[0.92em]" style={{ background: "var(--glass-hover)", fontFamily: "var(--font-mono, monospace)" }}>
-                  {tok.slice(1, -1)}
-                </code>
-              ) : tok.startsWith("**") && tok.endsWith("**") && tok.length > 4 ? (
-                <strong key={j}>{tok.slice(2, -2)}</strong>
-              ) : (
-                <Fragment key={j}>{tok}</Fragment>
-              ),
-            )}
-          </span>
-        ),
-      )}
-    </>
-  );
-}
 
 /** Height of the visual viewport (shrinks when the iOS keyboard is up). */
 function useVisualViewportHeight(active: boolean): number | null {
@@ -866,7 +833,7 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
             .filter((b) => b.text.trim())
             .map((b, i) => (
               <div key={b.blockId} className={i > 0 ? "mt-2" : undefined}>
-                <RichText text={b.text} />
+                <AgentMarkdown text={b.text} />
                 {b.streaming && running && <span className="ml-0.5 inline-block animate-pulse" style={{ color: "var(--color-accent)" }}>▍</span>}
               </div>
             ))}

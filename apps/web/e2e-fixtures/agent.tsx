@@ -6,6 +6,7 @@ import { fetchMe, agentScope, setActiveVault, setActiveWorkspace } from "../src/
 import { httpAgentClient } from "../src/agent/HttpAgentClient";
 import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAgentConversation";
 import AgentChat, { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
+import { AgentMarkdown } from "../../../packages/core/src/components/agent/AgentMarkdown";
 
 const permissionsFixture = new URLSearchParams(location.search).has("permissions");
 const contextFixture = new URLSearchParams(location.search).has("context");
@@ -58,6 +59,10 @@ function BudgetProbe() {
   const conversation = useAgentConversation(client, session.id);
   return <div><button onClick={() => { void conversation.send("Budget test"); }}>Send test turn</button><output aria-label="Session spend">{conversation.session?.cost_usd ?? "loading"}</output></div>;
 }
+function MarkdownProbe() {
+  const [text, setText] = useState("");
+  return <div className="min-w-0 p-4"><textarea aria-label="Fixture Markdown" value={text} onChange={(event) => setText(event.target.value)} /><section aria-label="Rendered reply"><AgentMarkdown text={text} /></section></div>;
+}
 function Fixture() {
   const [visible, setVisible] = useState(true);
   const [, update] = useState(0);
@@ -67,7 +72,7 @@ function Fixture() {
     <div style={{ height: "100dvh", maxWidth: historyFixture ? 1040 : 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
       {contextFixture && <button onClick={() => useUIStore.getState().openTab("document-b", "Reference note", "document")}>Open reference</button>}
-      {new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && ((contextFixture && expanded) || historyFixture ? <AgentChat note={fixtureNote("agent-chat")} /> : <AgentPanelChat client={client} />)}
+      {new URLSearchParams(location.search).has("markdown") ? <MarkdownProbe /> : new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && ((contextFixture && expanded) || historyFixture ? <AgentChat note={fixtureNote("agent-chat")} /> : <AgentPanelChat client={client} />)}
     </div>
   </AgentClientProvider></VaultClientProvider></QueryClientProvider>;
 }
