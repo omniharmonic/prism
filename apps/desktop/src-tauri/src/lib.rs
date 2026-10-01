@@ -13,7 +13,7 @@ use clients::anthropic::ClaudeClient;
 use clients::mcp_client::PrismMcpClient;
 use clients::local_agent::LocalAgent;
 use clients::model_router::ModelRouter;
-use commands::{vault, vaults, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, message_index, service_cmds, ollama_cmds, github_cmds, notion_db_cmds, semantic};
+use commands::{vault, vaults, convert, system, matrix, google, sync_cmds, agent, config, editor, wikilinks, notion_pages, service_cmds, ollama_cmds, github_cmds, notion_db_cmds, semantic};
 use commands::github_cmds::GitHubSyncState;
 use commands::notion_db_cmds::NotionDbSyncState;
 use commands::agent::AgentSessions;
@@ -205,7 +205,6 @@ pub fn run() {
             agent::agent_transform,
             agent::agent_generate,
             // Message indexing
-            message_index::index_messages,
             // Config + integration testing
             config::get_config_status,
             config::get_collab_config,
@@ -221,7 +220,6 @@ pub fn run() {
             config::acl_request,
             config::api_request,
             config::update_config,
-            config::discover_meetily_path,
             // Multi-vault registry
             vaults::vault_list,
             vaults::vault_set_active,

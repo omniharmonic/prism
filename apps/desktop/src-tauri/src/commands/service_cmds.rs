@@ -14,8 +14,18 @@ pub fn get_service_status(
     services.status()
 }
 
+/// Does the Prism Server own calendar ingest for this machine? True in client mode
+/// and whenever the desktop's own calendar sync is switched off.
+pub fn server_owns_calendar(c: &AppConfig) -> bool {
+    c.is_client_mode() || c.disable_calendar_sync
+}
+
 /// On-demand calendar sync for a specific date range.
 /// Called by the CalendarDashboard when the user navigates to a new week/month.
+/// When the server owns calendar ingest (client mode / `disable_calendar_sync`) this
+/// delegates to `POST /api/calendar/sync` (WP1.3) through the narrow desktop proxy
+/// instead of running `gog` + writing the vault from the desktop (two reconcilers
+/// on one window is the double-ingest hazard).
 #[tauri::command]
 pub async fn calendar_sync_range(
     google: State<'_, GoogleClient>,
@@ -24,6 +34,10 @@ pub async fn calendar_sync_range(
     from: String,
     to: String,
 ) -> Result<serde_json::Value, PrismError> {
+    if server_owns_calendar(config.inner()) {
+        let target = format!("/calendar/sync?from={from}&to={to}");
+        return crate::commands::config::server_api_call(config.inner(), "POST", &target, None).await;
+    }
     let account = &config.google_account_primary;
     if account.is_empty() {
         return Err(PrismError::Google("No Google account configured".into()));
@@ -221,4 +235,24 @@ pub async fn agent_update_skill(
     }).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(patch: &[(&str, serde_json::Value)]) -> AppConfig {
+        let mut v = serde_json::to_value(AppConfig::default()).unwrap();
+        for (k, val) in patch {
+            v.as_object_mut().unwrap().insert((*k).to_string(), val.clone());
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn calendar_goes_to_the_server_in_client_mode_or_when_desktop_calendar_is_off() {
+        assert!(!server_owns_calendar(&cfg(&[])), "default host mode keeps the local path");
+        assert!(server_owns_calendar(&cfg(&[("ingest_mode", serde_json::json!("client"))])));
+        assert!(server_owns_calendar(&cfg(&[("disable_calendar_sync", serde_json::json!(true))])));
+    }
 }

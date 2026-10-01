@@ -66,8 +66,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub disable_message_sync: bool,
     /// When true, the desktop skips the FATHOM half of transcript_sync — the Prism
-    /// Server ingests Fathom server-side. Meetily (local SQLite) still syncs on the
-    /// desktop. The Fathom key stays configured so live use still works.
+    /// Server ingests Fathom server-side. The Fathom key stays configured so live use still works.
     #[serde(default)]
     pub disable_fathom_sync: bool,
     /// When true, the desktop skips the FIREFLIES half of transcript_sync — the
@@ -89,13 +88,16 @@ pub struct AppConfig {
     pub disable_email_sync: bool,
     #[serde(default)]
     pub disable_calendar_sync: bool,
-    /// Skips only the Meetily half of transcript_sync (Fathom/Fireflies unaffected).
+    /// RETIRED (WP1.4): Meetily ingest was removed from the desktop; kept ONLY so old
+    /// config files still load/round-trip. Has no effect.
     #[serde(default)]
     pub disable_meetily_sync: bool,
     #[serde(default)]
     pub disable_embedding_index: bool,
     #[serde(default)]
     pub disable_skill_scheduler: bool,
+    /// RETIRED (WP1.4): the idle Notion task-sync loop was removed (manual Notion DB
+    /// sync commands remain). Kept ONLY for config compatibility. Has no effect.
     #[serde(default)]
     pub disable_notion_task_sync: bool,
     pub notion_api_key: String,
@@ -115,6 +117,9 @@ pub struct AppConfig {
     // Transcript data sources
     #[serde(default)]
     pub fathom_api_key: String,
+    /// RETIRED (WP1.4): no longer read by anything (no Meetily ingest, no
+    /// auto-discovery). Kept so old config files round-trip. Existing Meetily notes
+    /// under `vault/_inbox/transcripts/meetily/` stay in the vault untouched.
     #[serde(default)]
     pub meetily_db_path: String,
     #[serde(default)]
@@ -290,10 +295,6 @@ impl AppConfig {
                     config.anthropic_api_key = key;
                 }
             }
-            // Auto-discover Meetily if not configured
-            if config.meetily_db_path.is_empty() {
-                config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
-            }
             // Migrate/normalize the vault registry (synthesizes "primary"
             // for legacy single-vault configs; mirrors the active entry).
             config.normalize_vaults();
@@ -330,11 +331,6 @@ impl AppConfig {
             if let Some(key) = try_keychain_anthropic() {
                 config.anthropic_api_key = key;
             }
-        }
-
-        // Auto-discover Meetily
-        if config.meetily_db_path.is_empty() {
-            config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
         }
 
         // Migrate/normalize the vault registry before first save.
@@ -505,24 +501,6 @@ fn load_env_file(path: &std::path::Path) -> Result<HashMap<String, String>, Pris
     Ok(vars)
 }
 
-/// Auto-discover Meetily's SQLite database on macOS.
-fn auto_discover_meetily() -> Option<String> {
-    let home = dirs::home_dir()?;
-    let candidates = [
-        "Library/Application Support/com.meetily.ai/meeting_minutes.sqlite",
-        "Library/Application Support/ai.meetily.app/meeting_minutes.sqlite",
-        "Library/Application Support/meetily/meeting_minutes.sqlite",
-        "Library/Application Support/com.meetily.ai/meetily.db",
-    ];
-    for candidate in &candidates {
-        let path = home.join(candidate);
-        if path.exists() {
-            return Some(path.to_string_lossy().to_string());
-        }
-    }
-    None
-}
-
 fn try_keychain_anthropic() -> Option<String> {
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-s", "com.prism.anthropic", "-w"])
@@ -580,6 +558,91 @@ pub fn api_path_allowed(path: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Is `q` exactly `from=YYYY-MM-DD&to=YYYY-MM-DD` (digits only, fixed shape)? The
+/// server validates the calendar semantics; this only keeps the proxy query
+/// from carrying anything else.
+fn calendar_range_query_ok(q: &str) -> bool {
+    let day = |d: &str| {
+        d.len() == 10
+            && d.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
+    };
+    match q.strip_prefix("from=").and_then(|r| r.split_once("&to=")) {
+        Some((f, t)) => day(f) && day(t),
+        None => false,
+    }
+}
+
+/// The full desktop `/api` proxy policy: `(method, target)` where `target` is the
+/// path after `/api`, optionally with a query. Exactly two surfaces:
+///   1. `/integrations[/…]` (any method, NO query) — see [`api_path_allowed`].
+///   2. `POST /calendar/sync?from=YYYY-MM-DD&to=YYYY-MM-DD` — the server's on-demand
+///      calendar range sync (WP1.3), used by the Calendar view in client mode.
+///      The only route that may carry a query, and only that exact shape.
+/// Both go through the same char allowlist + `url`-crate parse the integrations
+/// check uses, so a tab/newline/`%2e`/dot-segment trick cannot reach another route.
+pub fn api_request_allowed(method: &str, target: &str) -> bool {
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (target, None),
+    };
+    if path == "/calendar/sync" {
+        let Some(q) = query else { return false };
+        if !method.eq_ignore_ascii_case("POST") || !calendar_range_query_ok(q) {
+            return false;
+        }
+        let raw = format!("/api{path}?{q}");
+        return match url::Url::parse(&format!("http://prism.invalid{raw}")) {
+            Ok(u) => u.path() == "/api/calendar/sync" && u.query() == Some(q) && u.fragment().is_none(),
+            Err(_) => false,
+        };
+    }
+    query.is_none() && api_path_allowed(path)
+}
+
+/// One authenticated call to the Prism Server `/api` (owner COLLAB_TOKEN Bearer),
+/// policy-checked by [`api_request_allowed`]. Shared by `api_request` and the
+/// desktop commands that delegate to a server route.
+pub(crate) async fn server_api_call(
+    config: &AppConfig,
+    method: &str,
+    target: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, PrismError> {
+    let (http_base, collab_token) = server_endpoint(config);
+    if collab_token.is_empty() {
+        return Err(PrismError::Config(
+            "No collab token configured — set it in Settings → Services → Prism Server to use the Prism Server from the desktop app".into(),
+        ));
+    }
+    if !api_request_allowed(method, target) {
+        return Err(PrismError::Other(format!(
+            "api path not allowed from the desktop proxy: {target}"
+        )));
+    }
+    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
+    let mut req = reqwest::Client::new()
+        .request(m, format!("{http_base}/api{target}"))
+        .bearer_auth(&collab_token)
+        .timeout(std::time::Duration::from_secs(60));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| PrismError::Other(format!("api request failed: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(PrismError::Other(format!("api {method} {target} → {status}{}", server_error_suffix(&text))));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("api parse failed: {e}")))
 }
 
 /// HTTP base of the Prism Server (derived from the collab WS url) + the owner
@@ -898,7 +961,8 @@ pub async fn acl_request(
 /// desktop COLLAB_TOKEN (Bearer) — the server treats a local Bearer of the
 /// collab/vault token as the owner. Deliberately allowlist-scoped: only the
 /// `/integrations` routes (server-side sync-integration credentials + manual
-/// sync) are reachable, so this never becomes a generic vault passthrough.
+/// sync) and the on-demand `POST /calendar/sync?from&to` are reachable (see
+/// `api_request_allowed`), so this never becomes a generic vault passthrough.
 /// Same base-URL derivation + error handling as `acl_request` above.
 #[tauri::command]
 pub async fn api_request(
@@ -907,41 +971,7 @@ pub async fn api_request(
     body: Option<serde_json::Value>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
-    let (http_base, collab_token) = server_endpoint(config.inner());
-    if collab_token.is_empty() {
-        return Err(PrismError::Config(
-            "No collab token configured — set it in Settings → Services → Prism Server to manage integrations from the desktop app".into(),
-        ));
-    }
-    // Allowlist: only the integrations surface. Everything else stays desktop-native.
-    if !api_path_allowed(&path) {
-        return Err(PrismError::Other(format!(
-            "api path not allowed from the desktop proxy: {path}"
-        )));
-    }
-
-    let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
-        .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
-    let mut req = reqwest::Client::new()
-        .request(m, format!("{http_base}/api{path}"))
-        .bearer_auth(&collab_token)
-        .timeout(std::time::Duration::from_secs(60));
-    if let Some(b) = body {
-        req = req.json(&b);
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| PrismError::Other(format!("api request failed: {e}")))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(PrismError::Other(format!("api {method} {path} → {status}{}", server_error_suffix(&text))));
-    }
-    if text.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("api parse failed: {e}")))
+    server_api_call(config.inner(), &method, &path, body).await
 }
 
 // ── Write-only secrets (docs/credentials.md) ─────────────────────────────────
@@ -1177,15 +1207,6 @@ pub fn update_config(
     new_config.save()?;
     log::info!("Config updated and saved (parachute connection hot-reloaded)");
     Ok(())
-}
-
-/// Auto-discover Meetily database path.
-#[tauri::command]
-pub fn discover_meetily_path() -> Result<serde_json::Value, PrismError> {
-    match auto_discover_meetily() {
-        Some(path) => Ok(serde_json::json!({ "found": true, "path": path })),
-        None => Ok(serde_json::json!({ "found": false })),
-    }
 }
 
 /// Check if gog CLI is installed
@@ -1440,6 +1461,34 @@ mod tests {
         // Sanity: the url crate really does collapse the tab trick, i.e. the
         // allowlist is what stops it.
         let u = url::Url::parse("http://h/api/integrations/.\t./vaults").unwrap();
+        assert_eq!(u.path(), "/api/vaults");
+    }
+
+    #[test]
+    fn api_request_policy_allows_exactly_integrations_and_calendar_range_sync() {
+        let q = "?from=2026-10-01&to=2026-10-31";
+        assert!(api_request_allowed("POST", &format!("/calendar/sync{q}")));
+        assert!(api_request_allowed("post", &format!("/calendar/sync{q}")));
+        assert!(api_request_allowed("GET", "/integrations/clickup"));
+        assert!(!api_request_allowed("GET", &format!("/calendar/sync{q}")), "POST only");
+        assert!(!api_request_allowed("PUT", &format!("/calendar/sync{q}")));
+        for bad in [
+            "/calendar/sync", "/calendar/sync?", "/calendar/sync?from=2026-10-01", "/calendar/sync?to=2026-10-31&from=2026-10-01",
+            "/calendar/sync?from=2026-10-01&to=2026-10-31&x=1", "/calendar/sync?from=2026-10-01&to=2026-10-31#f",
+            "/calendar/sync?from=2026-10-01&to=2026-10-3a", "/calendar/sync?from=2026-1-01&to=2026-10-31",
+            "/calendar/sync?from=2026-10-01%26to=2026-10-31", "/calendar/sync?from=%32026-10-01&to=2026-10-31",
+            "/calendar/sync/?from=2026-10-01&to=2026-10-31", "/calendar/syncX?from=2026-10-01&to=2026-10-31",
+            "/calendar?from=2026-10-01&to=2026-10-31", "/calendar/sync/../../vaults?from=2026-10-01&to=2026-10-31",
+            "/calendar/%2e%2e/vaults?from=2026-10-01&to=2026-10-31", "/calendar/sync\t?from=2026-10-01&to=2026-10-31",
+            "/calendar/.\t./vaults?from=2026-10-01&to=2026-10-31", "/calendar/\n../vaults?from=2026-10-01&to=2026-10-31",
+            "/calendar/sync?from=2026-10-01&to=2026-10-31\n", "/calendar/sync?from=2026-10-01&to=2026-10-31\t",
+            "/calendar/sync?from=2026-10-01&to=\t2026-10-31", "/calendar/sync?from=2026-10-01&to=2026-10-31%0a",
+            "/integrations/x?y=1", "/vaults", "/notes", "/acl/users", "",
+        ] {
+            assert!(!api_request_allowed("POST", bad), "{bad:?}");
+        }
+        // Sanity: the parser really would collapse the tab trick (the policy is what stops it).
+        let u = url::Url::parse("http://h/api/calendar/.\t./vaults?from=2026-10-01&to=2026-10-31").unwrap();
         assert_eq!(u.path(), "/api/vaults");
     }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Search, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
+import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, localAiApi, vaultApi } from "../../lib/parachute/client";
@@ -117,13 +117,6 @@ export function Settings({ open, onClose }: SettingsProps) {
       await loadConfig();
     } finally {
       setSaving(null);
-    }
-  };
-
-  const handleDiscoverMeetily = async () => {
-    const result = await invoke<{ found: boolean; path?: string }>("discover_meetily_path");
-    if (result.found && result.path) {
-      setEditValues((prev) => ({ ...prev, meetily_db_path: result.path! }));
     }
   };
 
@@ -462,24 +455,15 @@ export function Settings({ open, onClose }: SettingsProps) {
               <Section title="Meeting Transcripts">
                 <p className="text-[10px] mb-3" style={{ color: "var(--text-muted)" }}>
                   Connect transcript services to automatically pull meeting recordings into your vault.
-                  Transcripts are ingested every 10 minutes and enriched by the meeting processor skill.
+                  {config.ingest_mode === "client"
+                    ? "Transcript ingest runs on the Prism Server (this machine is in Client mode), so nothing here starts a sync."
+                    : "Transcripts are ingested every 10 minutes and enriched by the meeting processor skill."}
                 </p>
                 <SourceField icon={<Video size={14} />} label="Fathom" desc="Meeting recording & AI summaries"
                   fieldKey="fathom_api_key" placeholder="Fathom API key" sensitive
                   value={config.fathom_api_key as string} isSet={config.fathom_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
                   onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
-
-                <SourceField icon={<Mic size={14} />} label="Meetily" desc="Local meeting transcription (SQLite)"
-                  fieldKey="meetily_db_path" placeholder="/path/to/meeting_minutes.sqlite"
-                  value={config.meetily_db_path as string} isSet={!!(config.meetily_db_path as string)}
-                  editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave}
-                  extra={
-                    <button onClick={handleDiscoverMeetily} className="px-2 py-0.5 rounded text-[10px] hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }} title="Auto-discover Meetily database">
-                      <Search size={10} />
-                    </button>
-                  } />
 
                 <SourceField icon={<Video size={14} />} label="Read.ai" desc="Meeting copilot & transcription"
                   fieldKey="readai_api_key" placeholder="Read.ai API key" sensitive
@@ -588,8 +572,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 const INGEST_FLAGS: Array<{ key: string; label: string; desc: string }> = [
   { key: "disable_email_sync", label: "Email sync", desc: "Gmail to vault (every 3 min)" },
   { key: "disable_calendar_sync", label: "Calendar sync", desc: "Google Calendar to vault (every 5 min)" },
-  { key: "disable_meetily_sync", label: "Meetily sync", desc: "Local Meetily transcripts only (Fathom/Fireflies have their own switches)" },
-  { key: "disable_notion_task_sync", label: "Notion task sync", desc: "Notion databases to vault tasks" },
   { key: "disable_embedding_index", label: "Embedding index", desc: "Semantic-search indexing (the Prism server also sweeps this)" },
   { key: "disable_skill_scheduler", label: "Skill scheduler", desc: "Runs recurring agent skills on this machine" },
 ];
@@ -639,7 +621,7 @@ function IngestSettings({ config, onSave, saving, savedKeys }: {
       <div style={{ opacity: isClient ? 0.5 : 1 }}>
         <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
           {isClient
-            ? "Client mode turns every service off. The switches below only apply in Host mode."
+            ? "Client mode turns every service off here: all ingest runs on the Prism Server. The switches below only apply in Host mode."
             : "Turn individual services off on this machine (for example once the server owns them)."}
         </p>
         {INGEST_FLAGS.map((f) => {
@@ -647,7 +629,7 @@ function IngestSettings({ config, onSave, saving, savedKeys }: {
           return (
             <Row key={f.key} label={f.label}>
               <span className="flex items-center gap-2">
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{f.desc}</span>
+                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{isClient ? "Runs on the Prism Server" : f.desc}</span>
                 <button
                   onClick={() => onSave(f.key, !disabled)}
                   disabled={isClient || saving === f.key}
@@ -659,7 +641,7 @@ function IngestSettings({ config, onSave, saving, savedKeys }: {
                   }}
                   title={disabled ? "Disabled on this machine. Click to enable." : "Runs on this machine. Click to disable."}
                 >
-                  {disabled ? "Off" : "On"}
+                  {isClient ? "Server" : disabled ? "Off" : "On"}
                 </button>
                 {savedKeys.has(f.key) && <Check size={10} style={{ color: "var(--color-success)" }} />}
               </span>
