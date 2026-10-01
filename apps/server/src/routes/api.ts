@@ -22,6 +22,7 @@ import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
 import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
+import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 
 export const api = new Hono();
@@ -169,6 +170,25 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
  * the SAME `view`-cap math as every other read (`capsFor`), so a path or tag of a
  * note they cannot view is never emitted. `ETag`/`If-None-Match` gives 304.
  */
+/** Bounded, permission-filtered graph response. No note bodies or hidden totals. */
+api.get("/graph/neighborhood", async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon") return c.json({error:"unauthorized"},401);
+  if (resolveVaultEntry(actor.vaultId).id !== actor.vaultId) return c.json({error:"vault_unavailable"},409);
+  const center = c.req.query("center") ?? "";
+  const depth = Number(c.req.query("depth") ?? 1);
+  const limit = Number(c.req.query("limit") ?? 150);
+  if (!center || center.length > 2048 || !Number.isInteger(depth) || depth < 1 || depth > 5 || !Number.isInteger(limit) || limit < 1 || limit > 500) return c.json({error:"bad_request"},400);
+  try {
+    const notes = await vaultClient(actor.vaultId).listNotes({includeLinks:true,includeMetadata:["title","type","prism_creator","prism_visibility"]});
+    if (notes.length >= 50_000) return c.json({error:"incomplete_inventory"},503);
+    const allowed = roleAtLeast(actor.role,"admin") ? notes : notes.filter(note => capsFor(actor,ref(note)).has("view"));
+    const graph = graphNeighborhood(allowed,center,depth,limit);
+    c.header("Cache-Control","private, no-store");
+    return graph ? c.json(graph) : c.json({error:"not_found"},404);
+  } catch { return c.json({error:"graph_unavailable"},503); }
+});
+
 api.get("/wikilinks/resolve", async (c) => {
   const target = (c.req.query("target") ?? "").trim();
   if (!target || target.length > 2048) return c.json({error:"bad_request"},400);

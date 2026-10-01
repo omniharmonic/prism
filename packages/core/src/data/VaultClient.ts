@@ -17,6 +17,12 @@ export interface VaultLink {
   createdAt: string;
 }
 
+export interface VaultNeighborhood {
+  edges: VaultGraph["edges"];
+  nodes: Array<{ id: string; path: string | null; title: string; tags: string[] }>;
+  truncated: boolean;
+}
+
 export interface VaultGraph {
   nodes: Array<{ id: string; path?: string; tags?: string[] }>;
   edges: Array<{ source: string; target: string; relationship: string }>;
@@ -136,6 +142,7 @@ export interface VaultClient {
   ): Promise<VaultLink>;
   deleteLink(sourceId: string, targetId: string, relationship: string): Promise<void>;
   getGraph(depth?: number, centerId?: string): Promise<VaultGraph>;
+  getNeighborhood?(centerId: string, depth: number, limit?: number): Promise<VaultNeighborhood>;
   getVaultInfo(): Promise<VaultInfo>;
   updateVaultDescription(description: string): Promise<VaultInfo>;
   /** Note version history. Optional per shell; throws {@link HistoryUnavailableError}

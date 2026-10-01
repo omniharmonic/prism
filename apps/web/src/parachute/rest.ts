@@ -18,6 +18,7 @@ import type {
   VaultInfo,
   VaultLink,
   VaultGraph,
+  VaultNeighborhood,
   SemanticHit,
   NoteVersion,
   NoteVersionPage,
@@ -340,6 +341,10 @@ export async function deleteLink(
 }
 
 // ---- graph / vault --------------------------------------------------------
+
+export async function getNeighborhood(centerId: string, depth: number, limit = 150): Promise<VaultNeighborhood> {
+  return (await req(`/graph/neighborhood${qs({ center: centerId, depth, limit })}`)).json();
+}
 
 export async function getGraph(depth?: number, centerId?: string): Promise<VaultGraph> {
   const sp = new URLSearchParams({ format: "graph", include_links: "true", limit: "10000" });

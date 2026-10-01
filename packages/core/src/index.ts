@@ -34,14 +34,15 @@ export type {
   VaultClient,
   VaultLink,
   VaultGraph,
+  VaultNeighborhood,
   SemanticHit,
   NoteVersion,
   NoteVersionSummary,
   NoteVersionPage,
 } from "./data/VaultClient";
 export { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "./data/VaultClient";
-export { GraphCanvas } from "./components/layout/GraphPanel";
-export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphPanel";
+export { GraphCanvas } from "./components/layout/GraphCanvasLazy";
+export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphCanvas3D";
 
 // Collab sharing seam — host shells inject how share links are minted.
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
