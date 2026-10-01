@@ -20,10 +20,10 @@ shared UI was reviewed (bottom table).
 |---|---|---|
 | **A** | Already works in the web/client build through the server | 42 |
 | **B** | A server route existed but the client seam wasn't wired: **wired in WP4.3** | 8 |
-| **C → ported** | Desktop-only, no server equivalent: **ported in WP4.3** | 4 |
-| **C → gap** | Desktop-only, no server equivalent: **documented gap** (decision below) | 16 |
-| **C → local-only** | Local model routing (LM Studio / Ollama on the laptop): not ported by design | 6 |
-| **C → dropped** | Desktop-only maintenance command, not carried over | 1 |
+| **C → ported** | Desktop-only, no server equivalent: **ported in WP4.3** (4) and **parity A** (11) | 15 |
+| **C → gap** | Desktop-only, no server equivalent: **documented gap** (decision below) | 12 |
+| **C → local-only** | (was 6: local model routing — **ported in parity A** to the server's LM Studio) | 0 |
+| **C → dropped** | (was 1: vault-wide wikilink resolve — **ported in parity A** as a server job) | 0 |
 | **N/A** | Desktop shell config / onboarding; meaningless on a thin client | 11 |
 | **Dead** | Registered but never invoked by any UI | 14 |
 | | **Total** | **102** |
@@ -82,22 +82,29 @@ Security notes: no new credential path, no new write path for the agent (the inl
 only read), the new route is read-only and admin-gated like the rest of `/api/sync`, and nothing
 here acts outward as the owner (calendar edits and sends stay behind WP1.5 live actions).
 
-### C → documented gaps (16): decisions for the user
+### C → ported in parity A (11) — branch `parity/a`
+
+| Feature | Desktop commands | Port |
+|---|---|---|
+| Calendar: edit an event | `calendar_update_event` | **live action** `POST /api/actions/calendar/update {eventId, title?, start?+end?, location?, description?, attendees?, notify?}` → `gog calendar update primary <id> … --send-updates=all\|none` (WP1.5 standard: server owner by email, `ACTIONS_CALENDAR_ENABLED`, JSON + `Idempotency-Key` REQUIRED + CSRF guard, human origin only, calendar rate bucket, `calendar.update` audit row with ids/hashes only). gog/Google refusals that changed nothing (404/410 gone, 403 not the organizer, gog flag validation) → `event_not_found` 404 / `not_editable` / `rejected` 409, `sent: false`, key released. On success the meeting note's metadata is reflected now (`reflectLiveCalendarChange`, worker/calendar.ts: the ingest's `buildMeetingNote` shape from gog's returned event, only changed keys, `if_updated_at`, path/body never touched). `CalendarDashboard` Edit (sends only the fields the owner changed; "email guests" checkbox) on Google-synced events |
+| Calendar: delete an event | `calendar_delete_event` | **live action** `POST /api/actions/calendar/delete {eventId, notify?}` → `gog calendar delete primary <id> --send-updates=… --force` (same gates/audit/idempotency). The meeting note is **soft-cancelled** (`event_status: "cancelled"`, never deleted; the ingest reconcile leaves cancelled notes alone, the Calendar hides them). UI: two-step inline confirm with "email guests a cancellation" |
+| Skill config card (enable, interval, run hour, dependsOn, provider/model, mode, structured block, prompt; builder; delete) | `agent_update_skill` | `vaultOps.updateSkillNote` / `validateSkillPatch` through the **VaultClient** (the skill note IS the server scheduler's config): validation mirrors the desktop card + the scheduler's `parseStructuredConfig`; metadata merged onto the current note so `runner` (the lease), `lastRun` and unknown keys survive; `if_updated_at` (a metadata-only 409 is refetched + merged once, a prompt conflict is surfaced). AgentActivity shows the card + builder to the server owner on a thin client; "Run" on the card queues a server run |
+| Cancel a running skill run | `agent_cancel_dispatch` | `GET /api/agent/skills/running` + `POST /api/agent/skills/:skillName/cancel` (server owner by email, CSRF guard). Local structured run: stops before the next note AND aborts the in-flight LM Studio request (that note is not flagged); claude run: killed through the run queue (`cancelDispatch`). Persisted as a `cancelled` dispatch note (the desktop dropped cancelled runs). AgentActivity "Running on the server" list with Stop |
+| Local model routing for interactive skills | `ollama_status` `ollama_list_models` `set_skill_model` `get_skill_models` `local_ai_list_models` `test_local_ai` | `GET /api/agent/models` (the server's LM Studio `/api/v0/models` + claude CLI presence), `GET/PUT /api/agent/routing` (edit/chat/transform/generate → `claude:sonnet\|opus\|haiku` or `local:<model>`, SQLite settings, default claude/sonnet), `POST /api/agent/routing/test`. The read-only one-shot dispatch (`profile: "vault-ro"` + `skill`) honours it: local → one `/chat/completions` call behind the SKILLS admission guard + the shared one-local-run slot (a refusal fails the run, never a silent Claude fallback); claude → `--model` from the route. Settings → AI models (`ServerAiModels`). **Agent chat sessions stay on Claude** (multi-turn, tool-using). The laptop's own Ollama/LM Studio are not used (the server talks to ITS LM Studio) |
+| Resolve all wikilinks (vault-wide) | `resolve_all_wikilinks` | owner-only server job `POST /api/admin/wikilinks/resolve {dryRun = true}` + `GET` (progress/report) + `/cancel`: one lean listing for the path index, per-note content fetch (concurrency 4), `references` links only (note text never rewritten), already-linked skipped, one links-only PATCH per note with `if_updated_at` (409 counted, never forced), unbalanced `[[` counted. Command bar: dry run → confirm → write |
+
+Security notes (parity A): every outward/owner-identity action is a WP1.5 live action; every new
+route is SERVER-owner by email (vault admins and vault-role owners get 403) and every mutation
+passes the live-actions CSRF guard; the skill card writes the vault through the user's own
+VaultClient (grants apply). No new credential crosses to a client.
+
+### C → documented gaps (12): decisions for the user
 
 | Feature | Desktop commands | Why not ported now | Recommendation |
 |---|---|---|---|
-| Calendar: edit / delete an event | `calendar_update_event` `calendar_delete_event` | They mutate Google Calendar AS the owner; a port must meet the WP1.5 standard (owner-only, flag, CSRF, idempotency, audit). Live actions only have `create` + `rsvp` | Edit/delete in Google Calendar for now; if wanted, add `calendar/update` + `calendar/delete` to `routes/actions.ts` as a follow-up WP |
 | GitHub folder sync (setup modal, auto-push on save) | `github_check_auth` `github_sync_init` `github_sync_push` `github_sync_push_file` `github_sync_status` `github_sync_remove` | Configs live in desktop state; the desktop's "auto-sync on save" pushed after every save. The server has stateless `POST /api/sync/github/push\|pull` (folder) but no stored configs, no scheduler and no UI | **Check the desktop's GitHub sync configs before archiving.** If any auto-sync config matters, port it as a server worker (configs in SQLite, periodic push); otherwise accept the gap |
 | Notion database sync | `notion_db_list` `notion_db_schema` `notion_db_sync_init` `notion_db_sync` `notion_db_sync_status` `notion_db_sync_remove` | No server port (`worker/notion.ts` is the per-page adapter only); WP1.4 found no `auto_sync` config in use | Accept the gap (manual feature). Per-note Notion sync works |
-| Cancel a running skill dispatch | `agent_cancel_dispatch` | Scheduler runs are server-internal; session turns can be cancelled (Stop) | Accept; server runs are wall-clocked (30 min) |
-| Skill config card (enable, interval, model, builder) | `agent_update_skill` | Desktop-only UI | Edit the skill note's metadata in the note's Properties panel (it is the source of truth for the server scheduler) |
 
-### C → local-only (6), dropped (1)
-
-| Feature | Commands | Decision |
-|---|---|---|
-| Local model routing for interactive skills (LM Studio / Ollama) | `ollama_status` `ollama_list_models` `set_skill_model` `get_skill_models` `local_ai_list_models` `test_local_ai` | Local by nature (a model server next to the app). Interactive AI (chat, inline edit, transform) now runs on the **server agent** (Claude); background skills keep local-model routing **on the server** (skill-note `provider`/`model`, `SKILLS_LOCAL_MODEL`). Not ported |
-| Resolve all wikilinks (vault-wide) | `resolve_all_wikilinks` | Scans every note's content: a host maintenance job, not a client feature. Hidden outside the desktop; the per-note command was ported |
 
 ### N/A (11) and Dead (14)
 
@@ -117,15 +124,15 @@ here acts outward as the owner (calendar edits and sends stay behind WP1.5 live 
 | Where | Desktop-only behaviour | Client after WP4.3 |
 |---|---|---|
 | `CalendarDashboard` range sync | `calendar_sync_range` | **wired** (HostServices, owner) |
-| `CalendarDashboard` event Edit / Delete buttons | Tauri | gap (see above); hidden |
+| `CalendarDashboard` event Edit / Delete buttons | Tauri | **wired** (parity A): live actions `calendar/update` / `calendar/delete` on Google-synced events (owner, `ACTIONS_CALENDAR_ENABLED`); delete behind an inline confirm |
 | `CalendarDashboard` create + RSVP | Tauri | live actions when the flag is on |
 | `MetadataPanel` Sync section | Google Docs / Notion / GitHub adapters | **wired** for Google Docs + Notion (owner); GitHub hidden; non-owners see a notice |
-| `CommandBar` Sync to Notion, transforms, resolve wikilinks | Tauri | **wired** (owner; resolve-wikilinks for any signed-in user, under grants); vault-wide resolve hidden |
+| `CommandBar` Sync to Notion, transforms, resolve wikilinks | Tauri | **wired** (owner; resolve-wikilinks for any signed-in user, under grants); vault-wide resolve **wired** (parity A) as the owner-only server job, dry run then confirm |
 | `DocumentRenderer` ⌘J inline prompt | Tauri `agent_edit` | **wired** (owner); the shortcut is inert for others |
 | `AgentActivity` Run skill | Tauri dispatch | **wired** as "queue on the server" (owner, enabled skills) |
-| `AgentActivity` skill config / builder, Ollama list | Tauri | gap / local-only |
+| `AgentActivity` skill config / builder, model list, Stop | Tauri | **wired** (parity A): card + builder via VaultClient, models from the server LM Studio, running server skills + Stop (owner) |
 | `ComposeMessage` (New message) | Tauri Matrix client | **wired** (vault rooms + live Matrix) |
-| `Settings` Services / Data Sources / Ingest mode / Local AI | desktop config file | N/A: notices now point at Network → Server, never at the desktop |
+| `Settings` Services / Data Sources / Ingest mode / Local AI | desktop config file | N/A: notices now point at Network → Server, never at the desktop. **AI models** (parity A): the server owner gets `ServerAiModels` (server LM Studio list, per-skill routing, Test) |
 | `GitHubSyncModal`, `NotionDbSyncModal` | Tauri | gap (notices updated) |
 | `Onboarding` wizard | Tauri | N/A (`skipOnboarding` in the web shell) |
 | `ProjectTree` batch-delete progress | Rust event `vault:batch-delete-progress` | works; no per-item progress bar |
@@ -147,9 +154,21 @@ here acts outward as the owner (calendar edits and sends stay behind WP1.5 live 
 - Server: `npm test` (`agent-routes.test.ts`: `vault-ro` narrows `--allowedTools`, default
   unchanged, other profiles 400 and never spawn; `sync-routes.test.ts`: the Notion picker is
   admin-only and 400s before any network when unconfigured; `notion-sync.test.ts`:
-  `searchPages` request shape + `parseNotionSearch`).
-- Web: `npm run verify:host -w @prism/web` (13 checks: the HTTP seam's paths/bodies/polling/
-  cancel/error mapping, the vault ops, `roomsFromThreadNotes`, the prompts).
+  `searchPages` request shape + `parseNotionSearch`). Parity A: `actions.test.ts` (calendar
+  update/delete argv incl. injection, validation before gog, idempotent replay + key reuse,
+  CSRF, audit without titles/addresses, refusal classification + key release, meeting-note
+  reflection + soft-cancel, 403 matrix via the shared gate test), `skills.test.ts` (cancel a
+  local run mid-request and between notes, cancel a claude run, `runnerDispatcher` reports
+  cancelled, an aborted LM Studio request is a cancel), `agent-parity.test.ts` (403 matrix incl.
+  vault-role owner + admin device, CSRF, models list, routing validation, local/claude routing
+  of the vault-ro dispatch, admission refusals never fall back to claude, cancel of a local
+  dispatch, the Test route, running/cancel routes), `wikilinks-job.test.ts` (extraction,
+  matching, dry run writes nothing, one links-only PATCH with `if_updated_at`, conflicts, route
+  gate + CSRF + dry-run default + one job at a time).
+- Web: `npm run verify:host -w @prism/web` (16 checks: the HTTP seam's paths/bodies/polling/
+  cancel/error mapping, the vault ops, `roomsFromThreadNotes`, the prompts; parity A: the skill
+  rides on agentText, running/cancel/routing/test/models paths, the wikilink job poller,
+  `updateSkillNote` validation + lease preservation + conflict retry).
 - Client: `node apps/client/scripts/verify-client.mjs` §6–7 (no token-shaped literal in the
   bundle, no vault-token key/env/scope in the shell, no credential field in
   `client-settings.json`, the shim refuses the desktop config commands).
