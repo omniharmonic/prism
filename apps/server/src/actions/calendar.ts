@@ -7,11 +7,16 @@
  * launchd job) but NOT from a plain ssh / agent shell — never try these from one;
  * tests always inject a fake runner.
  *
- * argv (gog v0.25 — `gog calendar respond --help` / `create --help`):
+ * argv (gog v0.25 — `gog calendar respond|create|update|delete --help`):
  *   rsvp:   calendar respond primary <eventId> --status=<accepted|declined|tentative> --account=<a> --json --no-input
  *   create: calendar create primary --summary=… --from=<RFC3339> --to=<RFC3339>
  *           [--attendees=a,b] [--location=…] [--description=…] [--send-updates=all|none]
  *           --account=<a> --json --no-input
+ *   update: calendar update primary <eventId> [--summary=…] [--from=… --to=…] [--location=…]
+ *           [--description=…] [--attendees=a,b] --send-updates=all|none --account=<a> --json --no-input
+ *           (an empty --location= / --description= clears it; --attendees REPLACES the list)
+ *   delete: calendar delete primary <eventId> --send-updates=all|none --force --account=<a> --json --no-input
+ *           (--force: gog otherwise asks for confirmation, and --no-input turns that into a failure)
  * Every value is passed as ONE `--flag=value` element (execFile, no shell), so a
  * value can never be read as another flag; ids are additionally allowlisted.
  */
@@ -94,6 +99,110 @@ export function createArgs(account: string, c: CreateInput): string[] {
   if (c.attendees.length) args.push(`--send-updates=${c.notify ? "all" : "none"}`);
   args.push(`--account=${account}`, "--json", "--no-input");
   return args;
+}
+
+export interface UpdateInput {
+  eventId: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  /** "" clears it. */
+  location?: string;
+  /** "" clears it. */
+  description?: string;
+  /** Replaces the whole guest list when present. */
+  attendees?: string[];
+  notify: boolean;
+}
+
+const optText = (b: Record<string, unknown>, k: "location" | "description", max: number): string | undefined => {
+  const v = b[k];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") throw new ActionInputError(`${k}: must be a string`);
+  noCtl(k, v);
+  if (v.length > max) throw new ActionInputError(`${k}: too long`);
+  return v;
+};
+
+/** Validate an edit: the event id plus at least one field. start/end go together. */
+export function validateUpdateInput(b: Record<string, unknown>): UpdateInput {
+  const out: UpdateInput = { eventId: validateEventId(b.eventId), notify: b.notify !== false };
+  if (b.title !== undefined && b.title !== null) {
+    const title = typeof b.title === "string" ? b.title.trim() : "";
+    if (!title) throw new ActionInputError("title: may not be empty");
+    noCtl("title", title);
+    if (title.length > CAL_LIMITS.maxTitle) throw new ActionInputError("title: too long");
+    out.title = title;
+  }
+  const hasStart = b.start !== undefined && b.start !== null;
+  const hasEnd = b.end !== undefined && b.end !== null;
+  if (hasStart !== hasEnd) throw new ActionInputError("start and end: send both or neither");
+  if (hasStart) {
+    const start = typeof b.start === "string" ? b.start.trim() : "";
+    const end = typeof b.end === "string" ? b.end.trim() : "";
+    if (!RFC3339_RE.test(start) || Number.isNaN(Date.parse(start))) throw new ActionInputError("start: an RFC 3339 date-time with offset is required");
+    if (!RFC3339_RE.test(end) || Number.isNaN(Date.parse(end))) throw new ActionInputError("end: an RFC 3339 date-time with offset is required");
+    const span = Date.parse(end) - Date.parse(start);
+    if (span <= 0) throw new ActionInputError("end: must be after start");
+    if (span > MAX_SPAN_MS) throw new ActionInputError("end: an event may span at most 31 days");
+    out.start = start;
+    out.end = end;
+  }
+  const loc = optText(b, "location", CAL_LIMITS.maxLocation);
+  if (loc !== undefined) out.location = loc;
+  const desc = optText(b, "description", CAL_LIMITS.maxDescription);
+  if (desc !== undefined) out.description = desc;
+  if (b.attendees !== undefined && b.attendees !== null) {
+    if (!Array.isArray(b.attendees)) throw new ActionInputError("attendees: must be a list of addresses");
+    if (b.attendees.length > CAL_LIMITS.maxAttendees) throw new ActionInputError(`attendees: at most ${CAL_LIMITS.maxAttendees}`);
+    out.attendees = [...new Set(b.attendees.map((a, i) => validateAddress(`attendees[${i}]`, a)))];
+  }
+  if (out.title === undefined && out.start === undefined && out.location === undefined && out.description === undefined && out.attendees === undefined) {
+    throw new ActionInputError("nothing to update: send at least one of title, start+end, location, description, attendees");
+  }
+  return out;
+}
+
+export function updateArgs(account: string, u: UpdateInput): string[] {
+  const args = ["calendar", "update", "primary", validateEventId(u.eventId)];
+  if (u.title !== undefined) args.push(`--summary=${u.title}`);
+  if (u.start !== undefined && u.end !== undefined) args.push(`--from=${u.start}`, `--to=${u.end}`);
+  if (u.location !== undefined) args.push(`--location=${u.location}`);
+  if (u.description !== undefined) args.push(`--description=${u.description}`);
+  if (u.attendees !== undefined) args.push(`--attendees=${u.attendees.join(",")}`);
+  args.push(`--send-updates=${u.notify ? "all" : "none"}`, `--account=${account}`, "--json", "--no-input");
+  return args;
+}
+
+export function deleteArgs(account: string, eventId: string, notify: boolean): string[] {
+  return ["calendar", "delete", "primary", validateEventId(eventId), `--send-updates=${notify ? "all" : "none"}`, "--force", `--account=${account}`, "--json", "--no-input"];
+}
+
+/** The event object out of gog's JSON (`{event: {...}}` or the bare event), or null. */
+export function parseEvent(stdout: string): Record<string, unknown> | null {
+  try {
+    const j = JSON.parse(stdout) as Record<string, unknown>;
+    const ev = (j && typeof j.event === "object" && j.event ? j.event : j) as Record<string, unknown>;
+    return ev && typeof ev.id === "string" ? ev : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Google / gog refusals of an update or delete that provably changed nothing
+ * upstream (the event is gone, you may not edit it, gog's own flag validation).
+ * Returns a code + friendly detail, or null for anything unrecognised (stays
+ * outcome-unknown: the key is kept, never a blind retry).
+ */
+export function classifyCalendarWriteRefusal(message: string): { code: "event_not_found" | "not_editable" | "rejected"; status: 404 | 409; detail: string } | null {
+  if (/\b(404|410)\b|not ?found|has been deleted|resource has been removed/i.test(message))
+    return { code: "event_not_found", status: 404, detail: "That event no longer exists in Google Calendar (it may already be deleted)." };
+  if (/\b403\b|forbidden|insufficient permission|writer access|requiredAccessLevel|not the organizer|cannot (modify|change|edit)/i.test(message))
+    return { code: "not_editable", status: 409, detail: "Google Calendar does not let this account change that event (you are probably not its organizer)." };
+  if (/no (updates|changes|fields) (provided|specified)|invalid (time|date|rfc ?3339)|must be (after|before)/i.test(message))
+    return { code: "rejected", status: 409, detail: "gog refused the change before contacting Google." };
+  return null;
 }
 
 /** Pull the created event's id/link out of gog's JSON (tolerant of envelope shapes). */

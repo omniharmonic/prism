@@ -6,7 +6,7 @@ import { vaultApi } from "../../lib/parachute/client";
 import { isDesktop } from "../../lib/platform";
 import { useHostServices } from "../../data/HostServicesContext";
 import { useLiveActions } from "../../data/LiveActionsContext";
-import { LiveActionError, liveActionErrorText, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
+import { LiveActionError, liveActionErrorText, type CalendarUpdateParams, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -131,12 +131,21 @@ export default function CalendarDashboard(_props: RendererProps) {
     setEditingEvent(null);
   }, [selectedDate, today]);
 
-  const handleDeleteEvent = useCallback(async (eventId: string) => {
-    if (!confirm("Delete this event?")) return;
-    await calendarApi.deleteEvent(eventId);
+  // Desktop: its Tauri command behind a confirm(). Web/native: the server's live
+  // action, behind the detail panel's own two-step confirm (with "notify guests").
+  const handleDeleteEvent = useCallback(async (eventId: string, notify = true) => {
+    if (isDesktop) {
+      if (!confirm("Delete this event?")) return;
+      await calendarApi.deleteEvent(eventId);
+    } else if (liveCal) {
+      // Throws on failure — the panel shows the message and keeps the event open.
+      await liveCal.calendarDelete(eventId, { notify });
+    } else {
+      return;
+    }
     setSelectedEvent(null);
     refreshEvents();
-  }, [refreshEvents]);
+  }, [refreshEvents, liveCal]);
 
   const handleOpenMeetingNote = useCallback(async (ev: CalEvent) => {
     try {
@@ -304,7 +313,7 @@ export default function CalendarDashboard(_props: RendererProps) {
               event={selectedEvent}
               onClose={() => setSelectedEvent(null)}
               onEdit={() => { setEditingEvent(selectedEvent); setSelectedEvent(null); setShowCreateForm(true); }}
-              onDelete={() => selectedEvent.id && handleDeleteEvent(selectedEvent.id)}
+              onDelete={(notify) => (selectedEvent.id ? handleDeleteEvent(selectedEvent.id, notify) : Promise.resolve())}
               onOpenNotes={() => handleOpenMeetingNote(selectedEvent)}
               onOpenTranscript={(noteId, label) => openTab(noteId, label, "document")}
               live={liveCal}
@@ -525,13 +534,32 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
   event: CalEvent;
   onClose: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  /** `notify` = email guests about the cancellation (live path only). */
+  onDelete: (notify: boolean) => Promise<void>;
   onOpenNotes: () => void;
   onOpenTranscript: (noteId: string, label: string) => void;
-  /** Server live actions (web/native): RSVP to a Google-synced invitation. */
+  /** Server live actions (web/native): RSVP, edit and delete a Google-synced event. */
   live?: LiveActionsClient | null;
 }) {
   const meetUrl = event.hangoutLink || event.meetUrl;
+  // Edit / delete mutate Google Calendar: the desktop through Tauri, a thin client
+  // through the server's live actions — only for events that came from Google.
+  const canMutate = isDesktop || (!!live && !!event.id && !!event.htmlLink);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [notifyGuests, setNotifyGuests] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const doDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(notifyGuests);
+    } catch (e) {
+      setDeleteError(liveActionErrorText(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
   // RSVP only for events that came from Google (they carry an htmlLink) and
   // have guests; the id is then the Google event id.
   const canRsvp = !!live && !!event.id && !!event.htmlLink && (event.attendees?.length ?? 0) > 0;
@@ -683,18 +711,50 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         <button onClick={onOpenNotes} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
           <FileText size={12} /> Meeting Notes
         </button>
-        {/* Editing/deleting an event mutates Google Calendar — desktop only. */}
-        {isDesktop && (
+        {canMutate && (
           <>
             <button onClick={onEdit} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               <Pencil size={12} /> Edit
             </button>
-            <button onClick={onDelete} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}>
+            <button
+              onClick={() => (isDesktop ? void onDelete(true) : setConfirmDelete(true))}
+              aria-label="Delete event"
+              title="Delete event"
+              className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]"
+              style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}
+            >
               <Trash2 size={12} />
             </button>
           </>
         )}
       </div>
+      {confirmDelete && !isDesktop && (
+        <div className="space-y-2 rounded p-2" style={{ border: "1px solid var(--color-danger)" }} role="alertdialog" aria-label="Confirm delete">
+          <div className="text-xs" style={{ color: "var(--text-primary)" }}>
+            Delete this event from Google Calendar? Its meeting note is kept (marked cancelled).
+          </div>
+          {(event.attendees?.length ?? 0) > 0 && (
+            <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={notifyGuests} onChange={(e) => setNotifyGuests(e.target.checked)} />
+              {notifyGuests ? "Guests will be emailed a cancellation" : "Don't email guests"}
+            </label>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={doDelete}
+              disabled={deleting}
+              className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
+              style={{ background: "var(--color-danger)", color: "white" }}
+            >
+              {deleting ? "Deleting..." : "Delete event"}
+            </button>
+            <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="px-2 py-1 rounded text-xs" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+              Cancel
+            </button>
+          </div>
+          {deleteError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{deleteError}</div>}
+        </div>
+      )}
       {canRsvp && (
         <div className="flex items-center gap-2 flex-wrap">
           {!rsvpNA && <span className="text-xs" style={{ color: "var(--text-muted)" }}>RSVP</span>}
@@ -717,7 +777,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   defaultDate: Date | null;
   onClose: () => void;
   onSaved: () => void;
-  /** Server live actions (web/native, create only). */
+  /** Server live actions (web/native): create, and edit a Google-synced event. */
   live?: LiveActionsClient | null;
 }) {
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -733,6 +793,8 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   const [attendeesVal, setAttendeesVal] = useState("");
   const [notifyAttendees, setNotifyAttendees] = useState(true);
   const [saving, setSaving] = useState(false);
+  // The form's starting values, to send only real changes on a live edit.
+  const [initial] = useState(() => ({ date, startTime, endTime }));
 
   const handleSave = async () => {
     if (!summary.trim()) return;
@@ -742,7 +804,25 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
       const end = `${date}T${endTime}:00`;
 
       setSaveError(null);
-      if (isEdit && event?.id) {
+      if (isEdit && event?.id && live) {
+        // Server live action: send ONLY what the owner changed (an untouched
+        // all-day event is never turned into a timed one; an untouched guest list
+        // is never replaced).
+        const p: CalendarUpdateParams = { eventId: event.id, notify: notifyAttendees };
+        if (summary.trim() !== (event.summary || "")) p.title = summary.trim();
+        if (date !== initial.date || startTime !== initial.startTime || endTime !== initial.endTime) {
+          p.start = new Date(start).toISOString();
+          p.end = new Date(end).toISOString();
+        }
+        if (locationVal !== (event.location || "")) p.location = locationVal;
+        if (descVal !== (event.description || "")) p.description = descVal;
+        if (attendeesVal.trim()) p.attendees = attendeesVal.split(",").map((s) => s.trim()).filter(Boolean);
+        if (Object.keys(p).length <= 2) {
+          onClose();
+          return;
+        }
+        await live.calendarUpdate(p);
+      } else if (isEdit && event?.id) {
         await calendarApi.updateEvent(event.id, summary, start, end, attendeesVal ? attendeesVal.split(",").map((s) => s.trim()) : undefined, descVal || undefined);
       } else if (live) {
         // The server wants RFC 3339 with an offset: the form's local wall time → UTC.
@@ -818,6 +898,15 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
             <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
             {notifyAttendees ? "Attendees will be emailed an invite" : "Don't email attendees an invite"}
           </label>
+        )}
+        {live && isEdit && ((event?.attendees?.length ?? 0) > 0 || attendeesVal.trim()) && (
+          <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+            <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
+            {notifyAttendees ? "Guests will be emailed about the change" : "Don't email guests about the change"}
+          </label>
+        )}
+        {live && isEdit && (
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>Leave attendees empty to keep the current guest list; a list replaces it.</div>
         )}
 
         <textarea

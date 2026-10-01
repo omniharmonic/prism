@@ -60,7 +60,21 @@ import {
   type MailboxResult,
   type SendInput,
 } from "../actions/email";
-import { classifyRsvpRefusal, createArgs, parseCreated, rsvpArgs, runGog, validateCreateInput, validateEventId as validateCalEventId } from "../actions/calendar";
+import {
+  classifyCalendarWriteRefusal,
+  classifyRsvpRefusal,
+  createArgs,
+  deleteArgs,
+  parseCreated,
+  parseEvent,
+  rsvpArgs,
+  runGog,
+  updateArgs,
+  validateCreateInput,
+  validateEventId as validateCalEventId,
+  validateUpdateInput,
+} from "../actions/calendar";
+import { reflectLiveCalendarChange } from "../worker/calendar";
 import { isJoined, matrixActionClient, txnIdFor, validateBody, validateEventId as validateMxEventId, validateReactionKey, validateRoomId } from "../actions/matrix";
 import {
   IDEMPOTENCY_KEY_RE,
@@ -557,6 +571,90 @@ actionsApi.post(
       const out = parseCreated(await runGog(createArgs(account, validateCreateInput(ctx.body))));
       if (out.eventId) ctx.target.eventId = out.eventId;
       return out;
+    },
+  }),
+);
+
+/**
+ * A gog write failure → a provable "nothing changed upstream" Refusal (key
+ * released, `sent: false`) when gog/Google said so; else rethrown unchanged
+ * (outcome unknown: the key is kept and replayed). A missing gog binary stays
+ * as runGog reported it (502, `sent: false`).
+ */
+function classifyWriteFailure(e: unknown): never {
+  if (e instanceof ActionTransportError && !/ENOENT|command not found|executable file not found/i.test(e.message)) {
+    const r = classifyCalendarWriteRefusal(e.message);
+    if (r) throw new Refusal(r.code, r.detail, r.status, false);
+  }
+  throw e;
+}
+
+actionsApi.post(
+  "/calendar/update",
+  route({
+    action: "calendar.update",
+    family: "calendar",
+    rate: CAL_RATE,
+    // Updating notifies guests (`notify`, default on): a lost response must never
+    // become a second round of update emails.
+    requireKey: true,
+    prepare: (ctx) => {
+      agentRefused(ctx, "editing events");
+      const u = validateUpdateInput(ctx.body);
+      ctx.target.eventId = u.eventId;
+      ctx.target.fields = [u.title !== undefined && "title", u.start !== undefined && "time", u.location !== undefined && "location", u.description !== undefined && "description", u.attendees !== undefined && "attendees"].filter(Boolean);
+      if (u.attendees?.length) ctx.target.attendeesHash = recipientsHash(u.attendees);
+      ctx.target.notify = u.notify;
+    },
+    run: async (ctx) => {
+      const u = validateUpdateInput(ctx.body);
+      const account = googleAccount(ctx.actor);
+      let stdout: string;
+      try {
+        stdout = await runGog(updateArgs(account, u));
+      } catch (e) {
+        classifyWriteFailure(e);
+      }
+      const event = parseEvent(stdout);
+      // Reflect it on the meeting note now (best-effort, never fails the action:
+      // Google already changed). The ingest's next pass converges anything missed.
+      const reflected = await reflectLiveCalendarChange(vaultClient(primaryVaultId()), primaryVaultId(), u.eventId, {
+        kind: "update",
+        event,
+        fields: { title: u.title, start: u.start, end: u.end, location: u.location, attendees: u.attendees },
+      });
+      ctx.target.note = reflected.outcome;
+      const htmlLink = event && typeof event.htmlLink === "string" && /^https:\/\//.test(event.htmlLink) ? event.htmlLink : null;
+      return { eventId: u.eventId, htmlLink, note: reflected };
+    },
+  }),
+);
+
+actionsApi.post(
+  "/calendar/delete",
+  route({
+    action: "calendar.delete",
+    family: "calendar",
+    rate: CAL_RATE,
+    requireKey: true,
+    prepare: (ctx) => {
+      agentRefused(ctx, "deleting events");
+      ctx.target.eventId = validateCalEventId(ctx.body.eventId);
+      if (ctx.body.notify !== undefined && typeof ctx.body.notify !== "boolean") throw new ActionInputError("notify: true or false");
+      ctx.target.notify = ctx.body.notify !== false;
+    },
+    run: async (ctx) => {
+      const eventId = ctx.body.eventId as string;
+      const account = googleAccount(ctx.actor);
+      try {
+        await runGog(deleteArgs(account, eventId, ctx.body.notify !== false));
+      } catch (e) {
+        classifyWriteFailure(e);
+      }
+      // Soft-cancel the meeting note (never a hard delete: it may hold notes).
+      const reflected = await reflectLiveCalendarChange(vaultClient(primaryVaultId()), primaryVaultId(), eventId, { kind: "delete" });
+      ctx.target.note = reflected.outcome;
+      return { eventId, deleted: true, note: reflected };
     },
   }),
 );

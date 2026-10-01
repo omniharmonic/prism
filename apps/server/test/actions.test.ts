@@ -71,11 +71,12 @@ const fakeMailbox: MailboxOps = {
 };
 let gogCalls: string[][];
 let gogFail: string | null = null;
+let gogUpdateOut: string | null = null;
 let mxEvents: Array<{ roomId: string; type: string; txnId: string; content: Record<string, unknown> }>;
 let joined: string[];
 let fv: FakeVault;
 
-const FLAGS = ["actionsEmailEnabled", "actionsCalendarEnabled", "actionsMatrixEnabled", "actionsMatrixAgentRooms", "actionsEmailSendPerHour"] as const;
+const FLAGS = ["actionsEmailEnabled", "actionsCalendarEnabled", "actionsMatrixEnabled", "actionsMatrixAgentRooms", "actionsEmailSendPerHour", "actionsCalendarPer10Min"] as const;
 const saved: Record<string, unknown> = {};
 for (const k of FLAGS) saved[k] = (config as Record<string, unknown>)[k];
 const setCfg = (o: Partial<Record<(typeof FLAGS)[number], unknown>>) => Object.assign(config as Record<string, unknown>, o);
@@ -89,14 +90,17 @@ beforeEach(() => {
   mboxFound = "ok";
   gogCalls = [];
   gogFail = null;
+  gogUpdateOut = null;
   mxEvents = [];
   joined = ["!room1:hs.example.test", "!agentroom:hs.example.test"];
-  setCfg({ actionsEmailEnabled: true, actionsCalendarEnabled: true, actionsMatrixEnabled: true, actionsMatrixAgentRooms: ["!agentroom:hs.example.test"], actionsEmailSendPerHour: 1000 });
+  setCfg({ actionsEmailEnabled: true, actionsCalendarEnabled: true, actionsMatrixEnabled: true, actionsMatrixAgentRooms: ["!agentroom:hs.example.test"], actionsEmailSendPerHour: 1000, actionsCalendarPer10Min: 100000 });
   configureEmailActions({ smtp: fakeSmtp, mailbox: fakeMailbox });
   setActionsGogRunnerForTests(async (args) => {
     gogCalls.push(args);
     if (gogFail) throw new Error(gogFail);
-    return args[1] === "create" ? JSON.stringify({ event: { id: "evt123", htmlLink: "https://calendar.example.test/e/evt123" } }) : "{}";
+    if (args[1] === "create") return JSON.stringify({ event: { id: "evt123", htmlLink: "https://calendar.example.test/e/evt123" } });
+    if (args[1] === "update") return gogUpdateOut ?? "{}";
+    return "{}";
   });
   setMatrixActionClientForTests(() => ({
     async sendEvent(roomId: string, type: "m.room.message" | "m.reaction", txnId: string, content: Record<string, unknown>) {
@@ -133,6 +137,8 @@ const ROUTES: Array<[string, unknown]> = [
   ["/email/mark-read", { messageId: "m@example.test", read: true }],
   ["/calendar/rsvp", { eventId: "abc", response: "accepted" }],
   ["/calendar/create", { title: "t", start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z" }],
+  ["/calendar/update", { eventId: "abc", title: "renamed" }],
+  ["/calendar/delete", { eventId: "abc" }],
   ["/matrix/send", { roomId: "!room1:hs.example.test", body: "hi" }],
   ["/matrix/react", { roomId: "!room1:hs.example.test", eventId: "$e1", key: "👍" }],
 ];
@@ -390,6 +396,181 @@ test("calendar rsvp + create: exact gog argv, one element per value; bad ids ref
   for (const [p, b] of bad) assert.equal((await post(p, b, { ...owner(), "idempotency-key": freshKey() })).status, 400, JSON.stringify(b));
   assert.equal(gogCalls.length, 2);
   assert.equal((await post("/calendar/create", { title: "t", start: "2026-10-02T15:00:00Z", end: "2026-10-02T16:00:00Z" })).status, 400, "create needs a key");
+});
+
+// ── calendar update / delete (parity A) ─────────────────────────────────────
+
+const keyed = () => ({ ...owner(), "idempotency-key": freshKey() });
+const meetingNote = (over: Record<string, unknown> = {}) =>
+  fv.put({
+    id: "m1",
+    path: "vault/meetings/2026-10-02/Planning",
+    content: "# Planning\n\n## Meeting Notes\n\nmy notes",
+    tags: ["meeting"],
+    metadata: { type: "meeting", title: "Planning", calendarEventId: "evt1", date: "2026-10-02", start: "2026-10-02T15:00:00-06:00", end: "2026-10-02T16:00:00-06:00", attendees: ["Alice"], location: "Room 1", meetLink: null, htmlLink: "https://calendar.example.test/e/evt1", event_status: "confirmed", transcriptNoteId: "t9", ...over },
+  });
+const patchCalls = () => fv.calls.filter((c) => c.method === "PATCH");
+
+test("calendar update + delete: exact gog argv (one element per value, injection-safe); validation refuses before gog", async () => {
+  const r = await post(
+    "/calendar/update",
+    { eventId: "evt1_20261002T210000Z", title: "Plan --with-zoom", start: "2026-10-02T15:30:00-06:00", end: "2026-10-02T16:30:00-06:00", location: "", description: "a\nb", attendees: ["alice@example.test", "bob@example.test"], notify: false },
+    keyed(),
+  );
+  assert.equal(r.status, 200);
+  assert.deepEqual(gogCalls[0], [
+    "calendar", "update", "primary", "evt1_20261002T210000Z",
+    "--summary=Plan --with-zoom", "--from=2026-10-02T15:30:00-06:00", "--to=2026-10-02T16:30:00-06:00",
+    "--location=", "--description=a\nb", "--attendees=alice@example.test,bob@example.test",
+    "--send-updates=none", `--account=${SELF}`, "--json", "--no-input",
+  ]);
+  assert.equal((await post("/calendar/update", { eventId: "evt2", title: "Only title" }, keyed())).status, 200);
+  assert.deepEqual(gogCalls[1], ["calendar", "update", "primary", "evt2", "--summary=Only title", "--send-updates=all", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.equal((await post("/calendar/delete", { eventId: "evt3" }, keyed())).status, 200);
+  assert.deepEqual(gogCalls[2], ["calendar", "delete", "primary", "evt3", "--send-updates=all", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.equal((await post("/calendar/delete", { eventId: "evt4", notify: false }, keyed())).status, 200);
+  assert.deepEqual(gogCalls[3], ["calendar", "delete", "primary", "evt4", "--send-updates=none", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+
+  const bad: Array<[string, unknown]> = [
+    ["/calendar/update", { eventId: "--account=evil", title: "x" }],
+    ["/calendar/update", { eventId: "-x", title: "x" }],
+    ["/calendar/update", { eventId: "evt1" }], // nothing to change
+    ["/calendar/update", { eventId: "evt1", title: "  " }],
+    ["/calendar/update", { eventId: "evt1", title: "a\r\nBcc: x" }],
+    ["/calendar/update", { eventId: "evt1", start: "2026-10-02T15:00:00Z" }], // start without end
+    ["/calendar/update", { eventId: "evt1", start: "2026-10-02T16:00:00Z", end: "2026-10-02T15:00:00Z" }],
+    ["/calendar/update", { eventId: "evt1", start: "tomorrow", end: "2026-10-02T15:00:00Z" }],
+    ["/calendar/update", { eventId: "evt1", attendees: ["Eve <eve@example.test>"] }],
+    ["/calendar/update", { eventId: "evt1", attendees: "alice@example.test" }],
+    ["/calendar/update", { eventId: "evt1", location: "x\ny" }],
+    ["/calendar/delete", { eventId: "--force" }],
+    ["/calendar/delete", { eventId: "evt1", notify: "yes" }],
+    ["/calendar/delete", {}],
+  ];
+  for (const [p, b] of bad) assert.equal((await post(p, b, keyed())).status, 400, JSON.stringify(b));
+  assert.equal(gogCalls.length, 4, "nothing invalid reached gog");
+  assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" })).status, 400, "update needs a key");
+  assert.equal((await post("/calendar/delete", { eventId: "evt1" })).status, 400, "delete needs a key");
+});
+
+test("calendar update + delete: idempotent replay (gog runs once), key reuse 422, CSRF, audit holds ids not titles", async () => {
+  const key = freshKey();
+  const h = { ...owner(), "idempotency-key": key };
+  assert.equal((await post("/calendar/delete", { eventId: "evt1" }, h)).status, 200);
+  const again = await post("/calendar/delete", { eventId: "evt1" }, h);
+  assert.equal(again.status, 200);
+  assert.equal(again.headers.get("idempotent-replayed"), "true");
+  assert.equal(gogCalls.length, 1);
+  assert.equal((await post("/calendar/delete", { eventId: "evt2" }, h)).status, 422);
+  // CSRF: a form body / a sibling-site fetch / a foreign Origin never reach gog.
+  assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" }, { ...keyed(), "content-type": "text/plain" })).status, 415);
+  assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" }, { ...keyed(), "sec-fetch-site": "same-site" })).status, 403);
+  assert.equal((await post("/calendar/delete", { eventId: "evt1" }, { ...keyed(), origin: "https://evil.example.test" })).status, 403);
+  assert.equal(gogCalls.length, 1);
+  assert.equal((await post("/calendar/update", { eventId: "evt5", title: "Secret project title", attendees: ["alice@example.test"] }, keyed())).status, 200);
+  const rows = auditRows().filter((r) => String(r.action).startsWith("calendar."));
+  assert.deepEqual(rows.map((r) => [r.action, r.status]), [["calendar.delete", "ok"], ["calendar.delete", "replayed"], ["calendar.delete", "refused"], ["calendar.update", "ok"]]);
+  const t = JSON.parse(String(rows.at(-1)!.target)) as Record<string, unknown>;
+  assert.equal(t.eventId, "evt5");
+  assert.deepEqual(t.fields, ["title", "attendees"]);
+  assert.equal(typeof t.attendeesHash, "string");
+  const all = JSON.stringify(auditRows());
+  assert.ok(!all.includes("Secret project") && !all.includes("alice@"), "no title or address in the audit");
+});
+
+test("calendar update + delete: gog/Google refusals that changed nothing → sent:false + key released; unknown failures keep the key", async () => {
+  const cases: Array<[string, number, string]> = [
+    ["googleapi: Error 404: Not Found, notFound", 404, "event_not_found"],
+    ["googleapi: Error 410: Resource has been deleted, deleted", 404, "event_not_found"],
+    ["googleapi: Error 403: You need to have writer access to this calendar., requiredAccessLevel", 409, "not_editable"],
+  ];
+  for (const [msg, status, code] of cases) {
+    for (const [p, b] of [["/calendar/update", { eventId: "evt1", title: "x" }], ["/calendar/delete", { eventId: "evt1" }]] as const) {
+      gogFail = `exit status 1: ${msg}`;
+      const key = freshKey();
+      const r = await post(p, b, { ...owner(), "idempotency-key": key });
+      assert.equal(r.status, status, `${p} ${msg}`);
+      const j = (await r.json()) as Record<string, unknown>;
+      assert.equal(j.error, code);
+      assert.equal(j.sent, false);
+      gogFail = null;
+      assert.equal((await post(p, b, { ...owner(), "idempotency-key": key })).status, 200, "key released → same key retries");
+    }
+  }
+  gogFail = "exit status 1: connection reset by peer";
+  const key = freshKey();
+  const u = await post("/calendar/delete", { eventId: "evt1" }, { ...owner(), "idempotency-key": key });
+  assert.equal(u.status, 502);
+  assert.equal(((await u.json()) as Record<string, unknown>).sent, "unknown");
+  gogFail = null;
+  assert.equal((await post("/calendar/delete", { eventId: "evt1" }, { ...owner(), "idempotency-key": key })).status, 502, "kept + replayed, gog not re-run");
+  assert.equal(patchCalls().length, 0, "no vault reflection after a failed write");
+});
+
+test("calendar update reflects onto the meeting note now (ingest metadata shape, if_updated_at, path/body untouched)", async () => {
+  meetingNote();
+  fv.put({ id: "hand", path: "vault/meetings/2026-10-02/Planning-notes", tags: ["meeting"], metadata: { type: "meeting", title: "Planning" } });
+  gogUpdateOut = JSON.stringify({
+    event: {
+      id: "evt1",
+      summary: "Planning v2",
+      start: { dateTime: "2026-10-02T15:30:00-06:00" },
+      end: { dateTime: "2026-10-02T16:30:00-06:00" },
+      location: "Room 1",
+      attendees: [{ displayName: "Alice", email: "alice@example.test" }],
+      htmlLink: "https://calendar.example.test/e/evt1",
+      status: "confirmed",
+    },
+  });
+  const r = await post("/calendar/update", { eventId: "evt1", title: "Planning v2", start: "2026-10-02T15:30:00-06:00", end: "2026-10-02T16:30:00-06:00" }, keyed());
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as { note: { noteId: string; outcome: string }; htmlLink: string };
+  assert.deepEqual(j.note, { noteId: "m1", outcome: "updated" });
+  assert.equal(j.htmlLink, "https://calendar.example.test/e/evt1");
+  const p = patchCalls();
+  assert.equal(p.length, 1);
+  assert.match(p[0]!.path, /\/notes\/m1$/);
+  const body = p[0]!.body as Record<string, unknown>;
+  assert.equal(body.if_updated_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(body.force, undefined);
+  assert.deepEqual(body.metadata, { title: "Planning v2", start: "2026-10-02T15:30:00-06:00", end: "2026-10-02T16:30:00-06:00" });
+  assert.equal(body.content, undefined);
+  assert.equal(body.path, undefined);
+
+  // No returned event → the owner's fields are mapped (location "" clears it).
+  gogUpdateOut = "{}";
+  fv.calls.length = 0;
+  meetingNote();
+  const r2 = await post("/calendar/update", { eventId: "evt1", location: "" }, keyed());
+  assert.equal(((await r2.json()) as { note: { outcome: string } }).note.outcome, "updated");
+  assert.deepEqual((patchCalls()[0]!.body as Record<string, unknown>).metadata, { location: null });
+
+  // An event with no meeting note yet: Google changed, nothing to reflect.
+  fv.calls.length = 0;
+  const r3 = await post("/calendar/update", { eventId: "unknown-evt", title: "x" }, keyed());
+  assert.equal(r3.status, 200);
+  assert.equal(((await r3.json()) as { note: { outcome: string } }).note.outcome, "no-note");
+  assert.equal(patchCalls().length, 0);
+});
+
+test("calendar delete soft-cancels the meeting note (never deletes it; hand-made notes untouched)", async () => {
+  meetingNote();
+  fv.put({ id: "hand", path: "vault/meetings/2026-10-02/Other", tags: ["meeting"], metadata: { type: "meeting", title: "Other" } });
+  const r = await post("/calendar/delete", { eventId: "evt1" }, keyed());
+  assert.equal(r.status, 200);
+  assert.deepEqual(((await r.json()) as { note: unknown }).note, { noteId: "m1", outcome: "cancelled" });
+  const p = patchCalls();
+  assert.equal(p.length, 1);
+  assert.deepEqual((p[0]!.body as Record<string, unknown>).metadata, { event_status: "cancelled" });
+  assert.ok((p[0]!.body as Record<string, unknown>).if_updated_at);
+  assert.equal(fv.calls.filter((c) => c.method === "DELETE").length, 0, "never a hard delete");
+  assert.ok(fv.notes.has("m1") && fv.notes.has("hand"));
+  // A vault conflict is reported, the action still succeeds (Google already changed).
+  meetingNote();
+  fv.conflictOnNextWrite = true;
+  const r2 = await post("/calendar/delete", { eventId: "evt1" }, keyed());
+  assert.equal(r2.status, 200);
+  assert.equal(((await r2.json()) as { note: { outcome: string } }).note.outcome, "conflict");
 });
 
 // ── origin: human vs agent ──────────────────────────────────────────────────
