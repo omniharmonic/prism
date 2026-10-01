@@ -24,6 +24,7 @@ import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
+import { initNativeExtras } from "./native/extras";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
@@ -220,6 +221,7 @@ async function start() {
   }
 
   startOutboxSync();
+  if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
   if (!capability) {
     initAgentDeepLink(); // push notification → /agent/:id (WP3.3); cold start is handled by agentLink above
     // Warm start: the app is already open when a notification is tapped — the SW

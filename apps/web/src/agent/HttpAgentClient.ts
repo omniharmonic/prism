@@ -11,8 +11,9 @@
 import { createHttpAgentClient } from "@prism/core";
 import { serverFetch, streamServerSSE } from "../transport";
 import { contextHeaders } from "../config";
+import { withTurnEndNotifications } from "../native/notifyTurnEnd";
 
-export const httpAgentClient = createHttpAgentClient({
+export const httpAgentClient = withTurnEndNotifications(createHttpAgentClient({
   fetch: (path, init) => serverFetch(path, init),
   sse: (path, opts) => streamServerSSE(path, opts),
   headers: () => contextHeaders(),
@@ -20,4 +21,4 @@ export const httpAgentClient = createHttpAgentClient({
     const h = contextHeaders();
     return `${h["X-Prism-Workspace"] ?? ""}/${h["X-Prism-Vault"] ?? ""}`;
   },
-});
+}));

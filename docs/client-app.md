@@ -147,6 +147,93 @@ Because the host hook is present, `@prism/core`'s `isDesktop` is **false** in th
 (`lib/platform.ts`). Desktop-only affordances such as Google Calendar writes stay hidden,
 just as in the PWA.
 
+## Native extras (WP4.2, desktop only)
+
+Five extras. None changes the navigation lock, the CSP, the origin-change confirmation or
+how the token is handled. Each is least-privilege; the command table is the whole new IPC
+surface.
+
+| Extra | Command | Window / capability file | Notes |
+|---|---|---|---|
+| Quick capture | `quick_capture {text}` | `quick-capture` window only, `capabilities/quick-capture.json` (grants `allow-quick-capture` and nothing else) | POSTs from Rust. The window never gets `get_token`. |
+| Notifications | `notify {title, body, sessionId?}` | `main`, `capabilities/default.json` | Shown only while the main window is NOT focused. |
+| Export | `export_note {content, suggestedName, format}` | `main`, `capabilities/default.json` | Destination comes from the native save panel only. |
+| Tray / global shortcut | none (Rust only) | none | No page-callable surface at all. |
+| Drag-drop | none (OS event, Rust only) | none | Content reaches the page as a DOM event. |
+
+**Menu-bar icon (tray).** Items: Quick capture…, Open Prism, Sign out, Quit Prism. Sign out
+runs the same path as the app menu (`signOut()` in `host.js`). Closing the main window now
+**hides** it, so the app stays in the menu bar; Cmd-Q or tray Quit exits, and a dock click
+or "Open Prism" shows the window again. The tray uses the app icon (a monochrome template
+icon is a polish item).
+
+**Quick capture** (tray item, File menu, global shortcut). A small always-on-top window
+that loads the static `quick-capture.html` from the bundle (apps/web/public). It has no app
+code, no host hook and no token. Its only call is `quick_capture {text}`:
+- Rust validates the text (non-empty, ≤100,000 bytes, no control characters except
+  `\n \r \t`), builds the request itself (`capture.rs`: one fixed destination, `POST
+  <configured origin>/api/notes`, path `vault/capture/<utc-date>/<HHMMSS>-<rand4>`, tag
+  `capture`, metadata `source`/`capturedAt`) and sends it with the stored device token. It
+  doesn't follow redirects, and no error message echoes a response body.
+- The page controls only the text. An empty text means "dismiss" (Esc/Cancel): the window
+  closes and nothing is sent. A signed-out client returns "You're signed out…".
+- It writes to the server's primary vault (the shell has no vault switcher). The note
+  appears in the app via the normal invalidation stream.
+
+**Global shortcut.** Default `CommandOrControl+Shift+Space`. Configure it in
+`client-settings.json` as `"quickCaptureShortcut"`: absent = default, `""` = off. It must
+include a modifier; an invalid or already-taken value is logged and ignored (the tray
+still works). Restart required. It is registered from Rust with the official
+`tauri-plugin-global-shortcut`; none of its commands is granted to any window, so page
+script can't register or observe global shortcuts.
+
+**Notifications.** The web layer wraps the agent client's stream (`native/notifyTurnEnd.ts`);
+the terminal `status` event of a turn (`done`, `error`, `interrupted`) calls
+`__PRISM_SHELL__.notify(...)` with generic text and the session id (no reply text).
+Rust (`notify.rs`) treats everything as untrusted display text: HTML tags and angle
+brackets are removed, control/bidi characters collapsed, title ≤80 and body ≤240 characters,
+session id must match `[A-Za-z0-9_-]{8,64}`; shown only if the main window is unfocused or
+hidden, and at most one per 1.5 s. Clicking a notification activates the app; notify-rust
+has no click callback on desktop, so the shell remembers the session id for 60 s and, when
+the main window next gains focus within that time, dispatches the in-app DOM event
+`prism:open-agent-session` (the same event the push deep link uses: no navigation). A
+focus change within 60 s of a notification therefore also opens that session. Background
+notifications for a closed app need APNs (WP5).
+`tauri-plugin-notification`/`-dialog` are deliberately not used: they inject JS shims
+(`window.Notification`, `alert`, `confirm`) into every webview. The shell calls their
+underlying libraries (`notify-rust`, `rfd`) from Rust, so there is no JS-reachable plugin
+surface. `verify-client.mjs` fails if either plugin is added.
+
+**Export.** File → Export Note as Markdown… (Cmd-Shift-E) / as HTML…. The menu fires
+`prism:export-note`; the page builds the content from the open note (turndown/marked,
+`native/extras.ts`) and calls `export_note`. Rust shows the native save panel, with a
+name sanitised by `export.rs` (no separators, reserved characters, leading dots, ≤80
+characters), and writes **only** to the path the panel returns (extension added if the user
+left it off; a folder is refused). The command has no path parameter (a unit test and
+`verify-client.mjs`-style checks keep it that way), and no fs permission exists for JS. HTML
+exports are wrapped in a standalone document whose CSP forbids script, so a note carrying
+markup can't run code when the file is opened. Content cap 20 MB. It returns only the file
+name.
+
+**Drag-drop.** Files dropped on the main window arrive as the OS drop event in Rust
+(`dropfiles.rs`). `.md/.markdown/.txt` up to 1 MiB each, 10 files and 4 MiB per drop, valid
+UTF-8, regular files only, are read; everything else is reported as "Attachments aren't
+supported yet." (binaries are never read or uploaded in this WP). The shell then delivers
+the CONTENT to the page as `prism:files-dropped`, and the page creates the notes through
+its normal gateway client (`native/extras.ts`: path `vault/imports/<date>/<slug>-<rand>`, tag
+`document`; `.md` rendered to HTML for the editor), then opens the first one.
+*Why not create them from Rust?* That would be a second note writer holding the bearer
+that ignores the active vault, the offline outbox and invalidation; and the page already
+has write authority through its own token path, so routing a user-dropped file's text
+through it adds none. The part that must stay in Rust (reading local files) can't be
+reached by the page: paths exist only inside the OS event, never as an argument.
+
+**Verified by** the Rust unit tests (`capture`, `notify`, `export`, `dropfiles`,
+`shortcut`) and `verify-client.mjs` (each capability file lists exactly its window's
+commands; quick-capture never holds `get_token`; the capture page calls only
+`quick_capture`; no notification/dialog plugin). Manual checklist:
+`apps/client/scripts/verify-client-flow.md` §8.
+
 ## Security surface
 
 - **CSP** is built at startup from the origin (`origin.rs` `build_csp`). The copy in
@@ -159,7 +246,7 @@ just as in the PWA.
   - `style-src` nonce injection is disabled (`dangerousDisableAssetCspModification:
     ["style-src"]`) so that `'unsafe-inline'` keeps working for editor libraries that
     inject `<style>`.
-- **Capabilities** (`capabilities/default.json`): the `main` window gets
+- **Capabilities** (`capabilities/default.json`): the `main` window gets (plus, since WP4.2, `allow-notify` and `allow-export-note`; the separate `quick-capture` window gets only `allow-quick-capture`, see Native extras)
   `allow-get-token`, `allow-sign-in`, `allow-sign-out`, `allow-get-server-origin`,
   `allow-set-server-origin` and `allow-open-external`, and nothing else.
   - `build.rs` declares the commands in the app manifest, so anything not granted is denied.

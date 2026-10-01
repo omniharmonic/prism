@@ -10,7 +10,8 @@
  *  2. CSP (tauri.conf.json): no localhost / :1940 / :1939, no wildcard http(s)/ws(s) sources,
  *     connect-src is exactly 'self' + Tauri IPC + one https origin + its wss twin;
  *  3. the frontend is the native web build (no devUrl, no localhost dev server);
- *  4. capabilities grant only the shell's six commands (no core:*, fs, shell, opener, http, remote);
+ *  4. each capability file lists exactly its window's commands (main: 8; quick-capture: 1, never get_token);
+ *     no core:*, fs, shell, opener, http, dialog, notification, global-shortcut or remote grants (WP4.2);
  *  5. Rust: no process spawning, no vault port, no fs/shell/http/sql plugins;
  *  6. dist-native: no service worker; the only `localhost:1940` strings are the known inert
  *     UI placeholders/defaults of the shared UI (desktop vault-switcher, server-side hub hint) —
@@ -78,21 +79,67 @@ check(!conf.build?.devUrl, "no devUrl (dev also serves the bundled native build)
 check(conf.build?.frontendDist === "../../web/dist-native", "frontendDist is apps/web/dist-native");
 check(JSON.stringify(conf.build).includes("build:native"), "before{Dev,Build}Command builds the native web bundle");
 
-// 4. capabilities
+// 4. capabilities: each capability file lists EXACTLY its window's commands (WP4.2).
+const EXPECTED_CAPS = {
+  "default.json": {
+    windows: ["main"],
+    permissions: ["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external", "allow-notify", "allow-export-note"],
+  },
+  // The capture window gets ONE command and never get_token: the bearer must not enter that webview.
+  "quick-capture.json": { windows: ["quick-capture"], permissions: ["allow-quick-capture"] },
+};
 const capFiles = readdirSync(join(tauriDir, "capabilities")).filter((f) => f.endsWith(".json"));
-const allowed = new Set(["allow-get-token", "allow-sign-in", "allow-sign-out", "allow-get-server-origin", "allow-set-server-origin", "allow-open-external"]);
+check(
+  JSON.stringify([...capFiles].sort()) === JSON.stringify(Object.keys(EXPECTED_CAPS).sort()),
+  `capability files are exactly ${Object.keys(EXPECTED_CAPS).join(", ")}`,
+  `unexpected capability files: ${capFiles.join(", ")}`,
+);
+const granted = new Map(); // permission -> windows that hold it
 for (const f of capFiles) {
   const cap = JSON.parse(readFileSync(join(tauriDir, "capabilities", f), "utf8"));
   const perms = (cap.permissions ?? []).map((p) => (typeof p === "string" ? p : p.identifier));
-  const extra = perms.filter((p) => !allowed.has(p));
-  check(extra.length === 0, `${f}: only the shell's commands are granted`, `${f}: unexpected permissions ${extra.join(", ")}`);
+  const want = EXPECTED_CAPS[f];
+  if (want) {
+    check(
+      JSON.stringify([...perms].sort()) === JSON.stringify([...want.permissions].sort()),
+      `${f}: grants exactly ${want.permissions.join(", ")}`,
+      `${f}: permissions are [${perms.join(", ")}], expected [${want.permissions.join(", ")}]`,
+    );
+    check(
+      JSON.stringify(cap.windows ?? []) === JSON.stringify(want.windows),
+      `${f}: applies only to window(s) ${want.windows.join(", ")}`,
+      `${f}: windows are ${JSON.stringify(cap.windows)}`,
+    );
+  }
+  check(
+    !perms.some((p) => /^(core|opener|fs|shell|http|dialog|notification|global-shortcut|clipboard|process|updater)[:-]/.test(p)),
+    `${f}: no core:/plugin permissions`,
+  );
   check(!cap.remote, `${f}: no remote-origin IPC`);
+  for (const p of perms) granted.set(p, [...(granted.get(p) ?? []), ...(cap.windows ?? [])]);
 }
+check(!(granted.get("allow-get-token") ?? []).includes("quick-capture"), "quick-capture window can NOT call get_token");
+check((granted.get("allow-quick-capture") ?? []).join() === "quick-capture", "quick_capture is granted to the quick-capture window only");
+// Every command declared in build.rs is granted to some window, and nothing else is granted.
+const buildRs = readFileSync(join(tauriDir, "build.rs"), "utf8");
+const declared = [...buildRs.matchAll(/^\s*"([a-z_]+)",\s*(?:\/\/.*)?$/gm)].map((m) => `allow-${m[1].replace(/_/g, "-")}`);
+check(
+  declared.length === 9 && declared.every((d) => granted.has(d)) && [...granted.keys()].every((g) => declared.includes(g)),
+  `build.rs declares ${declared.length} commands, each granted to a window, none extra`,
+  `build.rs commands [${declared.join(", ")}] vs granted [${[...granted.keys()].join(", ")}]`,
+);
+// The capture page itself: static, calls only quick_capture, no network of its own.
+const capPage = readFileSync(join(root, "apps/web/public/quick-capture.js"), "utf8");
+const capCmds = [...capPage.matchAll(/invoke\(\s*"([a-z_:|-]+)"/g)].map((m) => m[1]);
+check(capCmds.length > 0 && capCmds.every((c) => c === "quick_capture"), "quick-capture.js invokes only quick_capture", `quick-capture.js invokes: ${capCmds.join(", ")}`);
+check(!/get_token|__PRISM_HOST__|fetch\(|XMLHttpRequest|WebSocket/.test(capPage), "quick-capture.js has no token access and no network of its own");
 
 // 5. Rust
 const cargo = readFileSync(join(tauriDir, "Cargo.toml"), "utf8");
-for (const dep of ["tauri-plugin-shell", "tauri-plugin-fs", "tauri-plugin-http", "tauri-plugin-sql", "rusqlite"]) {
-  check(!cargo.includes(dep), `Cargo.toml has no ${dep}`);
+// The notification/dialog plugins inject JS shims (window.Notification, alert, confirm) into every webview and
+// add webview-callable commands; WP4.2 uses notify-rust / rfd from Rust instead. global-shortcut adds no script.
+for (const dep of ["tauri-plugin-shell", "tauri-plugin-fs", "tauri-plugin-http", "tauri-plugin-sql", "rusqlite", "tauri-plugin-notification", "tauri-plugin-dialog", "tauri-plugin-clipboard-manager"]) {
+  check(!new RegExp(`^\\s*${dep}\\s*=`, "m").test(cargo), `Cargo.toml has no ${dep}`);
 }
 const rs = walk(join(tauriDir, "src")).filter((f) => f.endsWith(".rs") || f.endsWith(".js"));
 for (const f of rs) {

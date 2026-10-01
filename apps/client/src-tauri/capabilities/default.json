@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The bundled app in the main window may call the shell's six commands and nothing else: no core:* plugin APIs, no opener, no fs, no shell. Remote origins get no IPC at all (no `remote` block).",
+  "description": "The bundled app in the main window may call the shell's eight commands and nothing else: no core:* plugin APIs, no opener, no fs, no shell, and no dialog/notification/global-shortcut permissions (WP4.2 uses those libraries from Rust only). Remote origins get no IPC at all (no `remote` block).",
   "windows": ["main"],
   "platforms": ["macOS", "windows", "linux", "iOS", "android"],
   "permissions": [
@@ -10,6 +10,8 @@
     "allow-sign-out",
     "allow-get-server-origin",
     "allow-set-server-origin",
-    "allow-open-external"
+    "allow-open-external",
+    "allow-notify",
+    "allow-export-note"
   ]
 }

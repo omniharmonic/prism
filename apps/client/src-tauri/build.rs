@@ -12,6 +12,10 @@ fn main() {
             "get_server_origin",
             "set_server_origin",
             "open_external",
+            // WP4.2
+            "quick_capture",
+            "notify",
+            "export_note",
         ]),
     ))
     .expect("failed to run tauri-build");

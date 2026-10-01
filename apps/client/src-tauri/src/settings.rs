@@ -21,6 +21,12 @@ pub struct Settings {
     pub server_origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowGeometry>,
+    /// Global shortcut that opens the quick-capture window (WP4.2). Absent =
+    /// the default (`CommandOrControl+Shift+Space`); an empty string disables
+    /// it. Validated at startup (needs a modifier); an invalid value is logged
+    /// and ignored. Restart required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_capture_shortcut: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
