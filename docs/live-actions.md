@@ -205,7 +205,7 @@ Times must be RFC 3339 with an offset, end after start, and the span at most 31
 days. A create runs with at most 50 attendees. `notify: false` →
 `--send-updates=none`.
 
-`calendar/rsvp` classifies gog's pre-send refusals ("event has no attendees", "cannot respond to your own event (you are the organizer)", not-a-guest) as `409 rsvp_not_applicable` with `sent: false`; the idempotency key is released. Unrecognised gog failures stay `502 upstream_failed`, `sent: "unknown"`.
+`calendar/rsvp` classifies gog's pre-send refusals (from its stderr only, see "Edit and delete" below) ("event has no attendees", "cannot respond to your own event (you are the organizer)", not-a-guest) as `409 rsvp_not_applicable` with `sent: false`; the idempotency key is released. Unrecognised gog failures stay `502 upstream_failed`, `sent: "unknown"`.
 
 ### Edit and delete (parity A)
 
@@ -223,6 +223,23 @@ delete: gog calendar delete primary <eventId> --send-updates=all|none --force
   plain addresses); `notify: false` → `--send-updates=none` (default `all`).
 - `calendar/delete {eventId, notify?}`: `--force` because gog otherwise asks for confirmation,
   which `--no-input` turns into a failure.
+- **Recurring events.** gog defaults to `--scope=all` (the whole series), so both actions first
+  read the event (`gog calendar event primary <id> --account=… --json --no-input`) and always
+  pass an explicit scope:
+  - one **occurrence** (`recurringEventId` set) → `--scope=single
+    --original-start=<originalStartTime.dateTime>`. The start must be strict RFC 3339 and agree
+    with an `_YYYYMMDDTHHMMSSZ` id suffix. All-day occurrences → `409 unsupported_instance`; an
+    id that looks like an occurrence but Google reports as standalone → `409 event_mismatch`;
+  - a **series** (`recurrence` set) → `409 recurring_series` (`sent: false`, key released)
+    unless the body carries `scope: "all"`, which the UI sends only from its separate
+    "Delete ALL occurrences" / "Apply to ALL occurrences" button → `--scope=all`;
+  - a plain event → `--scope=all` (that one event). `scope: "all"` on anything but a series is
+    a 400. A failed pre-read is `502`, `sent: false`.
+- **Classification reads gog's stderr only.** Node's execFile error message starts with
+  `Command failed: <argv>` — the owner's title or description — so it is never inspected. A
+  killed / signalled / timed-out run is always `sent: "unknown"`; a missing binary is recognised
+  only by `err.code === "ENOENT"`. This applies to rsvp and create as well. Errors and audit
+  rows hold the exit code + scrubbed stderr, never argv.
 - Both require an `Idempotency-Key`, are refused for agent origin, use the calendar rate bucket
   and are audited as `calendar.update` (target: event id, the NAMES of the changed fields,
   `attendeesHash`, notify — never the title or an address) / `calendar.delete`.
@@ -242,7 +259,9 @@ delete: gog calendar delete primary <eventId> --send-updates=all|none --force
 - UI: `CalendarDashboard` shows Edit / Delete on Google-synced events (they carry an
   `htmlLink`). Edit sends only the fields the owner changed (an untouched all-day event is never
   turned into a timed one; an empty attendees box keeps the guest list) with an "email guests"
-  checkbox; Delete is a two-step inline confirm with "email guests a cancellation".
+  checkbox; Delete is a two-step inline confirm ("Delete this occurrence") with "email guests a
+  cancellation". A `recurring_series` answer reveals a distinct "Delete ALL occurrences" /
+  "Apply to ALL occurrences" button. The form shows date and time in the browser's zone.
 
 **Gotcha:** real gog reads its OAuth token from the macOS login keychain. That
 works under pm2, which runs in the GUI session, but **not** from a plain ssh or
