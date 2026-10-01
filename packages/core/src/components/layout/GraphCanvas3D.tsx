@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
+import { graphTooltip } from "./graphTooltip";
 const PALETTE = [
   "#7C9FE8",
   "#6FCF97",
@@ -161,7 +162,7 @@ export function GraphCanvas({
   );
 
   const handleNodeLabel = useCallback(
-    (node: GraphNode) => node.path?.split("/").pop() || node.id,
+    (node: GraphNode) => graphTooltip(node.path?.split("/").pop() || node.id),
     [],
   );
 
@@ -195,7 +196,7 @@ export function GraphCanvas({
       linkDirectionalArrowLength={3}
       linkDirectionalArrowRelPos={1}
       linkDirectionalArrowColor={() => arrowColor}
-      linkLabel={(link: GraphLink) => link.relationship}
+      linkLabel={(link: GraphLink) => graphTooltip(link.relationship)}
       onNodeClick={handleClick}
       onNodeHover={(node: GraphNode | null) => {
         if (node && typeof node.x !== "number") return;

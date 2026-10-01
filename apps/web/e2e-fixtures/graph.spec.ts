@@ -141,3 +141,25 @@ test("3D loads only when chosen and offers a list fallback when unavailable", as
     page.getByRole("list", { name: "Connected documents" }),
   ).toContainText("People and conversations");
 });
+
+test("3D tooltip consumer treats document and relationship markup as literal text", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/graph.html");
+  await expect(
+    page.getByRole("heading", { name: "A living workspace", exact: true }),
+  ).toBeVisible();
+  const label =
+    '<img src=x onerror="window.prismTooltipInjected=true"> <b>Research</b> & planning';
+  await page.evaluate(
+    (text) => (window as any).prismGraphFixture.showTooltip(text),
+    label,
+  );
+  await expect(page.locator(".float-tooltip-kap")).toHaveText(label);
+  await expect(
+    page.locator(".float-tooltip-kap img,.float-tooltip-kap b"),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() => (window as any).prismTooltipInjected),
+  ).toBeUndefined();
+});

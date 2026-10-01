@@ -12,7 +12,7 @@ export function useGraphNeighborhood(center: string, depth: number) {
     queryKey: ["vault", "neighborhood", scope, center, depth],
     enabled: !!center,
     retry: false,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
     queryFn: async (): Promise<VaultNeighborhood> => {
       const current = () =>
         (client.scope?.() ?? useAgentChatStore.getState().scope) === scope;

@@ -1,4 +1,6 @@
 import React from "react";
+import Tooltip from "float-tooltip";
+import { graphTooltip } from "../../../packages/core/src/components/layout/graphTooltip";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -48,6 +50,19 @@ const graph: VaultNeighborhood = {
   truncated: true,
 };
 const controls = {
+  showTooltip: (text: string) => {
+    const target = document.createElement("div");
+    target.style.cssText = "position:fixed;inset:0;pointer-events:none";
+    document.body.append(target);
+    new Tooltip(target).content(graphTooltip(text));
+    target.dispatchEvent(
+      new MouseEvent("mousemove", {
+        clientX: 100,
+        clientY: 100,
+        bubbles: true,
+      }),
+    );
+  },
   calls: [] as string[],
   fail: false,
   hold: false,
