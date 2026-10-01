@@ -16,7 +16,9 @@
     "verify:events": "node --import tsx scripts/verify-events.ts",
     "verify:host": "node --import tsx scripts/verify-host-services.ts",
     "verify:media": "node --import tsx scripts/verify-media-proxy.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test --config playwright.live.config.ts",
+    "check:scripts": "node scripts/check-scripts.mjs"
   },
   "dependencies": {
     "@hocuspocus/provider": "^4.1.0",

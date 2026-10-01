@@ -1,11 +1,18 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler"
   },
-  "include": ["e2e", "playwright.config.ts"],
+  "include": [
+    "e2e",
+    "e2e-fixtures",
+    "playwright.config.ts",
+    "playwright.live.config.ts"
+  ],
   "references": []
 }
