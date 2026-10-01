@@ -1,0 +1,3 @@
+# Keep the fictional design concepts with this roadmap. The repository ignores
+# PNG screenshots by default; this exception is limited to this asset directory.
+!assets/*.png
