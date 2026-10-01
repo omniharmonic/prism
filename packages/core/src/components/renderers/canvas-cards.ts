@@ -79,14 +79,14 @@ export function eid(): string {
 export function getCanvasNoteIds(elements: readonly any[]): Set<string> {
   const ids = new Set<string>();
   for (const el of elements) {
-    if (el.customData?.prismNoteId && el.type === "rectangle") ids.add(el.customData.prismNoteId);
+    if (!el.isDeleted && el.customData?.prismNoteId && el.type === "rectangle") ids.add(el.customData.prismNoteId);
   }
   return ids;
 }
 
 /** Find the rectangle card element for a given note id, if present. */
 export function findNoteElement(elements: readonly any[], noteId: string): any | null {
-  return elements.find((el: any) => el.type === "rectangle" && el.customData?.prismNoteId === noteId) || null;
+  return elements.find((el: any) => !el.isDeleted && el.type === "rectangle" && el.customData?.prismNoteId === noteId) || null;
 }
 
 /**

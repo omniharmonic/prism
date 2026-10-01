@@ -7,7 +7,8 @@ import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
-import { vaultApi } from "../../lib/parachute/client";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { authoredCanvasElements } from "./canvas-scene";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Note } from "../../lib/types";
 import { NoteDrawer } from "./NoteDrawer";
@@ -26,7 +27,7 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
   if (!content || content.trim() === "" || content.trim() === " ") return { elements: [] };
   try {
     const data = JSON.parse(content);
-    return { elements: data.elements || [], appState: data.appState, files: data.files };
+    return { elements: authoredCanvasElements(data.elements || []), appState: data.appState, files: data.files };
   } catch {
     return { elements: [] };
   }
@@ -35,6 +36,7 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
 // ─── Main Component ──────────────────────────────────────────
 
 export default function CanvasRenderer({ note, readOnly }: RendererProps) {
+  const client = useVaultClient();
   const theme = useSettingsStore((s) => s.theme);
   const isDark = theme === "dark";
   const contentRef = useRef(note.content || "");
@@ -65,7 +67,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     if (readOnly) return;
     // Serialize canvas state
     const serialized = JSON.stringify({
-      elements,
+      elements: authoredCanvasElements(elements),
       appState: {
         viewBackgroundColor: appState.viewBackgroundColor,
         gridSize: appState.gridSize,
@@ -94,7 +96,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
 
     // ── Scan ALL arrows for link sync ──
     for (const el of elements) {
-      if (el.type !== "arrow" || el.isDeleted) continue;
+      if (el.type !== "arrow" || el.isDeleted || el.customData?.prismLinkViz) continue;
       if (linkArrowIds.current.has(el.id)) continue;
 
       const startBound = el.startBinding?.elementId;
@@ -124,11 +126,11 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
 
       // If relationship changed, delete old link first
       if (existing) {
-        vaultApi.deleteLink(existing.sourceId, existing.targetId, existing.relationship).catch(() => {});
+        client.deleteLink(existing.sourceId, existing.targetId, existing.relationship).catch(() => {});
       }
 
       // Create the Parachute link
-      vaultApi.createLink(sourceId, targetId, relationship).then(() => {
+      client.createLink(sourceId, targetId, relationship).then(() => {
         queryClient.invalidateQueries({ queryKey: ["vault", "links"] });
       }).catch((err) => {
         console.error("Failed to create link:", err);
@@ -140,11 +142,11 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     for (const [arrowId, link] of syncedArrows.current) {
       const el = elements.find((e: any) => e.id === arrowId);
       if (!el || el.isDeleted) {
-        vaultApi.deleteLink(link.sourceId, link.targetId, link.relationship).catch(() => {});
+        client.deleteLink(link.sourceId, link.targetId, link.relationship).catch(() => {});
         syncedArrows.current.delete(arrowId);
       }
     }
-  }, [readOnly]);
+  }, [readOnly, client, queryClient]);
 
   // ─── Add note card ──────────────────────────────────────
 
@@ -159,7 +161,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     let fullNote = noteToAdd;
     if (includeBody) {
       try {
-        fullNote = await vaultApi.getNote(noteToAdd.id);
+        fullNote = await client.getNote(noteToAdd.id);
       } catch (e) {
         console.error("Preview fetch failed:", e);
         fullNote = noteToAdd;
@@ -177,7 +179,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
       elements: [...elements, ...newElements],
       commitToHistory: true,
     } as any);
-  }, [isDark, includeBody]);
+  }, [isDark, includeBody, client]);
 
   // ─── Open selected note in tab ──────────────────────────
 
@@ -189,13 +191,13 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     const path = el?.customData?.prismNotePath || "";
     const title = path.split("/").pop() || "Untitled";
     // Fetch full note to infer type
-    vaultApi.getNote(selectedNoteId).then((n) => {
+    client.getNote(selectedNoteId).then((n) => {
       const type = inferContentType(n);
       openTab(selectedNoteId, title, type);
     }).catch(() => {
       openTab(selectedNoteId, title, "document");
     });
-  }, [selectedNoteId, openTab]);
+  }, [selectedNoteId, openTab, client]);
 
   // ─── Toggle existing links ─────────────────────────────
 
@@ -219,7 +221,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     const allLinks: Array<{ sourceId: string; targetId: string; relationship: string }> = [];
     for (const nid of noteIds) {
       try {
-        const links = await vaultApi.getLinks(nid);
+        const links = await client.getLinks(nid);
         for (const link of links) {
           if (noteIds.has(link.sourceId) && noteIds.has(link.targetId)) {
             if (!allLinks.some(l => l.sourceId === link.sourceId && l.targetId === link.targetId && l.relationship === link.relationship)) {
@@ -263,22 +265,19 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
       }
 
       linkArrowIds.current.add(arrowId);
-      // Also track in syncedArrows so deletion is detected
-      syncedArrows.current.set(arrowId, {
-        sourceId: link.sourceId,
-        targetId: link.targetId,
-        relationship: link.relationship,
-      });
       rawElements.push(arrowDef);
     }
 
     if (rawElements.length > 0) {
       const converted = convertToExcalidrawElements(rawElements);
-      for (const el of converted) linkArrowIds.current.add((el as any).id);
+      for (const el of converted) {
+        (el as any).customData = { ...(el as any).customData, prismLinkViz: true };
+        linkArrowIds.current.add((el as any).id);
+      }
       api.updateScene({ elements: [...elements, ...converted], commitToHistory: true } as any);
     }
     setShowLinks(true);
-  }, [showLinks, isDark]);
+  }, [showLinks, isDark, client]);
 
   return (
     <div className="flex flex-col h-full">
