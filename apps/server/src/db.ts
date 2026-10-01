@@ -596,7 +596,7 @@ db.exec(`
 // Additive agent policy migration: old sessions retain their original profile.
 for (const [table, fields] of Object.entries({
   agent_sessions: { permission_mode: "TEXT", policy_version: "INTEGER NOT NULL DEFAULT 1", pending_mode: "TEXT", request_id: "TEXT", request_hash: "TEXT" },
-  agent_turns: { permission_mode: "TEXT", policy_version: "INTEGER", profile: "TEXT", request_id: "TEXT", request_hash: "TEXT", request_ready: "INTEGER NOT NULL DEFAULT 0" },
+  agent_turns: { permission_mode: "TEXT", policy_version: "INTEGER", profile: "TEXT", request_id: "TEXT", request_hash: "TEXT", request_ready: "INTEGER NOT NULL DEFAULT 0", context_json: "TEXT NOT NULL DEFAULT '[]'" },
 })) {
   const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
   for (const [name, definition] of Object.entries(fields)) {

@@ -15,7 +15,7 @@
  *    first seq (`seedConversation` returns that resume point), so nothing is
  *    double-counted and nothing already persisted is lost.
  */
-import { isTerminalTurn, type AgentSessionDetail, type AgentStreamMessage, type AgentTurn, type AgentTurnStatus } from "./sessions";
+import { isTerminalTurn, type AgentContextRecord, type AgentSessionDetail, type AgentStreamMessage, type AgentTurn, type AgentTurnStatus } from "./sessions";
 
 export interface TextBlockView {
   blockId: string;
@@ -36,6 +36,7 @@ export interface TurnView {
   id: string;
   prompt: string;
   noteId: string | null;
+  context?: AgentContextRecord[];
   status: AgentTurnStatus;
   /** Status reason (e.g. "waiting for your other agent turn to finish"). */
   reason?: string;
@@ -67,6 +68,7 @@ function turnFromDetail(t: AgentTurn): TurnView {
     id: t.id,
     prompt: t.prompt,
     noteId: t.note_id,
+    context: t.context,
     status: t.status,
     blocks: t.finalText ? [{ blockId: `final:${t.id}`, text: t.finalText, streaming: false }] : [],
     tools: t.tools.map((name, i) => ({ id: `${t.id}:${i}`, name: shortToolName(name) })),
@@ -120,12 +122,13 @@ export function seedConversation(detail: AgentSessionDetail): { state: Conversat
 }
 
 /** Optimistically add a just-sent turn (before its first event arrives). */
-export function addPendingTurn(state: ConversationState, turn: { id: string; prompt: string; noteId?: string | null; status?: AgentTurnStatus }): ConversationState {
+export function addPendingTurn(state: ConversationState, turn: { id: string; prompt: string; noteId?: string | null; status?: AgentTurnStatus; context?: AgentContextRecord[] }): ConversationState {
   if (state.turns.some((t) => t.id === turn.id)) return state;
   const view: TurnView = {
     id: turn.id,
     prompt: turn.prompt,
     noteId: turn.noteId ?? null,
+    context: turn.context,
     status: turn.status ?? "queued",
     blocks: [],
     tools: [],

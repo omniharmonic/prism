@@ -68,6 +68,11 @@ import {
   AgentPolicyConflictError,
   AgentRequestError,
   isAgentRequestId,
+  validContextNoteIds,
+  AgentContextError,
+  turnContext,
+  MAX_CONTEXT_NOTES,
+  NOTE_CONTEXT_MAX,
   listSessions,
   getOwnedSession,
   listTurns,
@@ -191,6 +196,7 @@ agentApi.get("/limits", (c) => {
     defaultProfile: "vault-ro",
     permissionModes: prismProfilesEnabled() ? PERMISSION_MODES : [],
     idempotentRequests: true,
+    contextNotes: { maxNotes: MAX_CONTEXT_NOTES, maxCharactersPerNote: NOTE_CONTEXT_MAX },
   });
 });
 
@@ -384,7 +390,8 @@ function sessionDetail(s: SessionRow) {
     const firstSeq = evs.length ? evs[0]!.seq : null;
     const turnLast = evs.length ? evs[evs.length - 1]!.seq : null;
     if (turnLast != null && turnLast > lastSeq) lastSeq = turnLast;
-    return { ...t, finalText: finalText(evs), ...turnActivity(evs), firstSeq, lastSeq: turnLast };
+    const { context_json: _context, ...row } = t;
+    return { ...row, context: turnContext(t), finalText: finalText(evs), ...turnActivity(evs), firstSeq, lastSeq: turnLast };
   });
   return { session: s, turns, lastSeq };
 }
@@ -454,11 +461,12 @@ agentApi.patch("/sessions/:id/permissions", async (c) => {
   }
 });
 
-type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown };
+type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown; contextNoteIds?: unknown };
 agentApi.post("/sessions/:id/turns", async (c) => {
   const s = ownedSession(c);
   if (!s) return c.json({ error: "not_found" }, 404);
   const body = await c.req.json<TurnBody>().catch(() => ({}) as TurnBody);
+  if (body.contextNoteIds !== undefined && !validContextNoteIds(body.contextNoteIds)) return c.json({ error: "bad_request", detail: "Attach up to five distinct note identifiers." }, 400);
   if (body.requestId !== undefined && !isAgentRequestId(body.requestId)) return c.json({ error: "bad_request", detail: "invalid request identifier" }, 400);
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
     return c.json({ error: "bad_request", detail: "prompt required" }, 400);
@@ -472,11 +480,12 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     const t = await startTurn(
       s.id,
       resolveVaultEntry(s.vault_id),
-      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null, requestId: typeof body.requestId === "string" ? body.requestId : undefined },
+      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null, requestId: typeof body.requestId === "string" ? body.requestId : undefined, contextNoteIds: validContextNoteIds(body.contextNoteIds) ? body.contextNoteIds : undefined },
       { grants: actor.grants, role: actor.role, subject: actor.email },
     );
-    return c.json({ turnId: t.id, status: t.status });
+    return c.json({ turnId: t.id, status: t.status, context: turnContext(t) });
   } catch (e) {
+    if (e instanceof AgentContextError) return c.json({ error: "context_unavailable", detail: e.message }, 409);
     if (e instanceof AgentRequestError) return c.json({ error: e.code, detail: e.message }, 409);
     if (e instanceof AgentPolicyConflictError) return c.json({ error: e.code, detail: e.message }, 409);
     if (e instanceof TurnConflictError) return c.json({ error: "conflict", detail: e.message, turnId: e.turnId }, 409);

@@ -7,7 +7,7 @@
  * full-screen conversation over the command pill with the composer pinned above
  * the keyboard (visualViewport) and safe-area insets; inputs are 16px (no iOS zoom).
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -43,6 +43,7 @@ import { Spinner } from "../ui/Spinner";
 import { PrismMark } from "../brand/PrismMark";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { AgentSourcePreview } from "./AgentSourcePreview";
+import { AgentContextAttachments } from "./AgentContextAttachments";
 import type { RendererProps } from "../renderers/RendererProps";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -418,6 +419,11 @@ export function Conversation({
   const pickable: AgentProfile[] = limits?.profiles?.length ? limits.profiles : ["vault-ro", "vault-rw"];
   const composerDraft = useComposerDraft(client.scope?.() || null, sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`);
   const { text: input, setText: setInput, clearIfUnchanged } = composerDraft;
+  const contextDraft = useComposerDraft(client.scope?.() || null, `context:${sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`}`);
+  const contextNoteIds: string[] = useMemo(() => {
+    try { const ids: unknown = JSON.parse(contextDraft.text || "[]"); return Array.isArray(ids) && ids.length <= 5 && ids.every((id) => typeof id === "string") ? ids : []; } catch { return []; }
+  }, [contextDraft.text]);
+  const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const draftPermissions = useComposerDraft(client.scope?.() || null, `permissions:note:${draft?.noteId ?? "new"}`);
@@ -487,6 +493,11 @@ export function Conversation({
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
       if (!text || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if (contextNoteIds.length && !limits?.contextNotes) {
+        const message = "This server can't accept the attached notes. Remove them before sending, or reconnect to the updated server.";
+        if (isDraft) setDraftError(message); else conv.setError(message);
+        return;
+      }
       const sentDraft = textArg ?? input;
       if (textArg !== undefined) setInput(textArg);
       sendingRef.current = true;
@@ -498,7 +509,7 @@ export function Conversation({
       if (idempotentRequests) {
         try {
           if (!scope) throw new Error("Wait for your workspace identity before sending.");
-          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}) });
+          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
           if (scope !== client.scope?.()) throw new Error("Workspace changed. Reopen the draft in its original workspace.");
           requestId = receipt.id;
         } catch (error) {
@@ -514,9 +525,10 @@ export function Conversation({
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
           const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId, ...(requestId ? { requestId } : {}) });
-          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}) });
+          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
           clearIfUnchanged(sentDraft);
+          contextDraft.clearIfUnchanged(contextDraft.text);
           draftPermissions.clearIfUnchanged(draftPermissions.text);
           if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
           onCreated(id);
@@ -530,15 +542,16 @@ export function Conversation({
         return;
       }
       const noteId = conv.session?.note_id ?? undefined;
-      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}) });
+      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
       if (ok) {
         clearIfUnchanged(sentDraft);
+        contextDraft.clearIfUnchanged(contextDraft.text);
         if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
       }
       sendingRef.current = false;
       setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
@@ -678,6 +691,9 @@ export function Conversation({
         </div>
       )}
       {isDraft && <AgentBudgetLine />}
+      {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
+      {attachmentPreview && <AgentSourcePreview noteId={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
+      {contextDraft.error && <p role="status" className="mb-2 text-xs">{contextDraft.error}</p>}
       {limitsUnavailable && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>
         {limitsQuery.isError ? <>Couldn't check agent settings. <button className="underline" onClick={() => void limitsQuery.refetch()}>Try again</button></> : "Checking agent settings…"}
       </p>}
@@ -830,6 +846,10 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   return (
     <div className="flex flex-col gap-2" data-testid="agent-turn" data-status={turn.status}>
       {turn.prompt && <UserBubble text={turn.prompt} />}
+      {!!turn.context?.length && <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="agent-supplied-context" style={{ color: "var(--text-muted)" }}>
+        <span>Saved text supplied:</span>
+        {turn.context.map((source) => <span key={source.noteId} className="flex flex-wrap items-center gap-1"><NoteChip noteId={source.noteId} op="context" /><span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
+      </div>}
       <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
         <PrismMark width={25} height={18} decorative />
         <span className="font-medium">Prism agent</span>

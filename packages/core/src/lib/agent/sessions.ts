@@ -26,6 +26,7 @@ export interface AgentLimits {
   defaultProfile: AgentProfile;
   permissionModes?: AgentPermissionMode[];
   idempotentRequests?: boolean;
+  contextNotes?: { maxNotes: number; maxCharactersPerNote: number };
 }
 export type AgentSessionStatus = "idle" | "running" | "archived";
 export type AgentTurnStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
@@ -65,6 +66,7 @@ export interface AgentTurn {
   session_id: string;
   prompt: string;
   note_id: string | null;
+  context?: AgentContextRecord[];
   status: AgentTurnStatus;
   pid: number | null;
   exit_code: number | null;
@@ -81,6 +83,7 @@ export interface AgentTurn {
   firstSeq?: number | null;
   lastSeq?: number | null;
 }
+export interface AgentContextRecord { noteId: string; characters: number; truncated: boolean; updatedAt: string | null }
 
 export interface AgentSessionDetail {
   session: AgentSession;
@@ -141,7 +144,7 @@ export interface AgentClient {
   listSessions(opts?: { limit?: number; archived?: boolean }): Promise<AgentSessionSummary[]>;
   getSession(sessionId: string): Promise<AgentSessionDetail>;
   /** 409 → AgentApiError(code "conflict", turnId) when a turn is already active; "budget_exceeded" at the session cap. */
-  sendTurn(sessionId: string, prompt: string, opts?: { noteId?: string; requestId?: string }): Promise<{ turnId: string; status: AgentTurnStatus }>;
+  sendTurn(sessionId: string, prompt: string, opts?: { noteId?: string; requestId?: string; contextNoteIds?: string[] }): Promise<{ turnId: string; status: AgentTurnStatus; context?: AgentContextRecord[] }>;
   /** Replays persisted events with seq > afterSeq, then streams live until the in-flight turn ends. Returns unsubscribe. */
   streamSession(sessionId: string, afterSeq: number, handlers: AgentStreamHandlers): () => void;
   cancelTurn(turnId: string): Promise<boolean>;

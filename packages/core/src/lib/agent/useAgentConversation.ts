@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { agentKeys } from "../../data/AgentClientContext";
-import { AgentApiError, isTerminalTurn, type AgentClient, type AgentSession, type AgentStreamMessage } from "./sessions";
+import { AgentApiError, isTerminalTurn, type AgentClient, type AgentContextRecord, type AgentSession, type AgentStreamMessage } from "./sessions";
 import {
   activeTurn,
   addPendingTurn,
@@ -28,7 +28,7 @@ import {
 type Action =
   | { type: "reset"; state: ConversationState }
   | { type: "msg"; msg: AgentStreamMessage }
-  | { type: "pending"; id: string; prompt: string; noteId?: string | null };
+  | { type: "pending"; id: string; prompt: string; noteId?: string | null; context?: AgentContextRecord[] };
 
 function reducer(s: ConversationState, a: Action): ConversationState {
   switch (a.type) {
@@ -37,7 +37,7 @@ function reducer(s: ConversationState, a: Action): ConversationState {
     case "msg":
       return applyAgentMessage(s, a.msg);
     case "pending":
-      return addPendingTurn(s, { id: a.id, prompt: a.prompt, noteId: a.noteId });
+      return addPendingTurn(s, { id: a.id, prompt: a.prompt, noteId: a.noteId, context: a.context });
   }
 }
 
@@ -174,7 +174,7 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
 
   /** Send a prompt in this session. Returns false on failure (error is set). */
   const send = useCallback(
-    async (prompt: string, opts: { noteId?: string; requestId?: string } = {}): Promise<boolean> => {
+    async (prompt: string, opts: { noteId?: string; requestId?: string; contextNoteIds?: string[] } = {}): Promise<boolean> => {
       if (!sessionId) return false;
       setError(null);
       try {
@@ -184,7 +184,7 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
           refreshLists();
           return true;
         }
-        dispatch({ type: "pending", id: r.turnId, prompt, noteId: opts.noteId ?? null });
+        dispatch({ type: "pending", id: r.turnId, prompt, noteId: opts.noteId ?? null, context: r.context });
         openStream(sessionId, stateRef.current.lastSeq);
         refreshLists();
         return true;

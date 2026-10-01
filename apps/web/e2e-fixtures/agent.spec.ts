@@ -324,3 +324,48 @@ test("sending waits for advertised capabilities and the selected session's docum
   await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
   await expect(send).toBeEnabled();
 });
+
+test("attached sources survive reload and show the bounded saved context supplied with a turn", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/agent.html?context&attachments");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await input.fill("Compare the brief with this reference");
+  await page.getByRole("button", { name: "Attach notes", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Attach vault notes" });
+  await picker.getByRole("textbox", { name: "Search notes to attach" }).fill("reference");
+  await picker.getByRole("button", { name: "Reference note", exact: true }).click();
+  await expect(picker.getByRole("button", { name: "Reference note Attached" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Attach notes", exact: true })).toBeFocused();
+  const attachments = page.getByTestId("agent-context-attachments");
+  await expect(attachments.getByRole("button", { name: "Reference note", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(input).toHaveValue("Compare the brief with this reference");
+  await expect(attachments.getByRole("button", { name: "Reference note", exact: true })).toBeVisible();
+  await attachments.getByRole("button", { name: "Reference note", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Source preview" })).toContainText("Fixture");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await expect(page.getByTestId("agent-supplied-context")).toContainText("8,000 characters · truncated");
+  await expect(attachments.getByRole("button", { name: "Remove attached note 1" })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("agent-attached-context-mobile.png") });
+});
+
+test("a failed source search never displays cached results and attachments can be removed", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?attachments");
+  const attach = page.getByRole("button", { name: "Attach notes", exact: true });
+  await attach.click();
+  const picker = page.getByRole("dialog", { name: "Attach vault notes" });
+  await picker.getByRole("textbox").fill("reference");
+  await picker.getByRole("button", { name: "Reference note", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Remove attached note 1" }).click();
+  await page.evaluate(() => { (window as any).prismAgentFixture.denySource = true; });
+  await attach.click();
+  await picker.getByRole("textbox").fill("reference");
+  await expect(picker.getByRole("alert")).toContainText("Couldn't search this vault");
+  await expect(picker.getByRole("button", { name: "Reference note", exact: true })).toHaveCount(0);
+});

@@ -270,7 +270,7 @@ test("request identifiers recover accepted sessions and finished turns without e
   configureAgentSessions({ sessionBudgetUsd: 0 }); // Receipt recovery must not charge/admit again.
   const retried = await postTurn(sid, { prompt: "one request", requestId });
   assert.equal(retried.status, 200);
-  assert.deepEqual(await retried.json(), { turnId, status: "done" });
+  assert.deepEqual(await retried.json(), { turnId, status: "done", context: [] });
   assert.equal(calls.length, 1);
   assert.equal(listTurns(sid).length, 1);
   const changed = await postTurn(sid, { prompt: "different request", requestId });
@@ -884,6 +884,53 @@ test("H1 (defense in depth): open-note context requires `view` on the note — s
   await startTurn(s3.id, resolveVaultEntry(), { prompt: "y" });
   assert.doesNotMatch(calls[1]!.args.at(-1)!, /OPEN BODY/);
   assert.match(calls[1]!.args.at(-1)!, /Active note: open\./);
+});
+
+test("attached notes are bounded, recorded, refreshed for a new turn, and not reread on retry", async () => {
+  const source: Note = { id: "source", path: "Research", content: "A".repeat(9000), metadata: null, tags: [], createdAt: "", updatedAt: "2026-10-01T10:00:00Z" };
+  vaultNotes.set(source.id, source);
+  const sid = await newSession();
+  const requestId = "context-retry-0001";
+  const turnId = await runTurn(sid, "Read the attachment", "agent-stream-turn1.jsonl", { contextNoteIds: [source.id], requestId });
+  const detail = await (await agentApi.request(`/sessions/${sid}`, { headers: owner() })).json() as any;
+  assert.deepEqual(detail.turns[0].context, [{ noteId: source.id, characters: 8000, truncated: true, updatedAt: source.updatedAt }]);
+  assert.equal(detail.turns[0].context_json, undefined);
+  assert.ok(calls[0]!.args.at(-1)!.includes("A".repeat(8000)));
+  assert.ok(!calls[0]!.args.at(-1)!.includes("A".repeat(8001)));
+  source.content = "CHANGED SAVED TEXT";
+  source.updatedAt = "2026-10-01T11:00:00Z";
+  const retry = await (await postTurn(sid, { prompt: "Read the attachment", contextNoteIds: [source.id], requestId })).json() as any;
+  assert.equal(retry.turnId, turnId);
+  assert.equal(retry.context[0].characters, 8000);
+  assert.equal(calls.length, 1);
+  assert.equal((await postTurn(sid, { prompt: "Read the attachment", contextNoteIds: [], requestId })).status, 409);
+  await runTurn(sid, "Read it again", "agent-stream-turn2-resume.jsonl", { contextNoteIds: [source.id] });
+  assert.match(calls[1]!.args.at(-1)!, /CHANGED SAVED TEXT/);
+});
+
+test("unavailable or forbidden attachments fail before execution and release admission", async () => {
+  const source: Note = { id: "private-source", path: "PRIVATE NAME", content: "PRIVATE BODY", metadata: { prism_visibility: "private", prism_creator: "someone-else@example.test" }, tags: [], createdAt: "", updatedAt: null };
+  vaultNotes.set(source.id, source);
+  const sid = await newSession();
+  for (const id of [source.id, "missing-source"]) {
+    const result = await postTurn(sid, { prompt: "Read this", contextNoteIds: [id] });
+    assert.equal(result.status, 409);
+    assert.doesNotMatch(await result.text(), /PRIVATE NAME|PRIVATE BODY/);
+    assert.equal(listTurns(sid).length, 0);
+    assert.equal(calls.length, 0);
+  }
+  await assert.rejects(() => startTurn(sid, resolveVaultEntry(), { prompt: "No access context", contextNoteIds: [source.id] }), /unavailable/);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal((await postTurn(sid, { prompt: "Without attachment" })).status, 200);
+});
+
+test("attachment validation rejects malformed, duplicate and excessive sources", async () => {
+  const sid = await newSession();
+  for (const contextNoteIds of ["source", [""], [null], ["with space"], ["same", "same"], ["a", "b", "c", "d", "e", "f"]]) {
+    assert.equal((await postTurn(sid, { prompt: "Read", contextNoteIds })).status, 400);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(listTurns(sid).length, 0);
 });
 
 test("H1: ALL agent routes are SERVER-OWNER only — an admin (and member) gets 403; an owner device token passes", async () => {
