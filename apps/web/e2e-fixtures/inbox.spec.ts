@@ -58,3 +58,12 @@ test("a failed Inbox read offers recovery instead of claiming the list is comple
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByText("4 conversations", { exact: true })).toBeVisible();
 });
+
+test("a capped Inbox discloses missing history and offers whole-vault search", async ({ page }) => {
+  await page.goto("/e2e-fixtures/inbox.html?limited");
+  await expect(page.getByText("Showing 500 conversations", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Older conversations may be outside");
+  await expect(page.getByRole("textbox", { name: "Search inbox" })).toHaveAttribute("placeholder", "Search loaded conversations…");
+  await page.getByRole("button", { name: "Search all notes", exact: true }).click();
+  expect(await page.evaluate(() => (window as any).prismInboxUI.getState().commandBarOpen)).toBe(true);
+});

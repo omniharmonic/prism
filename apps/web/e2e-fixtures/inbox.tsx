@@ -13,10 +13,11 @@ const notes = [
   note("social", "Messages/Social discussion", ["message-thread", "social"]),
   note("morgan", "People/Morgan", ["person"], { name: "Morgan", channels: { telegram: "@not-a-room:example.test" } }),
 ];
+if (location.search.includes("limited")) for (let index = 0; index < 500; index++) notes.push(note(`older-${index}`, `Messages/Older ${index}`, ["message-thread", "low"]));
 const controls = { denyThreads: location.search.includes("failed"), sends: [] as Array<{ room: string; body: string; key?: string }> };
 Object.assign(window, { prismInboxFixture: controls, prismInboxUI: useUIStore });
 const vault = {
-  listNotes: async (filters: Parameters<VaultClient["listNotes"]>[0]) => { if (filters?.tag === "message-thread" && controls.denyThreads) throw new Error("Fixture unavailable"); return notes.filter((note) => !filters?.tag || note.tags?.includes(filters.tag)); },
+  listNotes: async (filters: Parameters<VaultClient["listNotes"]>[0]) => { if (filters?.tag === "message-thread" && controls.denyThreads) throw new Error("Fixture unavailable"); return notes.filter((note) => !filters?.tag || note.tags?.includes(filters.tag)).slice(0, filters?.limit); },
   getGraph: async () => ({ nodes: [], edges: [{ source: "morgan", target: "direct", relationship: "messages-with" }, { source: "direct", target: "morgan", relationship: "email-from" }, { source: "morgan", target: "group", relationship: "messages-with" }] }),
 } as unknown as VaultClient;
 const client = {

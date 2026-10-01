@@ -21,6 +21,8 @@ interface LinkData {
 }
 
 type ViewMode = "triage" | "people" | "platforms";
+const THREAD_LIMIT = 500;
+const EMAIL_LIMIT = 200;
 
 /** Derive platform from metadata or fall back to tags (email notes lack metadata.platform). */
 function getPlatform(note: Note): string {
@@ -65,17 +67,17 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const openTab = useUIStore((s) => s.openTab);
 
-  // Fetch all message-thread notes
+  // Existing bounded lists; the UI must disclose when these limits are reached.
   const { data: loadedThreads, isLoading: threadsLoading, isError: threadsError, refetch: reloadThreads } = useQuery({
     queryKey: ["vault", "inbox", scope, "notes", { tag: "message-thread" }],
-    queryFn: () => vault.listNotes({ tag: "message-thread", limit: 500 }),
+    queryFn: () => vault.listNotes({ tag: "message-thread", limit: THREAD_LIMIT }),
     refetchInterval: useLivePollMs(30_000),
   });
 
   // Fetch email notes
   const { data: loadedEmails, isLoading: emailsLoading, isError: emailsError, refetch: reloadEmails } = useQuery({
     queryKey: ["vault", "inbox", scope, "notes", { tag: "email" }],
-    queryFn: () => vault.listNotes({ tag: "email", limit: 200 }),
+    queryFn: () => vault.listNotes({ tag: "email", limit: EMAIL_LIMIT }),
     refetchInterval: useLivePollMs(30_000),
   });
 
@@ -89,6 +91,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
   const threadNotes = threadsError ? undefined : loadedThreads;
   const emailNotes = emailsError ? undefined : loadedEmails;
   const personNotes = peopleError ? undefined : loadedPeople;
+  const limited = (threadNotes?.length ?? 0) >= THREAD_LIMIT || (emailNotes?.length ?? 0) >= EMAIL_LIMIT;
   const allMessages = useMemo(() => [...new Map([...(threadNotes || []), ...(emailNotes || [])].map((note) => [note.id, note])).values()], [threadNotes, emailNotes]);
 
   // Build person→message link index from the full graph (single API call
@@ -237,7 +240,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
         <div className="min-w-[120px] flex-1">
           <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Inbox</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {totalCount} conversations
+            {limited ? "Showing " : ""}{totalCount} conversations
             {viewMode === "people" && ` · ${filteredPeople.length} people`}
           </p>
         </div>
@@ -266,7 +269,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
           <Search size={13} style={{ color: "var(--text-muted)" }} />
           <input aria-label="Search inbox" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={viewMode === "people" ? "Search people or messages..." : "Search messages..."}
+            placeholder={limited ? "Search loaded conversations…" : viewMode === "people" ? "Search people or messages…" : "Search messages…"}
             className="bg-transparent text-base outline-none min-w-0 w-full"
             style={{ color: "var(--text-primary)" }} />
         </div>
@@ -289,6 +292,9 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       </div>
 
       {/* Content */}
+      {limited && <div role="status" className="flex flex-wrap items-center gap-2 border-b px-4 py-3 text-xs" style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}>
+        Older conversations may be outside this loaded set. <button className="focus-ring underline" onClick={() => useUIStore.getState().openCommandBar()}>Search all notes</button>
+      </div>}
       {(threadsError || emailsError || (viewMode === "people" && (peopleError || graphError))) && <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs" style={{ color: "var(--text-secondary)" }}>
         Some conversations or people links couldn't load. <button className="focus-ring underline" onClick={() => void Promise.all([reloadThreads(), reloadEmails(), reloadPeople(), reloadGraph()])}>Try again</button>
       </div>}
