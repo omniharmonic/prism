@@ -57,14 +57,10 @@ pub fn run() {
 
     let google_client = GoogleClient::new();
 
-    // Claude Code CLI client — runs in the Prism project directory
-    // so it picks up .mcp.json (Parachute MCP) and has access to vault tools
-    let prism_root = std::env::current_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join("iCloud Drive (Archive)/Documents/cursor projects/prism")
-    });
-    let claude_client = ClaudeClient::new(prism_root);
+    // Claude Code CLI client — hardened (WP0.1d): runs from a fixed EMPTY cwd under
+    // the app-data dir with ONLY the active vault's MCP (per-run config built from
+    // the managed prism-mcp.json above), no built-in tools, and an env allowlist.
+    let claude_client = ClaudeClient::new();
 
     // Build ONE shared local OpenAI-compatible agent (LM Studio / Ollama `/v1` /
     // llama.cpp / vLLM), used by BOTH the model router (interactive skills) and

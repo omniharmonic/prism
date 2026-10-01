@@ -1,29 +1,19 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
 use serde::Deserialize;
+use crate::clients::claude_args::{
+    build_claude_args, ClaudeRunner, ClaudeUse, OutputFormat, Persistence, RunMcpConfig, VaultMcpTarget,
+};
 use crate::error::PrismError;
 
-/// Claude Code CLI client — spawns `claude` processes for AI operations.
+/// Claude Code CLI client — spawns hardened `claude -p` processes for the
+/// interactive agent features (edit / chat / transform / generate).
 ///
-/// This mirrors how the OmniHarmonic agent works:
-/// - Uses `claude -p` (print mode) for non-interactive output
-/// - Runs in the Prism project directory to pick up `.mcp.json` (Parachute MCP)
-/// - Has access to vault data via the parachute-vault MCP tools
-/// - Uses `--resume` for multi-turn conversations with session continuity
-/// - Strips CLAUDECODE env var to avoid nested session detection
-///
-/// The Parachute MCP connection means Claude can:
-/// - Search notes via `mcp__parachute-vault__search-notes`
-/// - Read notes via `mcp__parachute-vault__get-note`
-/// - Create/update notes via `mcp__parachute-vault__create-note` / `update-note`
-/// - Traverse the knowledge graph via `mcp__parachute-vault__traverse-links`
-/// - Query by tags via `mcp__parachute-vault__search-notes` with tag filters
-/// - Use semantic search via `mcp__parachute-vault__semantic-search`
+/// Every spawn goes through [`crate::clients::claude_args`] (Arch v2 WP0.1d): no
+/// built-in tools, ONLY the active vault's MCP (a per-run 0600 config), an
+/// explicit per-feature tool allowlist under `--permission-mode dontAsk`, no
+/// settings sources, a fixed EMPTY cwd under the app-data dir, and an env
+/// allowlist. Chat keeps multi-turn continuity via `--session-id`/`--resume`.
 pub struct ClaudeClient {
-    claude_bin: String,
-    /// Prism project root — where .mcp.json lives, so Claude gets Parachute MCP access
-    prism_root: PathBuf,
-    env: HashMap<String, String>,
+    runner: ClaudeRunner,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -37,113 +27,29 @@ pub struct ClaudeJsonResponse {
 }
 
 impl ClaudeClient {
-    pub fn new(prism_root: PathBuf) -> Self {
-        // Resolve claude binary
-        let claude_bin = std::process::Command::new("which")
-            .arg("claude")
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                let home = dirs::home_dir().unwrap_or_default();
-                let npm_global = home.join(".npm-global/bin/claude");
-                if npm_global.exists() {
-                    return npm_global.to_string_lossy().to_string();
-                }
-                "claude".to_string()
-            });
-
-        // Build clean env: strip CLAUDECODE to avoid nested session detection,
-        // and ensure PATH includes common binary directories (macOS Dock launches
-        // have a minimal PATH that misses homebrew, nvm, bun, etc.)
-        let mut env: HashMap<String, String> = std::env::vars()
-            .filter(|(k, _)| k != "CLAUDECODE")
-            .collect();
-
-        let home = dirs::home_dir().unwrap_or_default();
-        let extra_paths = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            &home.join(".npm-global/bin").to_string_lossy().to_string(),
-            &home.join(".bun/bin").to_string_lossy().to_string(),
-            &home.join(".nvm/versions/node").to_string_lossy().to_string(),
-            &home.join(".local/bin").to_string_lossy().to_string(),
-        ];
-        let current_path = env.get("PATH").cloned().unwrap_or_default();
-        let mut parts: Vec<&str> = Vec::new();
-        for p in &extra_paths {
-            if !current_path.contains(*p) {
-                parts.push(p);
-            }
-        }
-        if !parts.is_empty() {
-            parts.push(&current_path);
-            env.insert("PATH".to_string(), parts.join(":"));
-        }
-
-        // Raise the Claude CLI's stream idle watchdog from 90s (default) to
-        // 300s. Interactive flows with long MCP tool calls or model reasoning
-        // pauses can otherwise trip "Stream idle timeout - partial response".
-        env.entry("CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string())
-            .or_insert_with(|| "300000".to_string());
-
-        Self {
-            claude_bin,
-            prism_root,
-            env,
-        }
+    pub fn new() -> Self {
+        Self { runner: ClaudeRunner::from_host() }
     }
 
-    /// Run a claude command in print mode.
-    /// Runs in the Prism project directory so .mcp.json is picked up,
-    /// giving Claude access to Parachute vault MCP tools.
+    /// Run a one-shot claude command in print mode (text output, no session).
+    /// `use_` picks the tool allowlist (edit/transform/generate are read-only).
     pub async fn run(
         &self,
+        use_: ClaudeUse,
         prompt: &str,
         model: &str,
         timeout_secs: u64,
     ) -> Result<String, PrismError> {
-        // Prefer the managed MCP config (regenerated from the ACTIVE vault on every
-        // switch, present even in a released `.app`); fall back to the repo file.
-        let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
-        let mcp_config = if managed.exists() {
-            managed
-        } else {
-            self.prism_root.join(".mcp.json")
-        };
-        let mut args = vec![
-            "-p".to_string(),
-            "--model".to_string(),
-            model.to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
-        if mcp_config.exists() {
-            args.push("--mcp-config".to_string());
-            args.push(mcp_config.to_string_lossy().to_string());
-        }
-        // Use -- to separate flags from prompt (prevents --mcp-config from consuming it)
-        args.push("--".to_string());
-        args.push(prompt.to_string());
+        // Dropped when this fn returns (any path) → the token file is deleted.
+        let mcp = RunMcpConfig::create(&VaultMcpTarget::active()?)?;
+        let args = build_claude_args(use_, model, OutputFormat::Text, &Persistence::OneShot, mcp.path(), prompt)?;
+        let mut cmd = self.runner.command(&args)?;
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new(&self.claude_bin)
-                .args(&args)
-                .current_dir(&self.prism_root)
-                .envs(&self.env)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
-        )
-        .await
-        .map_err(|_| PrismError::Agent(format!("Claude timed out after {}s", timeout_secs)))?
-        .map_err(|e| PrismError::Agent(format!("Failed to spawn claude: {}", e)))?;
+        // kill_on_drop: a timeout drops the output future and kills the child.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+            .await
+            .map_err(|_| PrismError::Agent(format!("Claude timed out after {}s", timeout_secs)))?
+            .map_err(|e| PrismError::Agent(format!("Failed to spawn claude: {}", e)))?;
 
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);
@@ -157,9 +63,12 @@ impl ClaudeClient {
         Ok(String::from_utf8_lossy(&result.stdout).trim().to_string())
     }
 
-    /// Run claude with JSON output and optional session resumption.
-    /// Sessions are maintained per-context (per document or global) for
-    /// multi-turn conversations.
+    /// Run claude (chat allowlist) with JSON output and session continuity.
+    /// `session_id = None` starts a new session under a freshly minted uuid
+    /// (`--session-id`); a known id is `--resume`d. Sessions are tracked per
+    /// context (per document or global) by the caller. The CLI keeps the
+    /// transcript under `~/.claude/projects/<agent-cwd slug>/`, so the cwd itself
+    /// stays empty — and every turn must run from that same cwd.
     pub async fn run_conversational(
         &self,
         prompt: &str,
@@ -167,49 +76,18 @@ impl ClaudeClient {
         session_id: Option<&str>,
         timeout_secs: u64,
     ) -> Result<ClaudeJsonResponse, PrismError> {
-        // Prefer the managed MCP config (regenerated from the ACTIVE vault on every
-        // switch, present even in a released `.app`); fall back to the repo file.
-        let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
-        let mcp_config = if managed.exists() {
-            managed
-        } else {
-            self.prism_root.join(".mcp.json")
+        let persistence = match session_id {
+            Some(sid) => Persistence::Resume(sid.to_string()),
+            None => Persistence::NewSession(uuid::Uuid::new_v4().to_string()),
         };
-        let mut args = vec![
-            "-p".to_string(),
-            "--model".to_string(),
-            model.to_string(),
-            "--dangerously-skip-permissions".to_string(),
-            "--output-format".to_string(),
-            "json".to_string(),
-        ];
-        if mcp_config.exists() {
-            args.push("--mcp-config".to_string());
-            args.push(mcp_config.to_string_lossy().to_string());
-        }
+        let mcp = RunMcpConfig::create(&VaultMcpTarget::active()?)?;
+        let args = build_claude_args(ClaudeUse::Chat, model, OutputFormat::Json, &persistence, mcp.path(), prompt)?;
+        let mut cmd = self.runner.command(&args)?;
 
-        if let Some(sid) = session_id {
-            args.push("--resume".to_string());
-            args.push(sid.to_string());
-        }
-
-        // Use -- to separate flags from prompt
-        args.push("--".to_string());
-        args.push(prompt.to_string());
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new(&self.claude_bin)
-                .args(&args)
-                .current_dir(&self.prism_root)
-                .envs(&self.env)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
-        )
-        .await
-        .map_err(|_| PrismError::Agent(format!("Claude timed out after {}s", timeout_secs)))?
-        .map_err(|e| PrismError::Agent(format!("Failed to spawn claude: {}", e)))?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+            .await
+            .map_err(|_| PrismError::Agent(format!("Claude timed out after {}s", timeout_secs)))?
+            .map_err(|e| PrismError::Agent(format!("Failed to spawn claude: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
 

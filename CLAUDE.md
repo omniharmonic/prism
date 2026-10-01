@@ -67,7 +67,7 @@ Frontend (React/TypeScript)     ← Tauri IPC →     Backend (Rust)
 1. **Parachute owns the data.** Never touch SQLite directly. All reads/writes go via HTTP API at localhost:1940.
 2. **Tags are the type system.** Notes are typed by tags (`task`, `meeting`, `person`, `project`, etc.), not `metadata.type`. The `inferContentType()` function in `src/lib/schemas/content-types.ts` maps tags → `ContentType` → renderer.
 3. **Frontend talks only to Rust.** All external API calls (Matrix, Google, Claude, Notion) happen in Rust commands. Frontend calls `invoke()` only.
-4. **Agent uses Claude Code CLI.** The `ClaudeClient` spawns `claude -p` subprocesses (not the Anthropic HTTP API). It runs in the Prism project root so it picks up `.mcp.json` and gets Parachute MCP access.
+4. **Agent uses Claude Code CLI — hardened.** The `ClaudeClient` and `DispatchManager` spawn `claude -p` subprocesses (not the Anthropic HTTP API), and EVERY desktop spawn is built by `src-tauri/src/clients/claude_args.rs` (WP0.1d, mirrors the server runner): no built-in tools, ONLY the active vault's MCP via a per-run 0600 config, an explicit per-feature vault-tool allowlist under `dontAsk`, no settings sources, a fixed EMPTY cwd under the app-data dir (NOT the repo root), env allowlist. Never hand-build a claude argv or re-add `--dangerously-skip-permissions`. See *Desktop agent runner* below.
 5. **Tauri commands return `Result<T, PrismError>`.** `PrismError` serializes to a string for the frontend. All new commands must follow this pattern.
 
 ## Prism Server & Web Sharing (the security gateway)
@@ -187,7 +187,7 @@ Managed state injected into commands via `State<'_, T>`: `ParachuteClient`, `Mat
 
 **Ingest switch (WP0.4).** Which services start is decided by the pure `plan_services(config)` in `services/mod.rs` (unit-tested); `ServiceManager::start` / `start_scheduler` just act on it, and `get_service_status` overlays `disabled` + `disabled_reason` so the UI tells the truth. `ingest_mode: "host"` (default) | `"client"` in `prism-config.json`: **client starts no services and no skill scheduler** (one log line says so) so a laptop can run as a pure viewer/editor while the Prism Server ingests. Per-service opt-outs (all default false, all `#[serde(default)]`, restart required): `disable_message_sync`, `disable_fathom_sync`, `disable_fireflies_sync`, `disable_meetily_sync` (Meetily half of `transcript_sync` only), `disable_email_sync`, `disable_calendar_sync`, `disable_notion_task_sync`, `disable_embedding_index`, `disable_skill_scheduler`. Settings -> Services -> "Ingest mode" (desktop only) edits the mode and the six WP0.4 flags. `ensure_default_skills` is now **create-only**: it seeds missing default `agent-skill` notes but never rewrites an existing note's prompt or metadata (vault notes are the source of truth). Never run two ingesters for the same source: turn the desktop flag on before enabling the server worker.
 
-`DispatchManager` (`src-tauri/src/services/agent_dispatch.rs`) handles on-demand background agent dispatches — each spawns a `claude -p` process, tracks status, and optionally writes output to a Parachute note.
+`DispatchManager` (`src-tauri/src/services/agent_dispatch.rs`) handles on-demand background agent dispatches — each spawns a hardened `claude -p` process (`ClaudeUse::Dispatch`, see *Desktop agent runner*), tracks status, and optionally writes output to a Parachute note.
 
 ### Server skill scheduler (`apps/server/src/worker/skills.ts`, Arch v2 WP1.1)
 
@@ -200,12 +200,23 @@ The port of `skill_scheduler.rs` + `structured_skill.rs` + `DispatchManager` rou
 ## AI / Model Routing
 
 `ModelRouter` (`src-tauri/src/clients/model_router.rs`) routes agent calls to either:
-- **Claude Code CLI** (default) — `claude -p` subprocess, picks up `.mcp.json`, supports `--resume` for session continuity
+- **Claude Code CLI** (default) — hardened `claude -p` subprocess (below); chat keeps continuity via `--session-id`/`--resume`
 - **Ollama + MCP** (opt-in per skill) — `OllamaAgent` connects to `http://localhost:11434` with the Parachute MCP client built in
 
 Per-skill routing is stored in `ModelRouter.skill_config` (a `Mutex<HashMap<String, SkillModelConfig>>`). Skills: `"edit"`, `"chat"`, `"transform"`, `"generate"`. Frontend controls routing via `ollama_cmds::set_skill_model`.
 
 The `PRISM_CONTEXT` constant in `commands/agent.rs` is the system prompt prepended to all agent calls — it describes the vault MCP tools and Benjamin's data context.
+
+### Desktop agent runner (`src-tauri/src/clients/claude_args.rs`, Arch v2 WP0.1d)
+
+The desktop agents read vault content ingested from email/Matrix/transcripts, so a prompt injection must not reach the host (it used to: `--dangerously-skip-permissions`, every built-in tool, cwd = the repo root with its `CLAUDE.md`/`.mcp.json`/`apps/server/.env`/`prism-server.db`, the full inherited env). Every spawn — `ClaudeClient::run` / `run_conversational` (`clients/anthropic.rs`) and `run_claude_dispatch` (`services/agent_dispatch.rs`) — now goes through `build_claude_args` + `ClaudeRunner::command`; asserted by the Rust tests in both files.
+- **argv** = `-p --model <m> --output-format text|json <persistence> --strict-mcp-config --mcp-config <per-run file> --tools "" --allowedTools <list> --permission-mode dontAsk --permission-prompts none --setting-sources "" -- <prompt>`. The model id is validated (an unsafe one → `sonnet`); the prompt is always after `--`.
+- **Allowlists (`ClaudeUse`)**: `Edit`/`Transform`/`Generate` = read-only `query-notes, list-tags, find-path, vault-info, doctor` (they only RETURN text — the editor/CommandBar applies or saves it; `claude_use_for_skill`, unknown skill → read-only). `Chat` and `Dispatch` (background skills, custom tasks, the structured-skill claude fallback) = `query-notes, create-note, update-note, list-tags, find-path, vault-info, doctor, read-attachment, request-attachment-download` — never `delete-note`, never the admin verbs, never `request-attachment-upload`. All `mcp__parachute-vault__*`.
+- **MCP config**: `RunMcpConfig` writes `$TMPDIR/prism-agent-<uuid>/mcp.json` (dir 0700, file 0600, both exclusive) holding ONLY `parachute-vault`, built from the `parachute-vault` entry of the managed `prism-mcp.json` (rewritten from the active vault at launch + on every vault switch; nothing else in it is copied). It is an RAII guard — deleted on exit, error, timeout, cancel, spawn failure. No managed config / no token → the run fails with a Settings hint (the repo `.mcp.json` fallback is gone).
+- **cwd**: `<data_dir>/prism/agent-cwd` (macOS `~/Library/Application Support/prism/agent-cwd`), created 0700; a non-empty cwd refuses to run. Chat sessions persist under `~/.claude/projects/<slug of that cwd>/` (not in the cwd); `--resume` only works from the same cwd, so moving it orphans sessions (`AgentSessions` is in-memory anyway).
+- **env**: `env_clear()` then HOME, USER, LOGNAME, LANG, LC_*, TMPDIR, TZ + a FIXED PATH (claude's dir, the resolved `node` dir for npm installs, `~/.local/bin`, `~/.npm-global/bin`, Homebrew, `/usr/local/bin`, `/usr/bin`, `/bin`) + `CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. Auth = the CLI's own claude.ai login via HOME/USER (keychain); the desktop never passed an API key to the CLI and `ANTHROPIC_API_KEY` from a dev shell is no longer inherited.
+- **Cancel** (`agent_cancel_dispatch`) now really kills a `claude -p` dispatch (`kill_on_drop` + a per-dispatch `Notify`); a local-model run is still only marked cancelled.
+- **Lost capability (deliberate):** no built-in `Read`, so the CLI can't read the temp file it spills an oversized MCP result to — skills must keep queries narrow (same trade-off as the server runner). No desktop feature needs Bash/Write/WebFetch.
 
 ### Server agent runner (`apps/server/src/agent-exec.ts`, `/api/agent/*`)
 

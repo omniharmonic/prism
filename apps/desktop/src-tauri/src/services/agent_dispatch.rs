@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
+use crate::clients::claude_args::{
+    build_claude_args, ClaudeRunner, ClaudeUse, OutputFormat, Persistence, RunMcpConfig, VaultMcpTarget,
+};
 use crate::clients::local_agent::LocalAgent;
 use crate::clients::parachute::ParachuteClient;
 use crate::error::PrismError;
@@ -59,6 +62,23 @@ pub struct DispatchManager {
     background_provider: String,
     /// Model id to request from the local server.
     local_model: String,
+    /// The hardened `claude -p` recipe (WP0.1d): binary, env allowlist, empty cwd.
+    claude: Arc<ClaudeRunner>,
+    /// Kill switches for running `claude -p` dispatches (cancel → child killed,
+    /// per-run MCP config deleted).
+    cancels: CancelMap,
+}
+
+type CancelMap = Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>;
+
+/// Everything `spawn_claude_process` needs, cloned out of the manager so it can
+/// run from a detached task (the local-model fallback path).
+#[derive(Clone)]
+struct ClaudeCtx {
+    dispatches: Arc<Mutex<HashMap<String, Dispatch>>>,
+    parachute: Arc<ParachuteClient>,
+    runner: Arc<ClaudeRunner>,
+    cancels: CancelMap,
 }
 
 impl DispatchManager {
@@ -76,6 +96,17 @@ impl DispatchManager {
             local_agent,
             background_provider,
             local_model,
+            claude: Arc::new(ClaudeRunner::from_host()),
+            cancels: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn claude_ctx(&self) -> ClaudeCtx {
+        ClaudeCtx {
+            dispatches: self.dispatches.clone(),
+            parachute: self.parachute.clone(),
+            runner: self.claude.clone(),
+            cancels: self.cancels.clone(),
         }
     }
 
@@ -162,12 +193,12 @@ impl DispatchManager {
                 "You are a background agent for Prism, a desktop knowledge management app.\n\n\
                  ## CRITICAL: Data access rules\n\n\
                  - ALL vault data lives in the Parachute database, accessed ONLY via the \
-                 parachute-vault MCP server tools (search-notes, get-note, create-note, \
-                 update-note, list-tags, traverse-links, etc.).\n\
-                 - NEVER write vault data using filesystem tools (Write, Bash). \
+                 parachute-vault MCP server tools (query-notes, create-note, update-note, \
+                 list-tags, find-path, vault-info).\n\
+                 - You have NO file, shell, or web access — only the vault MCP tools. \
                  The vault is NOT on the local filesystem.\n\
-                 - The Read tool is available ONLY for reading temp files that Claude Code \
-                 creates when MCP responses are too large. Do NOT use Read to explore the filesystem.\n\
+                 - Keep MCP queries narrow (filters, limits, `include_metadata`) so results \
+                 stay small.\n\
                  - When a task mentions paths like \"vault/meetings/...\" or \"vault/tasks/...\", \
                  these are Parachute note paths passed to MCP tools, NOT filesystem paths.\n\
                  - Do NOT search the filesystem for vault content. There may be an unrelated \
@@ -184,6 +215,7 @@ impl DispatchManager {
             let agent = self.local_agent.clone().expect("effective_routing checked is_some");
             let dispatches = self.dispatches.clone();
             let parachute = self.parachute.clone();
+            let ctx = self.claude_ctx();
             let id_c = id.clone();
             let skill_c = skill.to_string();
             let prompt_c = prompt.to_string();
@@ -211,11 +243,11 @@ impl DispatchManager {
                     }
                     Ok(Err(e)) => {
                         log::warn!("Dispatch {}: local model failed ({}); falling back to claude -p", id_c, e);
-                        spawn_claude_process(dispatches, parachute, id_c, skill_c, claude_prompt);
+                        spawn_claude_process(ctx, id_c, claude_prompt);
                     }
                     Err(_) => {
                         log::warn!("Dispatch {}: local model timed out after 25m; falling back to claude -p", id_c);
-                        spawn_claude_process(dispatches, parachute, id_c, skill_c, claude_prompt);
+                        spawn_claude_process(ctx, id_c, claude_prompt);
                     }
                 }
             });
@@ -224,13 +256,7 @@ impl DispatchManager {
         }
 
         // Default path: spawn a claude -p subprocess.
-        spawn_claude_process(
-            self.dispatches.clone(),
-            self.parachute.clone(),
-            id.clone(),
-            skill.to_string(),
-            full_prompt,
-        );
+        spawn_claude_process(self.claude_ctx(), id.clone(), full_prompt);
 
         Ok(id)
     }
@@ -315,13 +341,7 @@ impl DispatchManager {
              tag.\n\n{}",
             rubric
         );
-        spawn_claude_process(
-            self.dispatches.clone(),
-            self.parachute.clone(),
-            id.clone(),
-            skill.to_string(),
-            fallback_prompt,
-        );
+        spawn_claude_process(self.claude_ctx(), id.clone(), fallback_prompt);
         Ok(id)
     }
 
@@ -340,8 +360,11 @@ impl DispatchManager {
             if dispatch.status == DispatchStatus::Running {
                 dispatch.status = DispatchStatus::Cancelled;
                 dispatch.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                // Note: the actual process kill would need the PID, which is tricky
-                // since we spawned it via tokio. For now, just mark as cancelled.
+                // A `claude -p` run is killed (kill_on_drop) and its per-run MCP
+                // config deleted. A local-model run is only marked cancelled.
+                if let Some(n) = self.cancels.lock().ok().and_then(|m| m.get(id).cloned()) {
+                    n.notify_one();
+                }
                 Ok(())
             } else {
                 Err(PrismError::Agent("Dispatch is not running".into()))
@@ -406,111 +429,78 @@ impl DispatchManager {
     }
 }
 
-/// Spawn a `claude -p` subprocess for a dispatch and, in a background task,
-/// wait for it, record the terminal state, and persist the result. Used both as
-/// the default background path and as the fallback when the local model fails.
-fn spawn_claude_process(
-    dispatches: Arc<Mutex<HashMap<String, Dispatch>>>,
-    parachute: Arc<ParachuteClient>,
-    id: String,
-    _skill: String,
-    full_prompt: String,
-) {
-    let claude_bin = which_claude();
-    let prism_root = find_prism_root();
-    log::info!("Dispatch {}: spawning claude at {:?} in {:?}", id, claude_bin, prism_root);
+/// Spawn a hardened `claude -p` subprocess for a dispatch and, in a background
+/// task, wait for it, record the terminal state, and persist the result. Used both
+/// as the default background path and as the fallback when the local model fails.
+/// The kill switch is registered BEFORE the task starts, so a cancel can never
+/// miss a run.
+fn spawn_claude_process(ctx: ClaudeCtx, id: String, full_prompt: String) {
+    let cancel = Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut m) = ctx.cancels.lock() {
+        m.insert(id.clone(), cancel.clone());
+    }
+    log::info!("Dispatch {}: spawning hardened claude at {:?}", id, ctx.runner.claude_bin);
+    tauri::async_runtime::spawn(async move {
+        let start = std::time::Instant::now();
+        let outcome = match VaultMcpTarget::active() {
+            Ok(target) => {
+                run_claude_dispatch(
+                    &ctx.runner, &target, &std::env::temp_dir(), &full_prompt,
+                    std::time::Duration::from_secs(1800), &cancel,
+                ).await
+            }
+            Err(e) => (DispatchStatus::Failed, None, Some(e.to_string())),
+        };
+        if let Ok(mut m) = ctx.cancels.lock() {
+            m.remove(&id);
+        }
+        let (status, output, error) = outcome;
+        // A cancelled dispatch is already marked; finalize_dispatch no-ops on it.
+        finalize_dispatch(&ctx.dispatches, &ctx.parachute, &id, status, output, error, start.elapsed().as_secs()).await;
+    });
+}
 
-    let mut clean_env: HashMap<String, String> = std::env::vars()
-        .filter(|(k, _)| k != "CLAUDECODE")
-        .collect();
-
-    // macOS .app bundles inherit a minimal PATH that excludes Homebrew/nvm/fnm.
-    ensure_node_in_path(&mut clean_env);
-
-    // Raise the stream idle watchdog from 90s to 300s — MCP-heavy skills go
-    // silent while large result sets stream back. The 30-min wall clock below
-    // still bounds true hangs.
-    clean_env
-        .entry("CLAUDE_STREAM_IDLE_TIMEOUT_MS".to_string())
-        .or_insert_with(|| "300000".to_string());
-
-    // Pass --mcp-config explicitly rather than relying on global auto-discovery.
-    // A future Claude Code release makes --bare the default for -p, which skips
-    // auto-discovery of ~/.claude/settings.json MCP servers; passing an explicit
-    // config keeps Parachute MCP available in this fallback path regardless.
-    // Prefer the MANAGED config (regenerated from the active vault on every switch,
-    // and present even in a released `.app`); fall back to the repo `.mcp.json`.
-    let managed = crate::commands::config::AppConfig::managed_mcp_config_path();
-    let mcp_config = if managed.exists() {
-        managed
-    } else {
-        prism_root.join(".mcp.json")
+/// One background `claude -p` run with the `Dispatch` allowlist (vault read +
+/// write, never delete). The per-run MCP config lives in `mcp_base` only for the
+/// life of this call; on timeout or cancel the child is killed (kill_on_drop).
+async fn run_claude_dispatch(
+    runner: &ClaudeRunner,
+    target: &VaultMcpTarget,
+    mcp_base: &std::path::Path,
+    prompt: &str,
+    timeout: std::time::Duration,
+    cancel: &tokio::sync::Notify,
+) -> (DispatchStatus, Option<String>, Option<String>) {
+    let mcp = match RunMcpConfig::create_in(mcp_base, target) {
+        Ok(m) => m,
+        Err(e) => return (DispatchStatus::Failed, None, Some(e.to_string())),
     };
-    let mut args = vec![
-        "-p".to_string(),
-        "--model".to_string(), "sonnet".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        // Block filesystem write/search tools — agents must use Parachute MCP, not
-        // local files (there may be an unrelated Obsidian vault on disk). Read stays
-        // allowed: Claude Code spills large MCP responses to temp files it must Read.
-        "--disallowedTools".to_string(),
-        "Write,Edit,Bash,Glob,Grep".to_string(),
-    ];
-    if mcp_config.exists() {
-        args.push("--mcp-config".to_string());
-        args.push(mcp_config.to_string_lossy().to_string());
-    }
-    args.push("--".to_string());
-    args.push(full_prompt);
-
-    let child = tokio::process::Command::new(&claude_bin)
-        .args(&args)
-        .current_dir(&prism_root)
-        .envs(&clean_env)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    match child {
-        Ok(child) => {
-            tauri::async_runtime::spawn(async move {
-                let start = std::time::Instant::now();
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(1800),
-                    child.wait_with_output(),
-                ).await;
-                let elapsed = start.elapsed().as_secs();
-
-                let (status, output, error) = match result {
-                    Ok(Ok(out)) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        if out.status.success() {
-                            log::info!("Dispatch {} claude stdout ({} chars)", id, stdout.len());
-                            (DispatchStatus::Completed, Some(stdout), None)
-                        } else {
-                            log::warn!("Dispatch {} claude failed: {}", id, &stderr[..stderr.len().min(300)]);
-                            (DispatchStatus::Failed, None, Some(if stderr.is_empty() { stdout } else { stderr }))
-                        }
-                    }
-                    Ok(Err(e)) => (DispatchStatus::Failed, None, Some(format!("Process error: {}", e))),
-                    Err(_) => (DispatchStatus::Failed, None, Some("Timed out after 30 minutes".into())),
-                };
-
-                finalize_dispatch(&dispatches, &parachute, &id, status, output, error, elapsed).await;
-            });
-        }
-        Err(e) => {
-            tauri::async_runtime::spawn(async move {
-                let mut guard = dispatches.lock().await;
-                if let Some(d) = guard.get_mut(&id) {
-                    d.status = DispatchStatus::Failed;
-                    d.error = Some(format!("Failed to spawn claude: {}", e));
-                    d.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    let child = build_claude_args(ClaudeUse::Dispatch, "sonnet", OutputFormat::Text, &Persistence::OneShot, mcp.path(), prompt)
+        .and_then(|args| runner.command(&args))
+        .and_then(|mut cmd| cmd.spawn().map_err(|e| PrismError::Agent(format!("Failed to spawn claude: {}", e))));
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => return (DispatchStatus::Failed, None, Some(e.to_string())),
+    };
+    let outcome = tokio::select! {
+        r = tokio::time::timeout(timeout, child.wait_with_output()) => match r {
+            Ok(Ok(out)) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if out.status.success() {
+                    (DispatchStatus::Completed, Some(stdout), None)
+                } else {
+                    log::warn!("claude dispatch failed: {}", stderr.chars().take(300).collect::<String>());
+                    (DispatchStatus::Failed, None, Some(if stderr.is_empty() { stdout } else { stderr }))
                 }
-            });
-        }
-    }
+            }
+            Ok(Err(e)) => (DispatchStatus::Failed, None, Some(format!("Process error: {}", e))),
+            Err(_) => (DispatchStatus::Failed, None, Some(format!("Timed out after {} minutes", timeout.as_secs() / 60))),
+        },
+        _ = cancel.notified() => (DispatchStatus::Cancelled, None, Some("Cancelled".into())),
+    };
+    drop(mcp); // explicit: the token file is gone before we report
+    outcome
 }
 
 /// Record a dispatch's terminal state in the map and persist it to the vault.
@@ -592,112 +582,128 @@ async fn persist_to_vault(
     Ok(())
 }
 
-/// Find the Prism project root (where .mcp.json lives).
-/// In dev: current_dir works. In release .app bundle: fall back to known paths.
-fn find_prism_root() -> std::path::PathBuf {
-    // Try current dir first (works in dev)
-    let cwd = std::env::current_dir().unwrap_or_default();
-    if cwd.join(".mcp.json").exists() {
-        return cwd;
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clients::claude_args::claude_env;
+    use std::path::{Path, PathBuf};
 
-    // Known path (production)
-    let known = dirs::home_dir()
-        .unwrap_or_default()
-        .join("iCloud Drive (Archive)/Documents/cursor projects/prism");
-    if known.join(".mcp.json").exists() {
-        return known;
-    }
-
-    // Last resort: search common locations
-    log::warn!("Could not find Prism project root with .mcp.json, using fallback");
-    known
-}
-
-/// Ensure the PATH in the environment includes directories where `node` is likely installed.
-/// macOS .app bundles inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that won't
-/// include Homebrew, nvm, fnm, or volta-managed Node.js installations.
-fn ensure_node_in_path(env: &mut HashMap<String, String>) {
-    let current_path = env.get("PATH").cloned().unwrap_or_default();
-
-    // Check if node is already reachable in the current PATH
-    let node_found = std::process::Command::new("node")
-        .arg("--version")
-        .env("PATH", &current_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if node_found {
-        return;
-    }
-
-    let home = dirs::home_dir().unwrap_or_default();
-    let extra_dirs: Vec<std::path::PathBuf> = vec![
-        // Homebrew (Apple Silicon + Intel)
-        "/opt/homebrew/bin".into(),
-        "/usr/local/bin".into(),
-        // bun
-        home.join(".bun/bin"),
-        // nvm
-        home.join(".nvm/versions/node"),
-        // fnm
-        home.join(".local/share/fnm/aliases/default/bin"),
-        home.join("Library/Application Support/fnm/aliases/default/bin"),
-        // volta
-        home.join(".volta/bin"),
-        // Global npm
-        home.join(".npm-global/bin"),
-    ];
-
-    let mut additions = Vec::new();
-    for dir in &extra_dirs {
-        if dir.to_string_lossy().contains(".nvm/versions/node") {
-            // nvm: find the latest installed version
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                if let Some(latest) = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().join("bin/node").exists())
-                    .max_by_key(|e| e.file_name())
-                {
-                    let bin = latest.path().join("bin");
-                    if !current_path.contains(&*bin.to_string_lossy()) {
-                        additions.push(bin.to_string_lossy().to_string());
-                    }
-                }
-            }
-        } else if dir.exists() && !current_path.contains(&*dir.to_string_lossy()) {
-            additions.push(dir.to_string_lossy().to_string());
+    /// A throwaway dir with a fake `claude` that records its argv/cwd and the
+    /// per-run MCP config it was handed, then runs `body`. Never the real CLI.
+    fn fake_claude(body: &str) -> (PathBuf, ClaudeRunner) {
+        let base = std::env::temp_dir().join(format!("prism-dispatch-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("mcp")).unwrap();
+        let bin = base.join("claude");
+        let rec = base.display();
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{rec}/args'\npwd > '{rec}/cwd'\n\
+             while [ $# -gt 0 ]; do if [ \"$1\" = --mcp-config ]; then cp \"$2\" '{rec}/mcp-seen'; fi; shift; done\n{body}\n"
+        );
+        std::fs::write(&bin, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        let runner = ClaudeRunner {
+            claude_bin: bin.to_string_lossy().to_string(),
+            env: claude_env(std::env::vars(), Path::new("/tmp"), "/bin/sh", None),
+            cwd: base.join("agent-cwd"),
+        };
+        (base, runner)
     }
 
-    if !additions.is_empty() {
-        let new_path = format!("{}:{}", additions.join(":"), current_path);
-        log::info!("Augmented PATH for subprocess: added {}", additions.join(", "));
-        env.insert("PATH".to_string(), new_path);
+    fn target() -> VaultMcpTarget {
+        VaultMcpTarget::new("http://127.0.0.1:9", "test", "tok")
     }
-}
 
-fn which_claude() -> String {
-    std::process::Command::new("which")
-        .arg("claude")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            let home = dirs::home_dir().unwrap_or_default();
-            let npm_global = home.join(".npm-global/bin/claude");
-            if npm_global.exists() {
-                return npm_global.to_string_lossy().to_string();
-            }
-            "claude".to_string()
-        })
+    fn leftover_mcp(base: &Path) -> usize {
+        std::fs::read_dir(base.join("mcp")).unwrap().count()
+    }
+
+    #[tokio::test]
+    async fn dispatch_runs_hardened_and_cleans_up() {
+        let (base, runner) = fake_claude("echo done");
+        let cancel = tokio::sync::Notify::new();
+        let (status, out, err) = run_claude_dispatch(
+            &runner, &target(), &base.join("mcp"), "the task", std::time::Duration::from_secs(20), &cancel,
+        ).await;
+        assert_eq!(status, DispatchStatus::Completed, "{err:?}");
+        assert_eq!(out.as_deref(), Some("done"));
+        let args = std::fs::read_to_string(base.join("args")).unwrap();
+        assert!(!args.contains("dangerously"));
+        assert!(args.contains("--strict-mcp-config\n--mcp-config\n"));
+        assert!(args.contains("--permission-mode\ndontAsk\n"));
+        assert!(args.contains("--no-session-persistence\n"));
+        assert!(!args.contains("delete-note"));
+        assert!(args.ends_with("--\nthe task\n"));
+        // ran from the agent cwd, which is still empty
+        let cwd = std::fs::read_to_string(base.join("cwd")).unwrap();
+        assert!(cwd.trim().ends_with("agent-cwd"), "{cwd}");
+        assert_eq!(std::fs::read_dir(base.join("agent-cwd")).unwrap().count(), 0);
+        // the child saw the vault-only config; it is gone afterwards
+        let seen: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(base.join("mcp-seen")).unwrap()).unwrap();
+        assert_eq!(seen["mcpServers"].as_object().unwrap().len(), 1);
+        assert_eq!(leftover_mcp(&base), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_failure_and_timeout_clean_up() {
+        let (base, runner) = fake_claude("echo boom >&2; exit 3");
+        let cancel = tokio::sync::Notify::new();
+        let (status, _, err) = run_claude_dispatch(
+            &runner, &target(), &base.join("mcp"), "p", std::time::Duration::from_secs(20), &cancel,
+        ).await;
+        assert_eq!(status, DispatchStatus::Failed);
+        assert_eq!(err.as_deref(), Some("boom"));
+        assert_eq!(leftover_mcp(&base), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+
+        let (base, runner) = fake_claude("sleep 30");
+        let t0 = std::time::Instant::now();
+        let (status, _, _) = run_claude_dispatch(
+            &runner, &target(), &base.join("mcp"), "p", std::time::Duration::from_millis(300), &cancel,
+        ).await;
+        assert_eq!(status, DispatchStatus::Failed);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(leftover_mcp(&base), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_cancel_kills_and_cleans_up() {
+        let (base, runner) = fake_claude("sleep 30");
+        let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+        let c2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            c2.notify_one();
+        });
+        let t0 = std::time::Instant::now();
+        let (status, _, _) = run_claude_dispatch(
+            &runner, &target(), &base.join("mcp"), "p", std::time::Duration::from_secs(60), &cancel,
+        ).await;
+        assert_eq!(status, DispatchStatus::Cancelled);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(leftover_mcp(&base), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_a_non_empty_cwd() {
+        let (base, runner) = fake_claude("echo should-not-run");
+        std::fs::create_dir_all(base.join("agent-cwd")).unwrap();
+        std::fs::write(base.join("agent-cwd/CLAUDE.md"), "planted").unwrap();
+        let cancel = tokio::sync::Notify::new();
+        let (status, _, err) = run_claude_dispatch(
+            &runner, &target(), &base.join("mcp"), "p", std::time::Duration::from_secs(20), &cancel,
+        ).await;
+        assert_eq!(status, DispatchStatus::Failed);
+        assert!(err.unwrap().contains("not empty"));
+        assert!(!base.join("args").exists(), "the binary must not have run");
+        assert_eq!(leftover_mcp(&base), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }
