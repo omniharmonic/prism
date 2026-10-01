@@ -787,9 +787,12 @@ export type LiveCalendarChange =
   | { kind: "update"; event: CalEvent | null; fields: { title?: string; start?: string; end?: string; location?: string; attendees?: string[] } }
   | { kind: "delete" };
 
+const REFLECT_LOCK_WAIT_MS = 5_000;
+
 export interface ReflectResult {
   noteId: string | null;
-  outcome: "updated" | "cancelled" | "unchanged" | "no-note" | "conflict" | "failed";
+  /** "deferred" = an ingest pass held the lock longer than the bounded wait. */
+  outcome: "updated" | "cancelled" | "unchanged" | "no-note" | "conflict" | "failed" | "deferred";
 }
 
 /**
@@ -810,7 +813,23 @@ export interface ReflectResult {
  * ingest converges it). Serialized with the ingest passes (same per-vault lock).
  * Best-effort: never throws.
  */
-export async function reflectLiveCalendarChange(vault: ReflectVault, vaultId: string, eventId: string, change: LiveCalendarChange): Promise<ReflectResult> {
+export async function reflectLiveCalendarChange(
+  vault: ReflectVault,
+  vaultId: string,
+  eventId: string,
+  change: LiveCalendarChange,
+  opts: { lockWaitMs?: number } = {},
+): Promise<ReflectResult> {
+  // Bounded wait for a running ingest pass (security review L1): a long pass
+  // must never hold the owner's HTTP response; the next pass converges the note.
+  const deadline = Date.now() + (opts.lockWaitMs ?? REFLECT_LOCK_WAIT_MS);
+  while (locks.has(vaultId)) {
+    const left = deadline - Date.now();
+    if (left <= 0) return { noteId: null, outcome: "deferred" };
+    const prev = locks.get(vaultId)!;
+    await Promise.race([prev.catch(() => {}), new Promise((r) => setTimeout(r, left))]);
+  }
+  // No await between the check above and withLock registering itself.
   return withLock(vaultId, async (): Promise<ReflectResult> => {
     let note: Note | undefined;
     try {

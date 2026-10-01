@@ -69,9 +69,25 @@ const fakeMailbox: MailboxOps = {
     return mboxFound;
   },
 };
+/** Mutating gog calls (respond/create/update/delete); `event` reads go to gogReads. */
 let gogCalls: string[][];
-let gogFail: string | null = null;
+let gogReads: string[][];
+/** A string = a normal non-zero exit whose STDERR is that string (execFile shape:
+ *  the message starts with `Command failed: <argv>`); an object = thrown as is. */
+let gogFail: unknown = null;
+let gogEventFail: string | null = null;
+let gogEvents: Record<string, Record<string, unknown>>;
 let gogUpdateOut: string | null = null;
+
+/** What node's execFile rejects with on a non-zero exit (message = "Command failed: <argv>\n<stderr>"). */
+const execErr = (stderr: string, args: string[] = []) =>
+  Object.assign(new Error(`Command failed: /opt/homebrew/bin/gog ${args.join(" ")}\n${stderr}`), { code: 1, stderr, killed: false, signal: null });
+/** Default `gog calendar event` answer: an `_YYYYMMDDTHHMMSSZ` id is an occurrence of a series. */
+function defaultEvent(id: string): Record<string, unknown> {
+  const m = /^(.+)_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(id);
+  if (!m) return { id, status: "confirmed" };
+  return { id, recurringEventId: m[1], originalStartTime: { dateTime: `${m[2]}-${m[3]}-${m[4]}T${m[5]}:${m[6]}:${m[7]}Z` } };
+}
 let mxEvents: Array<{ roomId: string; type: string; txnId: string; content: Record<string, unknown> }>;
 let joined: string[];
 let fv: FakeVault;
@@ -89,15 +105,23 @@ beforeEach(() => {
   mboxCalls = [];
   mboxFound = "ok";
   gogCalls = [];
+  gogReads = [];
   gogFail = null;
+  gogEventFail = null;
+  gogEvents = {};
   gogUpdateOut = null;
   mxEvents = [];
   joined = ["!room1:hs.example.test", "!agentroom:hs.example.test"];
   setCfg({ actionsEmailEnabled: true, actionsCalendarEnabled: true, actionsMatrixEnabled: true, actionsMatrixAgentRooms: ["!agentroom:hs.example.test"], actionsEmailSendPerHour: 1000, actionsCalendarPer10Min: 100000 });
   configureEmailActions({ smtp: fakeSmtp, mailbox: fakeMailbox });
   setActionsGogRunnerForTests(async (args) => {
+    if (args[1] === "event") {
+      gogReads.push(args);
+      if (gogEventFail) throw execErr(gogEventFail, args);
+      return JSON.stringify({ event: gogEvents[args[3]!] ?? defaultEvent(args[3]!) });
+    }
     gogCalls.push(args);
-    if (gogFail) throw new Error(gogFail);
+    if (gogFail) throw typeof gogFail === "string" ? execErr(gogFail, args) : gogFail;
     if (args[1] === "create") return JSON.stringify({ event: { id: "evt123", htmlLink: "https://calendar.example.test/e/evt123" } });
     if (args[1] === "update") return gogUpdateOut ?? "{}";
     return "{}";
@@ -419,17 +443,17 @@ test("calendar update + delete: exact gog argv (one element per value, injection
   );
   assert.equal(r.status, 200);
   assert.deepEqual(gogCalls[0], [
-    "calendar", "update", "primary", "evt1_20261002T210000Z",
+    "calendar", "update", "primary", "evt1_20261002T210000Z", "--scope=single", "--original-start=2026-10-02T21:00:00Z",
     "--summary=Plan --with-zoom", "--from=2026-10-02T15:30:00-06:00", "--to=2026-10-02T16:30:00-06:00",
     "--location=", "--description=a\nb", "--attendees=alice@example.test,bob@example.test",
     "--send-updates=none", `--account=${SELF}`, "--json", "--no-input",
   ]);
   assert.equal((await post("/calendar/update", { eventId: "evt2", title: "Only title" }, keyed())).status, 200);
-  assert.deepEqual(gogCalls[1], ["calendar", "update", "primary", "evt2", "--summary=Only title", "--send-updates=all", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.deepEqual(gogCalls[1], ["calendar", "update", "primary", "evt2", "--scope=all", "--summary=Only title", "--send-updates=all", `--account=${SELF}`, "--json", "--no-input"]);
   assert.equal((await post("/calendar/delete", { eventId: "evt3" }, keyed())).status, 200);
-  assert.deepEqual(gogCalls[2], ["calendar", "delete", "primary", "evt3", "--send-updates=all", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.deepEqual(gogCalls[2], ["calendar", "delete", "primary", "evt3", "--scope=all", "--send-updates=all", "--force", `--account=${SELF}`, "--json", "--no-input"]);
   assert.equal((await post("/calendar/delete", { eventId: "evt4", notify: false }, keyed())).status, 200);
-  assert.deepEqual(gogCalls[3], ["calendar", "delete", "primary", "evt4", "--send-updates=none", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.deepEqual(gogCalls[3], ["calendar", "delete", "primary", "evt4", "--scope=all", "--send-updates=none", "--force", `--account=${SELF}`, "--json", "--no-input"]);
 
   const bad: Array<[string, unknown]> = [
     ["/calendar/update", { eventId: "--account=evil", title: "x" }],
@@ -445,10 +469,15 @@ test("calendar update + delete: exact gog argv (one element per value, injection
     ["/calendar/update", { eventId: "evt1", location: "x\ny" }],
     ["/calendar/delete", { eventId: "--force" }],
     ["/calendar/delete", { eventId: "evt1", notify: "yes" }],
+    ["/calendar/update", { eventId: "evt1", title: "x", notify: "yes" }],
+    ["/calendar/update", { eventId: "evt1", title: "x", scope: "single" }],
+    ["/calendar/delete", { eventId: "evt1", scope: "series" }],
     ["/calendar/delete", {}],
   ];
   for (const [p, b] of bad) assert.equal((await post(p, b, keyed())).status, 400, JSON.stringify(b));
   assert.equal(gogCalls.length, 4, "nothing invalid reached gog");
+  assert.equal(gogReads.length, 4, "nothing invalid was even read");
+  assert.deepEqual(gogReads[0], ["calendar", "event", "primary", "evt1_20261002T210000Z", `--account=${SELF}`, "--json", "--no-input"]);
   assert.equal((await post("/calendar/update", { eventId: "evt1", title: "x" })).status, 400, "update needs a key");
   assert.equal((await post("/calendar/delete", { eventId: "evt1" })).status, 400, "delete needs a key");
 });
@@ -505,6 +534,124 @@ test("calendar update + delete: gog/Google refusals that changed nothing → sen
   gogFail = null;
   assert.equal((await post("/calendar/delete", { eventId: "evt1" }, { ...owner(), "idempotency-key": key })).status, 502, "kept + replayed, gog not re-run");
   assert.equal(patchCalls().length, 0, "no vault reflection after a failed write");
+});
+
+// ── H1: recurring events — never touch a whole series by accident ───────────
+
+test("H1: an occurrence id → --scope=single --original-start=<its original start> (read first); scope:'all' on it → 400", async () => {
+  assert.equal((await post("/calendar/delete", { eventId: "abc_20261002T210000Z", notify: false }, keyed())).status, 200);
+  assert.deepEqual(gogReads[0], ["calendar", "event", "primary", "abc_20261002T210000Z", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.deepEqual(gogCalls[0], ["calendar", "delete", "primary", "abc_20261002T210000Z", "--scope=single", "--original-start=2026-10-02T21:00:00Z", "--send-updates=none", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+  // The original start comes from Google, and must agree with the id suffix.
+  gogEvents["abc_20261003T210000Z"] = { id: "abc_20261003T210000Z", recurringEventId: "abc", originalStartTime: { dateTime: "2026-10-03T15:00:00-06:00" } };
+  assert.equal((await post("/calendar/update", { eventId: "abc_20261003T210000Z", title: "x" }, keyed())).status, 200);
+  assert.ok(gogCalls[1]!.includes("--original-start=2026-10-03T15:00:00-06:00"));
+  gogEvents["abc_20261004T210000Z"] = { id: "abc_20261004T210000Z", recurringEventId: "abc", originalStartTime: { dateTime: "2026-10-04T09:00:00Z" } };
+  const mism = await post("/calendar/update", { eventId: "abc_20261004T210000Z", title: "x" }, keyed());
+  assert.equal(mism.status, 409);
+  assert.equal(((await mism.json()) as Record<string, unknown>).error, "event_mismatch");
+  gogEvents["allday_20261005"] = { id: "allday_20261005", recurringEventId: "allday", originalStartTime: { date: "2026-10-05" } };
+  const ad = await post("/calendar/delete", { eventId: "allday_20261005" }, keyed());
+  assert.equal(ad.status, 409);
+  assert.deepEqual(((await ad.json()) as Record<string, unknown>).error, "unsupported_instance");
+  assert.equal((await post("/calendar/delete", { eventId: "abc_20261002T210000Z", scope: "all" }, keyed())).status, 400, "an occurrence is never widened to the series");
+  // An id that LOOKS like an occurrence but Google reports as standalone is refused, not guessed.
+  gogEvents["odd_20261006T100000Z"] = { id: "odd_20261006T100000Z" };
+  assert.equal((await post("/calendar/delete", { eventId: "odd_20261006T100000Z" }, keyed())).status, 409);
+  assert.equal(gogCalls.length, 2, "no refused request reached a write");
+});
+
+test("H1: a recurring SERIES id is refused (409 recurring_series, sent:false, key released) unless scope:'all' is explicit", async () => {
+  gogEvents["series1"] = { id: "series1", recurrence: ["RRULE:FREQ=WEEKLY"] };
+  const key = freshKey();
+  for (const p of ["/calendar/update", "/calendar/delete"]) {
+    const r = await post(p, { eventId: "series1", title: "x" }, { ...owner(), "idempotency-key": p === "/calendar/delete" ? key : freshKey() });
+    assert.equal(r.status, 409, p);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.deepEqual([j.error, j.sent], ["recurring_series", false]);
+  }
+  assert.equal(gogCalls.length, 0, "nothing written");
+  // Same key may now carry the explicit, separately confirmed scope.
+  const ok = await post("/calendar/delete", { eventId: "series1", scope: "all" }, { ...owner(), "idempotency-key": freshKey() });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(gogCalls[0], ["calendar", "delete", "primary", "series1", "--scope=all", "--send-updates=all", "--force", `--account=${SELF}`, "--json", "--no-input"]);
+  assert.equal((await post("/calendar/update", { eventId: "series1", title: "y", scope: "all" }, keyed())).status, 200);
+  assert.deepEqual(gogCalls[1]!.slice(0, 6), ["calendar", "update", "primary", "series1", "--scope=all", "--summary=y"]);
+  const rows = auditRows().filter((r) => String(r.action) === "calendar.delete");
+  assert.equal(JSON.parse(String(rows.at(-1)!.target)).scope, "all");
+  // scope:"all" on a plain (non-recurring) event is a 400 — nothing to widen.
+  assert.equal((await post("/calendar/delete", { eventId: "plain1", scope: "all" }, keyed())).status, 400);
+});
+
+test("H1: the pre-read — event gone → 404 event_not_found; any other read failure → 502 sent:false, key released, nothing written", async () => {
+  gogEventFail = "googleapi: Error 404: Not Found, notFound";
+  const r = await post("/calendar/delete", { eventId: "gone1" }, keyed());
+  assert.equal(r.status, 404);
+  gogEventFail = "dial tcp: i/o timeout";
+  const key = freshKey();
+  const r2 = await post("/calendar/update", { eventId: "x1", title: "t" }, { ...owner(), "idempotency-key": key });
+  assert.equal(r2.status, 502);
+  assert.equal(((await r2.json()) as Record<string, unknown>).sent, false);
+  gogEventFail = null;
+  assert.equal((await post("/calendar/update", { eventId: "x1", title: "t" }, { ...owner(), "idempotency-key": key })).status, 200, "key released");
+  assert.equal(gogCalls.length, 1);
+});
+
+// ── H2: classify ONLY from gog's stderr ──────────────────────────────────────
+
+test("H2: user text in argv ('404', 'not found', 'forbidden') can never make a timeout or unknown failure look pre-send", async () => {
+  const title = "Fix the 404 page: not found, forbidden, has been deleted";
+  // A timeout (execFile kills the child): outcome unknown, key KEPT, never re-run.
+  gogFail = Object.assign(new Error(`Command failed: gog calendar update primary e1 --summary=${title}`), { killed: true, signal: "SIGTERM", code: null, stderr: "" });
+  const key = freshKey();
+  const r = await post("/calendar/update", { eventId: "e1", title }, { ...owner(), "idempotency-key": key });
+  assert.equal(r.status, 502);
+  const j = (await r.json()) as Record<string, unknown>;
+  assert.equal(j.sent, "unknown");
+  assert.ok(!String(j.detail).includes("404") && !String(j.detail).includes("--summary"), "no argv in the answer");
+  gogFail = null;
+  assert.equal((await post("/calendar/update", { eventId: "e1", title }, { ...owner(), "idempotency-key": key })).status, 502, "kept + replayed");
+  assert.equal(gogCalls.length, 1, "gog not re-run");
+  // A plain exit whose argv mentions 404 but whose STDERR is unrelated: unknown.
+  gogFail = Object.assign(new Error(`Command failed: gog calendar delete primary e2 --description=Error 404 forbidden`), { code: 1, stderr: "connection reset by peer" });
+  const d = await post("/calendar/update", { eventId: "e2", description: "Error 404 forbidden" }, keyed());
+  assert.equal(((await d.json()) as Record<string, unknown>).sent, "unknown");
+  // Create: a title saying "not found" + a failure is NOT "binary missing".
+  gogFail = Object.assign(new Error("Command failed: gog calendar create primary --summary=binary not found ENOENT"), { code: 2, stderr: "googleapi: Error 500" });
+  const c = await post("/calendar/create", { title: "binary not found ENOENT", start: "2026-10-02T15:00:00Z", end: "2026-10-02T16:00:00Z" }, keyed());
+  assert.deepEqual([c.status, ((await c.json()) as Record<string, unknown>).sent], [502, "unknown"]);
+  // Only a real spawn ENOENT (code === "ENOENT") is "nothing sent".
+  gogFail = Object.assign(new Error("spawn gog ENOENT"), { code: "ENOENT" });
+  const c2 = await post("/calendar/create", { title: "t", start: "2026-10-02T15:00:00Z", end: "2026-10-02T16:00:00Z" }, keyed());
+  assert.deepEqual([c2.status, ((await c2.json()) as Record<string, unknown>).sent], [502, false]);
+  // RSVP: a refusal phrase only in the MESSAGE (argv), stderr unrelated → not classified.
+  gogFail = Object.assign(new Error("Command failed: gog calendar respond primary abc event has no attendees"), { code: 1, stderr: "transport closed" });
+  const rs = await post("/calendar/rsvp", { eventId: "abc", response: "accepted" });
+  assert.deepEqual([rs.status, ((await rs.json()) as Record<string, unknown>).sent], [502, "unknown"]);
+  // Audit holds gog's (scrubbed) stderr, never argv.
+  const all = JSON.stringify(auditRows());
+  assert.ok(!all.includes("--summary") && !all.includes("Command failed"), "no argv in audit rows");
+});
+
+test("L1: note reflection waits a bounded time for a running ingest pass, then answers 'deferred'", async () => {
+  const { reflectLiveCalendarChange } = await import("../src/worker/calendar");
+  let release: () => void = () => {};
+  const hang = new Promise<void>((r) => (release = r));
+  const slow = {
+    listNotes: async () => {
+      await hang;
+      return [];
+    },
+    updateNote: async () => ({}) as never,
+  };
+  const first = reflectLiveCalendarChange(slow, "lockvault", "e", { kind: "delete" });
+  await new Promise((r) => setTimeout(r, 5));
+  const t0 = Date.now();
+  const second = await reflectLiveCalendarChange(slow, "lockvault", "e", { kind: "delete" }, { lockWaitMs: 30 });
+  assert.deepEqual(second, { noteId: null, outcome: "deferred" });
+  assert.ok(Date.now() - t0 < 1000);
+  release();
+  assert.equal((await first).outcome, "no-note");
 });
 
 test("calendar update reflects onto the meeting note now (ingest metadata shape, if_updated_at, path/body untouched)", async () => {

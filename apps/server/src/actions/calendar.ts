@@ -126,6 +126,7 @@ const optText = (b: Record<string, unknown>, k: "location" | "description", max:
 
 /** Validate an edit: the event id plus at least one field. start/end go together. */
 export function validateUpdateInput(b: Record<string, unknown>): UpdateInput {
+  if (b.notify !== undefined && typeof b.notify !== "boolean") throw new ActionInputError("notify: true or false");
   const out: UpdateInput = { eventId: validateEventId(b.eventId), notify: b.notify !== false };
   if (b.title !== undefined && b.title !== null) {
     const title = typeof b.title === "string" ? b.title.trim() : "";
@@ -163,8 +164,75 @@ export function validateUpdateInput(b: Record<string, unknown>): UpdateInput {
   return out;
 }
 
-export function updateArgs(account: string, u: UpdateInput): string[] {
-  const args = ["calendar", "update", "primary", validateEventId(u.eventId)];
+// ── recurring-event scope (security review H1) ──────────────────────────────
+//
+// gog v0.25 `calendar update|delete` default to `--scope=all` — the WHOLE series
+// when the id is a recurring master, and gog may resolve an instance to its
+// series. So every update/delete first READS the event (`gog calendar event`)
+// and decides the scope explicitly; the argv always carries `--scope=…`:
+//   - an INSTANCE (`recurringEventId` set) → `--scope=single
+//     --original-start=<its originalStartTime.dateTime>` (strict RFC 3339, and it
+//     must agree with an `_YYYYMMDDTHHMMSSZ` id suffix when there is one). An
+//     all-day instance (date-only original start) is refused: gog wants RFC 3339;
+//   - a recurring SERIES MASTER (`recurrence` non-empty) → refused (409
+//     `recurring_series`, nothing sent) unless the client sent `scope: "all"`
+//     (the UI's distinct "ALL occurrences" confirmation) → `--scope=all`;
+//   - a plain, non-recurring event → `--scope=all` (= that one event; gog's
+//     `single` needs an original start, which a non-recurring event has none of).
+// `scope: "all"` on anything but a series master is a 400.
+
+export type CalendarScope = { scope: "single"; originalStart: string } | { scope: "all" };
+
+export class ScopeRefusal extends Error {
+  constructor(
+    readonly code: "recurring_series" | "unsupported_instance" | "event_mismatch",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const INSTANCE_SUFFIX_RE = /_(\d{8})(T\d{6}Z)?$/;
+const RFC3339_STRICT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+/** `gog calendar event primary <id>` — read-only, used to decide the scope. */
+export function eventGetArgs(account: string, eventId: string): string[] {
+  return ["calendar", "event", "primary", validateEventId(eventId), `--account=${account}`, "--json", "--no-input"];
+}
+
+/** Decide the scope from the fetched event (pure; see the block comment above). */
+export function resolveScope(eventId: string, ev: Record<string, unknown>, requested: "all" | undefined): CalendarScope {
+  if (typeof ev.id === "string" && ev.id !== eventId) throw new ScopeRefusal("event_mismatch", "gog returned a different event than the one requested");
+  const recurringEventId = typeof ev.recurringEventId === "string" && ev.recurringEventId ? ev.recurringEventId : null;
+  const recurrence = Array.isArray(ev.recurrence) && ev.recurrence.length > 0;
+  const suffix = INSTANCE_SUFFIX_RE.exec(eventId);
+  if (recurringEventId) {
+    if (requested === "all") throw new ActionInputError('scope: "all" is only accepted for a recurring series id, not one occurrence');
+    const ost = (ev.originalStartTime ?? {}) as Record<string, unknown>;
+    const dt = typeof ost.dateTime === "string" ? ost.dateTime : null;
+    if (!dt) throw new ScopeRefusal("unsupported_instance", "All-day recurring occurrences can't be changed from Prism yet — edit this one in Google Calendar.");
+    if (!RFC3339_STRICT.test(dt) || Number.isNaN(Date.parse(dt))) throw new ScopeRefusal("event_mismatch", "the occurrence has no valid original start time");
+    if (suffix?.[2]) {
+      const fromId = `${suffix[1]!.slice(0, 4)}-${suffix[1]!.slice(4, 6)}-${suffix[1]!.slice(6, 8)}T${suffix[2].slice(1, 3)}:${suffix[2].slice(3, 5)}:${suffix[2].slice(5, 7)}Z`;
+      if (Date.parse(fromId) !== Date.parse(dt)) throw new ScopeRefusal("event_mismatch", "the occurrence id and its original start time disagree");
+    }
+    return { scope: "single", originalStart: dt };
+  }
+  if (suffix) throw new ScopeRefusal("event_mismatch", "that id looks like one occurrence, but Google does not report it as part of a series");
+  if (recurrence) {
+    if (requested !== "all") {
+      throw new ScopeRefusal("recurring_series", "This is a recurring series. Changing it affects ALL occurrences — confirm that explicitly, or pick one occurrence.");
+    }
+    return { scope: "all" };
+  }
+  if (requested === "all") throw new ActionInputError('scope: "all" is only accepted for a recurring series');
+  return { scope: "all" };
+}
+
+const scopeArgs = (s: CalendarScope): string[] => (s.scope === "single" ? ["--scope=single", `--original-start=${s.originalStart}`] : ["--scope=all"]);
+
+export function updateArgs(account: string, u: UpdateInput, scope: CalendarScope): string[] {
+  const args = ["calendar", "update", "primary", validateEventId(u.eventId), ...scopeArgs(scope)];
   if (u.title !== undefined) args.push(`--summary=${u.title}`);
   if (u.start !== undefined && u.end !== undefined) args.push(`--from=${u.start}`, `--to=${u.end}`);
   if (u.location !== undefined) args.push(`--location=${u.location}`);
@@ -174,8 +242,15 @@ export function updateArgs(account: string, u: UpdateInput): string[] {
   return args;
 }
 
-export function deleteArgs(account: string, eventId: string, notify: boolean): string[] {
-  return ["calendar", "delete", "primary", validateEventId(eventId), `--send-updates=${notify ? "all" : "none"}`, "--force", `--account=${account}`, "--json", "--no-input"];
+export function deleteArgs(account: string, eventId: string, notify: boolean, scope: CalendarScope): string[] {
+  return ["calendar", "delete", "primary", validateEventId(eventId), ...scopeArgs(scope), `--send-updates=${notify ? "all" : "none"}`, "--force", `--account=${account}`, "--json", "--no-input"];
+}
+
+/** `scope` from a request body: absent, or exactly "all". */
+export function validateScopeField(v: unknown): "all" | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (v === "all") return "all";
+  throw new ActionInputError('scope: only "all" (every occurrence of a recurring series) may be sent');
 }
 
 /** The event object out of gog's JSON (`{event: {...}}` or the bare event), or null. */
@@ -238,14 +313,47 @@ export function setActionsGogRunnerForTests(run: GogRunner | null): void {
   testRunner = run;
 }
 
-/** Run gog. A spawn/exit failure of a WRITE command is outcome-unknown (it may have reached Google). */
+/**
+ * A failed gog run. `stderr` is what gog itself printed — the ONLY text refusal
+ * classification may read (security review H2): Node's execFile `err.message`
+ * starts with `Command failed: <full argv>`, so a title like "Fix the 404 page"
+ * would otherwise look like a Google 404. `stderr` is null when the outcome is
+ * unknowable (killed / signalled / timed out / no stderr captured), and then
+ * nothing is ever classified as "nothing was sent". The message never holds argv.
+ */
+export class GogError extends ActionTransportError {
+  constructor(
+    message: string,
+    sent: false | "unknown",
+    readonly stderr: string | null,
+  ) {
+    super(message, sent);
+  }
+}
+
+const asText = (v: unknown): string | null => (typeof v === "string" ? v : Buffer.isBuffer(v) ? v.toString("utf8") : null);
+
+/** Map a GogRunner rejection (an execFile error, or a test fake) to a GogError. */
+export function gogFailure(e: unknown): GogError {
+  const x = (e ?? {}) as { code?: unknown; stderr?: unknown; killed?: unknown; signal?: unknown };
+  // Missing binary: execFile's spawn error carries code === "ENOENT" (a string;
+  // a normal non-zero exit carries a NUMBER code). Nothing was sent.
+  if (x.code === "ENOENT") return new GogError("gog failed: the gog binary was not found", false, null);
+  const aborted = x.killed === true || (typeof x.signal === "string" && x.signal !== "") || x.code === "ETIMEDOUT" || x.code === "ABORT_ERR";
+  if (aborted) return new GogError("gog failed: killed or timed out (outcome unknown)", "unknown", null);
+  const stderr = asText(x.stderr);
+  const exit = typeof x.code === "number" ? ` (exit ${x.code})` : "";
+  const shown = stderr ? `: ${stderr.replace(/\s+/g, " ").trim().slice(0, 300)}` : "";
+  return new GogError(`gog failed${exit}${shown}`, "unknown", stderr && stderr.trim() ? stderr : null);
+}
+
+/** Run gog. A spawn/exit failure of a WRITE command is outcome-unknown (it may have
+ *  reached Google) unless gog's own stderr later proves otherwise (classifiers). */
 export async function runGog(args: string[]): Promise<string> {
   const run = testRunner ?? defaultGogRunner();
   try {
     return await run(args);
   } catch (e) {
-    const msg = String((e as Error)?.message ?? e).replace(/\s+/g, " ");
-    const notFound = /ENOENT|not found/i.test(msg) && !/event/i.test(msg);
-    throw new ActionTransportError(`gog failed: ${msg.slice(0, 300)}`, notFound ? false : "unknown");
+    throw gogFailure(e);
   }
 }

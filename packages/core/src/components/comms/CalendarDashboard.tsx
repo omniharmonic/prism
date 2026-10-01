@@ -133,13 +133,13 @@ export default function CalendarDashboard(_props: RendererProps) {
 
   // Desktop: its Tauri command behind a confirm(). Web/native: the server's live
   // action, behind the detail panel's own two-step confirm (with "notify guests").
-  const handleDeleteEvent = useCallback(async (eventId: string, notify = true) => {
+  const handleDeleteEvent = useCallback(async (eventId: string, notify = true, scope?: "all") => {
     if (isDesktop) {
       if (!confirm("Delete this event?")) return;
       await calendarApi.deleteEvent(eventId);
     } else if (liveCal) {
       // Throws on failure — the panel shows the message and keeps the event open.
-      await liveCal.calendarDelete(eventId, { notify });
+      await liveCal.calendarDelete(eventId, { notify, ...(scope ? { scope } : {}) });
     } else {
       return;
     }
@@ -313,7 +313,7 @@ export default function CalendarDashboard(_props: RendererProps) {
               event={selectedEvent}
               onClose={() => setSelectedEvent(null)}
               onEdit={() => { setEditingEvent(selectedEvent); setSelectedEvent(null); setShowCreateForm(true); }}
-              onDelete={(notify) => (selectedEvent.id ? handleDeleteEvent(selectedEvent.id, notify) : Promise.resolve())}
+              onDelete={(notify, scope) => (selectedEvent.id ? handleDeleteEvent(selectedEvent.id, notify, scope) : Promise.resolve())}
               onOpenNotes={() => handleOpenMeetingNote(selectedEvent)}
               onOpenTranscript={(noteId, label) => openTab(noteId, label, "document")}
               live={liveCal}
@@ -534,8 +534,9 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
   event: CalEvent;
   onClose: () => void;
   onEdit: () => void;
-  /** `notify` = email guests about the cancellation (live path only). */
-  onDelete: (notify: boolean) => Promise<void>;
+  /** `notify` = email guests about the cancellation; `scope: "all"` = every
+   *  occurrence of a recurring SERIES (live path only, after its own confirm). */
+  onDelete: (notify: boolean, scope?: "all") => Promise<void>;
   onOpenNotes: () => void;
   onOpenTranscript: (noteId: string, label: string) => void;
   /** Server live actions (web/native): RSVP, edit and delete a Google-synced event. */
@@ -549,12 +550,16 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
   const [notifyGuests, setNotifyGuests] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const doDelete = async () => {
+  // The server refuses a recurring SERIES id unless the owner confirms "ALL
+  // occurrences" separately (security review H1); an occurrence is always alone.
+  const [seriesConfirm, setSeriesConfirm] = useState(false);
+  const doDelete = async (scope?: "all") => {
     setDeleting(true);
     setDeleteError(null);
     try {
-      await onDelete(notifyGuests);
+      await onDelete(notifyGuests, scope);
     } catch (e) {
+      if (e instanceof LiveActionError && e.code === "recurring_series") setSeriesConfirm(true);
       setDeleteError(liveActionErrorText(e));
     } finally {
       setDeleting(false);
@@ -731,7 +736,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       {confirmDelete && !isDesktop && (
         <div className="space-y-2 rounded p-2" style={{ border: "1px solid var(--color-danger)" }} role="alertdialog" aria-label="Confirm delete">
           <div className="text-xs" style={{ color: "var(--text-primary)" }}>
-            Delete this event from Google Calendar? Its meeting note is kept (marked cancelled).
+            Delete this occurrence from Google Calendar? Only this one is removed if the event repeats. Its meeting note is kept (marked cancelled).
           </div>
           {(event.attendees?.length ?? 0) > 0 && (
             <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
@@ -741,18 +746,34 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
           )}
           <div className="flex items-center gap-2">
             <button
-              onClick={doDelete}
+              onClick={() => void doDelete()}
               disabled={deleting}
               className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
               style={{ background: "var(--color-danger)", color: "white" }}
             >
-              {deleting ? "Deleting..." : "Delete event"}
+              {deleting ? "Deleting..." : "Delete this occurrence"}
             </button>
             <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="px-2 py-1 rounded text-xs" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               Cancel
             </button>
           </div>
           {deleteError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{deleteError}</div>}
+          {seriesConfirm && (
+            <div className="space-y-1 pt-1" style={{ borderTop: "1px solid var(--glass-border)" }}>
+              <div className="text-xs font-medium" style={{ color: "var(--color-danger)" }}>
+                This removes EVERY occurrence of the series from Google Calendar{notifyGuests && (event.attendees?.length ?? 0) > 0 ? " and emails every guest" : ""}.
+              </div>
+              <button
+                onClick={() => void doDelete("all")}
+                disabled={deleting}
+                className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
+                style={{ background: "var(--color-danger)", color: "white" }}
+                data-testid="delete-all-occurrences"
+              >
+                Delete ALL occurrences
+              </button>
+            </div>
+          )}
         </div>
       )}
       {canRsvp && (
@@ -781,11 +802,15 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   live?: LiveActionsClient | null;
 }) {
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A recurring SERIES id is refused unless "ALL occurrences" is confirmed (H1).
+  const [seriesEdit, setSeriesEdit] = useState(false);
   const isEdit = !!event;
   const dateStr = defaultDate ? `${defaultDate.getFullYear()}-${String(defaultDate.getMonth() + 1).padStart(2, "0")}-${String(defaultDate.getDate()).padStart(2, "0")}` : new Date().toISOString().slice(0, 10);
 
   const [summary, setSummary] = useState(event?.summary || "");
-  const [date, setDate] = useState(event?.start?.dateTime?.slice(0, 10) || event?.start?.date || dateStr);
+  // Date and time both in the browser's local zone (security review L8): the
+  // stored dateTime may carry another offset; slicing its date would mix zones.
+  const [date, setDate] = useState(event?.start?.dateTime ? formatDateInput(event.start.dateTime) : event?.start?.date || dateStr);
   const [startTime, setStartTime] = useState(event?.start?.dateTime ? formatTimeInput(event.start.dateTime) : "09:00");
   const [endTime, setEndTime] = useState(event?.end?.dateTime ? formatTimeInput(event.end.dateTime) : "10:00");
   const [locationVal, setLocationVal] = useState(event?.location || "");
@@ -796,7 +821,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   // The form's starting values, to send only real changes on a live edit.
   const [initial] = useState(() => ({ date, startTime, endTime }));
 
-  const handleSave = async () => {
+  const handleSave = async (scopeAll = false) => {
     if (!summary.trim()) return;
     setSaving(true);
     try {
@@ -808,7 +833,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
         // Server live action: send ONLY what the owner changed (an untouched
         // all-day event is never turned into a timed one; an untouched guest list
         // is never replaced).
-        const p: CalendarUpdateParams = { eventId: event.id, notify: notifyAttendees };
+        const p: CalendarUpdateParams = { eventId: event.id, notify: notifyAttendees, ...(scopeAll ? { scope: "all" as const } : {}) };
         if (summary.trim() !== (event.summary || "")) p.title = summary.trim();
         if (date !== initial.date || startTime !== initial.startTime || endTime !== initial.endTime) {
           p.start = new Date(start).toISOString();
@@ -817,7 +842,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
         if (locationVal !== (event.location || "")) p.location = locationVal;
         if (descVal !== (event.description || "")) p.description = descVal;
         if (attendeesVal.trim()) p.attendees = attendeesVal.split(",").map((s) => s.trim()).filter(Boolean);
-        if (Object.keys(p).length <= 2) {
+        if (Object.keys(p).length <= (scopeAll ? 3 : 2)) {
           onClose();
           return;
         }
@@ -842,6 +867,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
     } catch (e) {
       console.error("Failed to save event:", e);
       if (live) setSaveError(liveActionErrorText(e));
+      if (e instanceof LiveActionError && e.code === "recurring_series") setSeriesEdit(true);
     } finally {
       setSaving(false);
     }
@@ -906,7 +932,9 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           </label>
         )}
         {live && isEdit && (
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>Leave attendees empty to keep the current guest list; a list replaces it.</div>
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Changes apply to this occurrence only. Leave attendees empty to keep the current guest list; a list replaces it.
+          </div>
         )}
 
         <textarea
@@ -920,7 +948,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
       </div>
 
       <button
-        onClick={handleSave}
+        onClick={() => void handleSave()}
         disabled={!summary.trim() || saving}
         className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50"
         style={{ background: "var(--color-accent)", color: "white" }}
@@ -928,8 +956,25 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
         {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
       </button>
       {saveError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{saveError}</div>}
+      {seriesEdit && live && isEdit && (
+        <button
+          onClick={() => void handleSave(true)}
+          disabled={saving}
+          className="w-full py-1.5 rounded text-xs font-medium disabled:opacity-50"
+          style={{ background: "var(--color-danger)", color: "white" }}
+          data-testid="update-all-occurrences"
+        >
+          Apply to ALL occurrences of the series
+        </button>
+      )}
     </div>
   );
+}
+
+function formatDateInput(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr.slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function formatTimeInput(dateStr: string): string {
