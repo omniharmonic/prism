@@ -47,7 +47,7 @@ import { workspaceRole } from "../roles";
 import type { Actor } from "../auth/actor";
 import { isLocalRequest } from "../auth/local";
 import { DEVICE_TOKEN_PREFIX, verifyDeviceToken, safeEqual } from "../auth/device";
-import { PAT_PREFIX, verifyPat } from "../auth/pat";
+import { PAT_PREFIX, verifyPat, isInternalPat, INTERNAL_PAT_LABEL_PREFIX } from "../auth/pat";
 import { verifyVaultToken, peekTokenClaims, type HubJwtClaims } from "../auth/vault-token";
 
 export type UserActor = Extract<Actor, { kind: "user" }>;
@@ -64,6 +64,8 @@ export interface McpPrincipal {
   expiresAt: number | null;
   /** true when the credential pins the vault (PAT, hub JWT) rather than following X-Prism-Vault. */
   vaultBound: boolean;
+  /** Hosted turn marker, retained even if its PAT is deleted mid-request. */
+  agentTurnId?: string;
 }
 
 export type McpAuthFailure = {
@@ -142,6 +144,7 @@ export async function authenticateMcp(c: Context): Promise<McpAuthResult> {
         actor: userActor(pat.email, pat.vault_id),
         via: "pat",
         credentialId: pat.id,
+        ...(isInternalPat(pat) ? { agentTurnId: pat.label!.slice(INTERNAL_PAT_LABEL_PREFIX.length) } : {}),
         readOnly: pat.scope !== "write",
         expiresAt: pat.expires_at,
         vaultBound: true,

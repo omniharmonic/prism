@@ -27,7 +27,7 @@ export function useLiveActionsStatus(): LiveActionsStatus | null {
   const client = useLiveActionsClient();
   const { data } = useQuery({
     queryKey: ["live-actions-status", client?.scope?.() ?? ""],
-    enabled: !!client,
+    enabled: !!client && (!client.scope || !!client.scope()),
     staleTime: 10 * 60_000,
     retry: (n, e) => !(e instanceof LiveActionError && (e.status === 401 || e.status === 403 || e.status === 404)) && n < 1,
     queryFn: async () => {

@@ -131,6 +131,8 @@ export function createHttpLiveActionsClient(opts: HttpLiveActionsOptions): LiveA
   const base = (opts.base ?? "/api/actions").replace(/\/+$/, "");
 
   async function call<T>(method: "GET" | "POST", path: string, body?: unknown, key?: string): Promise<T> {
+    const scope = opts.scope?.();
+    const assertScope = () => { if (scope !== opts.scope?.()) throw new Error("Workspace changed. Check the original conversation before retrying this action."); };
     const headers: Record<string, string> = { ...(opts.headers?.() ?? {}) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (key) headers["Idempotency-Key"] = key;
@@ -142,9 +144,11 @@ export function createHttpLiveActionsClient(opts: HttpLiveActionsOptions): LiveA
       // Network failure: the request may or may not have arrived. Retry ONCE
       // with the SAME key — the server replays the first outcome if it did.
       if (!key) throw e;
+      assertScope();
       resp = await opts.fetch(`${base}${path}`, init);
     }
-    const j = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+    const j = (await resp.json().catch((error) => { if (resp.ok) throw error; return null; })) as Record<string, unknown> | null;
+    assertScope();
     if (!resp.ok) {
       const sent = j?.sent === false ? false : j?.sent === "unknown" ? "unknown" : undefined;
       throw new LiveActionError(resp.status, typeof j?.error === "string" ? j.error : `http_${resp.status}`, typeof j?.detail === "string" ? j.detail : undefined, sent);

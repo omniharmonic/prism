@@ -14,10 +14,8 @@
  * recipient. The tokens here live only in the test process.
  */
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Parse a dotenv file into a flat record (KEY=VALUE, # comments, quotes stripped). */
 function parseEnvFile(path: string): Record<string, string> {
@@ -43,7 +41,11 @@ function parseEnvFile(path: string): Record<string, string> {
   return out;
 }
 
-const fileEnv = parseEnvFile(resolve(__dirname, "../../server/.env"));
+// Live credentials are opt-in. Merely collecting tests must never read the
+// deployment's .env; an explicit file is needed for the production test command.
+const fileEnv = process.env.E2E_LIVE === "1" && process.env.E2E_ENV_FILE
+  ? parseEnvFile(resolve(process.env.E2E_ENV_FILE))
+  : {};
 // process.env wins over the file so CI / overrides work.
 const env = (k: string, fallback = ""): string => process.env[k] ?? fileEnv[k] ?? fallback;
 
@@ -67,9 +69,12 @@ export const E2E_HTTPS = process.env.E2E_HTTPS === "1" || APP_ORIGIN.startsWith(
  *  though all specs are @live. The @live tests that actually hit the vault call
  *  this; the no-vault CI run never does. */
 function requireToken(): void {
+  if (process.env.E2E_LIVE !== "1" || !process.env.E2E_BASE_URL || !env("PARACHUTE_URL")) {
+    throw new Error("Live fixture writes require E2E_LIVE=1, E2E_BASE_URL and explicit PARACHUTE_URL.");
+  }
   if (!PARACHUTE_TOKEN) {
     throw new Error(
-      "e2e: PARACHUTE_TOKEN missing — could not read apps/server/.env (run from a configured server, or set PARACHUTE_TOKEN).",
+      "e2e: PARACHUTE_TOKEN missing — set it explicitly or supply E2E_ENV_FILE for the opt-in live suite.",
     );
   }
 }

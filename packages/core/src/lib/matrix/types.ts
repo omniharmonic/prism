@@ -19,6 +19,9 @@ export interface LastMessage {
 }
 
 export interface MatrixMessage {
+  /** Legacy imports lack verified event identity/direction; never infer a person. */
+  source?: "legacy" | "matrix";
+  timestamp_label?: string;
   event_id: string;
   sender: string;
   sender_name: string | null;

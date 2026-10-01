@@ -8,22 +8,35 @@ import { create } from "zustand";
 import type { ContentType } from "../types";
 import { useUIStore } from "../../app/stores/ui";
 
-const KEY = "prism:agent-session";
-
-function load(): string | null {
+// Legacy unscoped IDs are deliberately not restored: their account/vault is unknown.
+const key = (scope: string) => `prism:agent-session:v2:${scope}`;
+const draftKey = (scope: string) => `prism:agent-context:v1:${scope}`;
+export interface AgentDraftContext { noteId?: string; noteTitle?: string }
+function loadDraft(scope: string | null): AgentDraftContext | null {
   try {
-    return localStorage.getItem(KEY);
-  } catch {
-    return null;
-  }
+    const value = scope ? JSON.parse(localStorage.getItem(draftKey(scope)) ?? "null") : null;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (value.noteId !== undefined && typeof value.noteId !== "string") return null;
+    return { noteId: value.noteId, noteTitle: typeof value.noteTitle === "string" ? value.noteTitle : undefined };
+  } catch { return null; }
 }
-function save(id: string | null) {
+function saveDraft(scope: string | null, draft: AgentDraftContext | null) {
+  if (!scope) return;
   try {
-    if (id) localStorage.setItem(KEY, id);
-    else localStorage.removeItem(KEY);
-  } catch {
-    /* storage unavailable */
-  }
+    if (draft) localStorage.setItem(draftKey(scope), JSON.stringify(draft));
+    else localStorage.removeItem(draftKey(scope));
+  } catch { /* The current window retains the explicit document binding. */ }
+}
+function load(scope: string | null): string | null {
+  try { return scope ? localStorage.getItem(key(scope)) : null; }
+  catch { return null; }
+}
+function save(scope: string | null, id: string | null) {
+  if (!scope) return;
+  try {
+    if (id) localStorage.setItem(key(scope), id);
+    else localStorage.removeItem(key(scope));
+  } catch { /* Navigation still works without persistent storage. */ }
 }
 
 export interface PendingAsk {
@@ -35,18 +48,33 @@ export interface PendingAsk {
 }
 
 interface AgentChatState {
+  scope: string | null;
+  bindScope: (scope: string | null) => void;
   activeSessionId: string | null;
   pendingAsk: PendingAsk | null;
+  draft: AgentDraftContext | null;
+  setDraft: (draft: AgentDraftContext | null) => void;
   setActiveSession: (id: string | null) => void;
   setPendingAsk: (a: PendingAsk | null) => void;
 }
 
-export const useAgentChatStore = create<AgentChatState>((set) => ({
-  activeSessionId: load(),
+export const useAgentChatStore = create<AgentChatState>((set, get) => ({
+  scope: null,
+  bindScope: (scope) => {
+    if (get().scope === scope) return;
+    set({ scope, activeSessionId: load(scope), draft: loadDraft(scope), pendingAsk: null });
+  },
+  activeSessionId: null,
   pendingAsk: null,
+  draft: null,
+  setDraft: (draft) => {
+    saveDraft(get().scope, draft);
+    set({ draft });
+  },
   setActiveSession: (id) => {
-    save(id);
-    set({ activeSessionId: id });
+    save(get().scope, id);
+    if (id) saveDraft(get().scope, null);
+    set({ activeSessionId: id, ...(id ? { draft: null } : {}) });
   },
   setPendingAsk: (a) => set({ pendingAsk: a }),
 }));
@@ -54,12 +82,7 @@ export const useAgentChatStore = create<AgentChatState>((set) => ({
 /** The Agent chat virtual tab id (Registry + Canvas + Navigation). */
 export const AGENT_CHAT_TAB = "agent-chat";
 
-const VIRTUAL_IDS = new Set(["messages-dashboard", "calendar-dashboard", "vault-messages", "agent-activity", "network", "map", AGENT_CHAT_TAB]);
-
-/** A tab id that is a real vault note (not tag:/matrix:/virtual) — "Ask about this note" applies. */
-export function isAskableNoteId(id: string | null | undefined): id is string {
-  return !!id && !id.includes(":") && !VIRTUAL_IDS.has(id);
-}
+export { isVaultNoteId as isAskableNoteId } from "../noteIdentity";
 
 /** Open the Agent chat tab, optionally on a session or with a pending ask. */
 export function openAgentChat(opts: { sessionId?: string | null; ask?: PendingAsk } = {}) {

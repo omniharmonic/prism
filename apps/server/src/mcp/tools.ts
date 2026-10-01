@@ -21,6 +21,7 @@
  *  - Every call writes ONE audit line: credential, account, tool, outcome,
  *    duration — never the arguments or results.
  */
+import { agentToolAllowed, enterAgentTool } from "../agent-policy";
 import * as z from "zod/v4";
 import type { Hono } from "hono";
 import { McpServer, ResourceTemplate, ResourceNotFoundError, type CacheHint } from "@modelcontextprotocol/server";
@@ -80,7 +81,7 @@ export function defineTool<S extends z.ZodObject>(def: PrismTool<S>): PrismTool<
 
 /** May this principal use this tool at all, by scope? (Both labels must say "read" for a read principal.) */
 export const scopeAllows = (p: McpPrincipal, t: PrismTool): boolean =>
-  !p.readOnly || (t.scope === "read" && t.annotations.readOnlyHint === true);
+  (!p.readOnly || (t.scope === "read" && t.annotations.readOnlyHint === true)) && agentToolAllowed(p, t.name);
 
 /** The tools this principal may see — evaluated fresh per request (no caching across actors). */
 export async function visibleTools(principal: McpPrincipal, tools: readonly PrismTool[]): Promise<PrismTool[]> {
@@ -169,7 +170,9 @@ export async function buildMcpServer(
       },
       async (args: unknown) => {
         const started = Date.now();
+        let release: (() => void) | undefined;
         try {
+          release = enterAgentTool(principal, tool.name);
           // Call-time scope check: never rely on tools/list alone.
           if (!scopeAllows(principal, tool)) throw new ToolError("forbidden", "this credential is read-only");
           if (!(await tool.access(principal, args as never))) throw new ToolError("forbidden", "you do not have access to that");
@@ -181,6 +184,8 @@ export async function buildMcpServer(
           if (err.code === "internal_error") console.error(`[mcp] ${tool.name} failed:`, e);
           audit(principal, tool.name, `error:${err.code}`, started);
           return errorResult(err);
+        } finally {
+          release?.();
         }
       },
     );

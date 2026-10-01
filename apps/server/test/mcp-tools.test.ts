@@ -18,8 +18,9 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createApp } from "../src/app";
-import { addGrant, addVaultEntry, ensureUser } from "../src/db";
-import { issuePat } from "../src/auth/pat";
+import { db, addGrant, addVaultEntry, ensureUser } from "../src/db";
+import { issuePat, issueInternalPat } from "../src/auth/pat";
+import { createSession } from "../src/agent-sessions";
 import { docNameFor, hocuspocus } from "../src/collab";
 import { PRISM_TOOLS } from "../src/mcp/router";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
@@ -470,4 +471,28 @@ test("unviewable and nonexistent resources fail identically (no existence oracle
   }
   assert.equal(errs[0], errs[1]);
   assert.notEqual(errs[0], "OK");
+});
+
+
+test("hosted suggest-only credential exposes suggestions but cannot directly modify a note through MCP", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  let client: Client | undefined;
+  try {
+    const session = createSession({ vaultId: "primary", ownerEmail: OWNER, permissionMode: "suggest" });
+    const turnId = "suggest-policy-test";
+    db.prepare("INSERT INTO agent_turns (id, session_id, prompt, status, profile, permission_mode, policy_version) VALUES (?, ?, ?, 'running', 'prism-suggest', 'suggest', 1)").run(turnId, session.id, "Suggest a correction");
+    const token = issueInternalPat({ email: OWNER, vaultId: "primary", scope: "write", turnId }).token;
+    client = await connect(token);
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    assert.ok(names.includes("prism_suggest_edit"));
+    assert.ok(names.includes("prism_get_note"));
+    for (const name of ["prism_update_note", "prism_restore_version", "prism_create_note", "prism_share", "prism_vote", "prism_resolve_comment"]) assert.ok(!names.includes(name), name);
+    const before = fv.notes.get("g1")!.content;
+    const direct = await call(client, "prism_update_note", { id: "g1", content: "bypass attempt", if_updated_at: "2026-02-01T00:00:00.000Z" });
+    assert.equal(direct.ok, false);
+    assert.equal(fv.notes.get("g1")!.content, before);
+    assert.equal((await call(client, "prism_get_note", { id: "g1" })).ok, true);
+    db.prepare("UPDATE agent_sessions SET pending_mode = 'read-only' WHERE id = ?").run(session.id);
+    assert.equal((await call(client, "prism_get_note", { id: "g1" })).ok, false, "a pending downgrade prevents new hosted calls");
+  } finally { await client?.close(); delete process.env.AGENT_PRISM_PROFILES; }
 });

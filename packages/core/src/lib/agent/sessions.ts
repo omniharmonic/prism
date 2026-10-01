@@ -12,7 +12,8 @@
  * server code. Field names follow the wire format exactly (snake_case rows).
  */
 
-export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw";
+export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw" | "prism-suggest";
+export type AgentPermissionMode = "read-only" | "suggest" | "read-write";
 /** How the server's `claude` runner is billed: a subscription login reports an API-equivalent ESTIMATE. */
 export type AgentBilling = "subscription" | "api" | "unknown";
 
@@ -23,6 +24,9 @@ export interface AgentLimits {
   daily: { limitUsd: number | null; spentUsd: number; remainingUsd: number | null; resetsAt: number };
   profiles: AgentProfile[];
   defaultProfile: AgentProfile;
+  permissionModes?: AgentPermissionMode[];
+  idempotentRequests?: boolean;
+  contextNotes?: { maxNotes: number; maxCharactersPerNote: number };
 }
 export type AgentSessionStatus = "idle" | "running" | "archived";
 export type AgentTurnStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
@@ -37,6 +41,9 @@ export interface AgentSession {
   owner_email: string;
   title: string | null;
   profile: AgentProfile;
+  permission_mode?: AgentPermissionMode | null;
+  policy_version?: number;
+  pending_mode?: AgentPermissionMode | null;
   note_id: string | null;
   cli_session_id: string | null;
   status: AgentSessionStatus;
@@ -59,6 +66,7 @@ export interface AgentTurn {
   session_id: string;
   prompt: string;
   note_id: string | null;
+  context?: AgentContextRecord[];
   status: AgentTurnStatus;
   pid: number | null;
   exit_code: number | null;
@@ -75,6 +83,7 @@ export interface AgentTurn {
   firstSeq?: number | null;
   lastSeq?: number | null;
 }
+export interface AgentContextRecord { noteId: string; characters: number; truncated: boolean; updatedAt: string | null }
 
 export interface AgentSessionDetail {
   session: AgentSession;
@@ -108,9 +117,11 @@ export interface AgentStreamHandlers {
 }
 
 export interface CreateSessionParams {
+  requestId?: string;
   title?: string;
   noteId?: string;
   profile?: AgentProfile;
+  permissionMode?: AgentPermissionMode;
 }
 
 /** Error from the agent API, with the server's `{error, detail, turnId}` body. */
@@ -128,11 +139,12 @@ export class AgentApiError extends Error {
 }
 
 export interface AgentClient {
+  updatePermissions?(sessionId: string, mode: AgentPermissionMode, expectedVersion: number): Promise<{ session: AgentSession }>;
   createSession(params?: CreateSessionParams): Promise<{ sessionId: string; session: AgentSession }>;
   listSessions(opts?: { limit?: number; archived?: boolean }): Promise<AgentSessionSummary[]>;
   getSession(sessionId: string): Promise<AgentSessionDetail>;
   /** 409 → AgentApiError(code "conflict", turnId) when a turn is already active; "budget_exceeded" at the session cap. */
-  sendTurn(sessionId: string, prompt: string, opts?: { noteId?: string }): Promise<{ turnId: string; status: AgentTurnStatus }>;
+  sendTurn(sessionId: string, prompt: string, opts?: { noteId?: string; requestId?: string; contextNoteIds?: string[] }): Promise<{ turnId: string; status: AgentTurnStatus; context?: AgentContextRecord[] }>;
   /** Replays persisted events with seq > afterSeq, then streams live until the in-flight turn ends. Returns unsubscribe. */
   streamSession(sessionId: string, afterSeq: number, handlers: AgentStreamHandlers): () => void;
   cancelTurn(turnId: string): Promise<boolean>;

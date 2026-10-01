@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
@@ -11,8 +11,8 @@ import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
-import { NativeSignInScreen } from "./auth/NativeSignInScreen";
-import { isNative, serverFetch, gatewayOrigin } from "./transport";
+import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
+import { isNative, serverFetch, gatewayOrigin, initializeTransport, getDeviceToken } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
@@ -20,6 +20,7 @@ import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { CommonsLanding } from "./commons/CommonsLanding";
 import { CommonsNav } from "./commons/CommonsNav";
+import { clearLegacyApiCache } from "./offline/readCache";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -56,7 +57,9 @@ window.addEventListener("vite:preloadError", () => {
   })();
 });
 
-async function start() {
+export async function start() {
+  initializeTransport();
+  await clearLegacyApiCache();
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
@@ -126,6 +129,15 @@ async function start() {
     return;
   }
 
+  // The first Keychain read can wait for an OS prompt after a local rebuild.
+  // Keep that wait distinct from the following network request; do not start
+  // another sign-in or discard the existing credential while approval is pending.
+  if (isNative && !capability) {
+    root.render(<NativeStartupScreen phase="credentials" />);
+    await getDeviceToken();
+    root.render(<NativeStartupScreen phase="connecting" />);
+  }
+
   // Commons governance surface: /governance. A signed-in member drives the
   // constitution + proposal lifecycle here (the API is /api/governance). Requires
   // a session; capability-link viewers are redirected to sign in.
@@ -176,7 +188,6 @@ async function start() {
   // /agent[/<sessionId>] opens the Agent chat (WP3.2; the push deep link of WP3.3).
   // A client route: the SW denylist stays /api/* + /auth/*.
   const agentLink = path.match(/^\/agent(?:\/([0-9a-f-]{36}))?\/?$/i);
-  if (agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
   const initialTab: InitialTab | undefined =
     path === "/map" || path === "/bioregion"
       ? { id: "map", title: "Map", type: "map" }
@@ -222,6 +233,15 @@ async function start() {
     isViewer = !(allowOwnerOnboarding && me.isOwner);
   }
 
+  if (!capability && agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
+  window.addEventListener("prism:vault-changed", () => { void fetchMe(); });
+  window.addEventListener("prism:offline-note-resolved", (event) => {
+    const { temporaryId, noteId } = (event as CustomEvent<{ temporaryId: string; noteId: string }>).detail;
+    // Keep tab IDs/history stable; only its resource identity changes.
+    useUIStore.setState((state) => ({
+      openTabs: state.openTabs.map((tab) => tab.noteId === temporaryId ? { ...tab, noteId } : tab),
+    }));
+  });
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
   // Client parity C: external note images via the server's SSRF-guarded proxy
@@ -273,5 +293,3 @@ async function start() {
     </React.StrictMode>,
   );
 }
-
-void start();

@@ -73,7 +73,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // PERSISTED to a note they may not write. `persistMetadata` is the single
   // choke point for that; when `_caps` is absent it is `onMetadataChange`
   // itself, so the desktop/owner path is untouched.
-  const persistMetadata = governed ? undefined : onMetadataChange;
+  const persistMetadata = governed || readOnly ? undefined : onMetadataChange;
   const changeFont = useCallback((f: ContentFont) => {
     setContentFont(f);
     persistMetadata?.({ contentFont: f });
@@ -173,7 +173,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const onSaved = useCallback((content: string) => {
     lastUserSavedContent.current = content;
   }, []);
-  const { isSaving, lastSaved, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
+  const { isSaving, lastSaved, saveError, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // the autosave triggers keeps every downstream call site unchanged while
   // guaranteeing no vault mutation when readOnly is set.
@@ -349,9 +349,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
           <PageHeader
             path={note.path}
-            onRename={handleRename}
+            onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
-            onIconChange={(emoji) => persistMetadata?.({ icon: emoji })}
+            onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
           />
           <EditorContent editor={editor} />
         </div>
@@ -376,8 +376,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
         <div className="flex items-center gap-3">
+          {saveError && <span role="alert">{saveError} <button type="button" onClick={saveNow} className="underline">Retry save</button></span>}
           {isSaving && <span>Saving...</span>}
-          {lastSaved && !isSaving && (
+          {lastSaved && !isSaving && !saveError && (
             <span>Saved {lastSaved.toLocaleTimeString()}</span>
           )}
         </div>

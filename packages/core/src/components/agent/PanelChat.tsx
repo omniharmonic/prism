@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 import { Send, Loader2, Bot, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
+import { useIsWeb } from "../../data/Platform";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { useQueryClient } from "@tanstack/react-query";
-import { useAgentClient, useAgentAvailable } from "../../data/AgentClientContext";
+import { useAgentClient, useAgentAvailability } from "../../data/AgentClientContext";
 
 // Server agent sessions (WP3.2), loaded only where they apply.
 const AgentPanelChat = lazy(() => import("./AgentChat").then((m) => ({ default: m.AgentPanelChat })));
@@ -19,14 +20,22 @@ interface ChatMessage {
  *  server sessions; the desktop keeps its Tauri `agent_chat` path. */
 export function PanelChat() {
   const client = useAgentClient();
-  const available = useAgentAvailable();
-  if (client && available) {
+  const isWeb = useIsWeb();
+  const availability = useAgentAvailability();
+  if (client && availability === "yes") {
     return (
-      <Suspense fallback={null}>
+      <Suspense fallback={<p role="status" className="p-4 text-sm">Opening conversation…</p>}>
         <AgentPanelChat client={client} />
       </Suspense>
     );
   }
+  if (availability === "checking") return <p role="status" className="p-4 text-sm">Connecting to your agent…</p>;
+  if (isWeb || client) return (
+    <div role="status" className="p-4 text-sm text-[var(--text-secondary)]">
+      <p className="font-medium text-[var(--text-primary)]">Agent unavailable</p>
+      <p className="mt-2">Reconnect or check this account’s access to server agent sessions.</p>
+    </div>
+  );
   return <TauriPanelChat />;
 }
 

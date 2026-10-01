@@ -83,7 +83,7 @@ test("prism profiles are OFF unless AGENT_PRISM_PROFILES is true", () => {
   assert.equal(isSessionProfile("prism-ro"), false);
   assert.equal(isSessionProfile("skill"), false, "skill is server-internal, never a user pick");
   process.env.AGENT_PRISM_PROFILES = "true";
-  assert.deepEqual(availableSessionProfiles(), ["vault-ro", "vault-rw", "prism-ro", "prism-rw"]);
+  assert.deepEqual(availableSessionProfiles(), ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest"]);
   assert.equal(isSessionProfile("prism-rw"), true);
   assert.equal(isSessionProfile("root"), false);
 });

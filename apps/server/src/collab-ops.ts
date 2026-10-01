@@ -23,6 +23,7 @@
  *  - SHEET RANGES are A1 ranges over the Y.Array<Y.Array<string>> rows, written
  *    per cell with the client's own delete+insert idiom (CollabSpreadsheet).
  */
+import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import type { Node as PMNode, Mark as PMMark } from "@tiptap/pm/model";
 import { Transform } from "@tiptap/pm/transform";
@@ -59,6 +60,7 @@ export function isAncestorState(base: Uint8Array, live: Y.Doc): boolean {
 
 /** Thrown when content cannot be applied safely (maps to invalid_request). */
 export class CollabOpError extends Error {}
+export class CollabConflictError extends CollabOpError {}
 
 /**
  * Apply `content` (the note's full new body) to `doc` minimally for its kind.
@@ -293,10 +295,15 @@ export function applyCanvasUpsert(map: Y.Map<CanvasEl>, content: string): { upse
  * (a quote cannot span paragraphs). Returns ProseMirror positions.
  */
 export function findTextRange(doc: PMNode, needle: string): { from: number; to: number } | null {
-  if (!needle) return null;
-  let found: { from: number; to: number } | null = null;
+  return findTextRanges(doc, needle, 1)[0] ?? null;
+}
+
+/** Search exact quotes without joining text across paragraph boundaries. */
+function findTextRanges(doc: PMNode, needle: string, limit = 2): Array<{ from: number; to: number }> {
+  if (!needle) return [];
+  const found: Array<{ from: number; to: number }> = [];
   doc.descendants((node, pos) => {
-    if (found) return false;
+    if (found.length >= limit) return false;
     if (!node.isTextblock) return true;
     let text = "";
     const map: number[] = [];
@@ -307,12 +314,17 @@ export function findTextRange(doc: PMNode, needle: string): { from: number; to: 
         for (let i = 0; i < t.length; i++) map.push(start + i);
         text += t;
       } else {
-        map.push(start); // inline leaf (hard break, image…): one opaque char
+        map.push(start);
         text += "￼";
       }
     });
-    const i = text.indexOf(needle);
-    if (i !== -1) found = { from: map[i]!, to: map[i + needle.length - 1]! + 1 };
+    let offset = 0;
+    while (found.length < limit) {
+      const index = text.indexOf(needle, offset);
+      if (index < 0) break;
+      found.push({ from: map[index]!, to: map[index + needle.length - 1]! + 1 });
+      offset = index + 1; // Include overlapping matches (e.g. "aa" in "aaa").
+    }
     return false;
   });
   return found;
@@ -336,6 +348,8 @@ export function colorFor(seed: string): string {
 
 /** Who an MCP write is attributed to, in the editor's own vocabulary. */
 export interface CollabAuthor {
+  actorId?: string;
+  turnId?: string;
   /** Display label — the account's name (or email) + " (agent)". */
   name: string;
   color: string;
@@ -460,16 +474,24 @@ export function setThreadResolved(ydoc: Y.Doc, threadId: string, resolved: boole
 }
 
 /**
- * A tracked change, as a human suggester's editor makes it: the first match of
+ * A tracked change, as a human suggester's editor makes it: a unique match of
  * `find` gets a `deletion` mark and `replace` is inserted right after it with an
  * `insertion` mark — both attributed to `who`. Null if `find` is not found.
  */
-export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: CollabAuthor, origin: string): { from: number; to: number } | null {
+export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: CollabAuthor, origin: string): { from: number; to: number; suggestionId: string } | null {
   const schema = collabSchema();
   const { doc } = initProseMirrorDoc(ydoc.getXmlFragment(FIELD), schema);
-  const range = findTextRange(doc, find);
+  const matches = findTextRanges(doc, find);
+  if (matches.length > 1) throw new CollabConflictError("This quote occurs more than once. Read the current document and use a longer, unique quote.");
+  const range = matches[0];
   if (!range) return null;
-  const attrs = { user: who.name, color: who.color };
+  let overlaps = false;
+  doc.nodesBetween(range.from, range.to, (node) => {
+    if (node.marks.some((mark) => mark.type.name === "insertion" || mark.type.name === "deletion")) overlaps = true;
+  });
+  if (overlaps) throw new CollabConflictError("This passage already has a pending suggestion. Review it before proposing another change here.");
+  const suggestionId = randomUUID();
+  const attrs = { user: who.name, color: who.color, suggestionId, actorId: who.actorId ?? null, turnId: who.turnId ?? null };
   ydoc.transact(() => {
     editFragment(ydoc, (d) => {
       const tr = new Transform(d);
@@ -483,5 +505,5 @@ export function suggestReplace(ydoc: Y.Doc, find: string, replace: string, who: 
       return tr.doc;
     });
   }, origin);
-  return range;
+  return { ...range, suggestionId };
 }

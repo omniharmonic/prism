@@ -23,8 +23,9 @@ import type {
   NoteVersionPage,
 } from "@prism/core";
 import { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
-import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getCapabilityToken } from "../config";
-import { enqueue } from "../offline/outbox";
+import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
+import { enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
+import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
 import { readThrough } from "../offline/readCache";
 
@@ -43,21 +44,16 @@ const jsonHeaders = (): Record<string, string> => ({
 const cacheable = (method: string, path: string): boolean =>
   method === "GET" && /^\/(notes|tags|vault|tree)(\/|\?|$)/.test(path) && !path.includes("search=");
 
-/** Cache scope: server + vault + workspace + capability link, so switching any never leaks entries. */
-function cacheKey(path: string): string {
-  const h = contextHeaders();
-  const cap = getCapabilityToken();
-  return `${apiBase()}|${h["X-Prism-Vault"] ?? ""}|${h["X-Prism-Workspace"] ?? ""}|${cap ? cap.slice(-16) : ""}|${path}`;
-}
-
 async function req(path: string, init?: RequestInit): Promise<Response> {
   const method = init?.method ?? "GET";
-  const doFetch = () =>
-    serverFetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: { ...jsonHeaders(), ...(init?.headers as Record<string, string>) },
-    });
-  const resp = cacheable(method, path) ? await readThrough(cacheKey(path), doFetch) : await doFetch();
+  // Snapshot both cache identity and request headers together. Never store an
+  // old in-flight response under the newly selected account/vault's cache key.
+  const context = await captureWriteContext().catch(() => null);
+  const url = `${context?.scope.api ?? apiBase()}${path}`;
+  const headers = { ...(context?.headers ?? jsonHeaders()), ...(init?.headers as Record<string, string>) };
+  const doFetch = () => serverFetch(url, { ...init, headers });
+  const resp = context && cacheable(method, path)
+    ? await readThrough(`${scopeKey(context.scope)}|${path}`, doFetch) : await doFetch();
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
@@ -86,45 +82,41 @@ const isOffline = () => typeof navigator !== "undefined" && !navigator.onLine;
  * an optimistic copy so the editor proceeds; it replays on reconnect. HTTP
  * errors (4xx/5xx) still throw.
  */
-async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T): Promise<T> {
+async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string): Promise<T> {
+  const context = await captureWriteContext();
   const bodyStr = JSON.stringify(body);
-  if (isOffline()) {
-    await enqueue(method, path, bodyStr);
+  if (isOffline() || path.includes("/offline-") || await hasPending(context)) {
+    await enqueue(method, path, bodyStr, context, { temporaryId });
+    if (!isOffline()) void flush();
     return optimistic();
   }
+  let resp: Response;
   try {
-    const resp = await serverFetch(`${apiBase()}${path}`, { method, headers: jsonHeaders(), body: bodyStr });
-    if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
-    const text = await resp.text();
-    return text ? (JSON.parse(text) as T) : optimistic();
-  } catch (e) {
-    if (e instanceof TypeError) {
-      await enqueue(method, path, bodyStr);
+    resp = await serverFetch(`${context.scope.api}${path}`, { method, headers: context.headers, body: bodyStr });
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
+    return optimistic();
+  }
+  if (!resp.ok) {
+    if (resp.status >= 500) {
+      await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
       return optimistic();
     }
-    throw e;
+    throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
+  }
+  try {
+    const text = await resp.text();
+    return text ? JSON.parse(text) as T : optimistic();
+  } catch {
+    await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
+    return optimistic();
   }
 }
 
-/** Mutation whose response we don't use (tags/links/delete/description). Returns
- *  `result` whether it lands online or is queued offline. */
+/** Online failures with an uncertain outcome are kept for review, never retried blindly. */
 async function mutate<T>(method: string, path: string, body: unknown, result: () => T): Promise<T> {
-  const bodyStr = body === undefined ? undefined : JSON.stringify(body);
-  if (isOffline()) {
-    await enqueue(method, path, bodyStr);
-    return result();
-  }
-  try {
-    const resp = await serverFetch(`${apiBase()}${path}`, { method, headers: jsonHeaders(), body: bodyStr });
-    if (!resp.ok) throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
-    return result();
-  } catch (e) {
-    if (e instanceof TypeError) {
-      await enqueue(method, path, bodyStr);
-      return result();
-    }
-    throw e;
-  }
+  return writeJson(method, path, body, result);
 }
 
 // ---- notes ----------------------------------------------------------------
@@ -173,19 +165,27 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
 }
 
 export async function getNote(id: string): Promise<Note> {
-  return (await req(`/notes/${encodeURIComponent(id)}`)).json();
+  const resolved = await resolveLocalNoteId(id);
+  if (resolved.startsWith("offline-")) {
+    const draft = await localNote(resolved);
+    if (!draft) throw new Error("This local draft is unavailable in the current workspace.");
+    return draft;
+  }
+  const note = await (await req(`/notes/${encodeURIComponent(resolved)}`)).json() as Note;
+  return await localNote(resolved, note).catch(() => note) ?? note;
 }
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
+  const temporaryId = `offline-${crypto.randomUUID()}`;
   return writeJson("POST", `/notes`, params, () => ({
-    id: `offline-${Date.now()}`,
+    id: temporaryId,
     content: params.content,
     path: params.path ?? null,
     metadata: params.metadata ?? null,
     tags: params.tags ?? null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
-  }));
+  }), temporaryId);
 }
 
 export async function updateNote(id: string, params: UpdateNoteParams): Promise<Note> {

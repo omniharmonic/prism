@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node scripts/check-sw-denylist.mjs --built",
     "build:native": "tsc && vite build --mode native",
     "verify:native": "node scripts/verify-native-build.mjs",
     "preview": "vite preview",
@@ -16,7 +16,11 @@
     "verify:events": "node --import tsx scripts/verify-events.ts",
     "verify:host": "node --import tsx scripts/verify-host-services.ts",
     "verify:media": "node --import tsx scripts/verify-media-proxy.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test --config playwright.live.config.ts",
+    "check:scripts": "node scripts/check-scripts.mjs",
+    "build:brand": "node --import tsx scripts/build-brand.ts",
+    "test:native-ui": "npm run build:native && playwright test --config playwright.native.config.ts"
   },
   "dependencies": {
     "@hocuspocus/provider": "^4.1.0",

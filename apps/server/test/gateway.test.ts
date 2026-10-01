@@ -131,6 +131,37 @@ test("a view capability cannot write (below edit)", async () => {
   assert.equal(fv.notes.get("n1")!.content, "shared"); // unchanged
 });
 
+test("member lists filter tags and page only viewable notes in the requested order", async () => {
+  fv.put({ id: "old", content: "old", tags: ["team", "email"], createdAt: "2026-09-01T00:00:00Z" });
+  fv.put({ id: "new", content: "new", tags: ["team", "email"], createdAt: "2026-10-01T00:00:00Z" });
+  fv.put({ id: "person", content: "profile", tags: ["team", "person"], createdAt: "2026-10-02T00:00:00Z" });
+  fv.put({ id: "hidden", content: "secret", tags: ["email"], createdAt: "2026-10-03T00:00:00Z" });
+  grantUser("reader@test.local", "tag", "team", "view");
+  const cookie = sessionCookie(makeSession("reader@test.local"));
+  const first = await req("/notes?tag=email&sort=desc&limit=1&offset=0", { cookie });
+  const second = await req("/notes?tag=email&sort=desc&limit=1&offset=1", { cookie });
+  assert.deepEqual((await first.json() as Array<{ id: string }>).map((n) => n.id), ["new"]);
+  assert.deepEqual((await second.json() as Array<{ id: string }>).map((n) => n.id), ["old"]);
+  assert.deepEqual(await (await req("/notes?tag=email&limit=1&offset=2", { cookie })).json(), []);
+  const ascending = await req("/notes?tag=email&sort=asc&limit=1", { cookie });
+  assert.deepEqual((await ascending.json() as Array<{ id: string }>).map((n) => n.id), ["old"]);
+  assert.deepEqual(await (await req("/notes?tag=unknown", { cookie })).json(), []);
+});
+
+test("capability-list pagination cannot widen the shared tag or consume hidden positions", async () => {
+  fv.put({ id: "a", content: "visible", tags: ["shared", "email"] });
+  fv.put({ id: "b", content: "other visible type", tags: ["shared", "person"] });
+  fv.put({ id: "c", content: "hidden", tags: ["email"] });
+  const token = makeCapability("tag", "shared", "view");
+  const headers = { authorization: `Capability ${token}` };
+  const response = await req("/notes?tag=email&limit=1", { headers });
+  assert.deepEqual((await response.json() as Array<{ id: string }>).map((n) => n.id), ["a"]);
+  assert.deepEqual(await (await req("/notes?tag=email&limit=1&offset=1", { headers })).json(), []);
+  for (const query of ["limit=-1", "limit=0", "limit=Infinity", "offset=-1", "offset=0.5", "limit=50001"]) {
+    assert.equal((await req(`/notes?${query}`, { headers })).status, 400);
+  }
+});
+
 // --------------------------------------------------------- signed-in collaborator
 
 test("an edit grant lets a non-owner change content, but NOT restructure (path locked)", async () => {
@@ -235,4 +266,27 @@ test("any unlisted /api path is denied for non-owners (deny-by-default)", async 
   assert.equal(r.status, 403);
   // And the vault was never touched for that path.
   assert.equal(fv.calls.some((c) => c.path.includes("/graph")), false);
+});
+
+// A different tab can change the session between offline replay's /auth/me and
+// its write. The expected actor is a precondition, not an authentication method.
+test("deferred write cannot replay under a different account", async () => {
+  const response = await ownerReq("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": "user:someone-else@test.local" },
+    body: JSON.stringify({ content: "saved under another account" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { error: string }).error, "write_actor_changed");
+  assert.equal(fv.calls.filter((c) => c.method === "POST").length, 0);
+});
+
+test("correct deferred-write actor still goes through normal authorization", async () => {
+  const ok = await ownerReq("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": `user:${OWNER}` }, body: JSON.stringify({ content: "saved" }),
+  });
+  assert.equal(ok.status, 200);
+  const denied = await req("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": `user:${OWNER}` }, body: JSON.stringify({ content: "spoofed" }),
+  });
+  assert.equal(denied.status, 409);
 });

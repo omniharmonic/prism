@@ -15,7 +15,7 @@
  *
  * Dependency-free (node:fs + regex). Exits non-zero with a clear message on a miss.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -85,3 +85,20 @@ console.log(
   `✓ check:sw — navigateFallbackDenylist covers ${SERVER_ROUTE_PREFIXES.join(", ")} ` +
     `(and ${PUBLICATION_DATA_PATH} is under /api).`,
 );
+
+// Authenticated API data must be cached only by the scoped read-cache layer.
+if (/cacheName:\s*["']vault-api["']/.test(src)) {
+  fail("URL-only vault-api runtime caching can expose another account/vault's response. Use the scoped IndexedDB cache.");
+}
+
+// A successful PWA build must actually retain the boot dependency offline.
+// Rollup previously named it after a lazy math chunk excluded by globIgnores.
+if (process.argv.includes("--built")) {
+  const dist = resolve(__dirname, "../dist");
+  const workspaces = readdirSync(resolve(dist, "assets")).filter((name) => /^workspace-.*\.js$/.test(name));
+  const worker = readFileSync(resolve(dist, "sw.js"), "utf8");
+  if (workspaces.length !== 1 || !worker.includes(`assets/${workspaces[0]}`)) {
+    fail("the workspace boot chunk is missing from the generated service-worker precache");
+  }
+  console.log("✓ check:sw — built workspace boot chunk is precached");
+}

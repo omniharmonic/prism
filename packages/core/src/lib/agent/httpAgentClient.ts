@@ -42,6 +42,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
   const sse: AgentSSE = opts.sse ?? ((path, o) => streamSSE(path, { ...o, fetch: (u, init) => opts.fetch(u, init) }));
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const scope = opts.scope?.();
     const headers: Record<string, string> = { ...hdrs() };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const resp = await opts.fetch(`${base}${path}`, {
@@ -49,14 +50,17 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    const data = await resp.json().catch((error) => { if (resp.ok) throw error; return null; });
+    if (scope !== opts.scope?.()) throw new Error("Workspace changed while waiting for the agent. Reopen the conversation in its original workspace.");
     if (!resp.ok) {
-      const j = (await resp.json().catch(() => null)) as { error?: string; detail?: string; turnId?: string } | null;
+      const j = data as { error?: string; detail?: string; turnId?: string } | null;
       throw new AgentApiError(resp.status, j?.error ?? `http_${resp.status}`, j?.detail, j?.turnId);
     }
-    return (await resp.json()) as T;
+    return data as T;
   }
 
   return {
+    updatePermissions: (id, mode, expectedVersion) => call("PATCH", `/sessions/${enc(id)}/permissions`, { mode, expectedVersion }),
     createSession: (p = {}) => call("POST", "/sessions", p),
     listSessions: ({ limit, archived } = {}) => {
       const q = new URLSearchParams();
@@ -66,7 +70,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
       return call("GET", `/sessions${s ? `?${s}` : ""}`);
     },
     getSession: (id) => call("GET", `/sessions/${enc(id)}`),
-    sendTurn: (id, prompt, o = {}) => call("POST", `/sessions/${enc(id)}/turns`, { prompt, ...(o.noteId ? { noteId: o.noteId } : {}) }),
+    sendTurn: (id, prompt, o = {}) => call("POST", `/sessions/${enc(id)}/turns`, { prompt, ...(o.noteId ? { noteId: o.noteId } : {}), ...(o.requestId ? { requestId: o.requestId } : {}), ...(o.contextNoteIds?.length ? { contextNoteIds: o.contextNoteIds } : {}) }),
     getLimits: () => call("GET", "/limits"),
     cancelTurn: async (turnId) => (await call<{ ok: boolean }>("POST", `/turns/${enc(turnId)}/cancel`)).ok,
     archiveSession: async (id) => {

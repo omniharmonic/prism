@@ -42,6 +42,7 @@ import {
 } from "../collab";
 import {
   CollabOpError,
+  CollabConflictError,
   addCommentThread,
   colorFor,
   formatA1,
@@ -142,7 +143,7 @@ const originOf = (ctx: ToolContext) => `mcp:${ctx.principal.actor.email}`;
 function authorOf(ctx: ToolContext): CollabAuthor {
   const email = ctx.principal.actor.email;
   const name = getUser(email)?.name?.trim() || email;
-  return { name: `${name} (agent)`, color: colorFor(email) };
+  return { name: `${name} (agent)`, color: colorFor(email), actorId: email, turnId: ctx.principal.agentTurnId };
 }
 
 /**
@@ -165,6 +166,7 @@ const requireDocument = (t: Target) => {
 };
 
 const opError = (e: unknown): never => {
+  if (e instanceof CollabConflictError) throw new ToolError("conflict", e.message);
   if (e instanceof CollabOpError) throw new ToolError("invalid_request", e.message);
   throw e;
 };
@@ -343,13 +345,13 @@ export const suggestEditTool = defineTool({
   scope: "write",
   title: "Suggest an edit (tracked change)",
   description:
-    "Propose a change to a document note as a tracked suggestion, the way a suggester does in the editor: the first occurrence " +
+    "Propose a change to a document note as a tracked suggestion, the way a suggester does in the editor: a unique occurrence " +
     "of `find` (exact text, within one paragraph) is marked for deletion and `replace` is inserted after it, both attributed to " +
     "your account (as an agent). Nothing changes until a reviewer accepts it. Empty `replace` suggests a pure deletion. Needs " +
-    "suggest access or higher. Prefer this over prism_update_note when you only hold suggest, or on a busy shared document.",
+    "suggest access or higher. Repeated quotes and overlaps with pending suggestions return a conflict; reread before retrying. Prefer this over prism_update_note when you only hold suggest, or on a busy shared document.",
   inputSchema: z.object({
     id: idField,
-    find: z.string().min(1).max(TEXT_MAX).describe("Exact existing text to replace (first occurrence)"),
+    find: z.string().min(1).max(TEXT_MAX).describe("Exact unique existing text to replace; include enough context to identify one passage"),
     replace: z.string().max(TEXT_MAX).describe("Replacement text (may be empty)"),
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -358,6 +360,7 @@ export const suggestEditTool = defineTool({
     const t = await target(ctx, id, "suggest");
     requireDocument(t);
     const who = authorOf(ctx);
+    let suggestionId: string | undefined;
     await withDoc(ctx, t.docName, (doc) => {
       let r;
       try {
@@ -366,8 +369,9 @@ export const suggestEditTool = defineTool({
         opError(e);
       }
       if (!r) throw new ToolError("invalid_request", "`find` was not found in the document (it must match exactly, within one paragraph)");
+      suggestionId = r.suggestionId;
     });
-    return { ok: true, id: t.note.id, suggested_by: who.name };
+    return { ok: true, id: t.note.id, suggestion_id: suggestionId, suggested_by: who.name };
   },
 });
 

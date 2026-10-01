@@ -1,3 +1,4 @@
+import { useAgentChatStore } from "@prism/core";
 /**
  * Web connection config: which Parachute vault to talk to, and the bearer token.
  *
@@ -109,27 +110,37 @@ export interface Me {
 }
 
 let cachedMe: Me | null = null;
+let cachedMeContext = "";
+const identityContext = () => JSON.stringify([gatewayOrigin(), contextHeaders(), getCapabilityToken()]);
 
 /** Current identity per the session cookie. Never throws. Caches the result so
  *  synchronous owner checks (e.g. gating owner-only UI) don't need a refetch.
  *  Sends the active-vault header so the returned `role` is scoped to the vault
  *  the app is currently viewing (role is per-workspace). */
 export async function fetchMe(): Promise<Me> {
+  const context = identityContext();
   try {
     // Native: no device token → not signed in; don't even ask (the sign-in
     // screen starts the flow). A 401 is routed to the host by serverFetch.
     if (isNative && !getCapabilityToken() && !(await getDeviceToken())) {
       cachedMe = { authenticated: false };
+      cachedMeContext = context;
+      useAgentChatStore.getState().bindScope(null);
       return cachedMe;
     }
     const r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
-    if (!r.ok) { cachedMe = { authenticated: false }; return cachedMe; }
-    cachedMe = (await r.json()) as Me;
-    void bindCacheUser(cachedMe.email);
+    const me = r.ok ? (await r.json()) as Me : { authenticated: false };
+    // A late response from the previous vault must not replace current identity.
+    if (identityContext() !== context) return getMe() ?? { authenticated: false };
+    cachedMe = me;
+    cachedMeContext = context;
+    useAgentChatStore.getState().bindScope(agentScope());
+    await bindCacheUser(cachedMe.email);
     return cachedMe;
   } catch {
-    cachedMe = { authenticated: false };
-    return cachedMe;
+    // Retain the last confirmed identity for offline drafts, but report the
+    // failed revalidation to callers. Replay checks cannot treat it as fresh.
+    return { authenticated: false };
   }
 }
 
@@ -137,7 +148,14 @@ export async function fetchMe(): Promise<Me> {
  *  synchronous read (collab presence/authorship). Null until fetchMe() has run.
  *  Use with fetchMe() to guarantee freshness. */
 export function getMe(): Me | null {
-  return cachedMe;
+  return cachedMeContext === identityContext() ? cachedMe : null;
+}
+
+/** Resolved conversation audience; never contains a token or defaults to another vault. */
+export function agentScope(): string | null {
+  const me = getMe();
+  if (getCapabilityToken() || !me?.authenticated || !me.email || !me.vaultId || !me.workspace?.id) return null;
+  return JSON.stringify([new URL(apiBase(), location.origin).href, me.workspace.id, me.vaultId, me.email]);
 }
 
 /** True only for the signed-in vault owner with no capability token in play.
@@ -146,7 +164,7 @@ export function getMe(): Me | null {
  *  This is a UX/defense-in-depth gate — the gateway is the real boundary and
  *  already filters /api/notes to a non-owner's granted notes. */
 export function isOwner(): boolean {
-  return !!cachedMe?.isOwner && !getCapabilityToken();
+  return !!getMe()?.isOwner && !getCapabilityToken();
 }
 
 async function postJson(path: string, body: unknown): Promise<Response> {
@@ -212,6 +230,8 @@ export async function requestMagicLink(email: string): Promise<{ emailDelivery: 
 }
 
 export async function logout(): Promise<void> {
+  cachedMe = null;
+  cachedMeContext = "";
   try {
     if (isNative) {
       // Device token: revoke it server-side (POST /auth/device/revoke with an
@@ -290,6 +310,7 @@ export function getActiveVault(): string | null {
 }
 
 export function setActiveVault(id: string | null): void {
+  useAgentChatStore.getState().bindScope(null);
   try {
     if (id) localStorage.setItem(ACTIVE_VAULT_KEY, id);
     else localStorage.removeItem(ACTIVE_VAULT_KEY);
@@ -323,6 +344,7 @@ export function getActiveWorkspace(): string | null {
 }
 
 export function setActiveWorkspace(id: string | null): void {
+  useAgentChatStore.getState().bindScope(null);
   try {
     if (id) localStorage.setItem(ACTIVE_WORKSPACE_KEY, id);
     else localStorage.removeItem(ACTIVE_WORKSPACE_KEY);

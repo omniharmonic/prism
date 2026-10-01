@@ -17,11 +17,11 @@
  */
 import { PRISM_MCP_ALLOW, VAULT_MCP_ALLOW, type McpServerKind } from "./agent-exec";
 
-export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw";
+export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw" | "prism-suggest";
 /** Every profile the type knows. */
-export const ALL_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "skill", "prism-ro", "prism-rw"];
+export const ALL_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "skill", "prism-ro", "prism-rw", "prism-suggest"];
 /** Profiles a user may pick for a chat session (`skill` is server-internal). */
-export const SESSION_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "prism-ro", "prism-rw"];
+export const SESSION_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest"];
 /** The always-available vault profiles (kept for existing importers). */
 export const PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"];
 
@@ -75,10 +75,10 @@ export const PRISM_WRITE_TOOLS = [
 ] as const;
 
 /** Which MCP server a profile talks to. */
-export const profileServer = (p: AgentProfile): McpServerKind => (p === "prism-ro" || p === "prism-rw" ? "prism" : "vault");
+export const profileServer = (p: AgentProfile): McpServerKind => (p === "prism-ro" || p === "prism-rw" || p === "prism-suggest" ? "prism" : "vault");
 export const isPrismProfile = (p: AgentProfile): boolean => profileServer(p) === "prism";
 /** The PAT scope a prism profile's per-turn credential carries. */
-export const prismProfileScope = (p: AgentProfile): "read" | "write" => (p === "prism-rw" ? "write" : "read");
+export const prismProfileScope = (p: AgentProfile): "read" | "write" => (p === "prism-rw" || p === "prism-suggest" ? "write" : "read");
 export const isReadOnlyProfile = (p: AgentProfile): boolean => p === "vault-ro" || p === "prism-ro";
 
 /** Server config switch for the prism-* profiles (read live so tests can flip it). */
@@ -95,6 +95,8 @@ export function profileAllowedTools(profile: AgentProfile): string[] {
       return SKILL_TOOLS.map((t) => `${VAULT_MCP_ALLOW}__${t}`);
     case "prism-ro":
       return PRISM_READ_TOOLS.map((t) => `${PRISM_MCP_ALLOW}__${t}`);
+    case "prism-suggest":
+      return [...PRISM_READ_TOOLS, "prism_suggest_edit", "prism_add_comment"].map((t) => `${PRISM_MCP_ALLOW}__${t}`);
     case "prism-rw":
       return [...PRISM_READ_TOOLS, ...PRISM_WRITE_TOOLS].map((t) => `${PRISM_MCP_ALLOW}__${t}`);
   }
@@ -119,3 +121,10 @@ export function prismMcpConfig(token: string, port: number): object {
     },
   };
 }
+
+/** User-facing document permissions; outward actions are never implied. */
+export type AgentPermissionMode = "read-only" | "suggest" | "read-write";
+export const PERMISSION_MODES: readonly AgentPermissionMode[] = ["read-only", "suggest", "read-write"];
+export const isPermissionMode = (value: unknown): value is AgentPermissionMode => PERMISSION_MODES.includes(value as AgentPermissionMode);
+export const modeProfile = (mode: AgentPermissionMode): AgentProfile => mode === "read-only" ? "prism-ro" : mode === "suggest" ? "prism-suggest" : "prism-rw";
+export const profileMode = (profile: AgentProfile): AgentPermissionMode => isReadOnlyProfile(profile) ? "read-only" : profile === "prism-suggest" ? "suggest" : "read-write";

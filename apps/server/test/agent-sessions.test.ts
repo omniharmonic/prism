@@ -32,6 +32,8 @@ import {
   configureAgentSessions,
   bootSweepAgentSessions,
   createSession,
+  changeSessionMode,
+  cancelTurn,
   startTurn,
   getTurn,
   getSession,
@@ -46,6 +48,9 @@ import {
   type SessionVault,
 } from "../src/agent-sessions";
 import { db, resolveVaultEntry, setMembership } from "../src/db";
+import { issueInternalPat } from "../src/auth/pat";
+import { enterAgentTool, agentToolAllowed } from "../src/agent-policy";
+import type { McpPrincipal } from "../src/mcp/auth";
 import { issueDeviceToken } from "../src/auth/device";
 import type { Note } from "../src/parachute";
 
@@ -253,6 +258,71 @@ function parseSSE(text: string): SSE[] {
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
+
+test("request identifiers recover accepted sessions and finished turns without executing twice", async () => {
+  const requestId = "fixture-retry-request-0001";
+  const sid = await newSession({ title: "Retry safely", profile: "vault-ro", requestId });
+  assert.equal(await newSession({ title: "Retry safely", profile: "vault-ro", requestId }), sid);
+  const mismatch = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ title: "Different request", profile: "vault-ro", requestId }) });
+  assert.equal(mismatch.status, 409);
+  assert.equal((await mismatch.json() as { error: string }).error, "request_mismatch");
+  const turnId = await runTurn(sid, "one request", "agent-stream-turn1.jsonl", { requestId });
+  configureAgentSessions({ sessionBudgetUsd: 0 }); // Receipt recovery must not charge/admit again.
+  const retried = await postTurn(sid, { prompt: "one request", requestId });
+  assert.equal(retried.status, 200);
+  assert.deepEqual(await retried.json(), { turnId, status: "done", context: [] });
+  assert.equal(calls.length, 1);
+  assert.equal(listTurns(sid).length, 1);
+  const changed = await postTurn(sid, { prompt: "different request", requestId });
+  assert.equal(changed.status, 409);
+  assert.equal((await changed.json() as { error: string }).error, "request_mismatch");
+  const other = createSession({ vaultId: resolveVaultEntry().id, ownerEmail: "another@example.test", title: "Retry safely", profile: "vault-ro", requestId });
+  assert.notEqual(other.id, sid, "request identifiers are scoped to the authenticated owner and vault");
+});
+
+test("a retry during admission is pending, then resolves to the one admitted turn", async () => {
+  const sid = await newSession({ profile: "vault-ro" });
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  configureAgentSessions({ mintReadToken: async () => { entered(); await barrier; return { token: "read-token", jti: "retry-jti" }; } });
+  const requestId = "fixture-retry-request-0002";
+  const first = postTurn(sid, { prompt: "read once", requestId });
+  await waiting;
+  const during = await postTurn(sid, { prompt: "read once", requestId });
+  assert.equal(during.status, 409);
+  assert.equal((await during.json() as { error: string }).error, "request_pending");
+  assert.equal(calls.length, 0);
+  release();
+  const accepted = await (await first).json();
+  const retry = await postTurn(sid, { prompt: "read once", requestId });
+  assert.equal(retry.status, 200);
+  assert.deepEqual(await retry.json(), accepted);
+  assert.equal(calls.length, 1);
+});
+
+test("malformed request identifiers are rejected before creating work", async () => {
+  const sid = await newSession();
+  for (const requestId of ["short", 123, "x".repeat(101), "unsafe/identifier/value"]) {
+    assert.equal((await postTurn(sid, { prompt: "no work", requestId })).status, 400);
+  }
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("failed admission can retry its identifier after rollback without a phantom accepted turn", async () => {
+  const sid = await newSession({ profile: "vault-ro" });
+  const requestId = "fixture-retry-request-0003";
+  mintFails = true;
+  assert.equal((await postTurn(sid, { prompt: "read safely", requestId })).status, 503);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(calls.length, 0);
+  mintFails = false;
+  assert.equal((await postTurn(sid, { prompt: "read safely", requestId })).status, 200);
+  assert.equal(listTurns(sid).length, 1);
+  assert.equal(calls.length, 1);
+});
 
 test("create → turn → normalized events persisted with a monotonic seq; deltas NOT persisted; turn done", async () => {
   const sid = await newSession({ title: "Fruit" });
@@ -816,6 +886,53 @@ test("H1 (defense in depth): open-note context requires `view` on the note — s
   assert.match(calls[1]!.args.at(-1)!, /Active note: open\./);
 });
 
+test("attached notes are bounded, recorded, refreshed for a new turn, and not reread on retry", async () => {
+  const source: Note = { id: "source", path: "Research", content: "A".repeat(9000), metadata: null, tags: [], createdAt: "", updatedAt: "2026-10-01T10:00:00Z" };
+  vaultNotes.set(source.id, source);
+  const sid = await newSession();
+  const requestId = "context-retry-0001";
+  const turnId = await runTurn(sid, "Read the attachment", "agent-stream-turn1.jsonl", { contextNoteIds: [source.id], requestId });
+  const detail = await (await agentApi.request(`/sessions/${sid}`, { headers: owner() })).json() as any;
+  assert.deepEqual(detail.turns[0].context, [{ noteId: source.id, characters: 8000, truncated: true, updatedAt: source.updatedAt }]);
+  assert.equal(detail.turns[0].context_json, undefined);
+  assert.ok(calls[0]!.args.at(-1)!.includes("A".repeat(8000)));
+  assert.ok(!calls[0]!.args.at(-1)!.includes("A".repeat(8001)));
+  source.content = "CHANGED SAVED TEXT";
+  source.updatedAt = "2026-10-01T11:00:00Z";
+  const retry = await (await postTurn(sid, { prompt: "Read the attachment", contextNoteIds: [source.id], requestId })).json() as any;
+  assert.equal(retry.turnId, turnId);
+  assert.equal(retry.context[0].characters, 8000);
+  assert.equal(calls.length, 1);
+  assert.equal((await postTurn(sid, { prompt: "Read the attachment", contextNoteIds: [], requestId })).status, 409);
+  await runTurn(sid, "Read it again", "agent-stream-turn2-resume.jsonl", { contextNoteIds: [source.id] });
+  assert.match(calls[1]!.args.at(-1)!, /CHANGED SAVED TEXT/);
+});
+
+test("unavailable or forbidden attachments fail before execution and release admission", async () => {
+  const source: Note = { id: "private-source", path: "PRIVATE NAME", content: "PRIVATE BODY", metadata: { prism_visibility: "private", prism_creator: "someone-else@example.test" }, tags: [], createdAt: "", updatedAt: null };
+  vaultNotes.set(source.id, source);
+  const sid = await newSession();
+  for (const id of [source.id, "missing-source"]) {
+    const result = await postTurn(sid, { prompt: "Read this", contextNoteIds: [id] });
+    assert.equal(result.status, 409);
+    assert.doesNotMatch(await result.text(), /PRIVATE NAME|PRIVATE BODY/);
+    assert.equal(listTurns(sid).length, 0);
+    assert.equal(calls.length, 0);
+  }
+  await assert.rejects(() => startTurn(sid, resolveVaultEntry(), { prompt: "No access context", contextNoteIds: [source.id] }), /unavailable/);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal((await postTurn(sid, { prompt: "Without attachment" })).status, 200);
+});
+
+test("attachment validation rejects malformed, duplicate and excessive sources", async () => {
+  const sid = await newSession();
+  for (const contextNoteIds of ["source", [""], [null], ["with space"], ["same", "same"], ["a", "b", "c", "d", "e", "f"]]) {
+    assert.equal((await postTurn(sid, { prompt: "Read", contextNoteIds })).status, 400);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(listTurns(sid).length, 0);
+});
+
 test("H1: ALL agent routes are SERVER-OWNER only — an admin (and member) gets 403; an owner device token passes", async () => {
   const vid = resolveVaultEntry().id;
   setMembership(vid, "admin@example.test", "admin", "test");
@@ -1031,4 +1148,110 @@ test("WP3.4 billing mode rides on /runner and /limits (subscription → label th
 
 test("WP3.4 /limits is owner-only like the rest of /api/agent", async () => {
   assert.equal((await agentApi.request("/limits")).status, 403);
+});
+
+
+function turnPrincipal(turnId: string): McpPrincipal {
+  const pat = issueInternalPat({ email: config.ownerEmail, vaultId: "primary", scope: "write", turnId });
+  return { via: "pat", credentialId: pat.row.id, agentTurnId: turnId, readOnly: false, expiresAt: pat.row.expires_at, vaultBound: true,
+    actor: { kind: "user", email: config.ownerEmail, vaultId: "primary", role: "owner", grants: [] } };
+}
+
+test("session permissions persist independently, snapshot each turn, and reject stale changes", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "suggest" });
+    const other = await newSession({ permissionMode: "read-write" });
+    assert.equal(getSession(sid)!.profile, "prism-suggest");
+    const r = await postTurn(sid, { prompt: "Propose a correction" });
+    assert.equal(r.status, 200);
+    const { turnId } = await r.json() as { turnId: string };
+    const snapshot = db.prepare("SELECT permission_mode, policy_version, profile FROM agent_turns WHERE id = ?").get(turnId);
+    assert.deepEqual(snapshot, { permission_mode: "suggest", policy_version: 1, profile: "prism-suggest" });
+    cancelTurn(turnId);
+    const updated = changeSessionMode(sid, "read-only", 1);
+    assert.equal(updated.permission_mode, "read-only");
+    assert.equal(updated.policy_version, 2);
+    assert.equal(getSession(other)!.permission_mode, "read-write");
+    assert.throws(() => changeSessionMode(sid, "read-write", 1), /changed elsewhere/);
+    const reloaded = await agentApi.request(`/sessions/${sid}`, { headers: owner() });
+    assert.equal((await reloaded.json() as any).session.permission_mode, "read-only");
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("suggest-only turn credentials cannot invoke alternate direct-write or administrative tools", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "suggest" });
+    const result = await postTurn(sid, { prompt: "Suggest only" });
+    const { turnId } = await result.json() as { turnId: string };
+    const principal = turnPrincipal(turnId);
+    assert.equal(agentToolAllowed(principal, "prism_get_note"), true);
+    assert.equal(agentToolAllowed(principal, "prism_suggest_edit"), true);
+    assert.equal(agentToolAllowed(principal, "prism_add_comment"), true);
+    for (const name of ["prism_update_note", "prism_create_note", "prism_restore_version", "prism_resolve_comment", "prism_share", "prism_vote", "prism_sheet_update"]) {
+      assert.equal(agentToolAllowed(principal, name), false, name);
+      assert.throws(() => enterAgentTool(principal, name), /no longer permits/);
+    }
+    cancelTurn(turnId);
+    assert.equal(agentToolAllowed(principal, "prism_suggest_edit"), false);
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("downgrade blocks new calls immediately and waits for an admitted tool to finish", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  let release: (() => void) | undefined;
+  try {
+    const sid = await newSession({ permissionMode: "read-write" });
+    const result = await postTurn(sid, { prompt: "Edit" });
+    const { turnId } = await result.json() as { turnId: string };
+    const principal = turnPrincipal(turnId);
+    release = enterAgentTool(principal, "prism_update_note");
+    const pending = changeSessionMode(sid, "read-only", 1);
+    assert.equal(pending.pending_mode, "read-only");
+    assert.equal(pending.permission_mode, "read-write", "do not claim a downgrade before a mutation drains");
+    assert.equal(agentToolAllowed(principal, "prism_update_note"), false);
+    assert.ok(patRevoked.length > 0, "revoke the runner credential before confirmation");
+    assert.equal((await postTurn(sid, { prompt: "Another turn" })).status, 409);
+    release();
+    const applied = getSession(sid)!;
+    assert.equal(applied.pending_mode, null);
+    assert.equal(applied.permission_mode, "read-only");
+    assert.equal(applied.policy_version, 2);
+    assert.equal(agentToolAllowed(principal, "prism_update_note"), false);
+    const audit = db.prepare("SELECT state FROM agent_policy_audit WHERE session_id = ? ORDER BY id").all(sid);
+    assert.deepEqual(audit, [{ state: "pending" }, { state: "applied" }]);
+  } finally { release?.(); delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("an active turn cannot gain authority, and legacy turns must stop before migration", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    for (const params of [{ permissionMode: "read-only" }, { profile: "vault-rw" }]) {
+      const sid = await newSession(params);
+      const { turnId } = await (await postTurn(sid, { prompt: "Keep working" })).json() as { turnId: string };
+      assert.throws(() => changeSessionMode(sid, "suggest", 1), /Stop the running turn/);
+      assert.equal(getSession(sid)!.pending_mode, null);
+      cancelTurn(turnId);
+      assert.equal(changeSessionMode(sid, "suggest", 1).profile, "prism-suggest");
+    }
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("permission API validates modes and versions and enforces session ownership", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "read-only" });
+    const patch = (body: unknown, headers = owner()) => agentApi.request(`/sessions/${sid}/permissions`, { method: "PATCH", headers: { ...J, ...headers }, body: JSON.stringify(body) });
+    const mismatch = await agentApi.request(`/sessions/${sid}/permissions`, { method: "PATCH", headers: { ...J, ...owner(), "X-Prism-Write-Actor": "user:other@test.local" }, body: JSON.stringify({ mode: "read-write", expectedVersion: 1 }) });
+    assert.equal(mismatch.status, 409);
+    assert.equal(getSession(sid)!.permission_mode, "read-only");
+    assert.equal((await patch({ mode: "root", expectedVersion: 1 })).status, 400);
+    assert.equal((await patch({ mode: "read-write" })).status, 400);
+    assert.equal((await patch({ mode: "suggest", expectedVersion: 1 }, { cookie: sessionCookie(makeSession("guest@test.local")) })).status, 403);
+    assert.equal((await patch({ mode: "suggest", expectedVersion: 1 })).status, 200);
+    assert.equal((await patch({ mode: "read-write", expectedVersion: 1 })).status, 409);
+    delete process.env.AGENT_PRISM_PROFILES;
+    assert.equal((await patch({ mode: "read-write", expectedVersion: 2 })).status, 409);
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
 });

@@ -1,3 +1,4 @@
+import { isVaultNoteId } from "../../lib/noteIdentity";
 import { lazy, Suspense } from "react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
@@ -11,24 +12,26 @@ import { Spinner } from "../ui/Spinner";
 const GraphPanel = lazy(() => import("./GraphPanel"));
 
 const PANEL_TABS = [
-  { id: "metadata", label: "Meta" },
   { id: "agent", label: "Agent" },
+  { id: "details", label: "Details" },
+  { id: "history", label: "Activity" },
+];
+const DETAIL_TABS = [
+  { id: "metadata", label: "Properties" },
   { id: "links", label: "Links" },
-  { id: "history", label: "History" },
   { id: "graph", label: "Graph" },
 ];
 
 export function ContextPanel() {
   const { contextPanelTab, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  // Don't fetch virtual notes (matrix:...) from Parachute
   const noteId = activeTab?.noteId;
-  const isVirtual = noteId && noteId.includes(":") && !noteId.match(/^\d/);
-  const { data: note } = useNote(isVirtual ? null : (noteId ?? null));
+  const { data: note } = useNote(isVaultNoteId(noteId) ? noteId : null);
+  const section = contextPanelTab === "agent" || contextPanelTab === "history" ? contextPanelTab : "details";
 
   return (
     <div
-      className="h-full flex flex-col"
+      className="h-full min-h-0 flex flex-col"
       style={{
         background: "var(--bg-surface)",
         borderLeft: "1px solid var(--glass-border)",
@@ -37,24 +40,22 @@ export function ContextPanel() {
       <div className="p-2" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <Tabs
           tabs={PANEL_TABS}
-          activeTab={contextPanelTab}
-          onChange={(id) => setContextPanelTab(id as typeof contextPanelTab)}
+          activeTab={section}
+          onChange={(id) => setContextPanelTab(id === "details" ? "metadata" : id as typeof contextPanelTab)}
         />
       </div>
 
-      <div
-        className={
-          contextPanelTab === "graph"
-            ? "flex-1 overflow-hidden"
-            : "flex-1 overflow-auto p-3"
-        }
-      >
+      {section === "details" && <div className="p-2 workspace-context-tabs">
+        <Tabs tabs={DETAIL_TABS} activeTab={contextPanelTab} onChange={(id) => setContextPanelTab(id as typeof contextPanelTab)} />
+      </div>}
+      <div hidden={section !== "agent"} className={section === "agent" ? "flex-1 min-h-0 overflow-hidden" : "hidden"}>
+        <PanelChat />
+      </div>
+      <div hidden={section === "agent"} className={section === "agent" ? "hidden" : contextPanelTab === "graph" ? "flex-1 min-h-0 overflow-hidden" : "workspace-panel-scroll flex-1 overflow-auto p-4"}>
         {contextPanelTab === "metadata" && note ? (
           <MetadataPanel note={note} />
         ) : contextPanelTab === "metadata" && !note ? (
           <Placeholder text="Select a note to view details" />
-        ) : contextPanelTab === "agent" ? (
-          <PanelChat />
         ) : contextPanelTab === "links" && note ? (
           <LinksPanel noteId={note.id} />
         ) : contextPanelTab === "links" ? (

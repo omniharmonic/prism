@@ -1,5 +1,18 @@
+import { PrismMark } from "@prism/core";
 import { useEffect } from "react";
 import { startNativeSignIn, getHost } from "../transport";
+
+/** Keep native credential/network waits visible instead of a frozen boot label. */
+export function NativeStartupScreen({ phase }: { phase: "credentials" | "connecting" }) {
+  return <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div className="workspace-auth-card" style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16 }}>
+      <PrismMark width={72} height={48} decorative />
+      <h1 style={{ margin: "16px 0 8px", fontSize: 22, fontWeight: 600 }}>Opening your workspace</h1>
+      <p role="status" style={{ fontSize: 14, color: "var(--text-secondary)" }}>{phase === "credentials" ? "Checking your saved sign-in…" : "Connecting to your Prism server…"}</p>
+      {phase === "credentials" && <p style={{ marginTop: 12, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>If your device shows a security prompt for Prism, respond there to continue.</p>}
+    </div>
+  </div>;
+}
 
 /**
  * Native-shell sign-in. There is no password form here: the shell runs the
@@ -19,9 +32,10 @@ export function NativeSignInScreen({ notice }: { notice?: string }) {
   return (
     <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div
-        className="glass-elevated"
+        className="workspace-auth-card"
         style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16, display: "flex", flexDirection: "column", gap: 14 }}
       >
+        <PrismMark width={72} height={48} decorative />
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Sign in to Prism</h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, opacity: 0.65 }}>
@@ -38,8 +52,8 @@ export function NativeSignInScreen({ notice }: { notice?: string }) {
             cursor: hasHost ? "pointer" : "default",
             fontSize: 14,
             fontWeight: 600,
-            background: "var(--color-accent, #4f8ff7)",
-            color: "white",
+            background: "var(--action-bg)",
+            color: "var(--action-fg)",
             opacity: hasHost ? 1 : 0.6,
           }}
         >

@@ -124,6 +124,10 @@ html.light .prose-editor code:not(pre code) {
   margin: 2rem 0;
 }
 
+.prose-editor ul { list-style-type: disc; }
+.prose-editor ol { list-style-type: decimal; }
+.prose-editor ul[data-type="taskList"] { list-style-type: none; padding-left: 0; }
+
 .prose-editor ul, .prose-editor ol {
   padding-left: 1.5em;
 }

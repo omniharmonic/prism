@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { useUIStore } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
@@ -58,6 +59,7 @@ export function Shell() {
   if (isMobile) {
     return (
       <div className="flex flex-col overflow-hidden" style={rootStyle}>
+        <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
         <div className="relative flex-1 min-h-0">
           {/* Canvas fills the screen; the pill floats over it and content scrolls
               beneath (renderers add bottom clearance so the last line clears). */}
@@ -93,6 +95,7 @@ export function Shell() {
 
   return (
     <div className="flex flex-col overflow-hidden" style={rootStyle}>
+        <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       {/* Main content area */}
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
@@ -145,24 +148,30 @@ function MobileDrawer({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
   return (
-    <>
-      <div
-        className="sheet-backdrop absolute inset-0 z-40"
-        style={{ background: "rgba(0,0,0,0.5)" }}
-        onClick={onClose}
-      />
-      <div
-        className={`${side === "left" ? "drawer-left" : "drawer-right"} absolute top-0 bottom-0 z-50 shadow-2xl`}
-        style={{
-          width: "min(85vw, 320px)",
-          background: "var(--bg-base)",
-          ...(side === "left" ? { left: 0 } : { right: 0 }),
-        }}
-      >
-        {children}
+    <dialog ref={dialogRef} className="workspace-mobile-drawer" aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? "100%" : "min(88vw, 360px)" }}>
+      <div className="h-full min-h-0 flex flex-col" style={{ background: "var(--bg-surface)" }}>
+        <div className="workspace-context-header flex items-center justify-between px-4 shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+          <span className="text-sm font-medium">{side === "left" ? "Workspace" : "Document panel"}</span>
+          <button type="button" aria-label={side === "left" ? "Close navigation" : "Back to document"} onClick={onClose}
+            className="interactive flex items-center justify-center" style={{ width: 44, height: 44 }}><X size={20} /></button>
+        </div>
+        <div className="flex-1 min-h-0">{children}</div>
       </div>
-    </>
+    </dialog>
   );
 }
 

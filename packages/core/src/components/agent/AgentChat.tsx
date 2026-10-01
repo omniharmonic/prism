@@ -7,7 +7,7 @@
  * full-screen conversation over the command pill with the composer pinned above
  * the keyboard (visualViewport) and safe-area insets; inputs are 16px (no iOS zoom).
  */
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -26,18 +26,24 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useAgentClient, useAgentAvailability, useAgentLimits, agentKeys } from "../../data/AgentClientContext";
+import { useAgentClient, useAgentAvailability, useAgentLimits, useAgentLimitsQuery, agentKeys } from "../../data/AgentClientContext";
 import { AgentBudgetLine } from "./AgentBudget";
 import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
-import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk } from "../../lib/agent/chatStore";
+import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk, type AgentDraftContext } from "../../lib/agent/chatStore";
+import { useComposerDraft } from "../../lib/agent/useComposerDraft";
+import { requestReceipt, clearRequestReceipt } from "../../lib/agent/requestReceipt";
+import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
-import type { AgentClient, AgentProfile, AgentSessionSummary } from "../../lib/agent/sessions";
+import type { AgentClient, AgentProfile, AgentPermissionMode, AgentSessionSummary } from "../../lib/agent/sessions";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
-import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
+import { PrismMark } from "../brand/PrismMark";
+import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentSourcePreview } from "./AgentSourcePreview";
+import { AgentContextAttachments } from "./AgentContextAttachments";
 import type { RendererProps } from "../renderers/RendererProps";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -61,40 +67,6 @@ function fmtDuration(ms: number | undefined): string | null {
 }
 
 const isRunning = (s: string | null | undefined) => s === "queued" || s === "running";
-
-/** Minimal, injection-free markdown: ``` fences, `code`, **bold**; the rest pre-wrapped. */
-function RichText({ text }: { text: string }) {
-  const parts = text.split(/```/);
-  return (
-    <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <pre
-            key={i}
-            className="my-2 overflow-x-auto rounded-lg px-3 py-2 text-[13px]"
-            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", fontFamily: "var(--font-mono, monospace)" }}
-          >
-            {part.replace(/^[a-z0-9-]*\n/i, "")}
-          </pre>
-        ) : (
-          <span key={i} className="whitespace-pre-wrap">
-            {part.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((tok, j) =>
-              tok.startsWith("`") && tok.endsWith("`") && tok.length > 2 ? (
-                <code key={j} className="rounded px-1 text-[0.92em]" style={{ background: "var(--glass-hover)", fontFamily: "var(--font-mono, monospace)" }}>
-                  {tok.slice(1, -1)}
-                </code>
-              ) : tok.startsWith("**") && tok.endsWith("**") && tok.length > 4 ? (
-                <strong key={j}>{tok.slice(2, -2)}</strong>
-              ) : (
-                <Fragment key={j}>{tok}</Fragment>
-              ),
-            )}
-          </span>
-        ),
-      )}
-    </>
-  );
-}
 
 /** Height of the visual viewport (shrinks when the iOS keyboard is up). */
 function useVisualViewportHeight(active: boolean): number | null {
@@ -131,7 +103,7 @@ export default function AgentChat(_props: RendererProps) {
   }
   if (availability === "error") return <Unavailable text="Can't reach the Prism server right now." />;
   if (availability === "no") return <Unavailable text="Agent chat is available to the server owner only." />;
-  return <AgentChatView client={client} />;
+  return <AgentChatView key={client.scope?.() ?? ""} client={client} />;
 }
 
 function Unavailable({ text }: { text: string }) {
@@ -146,10 +118,7 @@ function Unavailable({ text }: { text: string }) {
 }
 
 /** A new (not yet created) session: it is created on the first send. */
-interface Draft {
-  noteId?: string;
-  noteTitle?: string;
-}
+type Draft = AgentDraftContext;
 
 function AgentChatView({ client }: { client: AgentClient }) {
   const isMobile = useIsMobile();
@@ -157,7 +126,8 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
   const pendingAsk = useAgentChatStore((s) => s.pendingAsk);
   const setPendingAsk = useAgentChatStore((s) => s.setPendingAsk);
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const draft = useAgentChatStore((s) => s.draft);
+  const setDraft = useAgentChatStore((s) => s.setDraft);
   const [autoPrompt, setAutoPrompt] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const keys = agentKeys(client);
@@ -172,7 +142,10 @@ function AgentChatView({ client }: { client: AgentClient }) {
   useEffect(() => {
     if (activeSessionId && sessions && !sessions.some((s) => s.id === activeSessionId)) {
       // It may be brand new (list not refetched yet) — only drop it if the list is fresh.
-      void client.getSession(activeSessionId).catch(() => setActiveSession(null));
+      const scope = client.scope?.();
+      void client.getSession(activeSessionId).catch((error) => {
+        if (error instanceof AgentApiError && error.status === 404 && scope === client.scope?.() && useAgentChatStore.getState().activeSessionId === activeSessionId) setActiveSession(null);
+      });
     }
   }, [activeSessionId, sessions, client, setActiveSession]);
 
@@ -203,7 +176,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
     }
     setActiveSession(null);
     setDraft({});
-  }, [pendingAsk, sessions, setPendingAsk, setActiveSession]);
+  }, [pendingAsk, sessions, setPendingAsk, setActiveSession, setDraft]);
 
   const startNew = () => {
     setActiveSession(null);
@@ -227,7 +200,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const showingConversation = !!activeSessionId || !!draft;
   const conversation = showingConversation ? (
     <Conversation
-      key={activeSessionId ?? "draft"}
+      key={activeSessionId ?? `draft:${draft?.noteId ?? "new"}`}
       client={client}
       sessionId={activeSessionId}
       draft={draft}
@@ -278,7 +251,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
       <div className="h-full min-w-0 flex-1">
         {conversation ?? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <Bot size={28} style={{ color: "var(--color-accent)" }} />
+            <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               Chat with the agent on your Prism server. Conversations keep running when you close the tab.
             </p>
@@ -315,9 +288,9 @@ function SessionList({
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-shrink-0 items-center gap-2 px-4" style={{ height: 52, borderBottom: "1px solid var(--glass-border)" }}>
-        <Bot size={16} style={{ color: "var(--color-accent)" }} />
+        <PrismMark width={27} height={20} decorative style={{ color: "var(--text-primary)" }} />
         <span className="flex-1 font-semibold" style={{ color: "var(--text-primary)" }}>
-          Agent
+          Conversations
         </span>
         <button
           onClick={onNew}
@@ -345,14 +318,16 @@ function SessionList({
           return (
             <div
               key={s.id}
-              role="button"
-              tabIndex={0}
-              data-testid="agent-session-row"
-              onClick={() => onOpen(s.id)}
-              onKeyDown={(e) => e.key === "Enter" && onOpen(s.id)}
-              className="interactive group mx-1.5 flex items-center gap-2.5 rounded-lg px-2.5"
-              style={{ minHeight: mobile ? 56 : 48, background: active ? "var(--surface-selected)" : undefined }}
+              className="group mx-1.5 flex items-center rounded-lg pr-1"
+              style={{ background: active ? "var(--surface-selected)" : undefined }}
             >
+              <button
+                data-testid="agent-session-row"
+                onClick={() => onOpen(s.id)}
+                aria-current={active ? "true" : undefined}
+                className="interactive focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left"
+                style={{ minHeight: mobile ? 56 : 48 }}
+              >
               <span
                 className={running ? "animate-pulse" : undefined}
                 title={running ? "Running" : s.lastTurnStatus ?? "idle"}
@@ -368,11 +343,11 @@ function SessionList({
                       : "var(--glass-border)",
                 }}
               />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm" style={{ color: "var(--text-primary)", fontWeight: active ? 560 : 450 }}>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm" style={{ color: "var(--text-primary)", fontWeight: active ? 560 : 450 }}>
                   {s.title || "Untitled session"}
-                </div>
-                <div className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
+                </span>
+                <span className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
                   {running ? <span style={{ color: "var(--color-accent)" }}>{s.lastTurnStatus === "queued" ? "Queued" : "Working…"}</span> : relTime(s.lastTurnAt ?? s.updated_at)}
                   {isReadOnlyProfile(s.profile) && (
                     <span className="flex items-center gap-0.5">
@@ -384,8 +359,9 @@ function SessionList({
                       · {formatAgentCost(s.cost_usd, billing)?.text}
                     </span>
                   )}
-                </div>
-              </div>
+                </span>
+              </span>
+              </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -393,8 +369,8 @@ function SessionList({
                 }}
                 aria-label="Archive session"
                 title="Archive"
-                className={`interactive flex items-center justify-center rounded ${mobile ? "" : "opacity-0 group-hover:opacity-100"}`}
-                style={{ width: 28, height: 28, color: "var(--text-muted)" }}
+                className={`interactive focus-ring flex flex-shrink-0 items-center justify-center rounded ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+                style={{ width: mobile ? 44 : 32, height: mobile ? 44 : 32, color: "var(--text-muted)" }}
               >
                 <Archive size={14} />
               </button>
@@ -434,12 +410,47 @@ export function Conversation({
   compact?: boolean;
 }) {
   const conv = useAgentConversation(client, sessionId);
+  const mobileComposer = useIsMobile();
   const queryClient = useQueryClient();
-  const limits = useAgentLimits();
+  const limitsQuery = useAgentLimitsQuery();
+  const limits = limitsQuery.data;
+  const limitsUnavailable = !!client.getLimits && !limits && !(limitsQuery.error instanceof AgentApiError && limitsQuery.error.status === 404);
   // The profiles the server offers (prism-* only when enabled); older servers: the two vault profiles.
   const pickable: AgentProfile[] = limits?.profiles?.length ? limits.profiles : ["vault-ro", "vault-rw"];
-  const [input, setInput] = useState("");
-  const [profile, setProfile] = useState<AgentProfile>("vault-ro");
+  const composerDraft = useComposerDraft(client.scope?.() || null, sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`);
+  const { text: input, setText: setInput, clearIfUnchanged } = composerDraft;
+  const contextDraft = useComposerDraft(client.scope?.() || null, `context:${sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`}`);
+  const contextNoteIds: string[] = useMemo(() => {
+    try { const ids: unknown = JSON.parse(contextDraft.text || "[]"); return Array.isArray(ids) && ids.length <= 5 && ids.every((id) => typeof id === "string") ? ids : []; } catch { return []; }
+  }, [contextDraft.text]);
+  const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const draftPermissions = useComposerDraft(client.scope?.() || null, `permissions:note:${draft?.noteId ?? "new"}`);
+  const profile: AgentProfile = ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest"].includes(draftPermissions.text) ? draftPermissions.text as AgentProfile : "vault-ro";
+  const draftMode: AgentPermissionMode = ["read-only", "suggest", "read-write"].includes(draftPermissions.text) ? draftPermissions.text as AgentPermissionMode : "read-only";
+  const [changingMode, setChangingMode] = useState(false);
+  const permissionModes = limits?.permissionModes;
+  const idempotentRequests = limits?.idempotentRequests === true;
+  const modeLabels: Record<AgentPermissionMode, string> = { "read-only": "Read-only", suggest: "Suggested edits only", "read-write": "Read/write" };
+  const permissionPending = conv.session?.pending_mode;
+  useEffect(() => {
+    if (!permissionPending) return;
+    const timer = window.setInterval(() => { void conv.reload(); }, 1000);
+    return () => window.clearInterval(timer);
+  }, [permissionPending, conv.reload]);
+  const changeMode = async (mode: AgentPermissionMode) => {
+    if (!sessionId) { draftPermissions.setText(mode); return; }
+    if (!client.updatePermissions || !conv.session?.policy_version || changingMode) return;
+    setChangingMode(true);
+    try {
+      await client.updatePermissions(sessionId, mode, conv.session.policy_version);
+      conv.setError(null);
+      await conv.reload();
+      void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
+    } catch (error) { await conv.reload(); conv.setError(agentErrorText(error)); }
+    finally { setChangingMode(false); }
+  };
   const [creating, setCreating] = useState<string | null>(null); // prompt being sent in a draft
   const [draftError, setDraftError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -448,6 +459,7 @@ export function Conversation({
   const vvh = useVisualViewportHeight(!!fullScreen);
 
   const isDraft = !sessionId;
+  const awaitingSession = !isDraft && (conv.loading || conv.session?.id !== sessionId);
   const running = !!conv.active;
   // A turn just finished → today's spend changed: refresh the budget line.
   const wasRunning = useRef(false);
@@ -480,51 +492,86 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || running || creating) return;
+      if (!text || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if (contextNoteIds.length && !limits?.contextNotes) {
+        const message = "This server can't accept the attached notes. Remove them before sending, or reconnect to the updated server.";
+        if (isDraft) setDraftError(message); else conv.setError(message);
+        return;
+      }
+      const sentDraft = textArg ?? input;
+      if (textArg !== undefined) setInput(textArg);
+      sendingRef.current = true;
+      setSending(true);
       stickToBottom.current = true;
+      const scope = client.scope?.();
+      const conversation = sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`;
+      let requestId: string | undefined;
+      if (idempotentRequests) {
+        try {
+          if (!scope) throw new Error("Wait for your workspace identity before sending.");
+          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
+          if (scope !== client.scope?.()) throw new Error("Workspace changed. Reopen the draft in its original workspace.");
+          requestId = receipt.id;
+        } catch (error) {
+          if (isDraft) setDraftError(agentErrorText(error)); else conv.setError(agentErrorText(error));
+          sendingRef.current = false;
+          setSending(false);
+          return;
+        }
+      }
       if (isDraft) {
         setDraftError(null);
         setCreating(text);
-        setInput("");
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
-          const { sessionId: id } = await client.createSession({ title, profile, noteId: draft?.noteId });
-          await client.sendTurn(id, text, draft?.noteId ? { noteId: draft.noteId } : {});
+          const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId, ...(requestId ? { requestId } : {}) });
+          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
+          clearIfUnchanged(sentDraft);
+          contextDraft.clearIfUnchanged(contextDraft.text);
+          draftPermissions.clearIfUnchanged(draftPermissions.text);
+          if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
           onCreated(id);
         } catch (e) {
           setDraftError(agentErrorText(e));
-          setInput(text);
           setCreating(null);
+        } finally {
+          sendingRef.current = false;
+          setSending(false);
         }
         return;
       }
-      setInput("");
       const noteId = conv.session?.note_id ?? undefined;
-      const ok = await conv.send(text, noteId ? { noteId } : {});
-      if (!ok) setInput((cur) => cur || text);
+      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
+      if (ok) {
+        clearIfUnchanged(sentDraft);
+        contextDraft.clearIfUnchanged(contextDraft.text);
+        if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
+      }
+      sendingRef.current = false;
+      setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
   // under StrictMode's double effect run).
   const autoSent = useRef<string | null>(null);
   useEffect(() => {
-    if (isDraft && autoPrompt && autoSent.current !== autoPrompt) {
+    if (isDraft && !limitsUnavailable && autoPrompt && autoSent.current !== autoPrompt) {
       autoSent.current = autoPrompt;
       onAutoPromptConsumed?.();
       void submit(autoPrompt);
     }
-  }, [autoPrompt, isDraft]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoPrompt, isDraft, limitsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Focus the composer for a fresh draft (not on touch — avoids popping the keyboard unasked).
   useEffect(() => {
-    if (isDraft && !fullScreen) requestAnimationFrame(() => inputRef.current?.focus());
-  }, [isDraft, fullScreen]);
+    if (isDraft && !fullScreen && !mobileComposer) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [isDraft, fullScreen, mobileComposer]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !fullScreen && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && (!mobileComposer || e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void submit();
     }
@@ -583,13 +630,12 @@ export function Conversation({
 
   const empty = isDraft && !creating && (
     <div className="flex flex-col items-center gap-3 px-4 pt-10 text-center">
-      <Bot size={26} style={{ color: "var(--color-accent)" }} />
+      <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
       <p className="text-sm" style={{ color: "var(--text-muted)" }}>
         {draft?.noteId ? "Ask anything about this note." : "Ask the agent about your vault."}
         <br />
         It keeps working if you close the app.
       </p>
-      {noteId && <NoteChip noteId={noteId} label={draft?.noteTitle} />}
     </div>
   );
 
@@ -602,7 +648,7 @@ export function Conversation({
         background: fullScreen ? "var(--bg-surface)" : undefined,
       }}
     >
-      {isDraft && (
+      {isDraft && !permissionModes?.length && (
         <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <div className="flex flex-wrap rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
             {pickable.map((p) => [p, PROFILE_LABELS[p].label, isReadOnlyProfile(p) ? <Lock key="l" size={11} /> : <PenLine key="p" size={11} />] as [AgentProfile, string, ReactNode]).map(([p, label, icon]) => (
@@ -611,7 +657,7 @@ export function Conversation({
                 role="radio"
                 aria-checked={profile === p}
                 data-testid={`agent-profile-${p}`}
-                onClick={() => setProfile(p)}
+                onClick={() => draftPermissions.setText(p)}
                 className="flex items-center gap-1 rounded-full px-2.5 py-1"
                 style={{
                   background: profile === p ? "var(--color-accent)" : "transparent",
@@ -626,15 +672,43 @@ export function Conversation({
           <span className="truncate">{PROFILE_LABELS[profile].hint}</span>
         </div>
       )}
+      {!!permissionModes?.length && (isDraft || !!client.updatePermissions) && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <label className="flex items-center gap-2" style={{ color: "var(--text-secondary)" }}>
+            Agent permissions
+            <select
+              aria-label="Agent permissions"
+              value={isDraft ? draftMode : conv.session?.permission_mode ?? (isReadOnlyProfile(conv.session?.profile) ? "read-only" : conv.session?.profile === "prism-suggest" ? "suggest" : "read-write")}
+              disabled={changingMode || !!permissionPending || (!isDraft && !conv.session)}
+              onChange={(event) => { void changeMode(event.target.value as AgentPermissionMode); }}
+              className="rounded-lg border px-2 py-2"
+              style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)", color: "var(--text-primary)", minHeight: 36 }}
+            >
+              {permissionModes.map((mode) => <option key={mode} value={mode}>{modeLabels[mode]}</option>)}
+            </select>
+          </label>
+          {permissionPending && <span role="status">Stopping previous work before switching to {modeLabels[permissionPending]}…</span>}
+        </div>
+      )}
       {isDraft && <AgentBudgetLine />}
+      {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
+      {attachmentPreview && <AgentSourcePreview noteId={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
+      {contextDraft.error && <p role="status" className="mb-2 text-xs">{contextDraft.error}</p>}
+      {limitsUnavailable && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        {limitsQuery.isError ? <>Couldn't check agent settings. <button className="underline" onClick={() => void limitsQuery.refetch()}>Try again</button></> : "Checking agent settings…"}
+      </p>}
+      {isDraft && draftPermissions.error && <p role="status" className="mb-2 text-xs">{draftPermissions.error}</p>}
+      {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
       <div className="flex items-end gap-2">
         <textarea
           ref={inputRef}
           value={input}
+          aria-label="Message the agent"
+          disabled={sending}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           rows={1}
-          enterKeyHint={fullScreen ? "send" : undefined}
+          enterKeyHint={mobileComposer ? "enter" : undefined}
           placeholder={running ? "The agent is working…" : isDraft ? "Ask the agent…" : "Reply…"}
           data-testid="agent-input"
           className="min-w-0 flex-1 resize-none rounded-2xl px-3.5 py-2 outline-none"
@@ -662,7 +736,7 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || !!creating}
+            disabled={!input.trim() || sending || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
             aria-label="Send"
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
@@ -683,9 +757,10 @@ export function Conversation({
           <Spinner size={18} />
         </div>
       )}
-      {!isDraft && noteId && conv.state.turns.length > 0 && (
-        <div className="mb-3 flex justify-center">
-          <NoteChip noteId={noteId} />
+      {noteId && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs" data-testid="agent-working-document" style={{ color: "var(--text-muted)" }}>
+          <span>Working document</span>
+          <NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} />
         </div>
       )}
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -739,10 +814,11 @@ export function Conversation({
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end gap-1.5">
+      <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>You</span>
       <div
-        className="max-w-[85%] whitespace-pre-wrap px-3.5 py-2 text-sm"
-        style={{ background: "var(--color-accent)", color: "#fff", borderRadius: "18px 18px 4px 18px" }}
+        className="max-w-[92%] whitespace-pre-wrap rounded-xl px-3.5 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere]"
+        style={{ background: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}
         data-testid="agent-user-message"
       >
         {text}
@@ -770,6 +846,15 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   return (
     <div className="flex flex-col gap-2" data-testid="agent-turn" data-status={turn.status}>
       {turn.prompt && <UserBubble text={turn.prompt} />}
+      {!!turn.context?.length && <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="agent-supplied-context" style={{ color: "var(--text-muted)" }}>
+        <span>Saved text supplied:</span>
+        {turn.context.map((source) => <span key={source.noteId} className="flex flex-wrap items-center gap-1"><NoteChip noteId={source.noteId} op="context" /><span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
+      </div>}
+      <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <PrismMark width={25} height={18} decorative />
+        <span className="font-medium">Prism agent</span>
+        {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={new Date(turn.startedAt).toLocaleString()} style={{ color: "var(--text-muted)" }}>{new Date(turn.startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
+      </div>
       {turn.tools.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {turn.tools.map((tool) => (
@@ -794,12 +879,12 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
         </div>
       )}
       {hasText && (
-        <div className={`max-w-full ${compact ? "text-[13px]" : "text-sm"} leading-relaxed`} style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
+        <div className={`min-w-0 max-w-full [overflow-wrap:anywhere] ${compact ? "text-[13px]" : "text-sm"} leading-relaxed`} style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
           {turn.blocks
             .filter((b) => b.text.trim())
             .map((b, i) => (
               <div key={b.blockId} className={i > 0 ? "mt-2" : undefined}>
-                <RichText text={b.text} />
+                <AgentMarkdown text={b.text} />
                 {b.streaming && running && <span className="ml-0.5 inline-block animate-pulse" style={{ color: "var(--color-accent)" }}>▍</span>}
               </div>
             ))}
@@ -829,18 +914,18 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   );
 }
 
-/** A note the agent touched (or the session's note): click opens it in a tab. */
+/** Inspect a source without replacing the working document or active tab. */
 function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: string }) {
   const deleted = op === "delete";
-  const { data: note } = useNote(deleted ? null : noteId);
-  const openTab = useUIStore((s) => s.openTab);
-  const name = label || note?.path?.split("/").pop() || noteId.slice(0, 10);
+  const { data: note, isError } = useNote(deleted ? null : noteId);
+  const [preview, setPreview] = useState(false);
+  const name = isError ? "Unavailable note" : label || note?.path?.split("/").pop() || noteId.slice(0, 10);
   const verb = op === "create" ? "Created" : op === "update" ? "Updated" : op === "delete" ? "Deleted" : null;
-  const clickable = !deleted && !!note;
   return (
+    <>
     <button
-      disabled={!clickable}
-      onClick={() => note && openTab(note.id, name, inferContentType(note))}
+      disabled={deleted}
+      onClick={() => setPreview(true)}
       data-testid="agent-note-chip"
       className="flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs disabled:cursor-default"
       style={{
@@ -854,6 +939,8 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
       {verb && <span style={{ opacity: 0.75 }}>{verb}</span>}
       <span className="truncate">{name}</span>
     </button>
+    {preview && <AgentSourcePreview noteId={noteId} onClose={() => setPreview(false)} />}
+    </>
   );
 }
 
@@ -864,25 +951,38 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
 export function AgentPanelChat({ client }: { client: AgentClient }) {
   const activeSessionId = useAgentChatStore((s) => s.activeSessionId);
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
-  const { openTabs, activeTabId } = useUIStore();
-  const tab = openTabs.find((t) => t.id === activeTabId);
+  const draft = useAgentChatStore((s) => s.draft);
+  const setDraft = useAgentChatStore((s) => s.setDraft);
+  const scope = useAgentChatStore((s) => s.scope);
+  const tab = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId));
   const noteId = isAskableNoteId(tab?.noteId) ? tab!.noteId : undefined;
-  const draft = useMemo(() => (activeSessionId ? null : { noteId, noteTitle: noteId ? tab?.title : undefined }), [activeSessionId, noteId, tab?.title]);
+  const noteTitle = noteId ? tab?.title : undefined;
+  // Capture once. Reading a citation or expanding the panel must never retarget
+  // an unsent request. Only an explicit New action chooses another document.
+  useEffect(() => {
+    if (scope && !activeSessionId && !draft) setDraft({ noteId, noteTitle });
+  }, [scope, activeSessionId, draft, noteId, noteTitle, setDraft]);
+  const startNew = () => { setActiveSession(null); setDraft({ noteId, noteTitle }); };
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-shrink-0 items-center justify-end gap-1 px-2 py-1" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <button onClick={() => setActiveSession(null)} className="interactive flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="interactive focus-ring flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
           <Plus size={12} /> New
         </button>
       </div>
       <div className="min-h-0 flex-1">
         <Conversation
-          key={activeSessionId ?? `draft:${noteId ?? ""}`}
+          key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${draft?.noteId ?? ""}`}`}
           client={client}
           sessionId={activeSessionId}
           draft={draft}
           onCreated={(id) => setActiveSession(id)}
-          onExpand={() => openAgentChat({ sessionId: activeSessionId })}
+          onExpand={() => {
+            // Expansion moves the conversation; do not leave a second composer
+            // beside it (or an open mobile drawer covering the expanded view).
+            useUIStore.setState({ contextPanelOpen: false });
+            openAgentChat({ sessionId: activeSessionId });
+          }}
           compact
         />
       </div>

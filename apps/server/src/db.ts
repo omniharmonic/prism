@@ -593,8 +593,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sync_audit_ts ON sync_audit(ts);
 `);
 
-// Migration: accounts now carry a password. Add the column if an older db
-// predates it (CREATE TABLE IF NOT EXISTS won't alter an existing table).
+// Additive agent policy migration: old sessions retain their original profile.
+for (const [table, fields] of Object.entries({
+  agent_sessions: { permission_mode: "TEXT", policy_version: "INTEGER NOT NULL DEFAULT 1", pending_mode: "TEXT", request_id: "TEXT", request_hash: "TEXT" },
+  agent_turns: { permission_mode: "TEXT", policy_version: "INTEGER", profile: "TEXT", request_id: "TEXT", request_hash: "TEXT", request_ready: "INTEGER NOT NULL DEFAULT 0", context_json: "TEXT NOT NULL DEFAULT '[]'" },
+})) {
+  const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+  for (const [name, definition] of Object.entries(fields)) {
+    if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
+}
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS agent_session_request ON agent_sessions(vault_id, owner_email, request_id) WHERE request_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS agent_turn_request ON agent_turns(session_id, request_id) WHERE request_id IS NOT NULL;
+`);
+db.exec(`CREATE TABLE IF NOT EXISTS agent_policy_audit (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, actor TEXT NOT NULL,
+  from_mode TEXT NOT NULL, to_mode TEXT NOT NULL, policy_version INTEGER NOT NULL,
+  state TEXT NOT NULL, at INTEGER NOT NULL
+)`);
+
+// Migration: accounts now carry a password (CREATE TABLE will not alter old databases).
 {
   const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "password_hash")) {

@@ -8,6 +8,13 @@ These are proposed designs for the [workspace experience upgrade](README.md), ge
 
 The [design specification](DESIGN.md), [message requirements](MESSAGES.md), and [backend contracts](CONTRACTS.md) govern behavior. Generated labels, spacing, icons, and sample counts are illustrative; raster mockups cannot establish working accessibility, responsive layout, or data correctness. Implementation still begins with F00 after the architecture v2 handoff.
 
+## Current implementation concepts (2026-10-01)
+
+- [17 · Brand direction](assets/17-prism-brand.png): many spectrum inputs, one unified output. The production vector master governs final geometry.
+- [18 · Session permissions](assets/18-session-permissions.png): document collaboration on desktop/mobile with Read-only, Suggested edits only, and Read/write.
+
+These are generated concepts, not evidence of implemented permissions. Exact prompts are in [implementation-prompts.json](implementation-prompts.json).
+
 ## Screen index
 
 | Board | Screen / state | Work packages |

@@ -1,3 +1,4 @@
+import { isVaultNoteId } from "../../lib/noteIdentity";
 import { useState } from "react";
 import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
@@ -59,7 +60,7 @@ export function TabBar() {
   const favorites = useSettingsStore((s) => s.favorites);
   const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
+  const isRealNote = isVaultNoteId(activeTab?.noteId);
   const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
 
   const isMobile = useIsMobile();

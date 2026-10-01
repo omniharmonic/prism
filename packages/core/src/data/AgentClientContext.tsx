@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useAgentChatStore } from "../lib/agent/chatStore";
 import { AgentApiError, type AgentClient, type AgentLimits } from "../lib/agent/sessions";
 
 const AgentClientContext = createContext<AgentClient | null>(null);
@@ -15,6 +16,7 @@ export function AgentClientProvider({ client, children }: { client: AgentClient 
 
 /** The host's AgentClient, or null when this shell has none. */
 export function useAgentClient(): AgentClient | null {
+  useAgentChatStore((state) => state.scope); // Re-read availability after a resolved audience change.
   return useContext(AgentClientContext);
 }
 
@@ -42,7 +44,7 @@ export function useAgentAvailability(): AgentAvailability {
   const keys = agentKeys(client);
   const { data, isError } = useQuery({
     queryKey: keys.available,
-    enabled: !!client,
+    enabled: !!client && (!client.scope || !!client.scope()),
     staleTime: 10 * 60_000,
     retry: 1,
     queryFn: async () => {
@@ -72,14 +74,17 @@ export function useAgentAvailable(): boolean {
  * first answer or on an older server — callers must degrade to the old labels.
  */
 export function useAgentLimits(): AgentLimits | undefined {
+  return useAgentLimitsQuery().data;
+}
+
+export function useAgentLimitsQuery() {
   const client = useAgentClient();
   const keys = agentKeys(client);
-  const { data } = useQuery({
+  return useQuery({
     queryKey: keys.limits,
-    enabled: !!client?.getLimits,
+    enabled: !!client?.getLimits && (!client.scope || !!client.scope()),
     staleTime: 30_000,
     retry: false,
     queryFn: () => client!.getLimits!(),
   });
-  return data;
 }

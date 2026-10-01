@@ -18,6 +18,8 @@ export interface SuggestionUser {
 
 const suggestionKey = new PluginKey("suggestionMode");
 
+import type { Mark as PMMark } from "@tiptap/pm/model";
+import type { Transaction } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 
 /** The contiguous suggestion run (insertion or deletion) covering `pos`, or null.
@@ -25,27 +27,46 @@ import type { EditorState } from "@tiptap/pm/state";
 export function suggestionAt(
   state: EditorState,
   pos: number,
-): { type: "insertion" | "deletion"; from: number; to: number } | null {
-  const ins = state.schema.marks.insertion;
-  const del = state.schema.marks.deletion;
+): { type: "insertion" | "deletion"; from: number; to: number; mark: PMMark } | null {
   const size = state.doc.content.size;
-  const has = (a: number, b: number, t: typeof ins) =>
-    a >= 0 && b <= size && a < b && state.doc.rangeHasMark(a, b, t);
-  let mark: typeof ins | null = null;
-  let type: "insertion" | "deletion" | null = null;
-  if (ins && (has(pos, pos + 1, ins) || has(pos - 1, pos, ins))) {
-    mark = ins;
-    type = "insertion";
-  } else if (del && (has(pos, pos + 1, del) || has(pos - 1, pos, del))) {
-    mark = del;
-    type = "deletion";
-  }
-  if (!mark || !type) return null;
+  const at = (from: number, to: number): PMMark | null => {
+    if (from < 0 || to > size || from >= to) return null;
+    let found: PMMark | null = null;
+    state.doc.nodesBetween(from, to, (node) => {
+      if (node.isText) found ??= node.marks.find((m) => m.type.name === "insertion" || m.type.name === "deletion") ?? null;
+    });
+    return found;
+  };
+  const mark = at(pos, pos + 1) ?? at(pos - 1, pos);
+  if (!mark) return null;
   let from = pos;
   while (from > 0 && state.doc.rangeHasMark(from - 1, from, mark)) from--;
   let to = pos;
   while (to < size && state.doc.rangeHasMark(to, to + 1, mark)) to++;
-  return { type, from, to };
+  return { type: mark.type.name as "insertion" | "deletion", from, to, mark };
+}
+
+/** One agent replacement has two marks but one identity and one review action. */
+function resolveIdentifiedSuggestion(state: EditorState, tr: Transaction, mark: PMMark, action: "accept" | "reject"): boolean {
+  const id = mark.attrs.suggestionId;
+  if (!id) return false;
+  const remove: Array<[number, number]> = [];
+  state.doc.descendants((node, pos) => {
+    if (!node.isText) return;
+    for (const candidate of node.marks) {
+      if (!["insertion", "deletion"].includes(candidate.type.name) || candidate.attrs.suggestionId !== id || candidate.attrs.actorId !== mark.attrs.actorId || candidate.attrs.user !== mark.attrs.user) continue;
+      const deleting = candidate.type.name === (action === "accept" ? "deletion" : "insertion");
+      if (deleting) remove.push([pos, pos + node.nodeSize]);
+      else {
+        tr.removeMark(pos, pos + node.nodeSize, candidate);
+        const echo = state.schema.marks[candidate.type.name === "insertion" ? "underline" : "strike"];
+        if (echo) tr.removeMark(pos, pos + node.nodeSize, echo);
+      }
+    }
+  });
+  for (const [from, to] of remove.reverse()) tr.delete(tr.mapping.map(from), tr.mapping.map(to));
+  tr.setMeta(suggestionKey, true);
+  return true;
 }
 
 /** True if every text node in [a,b] is an insertion authored by `userName` —
@@ -150,8 +171,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
         ({ state, tr, dispatch }) => {
           const r = suggestionAt(state, state.selection.from);
           if (!r) return false;
-          if (r.type === "deletion") tr.delete(r.from, r.to);
-          else tr.removeMark(r.from, r.to, state.schema.marks.insertion!);
+          if (!resolveIdentifiedSuggestion(state, tr, r.mark, "accept")) {
+            if (r.type === "deletion") tr.delete(r.from, r.to);
+            else tr.removeMark(r.from, r.to, r.mark);
+          }
           if (dispatch) dispatch(tr);
           return true;
         },
@@ -162,8 +185,10 @@ export const SuggestionMode = Extension.create<SuggestionOptions>({
         ({ state, tr, dispatch }) => {
           const r = suggestionAt(state, state.selection.from);
           if (!r) return false;
-          if (r.type === "insertion") tr.delete(r.from, r.to);
-          else tr.removeMark(r.from, r.to, state.schema.marks.deletion!);
+          if (!resolveIdentifiedSuggestion(state, tr, r.mark, "reject")) {
+            if (r.type === "insertion") tr.delete(r.from, r.to);
+            else tr.removeMark(r.from, r.to, r.mark);
+          }
           if (dispatch) dispatch(tr);
           return true;
         },

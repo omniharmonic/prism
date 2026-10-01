@@ -31,11 +31,11 @@ export default defineConfig(({ mode }) => {
       // refresh and stale chunks rendered old code.
       registerType: "prompt",
       injectRegister: null,
-      includeAssets: ["apple-touch-icon.png", "vite.svg"],
+      includeAssets: ["apple-touch-icon.png", "prism-icon.svg", "prism-mark.svg"],
       manifest: {
         name: "Prism",
         short_name: "Prism",
-        description: "Your Parachute vault — notes, graph, and dashboards, anywhere.",
+        description: "Documents, people, and ideas in one collaborative workspace.",
         theme_color: "#0a0a0b",
         background_color: "#0a0a0b",
         display: "standalone",
@@ -83,20 +83,8 @@ export default defineConfig(({ mode }) => {
         // protected-resource metadata) are server-owned too (WP6.1).
         navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
         runtimeCaching: [
-          {
-            // Recently-viewed vault content stays available offline (read-only).
-            urlPattern: ({ url }) =>
-              url.pathname.includes("/api/notes") ||
-              url.pathname.includes("/api/vault") ||
-              url.pathname.includes("/api/tags"),
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "vault-api",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 500, maxAgeSeconds: 60 * 60 * 24 * 7 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
+          // Authenticated vault responses use the account/vault-scoped IndexedDB
+          // cache. A URL-only service-worker cache can mix accounts and vaults.
           {
             // Lazily-loaded JS chunks (diagrams, code editor) cache on first use.
             urlPattern: ({ request }) => request.destination === "script",
@@ -108,9 +96,19 @@ export default defineConfig(({ mode }) => {
       devOptions: { enabled: false },
     })]),
   ],
+  build: {
+    ...(native ? { outDir: "dist-native" } : {}),
+    rollupOptions: {
+      output: {
+        // Rollup can name the shared app chunk after a lazy math module. Keep
+        // the boot dependency out of the intentionally uncached diagram names.
+        chunkFileNames: (chunk) => chunk.moduleIds.some((id) => id.endsWith("/apps/web/src/main.tsx"))
+          ? "assets/workspace-[hash].js" : "assets/[name]-[hash].js",
+      },
+    },
+  },
   ...(native
     ? {
-        build: { outDir: "dist-native" },
         define: { "import.meta.env.VITE_PRISM_NATIVE": JSON.stringify("1") },
       }
     : {}),
