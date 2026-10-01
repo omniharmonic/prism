@@ -39,3 +39,9 @@ Production checks after restart:
 Follow-up actual native tool checks also passed: suggest-only `prism_suggest_edit` produced one paired tracked replacement with actor/turn/suggestion IDs. It appeared in the installed editor; rejecting the only pending test suggestion restored the original text and persisted. Read/write `prism_get_note`/`prism_update_note` then directly changed one unique synthetic marker, visible natively and in independent API readback. The session was returned to Read-only. No original user document was edited.
 
 These checks do not establish authenticated web-owner session behavior, PWA update/offline behavior, active-turn downgrade draining or forbidden tool attempts in production, concurrent reviewer decisions, or the unfinished plan packages. PWA registration is mounted in the signed-in workspace; the guest/sign-in browser checks do not register a worker. Keep those gates open.
+
+## Suggestion review interface — `35dec05`
+
+Web and Applications client updated after 66 browser regressions, typechecks, web/macOS builds and six native startup checks passed. Server implementation unchanged. Previous artifacts: `/private/tmp/prism-release-before-review/web-dist` and `/private/tmp/prism-client-before-35dec05/Prism Client.app`.
+
+After the user approved the macOS Keychain prompt, the actual installed app reopened its workspace. Its expanded review list showed the synthetic suggestion's author and replacement text. Individual Accept resolved the whole replacement; an open deployed browser received the review live and retained clean accepted text after reload. Phone-width browser screenshot: `/tmp/prism-review-production-mobile.png`; no horizontal overflow or page errors. Browser closed and capability revoked. No original user document edited. Further implementation continues in the isolated feature checkout.
