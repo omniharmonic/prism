@@ -91,7 +91,7 @@ test("gates: no session / capability / plain member → 403 on every folder + da
     ["GET", "/audit"],
   ];
   for (const [method, path] of routes) {
-    for (const headers of [{}, { cookie: member }, { authorization: `Capability ${cap}` }]) {
+    for (const headers of [{}, { cookie: member }, { authorization: `Capability ${cap}` }] as Array<Record<string, string>>) {
       const r = await sync.request(path, { method, headers: { ...J, ...headers }, body: method === "GET" ? undefined : "{}" });
       assert.equal(r.status, 403, `${method} ${path}`);
     }

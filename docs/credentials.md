@@ -44,6 +44,11 @@ for every kind except `proton-bridge`, which is **server-owner only**.
 | `google` | account (not a secret: the `gog` account name) | — | n/a |
 | `proton-bridge` | username, **password**, certSha256, host, port, security | host, port, username, security, certSha256, `mode` | never |
 
+`github` and `notion` also back the server's folder and database syncs (`docs/sync.md`).
+Those configs are stored without any credential, the token is read at push time, and
+requests go only to `api.github.com` / `api.notion.com`. A GitHub token for folder sync
+needs Contents read/write on the target repositories.
+
 `google` holds only the account name. Gmail, Calendar and Docs all read just
 `{account}`. The OAuth tokens belong to the `gog` CLI and live in the **server host's**
 macOS Keychain. They are created by running `gog` interactively in a GUI session on that

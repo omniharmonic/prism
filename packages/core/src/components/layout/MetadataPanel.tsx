@@ -7,7 +7,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
 import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { syncApi, type SyncStatus } from "../../lib/sync/client";
-import { githubSyncApi } from "../../lib/parachute/client";
+import { useGitHubSyncApi } from "../../lib/host/folderSync";
 import { GitHubSyncModal } from "./GitHubSyncModal";
 import { useIsWeb } from "../../data/Platform";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
@@ -655,17 +655,23 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
   const [showNotionSetup, setShowNotionSetup] = useState(false);
   const [showGitHubSetup, setShowGitHubSetup] = useState(false);
 
-  // Check if this note is in a directory with an active GitHub sync
+  // Check if this note is in a directory with an active GitHub sync. Desktop →
+  // Tauri; thin client → the server's folder syncs (owner; Client parity B).
+  const { api: ghApi } = useGitHubSyncApi();
   const [githubConfig, setGithubConfig] = useState<{ id: string; vaultPath: string } | null>(null);
-  useEffect(() => {
-    if (isWeb) return;
+  const refreshGithubConfig = useCallback(() => {
+    if (!ghApi) return;
     try {
-      githubSyncApi.status().then((configs) => {
-        const match = configs.find((c) => notePath?.startsWith(c.vaultPath));
+      ghApi.status().then((configs) => {
+        const under = (base: string) => !!notePath && (notePath === base.replace(/\/+$/, "") || notePath.startsWith(`${base.replace(/\/+$/, "")}/`));
+        const match = configs.find((c) => under(c.vaultPath));
         setGithubConfig(match ? { id: match.id, vaultPath: match.vaultPath } : null);
       }).catch(() => {});
     } catch { /* not in Tauri */ }
-  }, [notePath, isWeb]);
+  }, [notePath, ghApi]);
+  useEffect(() => {
+    refreshGithubConfig();
+  }, [refreshGithubConfig]);
 
   const handleAddSync = async (adapter: string) => {
     setSyncError(null);
@@ -676,10 +682,10 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
         return;
       }
       if (adapter === "github") {
-        if (viaServer) return; // directory-level on the server; not offered here
+        if (!ghApi) return;
         if (githubConfig) {
           // Directory already has GitHub sync — push this file
-          await githubSyncApi.pushFile(githubConfig.id, noteId);
+          await ghApi.pushFile(githubConfig.id, noteId);
           setSyncError(null);
           setShowAdd(false);
         } else {
@@ -727,11 +733,14 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
     return (
       <DesktopOnlyNotice
         feature="Note sync"
-        detail="Syncing a note to Google Docs or Notion runs on the Prism Server with its stored credentials, so only the server owner can set it up."
+        detail="Syncing a note to Google Docs, Notion or GitHub runs on the Prism Server with its stored credentials, so only the server owner can set it up."
       />
     );
   }
-  const adapters = viaServer ? SYNC_ADAPTERS.filter((a) => (SERVER_NOTE_SYNC_ADAPTERS as readonly string[]).includes(a.id)) : SYNC_ADAPTERS;
+  // On the server: per-note Google Docs / Notion, plus GitHub (folder sync, owner).
+  const adapters = viaServer
+    ? SYNC_ADAPTERS.filter((a) => (SERVER_NOTE_SYNC_ADAPTERS as readonly string[]).includes(a.id) || (a.id === "github" && !!ghApi))
+    : SYNC_ADAPTERS;
 
   return (
     <div className="space-y-2">
@@ -861,9 +870,9 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
           <button
             onClick={async () => {
               try {
-                await githubSyncApi.pushFile(githubConfig.id, noteId);
+                await ghApi!.pushFile(githubConfig.id, noteId);
               } catch (e) {
-                setSyncError(`GitHub push failed: ${e}`);
+                setSyncError(`GitHub push failed: ${viaServer ? hostServiceErrorText(e) : e}`);
               }
             }}
             className="px-2 py-1 rounded text-[10px] hover:bg-[var(--glass-hover)] transition-colors"
@@ -880,13 +889,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
           isOpen={true}
           onClose={() => {
             setShowGitHubSetup(false);
-            // Refresh GitHub config
-            try {
-              githubSyncApi.status().then((configs) => {
-                const match = configs.find((c) => notePath?.startsWith(c.vaultPath));
-                setGithubConfig(match ? { id: match.id, vaultPath: match.vaultPath } : null);
-              }).catch(() => {});
-            } catch { /* not in Tauri */ }
+            refreshGithubConfig();
           }}
           vaultPath={notePath?.split("/").slice(0, -1).join("/") || "vault"}
         />

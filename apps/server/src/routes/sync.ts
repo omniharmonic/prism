@@ -4,6 +4,8 @@
  * "notion"), and push/pull a directory to GitHub. Admin-session only; mounted
  * under /api/sync BEFORE the gateway. Credentials come from the secret store.
  * This is what lets the web/mobile app trigger syncs with no desktop running.
+ * Client parity B adds the STORED folder/database syncs (/github/configs*,
+ * /github/import, /notion-db/*, /audit) — see docs/sync.md.
  */
 import { Hono, type Context } from "hono";
 import { resolveActor } from "../auth/actor";

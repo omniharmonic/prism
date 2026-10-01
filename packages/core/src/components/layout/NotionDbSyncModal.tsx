@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   X,
   Database,
@@ -7,9 +7,11 @@ import {
   Loader2,
   Check,
   Search,
+  RefreshCw,
+  Trash2,
 } from "lucide-react";
-import { notionDbSyncApi } from "../../lib/parachute/client";
-import { useIsWeb } from "../../data/Platform";
+import { useNotionDbSyncApi } from "../../lib/host/folderSync";
+import { hostServiceErrorText, type NotionDbSyncInfo } from "../../lib/host/services";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface NotionDbSyncModalProps {
@@ -38,26 +40,28 @@ interface SyncResult {
   errors: string[];
 }
 
+// Suggestions for the vault-side field (any metadata key is accepted).
+// "content" makes the property the note body; "(skip)" leaves it out.
 const PARACHUTE_FIELDS = [
-  "title",
-  "content",
-  "metadata.status",
-  "metadata.priority",
-  "metadata.assignee",
-  "metadata.due_date",
-  "metadata.url",
-  "metadata.tags",
-  "metadata.custom",
   "(skip)",
+  "content",
+  "status",
+  "priority",
+  "assignee",
+  "due",
+  "url",
+  "category",
+  "project",
 ];
 
+// The adapter's transform vocabulary (Notion → vault; reversed on push).
 const TRANSFORMS = [
-  "none",
-  "lowercase",
-  "date-iso",
-  "markdown",
-  "csv-to-array",
-  "slug",
+  "identity",
+  "slugify",
+  "value_map",
+  "date_extract",
+  "people_extract",
+  "relation_to_links",
 ];
 
 const STEPS = ["Select Database", "Configure Mapping", "Sync Options", "Initial Sync"];
@@ -70,7 +74,9 @@ function slugify(text: string): string {
 }
 
 export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
-  const isWeb = useIsWeb();
+  // Desktop → its Tauri commands; web / Prism Client → the Prism Server (owner),
+  // with the server's stored Notion token (Client parity B).
+  const { api, viaServer } = useNotionDbSyncApi();
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<NotionDatabase[]>([]);
   const [loading, setLoading] = useState(false);
@@ -80,22 +86,41 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
   const [tag, setTag] = useState("task");
   const [savePath, setSavePath] = useState("");
   const [titleProperty, setTitleProperty] = useState("Name");
-  const [direction, setDirection] = useState<"bidirectional" | "notion-to-prism" | "prism-to-notion">("bidirectional");
-  const [conflictStrategy, setConflictStrategy] = useState<"newer" | "notion" | "parachute">("newer");
+  const [direction, setDirection] = useState<"bidirectional" | "pull" | "push">("bidirectional");
+  const [conflictStrategy, setConflictStrategy] = useState<"newer-wins" | "notion-wins" | "parachute-wins">("newer-wins");
   const [autoSync, setAutoSync] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [existing, setExisting] = useState<NotionDbSyncInfo[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const errText = (e: unknown) => (viaServer ? hostServiceErrorText(e) : e instanceof Error ? e.message : String(e));
 
-  // Fetch databases on mount
+  const refreshExisting = useCallback(async () => {
+    if (!api) return;
+    try {
+      setExisting(await api.status());
+    } catch {
+      setExisting([]);
+    }
+  }, [api]);
+
+  // Fetch databases + existing syncs on open
   useEffect(() => {
-    if (!isOpen || isWeb) return;
+    if (!isOpen || !api) return;
     setLoading(true);
-    notionDbSyncApi
+    setLoadError(null);
+    api
       .listDatabases()
       .then(setDatabases)
-      .catch(() => setDatabases([]))
+      .catch((e) => {
+        setDatabases([]);
+        setLoadError(viaServer ? hostServiceErrorText(e) : null);
+      })
       .finally(() => setLoading(false));
-  }, [isOpen, isWeb]);
+    void refreshExisting();
+  }, [isOpen, api, viaServer, refreshExisting]);
 
   // Reset state when modal closes
   useEffect(() => {
@@ -106,17 +131,20 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
       setSyncResult(null);
       setSyncing(false);
       setSearchQuery("");
+      setNotice(null);
     }
   }, [isOpen]);
 
   async function handleSelectDatabase(db: NotionDatabase) {
+    if (!api) return;
     setSelectedDb(db);
     setSavePath(`vault/tasks/${slugify(db.title)}`);
     setLoading(true);
     try {
-      const schema = await notionDbSyncApi.getSchema(db.id);
-      const mapped: PropertyMapping[] = schema.properties.map(
-        (prop) => {
+      const schema = await api.getSchema(db.id);
+      const mapped: PropertyMapping[] = schema.properties
+        .filter((prop) => prop.propertyType !== "title")
+        .map((prop) => {
           const suggested = schema.suggestedMappings?.find(
             (s) => s.notionProperty === prop.name
           );
@@ -126,8 +154,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
             parachuteField: suggested?.parachuteField ?? "(skip)",
             transform: suggested?.transform ?? "identity",
           };
-        }
-      );
+        });
       setMappings(mapped);
       const titleProp = schema.properties.find(
         (p) => p.propertyType === "title"
@@ -148,33 +175,59 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
   }
 
   async function handleStartSync() {
-    if (!selectedDb) return;
+    if (!selectedDb || !api) return;
     setSyncing(true);
     try {
-      const configId = await notionDbSyncApi.init({
+      const content = mappings.find((m) => m.parachuteField === "content");
+      const configId = await api.init({
         databaseId: selectedDb.id,
         databaseName: selectedDb.title,
         parachuteTag: tag,
         parachutePathPrefix: savePath,
-        propertyMap: mappings.map(m => ({
-          notionProperty: m.notionProperty,
-          notionType: m.type,
-          parachuteField: m.parachuteField,
-          transform: m.transform,
-        })),
+        propertyMap: mappings
+          .filter((m) => m.parachuteField && m.parachuteField !== "(skip)" && m.parachuteField !== "content")
+          .map(m => ({
+            notionProperty: m.notionProperty,
+            notionType: m.type,
+            parachuteField: m.parachuteField,
+            transform: m.transform,
+          })),
         titleProperty,
+        ...(content ? { contentProperty: content.notionProperty } : {}),
         syncDirection: direction,
         conflictStrategy,
         autoSync,
       });
-      const result = await notionDbSyncApi.sync(configId);
+      const result = await api.sync(configId);
       setSyncResult(result);
-    } catch {
-      setSyncResult({ created: 0, updated: 0, deleted: 0, conflicts: 0, errors: ["Sync failed. Check connection and try again."] });
+      void refreshExisting();
+    } catch (e) {
+      setSyncResult({ created: 0, updated: 0, deleted: 0, conflicts: 0, errors: [viaServer ? errText(e) : "Sync failed. Check connection and try again."] });
     } finally {
       setSyncing(false);
     }
   }
+
+  const manage = async (id: string, what: "sync" | "auto-on" | "auto-off" | "remove") => {
+    if (!api) return;
+    setBusyId(id);
+    setNotice(null);
+    try {
+      if (what === "sync") {
+        const r = await api.sync(id);
+        setNotice(`Created ${r.created}, updated ${r.updated}, ${r.conflicts} conflict(s)` + (r.unchanged !== undefined ? `, ${r.unchanged} unchanged` : "") + (r.errors.length ? `; ${r.errors[0]}` : ""));
+      } else if (what === "remove") {
+        await api.remove(id);
+      } else if (api.update) {
+        await api.update(id, { autoSync: what === "auto-on" });
+      }
+      await refreshExisting();
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const filteredDbs = databases.filter((db) =>
     db.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -182,7 +235,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
 
   if (!isOpen) return null;
 
-  if (isWeb) {
+  if (!api) {
     return (
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
         <div className="bg-[#1a1a2e]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl max-w-lg w-full p-6">
@@ -200,7 +253,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
           </div>
           <DesktopOnlyNotice
             feature="Notion database sync"
-            detail="Notion database sync has no Prism Server port yet; only the legacy desktop app can run it. Per-note Notion sync works from the note's Sync panel."
+            detail="Database sync runs on the Prism Server with its stored Notion token, so only the server owner can set it up. Per-note Notion sync works from the note's Sync panel."
           />
         </div>
       </div>
@@ -256,6 +309,56 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
           {/* Step 0: Select Database */}
           {step === 0 && (
             <div className="space-y-3">
+              {existing.length > 0 && (
+                <div className="p-3 rounded-lg bg-white/5 border border-white/10 space-y-2">
+                  <div className="text-xs text-white/50 uppercase tracking-wider">Active database syncs</div>
+                  {existing.map((c) => (
+                    <div key={c.id} className="text-sm text-white space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          {c.notionDatabaseName} <span className="text-white/40">→ #{c.parachuteTag} · {c.syncedCount} rows</span>
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => manage(c.id, "sync")}
+                            disabled={busyId !== null}
+                            className="px-2 py-1 rounded text-xs bg-white/10 hover:bg-white/20 disabled:opacity-40 flex items-center gap-1"
+                          >
+                            {busyId === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                            Sync now
+                          </button>
+                          <button
+                            onClick={() => manage(c.id, "remove")}
+                            disabled={busyId !== null}
+                            aria-label="Remove sync"
+                            className="p-1 rounded text-white/50 hover:text-red-300 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-white/40">
+                        <span>{c.lastSynced ? `Last synced ${new Date(c.lastSynced).toLocaleString()}` : "Never synced"}</span>
+                        {api.update && (
+                          <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={c.autoSync}
+                              disabled={busyId !== null}
+                              onChange={(e) => manage(c.id, e.target.checked ? "auto-on" : "auto-off")}
+                              className="accent-purple-500"
+                            />
+                            Auto-sync
+                          </label>
+                        )}
+                      </div>
+                      {c.lastError && <div className="text-xs text-red-300/80 truncate">{c.lastError}</div>}
+                    </div>
+                  ))}
+                  {notice && <p className="text-xs text-white/60">{notice}</p>}
+                </div>
+              )}
+              {loadError && <p className="text-xs text-red-300">{loadError}</p>}
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
                 <input
@@ -350,15 +453,13 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                           <ArrowRight className="w-3 h-3 text-white/20 inline" />
                         </td>
                         <td className="px-3 py-2">
-                          <select
+                          <input
+                            list="notion-db-parachute-fields"
                             value={mapping.parachuteField}
                             onChange={(e) => updateMapping(i, "parachuteField", e.target.value)}
+                            placeholder="(skip)"
                             className="w-full px-2 py-1 text-xs rounded bg-white/5 border border-white/10 text-white focus:outline-none focus:border-purple-400/50"
-                          >
-                            {PARACHUTE_FIELDS.map((f) => (
-                              <option key={f} value={f}>{f}</option>
-                            ))}
-                          </select>
+                          />
                         </td>
                         <td className="px-3 py-2">
                           <select
@@ -375,6 +476,11 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                     ))}
                   </tbody>
                 </table>
+                <datalist id="notion-db-parachute-fields">
+                  {PARACHUTE_FIELDS.map((f) => (
+                    <option key={f} value={f} />
+                  ))}
+                </datalist>
               </div>
             </div>
           )}
@@ -387,8 +493,8 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                 <div className="space-y-2">
                   {([
                     { value: "bidirectional", label: "Bidirectional", icon: <><ArrowLeft className="w-3.5 h-3.5" /><ArrowRight className="w-3.5 h-3.5" /></> },
-                    { value: "notion-to-prism", label: "Notion \u2192 Prism", icon: <ArrowRight className="w-3.5 h-3.5" /> },
-                    { value: "prism-to-notion", label: "Prism \u2192 Notion", icon: <ArrowLeft className="w-3.5 h-3.5" /> },
+                    { value: "pull", label: "Notion \u2192 Prism", icon: <ArrowRight className="w-3.5 h-3.5" /> },
+                    { value: "push", label: "Prism \u2192 Notion", icon: <ArrowLeft className="w-3.5 h-3.5" /> },
                   ] as const).map((opt) => (
                     <label
                       key={opt.value}
@@ -422,9 +528,9 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                 <label className="block text-sm text-white/70 mb-3">Conflict Resolution</label>
                 <div className="space-y-2">
                   {([
-                    { value: "newer", label: "Newer Wins" },
-                    { value: "notion", label: "Notion Wins" },
-                    { value: "parachute", label: "Parachute Wins" },
+                    { value: "newer-wins", label: "Newer Wins" },
+                    { value: "notion-wins", label: "Notion Wins" },
+                    { value: "parachute-wins", label: "Parachute Wins" },
                   ] as const).map((opt) => (
                     <label
                       key={opt.value}
@@ -465,7 +571,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                 }`}>
                   {autoSync && <Check className="w-3 h-3 text-white" />}
                 </div>
-                <span className="text-sm text-white">Auto-sync every 5 minutes</span>
+                <span className="text-sm text-white">{viaServer ? "Auto-sync in the background (every 10 min, when the server has NOTION_DB_SYNC_ENABLED)" : "Auto-sync every 5 minutes"}</span>
               </label>
             </div>
           )}
@@ -492,7 +598,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-white/50">Conflicts</span>
-                  <span className="text-white capitalize">{conflictStrategy} wins</span>
+                  <span className="text-white capitalize">{conflictStrategy.replace("-", " ")}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-white/50">Mappings</span>
@@ -502,7 +608,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-white/50">Auto-sync</span>
-                  <span className="text-white">{autoSync ? "Every 5 min" : "Off"}</span>
+                  <span className="text-white">{autoSync ? (viaServer ? "Background" : "Every 5 min") : "Off"}</span>
                 </div>
               </div>
 

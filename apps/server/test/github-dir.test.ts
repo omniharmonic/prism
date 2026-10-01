@@ -102,7 +102,7 @@ test("serialize: frontmatter like serde_yaml (title, tags, vault_path, sorted me
 
 test("safeRepoPath refuses traversal, absolute paths, .git and control characters", () => {
   for (const bad of ["../x.md", "a/../../x.md", "/etc/passwd", ".git/config", "a/.GIT/hooks/x", "a//b.md", "a\\b.md", "a/\u0000.md", "./x.md", ""]) {
-    assert.throws(() => safeRepoPath(bad), undefined, bad);
+    assert.throws(() => safeRepoPath(bad), Error, bad);
   }
   assert.equal(safeRepoPath("people/peter-thiel.md"), "people/peter-thiel.md");
   assert.equal(safeRepoPath(".github/notes.md"), ".github/notes.md");

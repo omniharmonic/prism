@@ -20,8 +20,8 @@ shared UI was reviewed (bottom table).
 |---|---|---|
 | **A** | Already works in the web/client build through the server | 42 |
 | **B** | A server route existed but the client seam wasn't wired: **wired in WP4.3** | 8 |
-| **C → ported** | Desktop-only, no server equivalent: **ported in WP4.3** | 4 |
-| **C → gap** | Desktop-only, no server equivalent: **documented gap** (decision below) | 16 |
+| **C → ported** | Desktop-only, no server equivalent: **ported** (4 in WP4.3, 12 in Client parity B) | 16 |
+| **C → gap** | Desktop-only, no server equivalent: **documented gap** (decision below) | 4 |
 | **C → local-only** | Local model routing (LM Studio / Ollama on the laptop): not ported by design | 6 |
 | **C → dropped** | Desktop-only maintenance command, not carried over | 1 |
 | **N/A** | Desktop shell config / onboarding; meaningless on a thin client | 11 |
@@ -82,13 +82,26 @@ Security notes: no new credential path, no new write path for the agent (the inl
 only read), the new route is read-only and admin-gated like the rest of `/api/sync`, and nothing
 here acts outward as the owner (calendar edits and sends stay behind WP1.5 live actions).
 
-### C → documented gaps (16): decisions for the user
+### C → ported in Client parity B (12)
+
+Details, routes, env and the import runbook: **`docs/sync.md`**.
+
+| Feature | Desktop commands | Port |
+|---|---|---|
+| GitHub folder sync (setup modal, push, push-file, auto-push on save) | `github_check_auth` `github_sync_init` `github_sync_push` `github_sync_push_file` `github_sync_status` `github_sync_remove` | Configs in SQLite `github_sync_configs` (desktop fields + `blob_map`), the stored `github` token, the **Git Data API** (one commit per push, blob-SHA no-op skip, no clone). Routes `/api/sync/github/{auth,configs,configs/:id/push,…/push-file,PATCH,DELETE}`. **Auto-sync** = the tree projection's change feed, debounced (30 s) into one commit; resync → full push. `POST /api/sync/github/import` (server owner) takes the desktop's `github-sync-configs.json` (auto-sync forced off, `id_map` kept) |
+| Notion database sync | `notion_db_list` `notion_db_schema` `notion_db_sync_init` `notion_db_sync` `notion_db_sync_status` `notion_db_sync_remove` | Configs in SQLite `notion_db_sync_configs`, the stored `notion` token; `notion_db.rs` ported (`should_overwrite`, no-op skip both ways, `if_updated_at`, 3 rps). Routes `/api/sync/notion-db/*`. Background pass for `autoSync` configs only with `NOTION_DB_SYNC_ENABLED=true` (10 min) |
+
+Client: `HostServices.githubSync` / `notionDbSync` (owner), selected by
+`useGitHubSyncApi` / `useNotionDbSyncApi` (`packages/core/src/lib/host/folderSync.ts`), so the
+same modals run on the desktop (Tauri) and the client (server). The note Sync panel offers
+GitHub on the server again; "Notion Database Sync…" is in the command bar. Every outbound
+write batch is audited in `sync_audit`.
+
+### C → documented gaps (4): decisions for the user
 
 | Feature | Desktop commands | Why not ported now | Recommendation |
 |---|---|---|---|
 | Calendar: edit / delete an event | `calendar_update_event` `calendar_delete_event` | They mutate Google Calendar AS the owner; a port must meet the WP1.5 standard (owner-only, flag, CSRF, idempotency, audit). Live actions only have `create` + `rsvp` | Edit/delete in Google Calendar for now; if wanted, add `calendar/update` + `calendar/delete` to `routes/actions.ts` as a follow-up WP |
-| GitHub folder sync (setup modal, auto-push on save) | `github_check_auth` `github_sync_init` `github_sync_push` `github_sync_push_file` `github_sync_status` `github_sync_remove` | Configs live in desktop state; the desktop's "auto-sync on save" pushed after every save. The server has stateless `POST /api/sync/github/push\|pull` (folder) but no stored configs, no scheduler and no UI | **Check the desktop's GitHub sync configs before archiving.** If any auto-sync config matters, port it as a server worker (configs in SQLite, periodic push); otherwise accept the gap |
-| Notion database sync | `notion_db_list` `notion_db_schema` `notion_db_sync_init` `notion_db_sync` `notion_db_sync_status` `notion_db_sync_remove` | No server port (`worker/notion.ts` is the per-page adapter only); WP1.4 found no `auto_sync` config in use | Accept the gap (manual feature). Per-note Notion sync works |
 | Cancel a running skill dispatch | `agent_cancel_dispatch` | Scheduler runs are server-internal; session turns can be cancelled (Stop) | Accept; server runs are wall-clocked (30 min) |
 | Skill config card (enable, interval, model, builder) | `agent_update_skill` | Desktop-only UI | Edit the skill note's metadata in the note's Properties panel (it is the source of truth for the server scheduler) |
 
@@ -119,14 +132,14 @@ here acts outward as the owner (calendar edits and sends stay behind WP1.5 live 
 | `CalendarDashboard` range sync | `calendar_sync_range` | **wired** (HostServices, owner) |
 | `CalendarDashboard` event Edit / Delete buttons | Tauri | gap (see above); hidden |
 | `CalendarDashboard` create + RSVP | Tauri | live actions when the flag is on |
-| `MetadataPanel` Sync section | Google Docs / Notion / GitHub adapters | **wired** for Google Docs + Notion (owner); GitHub hidden; non-owners see a notice |
+| `MetadataPanel` Sync section | Google Docs / Notion / GitHub adapters | **wired** for Google Docs + Notion + GitHub folder sync (owner); non-owners see a notice |
 | `CommandBar` Sync to Notion, transforms, resolve wikilinks | Tauri | **wired** (owner; resolve-wikilinks for any signed-in user, under grants); vault-wide resolve hidden |
 | `DocumentRenderer` ⌘J inline prompt | Tauri `agent_edit` | **wired** (owner); the shortcut is inert for others |
 | `AgentActivity` Run skill | Tauri dispatch | **wired** as "queue on the server" (owner, enabled skills) |
 | `AgentActivity` skill config / builder, Ollama list | Tauri | gap / local-only |
 | `ComposeMessage` (New message) | Tauri Matrix client | **wired** (vault rooms + live Matrix) |
 | `Settings` Services / Data Sources / Ingest mode / Local AI | desktop config file | N/A: notices now point at Network → Server, never at the desktop |
-| `GitHubSyncModal`, `NotionDbSyncModal` | Tauri | gap (notices updated) |
+| `GitHubSyncModal`, `NotionDbSyncModal` | Tauri | **wired** (HostServices `githubSync` / `notionDbSync`, owner; Client parity B) |
 | `Onboarding` wizard | Tauri | N/A (`skipOnboarding` in the web shell) |
 | `ProjectTree` batch-delete progress | Rust event `vault:batch-delete-progress` | works; no per-item progress bar |
 
@@ -147,9 +160,16 @@ here acts outward as the owner (calendar edits and sends stay behind WP1.5 live 
 - Server: `npm test` (`agent-routes.test.ts`: `vault-ro` narrows `--allowedTools`, default
   unchanged, other profiles 400 and never spawn; `sync-routes.test.ts`: the Notion picker is
   admin-only and 400s before any network when unconfigured; `notion-sync.test.ts`:
-  `searchPages` request shape + `parseNotionSearch`).
-- Web: `npm run verify:host -w @prism/web` (13 checks: the HTTP seam's paths/bodies/polling/
-  cancel/error mapping, the vault ops, `roomsFromThreadNotes`, the prompts).
+  `searchPages` request shape + `parseNotionSearch`). Parity B: `github-dir.test.ts` (desktop
+  path/wikilink/frontmatter vectors, path traversal, one-commit push, no-op skip, conflicts,
+  empty repo / new branch / racing push, caps — fake GitHub), `github-folder.test.ts` (403s,
+  vault scoping, no token in responses, init/push/push-file/patch/delete, import mapping,
+  audit, auto-sync debounce / resync / manual / kill switch), `notion-db.test.ts`
+  (`should_overwrite` matrix, transforms, mapping normalizer, pull/push both ways with no-op
+  skip, conflicts + `if_updated_at`, limiter + 429, routes, background flag).
+- Web: `npm run verify:host -w @prism/web` (15 checks: the HTTP seam's paths/bodies/polling/
+  cancel/error mapping, the vault ops, `roomsFromThreadNotes`, the prompts, the folder /
+  database sync seam).
 - Client: `node apps/client/scripts/verify-client.mjs` §6–7 (no token-shaped literal in the
   bundle, no vault-token key/env/scope in the shell, no credential field in
   `client-settings.json`, the shim refuses the desktop config commands).

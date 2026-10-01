@@ -7,6 +7,7 @@ import { Canvas } from "./Canvas";
 import { ContextPanel } from "./ContextPanel";
 import { StatusBar } from "./StatusBar";
 import { CommandBar } from "./CommandBar";
+import { NotionDbSyncHost } from "./NotionDbSyncHost";
 import { GraphFullscreen } from "./GraphFullscreen";
 import { MobileActionBar } from "./MobileActionBar";
 
@@ -84,6 +85,7 @@ export function Shell() {
         </div>
 
         <CommandBar />
+        <NotionDbSyncHost />
         <GraphFullscreen />
       </div>
     );
@@ -124,6 +126,7 @@ export function Shell() {
 
       {/* Command Bar overlay */}
       <CommandBar />
+      <NotionDbSyncHost />
 
       {/* Graph fullscreen overlay */}
       <GraphFullscreen />

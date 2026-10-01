@@ -11,6 +11,7 @@
  * the desktop's serialize_note_to_markdown.
  */
 import type { Note } from "../parachute";
+import { isUnderVaultPath, safeRepoPath } from "./github-dir";
 
 export interface GitHubSyncConfig {
   owner: string;
@@ -126,7 +127,13 @@ export async function pushToGitHub(client: GitHubClient, vault: SyncVault, confi
   const notes = await vault.listNotes({ pathPrefix: config.vaultPath, includeContent: true });
   let pushed = 0;
   for (const n of notes) {
-    const path = repoPathFor(n, config);
+    if (!n.path || !isUnderVaultPath(n.path, config.vaultPath)) continue;
+    let path: string;
+    try {
+      path = safeRepoPath(repoPathFor(n, config)); // never `..`, absolute or `.git/`
+    } catch {
+      continue;
+    }
     const content = serializeNote(n);
     const existing = await client.getFile(config.owner, config.repo, path, config.branch);
     if (existing && existing.content === content) continue;
@@ -152,6 +159,8 @@ export async function pullFromGitHub(client: GitHubClient, vault: SyncVault, con
     if (!file) continue;
     const { title, tags, vaultPath, body } = parseFrontmatter(file.content);
     const targetPath = stripExt(vaultPath ?? `${config.vaultPath.replace(/\/$/, "")}/${f.path}`);
+    // A file's frontmatter may not steer the write outside the synced folder.
+    if (!isUnderVaultPath(targetPath, config.vaultPath) || targetPath.split("/").some((s) => s === ".." || s === ".")) continue;
     const note = byPath.get(targetPath);
     if (note) {
       if (note.content !== body) {

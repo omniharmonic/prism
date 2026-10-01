@@ -158,7 +158,15 @@ export {
   type CalendarRangeResult,
   type NotionPageInfo,
   type AgentTextOptions,
+  type GitHubSyncHost,
+  type GitHubSyncInfo,
+  type GitHubAuthStatus,
+  type GitHubPushResult,
+  type NotionDbSyncHost,
+  type NotionDbSyncInfo,
+  type NotionDbSyncRunResult,
 } from "./lib/host/services";
+export { useGitHubSyncApi, useNotionDbSyncApi } from "./lib/host/folderSync";
 export {
   syncStatusFromNote,
   addSyncConfig,
