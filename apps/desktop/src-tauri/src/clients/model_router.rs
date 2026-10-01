@@ -3,7 +3,8 @@
 //! Routes requests to either Claude Code CLI (default) or a local OpenAI-compatible
 //! server (user opt-in per skill). Claude Code is the primary provider; the local
 //! provider is an optional alternative selectable per skill. Both paths get full
-//! vault access — Claude via `.mcp.json`, local via the shared [`LocalAgent`]'s
+//! vault access — Claude via a per-run vault-only MCP config (hardened argv in
+//! [`crate::clients::claude_args`], explicit per-skill tool allowlist), local via the shared [`LocalAgent`]'s
 //! built-in `PrismMcpClient`.
 //!
 //! The local provider is the generic OpenAI-compatible [`LocalAgent`] (LM Studio,
@@ -17,6 +18,7 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::clients::anthropic::{ClaudeClient, ClaudeJsonResponse};
+use crate::clients::claude_args::ClaudeUse;
 use crate::clients::local_agent::LocalAgent;
 use crate::error::PrismError;
 
@@ -24,6 +26,17 @@ use crate::error::PrismError;
 /// `"local"` is canonical; `"ollama"` is accepted for backward compatibility.
 fn is_local_provider(provider: &str) -> bool {
     provider == "local" || provider == "ollama"
+}
+
+/// The Claude tool allowlist for a one-shot skill. edit/transform/generate only
+/// RETURN text (the client applies or saves it), so they get the read-only vault
+/// tools; an unknown skill also falls back to read-only.
+pub fn claude_use_for_skill(skill: &str) -> ClaudeUse {
+    match skill {
+        "edit" => ClaudeUse::Edit,
+        "transform" => ClaudeUse::Transform,
+        _ => ClaudeUse::Generate,
+    }
 }
 
 /// Per-skill model configuration specifying which provider and model to use.
@@ -138,7 +151,7 @@ impl ModelRouter {
 
         let prompt = format!("{}\n\n{}", system_prompt, user_prompt);
         debug!("Routing skill '{}' to Claude model '{}'", skill, model);
-        self.claude.run(&prompt, model, timeout_secs).await
+        self.claude.run(claude_use_for_skill(skill), &prompt, model, timeout_secs).await
     }
 
     /// Route a conversational AI request to the appropriate provider.
@@ -266,5 +279,20 @@ impl ModelRouter {
     fn resolve_config(&self, skill: &str) -> Option<SkillModelConfig> {
         let map = self.skill_config.lock().expect("skill_config lock poisoned");
         map.get(skill).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_shot_skills_are_read_only() {
+        for s in ["edit", "transform", "generate", "chat", "unknown"] {
+            let u = claude_use_for_skill(s);
+            assert!(!u.tools().contains(&"create-note") && !u.tools().contains(&"update-note"), "{s}");
+        }
+        assert_eq!(claude_use_for_skill("edit"), ClaudeUse::Edit);
+        assert_eq!(claude_use_for_skill("transform"), ClaudeUse::Transform);
     }
 }
