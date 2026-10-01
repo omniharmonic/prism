@@ -298,6 +298,7 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   assert.deepEqual(await nd.status(), []);
   await assert.rejects(nd.update!("n1", { autoSync: true }), (e: unknown) => e instanceof HostServiceError && hostServiceErrorText(e).includes("no credential"));
   ok("notionDbSync → /api/sync/notion-db/{databases,…/schema,configs,…/sync} (+ not-configured copy)");
+}
 // ── parity A: skills / routing / wikilink job seam ───────────────────────────
 {
   const s = fakeServer((c) => {
