@@ -28,12 +28,12 @@ scheduler does not start (`plan_services` returns every entry `start=false` with
 |---|---|---|
 | `calendar_sync_range` (Calendar view navigation) | `commands/service_cmds.rs` | **Delegates to the server** (`POST /api/calendar/sync?from&to`, WP1.3) through the narrow `api_request` proxy whenever the server owns calendar (client mode or `disable_calendar_sync`). In plain host mode it still runs locally. The server returns 409 `calendar_sync_disabled` until `CALENDAR_SYNC_ENABLED`/`CALENDAR_SHADOW` is on; the Calendar view only logs that and keeps reading vault notes |
 | `index_messages` command / `messageIndexApi.indexMessages` | `commands/message_index.rs` | **RETIRED** (never called from the UI; the server ingests Matrix and embeds) |
-| `person_linker` | `services/person_linker.rs` | Library for the host-mode services; server has `worker/people.ts`. Dies with the host-mode services in WP4.3 |
+| `person_linker` | `services/person_linker.rs` | Library for the host-mode services; server has `worker/people.ts`. Inert in client mode; the legacy desktop is kept building (rollback) so it is not deleted |
 | Sync adapters: Google Docs, Notion page, GitHub, Notion DB | `sync/`, `commands/sync_cmds.rs`, `notion_db_cmds.rs`, `github_cmds.rs` | USER-INVOKED (not scheduled). Server also has `worker/github.ts`, `googledocs.ts`, `notion.ts`. Still desktop-callable; not host-mode-only background work |
 | Agent dispatch / `claude -p` | `services/agent_dispatch.rs`, `commands/agent.rs` | USER-INVOKED. Server agent sessions (WP3.x) are the replacement; desktop keeps its path until WP4 |
 | Google/gog live actions (send, RSVP, create event) | `commands/google.rs` | USER-INVOKED desktop-only; server replacement is WP1.5 |
 | Matrix live send/read | `commands/matrix.rs` | USER-INVOKED desktop-only; server replacement is WP1.5 |
-| Vault-token holders on the desktop | `parachute_api_key`, `collab_token` | Removed in WP4.3, not here |
+| Vault-token holders on the desktop | `parachute_api_key`, `collab_token` | **WP4.3:** the desktop is retired; the switch-over runbook (docs/client-app.md) backs up the config, blanks both keys and revokes the old token; `scripts/check-client-no-vault-token.sh` verifies. Feature parity: `desktop-parity.md` |
 
 ## UI changes for client mode
 

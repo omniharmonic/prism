@@ -7,7 +7,7 @@
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { agentApi } from "../src/routes/agent";
+import { agentApi, dispatchAllowedTools } from "../src/routes/agent";
 import { config } from "../src/config";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -191,4 +191,52 @@ test("a second dispatch comes back queued (not failed); a full queue → 503; ru
   } finally {
     fr.done();
   }
+});
+
+// ── WP4.3: a client may NARROW a one-shot dispatch to the read-only vault tools ─
+
+test("dispatch profile: vault-ro narrows --allowedTools; default unchanged; anything else → 400", async () => {
+  _resetDispatches();
+  const root = mkdtempSync(join(tmpdir(), "prism-agent-route-ro-"));
+  const seen: string[][] = [];
+  configureAgentRunner({
+    spawner: (_cmd, args) => {
+      seen.push(args);
+      return fakeProc().proc;
+    },
+    cwd: () => ensureAgentCwd(join(root, "cwd")),
+    claudePath: () => "/opt/fake/claude",
+    memoryProbe: () => ({ swapUsedPct: 0, freePct: 90 }),
+    maxConcurrent: 5,
+    maxQueue: 20,
+  });
+  try {
+    const post = (body: unknown) =>
+      agentApi.request("/dispatch", { method: "POST", headers: { ...J, cookie: ownerCookie() }, body: JSON.stringify(body) });
+    assert.equal((await post({ prompt: "x", profile: "vault-rw" })).status, 400);
+    assert.equal((await post({ prompt: "x", profile: "anything" })).status, 400);
+    assert.equal(seen.length, 0, "a refused profile never spawns");
+
+    assert.equal((await post({ prompt: "edit this", profile: "vault-ro" })).status, 200);
+    assert.equal((await post({ prompt: "legacy" })).status, 200);
+    // Spawns are async (queue admission): wait for both.
+    for (let i = 0; i < 100 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(seen.length, 2);
+    const allowed = (args: string[]) => args[args.indexOf("--allowedTools") + 1]!;
+    const ro = allowed(seen[0]!).split(",");
+    assert.ok(ro.length > 0 && ro.every((t) => t.startsWith("mcp__parachute-vault__")), "only vault tools");
+    for (const w of ["create-note", "update-note", "delete-note"]) assert.ok(!ro.includes(`mcp__parachute-vault__${w}`), `no ${w}`);
+    assert.ok(ro.includes("mcp__parachute-vault__query-notes"));
+    assert.equal(allowed(seen[1]!), "mcp__parachute-vault", "default stays the whole vault server");
+  } finally {
+    _resetDispatches();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dispatchAllowedTools never widens", () => {
+  assert.equal(dispatchAllowedTools(undefined), undefined);
+  assert.equal(dispatchAllowedTools("vault-rw"), undefined);
+  assert.equal(dispatchAllowedTools("skill"), undefined);
+  assert.ok(dispatchAllowedTools("vault-ro")!.length > 0);
 });

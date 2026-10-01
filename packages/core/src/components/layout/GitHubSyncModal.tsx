@@ -98,7 +98,7 @@ export function GitHubSyncModal({
           </div>
           <DesktopOnlyNotice
             feature="GitHub sync"
-            detail="Pushing your vault to GitHub needs the gh CLI and a local git working tree on the machine hosting your vault, so it's set up in the desktop app."
+            detail="Folder sync to GitHub has no client UI yet. The Prism Server can push or pull a folder with its stored GitHub token (POST /api/sync/github/push|pull)."
           />
         </div>
       </div>

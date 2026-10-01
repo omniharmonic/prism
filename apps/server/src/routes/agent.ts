@@ -21,6 +21,7 @@ import { streamSSE } from "hono/streaming";
 import { resolveActor } from "../auth/actor";
 import { resolveVaultEntry } from "../db";
 import { getBillingMode } from "../agent-billing";
+import { profileAllowedTools } from "../agent-profiles";
 import {
   startDispatch,
   getDispatch,
@@ -78,22 +79,41 @@ agentApi.use("*", async (c, next) => {
   await next();
 });
 
+/**
+ * The tool allowlist a one-shot dispatch may ask for. A client may only NARROW
+ * the default (the whole vault MCP server): `profile: "vault-ro"` = the read-only
+ * vault tools (WP4.3: the client's inline edit / transform, which only needs
+ * text back). Anything else → undefined = the unchanged default. Never widens.
+ */
+export function dispatchAllowedTools(profile: unknown): string[] | undefined {
+  return profile === "vault-ro" ? profileAllowedTools("vault-ro") : undefined;
+}
+
 agentApi.post("/dispatch", async (c) => {
   const actor = resolveActor(c);
   const body = await c.req
-    .json<{ prompt?: string; skill?: string; noteId?: string }>()
-    .catch(() => ({}) as { prompt?: string; skill?: string; noteId?: string });
+    .json<{ prompt?: string; skill?: string; noteId?: string; profile?: string }>()
+    .catch(() => ({}) as { prompt?: string; skill?: string; noteId?: string; profile?: string });
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
     return c.json({ error: "bad_request", detail: "prompt required" }, 400);
   }
+  if (body.profile !== undefined && body.profile !== "vault-ro") {
+    return c.json({ error: "bad_request", detail: "profile may only be \"vault-ro\"" }, 400);
+  }
   const entry = resolveVaultEntry(actor.vaultId);
   try {
-    // Only prompt/skill/noteId cross from the client — never runner options.
-    const d = startDispatch(entry, {
-      prompt: body.prompt,
-      skill: typeof body.skill === "string" ? body.skill : null,
-      noteId: typeof body.noteId === "string" ? body.noteId : null,
-    });
+    // Only prompt/skill/noteId (+ an optional NARROWING profile) cross from the
+    // client — never runner options.
+    const allowedTools = dispatchAllowedTools(body.profile);
+    const d = startDispatch(
+      entry,
+      {
+        prompt: body.prompt,
+        skill: typeof body.skill === "string" ? body.skill : null,
+        noteId: typeof body.noteId === "string" ? body.noteId : null,
+      },
+      allowedTools ? { allowedTools } : {},
+    );
     return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason });
   } catch (e) {
     if (e instanceof AgentBusyError) return c.json({ error: "busy", detail: e.message }, 503);

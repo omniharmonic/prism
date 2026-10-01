@@ -14,6 +14,8 @@ import { openAgentChat } from "../../lib/agent/chatStore";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
 import { formatAgentCost } from "../../lib/agent/cost";
 import { useLivePollMs } from "../../lib/events/channelStatus";
+import { useHostServices } from "../../data/HostServicesContext";
+import { queueSkillRun } from "../../lib/host/vaultOps";
 
 function formatDuration(secs: number | null): string {
   if (!secs) return "";
@@ -69,6 +71,20 @@ export default function AgentActivity(_props: RendererProps) {
   // Server agent sessions (WP3.2): the owner's durable chats, listed live.
   const agentClient = useAgentClient();
   const agentChat = useAgentAvailable();
+  // Thin client, server owner (WP4.3): "run now" = clear the skill note's
+  // lastRun so the SERVER scheduler (SKILLS_ENABLED) runs it on its next tick,
+  // with the skill's own routing. No client-side spawn.
+  const host = useHostServices();
+  const [queued, setQueued] = useState<Record<string, "queued" | "error">>({});
+  const queueRun = async (skillId: string) => {
+    try {
+      await queueSkillRun(vaultClient, skillId);
+      setQueued((q) => ({ ...q, [skillId]: "queued" }));
+      queryClient.invalidateQueries({ queryKey: ["agent", "skills"] });
+    } catch {
+      setQueued((q) => ({ ...q, [skillId]: "error" }));
+    }
+  };
   const { data: sessions } = useQuery({
     queryKey: agentKeys(agentClient).list(false),
     queryFn: () => agentClient!.listSessions({ limit: 50 }),
@@ -193,8 +209,8 @@ export default function AgentActivity(_props: RendererProps) {
           ) : (
             <div className="grid grid-cols-2 gap-2">
               {(skills || []).map((skill) => (
+                <div key={skill.id} className="relative">
                 <button
-                  key={skill.id}
                   // Desktop: run the skill now. Web (monitor): open the skill note
                   // to read/edit it — on-demand running is a host process.
                   onClick={() => (isWeb ? openNote(skill.id, skill.skillName) : handleDispatch(skill.skillName, skill.prompt))}
@@ -218,6 +234,28 @@ export default function AgentActivity(_props: RendererProps) {
                   </div>
                   {skill.enabled && <Clock size={9} style={{ color: "var(--color-success)" }} />}
                 </button>
+                {isWeb && host && skill.enabled && (
+                  <button
+                    onClick={() => queueRun(skill.id)}
+                    disabled={queued[skill.id] === "queued"}
+                    className="absolute right-6 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-[var(--glass-hover)] transition-colors disabled:opacity-60"
+                    title={
+                      queued[skill.id] === "queued"
+                        ? "Queued: the server scheduler runs it within a minute (a daily skill waits for its hour)"
+                        : queued[skill.id] === "error"
+                          ? "Could not queue this skill"
+                          : "Run on the server at its next scheduler tick"
+                    }
+                    aria-label={`Queue a run of ${skill.skillName}`}
+                  >
+                    {queued[skill.id] === "queued" ? (
+                      <Clock size={11} style={{ color: "var(--color-accent)" }} />
+                    ) : (
+                      <Play size={11} style={{ color: queued[skill.id] === "error" ? "var(--color-danger)" : "var(--color-accent)" }} />
+                    )}
+                  </button>
+                )}
+                </div>
               ))}
             </div>
           )}
@@ -253,7 +291,7 @@ export default function AgentActivity(_props: RendererProps) {
           ) : isWeb ? (
             <DesktopOnlyNotice
               feature="Running the agent on demand"
-              detail="Triggering a run spawns Claude on the machine hosting your vault. Use the Prism desktop app to run skills or custom tasks; here you can review every past run."
+              detail="Custom tasks run as server agent sessions, which only the server owner can start. Here you can review every past run."
             />
           ) : (
             <div className="flex items-end gap-2">
@@ -297,7 +335,7 @@ export default function AgentActivity(_props: RendererProps) {
           <div className="text-center py-8">
             <Bot size={32} style={{ color: "var(--text-muted)" }} className="mx-auto mb-2" />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              {isWeb ? "No agent runs yet. They'll appear here as your skills run on the desktop app." : "No dispatches yet. Use the quick actions above to get started."}
+              {isWeb ? "No agent runs yet. They'll appear here as your skills run on the Prism Server." : "No dispatches yet. Use the quick actions above to get started."}
             </p>
           </div>
         )}

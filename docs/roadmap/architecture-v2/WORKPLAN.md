@@ -330,6 +330,9 @@ Format for each package:
 - **Build** — the mini runs `apps/client` too; the legacy desktop build is archived; remove `parachute_api_key` and
   `collab_token` from client configs; the docs update the topology.
 - **Accept** — no process on any client holds a vault token (grep the configs); `/acl/workers` is green.
+- **Status (arch/wp4.3)** — built: parity audit `desktop-parity.md` (102 commands classified), HostServices seam wiring the
+  B/C items, `scripts/check-client-no-vault-token.sh`, runbook in `docs/client-app.md`; the desktop is marked legacy (kept
+  building). The switch-over itself is the overseer + user runbook.
 
 ### Phase 5 — iPhone app (lane E)
 

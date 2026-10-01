@@ -15,7 +15,9 @@
  *  5. Rust: no process spawning, no vault port, no fs/shell/http/sql plugins;
  *  6. dist-native: no service worker; the only `localhost:1940` strings are the known inert
  *     UI placeholders/defaults of the shared UI (desktop vault-switcher, server-side hub hint) —
- *     nothing new may appear, and the CSP forbids connecting there regardless.
+ *     nothing new may appear, and the CSP forbids connecting there regardless; no token-shaped literal;
+ *  7. WP4.3 "no vault token on the client": the shell names no vault-token key/env/scope, the settings
+ *     file has no credential field, and the web shim routes none of the desktop config commands.
  * Dependency-free (node:fs + child_process).
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
@@ -176,6 +178,32 @@ if (!existsSync(dist)) {
     `dist-native: ${total - inert} unexplained localhost:1940 occurrence(s) — a new vault URL crept into the bundle`,
   );
   check(js.includes("__PRISM_HOST__"), "bundle reads the host hook");
+  // WP4.3: no vault credential is baked into the bundle. (The shared UI still contains the legacy
+  // desktop Settings form's field NAMES `parachute_api_key` / `collab_token`; that form is gated off
+  // in this shell and its config commands are refused by the shim, checked below.)
+  const tokenShapes = [/\bpvt_[A-Za-z0-9]{8,}/, /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\./, /\bpd_[A-Za-z0-9_-]{20,}/, /\bpp_[A-Za-z0-9_-]{20,}/];
+  const hits = tokenShapes.filter((re) => re.test(js)).map(String);
+  check(hits.length === 0, "dist-native: no vault/device/PAT token-shaped literal", `dist-native contains token-shaped literal(s): ${hits.join(" ")}`);
+}
+
+// 7. WP4.3: the client path holds no vault token
+{
+  const shellSrc = rs.map((f) => readFileSync(f, "utf8").split("#[cfg(test)]")[0].replace(/^\s*\/\/.*$/gm, "")).join("\n");
+  check(
+    !/parachute_api_key|collab_token|PARACHUTE_TOKEN|COLLAB_TOKEN|pvt_|vault:[a-z0-9_-]+:(read|write|admin)/.test(shellSrc),
+    "Rust/JS shell: no vault-token config key, env var or scope",
+  );
+  const settingsRs = readFileSync(join(tauriDir, "src/settings.rs"), "utf8").split("#[cfg(test)]")[0];
+  const fields = [...settingsRs.matchAll(/^\s*pub\s+([a-z_]+)\s*:/gm)].map((m) => m[1]);
+  check(
+    fields.length > 0 && !fields.some((f) => /token|key|secret|password|parachute|collab|vault/.test(f)),
+    `client-settings.json fields carry no credential (${fields.join(", ")})`,
+  );
+  const shim = readFileSync(resolve(root, "apps/web/src/tauri-shim/core.ts"), "utf8");
+  check(
+    !/case\s+"(update_config|get_collab_config|set_anthropic_key|api_request|acl_request)"/.test(shim),
+    "web shim routes none of the desktop config/credential commands (update_config, get_collab_config, …)",
+  );
 }
 
 if (failed) {

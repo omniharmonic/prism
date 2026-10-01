@@ -116,6 +116,46 @@ export class NotionClient {
   async lastEdited(pageId: string): Promise<string | null> {
     return (await this.req(`/pages/${pageId}`)).last_edited_time ?? null;
   }
+  /** Pages the integration can see (one page of ≤50), optionally filtered by a
+   *  title query — the server port of the desktop `notion_list_pages` (WP4.3). */
+  async searchPages(query: string): Promise<NotionPageInfo[]> {
+    const body: Record<string, unknown> = { page_size: 50, filter: { property: "object", value: "page" } };
+    if (query.trim()) body.query = query.trim();
+    return parseNotionSearch(await this.req(`/search`, { method: "POST", body: JSON.stringify(body) }));
+  }
+}
+
+export interface NotionPageInfo {
+  id: string;
+  title: string;
+  url: string;
+  icon: string | null;
+}
+
+/** Pure: a Notion `/search` response → the picker rows the desktop returned
+ *  (title from the page's title property, "Untitled" when empty; emoji icon only). */
+export function parseNotionSearch(data: unknown): NotionPageInfo[] {
+  const results = (data as { results?: unknown[] })?.results;
+  if (!Array.isArray(results)) return [];
+  const out: NotionPageInfo[] = [];
+  for (const r of results as Array<Record<string, any>>) {
+    if (typeof r?.id !== "string") continue;
+    let title = "";
+    const props = r.properties && typeof r.properties === "object" ? Object.values(r.properties as Record<string, any>) : [];
+    for (const v of props) {
+      if (v?.type === "title" && Array.isArray(v.title)) {
+        title = v.title.map((t: any) => t?.plain_text ?? t?.text?.content ?? "").join("");
+        break;
+      }
+    }
+    out.push({
+      id: r.id,
+      title: title.trim() || "Untitled",
+      url: typeof r.url === "string" ? r.url : "",
+      icon: r.icon?.type === "emoji" && typeof r.icon.emoji === "string" ? r.icon.emoji : null,
+    });
+  }
+  return out;
 }
 
 // ── sync ops ──────────────────────────────────────────────────────────────────

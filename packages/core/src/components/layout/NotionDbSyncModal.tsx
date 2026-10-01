@@ -200,7 +200,7 @@ export function NotionDbSyncModal({ isOpen, onClose }: NotionDbSyncModalProps) {
           </div>
           <DesktopOnlyNotice
             feature="Notion database sync"
-            detail="Mapping a Notion database to your vault uses the Notion key stored on the machine hosting your vault, so it's configured in the desktop app."
+            detail="Notion database sync has no Prism Server port yet; only the legacy desktop app can run it. Per-note Notion sync works from the note's Sync panel."
           />
         </div>
       </div>

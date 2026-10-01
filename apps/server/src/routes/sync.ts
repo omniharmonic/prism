@@ -56,13 +56,17 @@ sync.post("/note/:id/push", async (c) => {
         const g = cred<{ account: string }>(actor.vaultId, "google");
         if (!g) { results.push({ adapter: sc.adapter, error: "google not configured" }); continue; }
         const res = await pushNoteToGoogleDoc(new GoogleDocsClient(g.account), note, sc.remote_id || undefined);
-        if (res.created) { sc.remote_id = res.docId; mutated = true; }
+        if (res.created) sc.remote_id = res.docId;
+        sc.last_synced = new Date().toISOString(); // what sync_status reads (desktop parity)
+        mutated = true;
         results.push({ adapter: sc.adapter, remote_id: res.docId, pushed: true });
       } else if (sc.adapter === "notion") {
         const n = cred<{ apiKey: string }>(actor.vaultId, "notion");
         if (!n) { results.push({ adapter: sc.adapter, error: "notion not configured" }); continue; }
         if (!sc.remote_id) { results.push({ adapter: sc.adapter, error: "no page id — link a Notion page first" }); continue; }
         await pushNotionPage(new NotionClient(n.apiKey), sc.remote_id!, note.content);
+        sc.last_synced = new Date().toISOString();
+        mutated = true;
         results.push({ adapter: sc.adapter, remote_id: sc.remote_id, pushed: true });
       } else {
         results.push({ adapter: sc.adapter, error: "unsupported adapter" });
@@ -106,6 +110,22 @@ sync.post("/note/:id/pull", async (c) => {
     }
   }
   return c.json({ error: "no_pullable_target" }, 400);
+});
+
+// ── Notion page picker (WP4.3: replaces the desktop `notion_list_pages`) ──────
+// Read-only: lists pages the stored integration can see, so the web/client
+// "Sync to Notion" flow can bind a note to a page (metadata.sync[]).
+sync.get("/notion/pages", async (c) => {
+  const actor = resolveActor(c);
+  const n = cred<{ apiKey: string }>(actor.vaultId, "notion");
+  if (!n) return c.json({ error: "notion_not_configured", detail: "store a Notion integration token in Network → Server" }, 400);
+  const q = (c.req.query("q") ?? "").slice(0, 200);
+  try {
+    return c.json(await new NotionClient(n.apiKey).searchPages(q));
+  } catch {
+    // Never echo the upstream body (it can quote the request).
+    return c.json({ error: "notion_search_failed" }, 502);
+  }
 });
 
 // ── GitHub directory sync ─────────────────────────────────────────────────────
