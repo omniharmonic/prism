@@ -22,6 +22,7 @@ import { DEVICE_TOKEN_PREFIX, bearerFromHeader, verifyDeviceToken } from "../aut
 import {
   issuePat,
   listLivePats,
+  isInternalPat,
   getPat,
   revokePat,
   patView,
@@ -77,7 +78,7 @@ pats.get("/pats", (c) => {
   if (!who) return c.json({ error: "unauthorized" }, 401);
   const all = c.req.query("all") === "1" && who.email === config.ownerEmail;
   c.header("Cache-Control", "no-store");
-  return c.json({ tokens: listLivePats(all ? null : who.email).map(patView), mcpUrl: resourceUrl("/mcp") });
+  return c.json({ tokens: listLivePats(all ? null : who.email).filter((r) => !isInternalPat(r)).map(patView), mcpUrl: resourceUrl("/mcp") });
 });
 
 pats.post("/pats", async (c) => {
@@ -113,7 +114,7 @@ pats.post("/pats", async (c) => {
     return c.json({ error: "bad_request", detail: `owner/admin write tokens may last at most ${PAT_ADMIN_WRITE_MAX_DAYS} days` }, 400);
   }
 
-  if (listLivePats(who.email).length >= PAT_MAX_LIVE_PER_ACCOUNT) {
+  if (listLivePats(who.email).filter((r) => !isInternalPat(r)).length >= PAT_MAX_LIVE_PER_ACCOUNT) {
     return c.json({ error: "too_many_tokens", detail: `revoke one first (limit ${PAT_MAX_LIVE_PER_ACCOUNT})` }, 409);
   }
 

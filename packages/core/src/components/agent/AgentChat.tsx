@@ -26,7 +26,9 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useAgentClient, useAgentAvailability, agentKeys } from "../../data/AgentClientContext";
+import { useAgentClient, useAgentAvailability, useAgentLimits, agentKeys } from "../../data/AgentClientContext";
+import { AgentBudgetLine } from "./AgentBudget";
+import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
 import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk } from "../../lib/agent/chatStore";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
@@ -48,11 +50,6 @@ function relTime(ms: number | null | undefined): string {
   if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
   if (d < 7 * 86_400_000) return `${Math.floor(d / 86_400_000)}d ago`;
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function fmtCost(usd: number | undefined): string | null {
-  if (usd == null || !Number.isFinite(usd)) return null;
-  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
 }
 
 function fmtDuration(ms: number | undefined): string | null {
@@ -314,6 +311,7 @@ function SessionList({
   onArchive: (id: string) => void;
   mobile: boolean;
 }) {
+  const billing = useAgentLimits()?.billing;
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-shrink-0 items-center gap-2 px-4" style={{ height: 52, borderBottom: "1px solid var(--glass-border)" }}>
@@ -376,9 +374,14 @@ function SessionList({
                 </div>
                 <div className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
                   {running ? <span style={{ color: "var(--color-accent)" }}>{s.lastTurnStatus === "queued" ? "Queued" : "Working…"}</span> : relTime(s.lastTurnAt ?? s.updated_at)}
-                  {s.profile === "vault-ro" && (
+                  {isReadOnlyProfile(s.profile) && (
                     <span className="flex items-center gap-0.5">
                       · <Lock size={10} /> read-only
+                    </span>
+                  )}
+                  {s.cost_usd > 0 && (
+                    <span className="truncate" title={formatAgentCost(s.cost_usd, billing)?.title} data-testid="agent-session-cost">
+                      · {formatAgentCost(s.cost_usd, billing)?.text}
                     </span>
                   )}
                 </div>
@@ -432,6 +435,9 @@ export function Conversation({
 }) {
   const conv = useAgentConversation(client, sessionId);
   const queryClient = useQueryClient();
+  const limits = useAgentLimits();
+  // The profiles the server offers (prism-* only when enabled); older servers: the two vault profiles.
+  const pickable: AgentProfile[] = limits?.profiles?.length ? limits.profiles : ["vault-ro", "vault-rw"];
   const [input, setInput] = useState("");
   const [profile, setProfile] = useState<AgentProfile>("vault-ro");
   const [creating, setCreating] = useState<string | null>(null); // prompt being sent in a draft
@@ -443,6 +449,12 @@ export function Conversation({
 
   const isDraft = !sessionId;
   const running = !!conv.active;
+  // A turn just finished → today's spend changed: refresh the budget line.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) void queryClient.invalidateQueries({ queryKey: agentKeys(client).limits });
+    wasRunning.current = running;
+  }, [running, queryClient, client]);
   const error = isDraft ? draftError : conv.error;
 
   // Keep the view pinned to the newest text while the user is at the bottom.
@@ -542,18 +554,19 @@ export function Conversation({
         </div>
         {!compact && (sessionProfile || conv.conn === "reconnecting") && (
           <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-            {sessionProfile === "vault-ro" ? (
+            {sessionProfile && isReadOnlyProfile(sessionProfile) ? (
               <>
-                <Lock size={10} /> Read-only
+                <Lock size={10} /> {PROFILE_LABELS[sessionProfile].label}
               </>
-            ) : sessionProfile === "vault-rw" ? (
+            ) : sessionProfile ? (
               <>
-                <PenLine size={10} /> Can edit your vault
+                <PenLine size={10} /> {sessionProfile === "vault-rw" ? "Can edit your vault" : PROFILE_LABELS[sessionProfile].label}
               </>
             ) : null}
             {conv.conn === "reconnecting" && <span style={{ color: "var(--color-warning, var(--text-muted))" }}>· reconnecting…</span>}
           </div>
         )}
+        {!compact && !isDraft && <AgentBudgetLine sessionCostUsd={conv.session?.cost_usd} />}
       </div>
       {onExpand && (
         <button onClick={onExpand} aria-label="Open in Agent tab" title="Open in Agent tab" className="interactive flex items-center justify-center rounded" style={{ width: 28, height: 28, color: "var(--text-muted)" }}>
@@ -591,13 +604,8 @@ export function Conversation({
     >
       {isDraft && (
         <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
-          <div className="flex rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
-            {(
-              [
-                ["vault-ro", "Read-only", <Lock key="l" size={11} />],
-                ["vault-rw", "Read-write", <PenLine key="p" size={11} />],
-              ] as Array<[AgentProfile, string, ReactNode]>
-            ).map(([p, label, icon]) => (
+          <div className="flex flex-wrap rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
+            {pickable.map((p) => [p, PROFILE_LABELS[p].label, isReadOnlyProfile(p) ? <Lock key="l" size={11} /> : <PenLine key="p" size={11} />] as [AgentProfile, string, ReactNode]).map(([p, label, icon]) => (
               <button
                 key={p}
                 role="radio"
@@ -615,9 +623,10 @@ export function Conversation({
               </button>
             ))}
           </div>
-          <span className="truncate">{profile === "vault-ro" ? "Can read, not change, your vault" : "Can create and edit notes"}</span>
+          <span className="truncate">{PROFILE_LABELS[profile].hint}</span>
         </div>
       )}
+      {isDraft && <AgentBudgetLine />}
       <div className="flex items-end gap-2">
         <textarea
           ref={inputRef}
@@ -754,7 +763,8 @@ function Thinking({ label }: { label: string }) {
 function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   const running = isRunning(turn.status);
   const problem = turnProblem(turn);
-  const cost = fmtCost(turn.costUsd);
+  const billing = useAgentLimits()?.billing;
+  const cost = formatAgentCost(turn.costUsd, billing);
   const dur = fmtDuration(turn.durationMs);
   const hasText = turn.blocks.some((b) => b.text.trim());
   return (
@@ -810,7 +820,9 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
       )}
       {!running && (cost || dur) && (
         <div className="text-[11px]" style={{ color: "var(--text-muted)" }} data-testid="agent-turn-footer">
-          {[dur, cost].filter(Boolean).join(" · ")}
+          {dur}
+          {dur && cost ? " · " : ""}
+          {cost && <span title={cost.title}>{cost.text}</span>}
         </div>
       )}
     </div>

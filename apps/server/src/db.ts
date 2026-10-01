@@ -385,7 +385,7 @@ db.exec(`
     vault_id           TEXT NOT NULL,
     owner_email        TEXT NOT NULL,
     title              TEXT,
-    profile            TEXT NOT NULL DEFAULT 'vault-rw',   -- vault-ro | vault-rw
+    profile            TEXT NOT NULL DEFAULT 'vault-rw',   -- vault-ro | vault-rw | prism-ro | prism-rw
     note_id            TEXT,                               -- open note (context on turn 1 only)
     cli_session_id     TEXT,                               -- from system/init (== id)
     status             TEXT NOT NULL DEFAULT 'idle',       -- idle | running | archived
@@ -410,6 +410,15 @@ db.exec(`
     ended_at   INTEGER
   );
   CREATE INDEX IF NOT EXISTS agent_turns_session ON agent_turns(session_id, started_at);
+  -- Per-turn spend ledger (WP3.4 daily budget). Separate from agent_turns because
+  -- archiving a session deletes its turn rows — the day's spend must survive that.
+  CREATE TABLE IF NOT EXISTS agent_cost_log (
+    turn_id     TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    cost_usd    REAL NOT NULL,
+    at          INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS agent_cost_log_owner ON agent_cost_log(owner_email, at);
   -- Web Push subscriptions (Arch v2 WP3.3, push.ts). One row per browser
   -- endpoint; owner-only. The payload sent to them carries ids only.
   CREATE TABLE IF NOT EXISTS push_subscriptions (

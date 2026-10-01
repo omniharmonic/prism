@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentApiError, type AgentClient } from "../lib/agent/sessions";
+import { AgentApiError, type AgentClient, type AgentLimits } from "../lib/agent/sessions";
 
 const AgentClientContext = createContext<AgentClient | null>(null);
 
@@ -24,6 +24,7 @@ export function agentKeys(client: AgentClient | null) {
   return {
     all: ["agent-sessions", scope] as const,
     available: ["agent-available", scope] as const,
+    limits: ["agent-limits", scope] as const,
     list: (archived: boolean) => ["agent-sessions", scope, "list", archived] as const,
   };
 }
@@ -63,4 +64,22 @@ export function useAgentAvailability(): AgentAvailability {
 /** True only when the agent chat can be used (hide entry points otherwise). */
 export function useAgentAvailable(): boolean {
   return useAgentAvailability() === "yes";
+}
+
+/**
+ * Billing mode + budgets + selectable profiles (WP3.4). Refetched on focus and
+ * after a turn ends (`invalidateQueries(keys.limits)`); `undefined` until the
+ * first answer or on an older server — callers must degrade to the old labels.
+ */
+export function useAgentLimits(): AgentLimits | undefined {
+  const client = useAgentClient();
+  const keys = agentKeys(client);
+  const { data } = useQuery({
+    queryKey: keys.limits,
+    enabled: !!client?.getLimits,
+    staleTime: 30_000,
+    retry: false,
+    queryFn: () => client!.getLimits!(),
+  });
+  return data;
 }

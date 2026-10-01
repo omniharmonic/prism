@@ -77,6 +77,7 @@ import {
   type MemoryProbe,
   type MemorySample,
 } from "../agent-exec";
+import { profileAllowedTools } from "../agent-profiles";
 
 // ── constants (identical to the desktop) ─────────────────────────────────────
 
@@ -821,7 +822,7 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
 
 /** The WP0.1 runner as a ClaudeDispatcher, bound to the primary vault. */
 export const runnerDispatcher: ClaudeDispatcher = (req, onFinish) => {
-  const d = startDispatch(resolveVaultEntry(), { prompt: req.prompt, skill: req.skill });
+  const d = startDispatch(resolveVaultEntry(), { prompt: req.prompt, skill: req.skill }, { allowedTools: profileAllowedTools("skill") });
   let done = false;
   const finish = (x: Dispatch) => {
     if (done || !(x.status === "done" || x.status === "error" || x.status === "cancelled")) return;

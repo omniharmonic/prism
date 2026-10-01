@@ -6,6 +6,7 @@
  * and no built-in host tool (file, shell, web, sub-agent, notebook, skill).
  */
 import { VAULT_MCP_NAME } from "./agent-exec";
+import { profileAllowedTools, type AgentProfile } from "./agent-profiles";
 
 /** The subset of the init event we assert on. */
 export interface CliInitEvent {
@@ -53,6 +54,24 @@ export function findInitEvent(output: string): CliInitEvent | null {
     }
   }
   return null;
+}
+
+/** WP3.4: the init event lists every tool the MCP server EXPOSES (write tools
+ *  appear even under a read-only profile — the permission layer denies them, see
+ *  the recorded `agent-stream-ro-denied` fixture). The tools a profile will refuse
+ *  are therefore `init.tools` minus the profile's `--allowedTools` list. */
+export function toolsDeniedByProfile(init: CliInitEvent, profile: AgentProfile): string[] {
+  const allowed = new Set(profileAllowedTools(profile));
+  return (init.tools ?? []).filter((t) => !allowed.has(t));
+}
+
+/** Violations of a read-only profile: any write/delete tool the profile would ALLOW. */
+export function checkReadOnlyEnforced(init: CliInitEvent, profile: AgentProfile): string[] {
+  const WRITE = /__((create|update|delete)-note|prism_(create_note|update_note|delete_note|restore_version|add_comment|resolve_comment|suggest_edit|sheet_update|share|propose_change|vote|withdraw_proposal))$/;
+  const allowed = new Set(profileAllowedTools(profile));
+  const problems = (init.tools ?? []).filter((t) => allowed.has(t) && WRITE.test(t)).map((t) => `read-only profile ${profile} allows ${t}`);
+  for (const t of profileAllowedTools(profile)) if (WRITE.test(t)) problems.push(`read-only profile ${profile} allowlist names ${t}`);
+  return problems;
 }
 
 /** Returns a list of isolation violations (empty = isolated). */
