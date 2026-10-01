@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { parseLegacyThread } from "../../../packages/core/src/lib/messages/legacyThread";
+import { parseEmailContent } from "../../../packages/core/src/lib/messages/emailThread";
 
 test("legacy transcripts retain multiline content and colon-bearing identities in UTC", () => {
   const parsed = parseLegacyThread("# Conversation\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:16] Alex: Next message");
@@ -133,4 +134,47 @@ test("live action retries and late acknowledgements cannot cross audiences", asy
   expect(result.retryError).toContain("Workspace changed");
   expect(result.lateError).toContain("Workspace changed");
   expect(result.malformedError).toContain("Incomplete acknowledgement");
+});
+
+test("email import readers preserve body headings, rules, header-like prose and message authors", () => {
+  const body = "# Body heading\nword---word\n\n---\n\n**From:** quoted text\nBody ends.";
+  const proton = parseEmailContent(`# Subject\n\n**From:** Morgan\n**To:** Alex\n**Date:** Today\n**Attachments:** plan.pdf\n\n---\n\n${body}`, "", "", "proton-bridge");
+  expect(proton).toEqual([{ from: "Morgan", date: "Today", details: ["To: Alex", "Attachments: plan.pdf"], body }]);
+  const legacy = parseEmailContent(`# Subject\n\n**From:** Morgan  \n**Date:** Today\n\n${body}\n\n---\n\n**From:** Alex\n**Date:** Tomorrow\n\nSecond reply\n\n---\n\n`, "", "");
+  expect(legacy).toHaveLength(2);
+  expect(legacy[0].body).toBe(body);
+  expect(legacy[1]).toMatchObject({ from: "Alex", body: "Second reply" });
+  expect(parseEmailContent(body, "Fallback", "Unknown")[0].body).toBe(body);
+});
+
+test("email reply keeps its multiline draft on close and retries the original send after reload", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/messages.html?email");
+  await expect(page.getByText("# A heading inside the message", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill("A careful reply");
+  await input.press("End");
+  await input.press("Enter");
+  await expect(input).toHaveValue("A careful reply\n");
+  await page.getByRole("button", { name: "Close email reply" }).click();
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(input).toHaveValue("A careful reply\n");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("lost email acknowledgement");
+  await page.reload();
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(input).toHaveValue("A careful reply\n");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByText("Reply sent.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("fixture-email-accepted") ?? "[]"))).toHaveLength(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("email-mobile.png") });
+});
+
+test("unavailable server email never falls through to native reply commands", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html?email&unavailable");
+  await expect(page.getByRole("button", { name: "Reply", exact: true })).toBeDisabled();
+  await expect(page.getByText("Replying is unavailable for this email on this connection.")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismMessagesFixture.attempts)).toBe(0);
 });

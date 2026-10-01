@@ -8,6 +8,7 @@ interface MessageComposerProps {
   draftScope?: string | null;
   draftKey: string;
   retrySafe?: boolean;
+  enterToSend?: boolean;
   disabled?: boolean;
   placeholder?: string;
 }
@@ -16,7 +17,7 @@ export function MessageComposer(props: MessageComposerProps) {
   return <ScopedMessageComposer key={JSON.stringify([props.draftScope, props.draftKey])} {...props} />;
 }
 
-function ScopedMessageComposer({ onSend, disabled, placeholder, draftScope, draftKey, retrySafe }: MessageComposerProps) {
+function ScopedMessageComposer({ onSend, disabled, placeholder, draftScope, draftKey, retrySafe, enterToSend = true }: MessageComposerProps) {
   const draft = useScopedDraft("message", draftScope || null, draftKey);
   const { text, setText } = draft;
   const [sending, setSending] = useState(false);
@@ -58,6 +59,7 @@ function ScopedMessageComposer({ onSend, disabled, placeholder, draftScope, draf
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey) return;
+            if (!enterToSend && !event.metaKey && !event.ctrlKey) return;
             // Touch keyboards keep Enter for line breaks; hardware users may
             // always send with Cmd/Ctrl+Enter.
             if (matchMedia("(pointer: coarse)").matches && !event.metaKey && !event.ctrlKey) return;
