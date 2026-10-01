@@ -57,7 +57,76 @@ export interface NotionPageInfo {
   icon: string | null;
 }
 
+/** The interactive AI skills the server routes (Settings → AI models). */
+export type InteractiveSkill = "edit" | "chat" | "transform" | "generate";
+export const INTERACTIVE_SKILLS: readonly InteractiveSkill[] = ["edit", "chat", "transform", "generate"];
+
+export interface SkillRoute {
+  provider: "claude" | "local";
+  model: string;
+}
+export type AgentRouting = Record<InteractiveSkill, SkillRoute>;
+
+export interface LocalModelInfo {
+  id: string;
+  type: string | null;
+  state: string | null;
+  quantization: string | null;
+}
+
+export interface AgentModelsOverview {
+  local: { baseUrl: string; configured: boolean; reachable: boolean; models: LocalModelInfo[]; error: string | null };
+  claude: { available: boolean; models: string[] };
+  skillsDefaultProvider: string;
+  skillsLocalModel: string;
+}
+
+export interface RouteTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  ms: number;
+  reply?: string;
+  error?: string;
+}
+
+/** A server skill run in flight (GET /api/agent/skills/running). */
+export interface RunningSkill {
+  skill: string;
+  kind: "local" | "claude";
+  id: string;
+  startedAt: string;
+  model: string | null;
+  cancelRequested: boolean;
+}
+
+/** The vault-wide wikilink job (POST /api/admin/wikilinks/resolve). */
+export interface WikilinkJob {
+  id: string;
+  vaultId: string;
+  dryRun: boolean;
+  status: "running" | "done" | "error" | "cancelled";
+  startedAt: string;
+  endedAt: string | null;
+  error: string | null;
+  total: number;
+  scanned: number;
+  notesWithWikilinks: number;
+  wikilinks: number;
+  resolved: number;
+  alreadyLinked: number;
+  unresolved: number;
+  unparseable: number;
+  notesUpdated: number;
+  conflicts: number;
+  errors: number;
+  unresolvedSample: string[];
+}
+
 export interface AgentTextOptions {
+  /** Which interactive skill this is — the server routes it (claude model or
+   *  the local model) per Settings → AI models. Default: claude/sonnet. */
+  skill?: InteractiveSkill;
   /** The note the text task is about (context only; the run is read-only). */
   noteId?: string;
   /** Give up (and cancel the run) after this long. Default 5 minutes. */
@@ -74,6 +143,24 @@ export interface HostServices {
    *  transform). Never writes the vault: the server narrows the run to the
    *  read-only vault tools. */
   agentText(prompt: string, opts?: AgentTextOptions): Promise<string>;
+
+  // ── parity A (server owner) ──
+  /** Server skill runs in flight (AgentActivity "Running" + Stop). */
+  runningSkills(): Promise<RunningSkill[]>;
+  /** Stop a running server skill run (recorded as a cancelled dispatch). */
+  cancelSkill(skillName: string): Promise<void>;
+  /** Local models on the server's LM Studio + claude availability. */
+  agentModels(): Promise<AgentModelsOverview>;
+  /** Per-skill interactive routing (server-wide). */
+  getRouting(): Promise<AgentRouting>;
+  setRouting(patch: Partial<AgentRouting>): Promise<AgentRouting>;
+  /** A tiny server-side round trip on a route (Settings "Test"). */
+  testRoute(route: SkillRoute): Promise<RouteTestResult>;
+  /** The vault-wide "Resolve all wikilinks" job (active vault). */
+  wikilinkJob(): Promise<WikilinkJob | null>;
+  startWikilinkJob(opts: { dryRun: boolean }): Promise<WikilinkJob>;
+  cancelWikilinkJob(): Promise<void>;
+
   /** Cache scope (e.g. the active vault) for query keys. */
   scope?: () => string;
 }
@@ -144,6 +231,7 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
       const started = await call<{ id: string; status: string }>("POST", "/api/agent/dispatch", {
         prompt,
         ...(o.noteId ? { noteId: o.noteId } : {}),
+        ...(o.skill ? { skill: o.skill } : {}),
         profile: "vault-ro",
       });
       const deadline = Date.now() + (o.timeoutMs ?? 5 * 60_000);
@@ -164,6 +252,20 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
         }
         await sleep(pollMs);
       }
+    },
+
+    runningSkills: async () => (await call<{ running?: RunningSkill[] }>("GET", "/api/agent/skills/running")).running ?? [],
+    cancelSkill: async (skillName) => {
+      await call("POST", `/api/agent/skills/${enc(skillName)}/cancel`, {});
+    },
+    agentModels: () => call("GET", "/api/agent/models"),
+    getRouting: async () => (await call<{ routing: AgentRouting }>("GET", "/api/agent/routing")).routing,
+    setRouting: async (patch) => (await call<{ routing: AgentRouting }>("PUT", "/api/agent/routing", { routing: patch })).routing,
+    testRoute: (route) => call("POST", "/api/agent/routing/test", { route }),
+    wikilinkJob: async () => (await call<{ job: WikilinkJob | null }>("GET", "/api/admin/wikilinks/resolve")).job,
+    startWikilinkJob: async ({ dryRun }) => (await call<{ job: WikilinkJob }>("POST", "/api/admin/wikilinks/resolve", { dryRun })).job,
+    cancelWikilinkJob: async () => {
+      await call("POST", "/api/admin/wikilinks/resolve/cancel", {});
     },
 
     scope: opts.scope,
@@ -194,6 +296,48 @@ export function cleanAgentText(out: string): string {
   return m ? m[1]! : t;
 }
 
+/**
+ * Start the vault-wide wikilink job and poll it to its end (the CommandBar's
+ * "Resolve All Wikilinks" on a thin client). If a job is already running (409),
+ * waits for THAT one instead of starting another.
+ */
+export async function runWikilinkJobToEnd(
+  host: Pick<HostServices, "startWikilinkJob" | "wikilinkJob">,
+  opts: { dryRun: boolean; pollMs?: number; sleep?: (ms: number) => Promise<void>; onProgress?: (j: WikilinkJob) => void },
+): Promise<WikilinkJob> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let job: WikilinkJob | null;
+  try {
+    job = await host.startWikilinkJob({ dryRun: opts.dryRun });
+  } catch (e) {
+    if (!(e instanceof HostServiceError && e.code === "busy")) throw e;
+    job = await host.wikilinkJob();
+  }
+  while (job && job.status === "running") {
+    opts.onProgress?.(job);
+    await sleep(opts.pollMs ?? 1000);
+    job = await host.wikilinkJob();
+  }
+  if (!job) throw new HostServiceError(0, "job_lost", "the server has no record of the wikilink job");
+  return job;
+}
+
+/** One-paragraph report of a wikilink job. */
+export function wikilinkJobSummary(j: WikilinkJob): string {
+  const verb = j.dryRun ? "would add" : "added";
+  const extra = [
+    j.alreadyLinked ? `${j.alreadyLinked} already linked` : "",
+    j.unresolved ? `${j.unresolved} unresolved` : "",
+    j.unparseable ? `${j.unparseable} note(s) with unbalanced [[ ]]` : "",
+    j.conflicts ? `${j.conflicts} note(s) skipped (changed meanwhile)` : "",
+    j.errors ? `${j.errors} error(s)` : "",
+  ].filter(Boolean);
+  return (
+    `${j.dryRun ? "Dry run" : "Done"}: ${j.wikilinks} wikilinks in ${j.notesWithWikilinks} of ${j.total} notes — ${verb} ${j.resolved} link(s) in ${j.notesUpdated} note(s)` +
+    (extra.length ? `; ${extra.join(", ")}.` : ".")
+  );
+}
+
 /** Human copy for a failed host-service call. */
 export function hostServiceErrorText(e: unknown): string {
   if (!(e instanceof HostServiceError)) return e instanceof Error ? e.message : String(e);
@@ -209,6 +353,10 @@ export function hostServiceErrorText(e: unknown): string {
     case "google_not_configured":
     case "notion_not_configured":
       return "The server has no credential for this service yet (Network → Server).";
+    case "not_running":
+      return "That skill is not running any more.";
+    case "csrf_refused":
+      return "The server refused a cross-site request.";
     default:
       return e.detail ? `${e.code}: ${e.detail}` : e.code;
   }

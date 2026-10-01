@@ -21,6 +21,8 @@ import {
   buildEditPrompt,
   buildTransformPrompt,
   cleanAgentText,
+  runWikilinkJobToEnd,
+  wikilinkJobSummary,
 } from "../../../packages/core/src/lib/host/services.ts";
 import {
   addSyncConfig,
@@ -30,6 +32,8 @@ import {
   matchWikilink,
   resolveWikilinks,
   queueSkillRun,
+  updateSkillNote,
+  validateStructuredBlock,
   type VaultOpsClient,
 } from "../../../packages/core/src/lib/host/vaultOps.ts";
 import { roomsFromThreadNotes } from "../../../packages/core/src/lib/matrix/vaultRooms.ts";
@@ -243,6 +247,105 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   assert.match(t, /into a presentation/);
   assert.match(t, /Return ONLY the converted content/);
   ok("edit/transform prompts: read-only rule, fenced data, desktop caps");
+}
+
+// ── parity A: skills / routing / wikilink job seam ───────────────────────────
+{
+  const s = fakeServer((c) => {
+    if (c.path === "/api/agent/dispatch") return json(200, { id: "d1", status: "running" });
+    if (c.path === "/api/agent/dispatches/d1") return json(200, { status: "done", output: "ok" });
+    if (c.path === "/api/agent/skills/running") return json(200, { running: [{ skill: "triage", kind: "local", id: "x", startedAt: "t", model: "m", cancelRequested: false }] });
+    if (c.path.endsWith("/cancel")) return json(200, { ok: true });
+    if (c.path === "/api/agent/routing") return json(200, { routing: { edit: { provider: "local", model: "m" } } });
+    if (c.path === "/api/agent/routing/test") return json(200, { ok: true, provider: "local", model: "m", ms: 5, reply: "ready" });
+    if (c.path === "/api/agent/models") return json(200, { local: { models: [] }, claude: { available: true, models: ["sonnet"] } });
+    return json(404, { error: "not_found" });
+  });
+  const h = createHttpHostServices({ fetch: s.fetch, sleep: noSleep });
+  await h.agentText("p", { skill: "edit" });
+  assert.deepEqual(s.calls[0]!.body, { prompt: "p", skill: "edit", profile: "vault-ro" }, "the skill rides along so the server can route it");
+  assert.equal((await h.runningSkills())[0]!.skill, "triage");
+  await h.cancelSkill("my skill/../x");
+  const cancel = s.calls.find((c) => c.path.endsWith("/cancel"))!;
+  assert.equal(cancel.path, "/api/agent/skills/my%20skill%2F..%2Fx/cancel", "the skill name is path-encoded");
+  assert.equal(cancel.method, "POST");
+  assert.equal(cancel.headers["Content-Type"], "application/json", "mutations send JSON (the server's CSRF guard needs it)");
+  assert.equal((await h.getRouting()).edit.provider, "local");
+  await h.setRouting({ edit: { provider: "claude", model: "opus" } });
+  const put = s.calls.find((c) => c.method === "PUT")!;
+  assert.deepEqual([put.path, put.body], ["/api/agent/routing", { routing: { edit: { provider: "claude", model: "opus" } } }]);
+  assert.equal((await h.testRoute({ provider: "local", model: "m" })).reply, "ready");
+  assert.equal((await h.agentModels()).claude.available, true);
+  ok("parity seam: agentText sends its skill; running skills / cancel (encoded, JSON) / routing get+put / test / models");
+}
+{
+  let polls = 0;
+  const job = (status: string, extra: Record<string, unknown> = {}) => ({
+    id: "j", vaultId: "primary", dryRun: true, status, startedAt: "t", endedAt: null, error: null, total: 10, scanned: 10, notesWithWikilinks: 3,
+    wikilinks: 7, resolved: 4, alreadyLinked: 1, unresolved: 2, unparseable: 0, notesUpdated: 2, conflicts: 0, errors: 0, unresolvedSample: [], ...extra,
+  });
+  const s = fakeServer((c) => {
+    if (c.method === "POST" && c.path === "/api/admin/wikilinks/resolve") return json(409, { error: "busy" });
+    if (c.method === "GET" && c.path === "/api/admin/wikilinks/resolve") return json(200, { job: ++polls < 3 ? job("running") : job("done") });
+    return json(404, {});
+  });
+  const h = createHttpHostServices({ fetch: s.fetch });
+  const r = await runWikilinkJobToEnd(h, { dryRun: true, sleep: noSleep });
+  assert.equal(r.status, "done");
+  assert.equal(polls, 3, "a busy start attaches to the running job and polls it to the end");
+  assert.match(wikilinkJobSummary(r), /^Dry run: 7 wikilinks in 3 of 10 notes — would add 4 link\(s\) in 2 note\(s\); 1 already linked, 2 unresolved\.$/);
+  ok("wikilink job: busy start attaches + polls to the end; dry-run summary text");
+}
+{
+  // updateSkillNote: validation, runner lease + lastRun preserved, if_updated_at, conflict retry.
+  const skill = note("s1", { tags: ["agent-skill"], metadata: { skillName: "triage", runner: "server", lastRun: "2026-10-01T08:00:00Z", enabled: true, executionMode: "agentic", extra: 7 } });
+  const other = note("s2", { tags: ["agent-skill"], metadata: { skillName: "digest" } });
+  const fv = fakeVault([skill, other]);
+  const vc = { ...fv.vc, listNotes: async () => [skill, other] };
+  await updateSkillNote(vc, "s1", { enabled: false, intervalSecs: 900, dependsOn: "digest", provider: "local", model: "qwen-7b" });
+  const m = fv.updates[0]!.params.metadata as Record<string, unknown>;
+  assert.deepEqual([m.enabled, m.intervalSecs, m.dependsOn, m.provider, m.model], [false, 900, "digest", "local", "qwen-7b"]);
+  assert.deepEqual([m.runner, m.lastRun, m.extra, m.skillName], ["server", "2026-10-01T08:00:00Z", 7, "triage"], "the lease, lastRun and unknown keys survive");
+  assert.equal(fv.updates[0]!.params.ifUpdatedAt, "t1");
+  assert.equal(fv.updates[0]!.params.content, undefined, "metadata-only change never touches the prompt");
+  for (const [patch, re] of [
+    [{ intervalSecs: 30 }, /interval/],
+    [{ runAtHour: 24 }, /run hour/],
+    [{ dependsOn: "triage" }, /itself/],
+    [{ dependsOn: "ghost" }, /no skill named/],
+    [{ provider: "openai" }, /provider/],
+    [{ model: "--x y" }, /model id/],
+    [{ executionMode: "structured" }, /structured mode needs a valid config block/],
+    [{ structured: { sourceTags: [], schema: {}, resultField: "r" } }, /sourceTags/],
+    [{ prompt: "   " }, /prompt may not be empty/],
+  ] as const) {
+    await assert.rejects(updateSkillNote(vc, "s1", patch as never), re, JSON.stringify(patch));
+  }
+  assert.equal(fv.updates.length, 1, "a refused patch writes nothing");
+  await updateSkillNote(vc, "s1", { executionMode: "structured", structured: { sourceTags: ["email"], schema: { type: "object" }, resultField: "importance" } });
+  assert.equal((fv.updates[1]!.params.metadata as Record<string, unknown>).executionMode, "structured");
+  await updateSkillNote(vc, "s1", { prompt: "New prompt" });
+  assert.equal(fv.updates[2]!.params.content, "New prompt");
+  await assert.rejects(updateSkillNote(vc, "s2x", { enabled: true }), /404/);
+  // A metadata-only write that hits a 409 (the scheduler stamped lastRun) is refetched + merged once.
+  let first = true;
+  const conflicting = {
+    ...vc,
+    updateNote: async (id: string, params: UpdateNoteParams) => {
+      if (first) {
+        first = false;
+        throw new Error("409 conflict");
+      }
+      return fv.vc.updateNote(id, params);
+    },
+  };
+  const before = fv.updates.length;
+  await updateSkillNote(conflicting, "s1", { enabled: true });
+  assert.equal(fv.updates.length, before + 1, "retried once after the conflict");
+  first = true;
+  await assert.rejects(updateSkillNote(conflicting, "s1", { prompt: "x" }), /409/, "a prompt change is never retried over someone else's edit");
+  assert.equal(validateStructuredBlock({ sourceTags: ["a"], schema: {}, resultField: "r", limit: 0 }), "'structured.limit' must be a whole number from 1 to 1000");
+  ok("updateSkillNote: desktop-style validation, lease/lastRun kept, if_updated_at, one conflict retry for metadata only");
 }
 
 console.log(`\nverify-host-services: ${passed} checks passed`);

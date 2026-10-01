@@ -30,6 +30,8 @@ export async function webGetSkills(vault: VaultClient): Promise<AgentSkill[]> {
         provider: (m.provider as string | undefined) ?? null,
         model: (m.model as string | undefined) ?? null,
         executionMode: String(m.executionMode ?? "agentic"),
+        dependsOn: typeof m.dependsOn === "string" && m.dependsOn ? m.dependsOn : null,
+        structured: m.structured && typeof m.structured === "object" && !Array.isArray(m.structured) ? (m.structured as Record<string, unknown>) : null,
       };
     })
     .sort((a, b) => a.skillName.localeCompare(b.skillName));

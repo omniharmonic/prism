@@ -121,6 +121,10 @@ export interface AgentSkill {
   /** Per-skill AI routing override. null = use the global background default. */
   provider: string | null;
   model: string | null;
+  /** Skill name this one waits for (has run today). Optional: older desktop builds omit it. */
+  dependsOn?: string | null;
+  /** The structured-mode config block (metadata.structured). */
+  structured?: Record<string, unknown> | null;
   /** "agentic" (tool loop) or "structured" (grammar-constrained classification). */
   executionMode: string;
 }

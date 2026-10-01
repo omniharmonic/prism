@@ -7,6 +7,8 @@ import { useIsWeb } from "../../data/Platform";
 import { useAccount } from "../../data/Account";
 import { AccountSettings } from "./AccountSettings";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
+import { useHostServices } from "../../data/HostServicesContext";
+import { ServerAiModels } from "./ServerAiModels";
 
 interface SettingsProps {
   open: boolean;
@@ -20,6 +22,8 @@ const MONO_FONT_OPTIONS = ["JetBrains Mono", "SF Mono", "Fira Code", "Source Cod
 export function Settings({ open, onClose }: SettingsProps) {
   const isWeb = useIsWeb();
   const account = useAccount();
+  // Server owner on a thin client: AI model routing lives on the Prism Server.
+  const host = useHostServices();
   const [tab, setTab] = useState<"account" | "services" | "sources" | "appearance">("services");
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -397,10 +401,12 @@ export function Settings({ open, onClose }: SettingsProps) {
                   Configure AI model providers and assign models to skills. All providers have full vault access via Parachute MCP.
                 </p>
 
-                {isWeb ? (
+                {isWeb && host ? (
+                  <ServerAiModels host={host} />
+                ) : isWeb ? (
                   <DesktopOnlyNotice
                     feature="AI model routing & local models"
-                    detail="Background skills choose their model on the Prism Server (skill-note provider/model, SKILLS_* settings). Inline edits and transforms run on the server agent."
+                    detail="Only the server owner can route AI models (they run on the Prism Server)."
                   />
                 ) : (
                 /* Interactive-skill model assignments (provider configured in the Local AI section below) */

@@ -15,7 +15,13 @@ import type { AgentSessionSummary } from "../../lib/agent/sessions";
 import { formatAgentCost } from "../../lib/agent/cost";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 import { useHostServices } from "../../data/HostServicesContext";
-import { queueSkillRun } from "../../lib/host/vaultOps";
+import { queueSkillRun, updateSkillNote, validateStructuredBlock, type SkillPatch } from "../../lib/host/vaultOps";
+import { hostServiceErrorText, type RunningSkill } from "../../lib/host/services";
+
+type ModelOption = { id: string; name: string; provider: string; size: string | null };
+/** Save a skill-config change: desktop → its Tauri command (+ the vault for the
+ *  fields that command never had); thin client → the skill note via VaultClient. */
+type SaveSkill = (skill: AgentSkill, patch: SkillPatch) => Promise<void>;
 
 function formatDuration(secs: number | null): string {
   if (!secs) return "";
@@ -67,7 +73,7 @@ export default function AgentActivity(_props: RendererProps) {
   const customSkill = "custom";
   const [showSkillConfig, setShowSkillConfig] = useState(false);
   const [showSkillBuilder, setShowSkillBuilder] = useState(false);
-  const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; provider: string; size: string | null }>>([]);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
   // Server agent sessions (WP3.2): the owner's durable chats, listed live.
   const agentClient = useAgentClient();
   const agentChat = useAgentAvailable();
@@ -93,11 +99,63 @@ export default function AgentActivity(_props: RendererProps) {
   });
 
   useEffect(() => {
-    if (isWeb) return; // Ollama is a host process — desktop only.
+    if (isWeb) {
+      // Thin client (server owner): the models the SERVER's LM Studio offers —
+      // the same server the background skills run their local model on.
+      if (!host) return;
+      host
+        .agentModels()
+        .then((m) =>
+          setAvailableModels(
+            m.local.models
+              .filter((x) => x.type === null || x.type === "llm" || x.type === "vlm")
+              .map((x) => ({ id: x.id, name: x.id, provider: "local", size: x.quantization })),
+          ),
+        )
+        .catch(() => {});
+      return;
+    }
     try {
       ollamaApi.listModels().then(setAvailableModels).catch(() => {});
     } catch { /* not in Tauri */ }
-  }, [isWeb]);
+  }, [isWeb, host]);
+
+  // Skill config (parity A): the desktop card on every shell. A thin client edits
+  // the skill note (the server scheduler's source of truth) through VaultClient.
+  const canConfigure = !isWeb || !!host;
+  const saveSkill: SaveSkill = async (skill, patch) => {
+    if (isWeb) {
+      await updateSkillNote(vaultClient, skill.id, patch);
+    } else {
+      const { runAtHour, dependsOn, structured, ...rest } = patch;
+      if (Object.keys(rest).length) await agentApi.updateSkill(skill.id, rest);
+      const extra: SkillPatch = {};
+      if (runAtHour !== undefined) extra.runAtHour = runAtHour;
+      if (dependsOn !== undefined) extra.dependsOn = dependsOn;
+      if (structured !== undefined) extra.structured = structured;
+      if (Object.keys(extra).length) await updateSkillNote(vaultClient, skill.id, extra);
+    }
+    queryClient.invalidateQueries({ queryKey: ["agent", "skills"] });
+  };
+
+  // Running server skills + Stop (parity A, server owner on a thin client).
+  const { data: runningSkills } = useQuery({
+    queryKey: ["agent", "skills-running", host?.scope?.() ?? ""],
+    queryFn: () => host!.runningSkills(),
+    enabled: isWeb && !!host,
+    refetchInterval: useLivePollMs(5_000, 15_000),
+  });
+  const [stopError, setStopError] = useState<string | null>(null);
+  const stopSkill = async (name: string) => {
+    setStopError(null);
+    try {
+      await host!.cancelSkill(name);
+    } catch (e) {
+      setStopError(hostServiceErrorText(e));
+    }
+    queryClient.invalidateQueries({ queryKey: ["agent", "skills-running"] });
+    queryClient.invalidateQueries({ queryKey: ["agent", "dispatches"] });
+  };
 
   // Web: source skills + run history straight from the vault (owner passthrough),
   // since triggering/live-status isn't available in the browser. Desktop: the
@@ -169,12 +227,51 @@ export default function AgentActivity(_props: RendererProps) {
         {/* Server agent sessions (owner, web) */}
         {agentChat && <SessionsSection sessions={sessions ?? []} />}
 
+        {/* Server skill runs in flight (owner, thin client) — with Stop */}
+        {isWeb && host && (runningSkills?.length ?? 0) > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+              <Loader2 size={12} className="animate-spin" /> Running on the server
+            </h3>
+            <div className="space-y-1.5">
+              {(runningSkills ?? []).map((r: RunningSkill) => (
+                <div
+                  key={r.skill}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                  style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
+                  data-testid="running-skill-row"
+                >
+                  <span className="w-2 h-2 rounded-full animate-pulse flex-shrink-0" style={{ background: "var(--color-accent)" }} />
+                  <span className="text-xs font-medium flex-1 truncate capitalize" style={{ color: "var(--text-primary)" }}>
+                    {r.skill.replace(/-/g, " ")}
+                  </span>
+                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    {r.kind === "local" ? `local${r.model ? ` · ${r.model}` : ""}` : "claude"} · since {formatTime(r.startedAt)}
+                  </span>
+                  <button
+                    onClick={() => stopSkill(r.skill)}
+                    disabled={r.cancelRequested}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] disabled:opacity-50 hover:bg-[var(--glass-hover)]"
+                    style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}
+                    title="Stop this run (it is recorded as cancelled)"
+                    aria-label={`Stop ${r.skill}`}
+                  >
+                    <Square size={9} /> {r.cancelRequested ? "Stopping…" : "Stop"}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {stopError && <div className="text-[11px] mt-1" style={{ color: "var(--color-danger)" }}>{stopError}</div>}
+          </div>
+        )}
+
         {/* Skills */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Skills</h3>
-            {/* Create/configure spawn or edit skills via the host backend — desktop only. */}
-            {!isWeb && (
+            {/* Create/configure skills: desktop, or the server owner on a thin client
+                (the skill notes are the server scheduler's config). */}
+            {canConfigure && (
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => { setShowSkillBuilder(true); setShowSkillConfig(true); }}
@@ -200,10 +297,21 @@ export default function AgentActivity(_props: RendererProps) {
                 <SkillBuilder onCreated={() => { setShowSkillBuilder(false); queryClient.invalidateQueries({ queryKey: ["agent", "skills"] }); }} onCancel={() => setShowSkillBuilder(false)} />
               )}
               {(skills || []).map((skill) => (
-                <SkillConfigCard key={skill.id} skill={skill} onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })} onRun={() => handleDispatch(skill.skillName, skill.prompt)} availableModels={availableModels} />
+                <SkillConfigCard
+                  key={skill.id}
+                  skill={skill}
+                  allSkills={skills || []}
+                  save={saveSkill}
+                  onUpdate={() => queryClient.invalidateQueries({ queryKey: ["agent", "skills"] })}
+                  onRun={() => (isWeb ? queueRun(skill.id) : handleDispatch(skill.skillName, skill.prompt))}
+                  runLabel={isWeb ? "Run on the server at its next scheduler tick" : "Run now"}
+                  availableModels={availableModels}
+                />
               ))}
               {(!skills || skills.length === 0) && !showSkillBuilder && (
-                <div className="text-xs" style={{ color: "var(--text-muted)" }}>No skills configured. They'll be created automatically on next restart.</div>
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  {isWeb ? "No skills yet. Create one with +; the server scheduler runs enabled skills." : "No skills configured. They'll be created automatically on next restart."}
+                </div>
               )}
             </div>
           ) : (
@@ -632,27 +740,48 @@ function SkillBuilder({ onCreated, onCancel }: { onCreated: () => void; onCancel
 
 const CLAUDE_MODELS = [{ id: "sonnet", name: "Sonnet" }, { id: "opus", name: "Opus" }, { id: "haiku", name: "Haiku" }];
 
-function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: AgentSkill; onUpdate: () => void; onRun: () => void; availableModels: Array<{ id: string; name: string; provider: string; size: string | null }> }) {
+function SkillConfigCard({
+  skill,
+  allSkills,
+  save,
+  onUpdate,
+  onRun,
+  runLabel,
+  availableModels,
+}: {
+  skill: AgentSkill;
+  allSkills: AgentSkill[];
+  save: SaveSkill;
+  onUpdate: () => void;
+  onRun: () => void;
+  runLabel: string;
+  availableModels: ModelOption[];
+}) {
   const [expanded, setExpanded] = useState(false);
   const [editPrompt, setEditPrompt] = useState(skill.prompt);
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const initialStructured = skill.structured ? JSON.stringify(skill.structured, null, 2) : "";
+  const [structuredText, setStructuredText] = useState(initialStructured);
 
-  // Per-skill AI routing, persisted to the skill note (read by DispatchManager).
-  // provider null = inherit the global background default.
-  const handleProviderChange = async (provider: string) => {
-    // "" provider = inherit global default; reset model when provider changes.
-    await agentApi.updateSkill(skill.id, { provider, model: "" });
-    onUpdate();
+  // Every change goes through `save` (validated like the desktop + the server
+  // scheduler's parser); a refusal is shown inline, nothing is half-written.
+  const apply = async (patch: SkillPatch) => {
+    setError(null);
+    try {
+      await save(skill, patch);
+      onUpdate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
-  const handleSkillModelChange = async (model: string) => {
-    await agentApi.updateSkill(skill.id, { model });
-    onUpdate();
-  };
-  const handleExecutionModeChange = async (executionMode: string) => {
-    await agentApi.updateSkill(skill.id, { executionMode });
-    onUpdate();
-  };
+
+  // Per-skill AI routing, persisted to the skill note (read by the scheduler).
+  // "" provider = inherit the server default; reset model when provider changes.
+  const handleProviderChange = (provider: string) => apply({ provider: provider as SkillPatch["provider"], model: "" });
+  const handleSkillModelChange = (model: string) => apply({ model });
+  const handleExecutionModeChange = (executionMode: string) => apply({ executionMode: executionMode as SkillPatch["executionMode"] });
   // Two-click inline confirm — window.confirm() is unreliable in the Tauri webview.
   const handleDelete = async () => {
     if (!confirmingDelete) {
@@ -668,35 +797,45 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
     }
   };
 
-  const handleToggle = async () => {
-    await agentApi.updateSkill(skill.id, { enabled: !skill.enabled });
-    onUpdate();
-  };
-
-  const handleIntervalChange = async (secs: number) => {
-    await agentApi.updateSkill(skill.id, { intervalSecs: secs });
-    onUpdate();
-  };
-
-  const handleRunAtHourChange = async (hour: number) => {
-    // Store runAtHour by updating skill metadata via a direct vault update
-    const note = await vaultApi.getNote(skill.id);
-    const meta = (note.metadata || {}) as Record<string, unknown>;
-    await vaultApi.updateNote(skill.id, { metadata: { ...meta, runAtHour: hour } });
-    onUpdate();
-  };
+  const handleToggle = () => apply({ enabled: !skill.enabled });
+  const handleIntervalChange = (secs: number) => apply({ intervalSecs: secs });
+  const handleRunAtHourChange = (hour: number) => apply({ runAtHour: hour });
+  const handleDependsOnChange = (name: string) => apply({ dependsOn: name || null });
 
   const handleSavePrompt = async () => {
     setSaving(true);
-    await agentApi.updateSkill(skill.id, { prompt: editPrompt });
+    await apply({ prompt: editPrompt });
     setSaving(false);
-    onUpdate();
   };
 
+  const handleSaveStructured = async () => {
+    let parsed: unknown;
+    try {
+      parsed = structuredText.trim() ? JSON.parse(structuredText) : null;
+    } catch (e) {
+      setError(`structured config is not valid JSON: ${(e as Error).message}`);
+      return;
+    }
+    const err = parsed === null ? null : validateStructuredBlock(parsed);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSaving(true);
+    await apply({ structured: parsed as Record<string, unknown> | null });
+    setSaving(false);
+  };
+
+  const otherSkills = allSkills.filter((s) => s.id !== skill.id).map((s) => s.skillName);
+  const intervalOptions = INTERVAL_OPTIONS.some((o) => o.value === skill.intervalSecs)
+    ? INTERVAL_OPTIONS
+    : [...INTERVAL_OPTIONS, { label: formatInterval(skill.intervalSecs), value: skill.intervalSecs }].sort((a, b) => a.value - b.value);
+  const selectStyle = { background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" };
+
   return (
-    <div className="rounded-lg overflow-hidden" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
+    <div className="rounded-lg overflow-hidden" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} data-testid="skill-config-card">
       <div className="flex items-center gap-2 px-3 py-2">
-        <button onClick={handleToggle} title={skill.enabled ? "Disable" : "Enable"}>
+        <button onClick={handleToggle} title={skill.enabled ? "Disable" : "Enable"} aria-label={skill.enabled ? `Disable ${skill.skillName}` : `Enable ${skill.skillName}`}>
           {skill.enabled
             ? <ToggleRight size={16} style={{ color: "var(--color-success)" }} />
             : <ToggleLeft size={16} style={{ color: "var(--text-muted)" }} />
@@ -710,7 +849,7 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
             {skill.description}
           </div>
         </button>
-        <button onClick={onRun} className="p-1 rounded hover:bg-[var(--glass-hover)]" title="Run now">
+        <button onClick={onRun} className="p-1 rounded hover:bg-[var(--glass-hover)]" title={runLabel} aria-label={runLabel}>
           <Play size={12} style={{ color: "var(--color-accent)" }} />
         </button>
         {confirmingDelete ? (
@@ -728,6 +867,7 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
           </button>
         )}
       </div>
+      {error && !expanded && <div className="px-3 pb-2 text-[10px]" style={{ color: "var(--color-danger)" }}>{error}</div>}
 
       {expanded && (
         <div className="px-3 pb-3 space-y-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
@@ -738,9 +878,10 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
               value={skill.intervalSecs}
               onChange={(e) => handleIntervalChange(Number(e.target.value))}
               className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              style={selectStyle}
+              aria-label="Run interval"
             >
-              {INTERVAL_OPTIONS.map((opt) => (
+              {intervalOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -751,7 +892,8 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
                   value={skill.runAtHour ?? 7}
                   onChange={(e) => handleRunAtHourChange(Number(e.target.value))}
                   className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-                  style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                  style={selectStyle}
+                  aria-label="Run at hour"
                 >
                   {HOUR_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -767,12 +909,29 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>After:</span>
+            <select
+              value={skill.dependsOn ?? ""}
+              onChange={(e) => handleDependsOnChange(e.target.value)}
+              className="rounded px-1.5 py-0.5 text-[10px] outline-none"
+              style={selectStyle}
+              title="Wait until this other skill has run today"
+              aria-label="Depends on"
+            >
+              <option value="">No dependency</option>
+              {otherSkills.map((n) => <option key={n} value={n}>{n}</option>)}
+              {skill.dependsOn && !otherSkills.includes(skill.dependsOn) && <option value={skill.dependsOn}>{skill.dependsOn} (missing)</option>}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>AI:</span>
             <select
               value={skill.provider ?? ""}
               onChange={(e) => handleProviderChange(e.target.value)}
               className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              style={selectStyle}
+              aria-label="AI provider"
             >
               <option value="">Default (global)</option>
               <option value="claude">Claude</option>
@@ -783,11 +942,15 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
                 value={skill.model ?? ""}
                 onChange={(e) => handleSkillModelChange(e.target.value)}
                 className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-                style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+                style={selectStyle}
+                aria-label="AI model"
               >
                 <option value="">Default model</option>
                 {(skill.provider === "claude" ? CLAUDE_MODELS : availableModels.filter(m => m.provider === "local"))
                   .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                {skill.model && !(skill.provider === "claude" ? CLAUDE_MODELS : availableModels).some((m) => m.id === skill.model) && (
+                  <option value={skill.model}>{skill.model}</option>
+                )}
               </select>
             )}
             <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>Mode:</span>
@@ -795,8 +958,9 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
               value={skill.executionMode || "agentic"}
               onChange={(e) => handleExecutionModeChange(e.target.value)}
               className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-              style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+              style={selectStyle}
               title="Agentic: free-form tool-calling loop. Structured: grammar-constrained classification (requires a 'structured' config block in the skill)."
+              aria-label="Execution mode"
             >
               <option value="agentic">Agentic</option>
               <option value="structured">Structured</option>
@@ -808,7 +972,8 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
             onChange={(e) => setEditPrompt(e.target.value)}
             rows={6}
             className="w-full rounded px-2 py-1.5 text-[10px] outline-none resize-none font-mono"
-            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+            style={selectStyle}
+            aria-label="Skill prompt"
           />
           {editPrompt !== skill.prompt && (
             <button
@@ -820,6 +985,34 @@ function SkillConfigCard({ skill, onUpdate, onRun, availableModels }: { skill: A
               {saving ? "Saving..." : "Save Prompt"}
             </button>
           )}
+
+          {(skill.executionMode === "structured" || skill.structured) && (
+            <div className="space-y-1">
+              <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                Structured config (JSON): sourceTags, schema, resultField required; excludeTags, allowedValues, alsoAddTags, shortcutLabels, limit optional.
+              </div>
+              <textarea
+                value={structuredText}
+                onChange={(e) => setStructuredText(e.target.value)}
+                rows={8}
+                className="w-full rounded px-2 py-1.5 text-[10px] outline-none resize-y font-mono"
+                style={selectStyle}
+                spellCheck={false}
+                aria-label="Structured config"
+              />
+              {structuredText !== initialStructured && (
+                <button
+                  onClick={handleSaveStructured}
+                  disabled={saving}
+                  className="px-3 py-1 rounded text-[10px] font-medium"
+                  style={{ background: "var(--color-accent)", color: "white" }}
+                >
+                  {saving ? "Saving..." : "Save Structured Config"}
+                </button>
+              )}
+            </div>
+          )}
+          {error && <div className="text-[10px]" style={{ color: "var(--color-danger)" }}>{error}</div>}
         </div>
       )}
     </div>
