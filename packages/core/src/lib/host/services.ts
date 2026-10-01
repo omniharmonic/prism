@@ -363,6 +363,12 @@ export function hostServiceErrorText(e: unknown): string {
       return "The server has no credential for this service yet (Network → Server).";
     case "not_running":
       return "That skill is not running any more.";
+    case "not_cancellable":
+      return "That run can't be stopped from Prism (no cancel handle); it ends on its own.";
+    case "local_unavailable":
+      return "The server's local model server isn't reachable, so the model can't be checked.";
+    case "rate_limited":
+      return "Too many tests in a short time — try again in a minute.";
     case "csrf_refused":
       return "The server refused a cross-site request.";
     default:

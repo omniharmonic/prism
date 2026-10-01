@@ -301,7 +301,8 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   const skill = note("s1", { tags: ["agent-skill"], metadata: { skillName: "triage", runner: "server", lastRun: "2026-10-01T08:00:00Z", enabled: true, executionMode: "agentic", extra: 7 } });
   const other = note("s2", { tags: ["agent-skill"], metadata: { skillName: "digest" } });
   const fv = fakeVault([skill, other]);
-  const vc = { ...fv.vc, listNotes: async () => [skill, other] };
+  const weekly = note("s3", { tags: ["agent-skill"], metadata: { skillName: "weekly", dependsOn: "triage" } });
+  const vc = { ...fv.vc, listNotes: async () => [skill, other, weekly] };
   await updateSkillNote(vc, "s1", { enabled: false, intervalSecs: 900, dependsOn: "digest", provider: "local", model: "qwen-7b" });
   const m = fv.updates[0]!.params.metadata as Record<string, unknown>;
   assert.deepEqual([m.enabled, m.intervalSecs, m.dependsOn, m.provider, m.model], [false, 900, "digest", "local", "qwen-7b"]);
@@ -313,6 +314,7 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
     [{ runAtHour: 24 }, /run hour/],
     [{ dependsOn: "triage" }, /itself/],
     [{ dependsOn: "ghost" }, /no skill named/],
+    [{ dependsOn: "weekly" }, /dependency cycle/],
     [{ provider: "openai" }, /provider/],
     [{ model: "--x y" }, /model id/],
     [{ executionMode: "structured" }, /structured mode needs a valid config block/],

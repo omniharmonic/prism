@@ -37,11 +37,22 @@ import {
 } from "../agent-exec";
 import { config } from "../config";
 import { csrfRefusal } from "./actions";
+import { consumeRateLimit } from "../middleware/ratelimit";
+
+let ROUTING_TEST_PER_MIN = 6;
+let routingTestGen = 0;
+/** Tests: set the /routing/test per-minute limit (also starts a fresh bucket). */
+export function _setRoutingTestLimitForTests(n: number): void {
+  ROUTING_TEST_PER_MIN = n;
+  routingTestGen++;
+}
+const MAX_DISPATCH_PROMPT = 120_000;
 import { requestVia } from "../auth/actor";
 import { cancelSkillRun, listRunningSkills } from "../worker/skills";
 import {
   INTERACTIVE_SKILLS,
   isInteractiveSkill,
+  listLocalModels,
   mergeRouting,
   modelsOverview,
   readRouting,
@@ -115,6 +126,8 @@ agentApi.post("/dispatch", async (c) => {
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
     return c.json({ error: "bad_request", detail: "prompt required" }, 400);
   }
+  // L5: bounded prompt (a transform carries ≤60k chars of note + the template).
+  if (body.prompt.length > MAX_DISPATCH_PROMPT) return c.json({ error: "bad_request", detail: "prompt too long" }, 400);
   if (body.profile !== undefined && body.profile !== "vault-ro") {
     return c.json({ error: "bad_request", detail: "profile may only be \"vault-ro\"" }, 400);
   }
@@ -243,8 +256,23 @@ agentApi.put("/routing", async (c) => {
   const denied = ownerMutation(c);
   if (denied) return denied;
   const body = await c.req.json<{ routing?: unknown }>().catch(() => null);
+  let next: ReturnType<typeof readRouting>;
   try {
-    const next = mergeRouting(readRouting(), body?.routing);
+    next = mergeRouting(readRouting(), body?.routing);
+  } catch (e) {
+    return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
+  }
+  // L4: a NEWLY chosen local model must be one the server's LM Studio lists.
+  const before = readRouting();
+  const newLocal = INTERACTIVE_SKILLS.filter((k) => next[k].provider === "local" && (before[k].provider !== "local" || before[k].model !== next[k].model));
+  if (newLocal.length) {
+    const models = await listLocalModels();
+    if (!models.reachable) return c.json({ error: "local_unavailable", detail: "the server's local model server is not reachable, so the model can't be checked" }, 409);
+    const known = new Set(models.models.map((m) => m.id));
+    const bad = newLocal.find((k) => !known.has(next[k].model));
+    if (bad) return c.json({ error: "bad_request", detail: `${bad}: '${next[bad].model}' is not a model on the server's LM Studio` }, 400);
+  }
+  try {
     writeRouting(next);
     return c.json({ skills: INTERACTIVE_SKILLS, routing: next });
   } catch (e) {
@@ -257,6 +285,12 @@ agentApi.put("/routing", async (c) => {
 agentApi.post("/routing/test", async (c) => {
   const denied = ownerMutation(c);
   if (denied) return denied;
+  // L4: each test may run a local completion — rate-limited per owner.
+  const retry = consumeRateLimit(`agent-routing-test:${routingTestGen}:${config.ownerEmail}`, ROUTING_TEST_PER_MIN, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ error: "rate_limited", retryAfter: retry }, 429);
+  }
   const body = await c.req.json<{ skill?: unknown; route?: unknown }>().catch(() => null);
   try {
     const route = body?.route !== undefined ? validateRoute("route", body.route) : isInteractiveSkill(body?.skill) ? routeFor(body.skill) : null;

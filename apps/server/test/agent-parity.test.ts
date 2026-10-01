@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentApi } from "../src/routes/agent";
+import { agentApi, _setRoutingTestLimitForTests } from "../src/routes/agent";
 import { config } from "../src/config";
 import { setMembership } from "../src/db";
 import { issueDeviceToken } from "../src/auth/device";
@@ -41,6 +41,7 @@ beforeEach(() => {
   lmLoaded = true;
   lmUp = true;
   lmReply = "local answer";
+  _setRoutingTestLimitForTests(1000);
   spawned = [];
   root = mkdtempSync(join(tmpdir(), "prism-parity-"));
   configureAgentRunner({
@@ -214,7 +215,7 @@ test("dispatch routed CLAUDE: the chosen --model is passed; full-tools dispatche
   // A free-text skill name never selects a route.
   await call("POST", "/dispatch", owner(), { prompt: "z", skill: "opus", profile: "vault-ro" });
   assert.equal(spawned[2]![spawned[2]!.indexOf("--model") + 1], "sonnet");
-  assert.equal(lmCalls.length, 0);
+  assert.equal(lmCalls.filter((c) => c.url.endsWith("/chat/completions")).length, 0);
 });
 
 test("cancel a local inline-AI dispatch: the LM Studio request is aborted and the dispatch ends cancelled", async () => {
@@ -297,4 +298,40 @@ test("running skills + cancel route: lists the in-flight server run; cancel → 
   await new Promise((res) => setTimeout(res, 5));
   const dn = [...notes.values()].find((n) => (n.tags ?? []).includes("agent-dispatch"));
   assert.equal(dn?.metadata?.status, "cancelled");
+});
+
+test("L4: a newly routed local model must be listed by the server's LM Studio (unknown → 400, unreachable → 409); /routing/test is rate-limited", async () => {
+  assert.equal((await call("PUT", "/routing", owner(), { routing: { edit: { provider: "local", model: "not-installed" } } })).status, 400);
+  lmUp = false;
+  assert.equal((await call("PUT", "/routing", owner(), { routing: { edit: { provider: "local", model: "qwen-7b" } } })).status, 409);
+  lmUp = true;
+  assert.equal((await call("PUT", "/routing", owner(), { routing: { edit: { provider: "local", model: "qwen-7b" } } })).status, 200);
+  // Re-saving an unchanged local route does not need LM Studio.
+  lmUp = false;
+  assert.equal((await call("PUT", "/routing", owner(), { routing: { edit: { provider: "local", model: "qwen-7b" }, chat: { provider: "claude", model: "haiku" } } })).status, 200);
+  lmUp = true;
+  _setRoutingTestLimitForTests(2);
+  const t = { route: { provider: "claude", model: "sonnet" } };
+  assert.equal((await call("POST", "/routing/test", owner(), t)).status, 200);
+  assert.equal((await call("POST", "/routing/test", owner(), t)).status, 200);
+  const r = await call("POST", "/routing/test", owner(), t);
+  assert.equal(r.status, 429);
+  assert.ok(r.headers.get("retry-after"));
+});
+
+test("L5: an oversized dispatch prompt is refused before anything runs; an oversized local reply is refused, a long text is capped", async () => {
+  assert.equal((await call("POST", "/dispatch", owner(), { prompt: "x".repeat(120_001), skill: "edit", profile: "vault-ro" })).status, 400);
+  assert.equal(spawned.length + lmCalls.length, 0);
+  await call("PUT", "/routing", owner(), { routing: { edit: { provider: "local", model: "qwen-7b" } } });
+  lmCalls = [];
+  lmReply = "y".repeat(2_100_000);
+  const j = (await (await call("POST", "/dispatch", owner(), { prompt: "p", skill: "edit", profile: "vault-ro" })).json()) as { id: string };
+  for (let i = 0; i < 100 && getDispatch(j.id)?.status === "running"; i++) await new Promise((res) => setTimeout(res, 5));
+  assert.equal(getDispatch(j.id)!.status, "error");
+  assert.match(getDispatch(j.id)!.error!, /too large/);
+  lmReply = "z".repeat(300_000);
+  const k = (await (await call("POST", "/dispatch", owner(), { prompt: "p", skill: "edit", profile: "vault-ro" })).json()) as { id: string };
+  for (let i = 0; i < 100 && getDispatch(k.id)?.status === "running"; i++) await new Promise((res) => setTimeout(res, 5));
+  const len = getDispatch(k.id)!.output.length;
+  assert.ok(len <= 200_000 && len > 199_000, `capped at 200k (got ${len})`);
 });

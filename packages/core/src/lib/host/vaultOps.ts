@@ -249,7 +249,14 @@ export function validateStructuredBlock(s: unknown): string | null {
  */
 export function validateSkillPatch(
   patch: SkillPatch,
-  ctx: { skillName: string; skillNames: string[]; currentMode?: string; currentStructured?: unknown },
+  ctx: {
+    skillName: string;
+    skillNames: string[];
+    /** Every skill's current dependsOn (by skillName) — for cycle detection (L6). */
+    dependsOnByName?: Record<string, string | null | undefined>;
+    currentMode?: string;
+    currentStructured?: unknown;
+  },
 ): string | null {
   if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") return "enabled must be true or false";
   if (patch.intervalSecs !== undefined) {
@@ -262,6 +269,15 @@ export function validateSkillPatch(
   if (patch.dependsOn !== undefined && patch.dependsOn !== null) {
     if (patch.dependsOn === ctx.skillName) return "a skill cannot depend on itself";
     if (!ctx.skillNames.includes(patch.dependsOn)) return `no skill named '${patch.dependsOn}'`;
+    // L6: following the chain from the new dependency must never come back here
+    // (a cycle means neither skill ever runs: each waits for the other "today").
+    const deps = ctx.dependsOnByName ?? {};
+    const seen = new Set<string>();
+    for (let cur: string | null | undefined = patch.dependsOn; cur; cur = deps[cur]) {
+      if (cur === ctx.skillName) return `that would create a dependency cycle (${[...seen, cur].join(" → ")} → ${patch.dependsOn})`;
+      if (seen.has(cur)) break; // an existing cycle elsewhere; not ours to report
+      seen.add(cur);
+    }
   }
   if (patch.provider !== undefined && !SKILL_PROVIDERS.includes(patch.provider)) return "provider must be claude, local or the default";
   if (patch.model !== undefined && patch.model !== "" && !MODEL_RE.test(patch.model)) return "model id has invalid characters";
@@ -310,13 +326,21 @@ export async function updateSkillNote(
     if (!(note.tags ?? []).includes("agent-skill")) throw new Error("not an agent-skill note");
     const md = (note.metadata ?? {}) as Record<string, unknown>;
     let skillNames: string[] = [];
+    const dependsOnByName: Record<string, string | null> = {};
     if (patch.dependsOn) {
       const all = vc.listNotes ? await vc.listNotes({ tag: "agent-skill", limit: 200 }) : [];
-      skillNames = all.map((n) => String((n.metadata as Record<string, unknown> | null)?.skillName ?? "")).filter(Boolean);
+      for (const n of all) {
+        const m = (n.metadata ?? {}) as Record<string, unknown>;
+        const name = typeof m.skillName === "string" ? m.skillName : "";
+        if (!name) continue;
+        skillNames.push(name);
+        dependsOnByName[name] = typeof m.dependsOn === "string" && m.dependsOn ? m.dependsOn : null;
+      }
     }
     const err = validateSkillPatch(patch, {
       skillName: String(md.skillName ?? ""),
       skillNames,
+      dependsOnByName,
       currentMode: typeof md.executionMode === "string" ? md.executionMode : "agentic",
       currentStructured: md.structured,
     });

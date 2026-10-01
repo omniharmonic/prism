@@ -191,6 +191,10 @@ export function claudeAvailable(): boolean {
   }
 }
 
+/** L5 caps: the raw HTTP body and the returned text. */
+const MAX_LOCAL_RESPONSE_BYTES = 2_000_000;
+const MAX_LOCAL_TEXT_CHARS = 200_000;
+
 export class LocalRefusedError extends Error {
   constructor(msg: string) {
     super(msg);
@@ -227,9 +231,20 @@ export async function localChat(model: string, system: string, user: string, opt
     throw new Error(`local model unreachable: ${scrub(err.message)}`);
   }
   if (!resp.ok) throw new Error(`local model returned HTTP ${resp.status}`);
-  const j = (await resp.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string | null } }> } | null;
-  const text = j?.choices?.[0]?.message?.content;
-  if (typeof text !== "string") throw new Error("local model response had no text");
+  // L5: bounded response — never buffer an unbounded body from the model server.
+  const declared = Number(resp.headers.get("content-length") ?? 0);
+  if (declared > MAX_LOCAL_RESPONSE_BYTES) throw new Error("local model response too large");
+  const raw = await resp.text();
+  if (raw.length > MAX_LOCAL_RESPONSE_BYTES) throw new Error("local model response too large");
+  let j: { choices?: Array<{ message?: { content?: string | null } }> } | null = null;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    j = null;
+  }
+  const full = j?.choices?.[0]?.message?.content;
+  if (typeof full !== "string") throw new Error("local model response had no text");
+  const text = full.length > MAX_LOCAL_TEXT_CHARS ? full.slice(0, MAX_LOCAL_TEXT_CHARS) : full;
   // Reasoning models may prefix a <think>…</think> block; the inline edit wants the answer only.
   return text.replace(/^\s*<think>[\s\S]*?<\/think>\s*/i, "").trim();
 }
