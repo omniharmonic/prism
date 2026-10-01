@@ -17,6 +17,7 @@ import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashComm
 import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
 import { CollabToolbar } from "./CollabToolbar";
+import { SuggestionReview } from "./SuggestionReview";
 
 export interface CollabUser {
   name: string;
@@ -195,6 +196,7 @@ export function CollabEditor({
           canReview={canReview}
         />
       )}
+      {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). */}
       {editor && canComment && (
         <BubbleMenu
