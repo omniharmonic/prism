@@ -32,6 +32,8 @@ import {
   configureAgentSessions,
   bootSweepAgentSessions,
   createSession,
+  changeSessionMode,
+  cancelTurn,
   startTurn,
   getTurn,
   getSession,
@@ -46,6 +48,9 @@ import {
   type SessionVault,
 } from "../src/agent-sessions";
 import { db, resolveVaultEntry, setMembership } from "../src/db";
+import { issueInternalPat } from "../src/auth/pat";
+import { enterAgentTool, agentToolAllowed } from "../src/agent-policy";
+import type { McpPrincipal } from "../src/mcp/auth";
 import { issueDeviceToken } from "../src/auth/device";
 import type { Note } from "../src/parachute";
 
@@ -1031,4 +1036,110 @@ test("WP3.4 billing mode rides on /runner and /limits (subscription → label th
 
 test("WP3.4 /limits is owner-only like the rest of /api/agent", async () => {
   assert.equal((await agentApi.request("/limits")).status, 403);
+});
+
+
+function turnPrincipal(turnId: string): McpPrincipal {
+  const pat = issueInternalPat({ email: config.ownerEmail, vaultId: "primary", scope: "write", turnId });
+  return { via: "pat", credentialId: pat.row.id, agentTurnId: turnId, readOnly: false, expiresAt: pat.row.expires_at, vaultBound: true,
+    actor: { kind: "user", email: config.ownerEmail, vaultId: "primary", role: "owner", grants: [] } };
+}
+
+test("session permissions persist independently, snapshot each turn, and reject stale changes", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "suggest" });
+    const other = await newSession({ permissionMode: "read-write" });
+    assert.equal(getSession(sid)!.profile, "prism-suggest");
+    const r = await postTurn(sid, { prompt: "Propose a correction" });
+    assert.equal(r.status, 200);
+    const { turnId } = await r.json() as { turnId: string };
+    const snapshot = db.prepare("SELECT permission_mode, policy_version, profile FROM agent_turns WHERE id = ?").get(turnId);
+    assert.deepEqual(snapshot, { permission_mode: "suggest", policy_version: 1, profile: "prism-suggest" });
+    cancelTurn(turnId);
+    const updated = changeSessionMode(sid, "read-only", 1);
+    assert.equal(updated.permission_mode, "read-only");
+    assert.equal(updated.policy_version, 2);
+    assert.equal(getSession(other)!.permission_mode, "read-write");
+    assert.throws(() => changeSessionMode(sid, "read-write", 1), /changed elsewhere/);
+    const reloaded = await agentApi.request(`/sessions/${sid}`, { headers: owner() });
+    assert.equal((await reloaded.json() as any).session.permission_mode, "read-only");
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("suggest-only turn credentials cannot invoke alternate direct-write or administrative tools", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "suggest" });
+    const result = await postTurn(sid, { prompt: "Suggest only" });
+    const { turnId } = await result.json() as { turnId: string };
+    const principal = turnPrincipal(turnId);
+    assert.equal(agentToolAllowed(principal, "prism_get_note"), true);
+    assert.equal(agentToolAllowed(principal, "prism_suggest_edit"), true);
+    assert.equal(agentToolAllowed(principal, "prism_add_comment"), true);
+    for (const name of ["prism_update_note", "prism_create_note", "prism_restore_version", "prism_resolve_comment", "prism_share", "prism_vote", "prism_sheet_update"]) {
+      assert.equal(agentToolAllowed(principal, name), false, name);
+      assert.throws(() => enterAgentTool(principal, name), /no longer permits/);
+    }
+    cancelTurn(turnId);
+    assert.equal(agentToolAllowed(principal, "prism_suggest_edit"), false);
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("downgrade blocks new calls immediately and waits for an admitted tool to finish", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  let release: (() => void) | undefined;
+  try {
+    const sid = await newSession({ permissionMode: "read-write" });
+    const result = await postTurn(sid, { prompt: "Edit" });
+    const { turnId } = await result.json() as { turnId: string };
+    const principal = turnPrincipal(turnId);
+    release = enterAgentTool(principal, "prism_update_note");
+    const pending = changeSessionMode(sid, "read-only", 1);
+    assert.equal(pending.pending_mode, "read-only");
+    assert.equal(pending.permission_mode, "read-write", "do not claim a downgrade before a mutation drains");
+    assert.equal(agentToolAllowed(principal, "prism_update_note"), false);
+    assert.ok(patRevoked.length > 0, "revoke the runner credential before confirmation");
+    assert.equal((await postTurn(sid, { prompt: "Another turn" })).status, 409);
+    release();
+    const applied = getSession(sid)!;
+    assert.equal(applied.pending_mode, null);
+    assert.equal(applied.permission_mode, "read-only");
+    assert.equal(applied.policy_version, 2);
+    assert.equal(agentToolAllowed(principal, "prism_update_note"), false);
+    const audit = db.prepare("SELECT state FROM agent_policy_audit WHERE session_id = ? ORDER BY id").all(sid);
+    assert.deepEqual(audit, [{ state: "pending" }, { state: "applied" }]);
+  } finally { release?.(); delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("an active turn cannot gain authority, and legacy turns must stop before migration", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    for (const params of [{ permissionMode: "read-only" }, { profile: "vault-rw" }]) {
+      const sid = await newSession(params);
+      const { turnId } = await (await postTurn(sid, { prompt: "Keep working" })).json() as { turnId: string };
+      assert.throws(() => changeSessionMode(sid, "suggest", 1), /Stop the running turn/);
+      assert.equal(getSession(sid)!.pending_mode, null);
+      cancelTurn(turnId);
+      assert.equal(changeSessionMode(sid, "suggest", 1).profile, "prism-suggest");
+    }
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
+});
+
+test("permission API validates modes and versions and enforces session ownership", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ permissionMode: "read-only" });
+    const patch = (body: unknown, headers = owner()) => agentApi.request(`/sessions/${sid}/permissions`, { method: "PATCH", headers: { ...J, ...headers }, body: JSON.stringify(body) });
+    const mismatch = await agentApi.request(`/sessions/${sid}/permissions`, { method: "PATCH", headers: { ...J, ...owner(), "X-Prism-Write-Actor": "user:other@test.local" }, body: JSON.stringify({ mode: "read-write", expectedVersion: 1 }) });
+    assert.equal(mismatch.status, 409);
+    assert.equal(getSession(sid)!.permission_mode, "read-only");
+    assert.equal((await patch({ mode: "root", expectedVersion: 1 })).status, 400);
+    assert.equal((await patch({ mode: "read-write" })).status, 400);
+    assert.equal((await patch({ mode: "suggest", expectedVersion: 1 }, { cookie: sessionCookie(makeSession("guest@test.local")) })).status, 403);
+    assert.equal((await patch({ mode: "suggest", expectedVersion: 1 })).status, 200);
+    assert.equal((await patch({ mode: "read-write", expectedVersion: 1 })).status, 409);
+    delete process.env.AGENT_PRISM_PROFILES;
+    assert.equal((await patch({ mode: "read-write", expectedVersion: 2 })).status, 409);
+  } finally { delete process.env.AGENT_PRISM_PROFILES; }
 });

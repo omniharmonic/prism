@@ -34,7 +34,7 @@ import { useComposerDraft } from "../../lib/agent/useComposerDraft";
 import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
-import type { AgentClient, AgentProfile, AgentSessionSummary } from "../../lib/agent/sessions";
+import type { AgentClient, AgentProfile, AgentPermissionMode, AgentSessionSummary } from "../../lib/agent/sessions";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
@@ -439,6 +439,7 @@ export function Conversation({
   compact?: boolean;
 }) {
   const conv = useAgentConversation(client, sessionId);
+  const mobileComposer = useIsMobile();
   const queryClient = useQueryClient();
   const limits = useAgentLimits();
   // The profiles the server offers (prism-* only when enabled); older servers: the two vault profiles.
@@ -448,6 +449,28 @@ export function Conversation({
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [profile, setProfile] = useState<AgentProfile>("vault-ro");
+  const [draftMode, setDraftMode] = useState<AgentPermissionMode>("read-only");
+  const [changingMode, setChangingMode] = useState(false);
+  const permissionModes = limits?.permissionModes;
+  const modeLabels: Record<AgentPermissionMode, string> = { "read-only": "Read-only", suggest: "Suggested edits only", "read-write": "Read/write" };
+  const permissionPending = conv.session?.pending_mode;
+  useEffect(() => {
+    if (!permissionPending) return;
+    const timer = window.setInterval(() => { void conv.reload(); }, 1000);
+    return () => window.clearInterval(timer);
+  }, [permissionPending, conv.reload]);
+  const changeMode = async (mode: AgentPermissionMode) => {
+    if (!sessionId) { setDraftMode(mode); return; }
+    if (!client.updatePermissions || !conv.session?.policy_version || changingMode) return;
+    setChangingMode(true);
+    try {
+      await client.updatePermissions(sessionId, mode, conv.session.policy_version);
+      conv.setError(null);
+      await conv.reload();
+      void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
+    } catch (error) { await conv.reload(); conv.setError(agentErrorText(error)); }
+    finally { setChangingMode(false); }
+  };
   const [creating, setCreating] = useState<string | null>(null); // prompt being sent in a draft
   const [draftError, setDraftError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -488,7 +511,7 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || running || creating || sendingRef.current) return;
+      if (!text || running || creating || sendingRef.current || permissionPending || changingMode) return;
       const sentDraft = textArg ?? input;
       if (textArg !== undefined) setInput(textArg);
       sendingRef.current = true;
@@ -499,7 +522,7 @@ export function Conversation({
         setCreating(text);
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
-          const { sessionId: id } = await client.createSession({ title, profile, noteId: draft?.noteId });
+          const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId });
           await client.sendTurn(id, text, draft?.noteId ? { noteId: draft.noteId } : {});
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
           clearIfUnchanged(sentDraft);
@@ -519,7 +542,7 @@ export function Conversation({
       sendingRef.current = false;
       setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
@@ -535,11 +558,11 @@ export function Conversation({
 
   // Focus the composer for a fresh draft (not on touch — avoids popping the keyboard unasked).
   useEffect(() => {
-    if (isDraft && !fullScreen) requestAnimationFrame(() => inputRef.current?.focus());
-  }, [isDraft, fullScreen]);
+    if (isDraft && !fullScreen && !mobileComposer) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [isDraft, fullScreen, mobileComposer]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !fullScreen && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && (!mobileComposer || e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void submit();
     }
@@ -617,7 +640,7 @@ export function Conversation({
         background: fullScreen ? "var(--bg-surface)" : undefined,
       }}
     >
-      {isDraft && (
+      {isDraft && !permissionModes?.length && (
         <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <div className="flex flex-wrap rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
             {pickable.map((p) => [p, PROFILE_LABELS[p].label, isReadOnlyProfile(p) ? <Lock key="l" size={11} /> : <PenLine key="p" size={11} />] as [AgentProfile, string, ReactNode]).map(([p, label, icon]) => (
@@ -641,6 +664,24 @@ export function Conversation({
           <span className="truncate">{PROFILE_LABELS[profile].hint}</span>
         </div>
       )}
+      {!!permissionModes?.length && (isDraft || !!client.updatePermissions) && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <label className="flex items-center gap-2" style={{ color: "var(--text-secondary)" }}>
+            Agent permissions
+            <select
+              aria-label="Agent permissions"
+              value={isDraft ? draftMode : conv.session?.permission_mode ?? (isReadOnlyProfile(conv.session?.profile) ? "read-only" : conv.session?.profile === "prism-suggest" ? "suggest" : "read-write")}
+              disabled={changingMode || !!permissionPending || (!isDraft && !conv.session)}
+              onChange={(event) => { void changeMode(event.target.value as AgentPermissionMode); }}
+              className="rounded-lg border px-2 py-2"
+              style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)", color: "var(--text-primary)", minHeight: 36 }}
+            >
+              {permissionModes.map((mode) => <option key={mode} value={mode}>{modeLabels[mode]}</option>)}
+            </select>
+          </label>
+          {permissionPending && <span role="status">Stopping previous work before switching to {modeLabels[permissionPending]}…</span>}
+        </div>
+      )}
       {isDraft && <AgentBudgetLine />}
       {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
       <div className="flex items-end gap-2">
@@ -652,7 +693,7 @@ export function Conversation({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           rows={1}
-          enterKeyHint={fullScreen ? "send" : undefined}
+          enterKeyHint={mobileComposer ? "enter" : undefined}
           placeholder={running ? "The agent is working…" : isDraft ? "Ask the agent…" : "Reply…"}
           data-testid="agent-input"
           className="min-w-0 flex-1 resize-none rounded-2xl px-3.5 py-2 outline-none"
@@ -680,7 +721,7 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || changingMode || !!permissionPending}
             aria-label="Send"
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"

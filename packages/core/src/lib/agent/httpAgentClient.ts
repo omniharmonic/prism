@@ -60,6 +60,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
   }
 
   return {
+    updatePermissions: (id, mode, expectedVersion) => call("PATCH", `/sessions/${enc(id)}/permissions`, { mode, expectedVersion }),
     createSession: (p = {}) => call("POST", "/sessions", p),
     listSessions: ({ limit, archived } = {}) => {
       const q = new URLSearchParams();

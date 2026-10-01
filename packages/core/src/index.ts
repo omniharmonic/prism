@@ -138,6 +138,7 @@ export type {
   AgentStreamMessage,
   AgentStreamHandlers,
   AgentProfile,
+  AgentPermissionMode,
   AgentBilling,
   AgentLimits,
   AgentTurnStatus,

@@ -26,6 +26,8 @@
  * holding prompts, final replies, tool NAMES and touched note ids — never raw
  * tool results.
  */
+import { settleAgentPolicy, auditPolicy } from "./agent-policy";
+import { modeProfile, profileMode, type AgentPermissionMode } from "./agent-profiles";
 import { notifyTurnEnd } from "./push";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -83,6 +85,9 @@ export interface SessionRow {
   owner_email: string;
   title: string | null;
   profile: AgentProfile;
+  permission_mode: AgentPermissionMode | null;
+  policy_version: number;
+  pending_mode: AgentPermissionMode | null;
   note_id: string | null;
   cli_session_id: string | null;
   status: SessionStatus;
@@ -236,8 +241,8 @@ export function purgeCliArtifacts(projectDir: string, sessionId: string): void {
 
 const q = {
   insertSession: db.prepare(
-    `INSERT INTO agent_sessions (id, vault_id, owner_email, title, profile, note_id, status, cost_usd, created_at, updated_at)
-     VALUES (@id, @vault_id, @owner_email, @title, @profile, @note_id, 'idle', 0, @created_at, @updated_at)`,
+    `INSERT INTO agent_sessions (id, vault_id, owner_email, title, profile, permission_mode, note_id, status, cost_usd, created_at, updated_at)
+     VALUES (@id, @vault_id, @owner_email, @title, @profile, @permission_mode, @note_id, 'idle', 0, @created_at, @updated_at)`,
   ),
   getSession: db.prepare("SELECT * FROM agent_sessions WHERE id = ?"),
   listSessions: db.prepare(
@@ -249,8 +254,8 @@ const q = {
   setSessionCost: db.prepare("UPDATE agent_sessions SET cost_usd = ?, updated_at = ? WHERE id = ?"),
   setTranscript: db.prepare("UPDATE agent_sessions SET transcript_note_id = ? WHERE id = ?"),
   insertTurn: db.prepare(
-    `INSERT INTO agent_turns (id, session_id, prompt, note_id, status, started_at)
-     VALUES (@id, @session_id, @prompt, @note_id, 'queued', @started_at)`,
+    `INSERT INTO agent_turns (id, session_id, prompt, note_id, status, started_at, profile, permission_mode, policy_version)
+     VALUES (@id, @session_id, @prompt, @note_id, 'queued', @started_at, @profile, @permission_mode, @policy_version)`,
   ),
   deleteTurn: db.prepare("DELETE FROM agent_turns WHERE id = ?"),
   getTurn: db.prepare("SELECT * FROM agent_turns WHERE id = ?"),
@@ -337,6 +342,7 @@ function record(sessionId: string, turnId: string, ev: AgentEvent): number {
 // ── queries ──────────────────────────────────────────────────────────────────
 
 export function getSession(id: string): SessionRow | null {
+  settleAgentPolicy(id);
   return (q.getSession.get(id) as SessionRow | undefined) ?? null;
 }
 /** The session iff it belongs to (vaultId, email). */
@@ -396,20 +402,57 @@ export function createSession(p: {
   title?: string | null;
   noteId?: string | null;
   profile?: AgentProfile;
+  permissionMode?: AgentPermissionMode;
 }): SessionRow {
+  if (p.permissionMode && !prismProfilesEnabled()) throw new ProfileUnavailableError("Prism session permissions are disabled on this server");
   const now = deps.now();
   const row = {
     id: randomUUID(),
     vault_id: p.vaultId,
     owner_email: p.ownerEmail.toLowerCase(),
     title: p.title?.trim().slice(0, 200) || null,
-    profile: p.profile ?? "vault-rw",
+    profile: p.permissionMode ? modeProfile(p.permissionMode) : p.profile ?? "vault-rw",
+    permission_mode: p.permissionMode ?? null,
     note_id: p.noteId ?? null,
     created_at: now,
     updated_at: now,
   };
   q.insertSession.run(row);
   return getSession(row.id)!;
+}
+
+export class AgentPolicyConflictError extends Error {
+  constructor(public code: string, message: string) { super(message); }
+}
+
+/** Active downgrades revoke new authority immediately; confirmation waits for tools to drain. */
+export function changeSessionMode(id: string, mode: AgentPermissionMode, expectedVersion: number): SessionRow {
+  const s = getSession(id);
+  if (!s) throw new SessionNotFoundError("session not found");
+  if (s.status === "archived") throw new SessionArchivedError("session is archived");
+  if (!prismProfilesEnabled()) throw new ProfileUnavailableError("Prism session permissions are disabled on this server");
+  if (expectedVersion !== s.policy_version) throw new AgentPolicyConflictError("policy_conflict", "Permissions changed elsewhere. Refresh before trying again.");
+  if (s.pending_mode) {
+    if (s.pending_mode === mode) return s;
+    throw new AgentPolicyConflictError("permission_change_pending", "Wait for the pending permission change to finish.");
+  }
+  const current = s.permission_mode ?? profileMode(s.profile);
+  if (current === mode && isPrismProfile(s.profile)) return s;
+  const turn = activeTurn(id);
+  const rank = { "read-only": 0, suggest: 1, "read-write": 2 };
+  if (turn && (!isPrismProfile(s.profile) || rank[mode] >= rank[current])) {
+    throw new AgentPolicyConflictError("stop_before_permission_change", "Stop the running turn before changing to these permissions.");
+  }
+  db.transaction(() => {
+    db.prepare("UPDATE agent_sessions SET pending_mode = ? WHERE id = ?").run(mode, id);
+    auditPolicy(s, mode, "pending");
+  })();
+  if (turn) {
+    dropPat(turn.id); // Revoke before signaling the child; admitted tools remain counted.
+    cancelTurn(turn.id);
+  }
+  settleAgentPolicy(id);
+  return getSession(id)!;
 }
 
 /** Max chars of the open note's body placed into the first turn. */
@@ -428,7 +471,9 @@ export function buildSessionPrompt(
     "You have NO host file, shell, or web access.",
     isReadOnlyProfile(o.profile)
       ? "This session is READ-ONLY: you can query the vault but cannot create, update, or delete notes."
-      : "Report concisely what you changed.",
+      : o.profile === "prism-suggest"
+        ? "You may propose suggested edits and add comments. You cannot directly edit, restore, delete, share, or approve changes."
+        : "Report concisely what you changed.",
   ].join(" ");
   const parts = [rules];
   if (o.firstTurn && o.note) {
@@ -562,6 +607,7 @@ export async function startTurn(
   const s = getSession(sessionId);
   if (!s) throw new SessionNotFoundError("session not found");
   if (s.status === "archived") throw new SessionArchivedError("session is archived");
+  if (s.pending_mode) throw new AgentPolicyConflictError("permission_change_pending", "The previous turn is stopping before permissions change.");
   if (entry.id !== s.vault_id) throw new SessionNotFoundError("session belongs to another vault");
   const busy = activeTurn(sessionId);
   if (busy) throw new TurnConflictError(busy.id);
@@ -589,7 +635,7 @@ export async function startTurn(
   const email = s.owner_email;
   // Reserve the turn SYNCHRONOUSLY (before any await) so a concurrent POST sees
   // it and 409s — the note fetch below must not open a race window.
-  q.insertTurn.run({ id: turnId, session_id: sessionId, prompt: req.prompt, note_id: noteId, started_at: deps.now() });
+  q.insertTurn.run({ id: turnId, session_id: sessionId, prompt: req.prompt, note_id: noteId, started_at: deps.now(), profile: s.profile, permission_mode: s.permission_mode ?? profileMode(s.profile), policy_version: s.policy_version });
   q.setSessionStatus.run("running", deps.now(), sessionId);
   const rollback = () => {
     dropToken(turnId);

@@ -102,3 +102,56 @@ test("late agent response cannot populate a newly selected audience", async ({ p
   });
   expect(message).toContain("Workspace changed");
 });
+
+
+test("session permission selector supports all three modes and restores the saved choice", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?permissions");
+  const selector = page.getByRole("combobox", { name: "Agent permissions" });
+  await expect(selector).toHaveValue("read-only");
+  await selector.selectOption("suggest");
+  await page.getByRole("textbox", { name: "Message the agent" }).fill("Propose a change");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByTestId("agent-conversation-title")).toHaveText("Document conversation");
+  await expect(selector).toHaveValue("suggest");
+  await selector.selectOption("read-write");
+  await expect(selector).toHaveValue("read-write");
+  await page.reload();
+  await expect(selector).toHaveValue("read-write");
+  await selector.selectOption("read-only");
+  await expect(selector).toHaveValue("read-only");
+});
+
+test("pending downgrade stays visible and prevents sending until confirmed", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?permissions");
+  const selector = page.getByRole("combobox", { name: "Agent permissions" });
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await selector.selectOption("read-write");
+  await input.fill("Work on this document");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByTestId("agent-conversation-title")).toHaveText("Document conversation");
+  await input.fill("Next request");
+  await page.evaluate(() => { (window as any).prismAgentFixture.pendingMode = true; });
+  await selector.selectOption("read-only");
+  await expect(page.getByRole("status")).toContainText("Stopping previous work");
+  await expect(selector).toHaveValue("read-write");
+  await expect(selector).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  await expect(selector).toHaveValue("read-only");
+  await expect(selector).toBeEnabled();
+  await expect(input).toHaveValue("Next request");
+});
+
+
+test("mobile agent controls fit the screen and Enter keeps a multiline draft", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/agent.html?permissions");
+  await expect(page.getByRole("combobox", { name: "Agent permissions" })).toBeVisible();
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await input.fill("First thought");
+  await input.press("Enter");
+  await input.pressSequentially("More context");
+  await expect(input).toHaveValue("First thought\nMore context");
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("agent-permissions-mobile.png") });
+});

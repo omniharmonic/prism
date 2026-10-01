@@ -41,6 +41,7 @@ export const PROFILE_LABELS: Record<AgentProfile, { label: string; hint: string 
   "vault-ro": { label: "Read-only", hint: "Can read, not change, your vault" },
   "vault-rw": { label: "Read-write", hint: "Can create and edit notes" },
   skill: { label: "Skill", hint: "Background skill run" },
+  "prism-suggest": { label: "Suggested edits only", hint: "Can suggest edits and comment; changes need review" },
   "prism-ro": { label: "Prism read-only", hint: "Reads through your Prism permissions (comments, history, governance)" },
   "prism-rw": { label: "Prism read-write", hint: "Reads and writes through your Prism permissions; never deletes or shares" },
 };

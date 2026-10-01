@@ -21,7 +21,7 @@ import { streamSSE } from "hono/streaming";
 import { resolveActor } from "../auth/actor";
 import { resolveVaultEntry } from "../db";
 import { getBillingMode } from "../agent-billing";
-import { profileAllowedTools } from "../agent-profiles";
+import { profileAllowedTools, isPermissionMode, prismProfilesEnabled, PERMISSION_MODES } from "../agent-profiles";
 import {
   startDispatch,
   startExternalDispatch,
@@ -64,6 +64,8 @@ import {
 } from "../local-ai";
 import {
   createSession,
+  changeSessionMode,
+  AgentPolicyConflictError,
   listSessions,
   getOwnedSession,
   listTurns,
@@ -105,6 +107,8 @@ agentApi.use("*", async (c, next) => {
   if (actor.kind !== "user" || actor.role !== "owner") {
     return c.json({ error: "forbidden" }, 403);
   }
+  const expectedActor = c.req.header("X-Prism-Write-Actor");
+  if (expectedActor && expectedActor !== `user:${actor.email}`) return c.json({ error: "write_actor_changed" }, 409);
   await next();
 });
 
@@ -183,6 +187,7 @@ agentApi.get("/limits", (c) => {
     ...budgetStatus(actor.email),
     profiles: availableSessionProfiles(),
     defaultProfile: "vault-ro",
+    permissionModes: prismProfilesEnabled() ? PERMISSION_MODES : [],
   });
 });
 
@@ -381,7 +386,7 @@ function sessionDetail(s: SessionRow) {
   return { session: s, turns, lastSeq };
 }
 
-type SessionBody = { title?: unknown; noteId?: unknown; profile?: unknown };
+type SessionBody = { title?: unknown; noteId?: unknown; profile?: unknown; permissionMode?: unknown };
 agentApi.post("/sessions", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
@@ -389,12 +394,15 @@ agentApi.post("/sessions", async (c) => {
   if (body.profile !== undefined && !isSessionProfile(body.profile)) {
     return c.json({ error: "bad_request", detail: `profile must be one of ${availableSessionProfiles().join(", ")}` }, 400);
   }
+  if (body.permissionMode !== undefined && !isPermissionMode(body.permissionMode)) return c.json({ error: "bad_request", detail: "invalid permission mode" }, 400);
+  if (body.permissionMode !== undefined && !prismProfilesEnabled()) return c.json({ error: "profile_unavailable" }, 409);
   const s = createSession({
     vaultId: actor.vaultId,
     ownerEmail: actor.email,
     title: typeof body.title === "string" ? body.title : null,
     noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null,
     profile: isSessionProfile(body.profile) ? body.profile : "vault-rw",
+    permissionMode: isPermissionMode(body.permissionMode) ? body.permissionMode : undefined,
   });
   return c.json({ sessionId: s.id, session: s });
 });
@@ -419,6 +427,22 @@ agentApi.get("/sessions/:id", (c) => {
   return c.json(sessionDetail(s));
 });
 
+agentApi.patch("/sessions/:id/permissions", async (c) => {
+  const s = ownedSession(c);
+  if (!s) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ mode?: unknown; expectedVersion?: unknown }>().catch(() => ({} as { mode?: unknown; expectedVersion?: unknown }));
+  if (!isPermissionMode(body.mode) || !Number.isInteger(body.expectedVersion)) return c.json({ error: "bad_request" }, 400);
+  try {
+    const session = changeSessionMode(s.id, body.mode, body.expectedVersion as number);
+    return c.json({ session }, session.pending_mode ? 202 : 200);
+  } catch (e) {
+    if (e instanceof AgentPolicyConflictError) return c.json({ error: e.code, detail: e.message }, 409);
+    if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);
+    if (e instanceof ProfileUnavailableError) return c.json({ error: "profile_unavailable", detail: e.message }, 409);
+    throw e;
+  }
+});
+
 type TurnBody = { prompt?: unknown; noteId?: unknown };
 agentApi.post("/sessions/:id/turns", async (c) => {
   const s = ownedSession(c);
@@ -441,6 +465,7 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     );
     return c.json({ turnId: t.id, status: t.status });
   } catch (e) {
+    if (e instanceof AgentPolicyConflictError) return c.json({ error: e.code, detail: e.message }, 409);
     if (e instanceof TurnConflictError) return c.json({ error: "conflict", detail: e.message, turnId: e.turnId }, 409);
     if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);
     if (e instanceof SessionBudgetError) return c.json({ error: "budget_exceeded", detail: e.message }, 409);
