@@ -58,3 +58,32 @@ test("editing an all-day event title preserves timing, guests, and occurrence no
   await page.getByRole("button", { name: "Update Event", exact: true }).click();
   expect(await page.evaluate(() => (window as any).prismCalendarFixture.updates)).toEqual([{ eventId: "all-day-event", notify: true, title: "Revised workshop" }]);
 });
+
+test("multi-day and overnight events appear on each occupied day with exclusive ends", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/calendar.html?layout");
+  await expect(page.getByRole("button", { name: /Multi-day offsite/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Overnight handoff/ })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("calendar-agenda-mobile.png") });
+  await page.getByRole("button", { name: "Next period" }).click();
+  await expect(page.getByRole("button", { name: /Multi-day offsite/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Overnight handoff/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /All-day workshop/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Next period" }).click();
+  await expect(page.getByRole("button", { name: /Multi-day offsite/ })).toHaveCount(0);
+});
+
+test("desktop separates concurrent meetings and clips overnight blocks to the local day", async ({ page }, testInfo) => {
+  await page.goto("/e2e-fixtures/calendar.html?layout");
+  await expect(page.getByRole("button", { name: "Previous-month meeting", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Day", exact: true }).click();
+  const a = page.getByRole("button", { name: /^Overlapping A/ });
+  const b = page.getByRole("button", { name: /^Overlapping B/ });
+  const first = page.getByRole("button", { name: /^Design review/ }).first();
+  await a.scrollIntoViewIfNeeded();
+  const boxes = await Promise.all([first, a, b].map(button => button.boundingBox()));
+  for (let i = 0; i < boxes.length - 1; i++) expect(boxes[i]!.x + boxes[i]!.width).toBeLessThanOrEqual(boxes[i + 1]!.x);
+  const overnight = page.getByRole("button", { name: /^Overnight handoff/ });
+  await expect(overnight).toHaveCSS("height", "48px"); // midnight → 1am, not a negative duration
+  await page.screenshot({ path: testInfo.outputPath("calendar-overlap-desktop.png") });
+});

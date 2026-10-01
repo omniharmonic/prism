@@ -14,6 +14,13 @@ const notes = [
   note("recording-two", "Transcripts/Second recording", { date: "2026-10-05" }, ["transcript"]),
   note("unrelated", "Transcripts/Unrelated same-day recording", { date: "2026-10-05" }, ["transcript"]),
 ];
+if (new URLSearchParams(location.search).has("layout")) notes.push(
+  note("trip", "Meetings/Offsite", { title: "Multi-day offsite", start: "2026-10-04", end: "2026-10-07" }),
+  note("overnight", "Meetings/Overnight", { title: "Overnight handoff", start: "2026-10-04T23:30:00-06:00", end: "2026-10-05T01:00:00-06:00" }),
+  note("overlap-a", "Meetings/Overlap A", { title: "Overlapping A", start: "2026-10-05T10:15:00-06:00", end: "2026-10-05T10:45:00-06:00" }),
+  note("overlap-b", "Meetings/Overlap B", { title: "Overlapping B", start: "2026-10-05T10:30:00-06:00", end: "2026-10-05T11:30:00-06:00" }),
+  note("spillover", "Meetings/September", { title: "Previous-month meeting", start: "2026-09-30T10:00:00-06:00", end: "2026-09-30T11:00:00-06:00" }),
+);
 const controls = { deny: false, searches: 0, writes: 0, reads: [] as string[], updates: [] as unknown[] };
 const vault = {
   listNotes: async () => notes.filter((n) => n.tags?.includes("meeting")),

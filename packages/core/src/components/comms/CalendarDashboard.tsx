@@ -12,6 +12,7 @@ import { LiveActionError, liveActionErrorText, type CalendarUpdateParams, type L
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
 import { EventTranscripts } from "./EventTranscripts";
+import { calendarDayKey as dateKey, groupCalendarDays, layoutCalendarDay } from "./calendarLayout";
 import type { RendererProps } from "../renderers/RendererProps";
 
 type CalEvent = {
@@ -45,9 +46,10 @@ function formatTime(dateStr?: string): string {
   catch { return ""; }
 }
 
-function getHour(dateStr?: string): number {
-  if (!dateStr) return 0;
-  try { return new Date(dateStr).getHours(); } catch { return 0; }
+/** Include the day when a displayed time belongs to a neighboring day. */
+function timeOnDay(value: string, day: Date): string {
+  const date = calendarDate(value);
+  return isSameDay(date, day) ? formatTime(value) : `${date.toLocaleDateString("en-US", { weekday: "short" })}, ${formatTime(value)}`;
 }
 
 function startOfWeek(d: Date): Date {
@@ -67,10 +69,6 @@ function getMonthDays(year: number, month: number): Date[] {
 
 function getWeekDays(start: Date): Date[] {
   return Array.from({ length: 7 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
-}
-
-function dateKey(d: Date): string {
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
 export default function CalendarDashboard(_props: RendererProps) {
@@ -107,7 +105,9 @@ function ScopedCalendarDashboard() {
   // Compute date range based on current view
   const { rangeStart, rangeEnd } = useMemo(() => {
     if (view === "month") {
-      return { rangeStart: new Date(year, month, 1), rangeEnd: new Date(year, month + 1, 0, 23, 59, 59) };
+      const days = getMonthDays(year, month);
+      const last = days[days.length - 1];
+      return { rangeStart: days[0], rangeEnd: new Date(last.getFullYear(), last.getMonth(), last.getDate(), 23, 59, 59) };
     } else if (view === "week") {
       const end = new Date(weekStart);
       end.setDate(end.getDate() + 6);
@@ -213,18 +213,7 @@ function ScopedCalendarDashboard() {
     return () => { cancelled = true; };
   }, [rangeKey, queryClient, host]);
 
-  const eventsByDate = useMemo(() => {
-    const map = new Map<string, CalEvent[]>();
-    for (const ev of events) {
-      const ds = ev.start?.dateTime || ev.start?.date;
-      if (!ds) continue;
-      const d = calendarDate(ds);
-      const k = dateKey(d);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k)!.push(ev);
-    }
-    return map;
-  }, [events]);
+  const eventsByDate = useMemo(() => groupCalendarDays(events, rangeStart, rangeEnd), [events, rangeStart, rangeEnd]);
 
   // Navigation
   const prev = () => {
@@ -469,13 +458,10 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
                   <div key={h} style={{ height: 48, borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }} />
                 ))}
                 {/* Event blocks */}
-                {dayEvts.filter((event) => !!event.start?.dateTime).map((ev, ei) => {
-                  const hour = getHour(ev.start?.dateTime) + new Date(ev.start!.dateTime!).getMinutes() / 60;
-                  const endHour = ev.end?.dateTime ? getHour(ev.end.dateTime) + new Date(ev.end.dateTime).getMinutes() / 60 : hour + 1;
-                  const duration = Math.max(0.5, endHour - hour);
+                {layoutCalendarDay(dayEvts, d).map(({ event: ev, start, end, column, columns }, ei) => {
                   return (
-                    <button key={ei} onClick={() => onEventClick(ev)} className="focus-ring absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
-                      style={{ top: hour * 48 + 2, height: duration * 48 - 4, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
+                    <button key={ei} onClick={() => onEventClick(ev)} className="focus-ring absolute rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
+                      style={{ top: start * 0.8 + 2, height: (end - start) * 0.8 - 4, left: `calc(${column / columns * 100}% + 2px)`, width: `calc(${100 / columns}% - 4px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                       <div className="font-medium truncate">{ev.summary || "Event"}</div>
                       <div className="opacity-75">{formatTime(ev.start?.dateTime)}</div>
                     </button>
@@ -497,8 +483,8 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
   const isToday = isSameDay(date, today);
   if (mobile) return <div className="space-y-3 overflow-auto p-4">
     {!events.length && <p className="py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No events for this day.</p>}
-    {[...events].sort((a, b) => (a.start?.dateTime ?? "").localeCompare(b.start?.dateTime ?? "")).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>
-      <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${formatTime(event.start.dateTime)}${event.end?.dateTime ? ` – ${formatTime(event.end.dateTime)}` : ""}` : "All day"}</span>
+    {[...events].sort((a, b) => (a.start?.dateTime ? Date.parse(a.start.dateTime) : -Infinity) - (b.start?.dateTime ? Date.parse(b.start.dateTime) : -Infinity)).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${timeOnDay(event.start.dateTime, date)}${event.end?.dateTime ? ` – ${timeOnDay(event.end.dateTime, date)}` : ""}` : "All day"}</span>
       <span className="mt-1 block break-words text-sm font-medium">{event.summary || "Untitled event"}</span>
       {event.location && <span className="mt-2 block break-words text-xs" style={{ color: "var(--text-secondary)" }}>{event.location}</span>}
     </button>)}
@@ -530,16 +516,10 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
             </div>
           ))}
           {/* Event blocks */}
-          {events.filter((event) => !!event.start?.dateTime).map((ev, i) => {
-            const hour = getHour(ev.start?.dateTime);
-            const endHour = ev.end?.dateTime ? getHour(ev.end.dateTime) : hour + 1;
-            const startMin = ev.start?.dateTime ? new Date(ev.start.dateTime).getMinutes() : 0;
-            const endMin = ev.end?.dateTime ? new Date(ev.end.dateTime).getMinutes() : 0;
-            const topPx = hour * 48 + (startMin / 60) * 48;
-            const heightPx = Math.max(24, (endHour - hour) * 48 + ((endMin - startMin) / 60) * 48);
+          {layoutCalendarDay(events, date).map(({ event: ev, start, end, column, columns }, i) => {
             return (
-              <button key={i} onClick={() => onEventClick(ev)} className="focus-ring absolute left-1 right-1 rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
-                style={{ top: topPx, height: heightPx, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
+              <button key={i} onClick={() => onEventClick(ev)} className="focus-ring absolute rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
+                style={{ top: start * 0.8, height: (end - start) * 0.8, left: `calc(${column / columns * 100}% + 4px)`, width: `calc(${100 / columns}% - 8px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                 <div className="text-xs font-medium truncate">{ev.summary || "Event"}</div>
                 <div className="text-[10px] opacity-80">{formatTime(ev.start?.dateTime)} – {formatTime(ev.end?.dateTime)}</div>
                 {ev.location && <div className="text-[10px] opacity-70 truncate mt-0.5">{ev.location}</div>}
@@ -562,7 +542,7 @@ function EventCard({ event }: { event: CalEvent }) {
         <Clock size={10} style={{ color: "var(--text-muted)" }} />
         <span className="text-[10px]" style={{ color: "var(--text-secondary)" }}>
           {formatTime(event.start?.dateTime) || "All day"}
-          {event.end?.dateTime && ` – ${formatTime(event.end.dateTime)}`}
+          {event.end?.dateTime && ` – ${event.start?.dateTime ? timeOnDay(event.end.dateTime, calendarDate(event.start.dateTime)) : formatTime(event.end.dateTime)}`}
         </span>
       </div>
       {event.location && <div className="text-[10px] mt-1 truncate" style={{ color: "var(--text-muted)" }}>{event.location}</div>}
@@ -643,7 +623,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
           <div>{event.start?.dateTime || event.start?.date ? calendarDate(event.start.dateTime || event.start.date!).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "Date unavailable"}</div>
           <div>
             {formatTime(event.start?.dateTime) || "All day"}
-            {event.end?.dateTime && ` – ${formatTime(event.end.dateTime)}`}
+            {event.end?.dateTime && ` – ${event.start?.dateTime ? timeOnDay(event.end.dateTime, calendarDate(event.start.dateTime)) : formatTime(event.end.dateTime)}`}
           </div>
         </div>
       </div>
