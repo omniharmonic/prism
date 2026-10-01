@@ -179,7 +179,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                 {isWeb ? (
                   <DesktopOnlyNotice
                     feature="Service credentials"
-                    detail="Parachute, Matrix, Google, and Claude credentials are written to native config and the Keychain on the machine hosting your vault, so they're edited in the desktop app."
+                    detail="This app holds no vault token. Integration credentials (Matrix, Google, Notion, ClickUp, Proton Bridge, transcripts) are stored on the Prism Server: the server owner sets them in Network → Server."
                   />
                 ) : (
                 <>
@@ -400,7 +400,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                 {isWeb ? (
                   <DesktopOnlyNotice
                     feature="AI model routing & local models"
-                    detail="Skill-to-model assignments and the local OpenAI-compatible server (LM Studio / Ollama) run the Claude CLI and reach a model server on the host, so they're configured in the desktop app."
+                    detail="Background skills choose their model on the Prism Server (skill-note provider/model, SKILLS_* settings). Inline edits and transforms run on the server agent."
                   />
                 ) : (
                 /* Interactive-skill model assignments (provider configured in the Local AI section below) */

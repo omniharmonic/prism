@@ -6,6 +6,8 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { sanitizeHtml } from "../../lib/html/sanitize";
 import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
+import { isDesktop } from "../../lib/platform";
+import { useHostServices } from "../../data/HostServicesContext";
 import { WikilinkExtension } from "../../lib/tiptap/WikilinkMark";
 import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
@@ -257,6 +259,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   // Inline prompt state
   const { inlinePromptOpen, inlinePromptPosition, inlinePromptSelection, openInlinePrompt, closeInlinePrompt } = useUIStore();
+  const hostServices = useHostServices();
+  const inlineAgent = isDesktop || !!hostServices;
 
   // Handle Cmd+S and Cmd+J
   useEffect(() => {
@@ -265,10 +269,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         e.preventDefault();
         saveNow();
       }
-      // ⌘J — inline agent prompt
+      // ⌘J — inline agent prompt (desktop, or a thin client whose owner has the
+      // server agent: WP4.3 host services)
       if ((e.metaKey || e.ctrlKey) && e.key === "j") {
         e.preventDefault();
-        if (!editor) return;
+        if (!editor || !inlineAgent) return;
         const { from, to } = editor.state.selection;
         const selectedText = editor.state.doc.textBetween(from, to, " ");
         if (!selectedText.trim()) return; // Need selected text
@@ -284,7 +289,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [saveNow, editor, openInlinePrompt]);
+  }, [saveNow, editor, openInlinePrompt, inlineAgent]);
 
   // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is

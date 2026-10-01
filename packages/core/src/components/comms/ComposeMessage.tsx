@@ -6,6 +6,11 @@ import { matrixApi } from "../../lib/matrix/client";
 import { getPlatformConfig, type Platform } from "../../lib/matrix/bridge-map";
 import type { Note } from "../../lib/types";
 import type { MatrixRoom } from "../../lib/matrix/types";
+import { isDesktop } from "../../lib/platform";
+import { useLiveActions } from "../../data/LiveActionsContext";
+import { liveActionErrorText } from "../../lib/actions/client";
+import { vaultApi } from "../../lib/parachute/client";
+import { roomsFromThreadNotes } from "../../lib/matrix/vaultRooms";
 
 interface ComposeMessageProps {
   onClose: () => void;
@@ -75,12 +80,28 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
   // Fetch people from the vault
   const { data: people } = useNotes({ tag: "person" });
 
+  // Thin client (WP4.3): no Matrix session here, so rooms come from the server's
+  // per-room `message-thread` notes and sending goes through live actions.
+  const liveMatrix = useLiveActions("matrix");
+  const viaServer = !isDesktop && !!liveMatrix;
+
   // Fetch Matrix rooms to match person -> room
-  const { data: rooms } = useQuery({
+  const { data: desktopRooms } = useQuery({
     queryKey: ["matrix", "rooms"],
     queryFn: matrixApi.getRooms,
     retry: 1,
+    enabled: isDesktop,
   });
+  // Same key + limit as VaultMessagesDashboard, so the two share one fetch.
+  const { data: threadNotes } = useQuery({
+    queryKey: ["vault", "notes", { tag: "message-thread" }],
+    queryFn: () => vaultApi.listNotes({ tag: "message-thread", limit: 500 }),
+    enabled: viaServer,
+  });
+  const rooms = useMemo(
+    () => (viaServer ? roomsFromThreadNotes(threadNotes ?? []) : desktopRooms),
+    [viaServer, threadNotes, desktopRooms],
+  );
 
   // Filter people by search
   const filteredPeople = useMemo(() => {
@@ -126,10 +147,11 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
     setSending(true);
     setError(null);
     try {
-      await matrixApi.sendMessage(matchedRoom.room_id, messageBody.trim());
+      if (viaServer) await liveMatrix!.matrixSend(matchedRoom.room_id, messageBody.trim());
+      else await matrixApi.sendMessage(matchedRoom.room_id, messageBody.trim());
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send message");
+      setError(viaServer ? liveActionErrorText(e) : e instanceof Error ? e.message : "Failed to send message");
     } finally {
       setSending(false);
     }
@@ -269,7 +291,9 @@ export function ComposeMessage({ onClose }: ComposeMessageProps) {
             <div className="text-xs px-1" style={{ color: matchedRoom ? "var(--color-success)" : "var(--color-warning)" }}>
               {matchedRoom
                 ? `Will send via: ${matchedRoom.name}`
-                : "No matching Matrix room found for this person and channel."}
+                : !isDesktop && !viaServer
+                  ? "Sending messages needs Matrix live actions on the Prism Server (server owner, ACTIONS_MATRIX_ENABLED)."
+                  : "No matching Matrix room found for this person and channel."}
             </div>
           )}
 

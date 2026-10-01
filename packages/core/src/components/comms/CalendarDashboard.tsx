@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, Exter
 import { calendarApi } from "../../lib/sync/client";
 import { vaultApi } from "../../lib/parachute/client";
 import { isDesktop } from "../../lib/platform";
+import { useHostServices } from "../../data/HostServicesContext";
 import { useLiveActions } from "../../data/LiveActionsContext";
 import { liveActionErrorText, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
@@ -84,6 +85,7 @@ export default function CalendarDashboard(_props: RendererProps) {
   // Web/native: create + RSVP through the server (WP1.5 live actions, gog) when
   // it offers calendar actions. Desktop keeps its Tauri commands (isDesktop).
   const liveCal = useLiveActions("calendar");
+  const host = useHostServices();
   const canCreate = isDesktop || !!liveCal;
   const openTab = useUIStore((s) => s.openTab);
 
@@ -169,15 +171,18 @@ export default function CalendarDashboard(_props: RendererProps) {
   const [syncedRanges, setSyncedRanges] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    // Google → Parachute sync is desktop-only (the browser has no Google access);
-    // the web shell just reads whatever the desktop/background sync persisted.
-    if (!isDesktop) return;
+    // Google → vault range sync: the desktop runs it through its Tauri command;
+    // a thin client (PWA / Prism Client, server owner) asks the Prism Server
+    // (POST /api/calendar/sync, WP4.3). Anyone else just reads the meeting notes
+    // the server's calendar ingest persists.
+    const syncRange = isDesktop ? calendarApi.syncRange : host ? host.calendarSyncRange : null;
+    if (!syncRange) return;
     if (syncedRanges.has(rangeKey)) return;
     let cancelled = false;
     setSyncing(true);
     const fromStr = rangeStart.toISOString().split("T")[0];
     const toStr = rangeEnd.toISOString().split("T")[0];
-    calendarApi.syncRange(fromStr, toStr)
+    syncRange(fromStr, toStr)
       .then((result) => {
         if (!cancelled) {
           setSyncedRanges((prev) => new Set(prev).add(rangeKey));
@@ -195,7 +200,7 @@ export default function CalendarDashboard(_props: RendererProps) {
         if (!cancelled) setSyncing(false);
       });
     return () => { cancelled = true; };
-  }, [rangeKey, queryClient]);
+  }, [rangeKey, queryClient, host]);
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalEvent[]>();

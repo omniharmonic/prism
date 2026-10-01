@@ -11,6 +11,10 @@ import { githubSyncApi } from "../../lib/parachute/client";
 import { GitHubSyncModal } from "./GitHubSyncModal";
 import { useIsWeb } from "../../data/Platform";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
+import { useHostServices } from "../../data/HostServicesContext";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { hostServiceErrorText } from "../../lib/host/services";
+import { addSyncConfig, removeSyncConfig, syncStatusFromNote, SERVER_NOTE_SYNC_ADAPTERS } from "../../lib/host/vaultOps";
 import { cn } from "../../lib/cn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -621,15 +625,28 @@ const SYNC_ADAPTERS = [
 
 function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata: Record<string, unknown> | null; notePath: string | null }) {
   const isWeb = useIsWeb();
+  // Thin client (WP4.3): the server pushes/pulls (POST /api/sync/note/:id/*) with
+  // ITS stored credentials; the config lives in metadata.sync[] like on desktop.
+  // Only the server owner gets a HostServices client.
+  const host = useHostServices();
+  const vaultClient = useVaultClient();
+  const viaServer = isWeb && !!host;
+  // Stable identities: the picker re-searches whenever these change.
+  const notionSearch = useCallback((q: string) => host!.notionPages(q), [host]);
+  const notionBind = useCallback(
+    (pageId: string) => addSyncConfig(vaultClient, noteId, "notion", { remote_id: pageId, direction: "push" }).then(() => undefined),
+    [vaultClient, noteId],
+  );
   const [showAdd, setShowAdd] = useState(false);
   const queryClient = useQueryClient();
 
-  const { data: statuses } = useQuery({
+  const { data: desktopStatuses } = useQuery({
     queryKey: ["sync", "status", noteId],
     queryFn: () => syncApi.status(noteId),
     retry: false,
     enabled: !isWeb,
   });
+  const statuses: SyncStatus[] | undefined = viaServer ? syncStatusFromNote({ metadata }) : desktopStatuses;
 
   const syncConfigs = ((metadata as Record<string, unknown>)?.sync as Array<Record<string, unknown>>) || [];
 
@@ -659,6 +676,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
         return;
       }
       if (adapter === "github") {
+        if (viaServer) return; // directory-level on the server; not offered here
         if (githubConfig) {
           // Directory already has GitHub sync — push this file
           await githubSyncApi.pushFile(githubConfig.id, noteId);
@@ -671,7 +689,8 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
         }
         return;
       }
-      await syncApi.addConfig(noteId, adapter);
+      if (viaServer) await addSyncConfig(vaultClient, noteId, adapter);
+      else await syncApi.addConfig(noteId, adapter);
       queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
       queryClient.invalidateQueries({ queryKey: ["vault"] });
       setShowAdd(false);
@@ -683,34 +702,36 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
   const handleSync = async () => {
     setSyncError(null);
     try {
-      const results = await syncApi.trigger(noteId);
+      const results: Array<{ status: string; message?: string }> = viaServer ? await host!.notePush(noteId) : await syncApi.trigger(noteId);
+      if (viaServer) queryClient.invalidateQueries({ queryKey: ["vault"] });
       const errors = results.filter((r: { status: string }) => r.status === "error");
       if (errors.length > 0) {
         setSyncError(errors.map((e: { message?: string }) => e.message).join("; "));
       }
       queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
     } catch (e) {
-      setSyncError(`Sync failed: ${e}`);
+      setSyncError(`Sync failed: ${viaServer ? hostServiceErrorText(e) : e}`);
     }
   };
 
   const handleRemove = async (adapter: string, remoteId: string) => {
-    await syncApi.removeConfig(noteId, adapter, remoteId);
+    if (viaServer) await removeSyncConfig(vaultClient, noteId, adapter, remoteId);
+    else await syncApi.removeConfig(noteId, adapter, remoteId);
     queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
     queryClient.invalidateQueries({ queryKey: ["vault"] });
   };
 
-  // The sync engine (Google Docs / Notion / GitHub adapters) and the Notion page
-  // picker all back onto host-only Tauri commands, so in the web shell we show a
-  // notice instead of dead controls.
-  if (isWeb) {
+  // Without a HostServices client (a non-owner, a capability viewer) there is
+  // nothing that may push this note anywhere: show a notice, not dead controls.
+  if (isWeb && !host) {
     return (
       <DesktopOnlyNotice
         feature="Note sync"
-        detail="Syncing this note to Google Docs, Notion, or GitHub runs adapters and CLIs on the machine hosting your vault, so it's managed in the desktop app."
+        detail="Syncing a note to Google Docs or Notion runs on the Prism Server with its stored credentials, so only the server owner can set it up."
       />
     );
   }
+  const adapters = viaServer ? SYNC_ADAPTERS.filter((a) => (SERVER_NOTE_SYNC_ADAPTERS as readonly string[]).includes(a.id)) : SYNC_ADAPTERS;
 
   return (
     <div className="space-y-2">
@@ -765,7 +786,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
             onClick={async () => {
               setSyncError(null);
               try {
-                const result = await syncApi.pull(noteId);
+                const result: { status: string; message?: string } = viaServer ? await host!.notePull(noteId) : await syncApi.pull(noteId);
                 if (result.status === "error") {
                   setSyncError((result as { message?: string }).message || "Pull failed");
                 } else {
@@ -773,7 +794,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
                   alert("Pulled from Google Docs. Close and reopen the tab to see updated content.");
                 }
               } catch (e) {
-                setSyncError(`Pull failed: ${e}`);
+                setSyncError(`Pull failed: ${viaServer ? hostServiceErrorText(e) : e}`);
               }
             }}
             className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs transition-colors hover:bg-[var(--glass-hover)]"
@@ -797,7 +818,7 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
         </button>
         {showAdd && (
           <div className="mt-1 py-1 glass-elevated rounded-md overflow-hidden">
-            {SYNC_ADAPTERS.map(({ id, label, icon: Icon }) => (
+            {adapters.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => handleAddSync(id)}
@@ -817,6 +838,8 @@ function SyncSection({ noteId, metadata, notePath }: { noteId: string; metadata:
         <NotionPagePicker
           noteId={noteId}
           metadata={metadata}
+          search={viaServer ? notionSearch : undefined}
+          bind={viaServer ? notionBind : undefined}
           onDone={() => {
             setShowNotionSetup(false);
             queryClient.invalidateQueries({ queryKey: ["sync", "status", noteId] });
@@ -887,9 +910,13 @@ function SyncStateIcon({ state }: { state: string }) {
   }
 }
 
-function NotionPagePicker({ noteId, metadata, onDone, onCancel, onError }: {
+function NotionPagePicker({ noteId, metadata, search, bind, onDone, onCancel, onError }: {
   noteId: string;
   metadata: Record<string, unknown> | null;
+  /** Thin client: search through the server (GET /api/sync/notion/pages). */
+  search?: (query: string) => Promise<Array<{ id: string; title: string; url: string; icon: string | null }>>;
+  /** Thin client: write the binding through the VaultClient seam. */
+  bind?: (pageId: string) => Promise<void>;
   onDone: () => void;
   onCancel: () => void;
   onError: (msg: string) => void;
@@ -901,18 +928,27 @@ function NotionPagePicker({ noteId, metadata, onDone, onCancel, onError }: {
 
   const doSearch = useCallback((query: string) => {
     setLoading(true);
-    invoke<Array<{ id: string; title: string; url: string; icon: string | null }>>(
-      "notion_list_pages", { query: query || null }
-    )
+    (search
+      ? search(query)
+      : invoke<Array<{ id: string; title: string; url: string; icon: string | null }>>("notion_list_pages", { query: query || null }))
       .then((results) => { setPages(results); setSearched(true); })
-      .catch((e) => onError(`Failed to search Notion: ${e}`))
+      .catch((e) => onError(`Failed to search Notion: ${search ? hostServiceErrorText(e) : e}`))
       .finally(() => setLoading(false));
-  }, [onError]);
+  }, [onError, search]);
 
   // Load initial results
   useEffect(() => { doSearch(""); }, [doSearch]);
 
   const handleSelect = async (pageId: string) => {
+    if (bind) {
+      try {
+        await bind(pageId);
+        onDone();
+      } catch (e) {
+        onError(`Failed to configure: ${e}`);
+      }
+      return;
+    }
     try {
       const currentSync = ((metadata as Record<string, unknown>)?.sync as Array<Record<string, unknown>>) || [];
       await invoke("vault_update_note", {

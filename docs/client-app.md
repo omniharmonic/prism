@@ -11,7 +11,8 @@ access**. Everything it can see or change goes through the server gateway, so
 | | Legacy desktop (`apps/desktop`) | Prism Client (`apps/client`) |
 |---|---|---|
 | Trust model | Holds the vault JWT, talks to `localhost:1940` | Holds a per-device `pd_…` token, talks to one Prism Server |
-| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 6 commands: `get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external` |
+| Status | **Legacy since WP4.3** (rollback path only, `apps/desktop/README.md`) | The client for every Mac, the Mac mini included |
+| Backend | ~100 Rust commands, sync services, `claude`/`gog`/`gh` subprocesses | 8 commands for the main window (`get_token`, `sign_in`, `sign_out`, `get_server_origin`, `set_server_origin`, `open_external`, `notify`, `export_note`) + `quick_capture` for the capture window |
 | UI | Desktop build of `@prism/core` | `apps/web` built with `--mode native` |
 | Identity | `Prism`, `com.benjaminlife.prism` | **`Prism Client`**, `com.benjaminlife.prism.client` |
 | Agent / ingest | Local | Server-side (`/api/agent/*`, server workers) |
@@ -19,7 +20,13 @@ access**. Everything it can see or change goes through the server gateway, so
 **Why "Prism Client".** During the transition both apps are installed. The bundle name
 comes from the product name, so a second `Prism.app` would overwrite the legacy one in
 `/Applications`. A distinct name and identifier keep them side by side, with separate
-keychain items and settings. WP4.3 (retire host-mode desktop) can rename it to "Prism".
+keychain items and settings. WP4.3 kept the name: renaming the bundle to "Prism" would
+overwrite the archived legacy `Prism.app` if it is ever restored for a rollback. Rename
+only once the legacy app is gone for good (a product-name change; the identifier, and so
+the keychain item and settings, stay the same).
+
+Feature parity with the legacy desktop, command by command, is
+`docs/roadmap/architecture-v2/desktop-parity.md`.
 
 ## Build and run
 
@@ -279,6 +286,110 @@ commands; quick-capture never holds `get_token`; the capture page calls only
 - **No process spawning** in the shell's code. The opener plugin uses macOS
   LaunchServices (`open`) to show the browser.
 - **Verified by** `scripts/verify-client.mjs` and the Rust unit tests.
+
+## Switch-over runbook (WP4.3): retire the legacy desktop
+
+For the overseer (server steps) and the user (app steps). Do the Mac mini first, then the
+laptop. Nothing here deletes anything: the legacy app and its config are archived, so
+every step can be rolled back.
+
+**0. Before you start (overseer).**
+- The server runs a build with WP4.3 (the read-only `profile: "vault-ro"` dispatch, the
+  Notion page route). Restart pm2 `prism-server` after deploying (it does not hot-reload).
+- `GET /acl/workers` is green and `PRISM_OWNER_TOKEN=… scripts/check-desktop-independence.sh`
+  exits 0, i.e. the server already owns every ingest source and the desktop runs
+  `ingest_mode: "client"`.
+- In the legacy app, write down anything in the desktop-only gaps you rely on
+  (`desktop-parity.md`, "documented gaps"): **GitHub folder-sync configs** (especially
+  auto-sync), Notion database syncs, calendar event edits. Decide per item before step 6.
+
+**1. Back up the legacy config (user, on that Mac).**
+```bash
+mkdir -p -m 700 ~/prism-legacy-archive
+cp -p "$HOME/Library/Application Support/prism/prism-config.json" \
+  ~/prism-legacy-archive/prism-config.json.$(date +%Y%m%d)
+chmod 600 ~/prism-legacy-archive/prism-config.json.*
+```
+The backup holds a live vault token. Keep it in that 0700 folder (step 7 revokes it).
+
+**2. Install Prism Client and sign in (user).**
+- Build (`cd apps/client && npm run tauri build -- --bundles app`, see Build and run) and copy
+  `Prism Client.app` to `/Applications`. Both apps install side by side.
+- Launch it → **Sign in** → the system browser opens the server's consent page ("An app
+  calling itself Prism Client on <host>") → sign in as the owner → **Approve**.
+- Check Settings → Account → **Signed-in devices** lists it.
+
+**3. Decide on live actions (user decides, overseer flips).** The desktop sent email, Matrix
+messages and calendar invites itself; the client does that only through the server's live
+actions, which are **off** by default. For each family you want: set
+`ACTIONS_MATRIX_ENABLED` / `ACTIONS_EMAIL_ENABLED` / `ACTIONS_CALENDAR_ENABLED=true` in
+`apps/server/.env` → restart pm2 → `GET /api/actions` shows `enabled: true, configured: true`.
+(`docs/live-actions.md`. They act AS the owner: audited, idempotent, owner-only.)
+
+**4. Parity checklist (user, in Prism Client).** Use a throwaway `_test` note for anything
+that writes.
+- [ ] Open, edit and autosave a document; a second device sees the edit live (collab); add a comment
+- [ ] Search; semantic search (Search panel)
+- [ ] History panel: open a version, restore it on the `_test` note
+- [ ] Inbox: open a thread; reply (Matrix, if enabled); New message to a person
+- [ ] Email: open a thread; reply / archive (if enabled)
+- [ ] Calendar: change month (the range syncs, no error), create a test event (if enabled), RSVP
+- [ ] Tasks / ClickUp tasks list; create a task
+- [ ] Agent chat: ask a question; Stop; the turn-end notification
+- [ ] ⌘J inline edit on a selection in `_test`; Command bar → "Turn into Email Draft"
+- [ ] Note Sync panel: add Google Docs, Push, Pull on `_test` (and Notion if you use it)
+- [ ] Agent activity: queue a run of an enabled skill (▶); it shows as run within ~1 min
+- [ ] Graph; Map (the basemap is blank in the client: known limit)
+- [ ] Dashboards; Network → Server (ingest health), sharing dialog, Governance tab, a publication
+- [ ] Quick capture (⌘⇧Space), Export Note, drag a `.md` file in
+
+**5. Quit the legacy app (user).** Cmd-Q `Prism.app`, then confirm it is gone:
+`pgrep -fl "Prism.app/Contents/MacOS"` prints nothing. Remove it from Login Items if listed.
+
+**6. Archive, don't delete (user).**
+```bash
+mkdir -p ~/prism-legacy-archive
+mv /Applications/Prism.app ~/prism-legacy-archive/Prism-legacy-$(date +%Y%m%d).app
+```
+
+**7. Remove the vault token from the desktop config (user, with the backup from step 1).**
+```bash
+cfg="$HOME/Library/Application Support/prism/prism-config.json"
+jq '.parachute_api_key = "" | .collab_token = "" | .anthropic_api_key = ""' "$cfg" > "$cfg.tmp" \
+  && chmod 600 "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+security delete-generic-password -s com.prism.anthropic 2>/dev/null || true   # desktop's Anthropic key, if any
+```
+Then **revoke** the old desktop token at the hub, because the backup still holds it, but
+only if it is not shared: compare its `jti` with the server's `PARACHUTE_TOKEN` and the repo
+`.mcp.json` token first (revoking a shared token would cut off the server).
+```bash
+node -e 'const t=require(process.argv[1]).parachute_api_key;console.log(JSON.parse(Buffer.from(t.split(".")[1],"base64url")).jti)' \
+  ~/prism-legacy-archive/prism-config.json.YYYYMMDD
+parachute auth revoke-token <jti>      # the vault enforces it after ~60 s (cache TTL)
+```
+`collab_token` is the server's `COLLAB_TOKEN` (loopback-only); removing it from the desktop
+config is enough. Rotate it in `apps/server/.env` only if the config file ever left the Mac.
+
+**8. Verify (overseer + user).**
+- `scripts/check-client-no-vault-token.sh` on that Mac → `clean`, exit 0. It reads the Prism
+  Client settings dir and the legacy config dir, and the environment of running Prism app
+  processes; it prints only where something was found, never a value.
+- `GET /acl/workers` (Network → Server → Ingest health) is green, and
+  `scripts/check-desktop-independence.sh` still exits 0.
+
+**Laptop.** Same steps 1–8. If the laptop never had the legacy app, steps 1, 5–7 are no-ops;
+still run step 8.
+
+**Rollback (any time).**
+1. Quit Prism Client (it can stay installed; to cut it off, revoke it in Settings → Account
+   → Signed-in devices).
+2. `mv ~/prism-legacy-archive/Prism-legacy-YYYYMMDD.app /Applications/Prism.app`.
+3. Restore the config: `cp -p ~/prism-legacy-archive/prism-config.json.YYYYMMDD "$HOME/Library/Application Support/prism/prism-config.json"`.
+   If step 7 revoked its token, mint a new one
+   (`parachute auth mint-token --scope vault:default:write`) and paste it in the legacy
+   Settings → Services. Keep `ingest_mode: "client"`: the server still owns ingest.
+4. Launch `Prism.app`. The desktop keeps all its Tauri commands; nothing on the server needs
+   to change (the WP4.3 server additions are additive).
 
 ## Known limits (follow-ups)
 

@@ -141,6 +141,39 @@ export type {
 } from "./lib/agent/sessions";
 export { openAgentChat, useAgentChatStore, AGENT_CHAT_TAB } from "./lib/agent/chatStore";
 
+// Host services seam (Arch v2 WP4.3): server-backed replacements for the legacy
+// desktop's host commands (calendar range sync, note sync, Notion picker, inline agent).
+export { HostServicesProvider, useHostServices } from "./data/HostServicesContext";
+export {
+  createHttpHostServices,
+  HostServiceError,
+  hostServiceErrorText,
+  buildEditPrompt,
+  buildTransformPrompt,
+  cleanAgentText,
+  type HostServices,
+  type HostFetch,
+  type HttpHostServicesOptions,
+  type NoteSyncOutcome,
+  type CalendarRangeResult,
+  type NotionPageInfo,
+  type AgentTextOptions,
+} from "./lib/host/services";
+export {
+  syncStatusFromNote,
+  addSyncConfig,
+  removeSyncConfig,
+  extractWikilinks,
+  matchWikilink,
+  resolveWikilinks,
+  queueSkillRun,
+  SERVER_NOTE_SYNC_ADAPTERS,
+  type VaultOpsClient,
+  type NoteSyncConfig,
+  type NoteSyncStatus,
+  type WikilinkResolution,
+} from "./lib/host/vaultOps";
+
 // Live actions seam (Arch v2 WP1.5): email / calendar / Matrix actions via the server.
 export { LiveActionsProvider, useLiveActionsClient, useLiveActionsStatus, useLiveActions } from "./data/LiveActionsContext";
 export {

@@ -1,6 +1,7 @@
 {
   "name": "@prism/desktop",
   "version": "0.1.0",
+  "description": "LEGACY (retired in Arch v2 WP4.3): host-mode Tauri desktop that holds a vault token. Kept building as the rollback path; use apps/client (Prism Client) instead. See apps/desktop/README.md.",
   "private": true,
   "type": "module",
   "scripts": {

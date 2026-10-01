@@ -29,3 +29,12 @@ test("github sync: not configured → 400 (before any network)", async () => {
   assert.equal(r.status, 400);
   assert.match(((await r.json()) as { error: string }).error, /github not configured/);
 });
+
+test("notion page picker: admin only, and not configured → 400 before any network (WP4.3)", async () => {
+  assert.equal((await sync.request("/notion/pages")).status, 403);
+  const tok = makeCapability("note", "n1", "edit");
+  assert.equal((await sync.request("/notion/pages", { headers: { authorization: `Capability ${tok}` } })).status, 403);
+  const r = await sync.request("/notion/pages?q=x", { headers: { cookie: ownerCookie() } });
+  assert.equal(r.status, 400);
+  assert.equal(((await r.json()) as { error: string }).error, "notion_not_configured");
+});

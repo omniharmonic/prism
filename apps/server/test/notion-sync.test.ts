@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { markdownToBlocks, blocksToMarkdown } from "../src/worker/notion";
+import { markdownToBlocks, blocksToMarkdown, NotionClient, parseNotionSearch } from "../src/worker/notion";
 
 test("markdownToBlocks maps headings, bullets, and paragraphs", () => {
   const blocks = markdownToBlocks("# H1\n## H2\n### H3\n- item\n* item2\n\nplain para");
@@ -38,4 +38,31 @@ test("extractText tolerates both plain_text and text.content shapes + empty", ()
     { type: "paragraph", paragraph: { rich_text: [] } },
   ]);
   assert.equal(md, "via text.content\n");
+});
+
+test("searchPages posts a page-only /search and maps the picker rows (WP4.3)", async () => {
+  const calls: Array<{ url: string; body: any }> = [];
+  const fake = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, body: JSON.parse(String(init?.body)) });
+    return new Response(
+      JSON.stringify({
+        results: [
+          { id: "p1", url: "https://notion.so/p1", icon: { type: "emoji", emoji: "📝" }, properties: { Name: { type: "title", title: [{ plain_text: "Road" }, { plain_text: "map" }] } } },
+          { id: "p2", properties: { title: { type: "title", title: [] } }, icon: { type: "external", external: { url: "https://x" } } },
+          { nope: true },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+  const pages = await new NotionClient("secret_x", fake).searchPages("  road ");
+  assert.equal(calls[0]!.url, "https://api.notion.com/v1/search");
+  assert.deepEqual(calls[0]!.body, { page_size: 50, filter: { property: "object", value: "page" }, query: "road" });
+  assert.deepEqual(pages, [
+    { id: "p1", title: "Roadmap", url: "https://notion.so/p1", icon: "📝" },
+    { id: "p2", title: "Untitled", url: "", icon: null },
+  ]);
+  await new NotionClient("secret_x", fake).searchPages("");
+  assert.equal(calls[1]!.body.query, undefined, "an empty query lists everything");
+  assert.deepEqual(parseNotionSearch(null), []);
 });

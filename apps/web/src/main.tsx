@@ -1,10 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
 import { httpLiveActionsClient } from "./actions/HttpLiveActionsClient";
+import { httpHostServices } from "./host/HttpHostServices";
 import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
@@ -249,7 +250,11 @@ async function start() {
                   {/* Live actions (WP1.5): server-owner only; components probe
                       GET /api/actions and keep their old path on 403/off. */}
                   <LiveActionsProvider client={capability ? null : httpLiveActionsClient}>
+                  {/* Host services (WP4.3): the server-side replacements for the
+                      legacy desktop's host commands. Server owner only. */}
+                  <HostServicesProvider client={!capability && isOwner() ? httpHostServices : null}>
                   <App skipOnboarding={isViewer} initialTab={initialTab} />
+                  </HostServicesProvider>
                   </LiveActionsProvider>
                 </AgentClientProvider>
                 </InvalidationSourceProvider>

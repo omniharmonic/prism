@@ -11,6 +11,11 @@ import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
+import { isDesktop } from "../../lib/platform";
+import { useHostServices } from "../../data/HostServicesContext";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { buildTransformPrompt, hostServiceErrorText } from "../../lib/host/services";
+import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
 
 interface Command {
   id: string;
@@ -29,6 +34,27 @@ export function CommandBar() {
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
   const agentChat = useAgentAvailable();
+  // Host-backed commands: the desktop runs them through Tauri; a thin client
+  // (PWA / Prism Client) through the server for its owner (WP4.3). Others get
+  // none of them.
+  const host = useHostServices();
+  const vaultClient = useVaultClient();
+  const hostCmds = isDesktop || !!host;
+
+  /** Run a command, surfacing a failure as an alert instead of a silent rejection. */
+  const surface = useCallback(async (fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (e) {
+      alert(hostServiceErrorText(e));
+    }
+  }, []);
+
+  const transformNote = useCallback(async (noteId: string, targetType: string): Promise<string> => {
+    if (isDesktop) return invoke<string>("agent_transform", { noteId, targetType });
+    const note = await vaultClient.getNote(noteId);
+    return host!.agentText(buildTransformPrompt(note, targetType), { noteId, timeoutMs: 10 * 60_000 });
+  }, [host, vaultClient]);
 
   const { data: searchResults } = useVaultSearch(debouncedQuery);
 
@@ -114,65 +140,76 @@ export function CommandBar() {
       },
     ] : []),
     // Sync commands (only show when a note is open)
-    ...(activeTab ? [
+    ...(activeTab && hostCmds ? [
       {
         id: "sync-notion", label: "Sync to Notion", category: "sync" as const,
         icon: <RefreshCw size={15} />,
         action: async () => {
-          await invoke("sync_add_config", { noteId: activeTab.noteId, adapter: "notion" });
-          await invoke("sync_trigger", { noteId: activeTab.noteId });
+          if (isDesktop) {
+            await invoke("sync_add_config", { noteId: activeTab.noteId, adapter: "notion" });
+            await invoke("sync_trigger", { noteId: activeTab.noteId });
+            closeCommandBar();
+            return;
+          }
           closeCommandBar();
+          await surface(async () => {
+            await addSyncConfig(vaultClient, activeTab.noteId, "notion");
+            const errors = (await host!.notePush(activeTab.noteId)).filter((r) => r.status === "error");
+            if (errors.length) alert(errors.map((r) => r.message).join("; "));
+          });
         },
       },
     ] : []),
     // Transform commands (only show when a note is open)
-    ...(activeTab ? [
+    ...(activeTab && hostCmds ? [
       {
         id: "transform-presentation", label: "Turn into Presentation", category: "transform" as const,
         icon: <Wand2 size={15} />,
-        action: async () => {
-          const content = await invoke<string>("agent_transform", {
-            noteId: activeTab.noteId, targetType: "presentation",
-          });
+        action: () => surface(async () => {
+          closeCommandBar();
+          const content = await transformNote(activeTab.noteId, "presentation");
           const note = await createNote.mutateAsync({
             content,
             metadata: { type: "presentation", aspectRatio: "16:9", theme: "dark" },
             path: `${activeTab.title} (slides)`,
           });
           openTab(note.id, `${activeTab.title} (slides)`, "presentation");
-          closeCommandBar();
-        },
+        }),
       },
       {
         id: "transform-email", label: "Turn into Email Draft", category: "transform" as const,
         icon: <Wand2 size={15} />,
-        action: async () => {
-          const content = await invoke<string>("agent_transform", {
-            noteId: activeTab.noteId, targetType: "email",
-          });
+        action: () => surface(async () => {
+          closeCommandBar();
+          const content = await transformNote(activeTab.noteId, "email");
           const note = await createNote.mutateAsync({
             content,
             metadata: { type: "email", status: "draft", from: "", to: [], subject: "" },
             path: `${activeTab.title} (email)`,
           });
           openTab(note.id, `${activeTab.title} (email)`, "email");
-          closeCommandBar();
-        },
+        }),
       },
+    ] : []),
+    ...(activeTab ? [
       {
         id: "resolve-wikilinks", label: "Resolve Wikilinks in This Note", category: "sync" as const,
         icon: <RefreshCw size={15} />,
         action: async () => {
-          const result = await invoke<{ resolved: number; total: number }>("resolve_wikilinks", {
-            noteId: activeTab.noteId,
-          });
-          alert(`Resolved ${result.resolved} of ${result.total} wikilinks`);
           closeCommandBar();
+          await surface(async () => {
+            // Desktop: its Tauri command. Elsewhere: the same algorithm through the
+            // VaultClient seam (the gateway applies this user's grants).
+            const result = isDesktop
+              ? await invoke<{ resolved: number; total: number }>("resolve_wikilinks", { noteId: activeTab.noteId })
+              : await resolveWikilinks(vaultClient, activeTab.noteId);
+            alert(`Resolved ${result.resolved} of ${result.total} wikilinks`);
+          });
         },
       },
     ] : []),
-    // Global utility
-    {
+    // Global utility (desktop only: it scans every note's content on the host)
+    ...(isDesktop ? [{
       id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
       icon: <RefreshCw size={15} />,
       action: async () => {
@@ -182,8 +219,8 @@ export function CommandBar() {
         alert(`Processed ${result.total_wikilinks} wikilinks: ${result.resolved} resolved, ${result.unresolved} unresolved`);
         closeCommandBar();
       },
-    },
-  ], [createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab]);
+    }] : []),
+  ], [createCommand, activeTab, activeIsNote, agentChat, closeCommandBar, toggleContextPanel, setContextPanelTab, createNote, openTab, hostCmds, host, vaultClient, surface, transformNote]);
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {

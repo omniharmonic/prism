@@ -1,6 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { X, Check, Loader2 } from "lucide-react";
 import { agentApi } from "../../lib/agent/client";
+import { isDesktop } from "../../lib/platform";
+import { useHostServices } from "../../data/HostServicesContext";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { buildEditPrompt, hostServiceErrorText } from "../../lib/host/services";
 
 interface InlinePromptProps {
   noteId: string;
@@ -16,6 +20,10 @@ export function InlinePrompt({ noteId, selection, position, onAccept, onReject }
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Desktop: its Tauri `agent_edit`. Thin client (owner): a READ-ONLY one-shot
+  // run on the Prism Server that only returns the replacement text (WP4.3).
+  const host = useHostServices();
+  const vaultClient = useVaultClient();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -27,14 +35,20 @@ export function InlinePrompt({ noteId, selection, position, onAccept, onReject }
     setError(null);
 
     try {
-      const replacement = await agentApi.edit(noteId, selection, prompt);
+      let replacement: string;
+      if (isDesktop || !host) {
+        replacement = await agentApi.edit(noteId, selection, prompt);
+      } else {
+        const note = await vaultClient.getNote(noteId);
+        replacement = await host.agentText(buildEditPrompt(note, selection, prompt), { noteId, timeoutMs: 3 * 60_000 });
+      }
       setResult(replacement);
     } catch (e) {
-      setError(String(e));
+      setError(isDesktop ? String(e) : hostServiceErrorText(e));
     } finally {
       setLoading(false);
     }
-  }, [noteId, selection, prompt, loading]);
+  }, [noteId, selection, prompt, loading, host, vaultClient]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
