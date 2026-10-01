@@ -690,7 +690,7 @@ test("calendar update reflects onto the meeting note now (ingest metadata shape,
   const body = p[0]!.body as Record<string, unknown>;
   assert.equal(body.if_updated_at, "2026-01-01T00:00:00.000Z");
   assert.equal(body.force, undefined);
-  assert.deepEqual(body.metadata, { title: "Planning v2", start: "2026-10-02T15:30:00-06:00", end: "2026-10-02T16:30:00-06:00" });
+  assert.deepEqual(body.metadata, { title: "Planning v2", start: "2026-10-02T15:30:00-06:00", end: "2026-10-02T16:30:00-06:00", attendeeEmails: ["alice@example.test"], calendarProvider: "google" });
   assert.equal(body.content, undefined);
   assert.equal(body.path, undefined);
 

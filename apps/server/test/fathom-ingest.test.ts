@@ -47,6 +47,9 @@ test("fathomNote matches the desktop note shape", () => {
   assert.equal(n.metadata.source, "fathom");
   assert.equal(n.metadata.source_id, "r1");
   assert.deepEqual(n.metadata.attendees, ["Alice", "bob@x"]);
+  assert.deepEqual(n.metadata.attendeeEmails, ["bob@x"]);
+  assert.equal(n.metadata.start, "2026-06-01T10:00:00Z");
+  assert.equal(n.metadata.scheduledStart, "2026-06-01T10:00:00Z");
   assert.match(n.content, /## Summary\n\nthe summary/);
   assert.match(n.content, /## Transcript\n\n\*\*Alice\*\*: hi/);
   assert.match(n.content, /recording_id: "r1"/);

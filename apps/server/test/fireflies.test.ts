@@ -80,6 +80,8 @@ test("firefliesNote matches the desktop note shape", () => {
   assert.equal(n!.metadata.source, "fireflies");
   assert.equal(n!.metadata.source_id, "01ABC");
   assert.deepEqual(n!.metadata.attendees, ["Alice", "bob@x"]);
+  assert.deepEqual(n!.metadata.attendeeEmails, ["bob@x"]);
+  assert.equal(n!.metadata.start, "2026-07-01T00:00:00.000Z");
   assert.match(n!.content, /## Summary\n\nthe summary/);
   assert.match(n!.content, /## Transcript\n\n\*\*Alice\*\*: hi/);
   assert.match(n!.content, /transcript_id: "01ABC"/);

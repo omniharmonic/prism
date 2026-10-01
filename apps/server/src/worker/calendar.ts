@@ -25,8 +25,8 @@
  *     writers added (transcriptNoteId, status…) survive;
  *   - content template only on CREATE (an existing note's body is never touched);
  *   - each attendee → person note (worker/people.ts), linked `attended-by`;
- *   - transcript auto-link (`has-transcript` + transcriptNoteId/meetingNoteId),
- *     with the desktop's date ±1 / attendee / title-word score;
+ *   - transcript links retain `has-transcript` + transcriptNoteId/meetingNoteId;
+ *     matching now requires a unique ranked choice in both directions;
  *   - reconcile: a calendar-synced note in the window whose event id is absent
  *     from the response is hard-deleted when template-only, else soft-cancelled
  *     (`event_status: "cancelled"`); skipped entirely when the response looks
@@ -56,6 +56,7 @@ import { getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret } from "../secrets";
 import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault } from "./people";
 import { defaultGogRunner, type GogRunner } from "./gmail";
+import { matchTranscript } from "./transcript-match";
 
 export type { CalendarDeleteMode };
 
@@ -156,6 +157,11 @@ export function buildMeetingNote(event: CalEvent): MeetingNote {
     start,
     end,
     attendees: names,
+    attendeeEmails: attendees.flatMap((a) => a.email ? [a.email.trim().toLowerCase()] : []),
+    calendarProvider: "google",
+    ...(asStr(event.recurringEventId) ? { calendarSeriesId: event.recurringEventId } : {}),
+    ...(firstKeyStr(event.originalStartTime, "dateTime", "date") ? { occurrenceStart: firstKeyStr(event.originalStartTime, "dateTime", "date") } : {}),
+    ...(asStr((event.start as Record<string, unknown> | undefined)?.timeZone) ? { timeZone: (event.start as Record<string, unknown>).timeZone } : {}),
     location,
     meetLink: meetUrl,
     htmlLink,
@@ -284,6 +290,7 @@ export interface CalendarIntent {
   eventId?: string;
   date?: string;
   reason?: string;
+  candidates?: Array<{ noteId: string; score: number; evidence: string[] }>;
 }
 
 export const ARCHIVED_TAG = "calendar-archived";
@@ -433,47 +440,68 @@ export async function syncCalendarWindow(
     return [...new Set(ids)];
   }
 
-  /** calendar_sync.rs link_meeting_to_transcripts. */
-  async function linkTranscript(note: Note | null, noteId: string | null, m: MeetingNote): Promise<void> {
-    if (note && (hasRel(note, HAS_TRANSCRIPT) || asStr(note.metadata?.transcriptNoteId))) return;
-    const list = await loadTranscripts();
-    if (!list.length) return;
-    const meetingAtt = m.attendees.map((a) => normalizeAttendee(a.name)).filter(Boolean);
-    const meetingWords = significantWords(m.title);
-    for (const t of list) {
-      const md = t.metadata;
-      if (!md) continue;
-      const td = asStr(md.date) ?? "";
-      if (td !== m.date) {
-        const a = parseDay(m.date);
-        const b = parseDay(td);
-        if (a === null || b === null || Math.abs(a - b) > 1) continue;
-      }
-      if (typeof md.meetingNoteId === "string") continue;
-      let score = 1;
-      const tAtt = Array.isArray(md.attendees) ? md.attendees.filter((x): x is string => typeof x === "string").map(normalizeAttendee) : [];
-      for (const ma of meetingAtt) for (const ta of tAtt) if (ma === ta || ma.includes(ta) || ta.includes(ma)) score += 3;
-      const tWords = significantWords(asStr(md.title) ?? "");
-      for (const w of meetingWords) if (tWords.includes(w)) score += 1;
-      if (score < 2) continue;
+  const peerMeetings = events.flatMap((event) => { try { return [buildMeetingNote(event)]; } catch { return []; } });
+  const seenEvents = new Set(peerMeetings.map((m) => m.eventId));
+  for (const note of meetings) {
+    const md = note.metadata ?? {}, eventId = asStr(md.calendarEventId);
+    if (!eventId || seenEvents.has(eventId)) continue;
+    seenEvents.add(eventId);
+    const names = Array.isArray(md.attendees) ? md.attendees.filter((v): v is string => typeof v === "string") : [];
+    const emails = Array.isArray(md.attendeeEmails) ? md.attendeeEmails.filter((v): v is string => typeof v === "string") : [];
+    peerMeetings.push({ eventId, title: asStr(md.title) ?? "", date: asStr(md.date) ?? "", path: note.path ?? "", content: "", metadata: md,
+      attendees: [...names.map((name) => ({ name, email: name.includes("@") ? name : null })), ...emails.map((email) => ({ name: email, email }))] });
+  }
 
-      const claim = () => (t.metadata = { ...md, meetingNoteId: noteId ?? `(new:${m.eventId})` });
-      if (opts.shadow || !noteId) {
-        intent({ action: "link-transcript", effect: "shadow", noteId: noteId ?? undefined, path: m.path, eventId: m.eventId, reason: `transcript ${t.id} (score ${score})` });
-        claim();
+  /** Ranked occurrence matching. Existing manual/legacy links are never reassigned. */
+  async function linkTranscript(note: Note | null, noteId: string | null, m: MeetingNote): Promise<void> {
+    const existing = asStr(note?.metadata?.transcriptNoteId);
+    if (note && (hasRel(note, HAS_TRANSCRIPT) || existing)) {
+      // Repair only links this matcher created, including a prior half-written pair.
+      if (!existing || !noteId || note.metadata?.transcriptLinkOrigin !== "calendar-match-v1") return;
+      const transcript = (await loadTranscripts()).find((t) => t.id === existing);
+      if (!transcript || transcript.metadata?.meetingNoteId === noteId) return;
+      if (asStr(transcript.metadata?.meetingNoteId)) {
+        intent({ action: "link-transcript", effect: "blocked", noteId, eventId: m.eventId, reason: "Transcript was linked elsewhere; manual review required" });
         return;
       }
+      if (opts.shadow) { intent({ action: "link-transcript", effect: "shadow", noteId, eventId: m.eventId, reason: "Repair incomplete transcript backlink" }); return; }
       try {
-        await vault.updateNote(noteId, { metadata: { transcriptNoteId: t.id }, links: { add: [{ target: t.id, relationship: HAS_TRANSCRIPT }] } });
-        await vault.updateNote(t.id, { metadata: { meetingNoteId: noteId } });
-        claim();
-        res.transcriptLinks++;
-        intent({ action: "link-transcript", effect: "applied", noteId, path: m.path, eventId: m.eventId, reason: `transcript ${t.id} (score ${score})` });
-        if (note) note.metadata = { ...(note.metadata ?? {}), transcriptNoteId: t.id };
-      } catch (e) {
-        intent({ action: "link-transcript", effect: "failed", noteId, path: m.path, eventId: m.eventId, reason: String(e) });
-      }
-      return; // first match only
+        await vault.updateNote(transcript.id, { metadata: { meetingNoteId: noteId } });
+        transcript.metadata = { ...transcript.metadata, meetingNoteId: noteId };
+        intent({ action: "link-transcript", effect: "applied", noteId, eventId: m.eventId, reason: "Repaired incomplete transcript backlink" });
+      } catch (e) { intent({ action: "link-transcript", effect: "failed", noteId, eventId: m.eventId, reason: String(e) }); }
+      return;
+    }
+    const list = await loadTranscripts();
+    if (!list.length) return;
+    const match = matchTranscript(m, list, peerMeetings);
+    if (match.status === "none") return;
+    if (match.status === "ambiguous") {
+      intent({ action: "link-transcript", effect: "blocked", noteId: noteId ?? undefined, eventId: m.eventId, reason: "Ambiguous transcript/event candidates; manual review required", candidates: match.candidates.slice(0, 5) });
+      return;
+    }
+    const best = match.candidates[0]!;
+    if (best.score < 100 && (!recognized || nextPageToken || events.length >= opts.max)) {
+      intent({ action: "link-transcript", effect: "blocked", noteId: noteId ?? undefined, eventId: m.eventId, reason: "Calendar response is incomplete; fuzzy transcript matching deferred" });
+      return;
+    }
+    const t = list.find((t) => t.id === best.noteId)!;
+    const md = t.metadata ?? {};
+    const claim = () => (t.metadata = { ...md, meetingNoteId: noteId ?? `(new:${m.eventId})` });
+    if (opts.shadow || !noteId) {
+      intent({ action: "link-transcript", effect: "shadow", noteId: noteId ?? undefined, path: m.path, eventId: m.eventId, reason: `transcript ${t.id} (${best.evidence.join(", ")}; score ${best.score})` });
+      claim();
+      return;
+    }
+    try {
+      await vault.updateNote(noteId, { metadata: { transcriptNoteId: t.id, transcriptLinkOrigin: "calendar-match-v1", transcriptLinkEvidence: best.evidence }, links: { add: [{ target: t.id, relationship: HAS_TRANSCRIPT }] } });
+      if (note) note.metadata = { ...(note.metadata ?? {}), transcriptNoteId: t.id, transcriptLinkOrigin: "calendar-match-v1" };
+      await vault.updateNote(t.id, { metadata: { meetingNoteId: noteId } });
+      claim();
+      res.transcriptLinks++;
+      intent({ action: "link-transcript", effect: "applied", noteId, path: m.path, eventId: m.eventId, reason: `transcript ${t.id} (${best.evidence.join(", ")}; score ${best.score})` });
+    } catch (e) {
+      intent({ action: "link-transcript", effect: "failed", noteId, path: m.path, eventId: m.eventId, reason: String(e) });
     }
   }
 

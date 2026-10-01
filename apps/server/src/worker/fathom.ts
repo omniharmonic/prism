@@ -135,6 +135,9 @@ export function fathomNote(m: FathomMeeting, summary: string, transcript: string
       title,
       date,
       attendees,
+      attendeeEmails: (m.calendar_invitees ?? []).flatMap((a) => a.email ? [a.email.trim().toLowerCase()] : []),
+      ...(m.recording_start_time || m.recorded_at || m.scheduled_start_time || m.scheduled_at ? { start: m.recording_start_time || m.recorded_at || m.scheduled_start_time || m.scheduled_at } : {}),
+      ...(m.scheduled_start_time || m.scheduled_at ? { scheduledStart: m.scheduled_start_time || m.scheduled_at } : {}),
       fathom_url: shareUrl,
     },
   };

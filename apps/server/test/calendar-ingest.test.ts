@@ -205,6 +205,8 @@ test("buildMeetingNote reproduces the desktop note byte-for-byte", () => {
     start: "2026-10-05T10:00:00-06:00",
     end: "2026-10-05T11:00:00-06:00",
     attendees: ["Ada Example", "grace@example.test"],
+    attendeeEmails: ["ada@example.test", "grace@example.test"],
+    calendarProvider: "google",
     location: "Room 7",
     meetLink: "https://meet.example.test/abc",
     htmlLink: "https://calendar.example.test/e/evt001",
@@ -481,7 +483,7 @@ test("each attendee keeps their OWN email (no zip misalignment when one has none
   assert.equal(room.metadata!.email, undefined);
 });
 
-test("transcript auto-link: date ±1 + attendee/title score, first match only, both sides stamped", async () => {
+test("transcript auto-link: unambiguous date ±1 + exact attendee/title evidence, both sides stamped", async () => {
   const v = fakeVault([
     { id: "t1", path: "vault/transcripts/a", tags: ["transcript"], metadata: { date: "2026-10-04", title: "Roadmap review notes", attendees: ["Ada Example"] }, content: "" },
     { id: "t2", path: "vault/transcripts/b", tags: ["transcript"], metadata: { date: "2026-10-05", title: "Unrelated", attendees: [], meetingNoteId: "other" }, content: "" },
@@ -507,6 +509,49 @@ test("two same-titled events on one day: no flip-flop between them (desktop woul
   assert.ok(r.intents.some((i) => i.action === "skip-collision" && i.eventId === "B"));
   assert.equal(v.totalWrites(), 0);
   assert.equal(r.reconcile.orphans, 0);
+});
+
+test("equal transcript candidates are disclosed without creating a first-match link", async () => {
+  const v = fakeVault(["one", "two"].map((id) => ({ id, tags: ["transcript"], metadata: { date: "2026-10-05", title: "Roadmap review", attendees: ["Ada Example"] } })));
+  const r = await syncCalendarWindow(fakeGog({ events: [ev()] }).client, v.vault, opts());
+  assert.equal(r.transcriptLinks, 0);
+  assert.ok(r.intents.some((i) => i.action === "link-transcript" && i.effect === "blocked" && i.reason?.includes("Ambiguous")));
+  assert.equal(v.byTag("meeting")[0]!.metadata!.transcriptNoteId, undefined);
+});
+
+test("incomplete calendar pages defer fuzzy matching and known competing events remain candidates", async () => {
+  const recording = { id: "recording", tags: ["transcript"], metadata: { date: "2026-10-05", title: "Roadmap review", attendees: ["Ada Example"] } };
+  const v = fakeVault([recording]);
+  const incomplete = await syncCalendarWindow(fakeGog({ events: [ev()], nextPageToken: "another-page" }).client, v.vault, opts());
+  assert.equal(incomplete.transcriptLinks, 0);
+  assert.ok(incomplete.intents.some((i) => i.reason?.includes("incomplete")));
+  const other = desktopNote("other-meeting", ev({ id: "other-event" }));
+  other.path += "-other";
+  const known = fakeVault([recording, other]);
+  const competing = await syncCalendarWindow(fakeGog({ events: [ev()] }).client, known.vault, opts());
+  assert.equal(competing.transcriptLinks, 0);
+  assert.ok(competing.intents.some((i) => i.reason?.includes("Ambiguous")));
+});
+
+test("a partial matcher link is repaired on the next pass without overwriting a manual choice", async () => {
+  const v = fakeVault([{ id: "recording", tags: ["transcript"], metadata: { date: "2026-10-05", title: "Roadmap review", attendees: ["Ada Example"] } }]);
+  const update = v.vault.updateNote.bind(v.vault);
+  let fail = true;
+  v.vault.updateNote = async (id, body) => { if (id === "recording" && fail) throw new Error("simulated backlink failure"); return update(id, body); };
+  const g = fakeGog({ events: [ev()] });
+  const first = await syncCalendarWindow(g.client, v.vault, opts());
+  assert.ok(first.intents.some((i) => i.action === "link-transcript" && i.effect === "failed"));
+  const note = v.byTag("meeting")[0]!;
+  assert.equal(note.metadata!.transcriptLinkOrigin, "calendar-match-v1");
+  assert.equal(v.notes.get("recording")!.metadata!.meetingNoteId, undefined);
+  fail = false;
+  const repaired = await syncCalendarWindow(g.client, v.vault, opts());
+  assert.equal(v.notes.get("recording")!.metadata!.meetingNoteId, note.id);
+  assert.ok(repaired.intents.some((i) => i.reason === "Repaired incomplete transcript backlink"));
+  v.notes.get("recording")!.metadata!.meetingNoteId = "manual-choice";
+  const blocked = await syncCalendarWindow(g.client, v.vault, opts());
+  assert.equal(v.notes.get("recording")!.metadata!.meetingNoteId, "manual-choice");
+  assert.ok(blocked.intents.some((i) => i.action === "link-transcript" && i.effect === "blocked"));
 });
 
 test("a create that finds its path taken by the SAME event (desktop race) merges; a foreign note is never touched", async () => {

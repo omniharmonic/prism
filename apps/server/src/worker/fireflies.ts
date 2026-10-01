@@ -242,6 +242,8 @@ export function firefliesNote(
       date,
       attendees,
       fireflies_url: shareUrl,
+      attendeeEmails: (t.meeting_attendees ?? []).flatMap((a) => a.email ? [a.email.trim().toLowerCase()] : []),
+      ...(typeof t.date === "number" && Number.isFinite(new Date(t.date).getTime()) ? { start: new Date(t.date).toISOString() } : {}),
       // How many characters of verbatim the SOURCE held when we copied it. The
       // delete gate compares the stored body against this, so a short-but-complete
       // transcript is deletable while a summary-only note (0) never is.
