@@ -4,10 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AgentClientProvider, createHttpAgentClient, useAgentChatStore, type AgentClient, type AgentSession, type AgentPermissionMode } from "@prism/core";
 import { fetchMe, agentScope, setActiveVault, setActiveWorkspace } from "../src/config";
 import { httpAgentClient } from "../src/agent/HttpAgentClient";
+import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAgentConversation";
 import { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
 
 const permissionsFixture = new URLSearchParams(location.search).has("permissions");
-const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false };
+const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, completeTurn: () => {} };
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const audience = (owner: string) => JSON.stringify(["https://fixture.example.test/api", "workspace", "vault", owner]);
@@ -42,8 +43,15 @@ const client: AgentClient = {
   sendTurn: async () => ({ turnId: "fixture-turn", status: "done" }),
   cancelTurn: async () => true,
   archiveSession: async () => {},
-  streamSession: () => () => {},
+  streamSession: (_id, _after, handlers) => {
+    controls.completeTurn = () => { session.cost_usd = 0.06; handlers.onEvent({ t: "status", status: "done", turnId: "fixture-turn", seq: 1 }); };
+    return () => {};
+  },
 };
+function BudgetProbe() {
+  const conversation = useAgentConversation(client, session.id);
+  return <div><button onClick={() => { void conversation.send("Budget test"); }}>Send test turn</button><output aria-label="Session spend">{conversation.session?.cost_usd ?? "loading"}</output></div>;
+}
 function Fixture() {
   const [visible, setVisible] = useState(true);
   const [, update] = useState(0);
@@ -51,7 +59,7 @@ function Fixture() {
   return <QueryClientProvider client={query}><AgentClientProvider client={client}>
     <div style={{ height: "100dvh", maxWidth: 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
-      {visible && <AgentPanelChat client={client} />}
+      {new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && <AgentPanelChat client={client} />}
     </div>
   </AgentClientProvider></QueryClientProvider>;
 }

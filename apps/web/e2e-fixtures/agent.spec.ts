@@ -155,3 +155,12 @@ test("mobile agent controls fit the screen and Enter keeps a multiline draft", a
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("agent-permissions-mobile.png") });
 });
+
+
+test("finished streamed turn refreshes the open conversation's spending summary", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?budget");
+  await expect(page.getByRole("status", { name: "Session spend" })).toHaveText("0");
+  await page.getByRole("button", { name: "Send test turn" }).click();
+  await page.evaluate(() => (window as any).prismAgentFixture.completeTurn());
+  await expect(page.getByRole("status", { name: "Session spend" })).toHaveText("0.06");
+});

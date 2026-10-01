@@ -109,7 +109,12 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
             void loadRef.current();
           }
           if (msg.t === "note_touched") void queryClient.invalidateQueries({ queryKey: ["vault"] });
-          if (msg.t === "status" && isTerminalTurn(msg.status)) refreshLists();
+          if (msg.t === "status" && isTerminalTurn(msg.status)) {
+            refreshLists();
+            // The server commits cost and session metadata before this event.
+            // Refresh the open conversation too, not only its sidebar row.
+            void loadRef.current();
+          }
         },
       });
       unsubRef.current = unsub;
