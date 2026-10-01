@@ -250,6 +250,9 @@ export class MatrixClient {
         method: "PUT",
         headers: { Authorization: `Bearer ${this.creds.accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(content),
+        // A stalled homeserver must not hold the request (and its idempotency
+        // key) forever; a timeout is reported as outcome-unknown by the caller.
+        signal: AbortSignal.timeout(30_000),
       },
     );
     if (!r.ok) {

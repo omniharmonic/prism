@@ -43,10 +43,11 @@ export interface EmailSendParams {
   references?: string[];
 }
 export interface EmailReplyParams {
-  /** The stored email note (preferred) … */
-  noteId?: string;
-  /** … or its Message-ID. */
-  messageId?: string;
+  /** The stored email note being replied to. */
+  noteId: string;
+  /** The recipient address(es) the UI SHOWED the user; the server refuses
+   *  (409 `target_changed`) if it would send anywhere else. */
+  expectTo: string[];
   body: string;
   html?: string;
   cc?: string[];
@@ -148,6 +149,10 @@ export function liveActionErrorText(e: unknown): string {
       return "The server has no credential for this service yet.";
     case "rate_limited":
       return "Too many actions in a short time — try again in a bit.";
+    case "target_changed":
+      return "The recipients changed since this was shown — reload and check before sending.";
+    case "ambiguous":
+      return "Several messages match — nothing was changed.";
     case "room_not_joined":
       return "You are not in that room.";
     case "forbidden":

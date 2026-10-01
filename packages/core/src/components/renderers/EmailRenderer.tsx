@@ -54,7 +54,8 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
   const messages = parseEmailContent(note.content, from, date);
 
   // Build reply metadata
-  const replyTo = extractEmail(from);
+  // Reply-To wins when stored (the server applies the same rule).
+  const replyTo = extractEmail((typeof meta?.replyTo === "string" && meta.replyTo) || from);
   const replySubject = subject.startsWith("Re: ") ? subject : `Re: ${subject}`;
 
   return (
@@ -165,10 +166,26 @@ function VaultEmailView({ note }: { note: RendererProps["note"] }) {
 
 /** Extract a bare email address from a "Name <email>" or plain "email" string. */
 function extractEmail(raw: string): string {
-  const match = raw.match(/<([^>]+)>/);
-  if (match) return match[1];
+  // The LAST angle-addr outside quoted strings / comments, so a display name like
+  // `"Eve <eve@evil>" <real@example>` yields the real address (mirrors the
+  // server's RFC 5322 parser; the server re-derives and refuses a mismatch).
+  let inQuote = false;
+  let depth = 0;
+  let start = -1;
+  let last = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "\\") { i++; continue; }
+    if (inQuote) { if (ch === '"') inQuote = false; continue; }
+    if (ch === '"') inQuote = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && depth > 0) depth--;
+    else if (depth === 0 && ch === "<") start = i + 1;
+    else if (depth === 0 && ch === ">" && start >= 0) { last = raw.slice(start, i).trim(); start = -1; }
+  }
+  if (last) return last;
   // Already a bare email?
-  if (raw.includes("@")) return raw.trim();
+  if (raw.includes("@") && !raw.includes("<")) return raw.trim();
   return "";
 }
 
@@ -205,7 +222,7 @@ function EmailReplyBar({
     setErrorText(null);
     try {
       const recipient = extractEmail(to) || to;
-      if (live && noteId) await live.emailReply({ noteId, body: trimmed });
+      if (live && noteId) await live.emailReply({ noteId, expectTo: [recipient], body: trimmed });
       else await gmailApi.send(account, [recipient], subject, trimmed, undefined, threadId || undefined);
       setSendStatus("sent");
       setBody("");

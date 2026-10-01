@@ -33,6 +33,17 @@ import { Hono, type Context } from "hono";
 import { config } from "../config";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { getSecret } from "../secrets";
+import { resolveVaultEntry } from "../db";
+
+/**
+ * Live actions use ONLY the PRIMARY vault's credentials and email notes
+ * (security review M2), whatever X-Prism-Vault the owner is browsing: another
+ * vault's admins can write that vault's integration secrets, and must never be
+ * able to steer the owner's sends (an attacker homeserver, a chosen gog
+ * account). The primary vault's matrix/google/proton-bridge credentials are
+ * themselves server-owner-only to write (routes/integrations.ts).
+ */
+const primaryVaultId = (): string => resolveVaultEntry(undefined).id;
 import { vaultClient, VaultError } from "../parachute";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { PROTON_CREDENTIAL, validateProtonCredential, type ProtonCredential } from "../worker/proton";
@@ -46,6 +57,7 @@ import {
   normalizeMessageId,
   smtpSender,
   validateSendInput,
+  type MailboxResult,
   type SendInput,
 } from "../actions/email";
 import { createArgs, parseCreated, rsvpArgs, runGog, validateCreateInput, validateEventId as validateCalEventId } from "../actions/calendar";
@@ -86,6 +98,53 @@ export function actionOrigin(c: Context): { via: string; origin: ActionOrigin } 
 }
 
 const MAX_BODY_BYTES = 1_200_000;
+
+/**
+ * CSRF guard (security review M1). Refuses:
+ *  - any body that is not `Content-Type: application/json` (415) — a simple
+ *    cross-site form can only send text/plain / urlencoded / multipart;
+ *  - for anything but a native bearer device token (not an ambient credential):
+ *    `Sec-Fetch-Site: cross-site|same-site` (a sibling subdomain is same-site
+ *    and rides a SameSite=Lax cookie), and an `Origin` that is neither
+ *    APP_ORIGIN nor a NATIVE_ORIGINS entry (403 `csrf_refused`).
+ * The PWA is same-origin (`Sec-Fetch-Site: same-origin`), so it is unaffected.
+ * Dev gotcha: a Vite dev server on another port is `same-site` — use its proxy.
+ */
+export function csrfRefusal(c: Context, via: string): Response | null {
+  const ct = (c.req.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  if (ct !== "application/json") return c.json({ error: "unsupported_media_type", detail: "Content-Type must be application/json" }, 415);
+  if (via === "device") return null;
+  const site = (c.req.header("sec-fetch-site") ?? "").toLowerCase();
+  if (site === "cross-site" || site === "same-site") return c.json({ error: "csrf_refused", detail: "cross-site request refused" }, 403);
+  const origin = c.req.header("origin");
+  if (origin !== undefined) {
+    const o = origin.replace(/\/+$/, "");
+    if (o !== config.appOrigin && !config.nativeOrigins.includes(o)) return c.json({ error: "csrf_refused", detail: "request origin not allowed" }, 403);
+  }
+  return null;
+}
+
+/** Read a request body, giving up (null) as soon as it passes `max` bytes —
+ *  the whole body is never buffered first (security review L7). */
+export async function readCapped(req: Request, max: number): Promise<string | null> {
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (declared > max) return null;
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 interface RunCtx {
   actor: OwnerActor;
@@ -130,10 +189,15 @@ function route(spec: Spec) {
       c.header("Retry-After", String(retry));
       return c.json({ error: "rate_limited", retryAfter: retry }, 429);
     }
-    const len = Number(c.req.header("content-length") ?? 0);
-    if (len > MAX_BODY_BYTES) return c.json({ error: "too_large" }, 413);
-    const raw = await c.req.text().catch(() => "");
-    if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) return c.json({ error: "too_large" }, 413);
+    const { via, origin } = actionOrigin(c);
+    // CSRF (security review M1): a JSON content type and a custom header are
+    // both mandatory, so a browser can only send this after a CORS preflight —
+    // a cross-site/sibling-subdomain `text/plain` form riding the SameSite=Lax
+    // session cookie is refused before its body is even read.
+    const csrf = csrfRefusal(c, via);
+    if (csrf) return csrf;
+    const raw = await readCapped(c.req.raw, MAX_BODY_BYTES);
+    if (raw === null) return c.json({ error: "too_large" }, 413);
     let body: Record<string, unknown>;
     try {
       const parsed = raw ? (JSON.parse(raw) as unknown) : {};
@@ -142,13 +206,12 @@ function route(spec: Spec) {
     } catch {
       return c.json({ error: "bad_request", detail: "a JSON object body is required" }, 400);
     }
-    const { via, origin } = actionOrigin(c);
-    const keyRaw = c.req.header("idempotency-key") ?? (typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined);
-    const { idempotencyKey: _drop, ...reqBody } = body;
-    void _drop;
+    // The key comes ONLY from the header (a custom header forces a preflight).
+    const keyRaw = c.req.header("idempotency-key");
+    const reqBody = body;
     const ctx: RunCtx = { actor, body: reqBody, origin, via, key: keyRaw ?? null, target: {} };
     const audit = (status: "ok" | "failed" | "refused" | "replayed", error?: string) =>
-      recordAction({ actorEmail: actor.email, via, origin, action: spec.action, vaultId: actor.vaultId, target: ctx.target, idempotencyKey: ctx.key, status, error });
+      recordAction({ actorEmail: actor.email, via, origin, action: spec.action, vaultId: primaryVaultId(), target: ctx.target, idempotencyKey: ctx.key, status, error });
 
     if (keyRaw !== undefined && !IDEMPOTENCY_KEY_RE.test(keyRaw)) {
       ctx.key = null;
@@ -225,7 +288,7 @@ function refusalResponse(c: Context, e: unknown, audit: (s: "refused", err?: str
 // ── credentials ─────────────────────────────────────────────────────────────
 
 function protonCred(actor: OwnerActor): ProtonCredential {
-  const raw = getSecret(actor.vaultId, config.ownerEmail, PROTON_CREDENTIAL);
+  const raw = getSecret(primaryVaultId(), config.ownerEmail, PROTON_CREDENTIAL);
   if (!raw) throw new Refusal("not_configured", "no proton-bridge credential is stored for this vault", 409);
   try {
     return validateProtonCredential(JSON.parse(raw));
@@ -235,7 +298,7 @@ function protonCred(actor: OwnerActor): ProtonCredential {
 }
 
 function googleAccount(actor: OwnerActor): string {
-  const raw = getSecret(actor.vaultId, config.ownerEmail, "google");
+  const raw = getSecret(primaryVaultId(), config.ownerEmail, "google");
   let account = "";
   try {
     account = (JSON.parse(raw ?? "{}") as { account?: string }).account ?? "";
@@ -247,7 +310,7 @@ function googleAccount(actor: OwnerActor): string {
 }
 
 function matrixCreds(actor: OwnerActor): MatrixCreds {
-  const raw = getSecret(actor.vaultId, config.ownerEmail, "matrix");
+  const raw = getSecret(primaryVaultId(), config.ownerEmail, "matrix");
   try {
     const c = JSON.parse(raw ?? "null") as MatrixCreds | null;
     if (c?.homeserver && c.accessToken) return c;
@@ -265,7 +328,7 @@ const agentRefused = (ctx: RunCtx, what: string) => {
 
 actionsApi.get("/", (c) => {
   const actor = resolveActor(c) as OwnerActor;
-  const has = (k: string) => !!getSecret(actor.vaultId, config.ownerEmail, k);
+  const has = (k: string) => !!getSecret(primaryVaultId(), config.ownerEmail, k);
   return c.json({
     email: { enabled: config.actionsEmailEnabled, configured: has(PROTON_CREDENTIAL) },
     calendar: { enabled: config.actionsCalendarEnabled, configured: has("google") },
@@ -310,8 +373,11 @@ actionsApi.post(
 
 /** The stored email note a reply / archive / mark-read refers to. */
 async function findEmailNote(ctx: RunCtx): Promise<{ id: string; updatedAt?: string | null; metadata: Record<string, unknown> }> {
-  const v = vaultClient(ctx.actor.vaultId);
-  const { noteId, messageId } = ctx.body;
+  const v = vaultClient(primaryVaultId());
+  // By note id only (security review L4): a Message-ID lookup would mean a full
+  // email-note list per call. Archive / mark-read by bare Message-ID go straight
+  // to IMAP and never come here.
+  const { noteId } = ctx.body;
   if (typeof noteId === "string" && noteId) {
     if (noteId.length > 300 || /[\0\r\n]/.test(noteId)) throw new ActionInputError("noteId: invalid");
     ctx.target.noteId = noteId;
@@ -324,17 +390,14 @@ async function findEmailNote(ctx: RunCtx): Promise<{ id: string; updatedAt?: str
       throw e;
     }
   }
-  if (typeof messageId === "string" && messageId) {
-    const want = normalizeMessageId("messageId", messageId).slice(1, -1);
-    ctx.target.messageIdHash = shortHash(`<${want}>`);
-    const notes = await v.listNotes({ tags: ["email"], includeMetadata: ["messageId", "subject", "from", "to", "threadId", "mailbox", "isUnread", "labels"] });
-    const n = notes.find((x) => x.metadata?.messageId === want);
-    if (!n) throw new Refusal("not_found", "no stored email with that Message-ID", 404);
-    ctx.target.noteId = n.id;
-    return { id: n.id, updatedAt: n.updatedAt, metadata: n.metadata as Record<string, unknown> };
-  }
-  throw new ActionInputError("noteId or messageId is required");
+  throw new ActionInputError("noteId is required");
 }
+
+/** Recipient sets equal, case-insensitively, order-free. */
+const sameRecipients = (a: string[], b: string[]): boolean => {
+  const n = (x: string[]) => [...new Set(x.map((s) => s.trim().toLowerCase()))].sort().join(",");
+  return n(a) === n(b);
+};
 
 actionsApi.post(
   "/email/reply",
@@ -347,11 +410,22 @@ actionsApi.post(
       agentRefused(ctx, "sending email");
       // Validate the user-supplied part now; recipients come from the stored note.
       validateSendInput({ ...ctx.body, to: ["placeholder@example.invalid"], subject: "x" });
+      if (typeof ctx.body.noteId !== "string" || !ctx.body.noteId) throw new ActionInputError("noteId is required");
+      // L1: the recipients the UI SHOWED the user; the send is refused if the
+      // server derives anything else (note changed, Reply-To, parser difference).
+      if (!Array.isArray(ctx.body.expectTo) || !ctx.body.expectTo.length || ctx.body.expectTo.some((x) => typeof x !== "string")) {
+        throw new ActionInputError("expectTo: the recipient addresses shown to the user are required");
+      }
     },
     run: async (ctx) => {
       const note = await findEmailNote(ctx);
       const cred = protonCred(ctx.actor);
       const r = buildReply(note.metadata, cred.username);
+      if (!sameRecipients(r.to, ctx.body.expectTo as string[])) {
+        ctx.target.expectedRecipients = (ctx.body.expectTo as string[]).length;
+        ctx.target.derivedRecipients = r.to.length;
+        throw new Refusal("target_changed", "the reply would go to different recipients than shown — reload and check", 409);
+      }
       const extraCc = Array.isArray(ctx.body.cc) ? ctx.body.cc : [];
       const m = validateSendInput({ to: r.to, cc: extraCc, subject: r.subject, body: ctx.body.body, html: ctx.body.html, inReplyTo: r.inReplyTo, references: r.references });
       sendTarget(ctx, m);
@@ -361,6 +435,11 @@ actionsApi.post(
 );
 
 const MAILBOX_RE = /^[A-Za-z0-9 ._/&-]{1,100}$/;
+/** M3: act only on exactly one exact Message-ID match. */
+function mailboxResult(r: MailboxResult, mailbox: string): void {
+  if (r === "not_found") throw new Refusal("not_found", `no message with exactly that Message-ID in ${mailbox}`, 404);
+  if (r === "ambiguous") throw new Refusal("ambiguous", `several messages in ${mailbox} carry that Message-ID — nothing was changed`, 409);
+}
 async function mailboxTarget(ctx: RunCtx): Promise<{ mailbox: string; messageId: string; note: Awaited<ReturnType<typeof findEmailNote>> | null }> {
   if (typeof ctx.body.noteId === "string" && ctx.body.noteId) {
     const note = await findEmailNote(ctx);
@@ -387,8 +466,7 @@ actionsApi.post(
       const target = config.actionsEmailArchiveMailbox;
       if (mailbox === target) return { archived: false, detail: "already archived" };
       const cred = protonCred(ctx.actor);
-      const moved = await mailboxOps().move(cred, mailbox, messageId, target);
-      if (!moved) throw new Refusal("not_found", `the message is not in ${mailbox}`, 404);
+      mailboxResult(await mailboxOps().move(cred, mailbox, messageId, target), mailbox);
       return { archived: true };
     },
   }),
@@ -410,14 +488,13 @@ actionsApi.post(
       ctx.target.read = read;
       const { mailbox, messageId, note } = await mailboxTarget(ctx);
       const cred = protonCred(ctx.actor);
-      const ok = await mailboxOps().setSeen(cred, mailbox, messageId, read);
-      if (!ok) throw new Refusal("not_found", `the message is not in ${mailbox}`, 404);
+      mailboxResult(await mailboxOps().setSeen(cred, mailbox, messageId, read), mailbox);
       // Reflect it on the stored note now (best-effort) instead of waiting for
       // the ingest's next flag refresh. if_updated_at, never force.
       if (note && note.updatedAt && note.metadata.isUnread !== !read) {
         const labels = (Array.isArray(note.metadata.labels) ? note.metadata.labels : []).filter((l) => l !== "UNREAD");
         if (!read) labels.splice(Math.min(1, labels.length), 0, "UNREAD");
-        await vaultClient(ctx.actor.vaultId)
+        await vaultClient(primaryVaultId())
           .updateNote(note.id, { metadata: { isUnread: !read, labels }, ifUpdatedAt: note.updatedAt })
           .catch(() => {});
       }
@@ -439,9 +516,10 @@ actionsApi.post(
     requireKey: false,
     prepare: (ctx) => {
       agentRefused(ctx, "responding to invitations");
-      ctx.target.eventId = validateCalEventId(ctx.body.eventId);
-      ctx.target.response = String(ctx.body.response);
-      rsvpArgs("x@example.invalid", ctx.body.eventId as string, String(ctx.body.response));
+      // L3: validate fully BEFORE anything client-supplied reaches the audit target.
+      rsvpArgs("x@example.invalid", validateCalEventId(ctx.body.eventId), String(ctx.body.response));
+      ctx.target.eventId = ctx.body.eventId;
+      ctx.target.response = ctx.body.response;
     },
     run: async (ctx) => {
       const account = googleAccount(ctx.actor);

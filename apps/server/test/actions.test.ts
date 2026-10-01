@@ -22,10 +22,11 @@ import { config } from "../src/config";
 import { actionsApi } from "../src/routes/actions";
 import { acl } from "../src/routes/acl";
 import { db, setMembership } from "../src/db";
-import { putSecret } from "../src/secrets";
+import { putSecret, deleteSecret } from "../src/secrets";
+import { integrations } from "../src/routes/integrations";
 import { INPROCESS_ACTOR, INPROCESS_CLIENT_KEY } from "../src/auth/actor";
 import { issueDeviceToken } from "../src/auth/device";
-import { configureEmailActions, smtpSend, buildReply, validateSendInput, type MailboxOps, type SmtpSender } from "../src/actions/email";
+import { configureEmailActions, smtpSend, buildReply, validateSendInput, imapMailboxOps, pickExactUid, type MailboxOps, type MailboxResult, type SmtpSender, type ActionImapClient } from "../src/actions/email";
 import { setActionsGogRunnerForTests } from "../src/actions/calendar";
 import { setMatrixActionClientForTests, txnIdFor } from "../src/actions/matrix";
 import { validateProtonCredential, type ProtonCredential } from "../src/worker/proton";
@@ -57,7 +58,7 @@ const fakeSmtp: SmtpSender = {
   },
 };
 let mboxCalls: Array<{ op: string; mailbox: string; messageId: string; arg: unknown }>;
-let mboxFound: boolean;
+let mboxFound: MailboxResult;
 const fakeMailbox: MailboxOps = {
   async move(_c, mailbox, messageId, target) {
     mboxCalls.push({ op: "move", mailbox, messageId, arg: target });
@@ -84,7 +85,7 @@ beforeEach(() => {
   sent = [];
   smtpBehaviour = "ok";
   mboxCalls = [];
-  mboxFound = true;
+  mboxFound = "ok";
   gogCalls = [];
   mxEvents = [];
   joined = ["!room1:hs.example.test", "!agentroom:hs.example.test"];
@@ -124,7 +125,7 @@ const sendBody = (over: Record<string, unknown> = {}) => ({ to: ["alice@example.
 
 const ROUTES: Array<[string, unknown]> = [
   ["/email/send", sendBody()],
-  ["/email/reply", { noteId: "n1", body: "x" }],
+  ["/email/reply", { noteId: "n1", body: "x", expectTo: ["a@example.test"] }],
   ["/email/archive", { messageId: "m@example.test" }],
   ["/email/mark-read", { messageId: "m@example.test", read: true }],
   ["/calendar/rsvp", { eventId: "abc", response: "accepted" }],
@@ -211,9 +212,9 @@ test("idempotency: same key → ONE send, replayed; different request on the sam
   assert.equal(b.headers.get("idempotent-replayed"), "true");
   assert.deepEqual(await b.json(), await a.json());
   assert.equal(sent.length, 1, "never sent twice");
-  // body-supplied key works the same
-  const c = await post("/email/send", { ...sendBody(), idempotencyKey: key });
-  assert.equal(c.status, 200);
+  // M1: a body-supplied key is NOT honoured (the header is required)
+  const c = await post("/email/send", { ...sendBody(), idempotencyKey: freshKey() });
+  assert.equal(c.status, 400);
   assert.equal(sent.length, 1);
   const d = await post("/email/send", sendBody({ body: "a different message" }), { ...owner(), "idempotency-key": key });
   assert.equal(d.status, 422);
@@ -222,7 +223,7 @@ test("idempotency: same key → ONE send, replayed; different request on the sam
   assert.equal((await post("/email/send", sendBody(), { ...owner(), "idempotency-key": "short" })).status, 400);
   assert.equal(sent.length, 1);
   const statuses = auditRows().map((r) => r.status);
-  assert.deepEqual(statuses, ["ok", "replayed", "replayed", "refused", "refused", "refused"]);
+  assert.deepEqual(statuses, ["ok", "replayed", "refused", "refused", "refused", "refused"]);
 });
 
 test("idempotency: a failure BEFORE sending releases the key; an outcome-unknown failure is replayed, never re-sent", async () => {
@@ -288,7 +289,7 @@ const emailNote = (id: string, md: Record<string, unknown>) =>
 
 test("reply: In-Reply-To, References (thread root first), Re: subject, To = original sender", async () => {
   emailNote("n1", { subject: "Project update", from: "Alice Example <alice@example.test>", to: SELF, messageId: "m2@mail.example.test", threadId: "m1@mail.example.test" });
-  const r = await post("/email/reply", { noteId: "n1", body: "Thanks!" }, { ...owner(), "idempotency-key": freshKey() });
+  const r = await post("/email/reply", { noteId: "n1", body: "Thanks!", expectTo: ["alice@example.test"] }, { ...owner(), "idempotency-key": freshKey() });
   assert.equal(r.status, 200, await r.clone().text());
   assert.equal(((await r.json()) as { inReplyTo: string }).inReplyTo, "<m2@mail.example.test>");
   const raw = sent[0]!.raw;
@@ -301,16 +302,16 @@ test("reply: In-Reply-To, References (thread root first), Re: subject, To = orig
   assert.match(String(t.inReplyToHash), /^[0-9a-f]{16}$/);
 });
 
-test("reply: by messageId; existing Re: kept; a reply to our own message goes to its recipients; not-an-email → 422", async () => {
+test("reply: existing Re: kept; a reply to our own message goes to its recipients; not-an-email → 422", async () => {
   emailNote("n2", { subject: "RE: Lunch", from: `Me <${SELF}>`, to: "Carol <carol@example.test>, me@example.test", messageId: "m9@mail.example.test", threadId: "m9@mail.example.test" });
-  const r = await post("/email/reply", { messageId: "<m9@mail.example.test>", body: "ok" }, { ...owner(), "idempotency-key": freshKey() });
+  const r = await post("/email/reply", { noteId: "n2", body: "ok", expectTo: ["Carol@example.test"] }, { ...owner(), "idempotency-key": freshKey() });
   assert.equal(r.status, 200, await r.clone().text());
   assert.match(sent[0]!.raw, /^Subject: RE: Lunch\r?$/m);
   assert.match(sent[0]!.raw, /^References: <m9@mail\.example\.test>\r?$/m, "root == message → one reference");
   assert.deepEqual(sent[0]!.envelope.to, ["carol@example.test"]);
   fv.put({ id: "plain", path: "notes/plain", tags: ["note"], content: "x", metadata: {} });
-  assert.equal((await post("/email/reply", { noteId: "plain", body: "x" }, { ...owner(), "idempotency-key": freshKey() })).status, 422);
-  assert.equal((await post("/email/reply", { noteId: "missing", body: "x" }, { ...owner(), "idempotency-key": freshKey() })).status, 404);
+  assert.equal((await post("/email/reply", { noteId: "plain", body: "x", expectTo: ["a@example.test"] }, { ...owner(), "idempotency-key": freshKey() })).status, 422);
+  assert.equal((await post("/email/reply", { noteId: "missing", body: "x", expectTo: ["a@example.test"] }, { ...owner(), "idempotency-key": freshKey() })).status, 404);
   assert.equal(sent.length, 1);
   // A stored subject with a line break can never become a header injection.
   assert.equal(buildReply({ messageId: "x@y", subject: "s\r\nBcc: a@b.test", from: "a@example.test" }, SELF).subject, "Re: s Bcc: a@b.test");
@@ -329,7 +330,7 @@ test("archive + mark-read: IMAP by Message-ID in the note's mailbox; mark-read r
   assert.equal(md.isUnread, false);
   assert.deepEqual(md.labels, ["INBOX"]);
   assert.equal((await post("/email/mark-read", { noteId: "n3" })).status, 400, "read is required");
-  mboxFound = false;
+  mboxFound = "not_found";
   assert.equal((await post("/email/archive", { messageId: "gone@mail.example.test" })).status, 404);
   assert.equal((await post("/email/archive", { messageId: "x@y", mailbox: "INBOX\r\nA1 DELETE" })).status, 400);
 });
@@ -566,4 +567,140 @@ test("SMTP: a server without STARTTLS is refused before any credential is sent",
 test("SMTP: a non-loopback host is refused without connecting", async () => {
   const cred = { ...smtpCred(1, "starttls", PIN), host: "mail.example.test" };
   await assert.rejects(tryOnce(cred), /non-loopback/);
+});
+
+// ── security review fixes (M1–M3, L1–L3, L7) ────────────────────────────────
+
+test("M1 CSRF: text/plain or form bodies → 415; cross-site / same-site fetch → 403; foreign Origin → 403; nothing sent", async () => {
+  const body = JSON.stringify(sendBody());
+  const req = (h: Record<string, string>) => actionsApi.request("/email/send", { method: "POST", headers: { cookie: owner().cookie, "idempotency-key": freshKey(), ...h }, body });
+  assert.equal((await req({ "content-type": "text/plain" })).status, 415);
+  assert.equal((await req({ "content-type": "application/x-www-form-urlencoded" })).status, 415);
+  assert.equal((await req({})).status, 415, "no content type");
+  assert.equal((await req({ ...J, "sec-fetch-site": "cross-site" })).status, 403);
+  assert.equal((await req({ ...J, "sec-fetch-site": "same-site" })).status, 403, "a sibling subdomain is same-site");
+  assert.equal((await req({ ...J, origin: "https://evil.example.test" })).status, 403);
+  assert.equal(sent.length, 0);
+  assert.equal((await req({ ...J, "sec-fetch-site": "same-origin", origin: config.appOrigin })).status, 200, "the PWA itself");
+  assert.equal((await req({ ...J, origin: config.nativeOrigins[0]! })).status, 200, "a native shell origin");
+  // A native bearer device token is not an ambient credential: its cross-site fetch is fine.
+  const dev = issueDeviceToken(config.ownerEmail, "phone", "prism-ios").token;
+  const r = await actionsApi.request("/matrix/send", {
+    method: "POST",
+    headers: { ...J, authorization: `Bearer ${dev}`, "sec-fetch-site": "cross-site", origin: "tauri://localhost", "idempotency-key": freshKey() },
+    body: JSON.stringify({ roomId: "!room1:hs.example.test", body: "from the phone" }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(sent.length, 2);
+});
+
+test("M2: matrix/google credentials are server-owner-only to write; actions read ONLY the primary vault's credentials", async () => {
+  setMembership(VAULT, "admin@example.test", "admin", null);
+  const admin = { ...J, cookie: sessionCookie(makeSession("admin@example.test")) };
+  const cases: Array<[string, Record<string, string>]> = [
+    ["matrix", { homeserver: "https://evil.example.test", accessToken: "x" }],
+    ["google", { account: "evil@example.test" }],
+  ];
+  for (const [kind, b] of cases) {
+    assert.equal((await integrations.request(`/${kind}`, { method: "PUT", headers: admin, body: JSON.stringify(b) })).status, 403, `admin PUT ${kind}`);
+    assert.equal((await integrations.request(`/${kind}`, { method: "DELETE", headers: admin })).status, 403, `admin DELETE ${kind}`);
+    assert.equal((await integrations.request(`/${kind}`, { headers: admin })).status, 200, `admin may still read ${kind} status`);
+    assert.equal((await integrations.request(`/${kind}`, { method: "PUT", headers: owner(), body: JSON.stringify(b) })).status, 200, `owner PUT ${kind}`);
+  }
+  // The credential only exists under another vault id → the action sees none.
+  deleteSecret(VAULT, config.ownerEmail, "matrix");
+  putSecret("other-vault", config.ownerEmail, "matrix", JSON.stringify({ homeserver: "https://evil.example.test", accessToken: "x" }));
+  const r = await post("/matrix/send", { roomId: "!room1:hs.example.test", body: "x" }, { ...owner(), "x-prism-vault": "other-vault", "idempotency-key": freshKey() });
+  assert.equal(r.status, 409);
+  assert.equal(((await r.json()) as { error: string }).error, "not_configured");
+  assert.equal(mxEvents.length, 0);
+});
+
+/** A fake imapflow slice: SEARCH returns every uid whose Message-ID CONTAINS the term (like IMAP). */
+function fakeImap(msgs: Array<{ uid: number; mid: string }>, log: string[]): ActionImapClient {
+  return {
+    async mailboxOpen() {
+      return {};
+    },
+    async search(q: { header?: Record<string, string> }) {
+      const term = q.header!["message-id"]!;
+      return msgs.filter((m) => m.mid.includes(term)).map((m) => m.uid);
+    },
+    fetch(range: string) {
+      const uids = new Set(String(range).split(",").map(Number));
+      const hits = msgs.filter((m) => uids.has(m.uid));
+      return (async function* () {
+        for (const m of hits) yield { uid: m.uid, headers: Buffer.from(`Message-ID: ${m.mid}\r\n`) };
+      })();
+    },
+    async messageMove(uid: string, target: string) {
+      log.push(`move ${uid} ${target}`);
+      return {};
+    },
+    async messageFlagsAdd(uid: string) {
+      log.push(`seen ${uid}`);
+      return true;
+    },
+    async messageFlagsRemove(uid: string) {
+      log.push(`unseen ${uid}`);
+      return true;
+    },
+    async logout() {},
+    close() {},
+  } as unknown as ActionImapClient;
+}
+
+test("M3: IMAP acts only on EXACTLY one exact Message-ID match (SEARCH is a substring match)", async () => {
+  const cred = validateProtonCredential({ host: "127.0.0.1", port: 1143, username: SELF, password: "p", security: "starttls", certSha256: PIN });
+  const log: string[] = [];
+  const msgs = [
+    { uid: 5, mid: "<a@mail.example.test>" },
+    { uid: 9, mid: "<xa@mail.example.test>" },
+    { uid: 12, mid: "<a@mail.example.test.evil>" },
+  ];
+  const ops = imapMailboxOps({ connect: async () => fakeImap(msgs, log) });
+  assert.equal(await ops.move(cred, "INBOX", "<a@mail.example.test>", "Archive"), "ok");
+  assert.deepEqual(log, ["move 5 Archive"], "not the highest substring hit (12)");
+  assert.equal(await ops.setSeen(cred, "INBOX", "<a>", true), "not_found", "a short crafted id matches nothing exactly");
+  const dup = imapMailboxOps({ connect: async () => fakeImap([{ uid: 1, mid: "<d@x.test>" }, { uid: 2, mid: "<d@x.test>" }], log) });
+  assert.equal(await dup.setSeen(cred, "INBOX", "<d@x.test>", true), "ambiguous");
+  assert.deepEqual(log, ["move 5 Archive"], "nothing done when ambiguous or absent");
+  assert.deepEqual(pickExactUid([{ uid: 3, messageId: "a@b" }], "<a@b>"), { uid: 3 });
+  mboxFound = "ambiguous";
+  assert.equal((await post("/email/archive", { messageId: "d@x.test" })).status, 409, "route maps ambiguous → 409");
+});
+
+test("L1: a reply is refused (409 target_changed) when the derived recipients differ from what the UI showed", async () => {
+  emailNote("n5", { subject: "Hi", from: "Alice <alice@example.test>", messageId: "m5@mail.example.test", threadId: "m5@mail.example.test" });
+  const r = await post("/email/reply", { noteId: "n5", body: "x", expectTo: ["mallory@example.test"] }, { ...owner(), "idempotency-key": freshKey() });
+  assert.equal(r.status, 409);
+  assert.equal(((await r.json()) as { error: string }).error, "target_changed");
+  assert.equal((await post("/email/reply", { noteId: "n5", body: "x" }, { ...owner(), "idempotency-key": freshKey() })).status, 400, "expectTo required");
+  assert.equal(sent.length, 0);
+});
+
+test("L2: reply recipients use a real address parser (last angle-addr, quoted names) and honour Reply-To", () => {
+  assert.deepEqual(buildReply({ messageId: "m@x", from: '"Eve <eve@evil.example.test>" <real@example.test>' }, SELF).to, ["real@example.test"]);
+  assert.deepEqual(buildReply({ messageId: "m@x", from: "Alice <alice@example.test>", replyTo: "List <list@example.test>" }, SELF).to, ["list@example.test"]);
+  assert.deepEqual(buildReply({ messageId: "m@x", from: SELF, to: '"Doe, Jane" <jane@example.test>, me@example.test' }, SELF).to, ["jane@example.test"]);
+});
+
+test("L3: an invalid RSVP response never reaches the audit target", async () => {
+  assert.equal((await post("/calendar/rsvp", { eventId: "abc", response: "maybe<script>" })).status, 400);
+  const row = auditRows().at(-1)!;
+  assert.equal(row.status, "refused");
+  assert.ok(!String(row.target).includes("script"));
+});
+
+test("L7: an oversized body is refused without a declared length (streamed cap)", async () => {
+  const big = JSON.stringify({ ...sendBody(), body: "x".repeat(1_300_000) });
+  const stream = new ReadableStream({
+    start(ctl) {
+      ctl.enqueue(new TextEncoder().encode(big));
+      ctl.close();
+    },
+  });
+  const r = await actionsApi.request("/email/send", { method: "POST", headers: { ...owner(), "idempotency-key": freshKey() }, body: stream, duplex: "half" } as RequestInit);
+  assert.equal(r.status, 413);
+  assert.equal(sent.length, 0);
 });

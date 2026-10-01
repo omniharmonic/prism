@@ -22,6 +22,7 @@ import crypto from "node:crypto";
 import tls from "node:tls";
 import { config } from "../config";
 import { connectPinnedImap, isLoopbackHost, scrubProtonError, smtpSettingsOf, type ProtonCredential } from "../worker/proton";
+import { addresses, messageIdOf, parseMime } from "../worker/proton-parse";
 
 // ── limits + validation ─────────────────────────────────────────────────────
 
@@ -136,21 +137,22 @@ export interface ReplySource {
   to?: unknown;
   messageId?: unknown;
   threadId?: unknown;
+  /** Honoured when present (the Proton ingest does not store it today). */
+  replyTo?: unknown;
 }
 
-const addrOf = (s: string): string => {
-  const a = s.indexOf("<");
-  const b = s.indexOf(">", a + 1);
-  return (a >= 0 && b > a ? s.slice(a + 1, b) : s).trim();
-};
+/** Addresses in a stored header value, via the ingest's RFC 5322 parser
+ *  (`getaddresses` semantics: quoted display names, comments, groups — never a
+ *  naive first-`<…>` scan, which `"a <x@evil>" <real@example>` would fool). */
+const addrsOf = (v: unknown): string[] => (typeof v === "string" ? addresses(v).filter((a) => a.includes("@")) : []);
 
 /**
  * Build the threading headers + recipients for a reply to a stored message:
  *   In-Reply-To = <messageId>; References = <threadId> <messageId> (the thread
  *   root first — the ingest stores the References root as threadId — collapsed
  *   when they are the same); Subject = "Re: " unless it already starts with a
- *   reply prefix; To = the original sender, or (replying to our own message) the
- *   original recipients.
+ *   reply prefix; To = Reply-To if stored, else the original sender, or
+ *   (replying to our own message) the original recipients.
  */
 export function buildReply(src: ReplySource, self: string): { to: string[]; subject: string; inReplyTo: string; references: string[] } {
   const messageId = normalizeMessageId("messageId", src.messageId);
@@ -166,13 +168,15 @@ export function buildReply(src: ReplySource, self: string): { to: string[]; subj
   refs.push(messageId);
   const subj = typeof src.subject === "string" ? src.subject.replace(/[\r\n\0]+/g, " ").trim() : "";
   const subject = /^re:/i.test(subj) ? subj : `Re: ${subj}`.trim();
-  const fromAddr = typeof src.from === "string" ? addrOf(src.from) : "";
+  const me = self.toLowerCase();
+  const notMe = (a: string) => a.toLowerCase() !== me;
+  const replyTo = addrsOf(src.replyTo).filter(notMe);
+  const fromAddr = addrsOf(src.from)[0] ?? "";
   let to: string[];
-  if (fromAddr && fromAddr.toLowerCase() !== self.toLowerCase()) to = [fromAddr];
-  else
-    to = (typeof src.to === "string" ? src.to.split(",") : [])
-      .map((s) => addrOf(s))
-      .filter((a) => a && a.toLowerCase() !== self.toLowerCase());
+  if (replyTo.length) to = replyTo;
+  else if (fromAddr && notMe(fromAddr)) to = [fromAddr];
+  else to = addrsOf(src.to).filter(notMe);
+  to = [...new Map(to.map((a) => [a.toLowerCase(), a])).values()];
   if (!to.length) throw new ActionInputError("the stored message has no usable reply address");
   return { to: to.map((a, i) => validateAddress(`replyTo[${i}]`, a)), subject: subject.slice(0, EMAIL_LIMITS.maxSubject), inReplyTo: messageId, references: refs };
 }
@@ -209,11 +213,28 @@ export interface SmtpSender {
   send(cred: ProtonCredential, envelope: { from: string; to: string[] }, raw: Buffer): Promise<{ accepted: number; rejected: number }>;
 }
 
+/** ok = acted on exactly one message; not_found = no exact match; ambiguous = several exact matches (nothing done). */
+export type MailboxResult = "ok" | "not_found" | "ambiguous";
+
 export interface MailboxOps {
-  /** Move the message with this Message-ID from `mailbox` to `target`. false = not found. */
-  move(cred: ProtonCredential, mailbox: string, messageId: string, target: string): Promise<boolean>;
-  /** Add/remove \Seen. false = not found. */
-  setSeen(cred: ProtonCredential, mailbox: string, messageId: string, seen: boolean): Promise<boolean>;
+  /** Move the ONE message whose Message-ID is exactly `messageId` from `mailbox` to `target`. */
+  move(cred: ProtonCredential, mailbox: string, messageId: string, target: string): Promise<MailboxResult>;
+  /** Add/remove \Seen on the ONE message whose Message-ID is exactly `messageId`. */
+  setSeen(cred: ProtonCredential, mailbox: string, messageId: string, seen: boolean): Promise<MailboxResult>;
+}
+
+/**
+ * IMAP `SEARCH HEADER Message-ID x` is a SUBSTRING match, so a short or crafted
+ * id (`<a>`) can hit unrelated messages. Candidates are therefore re-checked
+ * against their own fetched Message-ID header, normalized the same way, and we
+ * act only when EXACTLY one equals the wanted id.
+ */
+export function pickExactUid(candidates: Array<{ uid: number; messageId: string }>, wanted: string): { uid: number } | "not_found" | "ambiguous" {
+  const want = wanted.trim().replace(/^<|>$/g, "");
+  const hits = candidates.filter((c) => c.messageId.trim().replace(/^<|>$/g, "") === want);
+  if (!hits.length) return "not_found";
+  if (new Set(hits.map((h) => h.uid)).size > 1) return "ambiguous";
+  return { uid: hits[0]!.uid };
 }
 
 /**
@@ -300,12 +321,24 @@ export function smtpSend(opts: { timeoutMs?: number } = {}): SmtpSender {
   };
 }
 
-/** The real IMAP path for archive / mark-read: pinned connect, READ-WRITE select, search by Message-ID. */
-export function imapMailboxOps(opts: { timeoutMs?: number } = {}): MailboxOps {
-  const withUid = async <T>(cred: ProtonCredential, mailbox: string, messageId: string, fn: (client: import("imapflow").ImapFlow, uid: number) => Promise<T>): Promise<T | false> => {
-    let client: import("imapflow").ImapFlow;
+/** The slice of imapflow the mailbox actions use (injectable for tests). */
+export type ActionImapClient = Pick<
+  import("imapflow").ImapFlow,
+  "mailboxOpen" | "search" | "fetch" | "messageMove" | "messageFlagsAdd" | "messageFlagsRemove" | "logout" | "close"
+>;
+
+/**
+ * The real IMAP path for archive / mark-read: pinned connect, READ-WRITE select,
+ * a Message-ID SEARCH to find candidates, then an exact re-check of each
+ * candidate's own Message-ID header (`pickExactUid`) — never "the highest UID
+ * that matched a substring".
+ */
+export function imapMailboxOps(opts: { timeoutMs?: number; connect?: (cred: ProtonCredential) => Promise<ActionImapClient> } = {}): MailboxOps {
+  const MAX_CANDIDATES = 50;
+  const withUid = async (cred: ProtonCredential, mailbox: string, messageId: string, fn: (client: ActionImapClient, uid: number) => Promise<void>): Promise<MailboxResult> => {
+    let client: ActionImapClient;
     try {
-      client = await connectPinnedImap(cred, opts);
+      client = opts.connect ? await opts.connect(cred) : await connectPinnedImap(cred, opts);
     } catch (e) {
       throw new ActionTransportError((e as Error).message, false);
     }
@@ -313,9 +346,17 @@ export function imapMailboxOps(opts: { timeoutMs?: number } = {}): MailboxOps {
       await client.mailboxOpen(mailbox);
       const bare = messageId.replace(/^<|>$/g, "");
       const found = await client.search({ header: { "message-id": bare } }, { uid: true });
-      const uids = Array.isArray(found) ? found : [];
-      if (!uids.length) return false;
-      return await fn(client, Math.max(...uids));
+      const uids = (Array.isArray(found) ? found : []).slice(-MAX_CANDIDATES);
+      if (!uids.length) return "not_found";
+      const candidates: Array<{ uid: number; messageId: string }> = [];
+      for await (const m of client.fetch(uids.join(","), { uid: true, headers: ["message-id"] }, { uid: true })) {
+        const hdrs = m.headers ? Buffer.concat([m.headers, Buffer.from("\r\n")]) : Buffer.from("\r\n");
+        candidates.push({ uid: m.uid, messageId: messageIdOf(parseMime(hdrs)) });
+      }
+      const pick = pickExactUid(candidates, messageId);
+      if (pick === "not_found" || pick === "ambiguous") return pick;
+      await fn(client, pick.uid);
+      return "ok";
     } catch (e) {
       if (e instanceof ActionTransportError) throw e;
       throw new ActionTransportError(scrubProtonError(`proton-bridge imap: ${(e as Error).message}`, cred), "unknown");
@@ -328,21 +369,15 @@ export function imapMailboxOps(opts: { timeoutMs?: number } = {}): MailboxOps {
     }
   };
   return {
-    async move(cred, mailbox, messageId, target) {
-      const r = await withUid(cred, mailbox, messageId, async (client, uid) => {
+    move: (cred, mailbox, messageId, target) =>
+      withUid(cred, mailbox, messageId, async (client, uid) => {
         await client.messageMove(String(uid), target, { uid: true });
-        return true;
-      });
-      return r === true;
-    },
-    async setSeen(cred, mailbox, messageId, seen) {
-      const r = await withUid(cred, mailbox, messageId, async (client, uid) => {
+      }),
+    setSeen: (cred, mailbox, messageId, seen) =>
+      withUid(cred, mailbox, messageId, async (client, uid) => {
         if (seen) await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
         else await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
-        return true;
-      });
-      return r === true;
-    },
+      }),
   };
 }
 

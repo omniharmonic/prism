@@ -722,6 +722,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   const [locationVal, setLocationVal] = useState(event?.location || "");
   const [descVal, setDescVal] = useState(event?.description || "");
   const [attendeesVal, setAttendeesVal] = useState("");
+  const [notifyAttendees, setNotifyAttendees] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -743,6 +744,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           attendees: attendeesVal ? attendeesVal.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
           description: descVal || undefined,
           location: locationVal || undefined,
+          notify: notifyAttendees,
         });
       } else {
         await calendarApi.createEvent(summary, start, end, attendeesVal ? attendeesVal.split(",").map((s) => s.trim()) : undefined, descVal || undefined, locationVal || undefined);
@@ -802,6 +804,12 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           className="w-full rounded px-2 py-1.5 text-xs outline-none"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
         />
+        {live && !isEdit && attendeesVal.trim() && (
+          <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+            <input type="checkbox" checked={notifyAttendees} onChange={(e) => setNotifyAttendees(e.target.checked)} />
+            {notifyAttendees ? "Attendees will be emailed an invite" : "Don't email attendees an invite"}
+          </label>
+        )}
 
         <textarea
           value={descVal}

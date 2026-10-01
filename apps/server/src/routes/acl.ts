@@ -998,15 +998,6 @@ acl.get("/workers/calendar/intents", async (c) => {
   return c.json(body);
 });
 
-/** Server Proton Bridge ingest (WP1.2b): the last persisted intents (what the
- *  server wrote or WOULD write — create / update-flags / skip-*; never a subject,
- *  body, address or path slug: only note ids, uids, the 8-hex path hash and
- *  hashes) + the last pass
- *  summary, for comparing against the agent's proton_mail.py during the shadow
- *  period. `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
- *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the
- *  script actually wrote for each intent (match / differs + which keys /
- *  missing) — read-only. Server-owner only. */
 /** Live actions audit (WP1.5): newest first; `?limit=N` (default 100, max 1000),
  *  `?action=email.send,matrix.send`, `?before=<id>` to page. Ids + hashes only —
  *  never a body, subject or address. Server-owner only. */
@@ -1018,6 +1009,15 @@ acl.get("/actions/audit", (c) => {
   return c.json({ entries: listActionAudit({ limit, action: actions, before }) });
 });
 
+/** Server Proton Bridge ingest (WP1.2b): the last persisted intents (what the
+ *  server wrote or WOULD write — create / update-flags / skip-*; never a subject,
+ *  body, address or path slug: only note ids, uids, the 8-hex path hash and
+ *  hashes) + the last pass
+ *  summary, for comparing against the agent's proton_mail.py during the shadow
+ *  period. `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
+ *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the
+ *  script actually wrote for each intent (match / differs + which keys /
+ *  missing) — read-only. Server-owner only. */
 acl.get("/workers/proton/intents", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const vaultId = c.req.query("vault") || "primary";

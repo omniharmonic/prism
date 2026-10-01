@@ -25,6 +25,39 @@ A vault admin, a member, a guest, someone who is `owner` of a *different* vault,
 a capability link and anon all get `403`. These actions use the owner's
 mailbox, calendar and Matrix identity, so vault roles never reach them.
 
+### Credentials: primary vault, server-owner-written only
+
+Live actions read the `proton-bridge`, `google` and `matrix` credentials **only
+from the primary vault**, whichever vault the owner is browsing
+(`X-Prism-Vault`). The email notes that `reply`/`archive`/`mark-read` look up
+also come from the primary vault. Writing or deleting the `matrix` and `google`
+credentials (`PUT`/`DELETE /api/integrations/{matrix,google}`) is
+**server-owner only** in every vault, like `proton-bridge`. Otherwise a vault admin
+could point the owner's Matrix sends at their own homeserver, or choose the gog
+account the owner's RSVPs use. Admins can still read the status and trigger a
+sync. **Behaviour change:** an admin of a non-primary vault can no longer set
+that vault's Matrix or Google credential (for its ingest / Docs sync). The
+server owner sets it for them.
+
+## CSRF
+
+The session cookie is `SameSite=Lax`, so a page on a **sibling subdomain**
+(same-site) could otherwise submit a form to these routes as the owner. Every
+`POST /api/actions/*` therefore:
+
+- requires `Content-Type: application/json` (else `415`). A form can only send
+  `text/plain`, urlencoded or multipart bodies;
+- takes the idempotency key **only** from the `Idempotency-Key` header. A
+  custom header plus a JSON content type force a CORS preflight that the server
+  never grants to foreign origins;
+- for anything but a native bearer device token, refuses
+  `Sec-Fetch-Site: cross-site|same-site` and any `Origin` that is neither
+  `APP_ORIGIN` nor a `NATIVE_ORIGINS` entry (`403 csrf_refused`).
+
+The PWA is same-origin and unaffected. The bearer-token native path is not an
+ambient credential, so it is exempt from the fetch-site check. Dev gotcha: a
+Vite dev server on another port counts as `same-site`, so use its proxy.
+
 ## Human vs agent origin
 
 The origin is derived from **how the request authenticated**
@@ -37,8 +70,9 @@ The origin is derived from **how the request authenticated**
 | `mcp` (in-process dispatch from a Prism MCP tool) | agent |
 | `local-token` (loopback COLLAB_TOKEN / vault token: the desktop or a host script) | agent |
 
-A client may **downgrade** itself with `X-Prism-Action-Origin: agent`; it can
-never upgrade. Rules:
+A client may **downgrade** itself with `X-Prism-Action-Origin: agent`. No
+*header* can upgrade it, but see the threat model below: the classification
+reflects the credential, not who holds it. Rules:
 
 - **Email and calendar**: agent origin is refused outright
   (`403 agent_origin_refused`). Agent-initiated outward actions need a
@@ -48,13 +82,35 @@ never upgrade. Rules:
   may target only rooms listed in `ACTIONS_MATRIX_AGENT_ROOMS` (and joined).
   An empty list means agents may post nowhere.
 
-There are **no MCP tools** for these actions in this WP — today nothing agent-side
-can reach them except a future tool. The origin rules are in place for that.
+There are **no MCP tools** for these actions in this WP. The origin rules are in
+place for when there are.
+
+### Threat model: what the origin check does NOT cover
+
+"Human" means *a session cookie or a device token*, not *a person*. Anything
+running on the host as the user can obtain such a credential:
+
+- The **desktop agent** (`claude -p` spawned by Prism.app, `ClaudeClient` /
+  `DispatchManager`) runs at the repo root with Claude Code's full tool set,
+  including Bash and file reads. It can read `apps/server/.env` (SECRETS_KEY,
+  SESSION_SECRET, COLLAB_TOKEN, vault token) and `apps/server/prism-server.db`
+  (live session rows, encrypted secrets). With those it can mint or replay an
+  owner session and reach these routes as **human** origin. It can also decrypt
+  the stored credentials and talk to Bridge, gog or Matrix directly, skipping
+  Prism entirely.
+- Any other local process running as the same OS user can do the same.
+
+So the human/agent split protects against **remote** agents: Prism MCP clients
+and server agent sessions, whose tools are restricted to the vault MCP. It does
+not protect against a **host-local** agent with shell access. Hardening the
+desktop agent (dropping Bash/Read, an empty cwd, as WP0.1 did for the server
+runner) is a separate work package. Until then, treat every host-local agent as
+able to act as the owner.
 
 ## Idempotency
 
-Send `Idempotency-Key: <fresh UUID per user action>` (or `idempotencyKey` in the
-body). It is **required** for `email/send`, `email/reply`, `calendar/create` and
+Send the `Idempotency-Key: <fresh UUID per user action>` header. A body field is
+**not** accepted (CSRF, above). It is **required** for `email/send`, `email/reply`, `calendar/create` and
 `matrix/send`, and optional for the naturally idempotent ones.
 
 - Same key + same request → the first outcome is replayed with
@@ -91,6 +147,11 @@ Email uses the same `proton-bridge` credential as the ingest (`PUT
 - **IMAP** (archive, mark-read): the ingest's `connectPinnedImap()`, which checks
   the pin in `authenticate()` before LOGIN. The mailbox is opened read-write, and
   the message is found by **Message-ID** (UIDs can change), not by UID.
+  IMAP `SEARCH HEADER Message-ID` is a *substring* match, so a short or crafted
+  id like `<a>` could hit unrelated mail. Each candidate's own Message-ID header
+  is fetched and compared exactly (`pickExactUid`), and the action runs only
+  when **exactly one** matches. None → `404`, several → `409 ambiguous`, and
+  nothing is changed in either case.
   `archive` = `UID MOVE` to `ACTIONS_EMAIL_ARCHIVE_MAILBOX` (`Archive`).
   `mark-read` = add/remove `\Seen`, then a best-effort `if_updated_at` PATCH of
   the note's `isUnread`/`labels` (no `force`).
@@ -105,16 +166,26 @@ Email uses the same `proton-bridge` credential as the ingest (`PUT
 
 ### Reply threading
 
-`email/reply {noteId | messageId, body, html?, cc?}` reads the stored email note
-(tag `email`, written by the Proton ingest) and builds:
+`email/reply {noteId, expectTo[], body, html?, cc?}` reads the stored email note
+(tag `email`, written by the Proton ingest; by **note id only**, never a
+full-list Message-ID lookup) and builds:
 
 - `In-Reply-To: <messageId>`;
 - `References: <threadId> <messageId>`. The ingest stores the References root as
   `threadId`; it collapses to one id when they match;
 - `Subject: Re: <subject>` (kept as is if it already starts with `Re:` in any
   case; stored line breaks are flattened);
-- `To:` the original sender, or the original recipients when replying to your
-  own message.
+- `To:` the stored `replyTo` if present (the Proton ingest does not store
+  Reply-To today, so this is forward-compatible), else the original sender, else
+  (replying to your own message) the original recipients. Addresses are parsed
+  with the ingest's RFC 5322 parser (`addresses()`: quoted names, comments,
+  groups), not a first-`<…>` scan, so `"Eve <eve@evil>" <real@example>` yields
+  `real@example`.
+- **Target pinning:** `expectTo` is the address list the UI *showed* the user.
+  If the server derives anything else (the note changed, a parser difference),
+  the send is refused with `409 target_changed` and nothing is sent. Matrix
+  needs no equivalent: the server acts on exactly the `roomId` the client sent
+  and derives no target.
 
 ## Calendar (gog)
 
@@ -146,7 +217,7 @@ Every attempt past the owner gate writes one `action_audit` row (SQLite, `db.ts`
 |---|---|
 | `ts`, `actor_email`, `via`, `origin` | who, and how they authenticated |
 | `action` | `email.send`, `email.reply`, `email.archive`, `email.mark-read`, `calendar.rsvp`, `calendar.create`, `matrix.send`, `matrix.react` |
-| `vault_id` | the actor's vault, whose credential was used |
+| `vault_id` | the primary vault (whose credentials every action uses) |
 | `target` | JSON with **ids and hashes only**: note id, room id, event ids, `recipients` count + `recipientsHash`, `messageIdHash`, `inReplyToHash`, `attendeesHash`, size |
 | `idempotency_key` | |
 | `status` | `ok` / `failed` / `refused` / `replayed` |
@@ -176,6 +247,8 @@ The audit never holds a message body, a subject or a plain address. Read it at
 - **Web/native:** `apps/web/src/actions/HttpLiveActionsClient.ts` uses
   `serverFetch` + `contextHeaders()`, provided in `main.tsx` (null for
   capability viewers).
+- **Calendar create** shows "Attendees will be emailed an invite" with a checkbox
+  wired to `notify` (unchecked → `--send-updates=none`).
 - **Wired:** Matrix send in `MessageRenderer` and `VaultMessagesDashboard`; email
   reply, compose-send, **Archive** and **Mark read/unread** in `EmailRenderer`;
   calendar **create** and **RSVP** (Google-synced events with guests) in
@@ -192,7 +265,7 @@ The audit never holds a message body, a subject or a plain address. Read it at
    `smtpSecurity` (and `smtpCertSha256` if the SMTP cert differs).
 2. Google: the `google` credential (`{account}`), with `gog calendar list`
    working **as the pm2 user**.
-3. Matrix: the `matrix` credential (already present for ingest).
+3. Matrix: the `matrix` credential (already present for ingest). All three credentials must be stored in the **primary** vault, by the server owner.
 4. `apps/server/.env`: `ACTIONS_EMAIL_ENABLED=true`, `ACTIONS_CALENDAR_ENABLED=true`,
    `ACTIONS_MATRIX_ENABLED=true` (any subset). Optional:
    `ACTIONS_MATRIX_AGENT_ROOMS=!a:hs,!b:hs`, `ACTIONS_EMAIL_ARCHIVE_MAILBOX`,

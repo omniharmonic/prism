@@ -23,6 +23,19 @@ integrations.use("*", async (c, next) => {
   await next();
 });
 
+// `matrix` and `google` are the identities WP1.5 live actions act AS (Matrix
+// sends; the gog account for RSVP/create). Writing or deleting them is therefore
+// SERVER-OWNER only, in every vault (security review M2) — a vault admin could
+// otherwise point the owner's sends at an attacker homeserver or pick the gog
+// account. Status (GET) and a manual sync stay admin-visible.
+for (const kind of ["matrix", "google"]) {
+  integrations.on(["PUT", "DELETE"], `/${kind}`, async (c, next) => {
+    const a = resolveActor(c);
+    if (!(a.kind === "user" && a.email === config.ownerEmail)) return c.json({ error: "forbidden", detail: "only the server owner may change this credential" }, 403);
+    await next();
+  });
+}
+
 // Status: is the secret store available, and is Matrix configured for this vault?
 integrations.get("/matrix", (c) => {
   const actor = resolveActor(c);
