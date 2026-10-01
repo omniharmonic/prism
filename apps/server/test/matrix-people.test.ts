@@ -85,7 +85,7 @@ test("on, DM: the other side is created once and linked in the thread's own writ
 });
 
 test("on, group room (> 3 members): known people linked, nobody created", async () => {
-  const known: Note = { id: "p-known", content: "# Known Person", path: "vault/people/known-person", metadata: { name: "Known Person" }, tags: ["person"], createdAt: "", updatedAt: "" };
+  const known: Note = { id: "p-known", content: "# Known Person", path: "vault/people/known-person", metadata: { name: "Known Person", channels: { matrix: "@telegram_1:hs.example" } }, tags: ["person"], createdAt: "", updatedAt: "" };
   const fv = fakeVault([thread("!grp:hs"), known]);
   const members = { [SELF]: "Owner", "@telegram_1:hs.example": "Known Person", "@telegram_2:hs.example": "Stranger One", "@telegram_3:hs.example": "Stranger Two", "@telegram_4:hs.example": "Stranger Three" };
   const res = await ingestMatrix({ sync: async () => room("!grp:hs"), joinedMembers: async () => members }, fv.vault, { linkPeople: true, selfUserId: SELF });
@@ -116,7 +116,7 @@ test("participantLinks rules: bot detection, member cap, dedupe", async () => {
   assert.equal(MAX_MEMBERS_FOR_PERSON_CREATION, 3);
   const fv = fakeVault();
   const idx = new PeopleIndex();
-  // Same human under two puppets → one link.
+  // Same display name is not proof of the same person: the second puppet stays unresolved.
   const links = await participantLinks({ "@a:hs": "Pat Example", "@b:hs": "Pat Example (WA)" }, idx, fv.vault, { platform: "matrix" });
   assert.equal(links.length, 1);
   assert.equal(idx.created, 1);

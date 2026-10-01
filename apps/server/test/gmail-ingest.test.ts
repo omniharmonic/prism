@@ -249,7 +249,7 @@ test("an unchanged thread missing its person link IS rewritten to add the link",
   const t = buildThreadNote("18f0aaaabbbbcc01", [msg()]);
   const fv = fakeVault([
     { id: "desk-1", path: t.path, tags: ["email"], content: t.content, metadata: t.metadata },
-    { id: "p1", path: "vault/people/ada", tags: ["person"], content: "# Ada Example", metadata: { name: "Ada Example" } },
+    { id: "p1", path: "vault/people/ada", tags: ["person"], content: "# Ada Example", metadata: { name: "Ada Example", email: "ada@example.test" } },
   ]);
   const r = await ingestGmail(fakeGog([msg()]).client, fv.vault, OPTS);
   assert.equal(r.updated, 1);
@@ -285,17 +285,18 @@ test("person found by email case-insensitively (channels.email, email, contact)"
   ]);
   assert.equal(idx.find({ email: " bo@example.test" })?.id, "a");
   assert.equal(idx.find({ email: "CY@example.test" })?.id, "b");
-  assert.equal(idx.find({ name: "dee example" })?.id, "c", "path leaf with underscores");
+  assert.equal(idx.find({ name: "dee example" }), null, "a display name is not a unique external identity");
+  assert.equal(idx.resolve({ name: "dee example" }).status, "candidates");
   assert.equal(idx.find({ matrixId: "@eve:hs.example" })?.id, "d", "channels.matrix (the desktop never looked there)");
 });
 
-test("the storm case: a person whose path exists but no search would find is reused, not re-POSTed", async () => {
+test("the storm case: a path-only match stays unresolved without duplicate creation", async () => {
   // The desktop's path check compared normalize(\"j--smith\") to normalize(\"J. Smith\") → miss → 409.
   const fv = fakeVault([{ id: "pj", path: "vault/people/j--smith", tags: ["person"], content: "", metadata: null }]);
   const r = await ingestGmail(fakeGog([msg({ from: "J. Smith <js@example.test>" })]).client, fv.vault, OPTS);
   assert.equal(r.peopleCreated, 0);
   assert.equal(fv.log.conflicts, 0);
-  assert.deepEqual(fv.byTag("email")[0]!.linkSet, [{ targetId: "pj", relationship: EMAIL_FROM }]);
+  assert.deepEqual(fv.byTag("email")[0]!.linkSet, []);
 });
 
 test("a missing person is created once across many messages/threads in one pass", async () => {
@@ -308,13 +309,13 @@ test("a missing person is created once across many messages/threads in one pass"
   assert.equal(fv.log.lists.filter((l) => l === "person").length, 1, "people indexed once per pass");
 });
 
-test("no create ever 409s: a path taken behind our back is merged via if_exists", async () => {
+test("a path taken behind our back never becomes a fabricated person identity", async () => {
   // The person path is taken by a note the person listing cannot see (not person-tagged).
   const fv = fakeVault([{ id: "x", path: "vault/people/ada-example", tags: ["contact"], content: "", metadata: {} }]);
   const r = await ingestGmail(fakeGog([msg()]).client, fv.vault, OPTS);
   assert.equal(r.failed, 0);
   assert.equal(fv.log.conflicts, 0);
-  assert.deepEqual(fv.byTag("email")[0]!.linkSet, [{ targetId: "x", relationship: EMAIL_FROM }]);
+  assert.deepEqual(fv.byTag("email")[0]!.linkSet, []);
   assert.ok(fv.log.posts.every((p) => p.ifExists === "ignore" || p.ifExists === "update"));
 });
 

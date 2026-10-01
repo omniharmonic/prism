@@ -16,9 +16,10 @@
  *   - Matrix user id (lowercased) from `matrix`, `matrixId`, `matrixRoomIds`, `channels.*`;
  *   - normalized name from `metadata.name`, the path leaf, and the title line;
  *   - the exact person path the desktop would create (`vault/people/<slug>`).
- * A miss is created with `if_exists: "ignore"` (so even a lost race returns the
- * existing note instead of a 409) and immediately added to the index, so a
- * sender with ten messages in one pass is created once.
+ * Exact external identities are verified only when every claimant agrees.
+ * Name/path matches are review candidates, never automatic aliases. A true
+ * miss is created with `if_exists: "ignore"`; a returned existing note must
+ * independently prove its external identity before it can be linked.
  *
  * The skip rules (too-short names, phone-number-ish ids, bare addresses,
  * automated/role mailboxes) are the desktop's, byte-for-byte.
@@ -113,11 +114,17 @@ export interface FindOrCreateResult {
   created: boolean;
 }
 
+export interface PersonLookup { name?: string | null; email?: string | null; matrixId?: string | null }
+export type PersonResolution =
+  | { status: "verified"; person: Note; evidence: Array<"email" | "matrix"> }
+  | { status: "ambiguous" | "candidates"; candidates: Note[] }
+  | { status: "missing" };
+
 export class PeopleIndex {
-  private byEmail = new Map<string, Note>();
-  private byMatrix = new Map<string, Note>();
-  private byName = new Map<string, Note>();
-  private byPath = new Map<string, Note>();
+  private byEmail = new Map<string, Map<string, Note>>();
+  private byMatrix = new Map<string, Map<string, Note>>();
+  private byName = new Map<string, Map<string, Note>>();
+  private byPath = new Map<string, Map<string, Note>>();
   /** Person notes this index created (tests + pass logging). */
   created = 0;
 
@@ -134,10 +141,12 @@ export class PeopleIndex {
     return this.byPath.size;
   }
 
-  /** Index one person note. First writer wins, so lookups are deterministic. */
+  /** Retain every claimant: insertion order never chooses a canonical person. */
   add(n: Note): void {
-    const set = <K>(m: Map<K, Note>, k: K) => {
-      if (!m.has(k)) m.set(k, n);
+    const set = (map: Map<string, Map<string, Note>>, key: string) => {
+      const bucket = map.get(key) ?? new Map<string, Note>();
+      bucket.set(n.id, n);
+      map.set(key, bucket);
     };
     const md = (n.metadata ?? {}) as Record<string, unknown>;
     const ch = (md.channels && typeof md.channels === "object" ? md.channels : {}) as Record<string, unknown>;
@@ -158,22 +167,32 @@ export class PeopleIndex {
     set(this.byPath, (n.path ?? `#${n.id}`).toLowerCase());
   }
 
-  /** Exact lookup: email, then Matrix id, then normalized name. */
-  find(q: { name?: string | null; email?: string | null; matrixId?: string | null }): Note | null {
-    if (q.email) {
-      const hit = this.byEmail.get(normalizeEmail(q.email));
-      if (hit) return hit;
-    }
-    if (q.matrixId) {
-      const hit = this.byMatrix.get(q.matrixId.trim().toLowerCase());
-      if (hit) return hit;
-    }
+  /** Exact external identity is evidence. A name/path supplies candidates only. */
+  resolve(q: PersonLookup): PersonResolution {
+    const exact = new Map<string, Note>();
+    const evidence: Array<"email" | "matrix"> = [];
+    const add = (bucket: Map<string, Note> | undefined, kind: "email" | "matrix") => {
+      if (bucket?.size) evidence.push(kind);
+      for (const [id, person] of bucket ?? []) exact.set(id, person);
+    };
+    if (q.email) add(this.byEmail.get(normalizeEmail(q.email)), "email");
+    if (q.matrixId) add(this.byMatrix.get(q.matrixId.trim().toLowerCase()), "matrix");
+    const ordered = (notes: Iterable<Note>) => [...notes].sort((a, b) => a.id.localeCompare(b.id));
+    if (exact.size > 1) return { status: "ambiguous", candidates: ordered(exact.values()) };
+    if (exact.size === 1) return { status: "verified", person: [...exact.values()][0]!, evidence };
     if (q.name) {
-      const k = normalizeName(cleanDisplayName(q.name));
-      const hit = k ? this.byName.get(k) : undefined;
-      if (hit) return hit;
+      const clean = cleanDisplayName(q.name);
+      const candidates = new Map(this.byName.get(normalizeName(clean)) ?? []);
+      const atPath = this.byPath.get(`vault/people/${rustSanitizePath(clean)}`.toLowerCase());
+      for (const [id, person] of atPath ?? []) candidates.set(id, person);
+      if (candidates.size) return { status: "candidates", candidates: ordered(candidates.values()) };
     }
-    return null;
+    return { status: "missing" };
+  }
+
+  find(q: PersonLookup): Note | null {
+    const resolution = this.resolve(q);
+    return resolution.status === "verified" ? resolution.person : null;
   }
 
   /**
@@ -186,14 +205,14 @@ export class PeopleIndex {
     name: string,
     opts: { email?: string | null; matrixId?: string | null; platform?: string | null; allowCreate?: boolean } = {},
   ): Promise<FindOrCreateResult | null> {
-    if (creationRefusal(name, opts.email)) return null;
     const clean = cleanDisplayName(name);
-    const found = this.find({ name: clean, email: opts.email, matrixId: opts.matrixId });
-    if (found) return { id: found.id, created: false };
+    const resolution = this.resolve({ name: clean, email: opts.email, matrixId: opts.matrixId });
+    if (resolution.status === "verified") return { id: resolution.person.id, created: false };
+    // Do not silently merge aliases or create duplicates to work around a
+    // collision. Callers can inspect resolve() to build an authorized review projection.
+    if (resolution.status !== "missing") return null;
+    if (creationRefusal(name, opts.email) || opts.allowCreate === false) return null;
     const path = `vault/people/${rustSanitizePath(clean)}`;
-    const atPath = this.byPath.get(path.toLowerCase());
-    if (atPath) return { id: atPath.id, created: false };
-    if (opts.allowCreate === false) return null;
 
     const channels: Record<string, unknown> = {};
     if (opts.email) channels.email = [opts.email];
@@ -211,11 +230,15 @@ export class PeopleIndex {
       tags: ["person"],
       ifExists: "ignore", // a path we could not see (or a lost race) returns the existing note — never a 409
     });
-    // Index what we asked for as well as what came back: an `existed` note
-    // keeps its own metadata, but this pass must still resolve this sender to it.
+    // if_exists may return an unrelated note at the same path. Never invent
+    // external aliases on that returned record just to make this pass link it.
+    if (note.existed) {
+      if (!note.tags?.includes("person")) return null;
+      this.add(note);
+      const match = this.resolve({ email: opts.email, matrixId: opts.matrixId });
+      return match.status === "verified" ? { id: match.person.id, created: false } : null;
+    }
     this.add(note);
-    this.add({ ...note, metadata });
-    if (note.existed) return { id: note.id, created: false };
     this.created++;
     return { id: note.id, created: true };
   }
