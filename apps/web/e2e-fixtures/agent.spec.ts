@@ -189,3 +189,26 @@ test("working document and draft stay pinned while reading references, expanding
   await expect(working).toContainText("Reference note");
   expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
 });
+
+test("conversation identifies its authors and archive is a separate keyboard action", async ({ page }, testInfo) => {
+  await page.goto("/e2e-fixtures/agent.html?history&permissions");
+  await expect(page.getByTestId("agent-assistant-message")).toContainText("A shared place to think");
+  await expect(page.getByText("You", { exact: true })).toBeVisible();
+  await expect(page.getByText("Prism agent", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
+  const second = page.getByTestId("agent-session-row").filter({ hasText: "Explore the source material" });
+  await second.focus();
+  await page.keyboard.press("Tab");
+  const archive = page.getByRole("button", { name: "Archive session", exact: true }).nth(1);
+  await expect(archive).toBeFocused();
+  await expect(archive).toHaveCSS("opacity", "1");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.keyboard.press("Enter");
+  await expect(second).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismAgentStore.getState().activeSessionId)).toBe("fixture-session");
+  await page.screenshot({ path: testInfo.outputPath("document-conversation-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("textbox", { name: "Message the agent" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("document-conversation-mobile.png") });
+});

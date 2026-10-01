@@ -40,6 +40,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { useNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
+import { PrismMark } from "../brand/PrismMark";
 import type { RendererProps } from "../renderers/RendererProps";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -281,7 +282,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
       <div className="h-full min-w-0 flex-1">
         {conversation ?? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <Bot size={28} style={{ color: "var(--color-accent)" }} />
+            <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
               Chat with the agent on your Prism server. Conversations keep running when you close the tab.
             </p>
@@ -318,9 +319,9 @@ function SessionList({
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-shrink-0 items-center gap-2 px-4" style={{ height: 52, borderBottom: "1px solid var(--glass-border)" }}>
-        <Bot size={16} style={{ color: "var(--color-accent)" }} />
+        <PrismMark width={27} height={20} decorative style={{ color: "var(--text-primary)" }} />
         <span className="flex-1 font-semibold" style={{ color: "var(--text-primary)" }}>
-          Agent
+          Conversations
         </span>
         <button
           onClick={onNew}
@@ -348,14 +349,16 @@ function SessionList({
           return (
             <div
               key={s.id}
-              role="button"
-              tabIndex={0}
-              data-testid="agent-session-row"
-              onClick={() => onOpen(s.id)}
-              onKeyDown={(e) => e.key === "Enter" && onOpen(s.id)}
-              className="interactive group mx-1.5 flex items-center gap-2.5 rounded-lg px-2.5"
-              style={{ minHeight: mobile ? 56 : 48, background: active ? "var(--surface-selected)" : undefined }}
+              className="group mx-1.5 flex items-center rounded-lg pr-1"
+              style={{ background: active ? "var(--surface-selected)" : undefined }}
             >
+              <button
+                data-testid="agent-session-row"
+                onClick={() => onOpen(s.id)}
+                aria-current={active ? "true" : undefined}
+                className="interactive focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left"
+                style={{ minHeight: mobile ? 56 : 48 }}
+              >
               <span
                 className={running ? "animate-pulse" : undefined}
                 title={running ? "Running" : s.lastTurnStatus ?? "idle"}
@@ -371,11 +374,11 @@ function SessionList({
                       : "var(--glass-border)",
                 }}
               />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm" style={{ color: "var(--text-primary)", fontWeight: active ? 560 : 450 }}>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm" style={{ color: "var(--text-primary)", fontWeight: active ? 560 : 450 }}>
                   {s.title || "Untitled session"}
-                </div>
-                <div className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
+                </span>
+                <span className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
                   {running ? <span style={{ color: "var(--color-accent)" }}>{s.lastTurnStatus === "queued" ? "Queued" : "Working…"}</span> : relTime(s.lastTurnAt ?? s.updated_at)}
                   {isReadOnlyProfile(s.profile) && (
                     <span className="flex items-center gap-0.5">
@@ -387,8 +390,9 @@ function SessionList({
                       · {formatAgentCost(s.cost_usd, billing)?.text}
                     </span>
                   )}
-                </div>
-              </div>
+                </span>
+              </span>
+              </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -396,8 +400,8 @@ function SessionList({
                 }}
                 aria-label="Archive session"
                 title="Archive"
-                className={`interactive flex items-center justify-center rounded ${mobile ? "" : "opacity-0 group-hover:opacity-100"}`}
-                style={{ width: 28, height: 28, color: "var(--text-muted)" }}
+                className={`interactive focus-ring flex flex-shrink-0 items-center justify-center rounded ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+                style={{ width: mobile ? 44 : 32, height: mobile ? 44 : 32, color: "var(--text-muted)" }}
               >
                 <Archive size={14} />
               </button>
@@ -619,7 +623,7 @@ export function Conversation({
 
   const empty = isDraft && !creating && (
     <div className="flex flex-col items-center gap-3 px-4 pt-10 text-center">
-      <Bot size={26} style={{ color: "var(--color-accent)" }} />
+      <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
       <p className="text-sm" style={{ color: "var(--text-muted)" }}>
         {draft?.noteId ? "Ask anything about this note." : "Ask the agent about your vault."}
         <br />
@@ -796,10 +800,11 @@ export function Conversation({
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end gap-1.5">
+      <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>You</span>
       <div
-        className="max-w-[85%] whitespace-pre-wrap px-3.5 py-2 text-sm"
-        style={{ background: "var(--color-accent)", color: "#fff", borderRadius: "18px 18px 4px 18px" }}
+        className="max-w-[92%] whitespace-pre-wrap rounded-xl px-3.5 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere]"
+        style={{ background: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}
         data-testid="agent-user-message"
       >
         {text}
@@ -827,6 +832,11 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   return (
     <div className="flex flex-col gap-2" data-testid="agent-turn" data-status={turn.status}>
       {turn.prompt && <UserBubble text={turn.prompt} />}
+      <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <PrismMark width={25} height={18} decorative />
+        <span className="font-medium">Prism agent</span>
+        {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={new Date(turn.startedAt).toLocaleString()} style={{ color: "var(--text-muted)" }}>{new Date(turn.startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
+      </div>
       {turn.tools.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {turn.tools.map((tool) => (
@@ -851,7 +861,7 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
         </div>
       )}
       {hasText && (
-        <div className={`max-w-full ${compact ? "text-[13px]" : "text-sm"} leading-relaxed`} style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
+        <div className={`min-w-0 max-w-full [overflow-wrap:anywhere] ${compact ? "text-[13px]" : "text-sm"} leading-relaxed`} style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
           {turn.blocks
             .filter((b) => b.text.trim())
             .map((b, i) => (
