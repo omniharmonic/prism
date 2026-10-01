@@ -1,5 +1,6 @@
 import type { VaultClient } from "@prism/core";
 import * as rest from "./rest";
+import { agentScope } from "../config";
 
 /**
  * Web implementation of the {@link VaultClient} seam — the typed boundary the
@@ -7,7 +8,9 @@ import * as rest from "./rest";
  * Parachute REST layer. The desktop shell provides the equivalent over Tauri.
  */
 export const httpVaultClient: VaultClient = {
+  scope: () => agentScope() ?? "",
   listNotes: rest.listNotes,
+  resolveWikilink: rest.resolveWikilink,
   listTree: rest.listTree,
   getNote: rest.getNote,
   createNote: rest.createNote,

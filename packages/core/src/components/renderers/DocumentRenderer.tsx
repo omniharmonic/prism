@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNotes } from "../../app/hooks/useParachute";
-import { inferContentType } from "../../lib/schemas/content-types";
+import { WikilinkDropdown } from "./WikilinkDropdown";
 import { sanitizeHtml } from "../../lib/html/sanitize";
-import type { Note } from "../../lib/types";
 import { InlinePrompt } from "../agent/InlinePrompt";
 import { isDesktop } from "../../lib/platform";
 import { useHostServices } from "../../data/HostServicesContext";
@@ -494,80 +493,6 @@ function GhostTextOverlay({
         style={{ opacity: 0.7, color: "var(--text-secondary)" }}
         dangerouslySetInnerHTML={{ __html: sanitizeHtml(previewHtml) }}
       />
-    </div>
-  );
-}
-
-/**
- * Wikilink autocomplete dropdown — appears when typing [[ in the editor.
- * Shows matching notes from the vault, click to insert [[target]] at cursor.
- */
-function WikilinkDropdown({ editor, notes, autocomplete }: {
-  editor: ReturnType<typeof useEditor>;
-  notes: Note[];
-  autocomplete: WikilinkAutocompleteState;
-}) {
-  const [selectedIndex, setSelectedIndex] = useState(0);
-
-  if (!editor) return null;
-
-  const query = (autocomplete.query || "").toLowerCase();
-  const matches = query.length > 0
-    ? notes.filter((n) => {
-        const name = (n.path || "").split("/").pop() || "";
-        return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
-      }).slice(0, 8)
-    : notes.slice(0, 8);
-
-  if (matches.length === 0) return null;
-
-  // Get cursor position for dropdown placement
-  const coords = editor.view.coordsAtPos(autocomplete.to);
-
-  const handleSelect = (note: Note) => {
-    const name = (note.path || "").split("/").pop() || note.id;
-
-    // Both @ and [[ insert the same wikilink format — the decoration renders it clean
-    editor.chain().focus()
-      .deleteRange({ from: autocomplete.from, to: autocomplete.to })
-      .insertContent(`[[${note.path || name}|${name}]] `)
-      .run();
-  };
-
-  return (
-    <div
-      className="fixed z-50 glass-elevated rounded-lg py-1 overflow-hidden"
-      style={{
-        left: Math.min(coords.left, window.innerWidth - 300),
-        top: coords.bottom + 4,
-        width: 280,
-        maxHeight: 240,
-        overflowY: "auto",
-      }}
-    >
-      {matches.map((note, i) => {
-        const name = (note.path || "").split("/").pop() || note.id;
-        const type = inferContentType(note);
-        return (
-          <button
-            key={note.id}
-            onClick={() => handleSelect(note)}
-            onMouseEnter={() => setSelectedIndex(i)}
-            className="w-full flex items-start gap-2 px-3 py-1.5 text-left text-xs transition-colors"
-            style={{
-              background: i === selectedIndex ? "var(--glass-hover)" : "transparent",
-              color: "var(--text-primary)",
-            }}
-          >
-            <div className="flex-1 min-w-0">
-              <div className="truncate font-medium">{name}</div>
-              <div className="truncate" style={{ color: "var(--text-muted)", fontSize: "10px" }}>
-                {note.path} · {type}
-              </div>
-            </div>
-          </button>
-        );
-      })}
     </div>
   );
 }

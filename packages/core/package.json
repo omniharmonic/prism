@@ -13,6 +13,7 @@
     "./governance-prose": "./src/lib/governance/prose.ts",
     "./dashboard-engine": "./src/lib/dashboard/filter-engine.ts",
     "./collab-access": "./src/lib/collab/access.ts",
+    "./wikilinks": "./src/lib/wikilinks.ts",
     "./styles/*": "./src/styles/*"
   },
   "scripts": {
@@ -22,6 +23,7 @@
     "diff": "^8.0.4",
     "dompurify": "^3.4.8",
     "emoji-picker-react": "^4.19.1",
+    "entities": "^4.5.0",
     "maplibre-gl": "^4.7.1",
     "marked": "^14.1.4",
     "y-codemirror.next": "^0.3.5"

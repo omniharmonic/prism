@@ -155,8 +155,10 @@ html.light .prose-editor code:not(pre code) {
 /* ─── Wikilinks ─── */
 /* Hide the raw [[...]] text, show clean display name via ::after */
 .wikilink {
+  display: inline-block;
+  vertical-align: baseline;
   font-size: 0;
-  line-height: 0;
+  line-height: 1.75;
   color: transparent;
   cursor: pointer;
   border-radius: 4px;

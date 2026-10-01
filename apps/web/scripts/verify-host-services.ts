@@ -211,6 +211,22 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   ok("wikilinks: extract (dedupe, |label), match (path/filename/vault-stripped), resolve → references links");
 }
 {
+  const tree = [
+    {id:"a",path:"one/Report",tags:[],metadata:{aliases:["Weekly"]}},
+    {id:"b",path:"two/Report",tags:[],metadata:null},
+  ];
+  const fv = fakeVault([note("src",{content:"[[Report]] [[Weekly]]"})],tree);
+  const result = await resolveWikilinks(fv.vc,"src");
+  assert.equal(result.links[0]!.status,"ambiguous");
+  assert.deepEqual(fv.links.map(link=>link.t),["a"]);
+  let scope="a";
+  fv.vc.scope=()=>scope;
+  fv.vc.listTree=async()=>{scope="b";return tree;};
+  await assert.rejects(resolveWikilinks(fv.vc,"src"),/Workspace changed/);
+  assert.equal(fv.links.length,1,"no links written after a vault switch");
+  ok("wikilinks: ambiguous names skipped, aliases matched, scope change prevents writes");
+}
+{
   const fv = fakeVault([note("s1", { tags: ["agent-skill"], metadata: { skillName: "triage", lastRun: "2026-10-01T08:00:00Z", enabled: true } }), note("x")]);
   await queueSkillRun(fv.vc, "s1");
   const m = fv.updates[0]!.params.metadata as Record<string, unknown>;

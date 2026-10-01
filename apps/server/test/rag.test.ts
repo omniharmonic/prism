@@ -297,6 +297,7 @@ test("durable index jobs require admin access and remain bound to the credential
   const member = sessionCookie(makeSession("member@test.local"));
   assert.equal((await app.request("/api/index/jobs",{method:"POST",headers:{cookie:member}})).status,403);
   const headers={cookie:sessionCookie(makeSession(OWNER)),"x-prism-vault":"frb"};
+  assert.equal((await app.request("/api/index/jobs",{method:"POST",headers:{...headers,"x-prism-write-actor":"user:other@test.local"}})).status,409);
   const started=await app.request("/api/index/jobs",{method:"POST",headers});
   assert.equal(started.status,202);
   const job=await started.json() as {id:string};

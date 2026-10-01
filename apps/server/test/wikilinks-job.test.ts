@@ -135,6 +135,19 @@ test("M2/M3: ambiguous file names are never linked (counted + sampled); machine-
   assert.equal((ended as { status: string }).status, "done");
 });
 
+test("batch linking uses stable IDs and decoded aliases while preserving manual references",async()=>{
+  const v=new MemVault();
+  v.add('src','Source','<p>[[target|Renamed title]] and [[Research &amp; design]]</p>',[{sourceId:'src',targetId:'manual',relationship:'references'}]);
+  v.add('target','Renamed','Body');
+  v.notes.get('target')!.metadata={aliases:['Research & design']};
+  v.add('manual','Manual','Body');
+  await startWikilinkJob(v,'primary',{dryRun:false,paceMs:0}).done;
+  assert.equal(v.patches.length,1);
+  assert.deepEqual(v.patches[0]!.add,[{target:'target',relationship:'references'}]);
+  assert.deepEqual(v.patches[0]!.keys.sort(),['ifUpdatedAt','links']);
+  assert.ok(v.notes.get('src')!.content.includes('&amp;'),"the stored document is not rewritten");
+});
+
 // ── route ────────────────────────────────────────────────────────────────────
 
 let fv: FakeVault;

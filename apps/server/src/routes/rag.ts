@@ -16,6 +16,7 @@
  * A retired capability vault must never fall back to the primary vault.
  */
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { resolveActor } from "../auth/actor";
 import { effectiveCaps, type NoteRef } from "../permissions";
@@ -33,6 +34,12 @@ rag.use("/search/semantic", validIndexVault);
 rag.use("/index/*", validIndexVault);
 async function validIndexVault(c: Context, next: () => Promise<void>) {
   const actor = resolveActor(c);
+  const expected = c.req.header("x-prism-write-actor");
+  if (expected) {
+    const capability = c.req.header("authorization")?.match(/^Capability (.+)$/i)?.[1];
+    const actual = actor.kind === "user" ? `user:${actor.email}` : actor.kind === "link" && capability ? `capability:${createHash("sha256").update(capability).digest("hex")}` : null;
+    if (expected !== actual) return c.json({ error: "write_actor_changed" }, 409);
+  }
   if (resolveVaultEntry(actor.vaultId).id !== actor.vaultId) {
     return c.json({ error: "semantic_index_unavailable", reason: "This vault is no longer available" }, 409);
   }

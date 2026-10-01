@@ -132,6 +132,10 @@ export async function listNotes(filters?: NoteFilters): Promise<Note[]> {
   return (await req(`/notes${query}`)).json();
 }
 
+export async function resolveWikilink(target: string): Promise<{kind:"match"|"ambiguous"|"none";candidates:Array<{id:string;path:string|null;title:string}>}> {
+  return (await req(`/wikilinks/resolve${qs({target})}`)).json();
+}
+
 /** The lean row `GET /api/tree` returns (server projection, WP7.1). */
 interface TreeRow {
   id: string;

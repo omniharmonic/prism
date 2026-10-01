@@ -38,6 +38,7 @@
  * `GET /api/admin/wikilinks/resolve`; `POST …/cancel` stops it between notes.
  */
 import { randomUUID } from "node:crypto";
+import { parseWikilinks, buildWikilinkIndex, resolveWikilink, type WikilinkIndex } from "@prism/core/wikilinks";
 import type { Note, NoteLinkInput } from "./parachute";
 
 export interface WikilinkJobVault {
@@ -77,60 +78,14 @@ export interface WikilinkJob {
   ambiguousSample: string[];
 }
 
-/** Desktop `extract_wikilinks`: targets in order, `|label` dropped, trimmed,
- *  de-duplicated. One deliberate difference: a target may not contain `[`, so a
- *  stray `[[` before a real link (`[[oops [[Real]]`) yields `Real` instead of the
- *  desktop's garbage target `oops [[Real`; the note is still counted unparseable. */
-export function extractWikilinks(content: string): { links: string[]; balanced: boolean } {
-  const links: string[] = [];
-  const re = /\[\[([^[\]]*?)\]\]/g;
-  let m: RegExpExecArray | null;
-  let matched = 0;
-  while ((m = re.exec(content)) !== null) {
-    matched++;
-    const target = m[1]!.split("|")[0]!.trim();
-    if (target && !links.includes(target)) links.push(target);
-  }
-  const opens = content.split("[[").length - 1;
-  return { links, balanced: opens === matched };
-}
-
-export interface PathIndex {
-  byPath: Map<string, Note>;
-  byStripped: Map<string, Note>;
-  /** Lower-cased file name → EVERY note with that name (M2: a shared name is ambiguous). */
-  byName: Map<string, Note[]>;
-}
-
-export function buildIndex(notes: Note[]): PathIndex {
-  const idx: PathIndex = { byPath: new Map(), byStripped: new Map(), byName: new Map() };
-  for (const n of notes) {
-    const path = n.path ?? "";
-    if (!path) continue;
-    const stripped = path.startsWith("vault/") ? path.slice(6) : path;
-    const name = (path.split("/").pop() ?? "").toLowerCase();
-    if (!idx.byPath.has(path)) idx.byPath.set(path, n);
-    if (!idx.byStripped.has(stripped)) idx.byStripped.set(stripped, n);
-    if (name) idx.byName.set(name, [...(idx.byName.get(name) ?? []), n]);
-  }
-  return idx;
-}
-
+// Keep the public job helpers stable while sharing one resolver with clients.
+export const extractWikilinks = parseWikilinks;
+export type PathIndex = WikilinkIndex<Note>;
+export const buildIndex = (notes: Note[]): PathIndex => buildWikilinkIndex(notes);
 export type MatchResult = { kind: "match"; note: Note } | { kind: "ambiguous"; candidates: number } | { kind: "none" };
-
-/**
- * Exact path → `vault/`-stripped path → file name (case-insensitive); never the
- * note itself. A file name shared by several OTHER notes is AMBIGUOUS and never
- * linked (security review M2 — the desktop silently took the first in list order).
- */
-export function matchTarget(wikilink: string, idx: PathIndex, selfId: string): MatchResult {
-  for (const cand of [idx.byPath.get(wikilink), idx.byStripped.get(wikilink)]) {
-    if (cand && cand.id !== selfId) return { kind: "match", note: cand };
-  }
-  const byName = (idx.byName.get(wikilink.toLowerCase()) ?? []).filter((n) => n.id !== selfId);
-  if (byName.length === 1) return { kind: "match", note: byName[0]! };
-  if (byName.length > 1) return { kind: "ambiguous", candidates: byName.length };
-  return { kind: "none" };
+export function matchTarget(target: string, index: PathIndex, selfId: string): MatchResult {
+  const result = resolveWikilink(target,index,selfId);
+  return result.kind === "ambiguous" ? {kind:"ambiguous",candidates:result.notes.length} : result;
 }
 
 const hasRef = (n: Note, targetId: string): boolean =>
@@ -220,7 +175,8 @@ const SKIP_TAGS = new Set(["agent-dispatch", "agent-output", "agent-session", "a
 
 async function run(vault: WikilinkJobVault, job: WikilinkJob, concurrency: number, paceMs: number): Promise<void> {
   // One lean listing (no content) for the path index + existing links.
-  const notes = await vault.listNotes({ includeLinks: true, includeMetadata: ["type"] });
+  const notes = await vault.listNotes({ includeLinks: true, includeMetadata: ["type", "title", "aliases", "alias"] });
+  if (notes.length >= 50_000) throw new Error("Document inventory reached its limit; no links were changed");
   job.total = notes.length;
   const idx = buildIndex(notes);
   // M3 pre-filter, content-free: only notes that can hold a wikilink are fetched.

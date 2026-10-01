@@ -1,90 +1,66 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect, useId, useCallback } from "react";
 import type { Editor } from "@tiptap/react";
-import { inferContentType } from "../../lib/schemas/content-types";
 import type { Note } from "../../lib/types";
+import { noteAliases, noteLinkTitle } from "../../lib/wikilinks";
 import type { WikilinkAutocompleteState } from "../../lib/tiptap/WikilinkAutocomplete";
 
-/**
- * Wikilink autocomplete dropdown — appears when typing `[[` (or `@`) in any
- * editor. Shows matching vault notes; click to insert `[[path|name]]` at the
- * cursor. Shared by the plain DocumentRenderer and the collaborative editor so
- * the suggest feature works identically in both.
- */
-export function WikilinkDropdown({
-  editor,
-  notes,
-  autocomplete,
-}: {
-  editor: Editor | null;
-  notes: Note[];
-  autocomplete: WikilinkAutocompleteState;
+/** One keyboard-accessible picker for both local and collaborative editors. */
+export function WikilinkDropdown({ editor, notes, autocomplete }: {
+  editor: Editor|null; notes: Note[]; autocomplete: WikilinkAutocompleteState;
 }) {
-  const [selectedIndex, setSelectedIndex] = useState(0);
-
-  if (!editor) return null;
-
-  const query = (autocomplete.query || "").toLowerCase();
-  const matches = query.length > 0
-    ? notes.filter((n) => {
-        const name = (n.path || "").split("/").pop() || "";
-        return name.toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query);
-      }).slice(0, 8)
-    : notes.slice(0, 8);
-
-  if (matches.length === 0) return null;
-
-  const coords = editor.view.coordsAtPos(autocomplete.to);
-
-  const handleSelect = (note: Note) => {
-    const name = (note.path || "").split("/").pop() || note.id;
-    // Both @ and [[ insert the same wikilink format — the decoration renders it clean.
-    editor.chain().focus()
-      .deleteRange({ from: autocomplete.from, to: autocomplete.to })
-      .insertContent(`[[${note.path || name}|${name}]] `)
-      .run();
-  };
-
-  return (
-    <div
-      className="fixed glass-elevated overflow-hidden"
-      style={{
-        left: Math.min(coords.left, window.innerWidth - 300),
-        top: coords.bottom + 6,
-        width: 288,
-        maxHeight: 264,
-        overflowY: "auto",
-        borderRadius: "var(--radius-lg)",
-        padding: 4,
-        zIndex: 70,
-      }}
-    >
-      {matches.map((note, i) => {
-        const name = (note.path || "").split("/").pop()?.replace(/\.[^.]+$/, "") || note.id;
-        const sub = (note.path || "").replace(/^vault\//, "");
-        const type = inferContentType(note);
-        const emoji = typeof note.metadata?.icon === "string" ? (note.metadata.icon as string) : null;
-        return (
-          <button
-            key={note.id}
-            onClick={() => handleSelect(note)}
-            onMouseEnter={() => setSelectedIndex(i)}
-            className="interactive w-full flex items-center gap-2.5 text-left"
-            style={{
-              padding: "6px 8px",
-              background: i === selectedIndex ? "var(--surface-active)" : "transparent",
-              color: "var(--text-primary)",
-            }}
-          >
-            <span className="flex items-center justify-center flex-shrink-0" style={{ width: 18, fontSize: 15, color: "var(--text-muted)" }}>
-              {emoji || "·"}
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="truncate" style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{name}</div>
-              <div className="truncate" style={{ color: "var(--text-muted)", fontSize: 10 }}>{sub} · {type}</div>
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
+  const id = useId();
+  const signature = `${autocomplete.from}:${autocomplete.query}`;
+  const [selection,setSelection] = useState({signature:"",index:0,dismissed:false});
+  const matches = useMemo(()=>{
+    const query = autocomplete.query.trim().toLowerCase();
+    return notes.filter(note=>[noteLinkTitle(note),note.path??"",...noteAliases(note)].some(text=>text.toLowerCase().includes(query))).slice(0,8);
+  },[notes,autocomplete.query]);
+  const index = selection.signature===signature ? Math.min(selection.index,Math.max(0,matches.length-1)) : 0;
+  const dismissed = selection.signature===signature && selection.dismissed;
+  const visible = !!editor && autocomplete.active && !dismissed && matches.length>0;
+  const select = useCallback((note:Note)=>{
+    // IDs survive renames. A text node preserves portable syntax without
+    // interpreting a title containing <...> as editor HTML.
+    const label = noteLinkTitle(note).replace(/[\[\]|]/g, "").trim() || note.id;
+    editor?.chain().focus().deleteRange({from:autocomplete.from,to:autocomplete.to})
+      .insertContent({type:"text",text:`[[${note.id}|${label}]] `}).run();
+  },[editor,autocomplete.from,autocomplete.to]);
+  useEffect(()=>{
+    if (!editor || !visible) return;
+    const element = editor.view.dom;
+    element.setAttribute("aria-controls",id);
+    element.setAttribute("aria-autocomplete","list");
+    element.setAttribute("aria-activedescendant",`${id}-${index}`);
+    const keydown = (event:KeyboardEvent)=>{
+      if (event.isComposing) return;
+      if (event.key==="ArrowDown" || event.key==="ArrowUp") {
+        event.preventDefault();event.stopImmediatePropagation();
+        const next=(index+(event.key==="ArrowDown"?1:-1)+matches.length)%matches.length;
+        setSelection({signature,index:next,dismissed:false});
+        document.getElementById(`${id}-${next}`)?.scrollIntoView({block:"nearest"});
+      } else if ((event.key==="Enter" || event.key==="Tab") && !event.shiftKey && matches[index]) {
+        event.preventDefault();event.stopImmediatePropagation();select(matches[index]);
+      } else if (event.key==="Escape") {
+        event.preventDefault();event.stopImmediatePropagation();setSelection({signature,index,dismissed:true});
+      }
+    };
+    element.addEventListener("keydown",keydown,true);
+    return ()=>{
+      element.removeEventListener("keydown",keydown,true);
+      for(const name of ["aria-controls","aria-autocomplete","aria-activedescendant"])element.removeAttribute(name);
+    };
+  },[editor,visible,id,index,matches,select,signature]);
+  if (!editor || !visible) return null;
+  const coords = editor.view.coordsAtPos(Math.min(autocomplete.to,editor.state.doc.content.size));
+  const width = Math.min(320,window.innerWidth-16);
+  const height = Math.min(280,window.innerHeight-16);
+  const top = coords.bottom+height+6>window.innerHeight ? Math.max(8,coords.top-height-6) : coords.bottom+6;
+  return <div id={id} role="listbox" aria-label="Link to a document" className="fixed glass-elevated overflow-auto rounded-xl p-1 shadow-lg"
+    style={{left:Math.max(8,Math.min(coords.left,window.innerWidth-width-8)),top,width,maxHeight:height,zIndex:70}}>
+    {matches.map((note,i)=><button key={note.id} id={`${id}-${i}`} role="option" aria-selected={i===index} tabIndex={-1}
+      onMouseDown={event=>event.preventDefault()} onClick={()=>select(note)} onMouseEnter={()=>setSelection({signature,index:i,dismissed:false})}
+      className="flex w-full flex-col gap-1 rounded-lg px-3 py-2 text-left" style={{background:i===index?"var(--surface-selected)":"transparent",color:"var(--text-primary)"}}>
+      <span className="max-w-full truncate text-sm font-medium">{noteLinkTitle(note)}</span><span className="max-w-full truncate text-xs text-[var(--text-secondary)]">{note.path??note.id}</span>
+    </button>)}
+  </div>;
 }

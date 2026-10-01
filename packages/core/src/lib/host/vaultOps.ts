@@ -9,12 +9,15 @@
  *   updateSkillNote / validateSkillPatch                     ← agent_update_skill (skill config card)
  */
 import type { Note, NoteTreeEntry, UpdateNoteParams } from "../types";
+import { parseWikilinks, buildWikilinkIndex, resolveWikilink } from "../wikilinks";
 
 /** The subset of VaultClient these ops need (easy to fake in tests). */
 export interface VaultOpsClient {
+  scope?(): string;
   getNote(id: string): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams): Promise<Note>;
   listTree?(): Promise<NoteTreeEntry[]>;
+  listNotes?(): Promise<Note[]>;
   createLink?(sourceId: string, targetId: string, relationship: string, metadata?: unknown): Promise<unknown>;
 }
 
@@ -99,29 +102,11 @@ export async function removeSyncConfig(vc: VaultOpsClient, noteId: string, adapt
 
 // ── wikilinks ────────────────────────────────────────────────────────────────
 
-/** Port of the desktop `extract_wikilinks`: `[[target]]` / `[[target|label]]`, trimmed, de-duplicated, in order. */
-export function extractWikilinks(content: string): string[] {
-  const out: string[] = [];
-  const re = /\[\[([^\]]*?)\]\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
-    const target = m[1]!.split("|")[0]!.trim();
-    if (target && !out.includes(target)) out.push(target);
-  }
-  return out;
-}
-
-/** Port of the desktop matcher: exact path, filename (case-insensitive), or either with `vault/` stripped. */
-export function matchWikilink(wikilink: string, entries: Array<Pick<NoteTreeEntry, "id" | "path">>): Pick<NoteTreeEntry, "id" | "path"> | null {
-  const lower = wikilink.toLowerCase();
-  for (const n of entries) {
-    const path = n.path ?? "";
-    const name = path.split("/").pop() ?? "";
-    if (path === wikilink || name.toLowerCase() === lower) return n;
-    const stripped = path.startsWith("vault/") ? path.slice(6) : path;
-    if (stripped === wikilink || (stripped.split("/").pop() ?? "").toLowerCase() === lower) return n;
-  }
-  return null;
+export const extractWikilinks = (content: string): string[] => parseWikilinks(content).links;
+/** Compatibility helper; ambiguous names never silently choose the first row. */
+export function matchWikilink(wikilink: string, entries: Array<Pick<NoteTreeEntry, "id" | "path"> & Partial<Pick<NoteTreeEntry,"metadata">>>): Pick<NoteTreeEntry,"id"|"path"> | null {
+  const result = resolveWikilink(wikilink,buildWikilinkIndex(entries));
+  return result.kind === "match" ? result.note : null;
 }
 
 export interface WikilinkResolution {
@@ -133,20 +118,30 @@ export interface WikilinkResolution {
 /** Port of `resolve_wikilinks` (one note): create a `references` link for each wikilink that matches a note. */
 export async function resolveWikilinks(vc: VaultOpsClient, noteId: string): Promise<WikilinkResolution> {
   if (!vc.listTree || !vc.createLink) throw new Error("this vault client cannot list or link notes");
+  const scope = vc.scope?.();
+  const checkScope = () => { if (scope !== vc.scope?.()) throw new Error("Workspace changed. Reopen the original document before resolving its links."); };
   const note = await vc.getNote(noteId);
+  checkScope();
   const wikilinks = extractWikilinks(note.content ?? "");
   if (wikilinks.length === 0) return { resolved: 0, total: 0, links: [] };
-  const tree = (await vc.listTree()).filter((n) => n.id !== noteId);
+  const inventory = vc.listNotes ? await vc.listNotes() : await vc.listTree();
+  checkScope();
+  if (inventory.length >= 50_000) throw new Error("Document inventory may be incomplete; no links were changed");
+  const tree = inventory.filter((n) => n.id !== noteId);
+  const index = buildWikilinkIndex(tree);
   const links: WikilinkResolution["links"] = [];
   let created = 0;
   for (const w of wikilinks) {
-    const target = matchWikilink(w, tree);
-    if (!target) {
-      links.push({ wikilink: w, status: "unresolved" });
+    const result = resolveWikilink(w,index);
+    if (result.kind !== "match") {
+      links.push({ wikilink: w, status: result.kind === "ambiguous" ? "ambiguous" : "unresolved" });
       continue;
     }
+    const target = result.note;
     try {
+      checkScope();
       await vc.createLink(noteId, target.id, "references", { source: "wikilink", original: w });
+      checkScope();
       created++;
       links.push({ wikilink: w, targetId: target.id, targetPath: target.path, status: "created" });
     } catch (e) {

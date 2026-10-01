@@ -108,6 +108,10 @@ export function toNoteVersion(raw: Record<string, unknown>): NoteVersion {
  * That single indirection is what lets one codebase serve both shells.
  */
 export interface VaultClient {
+  /** Resolved audience identity for multi-request actions, never credentials. */
+  scope?(): string;
+  /** Fresh, permission-filtered exact/alias/title resolution. No document bodies. */
+  resolveWikilink?(target: string): Promise<{kind:"match"|"ambiguous"|"none";candidates:Array<{id:string;path:string|null;title:string}>}>;
   listNotes(filters?: NoteFilters): Promise<Note[]>;
   listTree(): Promise<NoteTreeEntry[]>;
   getNote(id: string): Promise<Note>;
