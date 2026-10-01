@@ -1159,10 +1159,13 @@ acl.post("/server/tunnel/ingress", async (c) => {
 // Curated editable .env keys — deliberately NARROW. No token/secret/OWNER_EMAIL
 // (editing those from the web could lock the owner out or leak). Each write backs
 // up .env first and is flagged restart-required (the process reads env at boot).
+// RESEND_API_KEY was removed (docs/credentials.md): it controls the channel that
+// delivers owner magic links, so a stolen owner session could swap in an
+// attacker-owned Resend account, read every later sign-in link in that account's
+// logs, and keep owner access after the session is revoked. Set it in .env.
 const EDITABLE_ENV: Record<string, (v: string) => boolean> = {
   APP_ORIGIN: (v) => /^https?:\/\/.+/.test(v),
   MAGIC_FROM: (v) => v.length > 0 && v.length < 200,
-  RESEND_API_KEY: (v) => v.length < 200,
 };
 
 acl.put("/server/config", async (c) => {

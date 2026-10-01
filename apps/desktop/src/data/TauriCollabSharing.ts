@@ -122,6 +122,12 @@ export const tauriCollabSharing: CollabSharing = {
   async syncIntegration(kind: string): Promise<Record<string, unknown>> {
     return api<Record<string, unknown>>("POST", `/integrations/${enc(kind)}/sync`);
   },
+  async integrationAction(kind: string, action: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return api<Record<string, unknown>>("POST", `/integrations/${enc(kind)}/${enc(action)}`, body ?? {});
+  },
+  async setVaultToken(vaultId: string, token: string): Promise<void> {
+    await acl("PUT", `/vaults/${enc(vaultId)}/token`, { token });
+  },
 
   // ── Publishing (Network → Publish) ──
   async listPublications(): Promise<PublicationInfo[]> {

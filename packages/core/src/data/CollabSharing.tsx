@@ -132,6 +132,10 @@ export interface ServerInfo {
     expiresAt: string | null;
     daysLeft: number | null;
     status: "ok" | "expiring" | "expired" | "unknown";
+    /** Owner-added vault → its token can be replaced write-only via
+     *  `setVaultToken`. Env-configured vaults (PARACHUTE_TOKEN / PRISM_VAULTS)
+     *  rotate in the server .env only. */
+    rotatable?: boolean;
   }>;
 }
 /** One ingest source's health (GET /acl/workers, server-owner). Desktop-owned
@@ -152,7 +156,9 @@ export interface IntegrationStatus {
   configured: boolean;
   /** Non-secret scope fields some kinds echo back (e.g. clickup's teamId /
    *  spaceIds / assignedOnly) so a re-save can prefill instead of dropping them. */
-  [field: string]: string | boolean | undefined;
+  /** Proton Bridge only: the server's ingest mode (PROTON_SYNC_ENABLED / PROTON_SHADOW). */
+  mode?: "off" | "shadow" | "live";
+  [field: string]: string | number | boolean | undefined;
 }
 export interface SharePerson {
   email: string;
@@ -350,7 +356,7 @@ export interface CollabSharing {
 
   /** Server settings + Cloudflare tunnel management (server-owner only). A config
    *  snapshot (no secret values), tunnel status + start/stop/restart, and a narrow
-   *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM/RESEND_API_KEY — restart-required).
+   *  editable-.env allowlist (APP_ORIGIN/MAGIC_FROM — restart-required; no secrets).
    *  Absent → the Server surface hides (desktop / non-server-owner). */
   getServerInfo?(): Promise<ServerInfo>;
   /** Per-source ingest health + staleness (server-owner). Absent → card hidden. */
@@ -375,6 +381,13 @@ export interface CollabSharing {
   setIntegrationCredential?(kind: string, fields: Record<string, unknown>): Promise<void>;
   deleteIntegrationCredential?(kind: string): Promise<void>;
   syncIntegration?(kind: string): Promise<Record<string, unknown>>;
+  /** Integration-specific helper action: `POST /api/integrations/<kind>/<action>`
+   *  (today only `proton-bridge` / `detect-cert`, which returns
+   *  `{certSha256, subject?, issuer?, validTo?}` and never touches a credential). */
+  integrationAction?(kind: string, action: string, body?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Replace an owner-ADDED vault's token (server-owner, write-only: neither the
+   *  old nor the new token is ever returned). Env vaults refuse (`rotatable:false`). */
+  setVaultToken?(vaultId: string, token: string): Promise<void>;
 
   /** Workspace entities (server-owner): the "one server, many workspaces" model.
    *  Create/configure a workspace (name + subdomain), and assign vaults to it.

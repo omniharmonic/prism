@@ -46,7 +46,7 @@ test("tunnel control validates the action", async () => {
 });
 
 test("config editor refuses keys outside the curated allowlist", async () => {
-  for (const key of ["OWNER_EMAIL", "PARACHUTE_TOKEN", "SESSION_SECRET", "DB_PATH"]) {
+  for (const key of ["OWNER_EMAIL", "PARACHUTE_TOKEN", "SESSION_SECRET", "DB_PATH", "RESEND_API_KEY", "SECRETS_KEY", "COLLAB_TOKEN"]) {
     const r = await acl.request("/server/config", { method: "PUT", headers: { ...J, cookie: ownerCookie() }, body: JSON.stringify({ key, value: "whatever" }) });
     assert.equal(r.status, 400, `${key} must be rejected`);
     assert.equal(((await r.json()) as { error: string }).error, "not_editable");
