@@ -174,7 +174,9 @@ test("working document and draft stay pinned while reading references, expanding
   await page.getByRole("button", { name: "Open reference", exact: true }).click();
   await expect(working).toContainText("Draft brief");
   await expect(input).toHaveValue("Revise the brief using this reference");
+  await page.evaluate(() => (window as any).prismFixtureUI.setState({ contextPanelOpen: true }));
   await page.getByRole("button", { name: "Open in Agent tab" }).click();
+  expect(await page.evaluate(() => (window as any).prismFixtureUI.getState().contextPanelOpen)).toBe(false);
   await expect(working).toContainText("Draft brief");
   await expect(input).toHaveValue("Revise the brief using this reference");
   await page.reload();

@@ -15,7 +15,7 @@ const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Dr
 const vault = { getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
 const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {} };
-Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
+Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismFixtureUI: useUIStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const audience = (owner: string) => JSON.stringify(["https://fixture.example.test/api", "workspace", "vault", owner]);
 let scope = audience("alex@example.test");

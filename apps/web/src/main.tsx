@@ -11,8 +11,8 @@ import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
-import { NativeSignInScreen } from "./auth/NativeSignInScreen";
-import { isNative, serverFetch, gatewayOrigin, initializeTransport } from "./transport";
+import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
+import { isNative, serverFetch, gatewayOrigin, initializeTransport, getDeviceToken } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
@@ -127,6 +127,15 @@ export async function start() {
       </React.StrictMode>,
     );
     return;
+  }
+
+  // The first Keychain read can wait for an OS prompt after a local rebuild.
+  // Keep that wait distinct from the following network request; do not start
+  // another sign-in or discard the existing credential while approval is pending.
+  if (isNative && !capability) {
+    root.render(<NativeStartupScreen phase="credentials" />);
+    await getDeviceToken();
+    root.render(<NativeStartupScreen phase="connecting" />);
   }
 
   // Commons governance surface: /governance. A signed-in member drives the

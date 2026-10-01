@@ -12,7 +12,12 @@ test.beforeEach(async ({ page }) => {
     window.prismNativeCommands = [];
     window.__TAURI_INTERNALS__ = { invoke: async function(command) {
       window.prismNativeCommands.push(command);
-      if (command === "get_token") return null;
+      if (command === "get_token") {
+        if (new URLSearchParams(location.search).has("pending-credentials")) {
+          return new Promise(function(resolve) { window.prismResolveCredential = resolve; });
+        }
+        return null;
+      }
       if (command === "sign_in") throw new Error("Fixture sign-in denied");
       throw new Error("Unexpected fixture command");
     }};
@@ -42,4 +47,17 @@ test("an app import failure displays recovery instead of a blank window", async 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Prism couldn’t start" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload Prism" })).toBeVisible();
+});
+
+test("a pending native credential request explains the system prompt and resumes afterward", async ({ page }) => {
+  await page.goto("/?pending-credentials");
+  await expect(page.getByRole("heading", { name: "Opening your workspace" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("Checking your saved sign-in…");
+  await expect(page.getByText("If your device shows a security prompt for Prism, respond there to continue.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toHaveCount(0);
+  await page.evaluate(() => {
+    history.replaceState(null, "", "/");
+    (window as unknown as { prismResolveCredential: (token: null) => void }).prismResolveCredential(null);
+  });
+  await expect(page.getByRole("heading", { name: "Sign in to Prism" })).toBeVisible();
 });

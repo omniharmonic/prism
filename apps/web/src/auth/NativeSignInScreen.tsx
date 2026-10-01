@@ -2,6 +2,18 @@ import { PrismMark } from "@prism/core";
 import { useEffect } from "react";
 import { startNativeSignIn, getHost } from "../transport";
 
+/** Keep native credential/network waits visible instead of a frozen boot label. */
+export function NativeStartupScreen({ phase }: { phase: "credentials" | "connecting" }) {
+  return <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div className="workspace-auth-card" style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16 }}>
+      <PrismMark width={72} height={48} decorative />
+      <h1 style={{ margin: "16px 0 8px", fontSize: 22, fontWeight: 600 }}>Opening your workspace</h1>
+      <p role="status" style={{ fontSize: 14, color: "var(--text-secondary)" }}>{phase === "credentials" ? "Checking your saved sign-in…" : "Connecting to your Prism server…"}</p>
+      {phase === "credentials" && <p style={{ marginTop: 12, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>If your device shows a security prompt for Prism, respond there to continue.</p>}
+    </div>
+  </div>;
+}
+
 /**
  * Native-shell sign-in. There is no password form here: the shell runs the
  * OAuth/PKCE device flow in the system browser (docs/native-auth.md) and stores

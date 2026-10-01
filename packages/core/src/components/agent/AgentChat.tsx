@@ -926,7 +926,12 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
           sessionId={activeSessionId}
           draft={draft}
           onCreated={(id) => setActiveSession(id)}
-          onExpand={() => openAgentChat({ sessionId: activeSessionId })}
+          onExpand={() => {
+            // Expansion moves the conversation; do not leave a second composer
+            // beside it (or an open mobile drawer covering the expanded view).
+            useUIStore.setState({ contextPanelOpen: false });
+            openAgentChat({ sessionId: activeSessionId });
+          }}
           compact
         />
       </div>
