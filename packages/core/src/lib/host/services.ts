@@ -242,7 +242,23 @@ export interface NotionDbSyncHost {
   update?(configId: string, patch: { autoSync?: boolean; conflictStrategy?: string; syncDirection?: string }): Promise<NotionDbSyncInfo>;
 }
 
+export interface SearchIndexJob {
+  id: string; vaultId: string; state: "queued" | "running" | "pausing" | "paused" | "completed" | "failed";
+  total: number; processed: number; indexed: number; skipped: number; deleted: number; failed: number;
+  startedAt: number; updatedAt: number; error: string | null;
+}
+export interface SearchIndexStatus {
+  vaultId: string; notes: number; chunks: number; semantic: boolean; automatic: boolean; job: SearchIndexJob | null;
+}
+export interface SearchIndexHost {
+  status(): Promise<SearchIndexStatus>;
+  start(): Promise<SearchIndexJob>;
+  pause(id: string): Promise<SearchIndexJob>;
+  resume(id: string): Promise<SearchIndexJob>;
+}
 export interface HostServices {
+  /** Admin search health and durable per-vault rebuild controls. */
+  searchIndex?: SearchIndexHost;
   /** GitHub folder sync on the server (`/api/sync/github/*`). */
   githubSync?: GitHubSyncHost;
   /** Notion database sync on the server (`/api/sync/notion-db/*`). */
@@ -300,10 +316,12 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const scope = opts.scope?.();
     const headers: Record<string, string> = { ...(opts.headers?.() ?? {}) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const resp = await opts.fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const j = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+    if (scope !== opts.scope?.()) throw new HostServiceError(409, "scope_changed", "Workspace changed during this request. Reopen it in the original workspace to check its result.");
     if (!resp.ok) {
       throw new HostServiceError(
         resp.status,
@@ -341,6 +359,12 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
   };
 
   return {
+    searchIndex: {
+      status: () => call("GET", "/api/index/status"),
+      start: () => call("POST", "/api/index/jobs"),
+      pause: id => call("POST", `/api/index/jobs/${enc(id)}/pause`),
+      resume: id => call("POST", `/api/index/jobs/${enc(id)}/resume`),
+    },
     githubSync,
     notionDbSync,
     calendarSyncRange: (from, to) => {

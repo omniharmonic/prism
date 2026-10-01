@@ -23,6 +23,9 @@ import { resolveVaultEntry } from "../db";
 import { roleAtLeast, roleFloor } from "../roles";
 import type { Note } from "../parachute";
 import { semanticSearch, indexNote, deindexNote, reindexAll, stats } from "../rag/service";
+import { indexJobs } from "../rag/runtime";
+import { IndexJobConflict } from "../rag/jobs";
+import { config, embeddingsConfigured } from "../config";
 
 export const rag = new Hono();
 
@@ -100,5 +103,30 @@ rag.post("/index/rebuild", async (c) => {
 
 rag.get("/index/status", (c) => {
   if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
-  return c.json(stats(resolveActor(c).vaultId));
+  const vaultId = resolveActor(c).vaultId;
+  return c.json({ ...stats(vaultId), semantic: embeddingsConfigured(),
+    automatic: vaultId === resolveVaultEntry().id && config.indexIntervalMs > 0,
+    job: indexJobs.current(vaultId) });
 });
+
+rag.post("/index/jobs", (c) => {
+  if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
+  try { return c.json(indexJobs.start(resolveActor(c).vaultId), 202); }
+  catch (error) {
+    if (error instanceof IndexJobConflict) return c.json({ error: "index_busy", detail: error.message }, 409);
+    return c.json({ error: "index_unavailable" }, 503);
+  }
+});
+
+for (const action of ["pause", "resume"] as const) {
+  rag.post(`/index/jobs/:id/${action}`, (c) => {
+    if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
+    try {
+      const job = indexJobs[action](resolveActor(c).vaultId, c.req.param("id"));
+      return job ? c.json(job) : c.json({ error: "not_found" }, 404);
+    } catch (error) {
+      if (error instanceof IndexJobConflict) return c.json({ error: "index_busy", detail: error.message }, 409);
+      return c.json({ error: "index_unavailable" }, 503);
+    }
+  });
+}

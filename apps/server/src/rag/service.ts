@@ -1,9 +1,8 @@
 /**
  * RAG service: index notes into the vector store, and answer queries with
  * HYBRID retrieval (dense vectors + sparse full-text), fused via RRF. The server
- * owns the index and the query path; the Rust backend's scheduled indexer feeds
- * the same store through the owner-only HTTP routes (see routes/rag.ts), so the
- * heavy embedding workflow lives in Rust while web/server get search instantly.
+ * owns indexing and retrieval; the legacy desktop can also submit notes through
+ * the admin HTTP routes. Every index operation is scoped to a vault.
  */
 import { createHash } from "node:crypto";
 import { vaultClient, type Note } from "../parachute";
@@ -61,8 +60,8 @@ export function deindexNote(noteId: string, vaultId?: string): void {
 }
 
 /**
- * Rebuild the index from the vault (owner-triggered). Pulls notes with content
- * and indexes each (incrementally — unchanged notes are skipped).
+ * Legacy synchronous rebuild contract. New clients use durable jobs. Keep only
+ * one document body in memory; unchanged contents are hash-skipped.
  */
 export async function reindexAll(opts: { force?: boolean; limit?: number; vaultId?: string } = {}): Promise<{
   total: number;
@@ -70,11 +69,12 @@ export async function reindexAll(opts: { force?: boolean; limit?: number; vaultI
   skipped: number;
 }> {
   const vault = vaultClient(opts.vaultId);
-  const notes = await vault.listNotes({ includeContent: true, limit: opts.limit ?? 50000 });
+  const notes = await vault.listNotes({ limit: opts.limit ?? 50000 });
   let indexed = 0;
   let skipped = 0;
   for (const n of notes) {
-    const r = await indexNote(n.id, n.content ?? "", opts.force, opts.vaultId);
+    const current = await vault.getNote(n.id);
+    const r = await indexNote(n.id, current.content ?? "", opts.force, opts.vaultId);
     if (r.status === "indexed") indexed++;
     else skipped++;
   }

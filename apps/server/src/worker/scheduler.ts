@@ -512,8 +512,8 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
  * every vector is stored under — it falls back to one full content sweep, which
  * is exactly the backfill those cases need.
  *
- * Primary vault only: the `embeddings` table is keyed by note id with no vault
- * column, so indexing a second vault would collide ids in one namespace.
+ * Automatic maintenance retains the established primary-vault schedule. Other
+ * vaults use explicit durable jobs; their vectors now have isolated namespaces.
  */
 export async function runIndexOnce(opts: { force?: boolean } = {}): Promise<number> {
   // A first-run backfill of a full vault takes far longer than one sweep
@@ -536,6 +536,9 @@ async function indexSweep(opts: { force?: boolean }): Promise<number> {
 
   // Lean list first: ids + updatedAt for the whole vault, no bodies.
   const lean = await vault.listNotes({});
+  // listNotes has a 50k ceiling. A partial inventory must never delete vectors
+  // for the unseen remainder or claim a complete maintenance pass.
+  if (lean.length >= 50_000) throw new Error("Index inventory reached its limit; refusing incomplete cleanup");
   const newest = lean.reduce((mx, n) => {
     const t = n.updatedAt ?? n.createdAt ?? "";
     return t > mx ? t : mx;

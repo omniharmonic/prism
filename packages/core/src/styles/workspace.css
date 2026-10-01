@@ -56,6 +56,20 @@ html.light {
   box-shadow: 0 10px 50px rgb(0 0 0 / 5%);
 }
 
+.workspace-progress {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 99px;
+  background: var(--glass-active);
+}
+.workspace-progress::-webkit-progress-bar { background: var(--glass-active); border-radius: 99px; }
+.workspace-progress::-webkit-progress-value { background: var(--color-accent); border-radius: 99px; }
+.workspace-progress::-moz-progress-bar { background: var(--color-accent); border-radius: 99px; }
+
 /* In-place controls are flat. Only elevated overlays retain depth. */
 .glass, .glass-interactive {
   backdrop-filter: none;

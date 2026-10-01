@@ -10,6 +10,7 @@ import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
+import { SearchIndexSettings } from "./SearchIndexSettings";
 
 interface SettingsProps {
   open: boolean;
@@ -190,6 +191,7 @@ export function Settings({ open, onClose }: SettingsProps) {
           {activeTab === "account" && <AccountSettings />}
 
           {/* Services Tab */}
+          {activeTab === "services" && host?.searchIndex && <SearchIndexSettings host={host} />}
           {activeTab === "services" && config && (
             <>
               <Section title="Core Services">

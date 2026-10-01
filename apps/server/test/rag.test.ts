@@ -28,13 +28,14 @@ import { getEmbedder } from "../src/rag/embedder";
 import { getWorkerCursor, addGrant, addVaultEntry } from "../src/db";
 import { signCapability } from "../src/auth/capability";
 import { config } from "../src/config";
+import { indexJobs } from "../src/rag/runtime";
 
 const OWNER = "owner@test.local"; // matches .env.test OWNER_EMAIL
 
 let fv: FakeVault;
 beforeEach(() => {
   resetDb();
-  db.exec("DELETE FROM embeddings; DELETE FROM embeddings_v2");
+  db.exec("DELETE FROM embeddings; DELETE FROM embeddings_v2; DELETE FROM search_index_job_items; DELETE FROM search_index_jobs");
   fv = installFakeVault();
 });
 afterEach(() => fv.restore());
@@ -288,6 +289,27 @@ test("index writes, status and deletion affect only the selected vault", async (
 });
 
 // ---- worker index maintenance (audit 2026-08-13, F2) ----
+test("durable index jobs require admin access and remain bound to the credential vault", async () => {
+  const app = createApp();
+  fv.put({id:"same",content:"primary body"});
+  addVaultEntry({ id: "frb", label: "Other", url: "http://vault.test", vault: "frb", token: "tok-frb" });
+  fv.putIn("frb",{id:"same",content:"secondary body"});
+  const member = sessionCookie(makeSession("member@test.local"));
+  assert.equal((await app.request("/api/index/jobs",{method:"POST",headers:{cookie:member}})).status,403);
+  const headers={cookie:sessionCookie(makeSession(OWNER)),"x-prism-vault":"frb"};
+  const started=await app.request("/api/index/jobs",{method:"POST",headers});
+  assert.equal(started.status,202);
+  const job=await started.json() as {id:string};
+  const wrongVault={cookie:headers.cookie};
+  assert.equal((await app.request(`/api/index/jobs/${job.id}/pause`,{method:"POST",headers:wrongVault})).status,404);
+  await indexJobs.runSlice();
+  const status=await (await app.request("/api/index/status",{headers})).json() as {vaultId:string;job:{state:string};notes:number};
+  assert.equal(status.vaultId,"frb");
+  assert.equal(status.job.state,"completed");
+  assert.equal(status.notes,1);
+  assert.equal(indexedHash("same",getEmbedder().id),null,"primary index untouched");
+  assert.ok(fv.calls.filter(c=>c.path.endsWith('/notes')).every(c=>!c.search.includes('include_content=true')),"no bulk bodies");
+});
 //
 // Before this existed, the ONLY caller of indexNote was the desktop app pushing
 // to /api/index/notes — so the index advanced only while the desktop was open,
@@ -426,6 +448,20 @@ test("deletion cleanup collects orphans left by a PREVIOUS embedder model", asyn
     "old-model orphan dropped even though the sweep runs a different model",
   );
   assert.ok(indexedHash("live", getEmbedder().id), "the live note is untouched");
+});
+
+test("a capped background inventory cannot delete unseen index entries", async () => {
+  upsertNoteChunks("unseen", "saved", "old-model", [{idx:0,text:"retained",vec:new Float32Array([1,0])}]);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input,init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/notes")) return Response.json(Array.from({length:50_000},(_,i)=>({id:String(i)})));
+    return original(input,init);
+  };
+  try {
+    await assert.rejects(runIndexOnce(),/inventory reached its limit/);
+    assert.equal(indexedHash("unseen","old-model"),"saved");
+  } finally { globalThis.fetch = original; }
 });
 
 test("semantic search never returns a removed indexed passage after the note changes", async () => {
