@@ -123,8 +123,15 @@ async function evict(db: IDBDatabase): Promise<void> {
   await done(t);
 }
 
+/** Remove the old URL-only service-worker API cache on upgrade/sign-out. */
+export async function clearLegacyApiCache(): Promise<void> {
+  try { if (typeof caches !== "undefined") await caches.delete("vault-api"); }
+  catch { /* CacheStorage may be unavailable in private browsing. */ }
+}
+
 /** Drop everything (sign-out, 401, account switch). */
 export async function clearReadCache(): Promise<void> {
+  await clearLegacyApiCache();
   try {
     const db = await open();
     const t = db.transaction(["bodies", "index"], "readwrite");

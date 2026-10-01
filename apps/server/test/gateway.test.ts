@@ -236,3 +236,26 @@ test("any unlisted /api path is denied for non-owners (deny-by-default)", async 
   // And the vault was never touched for that path.
   assert.equal(fv.calls.some((c) => c.path.includes("/graph")), false);
 });
+
+// A different tab can change the session between offline replay's /auth/me and
+// its write. The expected actor is a precondition, not an authentication method.
+test("deferred write cannot replay under a different account", async () => {
+  const response = await ownerReq("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": "user:someone-else@test.local" },
+    body: JSON.stringify({ content: "saved under another account" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { error: string }).error, "write_actor_changed");
+  assert.equal(fv.calls.filter((c) => c.method === "POST").length, 0);
+});
+
+test("correct deferred-write actor still goes through normal authorization", async () => {
+  const ok = await ownerReq("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": `user:${OWNER}` }, body: JSON.stringify({ content: "saved" }),
+  });
+  assert.equal(ok.status, 200);
+  const denied = await req("/notes", {
+    method: "POST", headers: { "X-Prism-Write-Actor": `user:${OWNER}` }, body: JSON.stringify({ content: "spoofed" }),
+  });
+  assert.equal(denied.status, 409);
+});

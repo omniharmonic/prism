@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
@@ -20,6 +20,7 @@ import { PublicationView } from "./publish/PublicationView";
 import { CollabPage } from "./collab/CollabPage";
 import { CommonsLanding } from "./commons/CommonsLanding";
 import { CommonsNav } from "./commons/CommonsNav";
+import { clearLegacyApiCache } from "./offline/readCache";
 import { startOutboxSync } from "./offline/outbox";
 import { OfflineIndicator } from "./offline/OfflineIndicator";
 import { UpdatePrompt } from "./offline/UpdatePrompt";
@@ -57,6 +58,7 @@ window.addEventListener("vite:preloadError", () => {
 });
 
 async function start() {
+  await clearLegacyApiCache();
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
@@ -222,6 +224,13 @@ async function start() {
     isViewer = !(allowOwnerOnboarding && me.isOwner);
   }
 
+  window.addEventListener("prism:offline-note-resolved", (event) => {
+    const { temporaryId, noteId } = (event as CustomEvent<{ temporaryId: string; noteId: string }>).detail;
+    // Keep tab IDs/history stable; only its resource identity changes.
+    useUIStore.setState((state) => ({
+      openTabs: state.openTabs.map((tab) => tab.noteId === temporaryId ? { ...tab, noteId } : tab),
+    }));
+  });
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
   // Client parity C: external note images via the server's SSRF-guarded proxy

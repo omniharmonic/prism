@@ -12,6 +12,7 @@
  * so the pre-caps behavior is unchanged (see permissions.ts).
  */
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { resolveVaultEntry } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
@@ -23,6 +24,21 @@ import { openEventStream } from "../events";
 import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
 
 export const api = new Hono();
+
+// Bind deferred writes to the original authenticated actor even if another tab
+// changes the session cookie between the client's identity check and this call.
+// This narrows authorization; it never substitutes for the regular grant checks.
+api.use("*", async (c, next) => {
+  const expected = c.req.header("x-prism-write-actor");
+  if (expected && c.req.method !== "OPTIONS") {
+    const actor = resolveActor(c);
+    const cap = c.req.header("authorization")?.match(/^Capability (.+)$/i)?.[1];
+    const actual = actor.kind === "user" ? `user:${actor.email}`
+      : actor.kind === "link" && cap ? `capability:${createHash("sha256").update(cap).digest("hex")}` : null;
+    if (expected !== actual) return c.json({ error: "write_actor_changed" }, 409);
+  }
+  await next();
+});
 
 const ref = (n: Note): NoteRef => ({
   id: n.id,

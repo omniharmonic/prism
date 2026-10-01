@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 import { Send, Loader2, Bot, FileInput, Replace, PenLine, ToggleLeft, ToggleRight } from "lucide-react";
+import { useIsWeb } from "../../data/Platform";
 import { agentApi } from "../../lib/agent/client";
 import { useUIStore } from "../../app/stores/ui";
 import { vaultApi } from "../../lib/parachute/client";
@@ -19,6 +20,7 @@ interface ChatMessage {
  *  server sessions; the desktop keeps its Tauri `agent_chat` path. */
 export function PanelChat() {
   const client = useAgentClient();
+  const isWeb = useIsWeb();
   const available = useAgentAvailable();
   if (client && available) {
     return (
@@ -27,6 +29,12 @@ export function PanelChat() {
       </Suspense>
     );
   }
+  if (isWeb || client) return (
+    <div role="status" className="p-4 text-sm text-[var(--text-secondary)]">
+      <p className="font-medium text-[var(--text-primary)]">Agent unavailable</p>
+      <p className="mt-2">Reconnect or check this account’s access to server agent sessions.</p>
+    </div>
+  );
   return <TauriPanelChat />;
 }
 

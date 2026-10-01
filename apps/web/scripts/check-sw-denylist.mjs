@@ -85,3 +85,8 @@ console.log(
   `✓ check:sw — navigateFallbackDenylist covers ${SERVER_ROUTE_PREFIXES.join(", ")} ` +
     `(and ${PUBLICATION_DATA_PATH} is under /api).`,
 );
+
+// Authenticated API data must be cached only by the scoped read-cache layer.
+if (/cacheName:\s*["']vault-api["']/.test(src)) {
+  fail("URL-only vault-api runtime caching can expose another account/vault's response. Use the scoped IndexedDB cache.");
+}

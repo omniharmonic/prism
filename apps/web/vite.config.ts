@@ -83,20 +83,8 @@ export default defineConfig(({ mode }) => {
         // protected-resource metadata) are server-owned too (WP6.1).
         navigateFallbackDenylist: [/^\/auth\//, /^\/api\//, /^\/health$/, /^\/mcp(\/|$)/, /^\/\.well-known\//],
         runtimeCaching: [
-          {
-            // Recently-viewed vault content stays available offline (read-only).
-            urlPattern: ({ url }) =>
-              url.pathname.includes("/api/notes") ||
-              url.pathname.includes("/api/vault") ||
-              url.pathname.includes("/api/tags"),
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "vault-api",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 500, maxAgeSeconds: 60 * 60 * 24 * 7 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
+          // Authenticated vault responses use the account/vault-scoped IndexedDB
+          // cache. A URL-only service-worker cache can mix accounts and vaults.
           {
             // Lazily-loaded JS chunks (diagrams, code editor) cache on first use.
             urlPattern: ({ request }) => request.destination === "script",

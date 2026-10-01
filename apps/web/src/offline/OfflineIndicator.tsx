@@ -1,61 +1,363 @@
-import { useEffect, useState } from "react";
-import { pendingCount, subscribe } from "./outbox";
+import { useEffect, useRef, useState } from "react";
+import {
+  allQueued,
+  discard,
+  flush,
+  resolveConflict,
+  subscribe,
+  visibleWrites,
+  type QueuedWrite,
+} from "./outbox";
+import { captureWriteContext, sameScope } from "./writeScope";
+import { serverFetch } from "../transport";
+import { getMe } from "../config";
 
-/**
- * Small fixed pill that surfaces offline state and the number of writes queued
- * for replay. Hidden when online with an empty queue.
- */
+const stateLabels = {
+  queued: "Saved on this device",
+  sending: "Confirming with the server",
+  conflict: "Needs review",
+  missing: "Original note unavailable",
+  blocked: "Access changed",
+  unknown: "Result unconfirmed",
+  quarantined: "Older draft",
+};
+function download(value: unknown, name: string) {
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
+  );
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Honest save status and recovery. Never discard content or retry uncertain writes implicitly. */
 export function OfflineIndicator() {
-  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
-  const [pending, setPending] = useState(0);
-
+  const [online, setOnline] = useState(navigator.onLine);
+  const [items, setItems] = useState<QueuedWrite[]>([]);
+  const [legacy, setLegacy] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [review, setReview] = useState<{
+    item: QueuedWrite;
+    current: Record<string, unknown>;
+    revision: string;
+  } | null>(null);
+  const [reviewed, setReviewed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [discarding, setDiscarding] = useState<number | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    const refresh = () => pendingCount().then(setPending).catch(() => {});
-    const on = () => {
-      setOnline(true);
-      refresh();
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const next = await visibleWrites();
+        const old = getMe()?.isOwner
+          ? (await allQueued()).filter((i) => !i.scope).length
+          : 0;
+        if (!disposed) {
+          setItems(next);
+          setLegacy(old);
+        }
+      } catch {
+        if (!disposed)
+          setError(
+            "Offline storage is unavailable. Keep this tab open and copy any unsaved text.",
+          );
+      }
     };
-    const off = () => setOnline(false);
-    window.addEventListener("online", on);
-    window.addEventListener("offline", off);
-    const unsub = subscribe(refresh);
-    refresh();
-    const iv = window.setInterval(refresh, 5000);
+    const change = () => {
+      setOnline(navigator.onLine);
+      void refresh();
+    };
+    const scopeChange = () => {
+      setItems([]);
+      setReview(null);
+      setOpen(false);
+      change();
+    };
+    window.addEventListener("online", change);
+    window.addEventListener("offline", change);
+    window.addEventListener("prism:vault-changed", scopeChange);
+    const unsubscribe = subscribe(() => void refresh());
+    void refresh();
+    const timer = window.setInterval(change, 5000);
     return () => {
-      window.removeEventListener("online", on);
-      window.removeEventListener("offline", off);
-      unsub();
-      clearInterval(iv);
+      disposed = true;
+      unsubscribe();
+      clearInterval(timer);
+      window.removeEventListener("online", change);
+      window.removeEventListener("offline", change);
+      window.removeEventListener("prism:vault-changed", scopeChange);
     };
   }, []);
+  useEffect(() => {
+    if (open) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [open]);
 
-  if (online && pending === 0) return null;
-
-  const label = !online
-    ? pending > 0
-      ? `Offline · ${pending} change${pending > 1 ? "s" : ""} queued`
-      : "Offline"
-    : `Syncing ${pending} change${pending > 1 ? "s" : ""}…`;
-
+  const loadReview = async (item: QueuedWrite) => {
+    setError("");
+    setBusy(true);
+    setReviewed(false);
+    try {
+      const context = await captureWriteContext(true);
+      if (!sameScope(item.scope, context.scope))
+        throw new Error("Return to this change’s original workspace.");
+      const response = await serverFetch(`${context.scope.api}${item.path}`, {
+        headers: context.headers,
+      });
+      if (!response.ok)
+        throw new Error(
+          "The current note is unavailable. You can still download your saved change.",
+        );
+      const current = (await response.json()) as Record<string, unknown>;
+      if (!sameScope(context.scope, (await captureWriteContext()).scope))
+        throw new Error("The workspace changed. Open recovery again.");
+      if (typeof current.updatedAt !== "string")
+        throw new Error("This note has no revision to compare safely.");
+      setReview({ item, current, revision: current.updatedAt });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const apply = async () => {
+    if (!review || !reviewed) return;
+    setBusy(true);
+    setError("");
+    try {
+      await resolveConflict(
+        review.item.id!,
+        review.item.body!,
+        review.revision,
+      );
+      setReview(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const attention = items.filter(
+    (i) => i.state !== "queued" && i.state !== "sending",
+  ).length;
+  if (online && !items.length && !legacy && !error && !open) return null;
+  const label = error
+    ? "Save needs attention"
+    : attention
+      ? `${attention} saved change${attention === 1 ? " needs" : "s need"} review`
+      : items.length
+        ? `${items.length} change${items.length === 1 ? "" : "s"} saved on this device`
+        : legacy
+          ? "Older drafts available"
+          : "Offline";
   return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: 14,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 9999,
-        padding: "6px 14px",
-        borderRadius: 999,
-        fontSize: 12,
-        fontWeight: 500,
-        background: online ? "var(--color-accent, #6366f1)" : "rgba(20,20,22,0.92)",
-        color: "white",
-        border: "1px solid var(--glass-border, rgba(255,255,255,0.18))",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
-      }}
-    >
-      {label}
-    </div>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
+        aria-label={label}
+        className="fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-full border border-[var(--glass-border)] bg-[var(--bg-surface)] px-4 py-2 text-xs text-[var(--text-primary)] shadow-lg"
+      >
+        <span role="status">
+          {!online && items.length ? "Offline · " : ""}
+          {label}
+        </span>
+      </button>
+      <dialog
+        ref={dialog}
+        onCancel={() => setOpen(false)}
+        onClose={() => setOpen(false)}
+        aria-labelledby="offline-recovery-title"
+        className="m-auto max-h-[85dvh] w-[min(48rem,94vw)] overflow-y-auto rounded-2xl border border-[var(--glass-border)] bg-[var(--bg-base)] p-6 text-[var(--text-primary)] shadow-2xl backdrop:bg-black/50"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="offline-recovery-title" className="text-lg font-semibold">
+              Saved changes
+            </h2>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              Your changes stay on this device until the server confirms them.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="rounded-lg border px-3 py-1 text-sm"
+          >
+            Close
+          </button>
+        </div>
+        {error && (
+          <p role="alert" className="mt-4 text-sm text-red-500">
+            {error}
+          </p>
+        )}
+        {legacy > 0 && (
+          <div className="my-4 rounded-lg border p-3 text-sm">
+            <p>
+              {legacy} older draft{legacy === 1 ? " has" : "s have"} no recorded
+              account or vault. They will not be sent automatically. Download
+              them to identify their original destination.
+            </p>
+            <button
+              type="button"
+              className="mt-2 underline"
+              onClick={() =>
+                void allQueued()
+                  .then((rows) => {
+                    if (getMe()?.isOwner)
+                      download(
+                        rows.filter((r) => !r.scope),
+                        "prism-older-drafts.json",
+                      );
+                  })
+                  .catch(() => setError("Could not read older drafts."))
+              }
+            >
+              Download older drafts
+            </button>
+          </div>
+        )}
+        {!items.length && (
+          <p className="my-5 text-sm">
+            No pending changes for this account and workspace.
+          </p>
+        )}
+        <ul className="mt-4 space-y-3">
+          {items.map((item) => (
+            <li
+              key={item.id}
+              className="rounded-xl border border-[var(--glass-border)] p-4"
+            >
+              <p className="text-sm font-medium">
+                {stateLabels[item.state ?? "quarantined"]}
+              </p>
+              <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                {new Date(item.queuedAt).toLocaleString()} ·{" "}
+                {item.method === "POST"
+                  ? "New note"
+                  : item.method === "DELETE"
+                    ? "Remove note"
+                    : "Note update"}
+              </p>
+              {item.detail && <p className="mt-2 text-sm">{item.detail}</p>}
+              <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                {item.method === "PATCH" &&
+                  item.state !== "sending" &&
+                  item.state !== "queued" && (
+                    <button
+                      type="button"
+                      disabled={busy || !online}
+                      className="underline"
+                      onClick={() => void loadReview(item)}
+                    >
+                      Review against current note
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() =>
+                    download(
+                      item,
+                      `prism-saved-change-${item.operationId}.json`,
+                    )
+                  }
+                >
+                  Download saved change
+                </button>
+                {item.state !== "sending" && (
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => setDiscarding(item.id!)}
+                  >
+                    Discard…
+                  </button>
+                )}
+              </div>
+              {discarding === item.id && (
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+                  <span>Remove this saved change from this device?</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void discard(item.id!)
+                        .then(() => setDiscarding(null))
+                        .catch((e: Error) => setError(e.message))
+                    }
+                  >
+                    Discard saved change
+                  </button>
+                  <button type="button" onClick={() => setDiscarding(null)}>
+                    Keep it
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+        {review && (
+          <section
+            className="mt-5 border-t border-[var(--glass-border)] pt-4"
+            aria-label="Compare saved change"
+          >
+            <h3 className="font-medium">Review before applying</h3>
+            <p className="my-2 text-sm">
+              Applying replaces the fields in your saved change. If the note
+              changes again, it will need another review.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                ["Current note", review.current],
+                ["Your saved change", JSON.parse(review.item.body!) as unknown],
+              ].map(([name, value]) => (
+                <div key={name as string}>
+                  <h4 className="mb-2 text-sm font-medium">{name as string}</h4>
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 p-3 text-xs">
+                    {JSON.stringify(value, null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+            <label className="my-3 flex gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={reviewed}
+                onChange={(e) => setReviewed(e.target.checked)}
+              />
+              I reviewed the saved change against the current note.
+            </label>
+            <div className="flex gap-3 text-sm">
+              <button
+                type="button"
+                disabled={busy || !reviewed}
+                className="rounded-lg border px-3 py-2 disabled:opacity-40"
+                onClick={() => void apply()}
+              >
+                Apply reviewed change
+              </button>
+              <button type="button" onClick={() => setReview(null)}>
+                Keep for later
+              </button>
+            </div>
+          </section>
+        )}
+        {online && items.some((i) => i.state === "queued") && (
+          <button
+            type="button"
+            className="mt-4 rounded-lg border px-3 py-2 text-sm"
+            onClick={() => void flush()}
+          >
+            Sync queued changes
+          </button>
+        )}
+      </dialog>
+    </>
   );
 }
