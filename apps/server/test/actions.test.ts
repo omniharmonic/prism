@@ -70,6 +70,7 @@ const fakeMailbox: MailboxOps = {
   },
 };
 let gogCalls: string[][];
+let gogFail: string | null = null;
 let mxEvents: Array<{ roomId: string; type: string; txnId: string; content: Record<string, unknown> }>;
 let joined: string[];
 let fv: FakeVault;
@@ -87,12 +88,14 @@ beforeEach(() => {
   mboxCalls = [];
   mboxFound = "ok";
   gogCalls = [];
+  gogFail = null;
   mxEvents = [];
   joined = ["!room1:hs.example.test", "!agentroom:hs.example.test"];
   setCfg({ actionsEmailEnabled: true, actionsCalendarEnabled: true, actionsMatrixEnabled: true, actionsMatrixAgentRooms: ["!agentroom:hs.example.test"], actionsEmailSendPerHour: 1000 });
   configureEmailActions({ smtp: fakeSmtp, mailbox: fakeMailbox });
   setActionsGogRunnerForTests(async (args) => {
     gogCalls.push(args);
+    if (gogFail) throw new Error(gogFail);
     return args[1] === "create" ? JSON.stringify({ event: { id: "evt123", htmlLink: "https://calendar.example.test/e/evt123" } }) : "{}";
   });
   setMatrixActionClientForTests(() => ({
@@ -336,6 +339,29 @@ test("archive + mark-read: IMAP by Message-ID in the note's mailbox; mark-read r
 });
 
 // ── calendar ────────────────────────────────────────────────────────────────
+
+test("calendar rsvp: gog pre-send refusals are 409 rsvp_not_applicable, sent:false, key released; unknown failures stay outcome-unknown", async () => {
+  for (const msg of ["event has no attendees", "cannot respond to your own event (you are the organizer)"]) {
+    gogFail = `exit status 1: ${msg}`;
+    const key = freshKey();
+    const r = await post("/calendar/rsvp", { eventId: "abc", response: "accepted" }, { ...owner(), "idempotency-key": key });
+    assert.equal(r.status, 409, msg);
+    const j = (await r.json()) as Record<string, unknown>;
+    assert.equal(j.error, "rsvp_not_applicable");
+    assert.equal(j.sent, false);
+    assert.equal(typeof j.detail, "string");
+    // key released: the same key may retry (and now succeeds)
+    gogFail = null;
+    assert.equal((await post("/calendar/rsvp", { eventId: "abc", response: "accepted" }, { ...owner(), "idempotency-key": key })).status, 200);
+  }
+  gogFail = "exit status 1: connection reset by peer";
+  const key = freshKey();
+  const u = await post("/calendar/rsvp", { eventId: "abc", response: "accepted" }, { ...owner(), "idempotency-key": key });
+  assert.equal(u.status, 502);
+  assert.equal(((await u.json()) as Record<string, unknown>).sent, "unknown");
+  gogFail = null;
+  assert.equal((await post("/calendar/rsvp", { eventId: "abc", response: "accepted" }, { ...owner(), "idempotency-key": key })).status, 502, "kept + replayed");
+});
 
 test("calendar rsvp + create: exact gog argv, one element per value; bad ids refused", async () => {
   assert.equal((await post("/calendar/rsvp", { eventId: "abc_20261001T150000Z", response: "tentative" })).status, 200);

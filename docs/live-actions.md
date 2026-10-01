@@ -205,6 +205,8 @@ Times must be RFC 3339 with an offset, end after start, and the span at most 31
 days. A create runs with at most 50 attendees. `notify: false` →
 `--send-updates=none`.
 
+`calendar/rsvp` classifies gog's pre-send refusals ("event has no attendees", "cannot respond to your own event (you are the organizer)", not-a-guest) as `409 rsvp_not_applicable` with `sent: false`; the idempotency key is released. Unrecognised gog failures stay `502 upstream_failed`, `sent: "unknown"`.
+
 **Gotcha:** real gog reads its OAuth token from the macOS login keychain. That
 works under pm2, which runs in the GUI session, but **not** from a plain ssh or
 agent shell. Never test these with real gog from a shell; tests inject a fake

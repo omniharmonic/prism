@@ -60,7 +60,7 @@ import {
   type MailboxResult,
   type SendInput,
 } from "../actions/email";
-import { createArgs, parseCreated, rsvpArgs, runGog, validateCreateInput, validateEventId as validateCalEventId } from "../actions/calendar";
+import { classifyRsvpRefusal, createArgs, parseCreated, rsvpArgs, runGog, validateCreateInput, validateEventId as validateCalEventId } from "../actions/calendar";
 import { isJoined, matrixActionClient, txnIdFor, validateBody, validateEventId as validateMxEventId, validateReactionKey, validateRoomId } from "../actions/matrix";
 import {
   IDEMPOTENCY_KEY_RE,
@@ -171,6 +171,8 @@ class Refusal extends Error {
     readonly code: string,
     message: string,
     readonly status: 403 | 404 | 409 | 422 = 403,
+    /** Set when the refusal is a provable "nothing was sent" (echoed as `sent: false`). */
+    readonly sent?: false,
   ) {
     super(message);
   }
@@ -280,7 +282,7 @@ function refusalResponse(c: Context, e: unknown, audit: (s: "refused", err?: str
   }
   if (e instanceof Refusal) {
     audit("refused", e.code);
-    return c.json({ error: e.code, detail: e.message }, e.status);
+    return c.json(e.sent === false ? { error: e.code, detail: e.message, sent: false } : { error: e.code, detail: e.message }, e.status);
   }
   throw e;
 }
@@ -523,7 +525,14 @@ actionsApi.post(
     },
     run: async (ctx) => {
       const account = googleAccount(ctx.actor);
-      await runGog(rsvpArgs(account, ctx.body.eventId as string, String(ctx.body.response)));
+      try {
+        await runGog(rsvpArgs(account, ctx.body.eventId as string, String(ctx.body.response)));
+      } catch (e) {
+        // gog's pre-send validation refusals: nothing changed upstream, so release the key.
+        const friendly = e instanceof ActionTransportError ? classifyRsvpRefusal(e.message) : null;
+        if (friendly) throw new Refusal("rsvp_not_applicable", friendly, 409, false);
+        throw e;
+      }
       return { eventId: ctx.body.eventId, response: ctx.body.response };
     },
   }),

@@ -159,6 +159,8 @@ export function liveActionErrorText(e: unknown): string {
       return "Only the server owner can do this.";
     case "upstream_failed":
       return e.sent === "unknown" ? "The service did not confirm — it may have gone through. Check before retrying." : "The service could not be reached. Nothing was sent.";
+    case "rsvp_not_applicable":
+      return e.detail ?? "There is no invitation to respond to on this event.";
     case "bad_request":
       return e.detail ?? "That request was not valid.";
     default:

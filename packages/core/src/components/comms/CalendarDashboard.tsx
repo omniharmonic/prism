@@ -5,7 +5,7 @@ import { calendarApi } from "../../lib/sync/client";
 import { vaultApi } from "../../lib/parachute/client";
 import { isDesktop } from "../../lib/platform";
 import { useLiveActions } from "../../data/LiveActionsContext";
-import { liveActionErrorText, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
+import { LiveActionError, liveActionErrorText, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
 import type { RendererProps } from "../renderers/RendererProps";
@@ -531,6 +531,9 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
   // have guests; the id is then the Google event id.
   const canRsvp = !!live && !!event.id && !!event.htmlLink && (event.attendees?.length ?? 0) > 0;
   const [rsvpMsg, setRsvpMsg] = useState<string | null>(null);
+  // Organizer isn't stored on the note, so the server's "rsvp_not_applicable"
+  // answer (you organize it / no guests) is what hides the buttons.
+  const [rsvpNA, setRsvpNA] = useState(false);
   const rsvp = async (response: RsvpResponse) => {
     if (!live) return;
     setRsvpMsg(null);
@@ -538,6 +541,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       await live.calendarRsvp(event.id ?? "", response);
       setRsvpMsg(response === "accepted" ? "Accepted" : response === "declined" ? "Declined" : "Marked tentative");
     } catch (e) {
+      if (e instanceof LiveActionError && e.code === "rsvp_not_applicable") setRsvpNA(true);
       setRsvpMsg(liveActionErrorText(e));
     }
   };
@@ -688,8 +692,8 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       </div>
       {canRsvp && (
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>RSVP</span>
-          {(["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
+          {!rsvpNA && <span className="text-xs" style={{ color: "var(--text-muted)" }}>RSVP</span>}
+          {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
             <button key={r} onClick={() => rsvp(r)} className="px-2 py-1 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
             </button>
