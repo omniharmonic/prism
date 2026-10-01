@@ -583,6 +583,23 @@ test("admission darwin: explicit swapMaxPct is still honoured as an extra guard"
   assert.match(v.reason!, /swap 95% used \(> 90%\)/);
 });
 
+test("admission darwin: low free swap is fine while the swap disk can grow it", () => {
+  // The 2026-10-01 false alarm: 466 MB free swap, 159 GB disk, 73% free memory.
+  const ok = admissionVerdict({ swapUsedPct: 92, freePct: 73, swapFreeMb: 466, swapDiskFreeMb: 159_000, pressureLevel: 1 }, null, 15, 512);
+  assert.equal(ok.ok, true);
+  const full = admissionVerdict({ swapUsedPct: 92, freePct: 73, swapFreeMb: 466, swapDiskFreeMb: 1_000, pressureLevel: 1 }, null, 15, 512);
+  assert.equal(full.ok, false);
+  assert.match(full.reason!, /swap nearly exhausted/);
+});
+
+test("admission darwin: kernel pressure warn/critical refuses", () => {
+  const w = admissionVerdict({ swapUsedPct: 10, freePct: 40, swapFreeMb: 4000, swapDiskFreeMb: 100_000, pressureLevel: 2 }, null, 15, 512);
+  assert.equal(w.ok, false);
+  assert.equal(w.reason, "memory pressure: kernel level warn");
+  const c = admissionVerdict({ swapUsedPct: 10, freePct: 40, swapFreeMb: 4000, swapDiskFreeMb: 100_000, pressureLevel: 4 }, null, 15, 512);
+  assert.equal(c.reason, "memory pressure: kernel level critical");
+});
+
 test("admission linux (no swapFreeMb): % behaviour unchanged, default 80", () => {
   assert.equal(admissionVerdict({ swapUsedPct: 85, freePct: 50 }, null, 15).ok, false);
   assert.equal(admissionVerdict({ swapUsedPct: 75, freePct: 50 }, null, 15).ok, true);

@@ -46,6 +46,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statfsSync,
   writeFileSync,
 } from "node:fs";
 import { freemem, homedir, tmpdir, totalmem } from "node:os";
@@ -318,6 +319,11 @@ export interface MemorySample {
    *  Its presence marks a darwin sample: swap is judged by absolute free MB, NOT
    *  by % of total (macOS grows swap on demand, so % used is meaningless there). */
   swapFreeMb?: number | null;
+  /** macOS only: `kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical). */
+  pressureLevel?: number | null;
+  /** macOS only: free MB on the swap volume (/System/Volumes/VM). macOS adds swap
+   *  files on demand, so low free swap only matters when the disk can't grow it. */
+  swapDiskFreeMb?: number | null;
 }
 export type MemoryProbe = () => MemorySample | null;
 
@@ -375,10 +381,21 @@ export const defaultMemoryProbe: MemoryProbe = () => {
   if (process.platform === "darwin") {
     const swap = run("/usr/sbin/sysctl", ["-n", "vm.swapusage"]);
     const mp = run("/usr/bin/memory_pressure", ["-Q"]);
+    const lvl = run("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]);
+    let swapDiskFreeMb: number | null = null;
+    try {
+      const st = statfsSync("/System/Volumes/VM");
+      swapDiskFreeMb = (Number(st.bavail) * Number(st.bsize)) / (1024 * 1024);
+    } catch {
+      swapDiskFreeMb = null;
+    }
+    const level = lvl != null && /^\s*\d+\s*$/.test(lvl) ? Number(lvl) : null;
     const sample: MemorySample = {
       swapUsedPct: swap ? parseSwapUsage(swap) : null,
       freePct: mp ? parseMemoryPressure(mp) : null,
       swapFreeMb: swap ? parseSwapFreeMb(swap) : null,
+      pressureLevel: level,
+      swapDiskFreeMb,
     };
     return sample.swapUsedPct == null && sample.freePct == null ? null : sample;
   }
@@ -401,6 +418,9 @@ export interface AdmissionVerdict {
 
 /** Default absolute free-swap floor (MB) for darwin samples. */
 export const DEFAULT_SWAP_MIN_FREE_MB = 512;
+/** darwin: free MB the swap volume must keep before low free swap counts (macOS
+ *  grows swap files on demand; it can only "exhaust" when this disk is nearly full). */
+export const DARWIN_SWAP_DISK_MIN_FREE_MB = 4096;
 /** Default swap-used % ceiling, applied to non-darwin samples only (unless set explicitly). */
 export const DEFAULT_SWAP_MAX_PCT = 80;
 
@@ -422,7 +442,14 @@ export function admissionVerdict(
   if (sample.freePct != null && sample.freePct < freeMinPct) {
     return { ok: false, reason: `memory pressure: ${sample.freePct.toFixed(0)}% free (< ${freeMinPct}%)`, sample };
   }
-  if (darwin && sample.swapFreeMb != null && sample.swapFreeMb < swapMinFreeMb) {
+  if (darwin && sample.pressureLevel != null && sample.pressureLevel >= 2) {
+    return { ok: false, reason: `memory pressure: kernel level ${sample.pressureLevel === 2 ? "warn" : "critical"}`, sample };
+  }
+  // Low free swap on macOS is only a signal when the swap volume can't grow it
+  // (2026-10-01: 466 MB "free" of a 6 GB swap with 159 GB of disk free and 73% free
+  // memory stopped classify — a false alarm). Unknown disk free keeps the old rule.
+  const swapCanGrow = darwin && sample.swapDiskFreeMb != null && sample.swapDiskFreeMb >= DARWIN_SWAP_DISK_MIN_FREE_MB;
+  if (darwin && !swapCanGrow && sample.swapFreeMb != null && sample.swapFreeMb < swapMinFreeMb) {
     return { ok: false, reason: `swap nearly exhausted: ${sample.swapFreeMb.toFixed(0)} MB free (< ${swapMinFreeMb} MB)`, sample };
   }
   const pctLimit = swapMaxPct ?? (darwin ? null : DEFAULT_SWAP_MAX_PCT);
