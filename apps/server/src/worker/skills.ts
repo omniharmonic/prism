@@ -586,18 +586,26 @@ export interface PassResult {
 /** Last refusal reason per skill — log on change only (no spam). */
 const lastRefusal = new Map<string, string>();
 const pinnedWarned = new Set<string>();
-/** One local-model run at a time, process-wide. */
-let localBusy = false;
-/** The one-local-run slot, shared with interactive local AI (local-ai.ts): a
- *  skill run and an inline edit never load/infer on LM Studio at the same time. */
-export function tryAcquireLocalModel(): boolean {
-  if (localBusy) return false;
-  localBusy = true;
-  return true;
+/**
+ * One local-model run at a time, process-wide — shared with interactive local
+ * AI (local-ai.ts), so a skill run and an inline edit never load/infer on LM
+ * Studio together (security review M1). Acquire is a synchronous test-and-set
+ * that returns an OWNERSHIP TOKEN; only the holder of that token can release the
+ * slot. Callers acquire AFTER their (async) admission check, never before it,
+ * and treat a failed acquire as "busy, try later".
+ */
+export type LocalSlotToken = symbol;
+let localOwner: LocalSlotToken | null = null;
+export function tryAcquireLocalModel(): LocalSlotToken | null {
+  if (localOwner !== null) return null;
+  localOwner = Symbol("local-model-run");
+  return localOwner;
 }
-export function releaseLocalModel(): void {
-  localBusy = false;
+/** Release the slot — a no-op unless `token` is the current holder's. */
+export function releaseLocalModel(token: LocalSlotToken | null): void {
+  if (token !== null && localOwner === token) localOwner = null;
 }
+export const localModelBusy = (): boolean => localOwner !== null;
 /** Pending async writes (claude-run dispatch notes) — awaited by tests. */
 const pendingWrites = new Set<Promise<unknown>>();
 
@@ -614,7 +622,7 @@ export async function settleSkillWrites(): Promise<void> {
 export function _resetSkillsState(): void {
   lastRefusal.clear();
   pinnedWarned.clear();
-  localBusy = false;
+  localOwner = null;
   pendingWrites.clear();
   runningSkills.clear();
 }
@@ -635,7 +643,8 @@ interface RunningSkill {
   cancelRequested: boolean;
 }
 
-/** In-flight server skill runs by skill name (one run per skill at a time). */
+/** In-flight server skill runs by RUN id (L7: a skill may have several claude
+ *  runs in flight — e.g. "run now" queued while one is still running). */
 const runningSkills = new Map<string, RunningSkill>();
 
 export interface RunningSkillInfo {
@@ -662,13 +671,18 @@ export function listRunningSkills(): RunningSkillInfo[] {
  * `cancelled` dispatch note. lastRun stays as written at acceptance, so the
  * skill is NOT immediately due again.
  */
-export function cancelSkillRun(skill: string): "cancelled" | "not_running" {
-  const r = runningSkills.get(skill);
-  if (!r) return "not_running";
-  r.cancelRequested = true;
-  r.abort?.abort();
-  r.cancel?.();
-  return "cancelled";
+export function cancelSkillRun(skill: string): "cancelled" | "not_running" | "not_cancellable" {
+  const runs = [...runningSkills.values()].filter((r) => r.skill === skill);
+  if (!runs.length) return "not_running";
+  let any = false;
+  for (const r of runs) {
+    if (!r.abort && !r.cancel) continue; // no handle (L7): reported, never pretended
+    r.cancelRequested = true;
+    r.abort?.abort();
+    r.cancel?.();
+    any = true;
+  }
+  return any ? "cancelled" : "not_cancellable";
 }
 
 /** Merge `patch` into a skill note's metadata with optimistic concurrency: one
@@ -766,18 +780,21 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
       }
 
       const verdict = await admitLocal(deps, route.model);
-      if (!verdict.ok) {
-        res.refused.push({ skill: skillName, reason: verdict.reason! });
-        if (lastRefusal.get(skillName) !== verdict.reason) {
-          lastRefusal.set(skillName, verdict.reason!);
-          deps.log(`[skills] '${skillName}' deferred: ${verdict.reason} (stays due; retried next tick)`);
+      // Acquire the slot AFTER the async admission (M1): someone else may have
+      // taken it while we awaited LM Studio / the memory probe → defer.
+      const slot = verdict.ok ? tryAcquireLocalModel() : null;
+      if (!verdict.ok || !slot) {
+        const reason = verdict.ok ? "another local-model run is in progress" : verdict.reason!;
+        res.refused.push({ skill: skillName, reason });
+        if (lastRefusal.get(skillName) !== reason) {
+          lastRefusal.set(skillName, reason);
+          deps.log(`[skills] '${skillName}' deferred: ${reason} (stays due; retried next tick)`);
         }
         continue;
       }
 
-      localBusy = true;
       const abort = new AbortController();
-      runningSkills.set(skillName, { skill: skillName, kind: "local", id, startedAt: Date.now(), model: route.model, abort, cancel: null, cancelRequested: false });
+      runningSkills.set(id, { skill: skillName, kind: "local", id, startedAt: Date.now(), model: route.model, abort, cancel: null, cancelRequested: false });
       try {
         await markRun();
         const start = Date.now();
@@ -796,12 +813,12 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
         } catch (e) {
           r = abort.signal.aborted ? finished("cancelled", null, "cancelled by the owner", start) : finished("failed", null, (e as Error).message, start);
         }
-        runningSkills.delete(skillName);
+        runningSkills.delete(id);
         await persist(deps, id, skillName, r, onOutcome);
         res.finished.push({ skill: skillName, status: r.status });
       } finally {
-        runningSkills.delete(skillName);
-        localBusy = false;
+        runningSkills.delete(id);
+        releaseLocalModel(slot);
       }
       continue;
     }
@@ -813,11 +830,11 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
       let ended = false;
       const h = deps.claude({ skill: skillName, prompt: claudePrompt }, (id, r) => {
         ended = true;
-        if (runningSkills.get(skillName)?.id === id) runningSkills.delete(skillName);
+        runningSkills.delete(id);
         track(persist(deps, id, skillName, r, onOutcome));
       });
       if (!ended) {
-        runningSkills.set(skillName, { skill: skillName, kind: "claude", id: h.id, startedAt: Date.now(), model: null, abort: null, cancel: h.cancel ?? null, cancelRequested: false });
+        runningSkills.set(h.id, { skill: skillName, kind: "claude", id: h.id, startedAt: Date.now(), model: null, abort: null, cancel: h.cancel ?? null, cancelRequested: false });
       }
       await markRun();
     } catch (e) {
@@ -846,7 +863,8 @@ function safeProbe(p: MemoryProbe): MemorySample | null {
 }
 
 export async function admitLocal(deps: Pick<SkillsDeps, "local" | "memoryProbe" | "settings">, model: string): Promise<{ ok: boolean; reason: string | null }> {
-  if (localBusy) return { ok: false, reason: "another local-model run is in progress" };
+  // Advisory early-out only; the authoritative check is tryAcquireLocalModel().
+  if (localModelBusy()) return { ok: false, reason: "another local-model run is in progress" };
   let status: LocalStatus;
   try {
     status = await deps.local.status(model);

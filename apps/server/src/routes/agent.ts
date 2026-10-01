@@ -218,6 +218,7 @@ agentApi.post("/skills/:skillName/cancel", (c) => {
   if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/.test(name)) return c.json({ error: "bad_request", detail: "invalid skill name" }, 400);
   const r = cancelSkillRun(name);
   if (r === "not_running") return c.json({ error: "not_running", detail: `no run of '${name}' is in progress` }, 404);
+  if (r === "not_cancellable") return c.json({ error: "not_cancellable", detail: `the run of '${name}' has no cancel handle` }, 409);
   console.log(`[skills] '${name}' cancelled by the owner`);
   return c.json({ ok: true, skill: name });
 });

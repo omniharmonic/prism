@@ -247,11 +247,13 @@ export async function runLocalInteractive(model: string, prompt: string, signal?
   const local: LocalModel = lmStudioClient(s.localBaseUrl, fetchImpl);
   const verdict = await admitLocal({ local, memoryProbe: probe, settings: s }, model);
   if (!verdict.ok) throw new LocalRefusedError(`local model refused: ${verdict.reason}`);
-  if (!tryAcquireLocalModel()) throw new LocalRefusedError("local model refused: another local-model run is in progress");
+  // Acquire AFTER the async admission (M1); release only our own slot.
+  const slot = tryAcquireLocalModel();
+  if (!slot) throw new LocalRefusedError("local model refused: another local-model run is in progress");
   try {
     return await localChat(model, SYSTEM, prompt, { signal, ...opts });
   } finally {
-    releaseLocalModel();
+    releaseLocalModel(slot);
   }
 }
 

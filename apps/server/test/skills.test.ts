@@ -15,6 +15,8 @@ import { config } from "../src/config";
 import {
   _resetSkillsState,
   cancelSkillRun,
+  tryAcquireLocalModel,
+  releaseLocalModel,
   listRunningSkills,
   SkillCancelledError,
   buildNotePrompt,
@@ -842,6 +844,81 @@ test("lmStudioClient.structured: an aborted signal is a cancel (SkillCancelledEr
   const p = lmStudioClient("http://lm.test/v1", f).structured("S", "U", "n", {}, "m", 60_000, ac.signal);
   ac.abort();
   await assert.rejects(p, (e: Error) => e instanceof SkillCancelledError);
+});
+
+test("L7: several claude runs of one skill are all tracked + cancelled; a run without a cancel handle → not_cancellable", async () => {
+  const { deps, vault } = makeDeps();
+  vault.add({ id: "ag", tags: ["agent-skill"], content: "Do it.", metadata: { skillName: "multi", enabled: true, runner: "server" } });
+  let n = 0;
+  const cancelled: string[] = [];
+  deps.claude = (_req, onFinish) => {
+    const id = `run${++n}000-0000`;
+    return {
+      id,
+      cancel: () => {
+        cancelled.push(id);
+        onFinish(id, { status: "cancelled", output: null, error: "cancelled by the owner", startedAt: 0, completedAt: 1, durationSecs: 0 });
+        return true;
+      },
+    };
+  };
+  await runSkillsOnce(deps);
+  vault.notes.get("ag")!.metadata!.lastRun = ""; // "run now" while the first is still running
+  await runSkillsOnce(deps);
+  assert.deepEqual(listRunningSkills().map((r) => r.id), ["run1000-0000", "run2000-0000"]);
+  assert.equal(cancelSkillRun("multi"), "cancelled");
+  assert.deepEqual(cancelled, ["run1000-0000", "run2000-0000"]);
+  assert.deepEqual(listRunningSkills(), []);
+  // A dispatcher that gives no cancel handle: reported honestly.
+  deps.claude = () => ({ id: "nocancel-0000" });
+  vault.notes.get("ag")!.metadata!.lastRun = "";
+  await runSkillsOnce(deps);
+  assert.equal(cancelSkillRun("multi"), "not_cancellable");
+  assert.equal(listRunningSkills()[0]!.cancelRequested, false);
+});
+
+// ── M1: the one-local-run slot is exclusive and owned ────────────────────────
+
+test("M1: the local slot is a token: a second acquire fails, only the holder's token releases it", () => {
+  const a = tryAcquireLocalModel();
+  assert.ok(a);
+  assert.equal(tryAcquireLocalModel(), null);
+  releaseLocalModel(Symbol("not-the-holder"));
+  releaseLocalModel(null);
+  assert.equal(tryAcquireLocalModel(), null, "a foreign token never frees the slot");
+  releaseLocalModel(a);
+  const b = tryAcquireLocalModel();
+  assert.ok(b);
+  releaseLocalModel(a);
+  assert.equal(tryAcquireLocalModel(), null, "a stale token cannot free the NEW holder's slot");
+  releaseLocalModel(b);
+});
+
+test("M1 race: the slot is taken while the skill awaits admission → the skill defers (no run, no lastRun) and never frees the other holder's slot", async () => {
+  const { deps, vault, local } = makeDeps();
+  seedCandidates(vault);
+  classifierSkill(vault, { runner: "server" });
+  let resolveStatus: (s: LocalStatus) => void = () => {};
+  local.status = () => new Promise<LocalStatus>((r) => (resolveStatus = r));
+  const pass = runSkillsOnce(deps);
+  await new Promise((r) => setTimeout(r, 5)); // the pass is now inside admitLocal
+  const other = tryAcquireLocalModel(); // e.g. an interactive inline edit
+  assert.ok(other);
+  resolveStatus({ reachable: true, loaded: true });
+  const res = await pass;
+  assert.deepEqual(res.refused.map((r) => r.reason), ["another local-model run is in progress"]);
+  assert.deepEqual(res.dispatched, []);
+  assert.equal(local.calls.length, 0, "no model call");
+  assert.equal(vault.notes.get("skill-classify")!.metadata!.lastRun, null, "stays due");
+  assert.equal(tryAcquireLocalModel(), null, "the other holder still owns the slot");
+  releaseLocalModel(other);
+  // Next tick, with the slot free, the skill runs and releases its own slot after.
+  local.status = async () => ({ reachable: true, loaded: true });
+  const res2 = await runSkillsOnce(deps);
+  assert.deepEqual(res2.dispatched, ["test-classify"]);
+  const after = tryAcquireLocalModel();
+  assert.ok(after, "released after the run");
+  releaseLocalModel(after);
 });
 
 afterEach(async () => {

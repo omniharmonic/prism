@@ -193,10 +193,11 @@ test("dispatch routed LOCAL is refused (dispatch error, never a silent claude fa
   d = await run();
   assert.match(d.error!, /not loaded .* refusing to JIT-load/);
   lmLoaded = true;
-  assert.equal(tryAcquireLocalModel(), true, "a skill run holds the local slot");
+  const held = tryAcquireLocalModel();
+  assert.ok(held, "a skill run holds the local slot");
   d = await run();
   assert.match(d.error!, /another local-model run is in progress/);
-  releaseLocalModel();
+  releaseLocalModel(held);
   assert.equal(spawned.length, 0, "never fell back to claude");
   assert.equal(lmCalls.filter((c) => c.url.endsWith("/chat/completions")).length, 0);
 });
@@ -229,8 +230,9 @@ test("cancel a local inline-AI dispatch: the LM Studio request is aborted and th
   assert.equal(c.ok, true);
   await new Promise((res) => setTimeout(res, 10));
   assert.equal(getDispatch(j.id)!.status, "cancelled");
-  assert.equal(tryAcquireLocalModel(), true, "the local slot was released");
-  releaseLocalModel();
+  const again = tryAcquireLocalModel();
+  assert.ok(again, "the local slot was released");
+  releaseLocalModel(again);
 });
 
 test("routing test: local = one tiny completion behind the guard; a refusal is reported as ok:false", async () => {
