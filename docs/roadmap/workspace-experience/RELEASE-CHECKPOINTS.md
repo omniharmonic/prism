@@ -26,4 +26,14 @@ Rollout sequence:
 
 Rollback if startup or integrity fails: stop `prism-server`, revert the release merge (preserving unrelated source history), restore the saved web artifact and previous `.env`, then start the old release. The new schema is additive; prefer retaining current data and disabling the profile flag to restoring a database snapshot. Database restoration is a last resort requiring explicit accounting for any writes since the backup. Do not overwrite newer user data merely to roll back UI code.
 
-Deployment and post-release results will be recorded after they occur.
+Deployed as merge `511696b`. Locked dependency installation passed. PM2 restarted only `prism-server`; both local and public `/health` returned 200 with vault healthy. Existing maintenance commit retained. Old hashed assets remain available to existing tabs, and the prior served directory is also retained at `/private/tmp/prism-release-before-workspace/served-web-dist`.
+
+Production checks after restart:
+
+- Installed `d58f257` client reconnected and restored its private conversation. Its actual native selector changed Read-only → Suggested edits only → Read/write → Read-only. Independent server readback confirmed the final `prism-ro` profile and policy version 4.
+- Native source picker found and attached only the private synthetic note. A real read-only turn used its supplied saved text and returned `PRISM_SAVED_CONTEXT_OK`; receipt recorded one source, 202 characters, no truncation. No tools or edits requested.
+- Explicitly retried that completed native request with its original request ID and payload. Server returned the same turn; turn count and cost remained unchanged.
+- Deployed sign-in and private guest-link document pages rendered in isolated Chromium. At 390×844 the document had no horizontal page overflow. A browser-entered `PRISM_RELEASE_WEB_OK` marker arrived live in the installed native editor and survived browser reload. Browser closed and the short-lived capability was revoked afterward.
+- Automated WCAG A/AA checks: sign-in had zero violations/incomplete checks; the guest document had zero violations and two nodes needing manual contrast review. No browser page errors observed. Synthetic screenshot: `/tmp/prism-release-mobile.png`.
+
+These checks do not establish authenticated web-owner session behavior, PWA update/offline behavior, active-turn downgrade draining in production, real suggested/direct tool edits, or the unfinished plan packages. PWA registration is mounted in the signed-in workspace; the guest/sign-in browser checks do not register a worker. Keep those gates open.
