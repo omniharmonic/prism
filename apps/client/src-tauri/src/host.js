@@ -243,8 +243,26 @@
     });
   }
 
+  // WP4.2: narrow wrappers over the two main-window commands. The shell
+  // sanitises/caps everything (notify) and picks the destination itself
+  // (exportNote: native save panel; no path ever comes from here).
+  function notify(title, body, sessionId) {
+    return ipc("notify", { title: String(title), body: String(body), sessionId: sessionId || null }).catch(function () {
+      return false;
+    });
+  }
+  function exportNote(content, suggestedName, format) {
+    return ipc("export_note", { content: String(content), suggestedName: String(suggestedName), format: String(format) });
+  }
+
   Object.defineProperty(window, "__PRISM_SHELL__", {
-    value: Object.freeze({ showServerSettings: showServerSettings, signOut: signOut, toast: toast }),
+    value: Object.freeze({
+      showServerSettings: showServerSettings,
+      signOut: signOut,
+      toast: toast,
+      notify: notify,
+      exportNote: exportNote,
+    }),
     writable: false,
     configurable: false,
   });

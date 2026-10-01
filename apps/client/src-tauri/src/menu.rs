@@ -1,4 +1,4 @@
-//! Native app menu (desktop). WP4.2 adds quick capture / global shortcut here.
+//! Native app menu (desktop). File: Quick Capture, Export Note (WP4.2).
 //!
 //! Besides Prism's own items it carries the standard Edit menu: on macOS the
 //! clipboard shortcuts (Cmd-C/V/X/A/Z) only reach the webview through it.
@@ -12,8 +12,28 @@ use crate::MAIN_WINDOW;
 const ID_RELOAD: &str = "prism.reload";
 const ID_SIGN_OUT: &str = "prism.sign_out";
 const ID_SERVER: &str = "prism.server_settings";
+const ID_CAPTURE: &str = "prism.quick_capture";
+const ID_EXPORT_MD: &str = "prism.export_markdown";
+const ID_EXPORT_HTML: &str = "prism.export_html";
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let capture = MenuItem::with_id(app, ID_CAPTURE, "Quick Capture…", true, None::<&str>)?;
+    let export_md = MenuItem::with_id(
+        app,
+        ID_EXPORT_MD,
+        "Export Note as Markdown…",
+        true,
+        Some("CmdOrCtrl+Shift+E"),
+    )?;
+    let export_html = MenuItem::with_id(
+        app,
+        ID_EXPORT_HTML,
+        "Export Note as HTML…",
+        true,
+        None::<&str>,
+    )?;
+    let file = Submenu::with_items(app, "File", true, &[&capture, &export_md, &export_html])?;
+
     let server = MenuItem::with_id(
         app,
         ID_SERVER,
@@ -73,10 +93,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::close_window(app, None)?,
         ],
     )?;
-    Menu::with_items(app, &[&app_menu, &edit, &view, &window])
+    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])
+}
+
+fn export_js(format: &str) -> String {
+    format!(
+        "window.dispatchEvent(new CustomEvent(\"prism:export-note\",{{detail:{{format:\"{format}\"}}}}));"
+    )
 }
 
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    if id == ID_CAPTURE {
+        if let Err(e) = crate::capture_window::show(app) {
+            log::warn!("could not open quick capture: {e}");
+        }
+        return;
+    }
     let Some(w) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
@@ -92,6 +124,14 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
             // host.js signOut(): revoke + forget (sign_out), drop the offline
             // read cache, reload into the sign-in screen.
             let _ = w.eval("window.__PRISM_SHELL__ && window.__PRISM_SHELL__.signOut()");
+        }
+        // The page owns the open note: it builds the content and calls
+        // `export_note`, which shows the native save panel.
+        ID_EXPORT_MD => {
+            let _ = w.eval(export_js("markdown"));
+        }
+        ID_EXPORT_HTML => {
+            let _ = w.eval(export_js("html"));
         }
         _ => {}
     }

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::origin::ServerOrigin;
 use crate::pkce::CLIENT_ID;
 
-fn client() -> Result<reqwest::Client, String> {
+pub(crate) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))

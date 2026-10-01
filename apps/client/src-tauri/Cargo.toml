@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,6 +40,19 @@ security-framework = "3"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSView", "NSResponder"] }
+
+# WP4.2 desktop extras. Deliberately NOT tauri-plugin-notification / -dialog:
+# those inject JS shims into every webview (window.Notification, alert,
+# confirm) and register webview-callable commands. We use their underlying
+# libraries from Rust only, so no new JS-reachable surface exists. The
+# global-shortcut plugin adds no init script; none of its commands is granted.
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+notify-rust = "4.11"
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.16", default-features = false, features = ["gtk3"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

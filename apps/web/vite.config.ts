@@ -60,6 +60,7 @@ export default defineConfig(({ mode }) => {
           "**/subset-shared*",
           "**/createText-*",
           "**/push-sw.js", // loaded via importScripts, not precached
+          "**/quick-capture.*", // native shell capture window only
         ],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Do NOT skipWaiting/clientsClaim: the new SW waits until the user
