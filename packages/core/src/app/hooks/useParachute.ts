@@ -4,6 +4,7 @@ import { systemApi, githubSyncApi } from "../../lib/parachute/client";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { queryKeys } from "../../lib/parachute/queries";
 import type { Note, NoteFilters, CreateNoteParams, UpdateNoteParams } from "../../lib/types";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 
 export function useNotes(filters?: NoteFilters) {
@@ -36,29 +37,35 @@ export function useNote(id: string | null) {
   });
 }
 
-/**
- * Vault search. Prefers the host's hybrid semantic search (RAG: dense vectors +
- * full-text, relevance-ranked with snippets) when available, and transparently
- * falls back to plain full-text otherwise. Either way results are `Note`s, so
- * every search surface benefits without changes; semantic results additionally
- * carry `_score`/`_snippet`.
- */
+/** Ranked retrieval with an explicit keyword fallback and audience-scoped results. */
 export function useVaultSearch(query: string) {
   const client = useVaultClient();
-  return useQuery({
-    queryKey: queryKeys.vault.search(query),
+  const scope = useAgentChatStore((state) => state.scope);
+  const text = query.trim();
+  const result = useQuery({
+    queryKey: ["vault", "search", scope, text],
     queryFn: async () => {
+      const current = () => useAgentChatStore.getState().scope === scope;
       if (client.semanticSearch) {
         try {
-          return await client.semanticSearch(query);
+          const notes = await client.semanticSearch(text);
+          if (!current()) throw new Error("Workspace changed");
+          return { notes, mode: "ranked" as const };
         } catch {
-          /* RAG unavailable (e.g. index empty / endpoint down) — fall back */
+          if (!current()) throw new Error("Workspace changed");
         }
       }
-      return client.search(query);
+      const notes = await client.search(text);
+      if (!current()) throw new Error("Workspace changed");
+      return { notes, mode: client.semanticSearch ? "fallback" as const : "keyword" as const };
     },
-    enabled: query.length > 0,
+    enabled: text.length > 0,
+    staleTime: 0,
+    retry: false,
   });
+  // A cached snippet is not proof of current access; hide it during revalidation.
+  const visible = text && !result.isFetching && !result.isError ? result.data : undefined;
+  return { ...result, data: visible?.notes, mode: visible?.mode };
 }
 
 export function useTags() {

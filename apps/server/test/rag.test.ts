@@ -433,3 +433,29 @@ test("deletion cleanup collects orphans left by a PREVIOUS embedder model", asyn
   );
   assert.ok(indexedHash("live", getEmbedder().id), "the live note is untouched");
 });
+
+test("semantic search never returns a removed indexed passage after the note changes", async () => {
+  const app = createApp();
+  const cookie = sessionCookie(makeSession(OWNER));
+  fv.put({ id: "edited", content: "PRIVATE_OLD_PASSAGE soil regenerative details", tags: ["shared"] });
+  await app.request("/api/index/rebuild", { method: "POST", headers: { cookie } });
+  fv.notes.get("edited")!.content = "Published soil summary with current information.";
+  const response = await app.request("/api/search/semantic?q=soil", { headers: { cookie } });
+  const hits = await response.json() as Array<{ id: string; _snippet: string }>;
+  assert.equal(hits[0]?.id, "edited", "fresh keyword result is retained");
+  assert.match(hits[0]!._snippet, /Published soil summary/);
+  assert.ok(!JSON.stringify(hits).includes("PRIVATE_OLD_PASSAGE"));
+  const obsolete = await app.request("/api/search/semantic?q=PRIVATE_OLD_PASSAGE", { headers: { cookie } });
+  assert.deepEqual(await obsolete.json(), [], "stale dense-only matches are excluded");
+});
+
+test("hidden semantic hits do not consume the visible result limit", async () => {
+  const app = createApp();
+  const cookie = sessionCookie(makeSession(OWNER));
+  fv.put({ id: "hidden", content: "soil soil regenerative", tags: ["private"] });
+  fv.put({ id: "visible", content: "community planning around soil", tags: ["shared"] });
+  await app.request("/api/index/rebuild", { method: "POST", headers: { cookie } });
+  grantUser("reader@test.local", "tag", "shared", "view");
+  const result = await app.request("/api/search/semantic?q=soil&limit=1", { headers: { cookie: sessionCookie(makeSession("reader@test.local")) } });
+  assert.deepEqual((await result.json() as Array<{ id: string }>).map(hit => hit.id), ["visible"]);
+});

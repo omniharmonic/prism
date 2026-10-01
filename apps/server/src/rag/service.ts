@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { vault, type Note } from "../parachute";
 import { getEmbedder } from "./embedder";
-import { chunkNote } from "./chunk";
+import { chunkNote, toPlainText } from "./chunk";
 import {
   upsertNoteChunks,
   removeNoteChunks,
@@ -85,11 +85,11 @@ export interface SemanticHit {
 
 /**
  * Hybrid semantic search: dense (vector) + sparse (vault full-text), fused with
- * RRF. Returns full Note objects (with tags) so the caller can apply the same
- * effectiveLevel authorization as /search. `candidatePool` widens each signal
+ * RRF. Returns full Note objects (with tags) and applies the caller’s
+ * view authorization before selecting visible results. `candidatePool` widens each signal
  * before fusion; the final list is truncated to `limit`.
  */
-export async function semanticSearch(query: string, limit = 20): Promise<SemanticHit[]> {
+export async function semanticSearch(query: string, limit: number, canRead: (note: Note) => boolean): Promise<SemanticHit[]> {
   const q = query.trim();
   if (!q) return [];
   const embedder = getEmbedder();
@@ -98,12 +98,12 @@ export async function semanticSearch(query: string, limit = 20): Promise<Semanti
   // Dense: top chunks → best chunk per note (preserves the snippet).
   const [qvec] = await embedder.embed([q]);
   const denseChunks = qvec ? queryTopK(embedder.id, qvec, pool * 2) : [];
-  const bestChunk = new Map<string, { score: number; snippet: string }>();
+  const bestChunk = new Map<string, { score: number; snippet: string; contentHash: string }>();
   const denseOrder: string[] = [];
   for (const c of denseChunks) {
     if (!bestChunk.has(c.noteId)) denseOrder.push(c.noteId);
     const cur = bestChunk.get(c.noteId);
-    if (!cur || c.score > cur.score) bestChunk.set(c.noteId, { score: c.score, snippet: c.text });
+    if (!cur || c.score > cur.score) bestChunk.set(c.noteId, { score: c.score, snippet: c.text, contentHash: c.contentHash });
   }
 
   // Sparse: vault full-text (also gives us hydrated notes for free).
@@ -131,7 +131,14 @@ export async function semanticSearch(query: string, limit = 20): Promise<Semanti
         continue; // note deleted since indexing — skip
       }
     }
-    const snip = bestChunk.get(f.id)?.snippet ?? "";
+    // Filter before the visible limit. A hidden hit must not consume a result slot.
+    if (!canRead(note)) continue;
+    const indexed = bestChunk.get(f.id);
+    const current = indexed?.contentHash === contentHash(note.content ?? "");
+    // Old vectors/snippets can contain removed private text even when the note is
+    // now visible. Keep a fresh keyword match, otherwise wait for reindexing.
+    if (indexed && !current && !noteById.has(f.id)) continue;
+    const snip = indexed && current ? indexed.snippet : toPlainText(note.content ?? "");
     hits.push({ note, score: f.score, snippet: snip.slice(0, 280) });
   }
   return hits;

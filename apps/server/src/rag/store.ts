@@ -36,7 +36,7 @@ const selectHashForNote = db.prepare(
   "SELECT content_hash FROM embeddings WHERE note_id = ? AND model = ? LIMIT 1",
 );
 const selectByModel = db.prepare(
-  "SELECT chunk_id, note_id, idx, vec, text FROM embeddings WHERE model = ?",
+  "SELECT chunk_id, note_id, idx, vec, text, content_hash FROM embeddings WHERE model = ?",
 );
 const countByModel = db.prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ?");
 const countNotesByModel = db.prepare(
@@ -117,6 +117,7 @@ export function allIndexedNoteIds(): Set<string> {
 }
 
 export interface ScoredChunk {
+  contentHash: string;
   noteId: string;
   idx: number;
   text: string;
@@ -133,9 +134,11 @@ export function queryTopK(model: string, query: Float32Array, k: number): Scored
     idx: number;
     vec: Buffer;
     text: string;
+    content_hash: string;
   }>;
   const scored = rows.map((r) => ({
     noteId: r.note_id,
+    contentHash: r.content_hash,
     idx: r.idx,
     text: r.text,
     score: cosine(query, bufToVec(r.vec)),

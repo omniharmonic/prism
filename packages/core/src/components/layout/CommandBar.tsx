@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
-  Search, FileText, MonitorPlay, Code, Mail, Table2, Globe,
+  Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
   CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -16,6 +16,7 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
+import { searchModeLabel, searchPreview } from "../navigation/searchPresentation";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 
 interface Command {
@@ -32,6 +33,7 @@ export function CommandBar() {
   const [debouncedQuery] = useDebounce(query, 200);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const createNote = useCreateNote();
   const isMobile = useIsMobile();
   const agentChat = useAgentAvailable();
@@ -57,15 +59,17 @@ export function CommandBar() {
     return host!.agentText(buildTransformPrompt(note, targetType), { skill: "transform", noteId, timeoutMs: 10 * 60_000 });
   }, [host, vaultClient]);
 
-  const { data: searchResults } = useVaultSearch(debouncedQuery);
+  const { data: searchResults, mode: searchMode, isFetching: searching, isError: searchFailed, refetch: retrySearch } = useVaultSearch(commandBarOpen ? debouncedQuery : "");
 
   useEffect(() => {
     if (commandBarOpen) {
       setQuery("");
       setSelectedIndex(0);
-      // Focus on the next frame (not a delayed timeout) so the tap that opened
-      // the bar still counts as the gesture iOS needs to raise the keyboard.
-      requestAnimationFrame(() => inputRef.current?.focus());
+      const previous = document.activeElement as HTMLElement | null;
+      const dialog = dialogRef.current;
+      dialog?.showModal();
+      inputRef.current?.focus();
+      return () => { dialog?.close(); if (previous?.isConnected) previous.focus(); };
     }
   }, [commandBarOpen]);
 
@@ -266,12 +270,12 @@ export function CommandBar() {
 
   // Vault search results as items
   const vaultItems = useMemo(() => {
-    return (searchResults || []).slice(0, 8).map((note) => ({
+    return (query.trim() === debouncedQuery.trim() ? searchResults || [] : []).slice(0, 8).map((note) => ({
       id: `note-${note.id}`,
       label: note.path?.split("/").pop()?.replace(/\.[^.]+$/, "") || note.id,
       sublabel: (note.path || "").replace(/^vault\//, ""),
       icon: typeof note.metadata?.icon === "string" ? (note.metadata.icon as string) : null,
-      preview: note.content.slice(0, 80),
+      preview: searchPreview(note, 130),
       action: () => {
         const type = inferContentType(note);
         const title = note.path?.split("/").pop() || note.id;
@@ -279,10 +283,14 @@ export function CommandBar() {
         closeCommandBar();
       },
     }));
-  }, [searchResults, openTab, closeCommandBar]);
+  }, [searchResults, query, debouncedQuery, openTab, closeCommandBar]);
 
   // Total items for keyboard navigation
   const totalItems = filteredCommands.length + vaultItems.length + (query.trim() && agentChat ? 1 : 0); // +1 for "Ask Claude"
+
+  useEffect(() => {
+    if (commandBarOpen) document.getElementById(`prism-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest" });
+  }, [commandBarOpen, selectedIndex, totalItems]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -291,7 +299,7 @@ export function CommandBar() {
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.min(i + 1, totalItems - 1));
+      setSelectedIndex((i) => Math.max(0, Math.min(i + 1, totalItems - 1)));
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
@@ -304,6 +312,7 @@ export function CommandBar() {
   };
 
   const executeSelected = () => {
+    if (selectedIndex < 0 || selectedIndex >= totalItems) return;
     if (selectedIndex < filteredCommands.length) {
       filteredCommands[selectedIndex].action();
     } else if (selectedIndex < filteredCommands.length + vaultItems.length) {
@@ -336,28 +345,38 @@ export function CommandBar() {
       <Search size={18} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
       <input
         ref={inputRef}
-        autoFocus
+        aria-label="Search notes and commands"
+        role="combobox"
+        aria-expanded={true}
+        aria-controls="prism-command-results"
+        aria-autocomplete="list"
+        aria-activedescendant={selectedIndex >= 0 && selectedIndex < totalItems ? `prism-command-${selectedIndex}` : undefined}
         inputMode="search"
         enterKeyHint="search"
         value={query}
         onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
         onKeyDown={handleKeyDown}
-        placeholder="Search notes, create, or ask Claude…"
+        placeholder="Search notes, create, or ask your agent…"
         className="flex-1 min-w-0 bg-transparent outline-none"
         style={{ color: "var(--text-primary)", fontSize: "var(--text-lg)" }}
       />
       {!isMobile && <kbd>esc</kbd>}
+      <button aria-label="Close search" className="focus-ring shrink-0 rounded-lg p-2" onClick={closeCommandBar}><X size={18} /></button>
     </div>
   );
 
   const body = (
     <>
+      {query.trim() && <div role="status" className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>{searching || query.trim() !== debouncedQuery.trim() ? "Searching…" : searchFailed ? "Search unavailable" : searchModeLabel(searchMode)}</div>}
+      {searchFailed && <div role="alert" className="px-3 py-2 text-sm">Couldn't search this workspace. <button className="focus-ring underline" onClick={() => void retrySearch()}>Try again</button></div>}
+      {query.trim() && query.trim() === debouncedQuery.trim() && !searching && !searchFailed && !vaultItems.length && <p className="px-3 py-2 text-sm" style={{ color: "var(--text-muted)" }}>No matching notes.</p>}
       {filteredCommands.length > 0 && (
         <div style={{ marginBottom: 2 }}>
           <div className="text-label" style={{ padding: "6px 10px 4px" }}>Actions</div>
           {filteredCommands.map((cmd, i) => (
             <CmdRow
               key={cmd.id}
+              id={`prism-command-${i}`}
               selected={selectedIndex === i}
               onClick={cmd.action}
               onHover={() => setSelectedIndex(i)}
@@ -376,12 +395,14 @@ export function CommandBar() {
             return (
               <CmdRow
                 key={item.id}
+                id={`prism-command-${idx}`}
                 selected={selectedIndex === idx}
                 onClick={item.action}
                 onHover={() => setSelectedIndex(idx)}
                 icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
                 label={item.label}
                 sublabel={item.sublabel}
+                preview={item.preview}
               />
             );
           })}
@@ -390,11 +411,12 @@ export function CommandBar() {
 
       {query.trim() && agentChat && (
         <CmdRow
+          id={`prism-command-${askIdx}`}
           selected={selectedIndex === askIdx}
           onClick={askClaude}
           onHover={() => setSelectedIndex(askIdx)}
           icon={<Bot size={15} />}
-          label={`Ask Claude: "${query}"`}
+          label={`Ask your agent: "${query}"`}
           accent
           trailing={<ArrowRight size={13} />}
         />
@@ -412,8 +434,8 @@ export function CommandBar() {
   // keyboard, Obsidian-style) and results scrolling above it.
   if (isMobile) {
     return (
-      <div
-        className="fixed inset-0 flex flex-col justify-end"
+      <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); closeCommandBar(); }}
+        className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-transparent p-0 text-[var(--text-primary)] flex flex-col justify-end"
         style={{ zIndex: "var(--z-modal)" as unknown as number }}
         onClick={closeCommandBar}
       >
@@ -429,16 +451,16 @@ export function CommandBar() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
+          <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
           {inputRow}
         </div>
-      </div>
+      </dialog>
     );
   }
 
   return (
-    <div
-      className="fixed inset-0 flex items-start justify-center"
+    <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); closeCommandBar(); }}
+      className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 text-[var(--text-primary)] flex items-start justify-center"
       style={{ background: "rgba(0,0,0,0.45)", zIndex: "var(--z-modal)", paddingTop: "14vh", paddingLeft: 16, paddingRight: 16 }}
       onClick={closeCommandBar}
     >
@@ -448,7 +470,7 @@ export function CommandBar() {
         onClick={(e) => e.stopPropagation()}
       >
         {inputRow}
-        <div style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
+        <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
 
         {/* Footer keyboard hints */}
         <div
@@ -460,37 +482,44 @@ export function CommandBar() {
           <span className="flex items-center gap-1"><kbd>esc</kbd> close</span>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 
 /** A single command-palette row: quiet at rest, surface-fill when selected. */
 function CmdRow({
+  id,
   selected,
   onClick,
   onHover,
   icon,
   label,
   sublabel,
+  preview,
   accent,
   trailing,
 }: {
+  id: string;
   selected: boolean;
   onClick?: () => void;
   onHover: () => void;
   icon: React.ReactNode;
   label: string;
   sublabel?: string;
+  preview?: string;
   accent?: boolean;
   trailing?: React.ReactNode;
 }) {
   return (
-    <div
-      role="button"
+    <button
+      type="button"
+      role="option"
+      id={id}
+      aria-selected={selected}
       tabIndex={-1}
       onClick={onClick}
       onMouseEnter={onHover}
-      className="interactive flex items-center gap-3"
+      className="interactive focus-ring flex w-full items-center gap-3"
       style={{
         padding: "8px 10px",
         minHeight: 40,
@@ -506,11 +535,12 @@ function CmdRow({
       </span>
       <div className="min-w-0 flex-1 text-left">
         <div className="truncate" style={{ fontSize: "var(--text-base)" }}>{label}</div>
+        {preview && <div className="mt-1 line-clamp-2 break-words text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>{preview}</div>}
         {sublabel && (
           <div className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{sublabel}</div>
         )}
       </div>
       {trailing && <span style={{ marginLeft: "auto", color: "var(--text-muted)" }}>{trailing}</span>}
-    </div>
+    </button>
   );
 }

@@ -3,56 +3,33 @@ import { useVaultSearch } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
+import { searchModeLabel, searchPreview } from "./searchPresentation";
 
-interface SearchPanelProps {
-  query: string;
-  onClose: () => void;
-}
+interface SearchPanelProps { query: string; onClose: () => void }
 
 export function SearchPanel({ query, onClose }: SearchPanelProps) {
-  const { data: results, isLoading } = useVaultSearch(query);
+  const { data: results, isFetching, isError, mode, refetch } = useVaultSearch(query);
   const openTab = useUIStore((s) => s.openTab);
-
-  return (
-    <div className="flex-1 overflow-auto">
-      <div className="px-3 py-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-        {isLoading ? "Searching..." : `${results?.length ?? 0} results`}
-      </div>
-      {isLoading && (
-        <div className="flex justify-center py-4">
-          <Spinner size={16} />
-        </div>
-      )}
-      {results?.map((note) => {
-        const title = note.path?.split("/").pop() || note.id;
-        const type = inferContentType(note);
-        return (
-          <button
-            key={note.id}
-            onClick={() => {
-              openTab(note.id, title, type);
-              onClose();
-            }}
-            className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[var(--glass-hover)] transition-colors"
-          >
-            <FileText size={14} className="mt-0.5 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-            <div className="min-w-0">
-              <div className="text-sm truncate" style={{ color: "var(--text-primary)" }}>
-                {title}
-              </div>
-              {note.path && (
-                <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-                  {note.path}
-                </div>
-              )}
-              <div className="text-xs mt-0.5 line-clamp-2" style={{ color: "var(--text-secondary)" }}>
-                {/* Prefer the semantic-match passage when present, else a content preview. */}
-                {(note as { _snippet?: string })._snippet || note.content.slice(0, 120)}
-              </div>
-            </div>
-          </button>
-        );
-      })}
+  return <section aria-label="Search results" className="min-w-0 flex-1 overflow-auto">
+    <div role="status" className="px-3 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
+      {!query.trim() ? "Search your workspace" : isFetching ? "Searching…" : isError ? "Search unavailable" : `${results?.length ?? 0} results shown · ${searchModeLabel(mode)}`}
     </div>
-  );
+    {isFetching && <div className="flex justify-center py-4"><Spinner size={16} /></div>}
+    {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring underline" onClick={() => void refetch()}>Try again</button></div>}
+    {!isFetching && !isError && query.trim() && results?.length === 0 && <p className="px-3 py-5 text-sm" style={{ color: "var(--text-secondary)" }}>No matching notes. Try a name, phrase, or related idea.</p>}
+    {results?.map(note => {
+      const title = note.path?.split("/").pop() || note.id;
+      const type = inferContentType(note);
+      const updated = note.updatedAt ? new Date(note.updatedAt) : null;
+      return <button key={note.id} onClick={() => { openTab(note.id, title, type); onClose(); }} className="interactive focus-ring flex w-full min-w-0 items-start gap-3 border-b px-3 py-4 text-left" style={{ borderColor: "var(--glass-border)" }}>
+        <FileText size={17} className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }} />
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-sm font-medium [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }}>{title}</span>
+          {note.path && <span className="mt-1 block truncate text-xs" style={{ color: "var(--text-muted)" }}>{note.path}</span>}
+          <span className="mt-2 block line-clamp-3 break-words text-xs leading-relaxed [overflow-wrap:anywhere]" style={{ color: "var(--text-secondary)" }}>{searchPreview(note)}</span>
+          <span className="mt-2 block text-[11px] capitalize" style={{ color: "var(--text-muted)" }}>{type.replace(/-/g, " ")}{updated && Number.isFinite(updated.getTime()) ? ` · Updated ${updated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}</span>
+        </span>
+      </button>;
+    })}
+  </section>;
 }

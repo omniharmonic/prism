@@ -67,22 +67,18 @@ const ownerOnly = (c: Context) => roleAtLeast(resolveActor(c).role, "admin");
 rag.get("/search/semantic", async (c) => {
   const actor = resolveActor(c);
   const q = c.req.query("q") ?? c.req.query("search") ?? "";
-  const limit = Math.min(Number(c.req.query("limit") ?? 20) || 20, 100);
+  const requestedLimit = Number(c.req.query("limit") ?? 20);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return c.json({ error: "bad_request" }, 400);
+  const limit = Math.min(requestedLimit, 100);
   let hits;
   try {
-    hits = await semanticSearch(q, limit);
+    hits = await semanticSearch(q, limit, (note) => roleAtLeast(actor.role, "admin") || effectiveCaps(actor.grants, ref(note), roleFloor(actor.role), subjectOf(actor)).has("view"));
   } catch {
     return c.json({ error: "search_error" }, 502);
   }
-  const visible = roleAtLeast(actor.role, "admin")
-    ? hits
-    : // The `view` CAP, not the level ladder: a caps grant that omits view (e.g. a
-      // ["create"] drop-box) projects to level "view" (levelForCaps) but confers
-      // no read — the ladder check leaked it. Same inputs as api.ts capsFor.
-      hits.filter((h) => effectiveCaps(actor.grants, ref(h.note), roleFloor(actor.role), subjectOf(actor)).has("view"));
   // Shape mirrors /notes entries, plus score + snippet for ranked display.
   return c.json(
-    visible.map((h) => ({ ...h.note, _score: h.score, _snippet: h.snippet })),
+    hits.map((h) => ({ ...h.note, _score: h.score, _snippet: h.snippet })),
   );
 });
 
