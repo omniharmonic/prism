@@ -10,6 +10,7 @@ import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
+import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
 import { isNative, serverFetch, gatewayOrigin, initializeTransport, getDeviceToken } from "./transport";
@@ -143,6 +144,7 @@ export async function start() {
   // a session; capability-link viewers are redirected to sign in.
   if (window.location.pathname === "/governance") {
     const me = await fetchMe();
+    if (me.unavailable) { root.render(<ReconnectScreen />); return; }
     if (!me.authenticated) {
       root.render(
         <React.StrictMode>
@@ -163,6 +165,7 @@ export async function start() {
   // Commons landing: /commons — orientation + the two doors (requires a session).
   if (window.location.pathname === "/commons") {
     const me = await fetchMe();
+    if (me.unavailable) { root.render(<ReconnectScreen />); return; }
     if (!me.authenticated) {
       root.render(
         <React.StrictMode>
@@ -208,6 +211,7 @@ export async function start() {
   if (!capability) {
     // Otherwise a session is required. Ask the gateway who we are.
     const me = await fetchMe();
+    if (me.unavailable) { root.render(<ReconnectScreen />); return; }
     if (!me.authenticated) {
       const reason = new URLSearchParams(window.location.search).get("login");
       const notice =

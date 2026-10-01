@@ -94,6 +94,8 @@ export function apiBase(): string {
 
 export interface Me {
   authenticated: boolean;
+  /** Authentication could not be checked; this is not a sign-out. */
+  unavailable?: boolean;
   email?: string;
   name?: string | null;
   /** Small data:image/ URL avatar, or null. Feeds collab presence identity. */
@@ -129,6 +131,7 @@ export async function fetchMe(): Promise<Me> {
       return cachedMe;
     }
     const r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
+    if (!r.ok && r.status !== 401 && r.status !== 403) return { authenticated: false, unavailable: true };
     const me = r.ok ? (await r.json()) as Me : { authenticated: false };
     // A late response from the previous vault must not replace current identity.
     if (identityContext() !== context) return getMe() ?? { authenticated: false };
@@ -140,7 +143,7 @@ export async function fetchMe(): Promise<Me> {
   } catch {
     // Retain the last confirmed identity for offline drafts, but report the
     // failed revalidation to callers. Replay checks cannot treat it as fresh.
-    return { authenticated: false };
+    return { authenticated: false, unavailable: true };
   }
 }
 
@@ -232,6 +235,7 @@ export async function requestMagicLink(email: string): Promise<{ emailDelivery: 
 export async function logout(): Promise<void> {
   cachedMe = null;
   cachedMeContext = "";
+  useAgentChatStore.getState().bindScope(null);
   try {
     if (isNative) {
       // Device token: revoke it server-side (POST /auth/device/revoke with an

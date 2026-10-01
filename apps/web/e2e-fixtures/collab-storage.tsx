@@ -1,0 +1,30 @@
+import React from "react";
+import { createRoot } from "react-dom/client";
+import * as Y from "yjs";
+import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "../src/collab/localDocument";
+import { CollabDoc } from "../src/collab/CollabDoc";
+import { ReconnectScreen } from "../src/auth/ReconnectScreen";
+import { fetchMe } from "../src/config";
+import type { WriteScope } from "../src/offline/writeScope";
+
+const scope: WriteScope = { api: `${location.origin}/api`, workspace: "workspace-a", vault: "vault-a", actor: "user:alice@example.test" };
+const opened = new Map<string, { doc: Y.Doc; persistence: Awaited<ReturnType<typeof persistLocalDocument>> }>();
+const states: Record<string, LocalSaveState> = {};
+Object.assign(window, { prismCollabFixture: {
+  async open(label: string, overrides: Partial<WriteScope> = {}, note = "same-note") {
+    const doc = new Y.Doc();
+    const persistence = await persistLocalDocument(localDocumentKey({ ...scope, ...overrides }, note), doc, (state) => { states[label] = state; });
+    opened.set(label, { doc, persistence });
+    return doc.getText("content").toString();
+  },
+  async append(label: string, value: string) {
+    const entry = opened.get(label)!;
+    entry.doc.getText("content").insert(entry.doc.getText("content").length, value);
+    await entry.persistence.flush();
+    return states[label];
+  },
+  close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
+  async checkAuth() { return fetchMe(); },
+}});
+const query = new URLSearchParams(location.search);
+createRoot(document.getElementById("root")!).render(<React.StrictMode>{(query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</React.StrictMode>);

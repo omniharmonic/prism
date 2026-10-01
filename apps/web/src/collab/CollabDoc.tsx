@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { IndexeddbPersistence } from "y-indexeddb";
-import { CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
+import { captureWriteContext, scopeKey } from "../offline/writeScope";
+import { CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
-import { apiBase, capabilityHeader, getCapabilityToken, getActiveVault, getMe, fetchMe } from "../config";
+import { apiBase, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
 
 /** The vault-scoped collab documentName: the primary vault uses a BARE note id
  *  (backward-compatible), every other vault prefixes `${vaultId}::` so the server
@@ -96,7 +97,19 @@ function deriveTitle(content: string): string {
  *
  * `embedded` drops the full-viewport chrome so it fits inside the app canvas.
  */
-export function CollabDoc({
+type CollabDocProps = {
+  noteId: string;
+  embedded?: boolean;
+  onWikilinkNavigate?: (target: string) => void;
+  wikilinkNotes?: Note[];
+};
+
+export function CollabDoc(props: CollabDocProps) {
+  const scope = useAgentChatStore((state) => state.scope);
+  return <ScopedCollabDoc key={JSON.stringify([props.noteId, scope, getActiveVault(), getCapabilityToken()])} {...props} />;
+}
+
+function ScopedCollabDoc({
   noteId,
   embedded = false,
   onWikilinkNavigate,
@@ -110,8 +123,11 @@ export function CollabDoc({
   /** Vault notes for the `[[` autocomplete (in-app only). */
   wikilinkNotes?: Note[];
 }) {
-  const [ydoc] = useState(() => new Y.Doc());
-  const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
+  const [connection, setConnection] = useState<{ doc: Y.Doc; provider: HocuspocusProvider } | null>(null);
+  const ydoc = connection?.doc;
+  const provider = connection?.provider;
+  const [localSave, setLocalSave] = useState<LocalSaveState>("saving");
+  const [connectionError, setConnectionError] = useState(false);
   const [denied, setDenied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
@@ -130,36 +146,6 @@ export function CollabDoc({
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
   const [editor, setEditor] = useState<Editor | null>(null);
   const [focusedThread, setFocusedThread] = useState<string | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, {
-          credentials: "include",
-          headers: capabilityHeader(),
-        });
-        if (!r.ok) return;
-        const note = await r.json();
-        setLevel(note._level ?? "own");
-        setPath(note.path ?? null);
-        if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
-        setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
-        const k = detectKind(note);
-        setKind(k);
-        if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
-        const filename = note.path?.split("/").pop() as string | undefined;
-        const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
-        // Prefer the note's explicit title / filename; fall back to a heading
-        // derived from the body. (Content-only derivation left "Shared document"
-        // whenever the body had no leading heading — or was collab HTML.)
-        if (k === "document") setTitle(titleMeta || filename || deriveTitle(note.content || ""));
-        else if (k === "canvas") setTitle(titleMeta || filename || "Canvas");
-        else setTitle(titleMeta || filename || deriveTitle(note.content || ""));
-      } catch {
-        /* level unknown → server still enforces */
-      }
-    })();
-  }, [noteId]);
 
   // Expose the reading-font control to the shell (bottom bar on desktop, More
   // sheet on mobile) for documents only. Declared above the early returns below
@@ -198,20 +184,6 @@ export function CollabDoc({
     if (isSuggestLevel) setSuggesting(true);
   }, [isSuggestLevel]);
 
-  // Local-first persistence: the Y.Doc is mirrored to IndexedDB, so edits made
-  // while offline (or before the server syncs) survive a reload and merge via
-  // CRDT on reconnect — nothing is lost if the network drops mid-edit.
-  // The `v2-` prefix retires pre-fix local stores: before the server persisted
-  // its seed, every reconnect re-seeded a fresh-client-ID copy that accumulated
-  // in these IndexedDB docs. Bumping the key abandons that duplicated state so a
-  // corrupted note reloads clean from the (now stable) server doc.
-  useEffect(() => {
-    const persistence = new IndexeddbPersistence(`prism-collab-v2-${noteId}`, ydoc);
-    return () => {
-      void persistence.destroy();
-    };
-  }, [noteId, ydoc]);
-
   // Track browser connectivity to distinguish "offline (saved locally)" from
   // "connecting" in the status line.
   useEffect(() => {
@@ -227,57 +199,77 @@ export function CollabDoc({
 
   useEffect(() => {
     let p: HocuspocusProvider | null = null;
+    const doc = new Y.Doc();
+    let persistence: Awaited<ReturnType<typeof persistLocalDocument>> | undefined;
     let cancelled = false;
-    // A FEDERATED note must open under its `space_note_key` (the doc the peer
-    // bridge serves), not its local id — else this hub's edits never federate
-    // (federation gap #2). /api/federated returns 204 for non-federated notes (and
-    // whenever federation is off), so the default stays `noteId` with no behavior
-    // change for the normal path.
+    const capToken = getCapabilityToken();
+    const initialContext = JSON.stringify([contextHeaders(), capToken]);
+    const current = () => !cancelled && initialContext === JSON.stringify([contextHeaders(), getCapabilityToken()]);
     void (async () => {
-      // Resolve WHO this collaborator is before opening the doc, so the editor
-      // mounts (below, gated on `provider`) with the correct cursor/comment/
-      // suggestion identity — not the stale hardcoded "You".
-      const capToken = getCapabilityToken();
-      if (capToken) {
-        setUser(identityFrom(null, capToken));
-      } else {
-        const me = await fetchMe().catch(() => null);
-        if (!cancelled) setUser(identityFrom(me, null));
-      }
-      if (cancelled) return;
-      // Default: the active vault's scoped name (primary → bare id). A federated
-      // note overrides this with its space_note_key below.
-      let name = vaultDocName(noteId);
       try {
-        const r = await serverFetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, {
-          headers: { ...capabilityHeader() },
-          credentials: "include",
-        });
-        if (r.ok) {
-          const j = (await r.json().catch(() => null)) as { spaceNoteKey?: string } | null;
-          if (j?.spaceNoteKey) name = j.spaceNoteKey;
+        if (!capToken) {
+          const me = await fetchMe();
+          if (!current()) return;
+          if (!me.authenticated) { setConnectionError(true); return; }
+          setUser(identityFrom(me, null));
+        } else setUser(identityFrom(null, capToken));
+        const context = await captureWriteContext();
+        if (!current()) return;
+        const stillCurrent = async () => current() && scopeKey((await captureWriteContext()).scope) === scopeKey(context.scope);
+        // Fresh authorization BEFORE loading any local CRDT or opening a socket.
+        const response = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, { headers: context.headers });
+        if (!(await stillCurrent())) return;
+        if (!response.ok) {
+          if ([401, 403, 404, 410].includes(response.status)) setDenied(true);
+          else setConnectionError(true);
+          return;
         }
-      } catch {
-        /* not federated / offline → open by local id */
-      }
-      if (cancelled) return;
-      p = new HocuspocusProvider({
-        url: collabUrl(),
-        name,
-        token: collabToken(getCapabilityToken()),
-        document: ydoc,
-        onStatus: ({ status }) => setConnected(status === "connected"),
-        onSynced: () => setSynced(true),
-        onAuthenticationFailed: () => setDenied(true),
-      });
-      setProvider(p);
+        const note = await response.json();
+        if (!(await stillCurrent())) return;
+        setLevel(note._level ?? "own");
+        setPath(note.path ?? null);
+        if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
+        setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
+        const k = detectKind(note);
+        setKind(k);
+        if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
+        const filename = note.path?.split("/").pop() as string | undefined;
+        const titleMeta = typeof note.metadata?.title === "string" ? note.metadata.title : undefined;
+        // Prefer the note's explicit title / filename; fall back to a heading
+        // derived from the body. (Content-only derivation left "Shared document"
+        // whenever the body had no leading heading — or was collab HTML.)
+        if (k === "document") setTitle(titleMeta || filename || deriveTitle(note.content || ""));
+        else if (k === "canvas") setTitle(titleMeta || filename || "Canvas");
+        else setTitle(titleMeta || filename || deriveTitle(note.content || ""));
+        let name = vaultDocName(noteId);
+        try {
+          const r = await serverFetch(`${apiBase()}/federated/${encodeURIComponent(noteId)}`, { headers: context.headers });
+          if (r.ok) {
+            const federated = await r.json();
+            if (federated?.spaceNoteKey) name = federated.spaceNoteKey;
+          }
+        } catch { /* ordinary local note */ }
+        if (!(await stillCurrent())) return;
+        try {
+          persistence = await persistLocalDocument(localDocumentKey(context.scope, name), doc, (state) => { if (current()) setLocalSave(state); });
+        } catch { if (current()) setLocalSave("unavailable"); }
+        if (!(await stillCurrent())) { persistence?.close(); return; }
+        p = new HocuspocusProvider({
+          url: collabUrl(), name, token: collabToken(capToken), document: doc,
+          onStatus: ({ status }) => { if (current()) setConnected(status === "connected"); },
+          onSynced: () => { if (current()) setSynced(true); },
+          onAuthenticationFailed: () => { if (current()) setDenied(true); },
+        });
+        setConnection({ doc, provider: p });
+      } catch { if (current()) setConnectionError(true); }
     })();
     return () => {
       cancelled = true;
       p?.destroy();
-      ydoc.destroy();
+      persistence?.close();
+      doc.destroy();
     };
-  }, [noteId, ydoc]);
+  }, [noteId]);
 
   useEffect(() => {
     if (!provider?.awareness) return;
@@ -340,7 +332,11 @@ export function CollabDoc({
     );
   }
 
-  if (!provider) return null;
+  if (connectionError) return <div role="alert" className="p-6 text-sm">
+    <p>Reconnect to open this document. Saved changes remain on this device.</p>
+    <button className="focus-ring mt-3 rounded-lg border px-3 py-2" onClick={() => window.location.reload()}>Try again</button>
+  </div>;
+  if (!provider || !ydoc) return <p role="status" className="p-6 text-sm">Opening document…</p>;
 
   const outer: React.CSSProperties = embedded
     ? { padding: "0 16px" }
@@ -353,7 +349,7 @@ export function CollabDoc({
   const statusText = !connected
     ? online
       ? "Connecting…"
-      : "Offline · saved locally"
+      : localSave === "saved" ? "Offline · saved on this device" : localSave === "saving" ? "Offline · saving…" : "Offline · local save unavailable"
     : !editable
       ? "View only"
       : !isDocument
@@ -368,6 +364,7 @@ export function CollabDoc({
 
   return (
     <div style={outer}>
+      {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Header — shared page chrome, identical to the non-collab document view */}
