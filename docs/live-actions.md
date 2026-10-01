@@ -90,22 +90,23 @@ place for when there are.
 "Human" means *a session cookie or a device token*, not *a person*. Anything
 running on the host as the user can obtain such a credential:
 
-- The **desktop agent** (`claude -p` spawned by Prism.app, `ClaudeClient` /
-  `DispatchManager`) runs at the repo root with Claude Code's full tool set,
-  including Bash and file reads. It can read `apps/server/.env` (SECRETS_KEY,
-  SESSION_SECRET, COLLAB_TOKEN, vault token) and `apps/server/prism-server.db`
-  (live session rows, encrypted secrets). With those it can mint or replay an
-  owner session and reach these routes as **human** origin. It can also decrypt
-  the stored credentials and talk to Bridge, gog or Matrix directly, skipping
-  Prism entirely.
-- Any other local process running as the same OS user can do the same.
+- **Agents Prism spawns are no longer in this class.** The server runner
+  (WP0.1) and, since WP0.1d, the desktop agent (`claude -p` spawned by
+  Prism.app via `clients/claude_args.rs`) both run with no built-in tools
+  (`--tools ""`), only the vault MCP for the active vault, an empty fixed cwd
+  and an env allowlist — they cannot read `apps/server/.env` or
+  `prism-server.db`, so they cannot mint a "human" credential. (Before
+  WP0.1d the desktop agent ran at the repo root with Bash and could.)
+- Any **other** host-local process running as the same OS user — a manually
+  started Claude Code session in this repo, a script, malware — can still read
+  `.env` and the server DB, mint or replay an owner session and reach these
+  routes as **human** origin, or decrypt the stored credentials and talk to
+  Bridge, gog or Matrix directly.
 
-So the human/agent split protects against **remote** agents: Prism MCP clients
-and server agent sessions, whose tools are restricted to the vault MCP. It does
-not protect against a **host-local** agent with shell access. Hardening the
-desktop agent (dropping Bash/Read, an empty cwd, as WP0.1 did for the server
-runner) is a separate work package. Until then, treat every host-local agent as
-able to act as the owner.
+So the human/agent split protects against **remote** agents (Prism MCP clients,
+server agent sessions) and Prism's own spawned agents. It does not protect
+against arbitrary host-local software running as the owner — treat the host
+account itself as the trust boundary.
 
 ## Idempotency
 
