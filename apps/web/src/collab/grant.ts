@@ -61,8 +61,26 @@ async function api(path: string, init?: RequestInit): Promise<Response> {
       ...(init?.headers as Record<string, string>),
     },
   });
-  if (!r.ok) throw new Error(`API ${init?.method ?? "GET"} ${path} → ${r.status}`);
+  if (!r.ok) throw await serverError(r, `API ${init?.method ?? "GET"} ${path}`);
   return r;
+}
+
+/** An Error carrying the server's `{error, detail}` (e.g. 409 `disabled`) so the
+ *  UI can say something useful. Server error bodies never carry secret values. */
+async function serverError(r: Response, what: string): Promise<Error & { status: number; code?: string }> {
+  let code: string | undefined;
+  let detail: string | undefined;
+  try {
+    const b = (await r.json()) as { error?: unknown; detail?: unknown };
+    if (typeof b.error === "string") code = b.error;
+    if (typeof b.detail === "string") detail = b.detail.slice(0, 300);
+  } catch {
+    /* non-JSON body */
+  }
+  const e = new Error(`${what} → ${r.status}${code ? ` ${code}` : ""}${detail ? `: ${detail}` : ""}`) as Error & { status: number; code?: string };
+  e.status = r.status;
+  e.code = code;
+  return e;
 }
 
 const enc = encodeURIComponent;
@@ -186,6 +204,18 @@ export const webCollabSharing: CollabSharing = {
   },
   async syncIntegration(kind: string): Promise<Record<string, unknown>> {
     return (await api(`/integrations/${enc(kind)}/sync`, { method: "POST" })).json();
+  },
+  async integrationAction(kind: string, action: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return (await api(`/integrations/${enc(kind)}/${enc(action)}`, { method: "POST", body: JSON.stringify(body ?? {}) })).json();
+  },
+  async setVaultToken(vaultId: string, token: string): Promise<void> {
+    const r = await serverFetch(`/acl/vaults/${enc(vaultId)}/token`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...contextHeaders() },
+      body: JSON.stringify({ token }),
+    });
+    if (!r.ok) throw await serverError(r, "Replace vault token");
   },
 
   // ── Workspace entities (one server, many workspaces) ──

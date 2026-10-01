@@ -659,6 +659,7 @@ const insertVaultEntry = db.prepare(
 const selectVaultEntries = db.prepare("SELECT * FROM prism_vaults ORDER BY created_at ASC");
 const selectVaultEntry = db.prepare("SELECT * FROM prism_vaults WHERE id = ?");
 const deleteVaultEntryStmt = db.prepare("DELETE FROM prism_vaults WHERE id = ?");
+const updateVaultEntryTokenStmt = db.prepare("UPDATE prism_vaults SET token = ? WHERE id = ?");
 
 const stripVaultRow = (r: VaultEntry & { created_at?: number }): VaultEntry => ({
   id: r.id,
@@ -678,6 +679,11 @@ export function listVaultEntries(): VaultEntry[] {
 export function getVaultEntry(id: string): VaultEntry | null {
   const row = selectVaultEntry.get(id) as (VaultEntry & { created_at: number }) | undefined;
   return row ? stripVaultRow(row) : null;
+}
+/** Replace an owner-ADDED vault's token (rotation). Env vaults aren't in this
+ *  table, so this returns false for them. Never returns the token. */
+export function updateVaultEntryToken(id: string, token: string): boolean {
+  return updateVaultEntryTokenStmt.run(token, id).changes > 0;
 }
 export function removeVaultEntry(id: string): void {
   deleteVaultEntryStmt.run(id);

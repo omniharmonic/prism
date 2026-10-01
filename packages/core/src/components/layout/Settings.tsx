@@ -107,6 +107,19 @@ export function Settings({ open, onClose }: SettingsProps) {
     setTimeout(() => setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
   };
 
+  // Write-only secrets: `null` tells update_config to CLEAR the stored value
+  // (a blank string keeps it). The value itself is never read back.
+  const handleClear = async (key: string) => {
+    setSaving(key);
+    try {
+      await invoke("update_config", { updates: { [key]: null } });
+      setEditValues((prev) => { const n = { ...prev }; delete n[key]; return n; });
+      await loadConfig();
+    } finally {
+      setSaving(null);
+    }
+  };
+
   const handleDiscoverMeetily = async () => {
     const result = await invoke<{ found: boolean; path?: string }>("discover_meetily_path");
     if (result.found && result.path) {
@@ -183,14 +196,14 @@ export function Settings({ open, onClose }: SettingsProps) {
                   desc="Knowledge graph vault"
                   fields={[
                     { key: "parachute_url", label: "URL", value: config.parachute_url as string, placeholder: "http://localhost:1940" },
-                    { key: "parachute_api_key", label: "API Key", value: config.parachute_api_key as string, placeholder: "pvt_...", sensitive: true, isSet: config.parachute_api_key_set as boolean },
+                    { key: "parachute_api_key", label: "API Key", value: config.parachute_api_key as string, placeholder: "hub JWT (eyJ…) from parachute auth mint-token", sensitive: true, isSet: config.parachute_api_key_set as boolean },
                   ]}
                   isSet={!!(config.parachute_api_key_set)}
                   editValues={editValues}
                   saving={saving}
                   savedKeys={savedKeys}
                   onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))}
-                  onSave={handleSave}
+                  onSave={handleSave} onClear={handleClear}
                 />
                 <ServiceField
                   icon={<MessageSquare size={14} />}
@@ -206,7 +219,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                   saving={saving}
                   savedKeys={savedKeys}
                   onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))}
-                  onSave={handleSave}
+                  onSave={handleSave} onClear={handleClear}
                 />
                 <ServiceField
                   icon={<Mail size={14} />}
@@ -235,7 +248,22 @@ export function Settings({ open, onClose }: SettingsProps) {
                   saving={saving}
                   savedKeys={savedKeys}
                   onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))}
-                  onSave={handleSave}
+                  onSave={handleSave} onClear={handleClear}
+                />
+                <ServiceField
+                  icon={<Zap size={14} />}
+                  label="Prism Server"
+                  desc="Live collaboration, sharing and server integrations (the server's COLLAB_TOKEN)"
+                  fields={[
+                    { key: "collab_url", label: "Collab URL", value: (config.collab_url as string) || "", placeholder: "ws://localhost:8787/collab" },
+                    { key: "collab_token", label: "Collab Token", value: "", placeholder: "COLLAB_TOKEN from the server .env", sensitive: true, isSet: config.collab_token_set as boolean },
+                  ]}
+                  isSet={!!(config.collab_token_set)}
+                  editValues={editValues}
+                  saving={saving}
+                  savedKeys={savedKeys}
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))}
+                  onSave={handleSave} onClear={handleClear}
                 />
                 </>
                 )}
@@ -440,7 +468,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                   fieldKey="fathom_api_key" placeholder="Fathom API key" sensitive
                   value={config.fathom_api_key as string} isSet={config.fathom_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} />
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
 
                 <SourceField icon={<Mic size={14} />} label="Meetily" desc="Local meeting transcription (SQLite)"
                   fieldKey="meetily_db_path" placeholder="/path/to/meeting_minutes.sqlite"
@@ -457,19 +485,19 @@ export function Settings({ open, onClose }: SettingsProps) {
                   fieldKey="readai_api_key" placeholder="Read.ai API key" sensitive
                   value={config.readai_api_key as string} isSet={config.readai_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} />
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
 
                 <SourceField icon={<Mic size={14} />} label="Otter.ai" desc="Meeting notes & transcription"
                   fieldKey="otter_api_key" placeholder="Otter API key" sensitive
                   value={config.otter_api_key as string} isSet={config.otter_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} />
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
 
                 <SourceField icon={<Mic size={14} />} label="Fireflies.ai" desc="AI meeting assistant"
                   fieldKey="fireflies_api_key" placeholder="Fireflies API key" sensitive
                   value={config.fireflies_api_key as string} isSet={config.fireflies_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} />
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
               </Section>
 
               <Section title="Knowledge Sources">
@@ -477,7 +505,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                   fieldKey="notion_api_key" placeholder="Notion API key" sensitive
                   value={config.notion_api_key as string} isSet={config.notion_api_key_set as boolean}
                   editValues={editValues} saving={saving} savedKeys={savedKeys}
-                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} />
+                  onEdit={(k, v) => setEditValues((prev) => ({ ...prev, [k]: v }))} onSave={handleSave} onClear={handleClear} />
               </Section>
             </>
           )}
@@ -780,7 +808,56 @@ function LocalAiSettings({ config, onSave, saving, savedKeys }: {
 
 // ─── Service Field (multi-field config card) ─────────────────
 
-function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, savedKeys, onEdit, onSave }: {
+/** Write-only secret input: never holds the stored value (the backend returns ""
+ *  for every secret + a `<key>_set` flag), always masked, "Remove" clears it. */
+function SecretInput({ fieldKey, placeholder, isSet, editValues, saving, savedKeys, onEdit, onSave, onClear, className, style }: {
+  fieldKey: string;
+  placeholder: string;
+  isSet: boolean;
+  editValues: Record<string, string>;
+  saving: string | null;
+  savedKeys: Set<string>;
+  onEdit: (key: string, value: string) => void;
+  onSave: (key: string, value: string) => void;
+  onClear?: (key: string) => void;
+  className: string;
+  style: React.CSSProperties;
+}) {
+  const value = editValues[fieldKey] ?? "";
+  return (
+    <>
+      <input
+        type="password"
+        autoComplete="new-password"
+        spellCheck={false}
+        value={value}
+        onChange={(e) => onEdit(fieldKey, e.target.value)}
+        placeholder={isSet ? "configured — enter to replace" : placeholder}
+        className={className}
+        style={style}
+      />
+      {value.trim() && (
+        <button onClick={() => onSave(fieldKey, value)} disabled={saving === fieldKey}
+          className="px-2 py-0.5 rounded text-[10px] font-medium"
+          style={{ background: "var(--color-accent)", color: "white" }}>
+          {saving === fieldKey ? "..." : "Save"}
+        </button>
+      )}
+      {isSet && !value && onClear && (
+        <button
+          onClick={() => { if (window.confirm("Remove this stored credential? Anything that uses it stops until a new one is saved.")) onClear(fieldKey); }}
+          disabled={saving === fieldKey}
+          title="Remove the stored value"
+          className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-muted)" }}>
+          <Trash2 size={10} />
+        </button>
+      )}
+      {savedKeys.has(fieldKey) && <Check size={10} style={{ color: "var(--color-success)" }} />}
+    </>
+  );
+}
+
+function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, savedKeys, onEdit, onSave, onClear }: {
   icon: React.ReactNode;
   label: string;
   desc: string;
@@ -791,6 +868,7 @@ function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, sa
   savedKeys: Set<string>;
   onEdit: (key: string, value: string) => void;
   onSave: (key: string, value: string) => void;
+  onClear?: (key: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -815,17 +893,27 @@ function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, sa
           {fields.map((f) => {
             const isEditing = f.key in editValues;
             const isSaved = savedKeys.has(f.key);
+            const inputClass = "flex-1 h-6 rounded px-2 text-[10px] outline-none";
+            const inputStyle: React.CSSProperties = { background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: f.key.includes("url") || f.key.includes("homeserver") ? "var(--font-mono)" : undefined };
+            if (f.sensitive) {
+              return (
+                <div key={f.key} className="flex items-center gap-1.5 pt-1.5">
+                  <span className="text-[10px] w-20 flex-shrink-0" style={{ color: "var(--text-muted)" }}>{f.label}</span>
+                  <SecretInput fieldKey={f.key} placeholder={f.placeholder} isSet={!!f.isSet} editValues={editValues} saving={saving}
+                    savedKeys={savedKeys} onEdit={onEdit} onSave={onSave} onClear={onClear} className={inputClass} style={inputStyle} />
+                </div>
+              );
+            }
             return (
               <div key={f.key} className="flex items-center gap-1.5 pt-1.5">
                 <span className="text-[10px] w-20 flex-shrink-0" style={{ color: "var(--text-muted)" }}>{f.label}</span>
                 <input
-                  type={f.sensitive && !isEditing ? "password" : "text"}
+                  type="text"
                   value={isEditing ? editValues[f.key] : (f.value || "")}
                   onChange={(e) => onEdit(f.key, e.target.value)}
-                  onFocus={() => { if (!isEditing && f.sensitive) onEdit(f.key, ""); }}
                   placeholder={f.placeholder}
-                  className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
-                  style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: f.key.includes("url") || f.key.includes("homeserver") ? "var(--font-mono)" : undefined }}
+                  className={inputClass}
+                  style={inputStyle}
                 />
                 {isEditing && editValues[f.key] && (
                   <button onClick={() => onSave(f.key, editValues[f.key])} disabled={saving === f.key}
@@ -846,7 +934,7 @@ function ServiceField({ icon, label, desc, fields, isSet, editValues, saving, sa
 
 // ─── Source Field (single-key data source) ───────────────────
 
-function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, value, isSet, editValues, saving, savedKeys, onEdit, onSave, extra }: {
+function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, value, isSet, editValues, saving, savedKeys, onEdit, onSave, onClear, extra }: {
   icon: React.ReactNode;
   label: string;
   desc: string;
@@ -860,6 +948,7 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
   savedKeys: Set<string>;
   onEdit: (key: string, value: string) => void;
   onSave: (key: string, value: string) => void;
+  onClear?: (key: string) => void;
   extra?: React.ReactNode;
 }) {
   const isEditing = fieldKey in editValues;
@@ -882,14 +971,20 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
         )}
       </div>
       <div className="flex items-center gap-1.5">
+        {sensitive ? (
+          <SecretInput fieldKey={fieldKey} placeholder={placeholder} isSet={isSet} editValues={editValues} saving={saving}
+            savedKeys={savedKeys} onEdit={onEdit} onSave={onSave} onClear={onClear}
+            className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
+            style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
+        ) : (
+        <>
         <input
-          type={sensitive && !isEditing ? "password" : "text"}
+          type="text"
           value={isEditing ? editValues[fieldKey] : (value || "")}
           onChange={(e) => onEdit(fieldKey, e.target.value)}
-          onFocus={() => { if (!isEditing && sensitive) onEdit(fieldKey, ""); }}
           placeholder={placeholder}
           className="flex-1 h-6 rounded px-2 text-[10px] outline-none"
-          style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: !sensitive ? "var(--font-mono)" : undefined }}
+          style={{ background: "var(--bg-surface)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}
         />
         {extra}
         {isEditing && editValues[fieldKey] && (
@@ -900,6 +995,8 @@ function SourceField({ icon, label, desc, fieldKey, placeholder, sensitive, valu
           </button>
         )}
         {isSaved && <Check size={10} style={{ color: "var(--color-success)" }} />}
+        </>
+        )}
       </div>
     </div>
   );

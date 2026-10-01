@@ -267,29 +267,37 @@ impl AppConfig {
     /// so Settings UI always has a file to read/write. Users configure
     /// everything through Settings; no external .env required.
     pub fn load() -> Result<Self, PrismError> {
-        let config_path = Self::config_path();
+        Self::load_from(&Self::config_path())
+    }
+
+    /// `load()` against an explicit path (tests use a temp dir).
+    ///
+    /// STRICT about an existing file: if it exists but can't be read or parsed,
+    /// this returns an error — it must NEVER fall into the first-launch branch,
+    /// which writes defaults and would wipe every stored credential. Callers fall
+    /// back to the launch-time managed state instead.
+    pub fn load_from(config_path: &std::path::Path) -> Result<Self, PrismError> {
         log::debug!("Loading config from {:?} (exists: {})", config_path, config_path.exists());
 
-        // Try loading existing config
         if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
-                    // Try macOS Keychain for Anthropic key if not in config
-                    if config.anthropic_api_key.is_empty() {
-                        if let Some(key) = try_keychain_anthropic() {
-                            config.anthropic_api_key = key;
-                        }
-                    }
-                    // Auto-discover Meetily if not configured
-                    if config.meetily_db_path.is_empty() {
-                        config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
-                    }
-                    // Migrate/normalize the vault registry (synthesizes "primary"
-                    // for legacy single-vault configs; mirrors the active entry).
-                    config.normalize_vaults();
-                    return Ok(config);
+            let content = std::fs::read_to_string(config_path)
+                .map_err(|e| PrismError::Io(format!("Read config {:?}: {}", config_path, e)))?;
+            let mut config = serde_json::from_str::<AppConfig>(&content)
+                .map_err(|e| PrismError::Config(format!("Config {:?} is not valid (left untouched): {}", config_path, e)))?;
+            // Try macOS Keychain for Anthropic key if not in config
+            if config.anthropic_api_key.is_empty() {
+                if let Some(key) = try_keychain_anthropic() {
+                    config.anthropic_api_key = key;
                 }
             }
+            // Auto-discover Meetily if not configured
+            if config.meetily_db_path.is_empty() {
+                config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
+            }
+            // Migrate/normalize the vault registry (synthesizes "primary"
+            // for legacy single-vault configs; mirrors the active entry).
+            config.normalize_vaults();
+            return Ok(config);
         }
 
         // First launch — check for legacy omniharmonic .env to migrate from
@@ -333,7 +341,7 @@ impl AppConfig {
         config.normalize_vaults();
 
         // Always persist so the file exists for future launches
-        match config.save() {
+        match config.save_to(config_path) {
             Ok(_) => log::info!("Created initial config at {:?}", config_path),
             Err(e) => log::error!("Failed to save initial config to {:?}: {}", config_path, e),
         }
@@ -341,19 +349,74 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// Parse the existing config file only — no Keychain lookup, no Meetily
+    /// discovery, no first-launch write. For hot paths that need values saved
+    /// this session (the managed state is launch-time). None = no/invalid file.
+    pub fn read_existing() -> Option<Self> {
+        let content = std::fs::read_to_string(Self::config_path()).ok()?;
+        let mut c = serde_json::from_str::<AppConfig>(&content).ok()?;
+        c.normalize_vaults();
+        Some(c)
+    }
+
     /// Save config to prism-config.json
     pub fn save(&self) -> Result<(), PrismError> {
-        let path = Self::config_path();
+        self.save_to(&Self::config_path())
+    }
+
+    /// Atomic, private save: write a 0600 temp file in the SAME directory, fsync
+    /// it, rename it over the target (atomic on POSIX), fsync the directory. A
+    /// crash mid-save can never leave a truncated/half-written config (which the
+    /// strict `load_from` would then refuse). An existing file that doesn't parse
+    /// is first copied aside to `<name>.corrupt-<ts>` so it is never silently lost.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), PrismError> {
+        use std::io::Write;
         log::debug!("Saving config to {:?}", path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
-        }
+        let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&parent)
+            .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| PrismError::Other(format!("Serialize config: {}", e)))?;
-        std::fs::write(&path, json)
-            .map_err(|e| PrismError::Io(format!("Write config to {:?}: {}", path, e)))?;
-        Ok(())
+
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            if serde_json::from_str::<AppConfig>(&existing).is_err() {
+                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                let aside = path.with_extension(format!("json.corrupt-{ts}"));
+                let _ = std::fs::copy(path, &aside);
+                log::warn!("Existing config {:?} did not parse; kept a copy at {:?}", path, aside);
+            }
+        }
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("prism-config.json");
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()));
+        let write = || -> std::io::Result<()> {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
+            f.write_all(json.as_bytes())?;
+            f.sync_all()?;
+            drop(f);
+            std::fs::rename(&tmp, path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                if let Ok(d) = std::fs::File::open(&parent) {
+                    let _ = d.sync_all();
+                }
+            }
+            Ok(())
+        };
+        write().map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            PrismError::Io(format!("Write config to {:?}: {}", path, e))
+        })
     }
 
     fn config_path() -> PathBuf {
@@ -482,11 +545,64 @@ fn try_keychain_anthropic() -> Option<String> {
 pub fn get_collab_config(
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
+    let c = AppConfig::read_existing().unwrap_or_else(|| config.inner().clone());
     Ok(serde_json::json!({
-        "url": config.collab_url,
-        "token": config.collab_token,
-        "enabled": !config.collab_token.is_empty(),
+        "url": c.collab_url,
+        "token": c.collab_token,
+        "enabled": !c.collab_token.is_empty(),
     }))
+}
+
+/// The `/api` proxy allowlist: `/integrations` or `/integrations/…` only, with no
+/// dot segment (raw or percent-encoded) — the URL parser would otherwise resolve
+/// `/integrations/../vaults` to `/api/vaults` and escape the allowlist — and no
+/// query/fragment.
+pub fn api_path_allowed(path: &str) -> bool {
+    // 1. Strict character allowlist on the RAW path: letters, digits, '-', '_',
+    //    '/'. No '.', '%', '\\', whitespace/tab/newline (the WHATWG parser strips
+    //    tab/newline, so `/.\t./` would become `/../`), '?', '#'.
+    if path.is_empty() || !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/') {
+        return false;
+    }
+    if !(path == "/integrations" || path.starts_with("/integrations/")) {
+        return false;
+    }
+    // 2. Parse exactly as reqwest will (same `url` crate) and assert the RESULTING
+    //    path is still under /api/integrations and unchanged by normalization.
+    let raw = format!("/api{path}");
+    match url::Url::parse(&format!("http://prism.invalid{raw}")) {
+        Ok(u) => {
+            let p = u.path();
+            u.query().is_none()
+                && u.fragment().is_none()
+                && p == raw
+                && (p == "/api/integrations" || p.starts_with("/api/integrations/"))
+        }
+        Err(_) => false,
+    }
+}
+
+/// HTTP base of the Prism Server (derived from the collab WS url) + the owner
+/// collab token, read fresh from disk so a URL/token saved in Settings applies
+/// without restarting (the managed state is launch-time only).
+fn server_endpoint(state: &AppConfig) -> (String, String) {
+    let c = AppConfig::read_existing().unwrap_or_else(|| state.clone());
+    (crate::services::embedding_index::http_base_from_collab(&c.collab_url), c.collab_token)
+}
+
+/// `" <code>: <detail>"` from a Prism Server JSON error body (`{error, detail}`),
+/// so the UI can show why a call failed. Server error bodies never carry secret
+/// values; the detail is still capped.
+pub fn server_error_suffix(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return String::new() };
+    let code = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
+    let detail: String = v.get("detail").and_then(|x| x.as_str()).unwrap_or("").chars().take(300).collect();
+    match (code.is_empty(), detail.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(" {code}"),
+        (true, false) => format!(": {detail}"),
+        (false, false) => format!(" {code}: {detail}"),
+    }
 }
 
 #[tauri::command]
@@ -705,23 +821,16 @@ pub async fn create_collab_share_link(
     note_id: String,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<String, PrismError> {
-    if config.collab_token.is_empty() {
+    let (http_base, collab_token) = server_endpoint(config.inner());
+    if collab_token.is_empty() {
         return Err(PrismError::Config(
-            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+            "No collab token configured — set it in Settings → Services → Prism Server to share from the desktop app".into(),
         ));
     }
-    // HTTP base of the Prism Server, derived from the collab WS url.
-    let http_base = config
-        .collab_url
-        .replacen("wss://", "https://", 1)
-        .replacen("ws://", "http://", 1)
-        .trim_end_matches("/collab")
-        .trim_end_matches('/')
-        .to_string();
 
     let resp = reqwest::Client::new()
         .post(format!("{http_base}/acl/notes/{}/links", urlencoding::encode(&note_id)))
-        .bearer_auth(&config.collab_token)
+        .bearer_auth(&collab_token)
         .json(&serde_json::json!({ "level": "edit", "expiresInDays": 30 }))
         .timeout(std::time::Duration::from_secs(15))
         .send()
@@ -754,25 +863,18 @@ pub async fn acl_request(
     body: Option<serde_json::Value>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
-    if config.collab_token.is_empty() {
+    let (http_base, collab_token) = server_endpoint(config.inner());
+    if collab_token.is_empty() {
         return Err(PrismError::Config(
-            "No COLLAB_TOKEN configured — set it in prism-config.json to share from the desktop app".into(),
+            "No collab token configured — set it in Settings → Services → Prism Server to share from the desktop app".into(),
         ));
     }
-    // HTTP base of the Prism Server, derived from the collab WS url.
-    let http_base = config
-        .collab_url
-        .replacen("wss://", "https://", 1)
-        .replacen("ws://", "http://", 1)
-        .trim_end_matches("/collab")
-        .trim_end_matches('/')
-        .to_string();
 
     let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
         .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
     let mut req = reqwest::Client::new()
         .request(m, format!("{http_base}/acl{path}"))
-        .bearer_auth(&config.collab_token)
+        .bearer_auth(&collab_token)
         .timeout(std::time::Duration::from_secs(15));
     if let Some(b) = body {
         req = req.json(&b);
@@ -784,7 +886,7 @@ pub async fn acl_request(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(PrismError::Other(format!("acl {method} {path} → {status}")));
+        return Err(PrismError::Other(format!("acl {method} {path} → {status}{}", server_error_suffix(&text))));
     }
     if text.trim().is_empty() {
         return Ok(serde_json::Value::Null);
@@ -805,31 +907,24 @@ pub async fn api_request(
     body: Option<serde_json::Value>,
     config: tauri::State<'_, AppConfig>,
 ) -> Result<serde_json::Value, PrismError> {
-    if config.collab_token.is_empty() {
+    let (http_base, collab_token) = server_endpoint(config.inner());
+    if collab_token.is_empty() {
         return Err(PrismError::Config(
-            "No COLLAB_TOKEN configured — set it in prism-config.json to manage integrations from the desktop app".into(),
+            "No collab token configured — set it in Settings → Services → Prism Server to manage integrations from the desktop app".into(),
         ));
     }
     // Allowlist: only the integrations surface. Everything else stays desktop-native.
-    if !path.starts_with("/integrations") {
+    if !api_path_allowed(&path) {
         return Err(PrismError::Other(format!(
             "api path not allowed from the desktop proxy: {path}"
         )));
     }
-    // HTTP base of the Prism Server, derived from the collab WS url.
-    let http_base = config
-        .collab_url
-        .replacen("wss://", "https://", 1)
-        .replacen("ws://", "http://", 1)
-        .trim_end_matches("/collab")
-        .trim_end_matches('/')
-        .to_string();
 
     let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
         .map_err(|_| PrismError::Other(format!("invalid HTTP method: {method}")))?;
     let mut req = reqwest::Client::new()
         .request(m, format!("{http_base}/api{path}"))
-        .bearer_auth(&config.collab_token)
+        .bearer_auth(&collab_token)
         .timeout(std::time::Duration::from_secs(60));
     if let Some(b) = body {
         req = req.json(&b);
@@ -841,7 +936,7 @@ pub async fn api_request(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(PrismError::Other(format!("api {method} {path} → {status}")));
+        return Err(PrismError::Other(format!("api {method} {path} → {status}{}", server_error_suffix(&text))));
     }
     if text.trim().is_empty() {
         return Ok(serde_json::Value::Null);
@@ -849,8 +944,197 @@ pub async fn api_request(
     serde_json::from_str(&text).map_err(|e| PrismError::Other(format!("api parse failed: {e}")))
 }
 
-/// Get full config (for Settings UI to populate fields).
-/// Masks sensitive keys for display.
+// ── Write-only secrets (docs/credentials.md) ─────────────────────────────────
+//
+// Every credential in AppConfig is WRITE-ONLY from the webview: `get_full_config`
+// returns `""` for it plus a `<key>_set` bool, never the value (not even a masked
+// prefix/suffix), and `update_config` MERGES — a non-empty string replaces, an
+// empty/whitespace string keeps the stored value, and JSON `null` clears it.
+// The one deliberate exception is `get_collab_config`, which hands the dedicated
+// COLLAB_TOKEN to the trusted webview because the Hocuspocus WebSocket is opened
+// from JS; it is never rendered.
+
+/// Config keys that hold a credential. Order is the Settings UI's.
+pub const SECRET_FIELDS: &[&str] = &[
+    "parachute_api_key",
+    "matrix_access_token",
+    "anthropic_api_key",
+    "notion_api_key",
+    "fathom_api_key",
+    "readai_api_key",
+    "otter_api_key",
+    "fireflies_api_key",
+    "collab_token",
+];
+
+/// Plain (non-secret) string fields the Settings UI may write. Unchanged
+/// semantics: any string value (including "") is stored as-is. (The list pins
+/// `plain_slot` in the tests.)
+#[cfg_attr(not(test), allow(dead_code))]
+const PLAIN_STRING_FIELDS: &[&str] = &[
+    "matrix_homeserver",
+    "matrix_user",
+    "google_account_primary",
+    "google_account_agent",
+    "parachute_url",
+    "parachute_vault",
+    "meetily_db_path",
+    "local_ai_base_url",
+    "local_ai_model",
+    "background_skill_provider",
+    "collab_url",
+];
+
+fn secret_slot<'a>(c: &'a mut AppConfig, key: &str) -> Option<&'a mut String> {
+    Some(match key {
+        "parachute_api_key" => &mut c.parachute_api_key,
+        "matrix_access_token" => &mut c.matrix_access_token,
+        "anthropic_api_key" => &mut c.anthropic_api_key,
+        "notion_api_key" => &mut c.notion_api_key,
+        "fathom_api_key" => &mut c.fathom_api_key,
+        "readai_api_key" => &mut c.readai_api_key,
+        "otter_api_key" => &mut c.otter_api_key,
+        "fireflies_api_key" => &mut c.fireflies_api_key,
+        "collab_token" => &mut c.collab_token,
+        _ => return None,
+    })
+}
+
+fn plain_slot<'a>(c: &'a mut AppConfig, key: &str) -> Option<&'a mut String> {
+    Some(match key {
+        "matrix_homeserver" => &mut c.matrix_homeserver,
+        "matrix_user" => &mut c.matrix_user,
+        "google_account_primary" => &mut c.google_account_primary,
+        "google_account_agent" => &mut c.google_account_agent,
+        "parachute_url" => &mut c.parachute_url,
+        "parachute_vault" => &mut c.parachute_vault,
+        "meetily_db_path" => &mut c.meetily_db_path,
+        "local_ai_base_url" => &mut c.local_ai_base_url,
+        "local_ai_model" => &mut c.local_ai_model,
+        "background_skill_provider" => &mut c.background_skill_provider,
+        "collab_url" => &mut c.collab_url,
+        _ => return None,
+    })
+}
+
+/// The webview's view of the config: every non-secret field as before, every
+/// secret as `""` + `<key>_set`. Pure (unit-tested).
+pub fn redacted_config_view(config: &AppConfig) -> serde_json::Value {
+    let mut c = config.clone();
+    let mut out = serde_json::json!({
+        "matrix_homeserver": c.matrix_homeserver,
+        "matrix_user": c.matrix_user,
+        "google_account_primary": c.google_account_primary,
+        "google_account_agent": c.google_account_agent,
+        "parachute_url": c.parachute_url,
+        "parachute_vault": c.parachute_vault,
+        "meetily_db_path": c.meetily_db_path,
+        "local_ai_base_url": c.local_ai_base_url,
+        "local_ai_model": c.local_ai_model,
+        "background_skill_provider": c.background_skill_provider,
+        "collab_url": c.collab_url,
+        "ingest_mode": if c.is_client_mode() { "client" } else { "host" },
+        "disable_email_sync": c.disable_email_sync,
+        "disable_calendar_sync": c.disable_calendar_sync,
+        "disable_meetily_sync": c.disable_meetily_sync,
+        "disable_embedding_index": c.disable_embedding_index,
+        "disable_skill_scheduler": c.disable_skill_scheduler,
+        "disable_notion_task_sync": c.disable_notion_task_sync,
+    });
+    let obj = out.as_object_mut().expect("object");
+    for key in SECRET_FIELDS {
+        let set = secret_slot(&mut c, key).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        // The key stays present (older Settings builds read it) but is ALWAYS empty.
+        obj.insert((*key).to_string(), serde_json::Value::String(String::new()));
+        obj.insert(format!("{key}_set"), serde_json::Value::Bool(set));
+    }
+    out
+}
+
+/// Merge a Settings `updates` object into `config`. Secrets: non-empty string →
+/// replace (trimmed), empty string → keep, `null` → clear. Plain strings: stored
+/// as given. Flags/enums as before. Unknown keys are ignored. Returns the secret
+/// keys that were CLEARED (so the caller can drop out-of-file copies, e.g. the
+/// Anthropic key's Keychain item). Pure (unit-tested).
+pub fn apply_config_updates(config: &mut AppConfig, updates: &serde_json::Value) -> Vec<String> {
+    let mut cleared = Vec::new();
+    let Some(obj) = updates.as_object() else { return cleared };
+    for (key, value) in obj {
+        if let Some(slot) = secret_slot(config, key) {
+            match value {
+                serde_json::Value::Null => {
+                    slot.clear();
+                    cleared.push(key.clone());
+                }
+                serde_json::Value::String(s) if !s.trim().is_empty() => *slot = s.trim().to_string(),
+                _ => {} // blank (or non-string) = keep the stored secret
+            }
+            continue;
+        }
+        if let Some(slot) = plain_slot(config, key) {
+            if let Some(s) = value.as_str() {
+                *slot = s.to_string();
+            }
+            continue;
+        }
+        match key.as_str() {
+            // Ingest switch (restart required — services are started once at launch).
+            "ingest_mode" => {
+                if let Some(v) = value.as_str() {
+                    config.ingest_mode = if v.eq_ignore_ascii_case("client") { "client".into() } else { "host".into() };
+                }
+            }
+            "disable_email_sync" => if let Some(v) = value.as_bool() { config.disable_email_sync = v; },
+            "disable_calendar_sync" => if let Some(v) = value.as_bool() { config.disable_calendar_sync = v; },
+            "disable_meetily_sync" => if let Some(v) = value.as_bool() { config.disable_meetily_sync = v; },
+            "disable_embedding_index" => if let Some(v) = value.as_bool() { config.disable_embedding_index = v; },
+            "disable_skill_scheduler" => if let Some(v) = value.as_bool() { config.disable_skill_scheduler = v; },
+            "disable_notion_task_sync" => if let Some(v) = value.as_bool() { config.disable_notion_task_sync = v; },
+            _ => {}
+        }
+    }
+    cleared
+}
+
+/// Keep the ACTIVE vault registry entry in lock-step with the legacy parachute_*
+/// fields just edited from Settings. Capture them BEFORE `normalize_vaults()`,
+/// which mirrors the (stale) active entry back over them — doing it in the other
+/// order silently reverted every Settings edit of the vault URL/name/key.
+pub fn sync_active_vault_entry(c: &mut AppConfig) {
+    let (u, vlt, tok) = (c.parachute_url.clone(), c.parachute_vault.clone(), c.parachute_api_key.clone());
+    c.normalize_vaults();
+    let active_id = c.active_vault_id.clone();
+    if let Some(entry) = c.vaults.iter_mut().find(|e| e.id == active_id) {
+        entry.url = u.clone();
+        entry.vault = vlt.clone();
+        entry.token = tok.clone();
+    }
+    c.parachute_url = u;
+    c.parachute_vault = vlt;
+    c.parachute_api_key = tok;
+}
+
+/// The pure core of `update_config`: STRICT re-read of the on-disk config (a
+/// missing/corrupt/unreadable file falls back to the launch-time `managed` state
+/// — it never triggers the first-launch save of defaults), then merge `updates`
+/// and keep the active vault entry in step. Returns the merged config and the
+/// secret keys cleared.
+pub fn merged_config_for_update(path: &std::path::Path, managed: &AppConfig, updates: &serde_json::Value) -> (AppConfig, Vec<String>) {
+    let mut c = if path.exists() {
+        AppConfig::load_from(path).unwrap_or_else(|e| {
+            log::warn!("update_config: {e} — merging into the in-memory config instead");
+            managed.clone()
+        })
+    } else {
+        managed.clone()
+    };
+    let cleared = apply_config_updates(&mut c, updates);
+    sync_active_vault_entry(&mut c);
+    (c, cleared)
+}
+
+/// Get the config for the Settings UI. Secrets are REDACTED (`""` + `<key>_set`);
+/// see `redacted_config_view`.
 #[tauri::command]
 pub fn get_full_config(
     config: tauri::State<'_, AppConfig>,
@@ -860,110 +1144,29 @@ pub fn get_full_config(
     // show stale "not set" for any key saved during this session (the app process
     // outlives a closed window on macOS). Fall back to managed state on read error.
     let config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
-
-    fn mask(s: &str) -> String {
-        if s.is_empty() { return String::new(); }
-        if s.len() <= 8 { return "*".repeat(s.len()); }
-        format!("{}...{}", &s[..4], &s[s.len()-4..])
-    }
-
-    Ok(serde_json::json!({
-        "matrix_homeserver": config.matrix_homeserver,
-        "matrix_user": config.matrix_user,
-        "matrix_access_token": mask(&config.matrix_access_token),
-        "matrix_access_token_set": !config.matrix_access_token.is_empty(),
-        "notion_api_key": mask(&config.notion_api_key),
-        "notion_api_key_set": !config.notion_api_key.is_empty(),
-        "google_account_primary": config.google_account_primary,
-        "google_account_agent": config.google_account_agent,
-        "anthropic_api_key": mask(&config.anthropic_api_key),
-        "anthropic_api_key_set": !config.anthropic_api_key.is_empty(),
-        "parachute_url": config.parachute_url,
-        "parachute_vault": config.parachute_vault,
-        "parachute_api_key": mask(&config.parachute_api_key),
-        "parachute_api_key_set": !config.parachute_api_key.is_empty(),
-        "fathom_api_key": mask(&config.fathom_api_key),
-        "fathom_api_key_set": !config.fathom_api_key.is_empty(),
-        "meetily_db_path": config.meetily_db_path,
-        "readai_api_key": mask(&config.readai_api_key),
-        "readai_api_key_set": !config.readai_api_key.is_empty(),
-        "otter_api_key": mask(&config.otter_api_key),
-        "otter_api_key_set": !config.otter_api_key.is_empty(),
-        "fireflies_api_key": mask(&config.fireflies_api_key),
-        "fireflies_api_key_set": !config.fireflies_api_key.is_empty(),
-        "local_ai_base_url": config.local_ai_base_url,
-        "local_ai_model": config.local_ai_model,
-        "background_skill_provider": config.background_skill_provider,
-        "ingest_mode": if config.is_client_mode() { "client" } else { "host" },
-        "disable_email_sync": config.disable_email_sync,
-        "disable_calendar_sync": config.disable_calendar_sync,
-        "disable_meetily_sync": config.disable_meetily_sync,
-        "disable_embedding_index": config.disable_embedding_index,
-        "disable_skill_scheduler": config.disable_skill_scheduler,
-        "disable_notion_task_sync": config.disable_notion_task_sync,
-    }))
+    Ok(redacted_config_view(&config))
 }
 
-/// Update config fields and persist. Only non-null fields are updated.
-/// Hot-reloads the Parachute API key into the running client so it takes
-/// effect immediately without restarting the app.
+/// Update config fields and persist (write-only secrets: blank keeps, `null`
+/// clears — see `apply_config_updates`). Hot-reloads the Parachute connection
+/// into the running client so it takes effect immediately without a restart.
 #[tauri::command]
 pub fn update_config(
     config: tauri::State<'_, AppConfig>,
     parachute: tauri::State<'_, crate::clients::parachute::ParachuteClient>,
     updates: serde_json::Value,
 ) -> Result<(), PrismError> {
-    let mut new_config = config.inner().clone();
-
-    if let Some(obj) = updates.as_object() {
-        if let Some(v) = obj.get("matrix_homeserver").and_then(|v| v.as_str()) { new_config.matrix_homeserver = v.to_string(); }
-        if let Some(v) = obj.get("matrix_user").and_then(|v| v.as_str()) { new_config.matrix_user = v.to_string(); }
-        if let Some(v) = obj.get("matrix_access_token").and_then(|v| v.as_str()) { new_config.matrix_access_token = v.to_string(); }
-        if let Some(v) = obj.get("notion_api_key").and_then(|v| v.as_str()) { new_config.notion_api_key = v.to_string(); }
-        if let Some(v) = obj.get("google_account_primary").and_then(|v| v.as_str()) { new_config.google_account_primary = v.to_string(); }
-        if let Some(v) = obj.get("anthropic_api_key").and_then(|v| v.as_str()) { new_config.anthropic_api_key = v.to_string(); }
-        if let Some(v) = obj.get("parachute_url").and_then(|v| v.as_str()) { new_config.parachute_url = v.to_string(); }
-        // Vault url/name/key edits from Settings flow into the ACTIVE registry
-        // entry below (and repoint the live client) — no restart needed.
-        if let Some(v) = obj.get("parachute_vault").and_then(|v| v.as_str()) { new_config.parachute_vault = v.to_string(); }
-        if let Some(v) = obj.get("parachute_api_key").and_then(|v| v.as_str()) { new_config.parachute_api_key = v.to_string(); }
-        if let Some(v) = obj.get("fathom_api_key").and_then(|v| v.as_str()) { new_config.fathom_api_key = v.to_string(); }
-        if let Some(v) = obj.get("meetily_db_path").and_then(|v| v.as_str()) { new_config.meetily_db_path = v.to_string(); }
-        if let Some(v) = obj.get("readai_api_key").and_then(|v| v.as_str()) { new_config.readai_api_key = v.to_string(); }
-        if let Some(v) = obj.get("otter_api_key").and_then(|v| v.as_str()) { new_config.otter_api_key = v.to_string(); }
-        if let Some(v) = obj.get("fireflies_api_key").and_then(|v| v.as_str()) { new_config.fireflies_api_key = v.to_string(); }
-        // Local AI (OpenAI-compatible). Changing these takes effect on the next
-        // app restart — the LocalAgent + DispatchManager wiring is built at launch.
-        if let Some(v) = obj.get("local_ai_base_url").and_then(|v| v.as_str()) { new_config.local_ai_base_url = v.to_string(); }
-        if let Some(v) = obj.get("local_ai_model").and_then(|v| v.as_str()) { new_config.local_ai_model = v.to_string(); }
-        if let Some(v) = obj.get("background_skill_provider").and_then(|v| v.as_str()) { new_config.background_skill_provider = v.to_string(); }
-        // Ingest switch (restart required — services are started once at launch).
-        if let Some(v) = obj.get("ingest_mode").and_then(|v| v.as_str()) {
-            new_config.ingest_mode = if v.eq_ignore_ascii_case("client") { "client".into() } else { "host".into() };
-        }
-        if let Some(v) = obj.get("disable_email_sync").and_then(|v| v.as_bool()) { new_config.disable_email_sync = v; }
-        if let Some(v) = obj.get("disable_calendar_sync").and_then(|v| v.as_bool()) { new_config.disable_calendar_sync = v; }
-        if let Some(v) = obj.get("disable_meetily_sync").and_then(|v| v.as_bool()) { new_config.disable_meetily_sync = v; }
-        if let Some(v) = obj.get("disable_embedding_index").and_then(|v| v.as_bool()) { new_config.disable_embedding_index = v; }
-        if let Some(v) = obj.get("disable_skill_scheduler").and_then(|v| v.as_bool()) { new_config.disable_skill_scheduler = v; }
-        if let Some(v) = obj.get("disable_notion_task_sync").and_then(|v| v.as_bool()) { new_config.disable_notion_task_sync = v; }
-    }
-
-    // Keep the ACTIVE vault registry entry in lock-step with any legacy
-    // parachute_* edits from the Settings form. Without this, `normalize_vaults()`
-    // would mirror the (stale) active entry back over the just-saved Settings
-    // values on the next load, silently reverting them.
-    new_config.normalize_vaults();
-    let active_id = new_config.active_vault_id.clone();
-    let (u, vlt, tok) = (
-        new_config.parachute_url.clone(),
-        new_config.parachute_vault.clone(),
-        new_config.parachute_api_key.clone(),
-    );
-    if let Some(entry) = new_config.vaults.iter_mut().find(|e| e.id == active_id) {
-        entry.url = u;
-        entry.vault = vlt;
-        entry.token = tok;
+    // Start from the ON-DISK config, not the launch-time managed state: the managed
+    // state never sees this session's saves, so building on it made a second save
+    // silently revert the first (e.g. saving the Notion key dropped a Matrix token
+    // saved a minute earlier).
+    let (new_config, cleared) = merged_config_for_update(&AppConfig::config_path(), config.inner(), &updates);
+    if cleared.iter().any(|k| k == "anthropic_api_key") {
+        // `load()` falls back to the Keychain item, so a clear must remove it too
+        // or the key silently comes back on the next read.
+        let _ = std::process::Command::new("security")
+            .args(["delete-generic-password", "-s", "com.prism.anthropic"])
+            .output();
     }
 
     // Hot-reload the running client to the (possibly new) url/vault/key so edits
@@ -1084,5 +1287,226 @@ mod tests {
     fn unknown_ingest_mode_is_treated_as_host() {
         assert!(!config_from(&[("ingest_mode", serde_json::json!("banana"))]).is_client_mode());
         assert!(config_from(&[("ingest_mode", serde_json::json!("Client"))]).is_client_mode());
+    }
+
+    // ── write-only secrets: redact + merge ──────────────────────────────────
+
+    /// A config with a distinctive value in EVERY secret field.
+    fn all_secrets_set() -> AppConfig {
+        let mut c = AppConfig::default();
+        for k in SECRET_FIELDS {
+            *secret_slot(&mut c, k).unwrap() = format!("SECRET-{k}-0123456789abcdef");
+        }
+        c
+    }
+
+    #[test]
+    fn every_secret_field_has_a_slot() {
+        let mut c = AppConfig::default();
+        for k in SECRET_FIELDS {
+            assert!(secret_slot(&mut c, k).is_some(), "{k} has no slot");
+            assert!(plain_slot(&mut c, k).is_none(), "{k} must not also be a plain field");
+        }
+        for k in PLAIN_STRING_FIELDS {
+            assert!(plain_slot(&mut c, k).is_some(), "{k} has no slot");
+        }
+    }
+
+    #[test]
+    fn redacted_view_never_contains_a_secret_value_or_fragment() {
+        let c = all_secrets_set();
+        let view = redacted_config_view(&c);
+        let text = view.to_string();
+        assert!(!text.contains("SECRET-"), "no secret (or masked prefix) in {text}");
+        assert!(!text.contains("cdef"), "no masked suffix either");
+        for k in SECRET_FIELDS {
+            assert_eq!(view[*k], serde_json::json!(""), "{k} is always empty");
+            assert_eq!(view[format!("{k}_set")], serde_json::json!(true), "{k}_set");
+        }
+        let empty = redacted_config_view(&AppConfig::default());
+        for k in SECRET_FIELDS {
+            assert_eq!(empty[format!("{k}_set")], serde_json::json!(false), "{k}_set when unset");
+        }
+        // Non-secret fields are still returned for the form.
+        assert_eq!(view["matrix_homeserver"], serde_json::json!(c.matrix_homeserver));
+        assert_eq!(view["collab_url"], serde_json::json!(c.collab_url));
+    }
+
+    #[test]
+    fn whitespace_only_secret_reads_as_not_set() {
+        let mut c = AppConfig::default();
+        c.notion_api_key = "   ".into();
+        assert_eq!(redacted_config_view(&c)["notion_api_key_set"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn merge_blank_keeps_value_replaces_null_clears() {
+        let mut c = all_secrets_set();
+        let cleared = apply_config_updates(
+            &mut c,
+            &serde_json::json!({
+                "notion_api_key": "",            // blank → keep
+                "fathom_api_key": "   ",         // whitespace → keep
+                "matrix_access_token": "  syt_new  ", // value → replace (trimmed)
+                "collab_token": null,            // null → clear
+                "anthropic_api_key": null,
+            }),
+        );
+        assert_eq!(c.notion_api_key, "SECRET-notion_api_key-0123456789abcdef");
+        assert_eq!(c.fathom_api_key, "SECRET-fathom_api_key-0123456789abcdef");
+        assert_eq!(c.matrix_access_token, "syt_new");
+        assert_eq!(c.collab_token, "");
+        assert_eq!(c.anthropic_api_key, "");
+        cleared.iter().for_each(|k| assert!(k == "collab_token" || k == "anthropic_api_key"));
+        assert_eq!(cleared.len(), 2);
+        // Untouched secrets stay.
+        assert_eq!(c.otter_api_key, "SECRET-otter_api_key-0123456789abcdef");
+    }
+
+    #[test]
+    fn merge_ignores_non_string_secret_values_and_unknown_keys() {
+        let mut c = all_secrets_set();
+        apply_config_updates(&mut c, &serde_json::json!({ "notion_api_key": 42, "parachute_api_key": true, "nonsense": "x" }));
+        assert_eq!(c.notion_api_key, "SECRET-notion_api_key-0123456789abcdef");
+        assert_eq!(c.parachute_api_key, "SECRET-parachute_api_key-0123456789abcdef");
+    }
+
+    #[test]
+    fn merge_keeps_plain_field_and_flag_semantics() {
+        let mut c = AppConfig::default();
+        apply_config_updates(
+            &mut c,
+            &serde_json::json!({
+                "matrix_homeserver": "https://m.example.test",
+                "google_account_agent": "agent@example.test",
+                "collab_url": "wss://prism.example.test/collab",
+                "meetily_db_path": "",
+                "ingest_mode": "CLIENT",
+                "disable_email_sync": true,
+            }),
+        );
+        assert_eq!(c.matrix_homeserver, "https://m.example.test");
+        assert_eq!(c.google_account_agent, "agent@example.test");
+        assert_eq!(c.collab_url, "wss://prism.example.test/collab");
+        assert_eq!(c.meetily_db_path, "", "plain fields may be cleared with an empty string");
+        assert!(c.is_client_mode() && c.disable_email_sync);
+    }
+
+    #[test]
+    fn redact_then_merge_round_trip_never_loses_a_secret() {
+        // An old/naive client that echoes the whole view back must not wipe anything.
+        let mut c = all_secrets_set();
+        let before = c.clone();
+        let view = redacted_config_view(&c);
+        apply_config_updates(&mut c, &view);
+        for k in SECRET_FIELDS {
+            let (mut a, mut b) = (before.clone(), c.clone());
+            assert_eq!(secret_slot(&mut a, k).unwrap(), secret_slot(&mut b, k).unwrap(), "{k} survived");
+        }
+    }
+
+    #[test]
+    fn settings_vault_edits_reach_the_active_registry_entry() {
+        let mut c = AppConfig::default();
+        c.normalize_vaults();
+        apply_config_updates(&mut c, &serde_json::json!({ "parachute_url": "http://vault.example.test", "parachute_api_key": "eyJnew" }));
+        sync_active_vault_entry(&mut c);
+        assert_eq!(c.parachute_url, "http://vault.example.test");
+        assert_eq!(c.parachute_api_key, "eyJnew");
+        let e = c.active_entry().clone();
+        assert_eq!((e.url.as_str(), e.token.as_str()), ("http://vault.example.test", "eyJnew"));
+        // …and a reload-style normalize keeps them (no silent revert).
+        c.normalize_vaults();
+        assert_eq!(c.parachute_api_key, "eyJnew");
+    }
+
+    #[test]
+    fn api_proxy_allowlist_cannot_be_escaped() {
+        for ok in ["/integrations", "/integrations/proton-bridge", "/integrations/proton-bridge/detect-cert", "/integrations/clickup/sync"] {
+            assert!(api_path_allowed(ok), "{ok}");
+        }
+        for bad in [
+            "/vaults", "/integrationsX", "/integrations/../vaults", "/integrations/%2e%2e/vaults",
+            "/integrations/%2E%2E/notes", "/integrations/x%2f..%2fnotes", "/integrations/./x", "/integrations/x?y=1",
+            "/integrations\\..\\vaults", "/integrations/x#frag",
+            // security review M1: the WHATWG parser strips tab/CR/LF, so these
+            // would resolve to /api/vaults.
+            "/integrations/.\t./vaults", "/integrations/\n../vaults", "/integrations/..\r/vaults",
+            "/integrations/.\n./.\t./notes", "/integrations/ ../vaults", "/integrations/x\u{0}",
+            "/integrations/%09..%2fvaults", "", "integrations", "/integrations/\u{2028}",
+        ] {
+            assert!(!api_path_allowed(bad), "{bad:?}");
+        }
+        // Sanity: the url crate really does collapse the tab trick, i.e. the
+        // allowlist is what stops it.
+        let u = url::Url::parse("http://h/api/integrations/.\t./vaults").unwrap();
+        assert_eq!(u.path(), "/api/vaults");
+    }
+
+    // ── M2: strict load + atomic save never wipe stored credentials ─────────
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("prism-config-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn corrupt_file_is_an_error_and_is_never_overwritten_with_defaults_by_load() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("prism-config.json");
+        std::fs::write(&path, "{ this is not json").unwrap();
+        assert!(AppConfig::load_from(&path).is_err(), "strict: no first-launch fallback");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json", "file untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_on_corrupt_file_merges_into_managed_state_and_keeps_its_secrets() {
+        let dir = temp_dir("update");
+        let path = dir.join("prism-config.json");
+        std::fs::write(&path, "{\"truncated\": ").unwrap();
+        let managed = all_secrets_set();
+        let (merged, _) = merged_config_for_update(&path, &managed, &serde_json::json!({ "matrix_user": "@me:example.test" }));
+        for k in SECRET_FIELDS {
+            let (mut a, mut b) = (managed.clone(), merged.clone());
+            assert_eq!(secret_slot(&mut a, k).unwrap(), secret_slot(&mut b, k).unwrap(), "{k} preserved");
+        }
+        assert_eq!(merged.matrix_user, "@me:example.test");
+        // Saving keeps a copy of the unparseable file and writes a valid, private one.
+        merged.save_to(&path).unwrap();
+        let written: AppConfig = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written.notion_api_key, managed.notion_api_key);
+        let aside: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(aside.iter().any(|n| n.contains(".corrupt-")), "corrupt original kept: {aside:?}");
+        assert!(!aside.iter().any(|n| n.contains(".tmp-")), "no temp file left: {aside:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_on_valid_file_builds_on_disk_not_launch_state() {
+        let dir = temp_dir("valid");
+        let path = dir.join("prism-config.json");
+        let mut on_disk = all_secrets_set();
+        on_disk.meetily_db_path = "/nonexistent/meetily.sqlite".into(); // skip auto-discovery
+        on_disk.save_to(&path).unwrap();
+        let launch = AppConfig::default(); // stale launch-time state: no secrets
+        let (merged, _) = merged_config_for_update(&path, &launch, &serde_json::json!({ "fathom_api_key": "new-fathom" }));
+        assert_eq!(merged.fathom_api_key, "new-fathom");
+        assert_eq!(merged.notion_api_key, on_disk.notion_api_key, "earlier save not reverted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn server_error_suffix_surfaces_code_and_detail_only() {
+        assert_eq!(server_error_suffix(r#"{"error":"disabled","detail":"PROTON off"}"#), " disabled: PROTON off");
+        assert_eq!(server_error_suffix(r#"{"error":"forbidden"}"#), " forbidden");
+        assert_eq!(server_error_suffix("not json"), "");
     }
 }

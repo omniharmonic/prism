@@ -7,16 +7,17 @@
 // /acl/server 403s (non-owner admin) — its state comes from the per-kind
 // GET /api/integrations/<kind>, never the owner-only ServerInfo snapshot.
 import { useCallback, useEffect, useState } from "react";
-import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, CheckCircle2, XCircle, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { Server, Globe, Radio, RefreshCw, Square, Play, AlertTriangle, Save, CheckCircle2, XCircle, ChevronDown, ChevronRight, Trash2, Search, KeyRound } from "lucide-react";
 import { Button } from "../../ui/Button";
 import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
 import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress, type WorkerSourceHealth } from "../../../data/CollabSharing";
 
-const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[] = [
-  { key: "APP_ORIGIN", label: "App origin (public URL)", help: "The public https origin — must match the tunnel hostname. Changing it affects cookies; restart required." },
-  { key: "MAGIC_FROM", label: "Email 'from' address", help: "Sender for magic-link / invite emails." },
-  { key: "RESEND_API_KEY", label: "Resend API key", help: "Enables outbound email. Leave blank to log links to the console instead.", secret: true },
+const EDITABLE: { key: string; label: string; help: string }[] = [
+  { key: "MAGIC_FROM", label: "Email 'from' address", help: "Sender for magic-link / invite emails: you@example.com or Name <you@example.com> (must be a Resend-verified domain)." },
+  // APP_ORIGIN and RESEND_API_KEY are deliberately NOT here: they decide where and
+  // through whom owner sign-in links travel, so they are host-only (server .env)
+  // — see docs/credentials.md.
 ];
 
 // ── Server-side sync integrations: which credential fields each kind takes.
@@ -28,10 +29,27 @@ interface IntegrationField {
   help?: string;
   secret?: boolean;
   required?: boolean;
-  type?: "checkbox";
+  type?: "checkbox" | "select" | "number";
   default?: boolean;
+  options?: string[];
+  placeholder?: string;
+  /** Rendered under a collapsed "Advanced" disclosure. */
+  advanced?: boolean;
+  /** Offer the Proton Bridge "Detect" button (reads the loopback cert). */
+  detectCert?: boolean;
 }
+// Every credential here is WRITE-ONLY: the server's GET echoes configured-state
+// and non-secret scope fields only, never a secret, and secret inputs are always
+// blank (placeholder "configured — enter to replace"). docs/credentials.md.
 const INTEGRATION_FIELDS: Record<string, IntegrationField[]> = {
+  "proton-bridge": [
+    { key: "username", label: "Bridge account address", required: true, help: "The address Bridge shows for the account (Bridge → account → Mailbox details). Stored on every note as the account — keep it identical to what the old script used." },
+    { key: "password", label: "Bridge password", secret: true, required: true, help: "The per-account password Bridge generates (not your Proton login). Required on every save." },
+    { key: "certSha256", label: "Bridge certificate SHA-256", required: true, detectCert: true, placeholder: "64 hex characters", help: "Pins Bridge's self-signed certificate — the password is only ever sent to a listener presenting exactly this certificate." },
+    { key: "host", label: "Host", advanced: true, placeholder: "127.0.0.1", help: "Loopback only (127.0.0.1, ::1 or localhost)." },
+    { key: "port", label: "Port", advanced: true, type: "number", placeholder: "1143" },
+    { key: "security", label: "Security", advanced: true, type: "select", options: ["starttls", "tls"], placeholder: "starttls" },
+  ],
   clickup: [
     { key: "apiKey", label: "API key", secret: true, required: true },
     { key: "teamId", label: "Workspace ID", help: "blank = all workspaces" },
@@ -49,7 +67,24 @@ const INTEGRATION_FIELDS: Record<string, IntegrationField[]> = {
   ],
 };
 /** Kinds with a POST /api/integrations/<kind>/sync route. */
-const SYNCABLE = new Set(["matrix", "fathom", "fireflies", "clickup"]);
+const SYNCABLE = new Set(["matrix", "fathom", "fireflies", "clickup", "proton-bridge"]);
+
+/** Turn a sync/detect failure into something an owner can act on. The seam's
+ *  error text carries the server's `{error, detail}` (web) or status line (desktop). */
+function friendlyIntegrationError(kind: string, action: "sync" | "detect" | "save", e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  if (kind === "proton-bridge" && action === "sync" && /\b409\b/.test(msg) && /disabled|PROTON_SYNC_ENABLED/.test(msg)) {
+    return "Proton ingest is off on the server. The credential is stored; set PROTON_SHADOW=true (or PROTON_SYNC_ENABLED=true) in the server .env and restart it to run a pass.";
+  }
+  if (action === "sync" && /\b409\b/.test(msg) && /busy/.test(msg)) return `A ${kind} pass is already running — try again when it finishes.`;
+  if (action === "detect") {
+    if (/\b429\b|rate_limited/.test(msg)) return "Too many certificate checks — wait a minute and try again.";
+    if (/unreachable|ECONNREFUSED/.test(msg)) return "Nothing is listening there — is Proton Mail Bridge running on this server's machine?";
+    if (/no_starttls/.test(msg)) return "That listener didn't offer STARTTLS. If Bridge is set to SSL for IMAP, choose security “tls” under Advanced.";
+    if (/timeout/.test(msg)) return "No certificate within 10 s — check the host/port under Advanced.";
+  }
+  return msg || `${kind} ${action} failed.`;
+}
 
 /** One configurable integration row: badge header → expandable credential form. */
 function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, onChanged }: {
@@ -64,6 +99,11 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // A fingerprint read from the live listener (Detect) is trust-on-first-use, so
+  // Save stays disabled until the owner explicitly confirms it's their Bridge.
+  const [detected, setDetected] = useState<{ certSha256: string; subject?: string; issuer?: string; validTo?: string } | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   const fields = INTEGRATION_FIELDS[kind] ?? [];
   const configurable = fields.length > 0 && !!sharing.setIntegrationCredential;
 
@@ -75,17 +115,23 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
         const seed: Record<string, string | boolean> = {};
         for (const f of fields) {
           const v = status?.[f.key];
+          // Secrets are never echoed by the server — and never prefilled even if they were.
           if (f.secret || v === undefined) continue;
-          if (f.type === "checkbox" ? typeof v === "boolean" : typeof v === "string") seed[f.key] = v;
+          if (f.type === "checkbox") {
+            if (typeof v === "boolean") seed[f.key] = v;
+          } else if (typeof v === "string" || typeof v === "number") seed[f.key] = String(v);
         }
         setValues(seed);
+        setDetected(null);
+        setConfirmed(false);
       }
       return !o;
     });
   };
 
   const str = (key: string) => String(values[key] ?? "").trim();
-  const canSave = fields.filter((f) => f.required).every((f) => str(f.key));
+  const needsConfirm = !!detected && str("certSha256") === detected.certSha256 && !confirmed;
+  const canSave = fields.filter((f) => f.required).every((f) => str(f.key)) && !needsConfirm;
 
   const save = async () => {
     if (!sharing.setIntegrationCredential) return;
@@ -93,21 +139,128 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
     const payload: Record<string, unknown> = {};
     for (const f of fields) {
       if (f.type === "checkbox") payload[f.key] = (values[f.key] as boolean | undefined) ?? f.default ?? false;
+      else if (f.type === "number" && str(f.key)) payload[f.key] = Number(str(f.key));
       else if (str(f.key)) payload[f.key] = str(f.key);
     }
     setBusy("save");
     try {
       await sharing.setIntegrationCredential(kind, payload);
       setValues({});
+      setDetected(null);
+      setConfirmed(false);
       setOpen(false);
       onNotice(`${kind} credential saved.`);
       await onChanged();
     } catch (e) {
-      onError(e instanceof Error ? e.message : `Couldn't save the ${kind} credential.`);
+      onError(e instanceof Error ? friendlyIntegrationError(kind, "save", e) : `Couldn't save the ${kind} credential.`);
     } finally {
       setBusy(null);
     }
   };
+
+  // Proton Bridge: read the certificate the loopback listener presents. The
+  // server sends no credential while doing this (docs/credentials.md).
+  const detectCert = async (key: string) => {
+    if (!sharing.integrationAction) return;
+    setBusy("detect");
+    try {
+      const body: Record<string, unknown> = {};
+      if (str("host")) body.host = str("host");
+      if (str("port")) body.port = Number(str("port"));
+      if (str("security")) body.security = str("security");
+      const res = (await sharing.integrationAction(kind, "detect-cert", body)) as { certSha256?: unknown; subject?: unknown; issuer?: unknown; validTo?: unknown };
+      if (typeof res.certSha256 !== "string" || !/^[0-9a-f]{64}$/.test(res.certSha256)) throw new Error("the server returned no fingerprint");
+      const d = {
+        certSha256: res.certSha256,
+        subject: typeof res.subject === "string" ? res.subject : undefined,
+        issuer: typeof res.issuer === "string" ? res.issuer : undefined,
+        validTo: typeof res.validTo === "string" ? res.validTo : undefined,
+      };
+      setValues((s) => ({ ...s, [key]: d.certSha256 }));
+      setDetected(d);
+      setConfirmed(false);
+    } catch (e) {
+      onError(friendlyIntegrationError(kind, "detect", e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const renderField = (f: IntegrationField) =>
+    f.type === "checkbox" ? (
+      <label key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+        <input
+          type="checkbox"
+          checked={(values[f.key] as boolean | undefined) ?? f.default ?? false}
+          onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.checked }))}
+        />
+        {f.label}
+      </label>
+    ) : (
+      <div key={f.key}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3 }}>
+          {f.label}
+          {f.required && <span style={{ color: "var(--text-secondary)", fontWeight: 400 }}> (required)</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {f.type === "select" ? (
+            <select
+              value={String(values[f.key] ?? "")}
+              onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.value }))}
+              style={{ flex: 1, minWidth: 0, height: 32, borderRadius: 6, padding: "0 8px", fontSize: 13, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
+            >
+              <option value="">{f.placeholder ? `default (${f.placeholder})` : "default"}</option>
+              {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          ) : (
+            <Input
+              type={f.secret ? "password" : f.type === "number" ? "number" : "text"}
+              autoComplete={f.secret ? "new-password" : "off"}
+              spellCheck={false}
+              placeholder={f.secret && configured ? "configured — enter to replace" : (f.placeholder ?? "")}
+              value={String(values[f.key] ?? "")}
+              onChange={(e) => {
+                const v = e.target.value;
+                setValues((s) => ({ ...s, [f.key]: v }));
+                if (f.detectCert) setConfirmed(false);
+              }}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+          )}
+          {f.detectCert && !!sharing.integrationAction && (
+            <Button variant="ghost" onClick={() => void detectCert(f.key)} disabled={busy !== null} title="Read the certificate the local Bridge presents (no password is sent)">
+              <Search size={13} /> {busy === "detect" ? "Detecting…" : "Detect"}
+            </Button>
+          )}
+        </div>
+        {f.help && <p style={{ color: "var(--text-secondary)", fontSize: 11.5, margin: "3px 0 0" }}>{f.help}</p>}
+        {f.detectCert && detected && str(f.key) === detected.certSha256 && (
+          <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 6, border: "1px solid var(--color-warning)", fontSize: 11.5, color: "var(--text-primary)" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", fontWeight: 600, marginBottom: 4 }}>
+              <AlertTriangle size={13} color="var(--color-warning)" /> Confirm this is your Bridge
+            </div>
+            <div style={{ color: "var(--text-secondary)", wordBreak: "break-all" }}>
+              {detected.subject && <>Subject: {detected.subject}<br /></>}
+              {detected.issuer && detected.issuer !== detected.subject && <>Issuer: {detected.issuer}<br /></>}
+              {detected.validTo && <>Valid until: {detected.validTo}<br /></>}
+              SHA-256: <code>{detected.certSha256}</code>
+            </div>
+            <p style={{ color: "var(--text-secondary)", margin: "6px 0" }}>
+              This is whatever is listening on that port right now. Only pin it if Proton Mail Bridge is running there
+              (Bridge's certificate is self-signed, so nothing else can vouch for it).
+            </p>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+              I confirm this is my Proton Mail Bridge
+            </label>
+          </div>
+        )}
+      </div>
+    );
+
+  const basicFields = fields.filter((f) => !f.advanced);
+  const advancedFields = fields.filter((f) => f.advanced);
+  const mode = typeof status?.mode === "string" ? status.mode : null;
 
   const remove = async () => {
     if (!sharing.deleteIntegrationCredential) return;
@@ -136,7 +289,7 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
         .join(" · ");
       onNotice(`${kind} sync: ${counts || "done"}.`);
     } catch (e) {
-      onError(e instanceof Error ? e.message : `${kind} sync failed.`);
+      onError(friendlyIntegrationError(kind, "sync", e));
     } finally {
       setBusy(null);
     }
@@ -151,36 +304,27 @@ function IntegrationRow({ kind, configured, status, sharing, onNotice, onError, 
         {configured ? <CheckCircle2 size={13} color="var(--color-success)" /> : <XCircle size={13} color="var(--text-secondary)" />}
         <span style={{ fontWeight: 600 }}>{kind}</span>
         <span style={{ color: "var(--text-secondary)", fontSize: 11.5 }}>{configured ? "configured" : "not configured"}</span>
+        {mode && (
+          <span title="Server ingest mode (PROTON_SYNC_ENABLED / PROTON_SHADOW in the server .env)">
+            <Badge variant={mode === "live" ? "success" : mode === "shadow" ? "info" : "default"}>{mode === "off" ? "ingest off" : mode}</Badge>
+          </span>
+        )}
         {configurable && <span style={{ marginLeft: "auto", color: "var(--text-secondary)", display: "inline-flex" }}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>}
       </button>
       {open && configurable && (
         <div style={{ padding: "2px 10px 10px", borderTop: "1px solid var(--glass-border)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-            {fields.map((f) =>
-              f.type === "checkbox" ? (
-                <label key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={(values[f.key] as boolean | undefined) ?? f.default ?? false}
-                    onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.checked }))}
-                  />
-                  {f.label}
-                </label>
-              ) : (
-                <div key={f.key}>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3 }}>
-                    {f.label}
-                    {f.required && <span style={{ color: "var(--text-secondary)", fontWeight: 400 }}> (required)</span>}
-                  </div>
-                  <Input
-                    type={f.secret ? "password" : "text"}
-                    placeholder={f.secret && configured ? "configured — enter to replace" : ""}
-                    value={String(values[f.key] ?? "")}
-                    onChange={(e) => setValues((s) => ({ ...s, [f.key]: e.target.value }))}
-                  />
-                  {f.help && <p style={{ color: "var(--text-secondary)", fontSize: 11.5, margin: "3px 0 0" }}>{f.help}</p>}
-                </div>
-              ),
+            {basicFields.map(renderField)}
+            {advancedFields.length > 0 && (
+              <>
+                <button
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-secondary)", fontSize: 12 }}
+                >
+                  {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />} Advanced
+                </button>
+                {showAdvanced && advancedFields.map(renderField)}
+              </>
             )}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -223,6 +367,9 @@ export function ServerPanel() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Write-only vault-token rotation (owner-added vaults only).
+  const [rotating, setRotating] = useState<string | null>(null);
+  const [newToken, setNewToken] = useState("");
   const [ingress, setIngress] = useState<TunnelIngress | null>(null);
   const [workers, setWorkers] = useState<WorkerSourceHealth[] | null>(null);
   const refresh = useCallback(async () => {
@@ -274,6 +421,23 @@ export function ServerPanel() {
       setBusy(null);
     }
   }, [sharing, refresh]);
+
+  const rotateToken = useCallback(async (vaultId: string, vaultName: string) => {
+    if (!sharing?.setVaultToken) return;
+    setBusy(`token:${vaultId}`);
+    setError(null);
+    try {
+      await sharing.setVaultToken(vaultId, newToken.trim());
+      setNewToken("");
+      setRotating(null);
+      setNotice(`Token for ${vaultName} replaced (checked against the vault first).`);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't replace the token.");
+    } finally {
+      setBusy(null);
+    }
+  }, [sharing, newToken, refresh]);
 
   // Re-read on vault switch too: the integration scope follows the active vault.
   useEffect(() => { void refresh(); }, [refresh, vaultSignal]);
@@ -385,9 +549,18 @@ export function ServerPanel() {
         <div style={cardStyle}>
           <div style={labelStyle}>Vault access tokens</div>
           {info.tokens.map((tk, i) => (
-            <div key={tk.id} style={{ ...rowStyle, borderBottom: i === info.tokens!.length - 1 ? "none" : rowStyle.borderBottom }}>
+            <div key={tk.id} style={{ ...rowStyle, flexWrap: "wrap", borderBottom: i === info.tokens!.length - 1 ? "none" : rowStyle.borderBottom }}>
               <span style={{ color: "var(--text-secondary)" }}>{tk.vault}</span>
               <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {tk.rotatable && !!sharing.setVaultToken && (
+                  <button
+                    onClick={() => setRotating((r) => (r === tk.id ? null : tk.id))}
+                    title="Replace this vault's token (write-only)"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", display: "inline-flex" }}
+                  >
+                    <KeyRound size={13} />
+                  </button>
+                )}
                 {tk.expiresAt && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{new Date(tk.expiresAt).toLocaleDateString()}</span>}
                 {tk.status === "expired" ? (
                   <Badge variant="error">expired</Badge>
@@ -399,11 +572,28 @@ export function ServerPanel() {
                   <Badge>unknown</Badge>
                 )}
               </span>
+              {rotating === tk.id && (
+                <div style={{ display: "flex", gap: 8, width: "100%", marginTop: 6 }}>
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder="new token — never shown again"
+                    value={newToken}
+                    onChange={(e) => setNewToken(e.target.value)}
+                    style={{ flex: 1, minWidth: 0 }}
+                  />
+                  <Button onClick={() => void rotateToken(tk.id, tk.vault)} disabled={!newToken.trim() || busy === `token:${tk.id}`}>
+                    <Save size={13} /> {busy === `token:${tk.id}` ? "Checking…" : "Replace"}
+                  </Button>
+                </div>
+              )}
             </div>
           ))}
           {info.tokens.some((tk) => tk.status === "expired" || tk.status === "expiring") && (
             <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 8 }}>
-              Re-mint with <code>parachute auth mint-token --scope vault:&lt;name&gt;:write</code> and update the vault's entry.
+              Re-mint with <code>parachute auth mint-token --scope vault:&lt;name&gt;:write</code>, then replace it here
+              (key icon — vaults added in the app) or in the server <code>.env</code> (env-configured vaults) and restart.
             </p>
           )}
         </div>
@@ -507,12 +697,14 @@ export function ServerPanel() {
       <div style={cardStyle}>
         <div style={labelStyle}>App settings</div>
         <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 12px" }}>
-          These write to the server's <code>.env</code> (backed up first) and take effect after a restart. Secrets and the
-          owner email aren't editable here for safety.
+          These write to the server's <code>.env</code> (backed up first) and take effect after a restart. Host secrets
+          (session/capability/secrets keys, vault and collab tokens, the Resend key), the public origin and the owner email
+          aren't editable from a browser: changing them here would let a stolen session take over the server's root of trust
+          or redirect owner sign-in links. Set them in the server <code>.env</code>. Public origin: {info?.appOrigin ?? "—"}. Email delivery: {info?.emailConfigured ? "Resend configured" : "console only (RESEND_API_KEY unset)"}.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {EDITABLE.map((f) => {
-            const current = f.key === "APP_ORIGIN" ? info?.appOrigin : f.key === "MAGIC_FROM" ? info?.magicFrom : info?.emailConfigured ? "•••• configured" : "";
+            const current = f.key === "MAGIC_FROM" ? info?.magicFrom : "";
             const dirty = edits[f.key] !== undefined;
             return (
               <div key={f.key}>
@@ -521,9 +713,9 @@ export function ServerPanel() {
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <Input
-                    type={f.secret ? "password" : "text"}
-                    placeholder={f.secret ? (current || "not set") : (current ?? "")}
-                    value={edits[f.key] ?? (f.secret ? "" : (current ?? ""))}
+                    type="text"
+                    placeholder={current ?? ""}
+                    value={edits[f.key] ?? (current ?? "")}
                     onChange={(e) => setEdits((s) => ({ ...s, [f.key]: e.target.value }))}
                     style={{ flex: 1 }}
                   />

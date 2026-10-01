@@ -108,6 +108,15 @@ Credential kind `proton-bridge`. It is encrypted with `SECRETS_KEY`, like the
 `PUT /api/integrations/proton-bridge`. All `/proton-bridge*` routes are
 **server-owner only**; a vault admin gets 403.
 
+**From the UI:** open **Network → Server → Sync integrations → proton-bridge**. This
+works in the web app, Prism Client and the desktop. Fill in the account address and the
+Bridge password, then press **Detect** next to the fingerprint field. Detect calls
+`POST /api/integrations/proton-bridge/detect-cert`. It reads the certificate the
+loopback listener presents and sends no credential. Check the subject, expiry and
+fingerprint, tick the confirmation, then press **Save**. Host, port and security are
+under **Advanced**. The row's badge shows the ingest mode (off, shadow or live). The
+design and its tests are described in `docs/credentials.md`.
+
 ```json
 { "host": "127.0.0.1", "port": 1143, "username": "<bridge account address>",
   "password": "<bridge password>", "security": "starttls", "certSha256": "<64 hex>" }
