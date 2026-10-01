@@ -13,7 +13,7 @@
  * (see PrismHost). Every server call in apps/web and @prism/core goes through
  * `serverFetch` / `streamServerSSE` / `collabWsUrl` here.
  */
-import { streamSSE, setServerFetch as installCoreFetch, type StreamSSEOptions } from "@prism/core";
+import { streamSSE, setServerFetch as installCoreFetch, setMapProxyFetch, type StreamSSEOptions } from "@prism/core";
 import { clearReadCache } from "./offline/readCache";
 
 /** The contract a native shell implements and injects BEFORE the app boots. */
@@ -148,4 +148,9 @@ export function collabToken(capability: string | null): string | (() => Promise<
 
 // @prism/core's governance/review clients use the core seam — point it here.
 // PWA keeps core's default (same-origin + cookie) untouched.
-if (isNative) installCoreFetch(serverFetch);
+// Native also routes the OpenFreeMap basemap through the server's /api/map proxy
+// (Client parity C): the client CSP allows only its server; the PWA loads tiles directly.
+if (isNative) {
+  installCoreFetch(serverFetch);
+  setMapProxyFetch(serverFetch);
+}

@@ -29,6 +29,7 @@ import { adminApi } from "./routes/admin";
 import { mcp } from "./routes/mcp";
 import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
+import { media, map as mapProxy } from "./routes/media";
 import { rateLimit } from "./middleware/ratelimit";
 
 export function createApp(): Hono {
@@ -60,7 +61,9 @@ export function createApp(): Hono {
 
   app.use("*", async (c, next) => {
     await next();
-    c.header("Content-Security-Policy", CSP);
+    // A route that set its OWN (stricter) CSP keeps it — the media/map proxies
+    // answer with `default-src 'none'; sandbox`.
+    if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
     c.header("X-Frame-Options", "DENY");
@@ -163,6 +166,11 @@ export function createApp(): Hono {
   // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
   // /api/mcp to the vault.
   app.route("/api/mcp", mcp);
+  // External image + basemap proxies for the locked-down Prism Client (Client
+  // parity C). Signed-in users only, SSRF-guarded; before the gateway so the
+  // owner short-circuit never proxies them to the vault.
+  app.route("/api/media", media);
+  app.route("/api/map", mapProxy);
   app.route("/api", api);
   app.route("/acl", acl);
 

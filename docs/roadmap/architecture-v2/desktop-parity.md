@@ -139,10 +139,14 @@ VaultClient (grants apply). No new credential crosses to a client.
 
 ## Client-shell gaps that are not command parity
 
-- **External images and the Map basemap don't load in Prism Client** (its CSP allows only the
-  server for `img-src`/`connect-src`, because page script can read the bearer token). They do
-  in the desktop and the PWA. **Decision for the user:** accept, or build a server image/tile
-  proxy (see `docs/client-app.md` Known limits).
+- **External images and the Map basemap: CLOSED (Client parity C).** The client CSP still allows
+  only the server, so the server proxies them: external `<img>` in any note surface →
+  `GET /api/media/proxy?u=` (SSRF-guarded, raster only, SVG refused) shown as `blob:` URLs; the
+  OpenFreeMap basemap → `GET /api/map/style/:id` + `/api/map/ofm/*` (host- and path-allowlisted)
+  via a `prismmap://` MapLibre protocol. Signed-in users only. The PWA and the legacy desktop
+  still load them directly. Residual: custom basemap style URLs, `<picture><source>` / CSS
+  background images, and website-note iframes stay blocked in the client. Details:
+  `docs/client-app.md` "External images and the basemap".
 - **Live actions are OFF on the server** (`ACTIONS_{EMAIL,CALENDAR,MATRIX}_ENABLED`). Until the
   owner turns them on, the client cannot send email, send Matrix messages or create/RSVP
   events; the desktop did these directly. Turning them on is step 3 of the switch-over runbook.
