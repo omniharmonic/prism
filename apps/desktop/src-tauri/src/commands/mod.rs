@@ -11,7 +11,6 @@ pub mod schema_seed;
 pub mod editor;
 pub mod wikilinks;
 pub mod notion_pages;
-pub mod message_index;
 pub mod service_cmds;
 pub mod ollama_cmds;
 pub mod github_cmds;

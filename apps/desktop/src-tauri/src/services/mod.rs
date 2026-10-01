@@ -6,7 +6,7 @@ pub mod agent_dispatch;
 pub mod skill_scheduler;
 pub mod structured_skill;
 pub mod transcript_sync;
-pub mod notion_task_sync;
+pub mod notion_task_sync; // config helpers only (the loop was retired in WP1.4)
 pub mod embedding_index;
 
 use std::sync::Arc;
@@ -54,7 +54,6 @@ pub const SVC_CALENDAR: &str = "calendar-sync";
 pub const SVC_EMAIL: &str = "email-sync";
 pub const SVC_TRANSCRIPT: &str = "transcript-sync";
 pub const SVC_SCHEDULER: &str = "skill-scheduler";
-pub const SVC_NOTION: &str = "notion-task-sync";
 pub const SVC_EMBEDDING: &str = "embedding-index";
 
 /// Whether one service should start on this machine, and if not, why.
@@ -85,19 +84,16 @@ pub fn plan_services(c: &AppConfig) -> Vec<ServicePlan> {
         ServicePlan { name, start: reason.is_none(), reason }
     };
 
-    // transcript-sync covers Fathom + Fireflies + Meetily; it runs while ANY source is
-    // both configured and not individually disabled (mirrors the per-source gates in
-    // transcript_sync::run).
+    // transcript-sync covers Fathom + Fireflies (Meetily ingest was retired in WP1.4);
+    // it runs while ANY source is both configured and not individually disabled
+    // (mirrors the per-source gates in transcript_sync::run).
     let fathom = !c.fathom_api_key.is_empty() && !c.disable_fathom_sync;
     let fireflies = !c.fireflies_api_key.is_empty() && !c.disable_fireflies_sync;
-    let meetily = !c.meetily_db_path.is_empty() && !c.disable_meetily_sync;
-    let any_source_configured = !c.fathom_api_key.is_empty()
-        || !c.fireflies_api_key.is_empty()
-        || !c.meetily_db_path.is_empty();
+    let any_source_configured = !c.fathom_api_key.is_empty() || !c.fireflies_api_key.is_empty();
     let transcript_unconfigured = if any_source_configured {
-        "every configured transcript source is disabled (disable_fathom_sync / disable_fireflies_sync / disable_meetily_sync)"
+        "every configured transcript source is disabled (disable_fathom_sync / disable_fireflies_sync)"
     } else {
-        "no Fathom, Fireflies, or Meetily configured"
+        "no Fathom or Fireflies configured"
     };
 
     vec![
@@ -107,11 +103,9 @@ pub fn plan_services(c: &AppConfig) -> Vec<ServicePlan> {
             !c.google_account_primary.is_empty(), "no Google account configured"),
         mk(SVC_EMAIL, Some(("disable_email_sync", c.disable_email_sync)),
             !c.google_account_primary.is_empty(), "no Google account configured"),
-        mk(SVC_TRANSCRIPT, None, fathom || fireflies || meetily, transcript_unconfigured),
+        mk(SVC_TRANSCRIPT, None, fathom || fireflies, transcript_unconfigured),
         // The scheduler needs no credentials of its own; it is gated only by mode/flag.
         mk(SVC_SCHEDULER, Some(("disable_skill_scheduler", c.disable_skill_scheduler)), true, ""),
-        mk(SVC_NOTION, Some(("disable_notion_task_sync", c.disable_notion_task_sync)),
-            !c.notion_api_key.is_empty(), "no Notion API key configured"),
         mk(SVC_EMBEDDING, Some(("disable_embedding_index", c.disable_embedding_index)),
             !c.collab_token.is_empty(), "no COLLAB_TOKEN (Prism Server) configured"),
     ]
@@ -132,7 +126,6 @@ pub struct ServiceManager {
     pub email_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub transcript_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub scheduler_status: Arc<std::sync::Mutex<ServiceStatus>>,
-    pub notion_task_sync_status: Arc<std::sync::Mutex<ServiceStatus>>,
     pub embedding_index_status: Arc<std::sync::Mutex<ServiceStatus>>,
 }
 
@@ -204,7 +197,7 @@ impl ServiceManager {
             log_disabled(&plans, SVC_EMAIL);
         }
 
-        // Transcript sync (Fathom + Fireflies + Meetily → Parachute) — every 10 minutes
+        // Transcript sync (Fathom + Fireflies → Parachute) — every 10 minutes
         let transcript_status = Arc::new(std::sync::Mutex::new(ServiceStatus::new("transcript-sync")));
 
         if should_start(SVC_TRANSCRIPT) {
@@ -220,21 +213,6 @@ impl ServiceManager {
         }
 
         let scheduler_status = Arc::new(std::sync::Mutex::new(ServiceStatus::new("skill-scheduler")));
-
-        // Notion task sync — background bidirectional sync for configured databases
-        let notion_task_sync_status = Arc::new(std::sync::Mutex::new(ServiceStatus::new("notion-task-sync")));
-
-        if should_start(SVC_NOTION) {
-            let p = parachute.clone();
-            let rx = shutdown_rx.clone();
-            let status = notion_task_sync_status.clone();
-            let api_key = config.notion_api_key.clone();
-            handles.push(tauri::async_runtime::spawn(async move {
-                notion_task_sync::run(p, api_key, rx, status).await;
-            }));
-        } else {
-            log_disabled(&plans, SVC_NOTION);
-        }
 
         // Embedding index (vault → Prism Server semantic index) — every 5 minutes.
         // Needs the server (COLLAB_TOKEN); embeddings are a server-provided service.
@@ -268,7 +246,6 @@ impl ServiceManager {
             email_status,
             transcript_status,
             scheduler_status,
-            notion_task_sync_status,
             embedding_index_status,
         }
     }
@@ -296,7 +273,6 @@ impl ServiceManager {
             self.email_status.lock().unwrap().clone(),
             self.transcript_status.lock().unwrap().clone(),
             self.scheduler_status.lock().unwrap().clone(),
-            self.notion_task_sync_status.lock().unwrap().clone(),
             self.embedding_index_status.lock().unwrap().clone(),
         ];
         all.into_iter()
@@ -350,7 +326,6 @@ mod tests {
             ("google_account_primary", serde_json::json!("me@example.com")),
             ("fathom_api_key", serde_json::json!("fk")),
             ("fireflies_api_key", serde_json::json!("ffk")),
-            ("meetily_db_path", serde_json::json!("/tmp/meetily.db")),
             ("notion_api_key", serde_json::json!("nk")),
             ("collab_token", serde_json::json!("ct")),
         ];
@@ -369,7 +344,7 @@ mod tests {
     #[test]
     fn default_host_mode_starts_everything_configured() {
         let all = started(&fully_configured(&[]));
-        assert_eq!(all.len(), 7, "host + all configured + no flags = today's behaviour: {all:?}");
+        assert_eq!(all.len(), 6, "host + all configured + no flags = today's behaviour: {all:?}");
     }
 
     #[test]
@@ -395,28 +370,31 @@ mod tests {
             ("disable_calendar_sync", SVC_CALENDAR),
             ("disable_embedding_index", SVC_EMBEDDING),
             ("disable_skill_scheduler", SVC_SCHEDULER),
-            ("disable_notion_task_sync", SVC_NOTION),
         ];
         for (flag, svc) in cases {
             let c = fully_configured(&[(flag, serde_json::json!(true))]);
             let s = started(&c);
             assert!(!s.contains(&svc), "{flag} must suppress {svc}");
-            assert_eq!(s.len(), 6, "{flag} must suppress ONLY {svc}: {s:?}");
+            assert_eq!(s.len(), 5, "{flag} must suppress ONLY {svc}: {s:?}");
             assert!(plan_for(&c, svc).reason.unwrap().contains(flag));
         }
     }
 
     #[test]
-    fn meetily_flag_keeps_shared_transcript_service_while_other_sources_remain() {
-        let c = fully_configured(&[("disable_meetily_sync", serde_json::json!(true))]);
-        assert!(started(&c).contains(&SVC_TRANSCRIPT), "Fathom/Fireflies still need the service");
-        // ...and only-Meetily + flag means the service has nothing to do.
-        let only = cfg(&[
-            ("meetily_db_path", serde_json::json!("/tmp/m.db")),
+    fn retired_flags_are_inert_and_meetily_config_starts_nothing() {
+        // WP1.4: Meetily + Notion task sync are retired. Their config keys still
+        // parse (old files) but neither starts a service nor suppresses one.
+        let c = fully_configured(&[
             ("disable_meetily_sync", serde_json::json!(true)),
+            ("disable_notion_task_sync", serde_json::json!(true)),
+            ("meetily_db_path", serde_json::json!("/tmp/m.db")),
         ]);
+        assert_eq!(started(&c).len(), 6);
+        // A config with ONLY a Meetily path has no transcript source any more.
+        let only = cfg(&[("meetily_db_path", serde_json::json!("/tmp/m.db"))]);
         assert!(!started(&only).contains(&SVC_TRANSCRIPT));
-        assert!(plan_for(&only, SVC_TRANSCRIPT).reason.unwrap().contains("disabled"));
+        assert!(plan_for(&only, SVC_TRANSCRIPT).reason.unwrap().contains("no Fathom or Fireflies"));
+        assert!(plan_services(&only).iter().all(|p| p.name != "notion-task-sync"));
     }
 
     #[test]
@@ -425,7 +403,7 @@ mod tests {
         let m = ServiceManager::start(&c);
         assert!(m.handles.is_empty(), "client mode must spawn no tasks");
         let st = m.status();
-        assert_eq!(st.len(), 7);
+        assert_eq!(st.len(), 6);
         for s in st {
             assert!(s.disabled && !s.running, "{} must show disabled", s.name);
             assert!(s.disabled_reason.unwrap().contains("client mode"));

@@ -36,7 +36,7 @@ fn is_rate_limited(err: &PrismError) -> bool {
 }
 
 /// Transcript sync service: pulls transcripts from configured sources
-/// (Fathom API, Fireflies GraphQL, Meetily SQLite, etc.) into Parachute as
+/// (Fathom API, Fireflies GraphQL) into Parachute as
 /// tagged notes.
 pub async fn run(
     parachute: Arc<ParachuteClient>,
@@ -66,17 +66,6 @@ pub async fn run(
 
         let mut total = 0u64;
         let mut errors_str = Vec::new();
-
-        // Meetily (SQLite) — skipped when disable_meetily_sync is set.
-        if !config.meetily_db_path.is_empty() && !config.disable_meetily_sync {
-            match sync_meetily(&parachute, &config.meetily_db_path).await {
-                Ok(count) => total += count,
-                Err(e) => {
-                    log::warn!("Meetily sync error: {}", e);
-                    errors_str.push(format!("Meetily: {}", e));
-                }
-            }
-        }
 
         // Fathom (API) — skipped when handled server-side (disable_fathom_sync).
         if !config.fathom_api_key.is_empty() && !config.disable_fathom_sync {
@@ -138,270 +127,6 @@ pub async fn run(
     let mut s = status.lock().unwrap();
     s.running = false;
     log::info!("Transcript sync service stopped");
-}
-
-/// Sync transcripts from Meetily's local SQLite database.
-async fn sync_meetily(
-    parachute: &ParachuteClient,
-    db_path: &str,
-) -> Result<u64, PrismError> {
-    let db_path = db_path.to_string();
-
-    // Run SQLite queries in a blocking thread
-    let meetings = tokio::task::spawn_blocking(move || {
-        read_meetily_meetings(&db_path)
-    }).await
-        .map_err(|e| PrismError::Other(format!("spawn error: {}", e)))??;
-
-    // Load existing transcript notes to avoid duplicates
-    let existing = parachute.list_notes(&ListNotesParams {
-        tag: Some("transcript".into()),
-        limit: Some(500),
-        ..Default::default()
-    }).await.unwrap_or_default();
-
-    let mut ingested = 0u64;
-
-    for meeting in &meetings {
-        let meeting_id = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let title = meeting.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled Meeting");
-        let date = meeting.get("date").and_then(|v| v.as_str()).unwrap_or("");
-        let transcript = meeting.get("transcript").and_then(|v| v.as_str()).unwrap_or("");
-        let summary = meeting.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-        let attendees: Vec<String> = meeting.get("attendees")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|a| a.as_str().map(String::from)).collect())
-            .unwrap_or_default();
-
-        if transcript.is_empty() && summary.is_empty() {
-            continue;
-        }
-
-        // Check if already ingested
-        let slug = sanitize_path(title);
-        let path = format!("vault/_inbox/transcripts/meetily/{}-{}", date, slug);
-        let already_exists = existing.iter().any(|n| {
-            let by_source = n.metadata.as_ref()
-                .and_then(|m| m.get("source_id").or_else(|| m.get("sourceId")))
-                .and_then(|v| v.as_str());
-            by_source == Some(meeting_id) || n.path.as_deref() == Some(&path)
-        });
-
-        if already_exists {
-            continue;
-        }
-
-        // Build content
-        let mut content = format!("---\ntitle: \"{}\"\ndate: {}\nsource: meetily\nmeeting_id: \"{}\"\n---\n\n", title, date, meeting_id);
-        if !summary.is_empty() {
-            content.push_str(&format!("## Summary\n\n{}\n\n", summary));
-        }
-        if !transcript.is_empty() {
-            content.push_str(&format!("## Transcript\n\n{}\n", transcript));
-        }
-
-        // Schema-declared transcript fields: source, source_id, date,
-        // duration_minutes, synced_at. `title`/`attendees` are undeclared but the
-        // meeting↔transcript linker reads them, so they stay.
-        let metadata = serde_json::json!({
-            "type": "transcript",
-            "source": "meetily",
-            "source_id": meeting_id,
-            "synced_at": chrono::Utc::now().to_rfc3339(),
-            "title": title,
-            "date": date,
-            "attendees": attendees,
-        });
-
-        match parachute.create_note(&CreateNoteParams {
-            content,
-            path: Some(path),
-            metadata: Some(metadata),
-            tags: Some(vec!["transcript".into(), "meetily".into()]),
-        }).await {
-            Ok(note) => {
-                ingested += 1;
-                // Link transcript to matching meeting note (speakers as attendees)
-                link_transcript_to_meeting(
-                    parachute, &note.id, title, date, &attendees,
-                ).await;
-            }
-            Err(e) => log::debug!("Meetily: failed to create note for '{}': {}", title, e),
-        }
-    }
-
-    Ok(ingested)
-}
-
-/// Read meetings from Meetily's SQLite database.
-fn read_meetily_meetings(db_path: &str) -> Result<Vec<serde_json::Value>, PrismError> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ).map_err(|e| PrismError::Other(format!("Meetily DB open failed: {}", e)))?;
-
-    // Discover table schema
-    let tables: Vec<String> = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")
-        .map_err(|e| PrismError::Other(format!("Schema query failed: {}", e)))?
-        .query_map([], |row| row.get(0))
-        .map_err(|e| PrismError::Other(format!("Schema read failed: {}", e)))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    log::info!("Meetily DB tables: {:?}", tables);
-
-    // Query meetings from last 30 days
-    let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let mut meetings = Vec::new();
-
-    // Try meetings table
-    if tables.contains(&"meetings".to_string()) {
-        let mut stmt = conn.prepare(
-            "SELECT * FROM meetings WHERE created_at >= ? ORDER BY created_at DESC"
-        ).map_err(|e| PrismError::Other(format!("Query failed: {}", e)))?;
-
-        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-        let rows = stmt.query_map(rusqlite::params![cutoff], |row| {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in column_names.iter().enumerate() {
-                let val: rusqlite::Result<String> = row.get(i);
-                if let Ok(v) = val {
-                    obj.insert(name.clone(), serde_json::json!(v));
-                }
-            }
-            Ok(serde_json::Value::Object(obj))
-        }).map_err(|e| PrismError::Other(format!("Query failed: {}", e)))?;
-
-        for row in rows {
-            if let Ok(meeting) = row {
-                let id = meeting.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                // Get transcript
-                let transcript = get_meetily_transcript(&conn, &id);
-                let summary = get_meetily_summary(&conn, &id);
-                let speakers = get_meetily_speakers(&conn, &id);
-
-                let date = meeting.get("created_at").or(meeting.get("scheduled_at"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| if s.len() >= 10 { &s[..10] } else { s })
-                    .unwrap_or("")
-                    .to_string();
-
-                let title = meeting.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string();
-
-                meetings.push(serde_json::json!({
-                    "id": id,
-                    "title": title,
-                    "date": date,
-                    "transcript": transcript,
-                    "summary": summary,
-                    "attendees": speakers,
-                }));
-            }
-        }
-    }
-
-    log::info!("Meetily: found {} meetings in last 30 days", meetings.len());
-    Ok(meetings)
-}
-
-fn get_meetily_transcript(conn: &rusqlite::Connection, meeting_id: &str) -> String {
-    // Schema: id, meeting_id, transcript, timestamp, summary, action_items, key_points,
-    //         audio_start_time, audio_end_time, duration, speaker
-    let result = conn.prepare("SELECT transcript, speaker, timestamp FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, timestamp")
-        .and_then(|mut stmt| {
-            let rows: Vec<(String, String, String)> = stmt.query_map(
-                rusqlite::params![meeting_id],
-                |row| {
-                    let text: String = row.get::<_, String>(0).unwrap_or_default();
-                    let speaker: String = row.get::<_, String>(1).unwrap_or_default();
-                    let timestamp: String = row.get::<_, String>(2).unwrap_or_default();
-                    Ok((text, speaker, timestamp))
-                },
-            )?.filter_map(|r| r.ok()).collect();
-            Ok(rows)
-        });
-
-    match result {
-        Ok(rows) => rows.iter()
-            .filter(|(text, _, _)| !text.is_empty())
-            .map(|(text, speaker, ts)| {
-                let speaker_label = if speaker.is_empty() { "Speaker".to_string() } else { speaker.clone() };
-                if ts.is_empty() {
-                    format!("**{}**: {}", speaker_label, text)
-                } else {
-                    format!("**{}** ({}): {}", speaker_label, ts, text)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        Err(e) => {
-            log::debug!("Meetily transcript read error: {}", e);
-            String::new()
-        }
-    }
-}
-
-/// Distinct, non-empty speaker labels for a Meetily meeting. Used as the
-/// transcript's `attendees`, which is the strongest signal the meeting↔event
-/// linker has (previously Meetily passed an empty slice, leaving only date +
-/// title-word overlap to reach the minimum match score of 2).
-fn get_meetily_speakers(conn: &rusqlite::Connection, meeting_id: &str) -> Vec<String> {
-    let result = conn.prepare(
-        "SELECT DISTINCT speaker FROM transcripts WHERE meeting_id = ? AND speaker IS NOT NULL AND speaker != ''",
-    ).and_then(|mut stmt| {
-        let rows: Vec<String> = stmt.query_map(rusqlite::params![meeting_id], |row| {
-            row.get::<_, String>(0)
-        })?.filter_map(|r| r.ok()).collect();
-        Ok(rows)
-    });
-
-    match result {
-        Ok(rows) => rows.into_iter()
-            .map(|s| s.trim().to_string())
-            // Drop generic placeholder labels that add no matching signal.
-            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("speaker") && !s.eq_ignore_ascii_case("unknown"))
-            .collect(),
-        Err(e) => {
-            log::debug!("Meetily speaker read error: {}", e);
-            Vec::new()
-        }
-    }
-}
-
-fn get_meetily_summary(conn: &rusqlite::Connection, meeting_id: &str) -> String {
-    // Try summary_processes table first (newer schema)
-    if let Ok(mut stmt) = conn.prepare("SELECT result FROM summary_processes WHERE meeting_id = ? AND status = 'completed'") {
-        if let Ok(summary) = stmt.query_row(rusqlite::params![meeting_id], |row| {
-            row.get::<_, String>(0)
-        }) {
-            // May be JSON — try to extract markdown
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&summary) {
-                if let Some(md) = parsed.get("markdown").and_then(|v| v.as_str()) {
-                    return md.to_string();
-                }
-                if let Some(md) = parsed.get("SessionSummary").and_then(|v| v.as_str()) {
-                    return md.to_string();
-                }
-            }
-            return summary;
-        }
-    }
-
-    // Fallback: summaries table
-    if let Ok(mut stmt) = conn.prepare("SELECT * FROM summaries WHERE meeting_id = ?") {
-        if let Ok(summary) = stmt.query_row(rusqlite::params![meeting_id], |row| {
-            row.get::<_, String>(1) // Usually second column is the summary text
-        }) {
-            return summary;
-        }
-    }
-
-    String::new()
 }
 
 /// Sync transcripts from Fathom API.
@@ -1121,7 +846,7 @@ mod tests {
 
     #[test]
     fn generic_title_no_attendees_does_not_link() {
-        // The Meetily failure mode before speakers were extracted: identical
+        // The failure mode before speakers were extracted: identical
         // generic single filler-ish word, no attendees. Only the date matches.
         let score = score_transcript_meeting_match(
             "Standup", &[], "2026-05-28",
@@ -1153,7 +878,7 @@ mod tests {
 
     #[test]
     fn meetily_speakers_as_attendees_rescue_a_match() {
-        // Regression: Meetily used to pass &[] for attendees. With speakers
+        // Regression: a source used to pass &[] for attendees. With speakers
         // extracted, a shared speaker now lifts a generic-title meeting over
         // the threshold where title words alone would not.
         let without = score_transcript_meeting_match(

@@ -1,15 +1,10 @@
+//! Notion DB sync config persistence + presets. The idle background loop that
+//! used to live here was retired in WP1.4; syncs now run only when the user
+//! invokes `notion_db_sync` (commands/notion_db_cmds.rs).
+
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::watch;
-use crate::clients::parachute::ParachuteClient;
-use crate::services::ServiceStatus;
-use crate::sync::adapters::notion_db::{
-    NotionDatabaseAdapter, NotionDbSyncConfig, PropertyMapping,
-};
-
-const SYNC_INTERVAL_SECS: u64 = 300; // Check every 5 minutes
-const INITIAL_DELAY_SECS: u64 = 30;
+use crate::sync::adapters::notion_db::{NotionDbSyncConfig, PropertyMapping};
 
 /// Persistent storage for Notion DB sync configurations.
 fn configs_path() -> PathBuf {
@@ -46,140 +41,6 @@ pub fn save_configs(configs: &HashMap<String, NotionDbSyncConfig>) {
         }
         Err(e) => log::warn!("Failed to serialize Notion sync configs: {}", e),
     }
-}
-
-/// Background service for Notion database task sync.
-/// Periodically syncs configured databases with auto_sync enabled.
-pub async fn run(
-    parachute: Arc<ParachuteClient>,
-    notion_api_key: String,
-    mut shutdown: watch::Receiver<bool>,
-    status: Arc<std::sync::Mutex<ServiceStatus>>,
-) {
-    log::info!("Notion task sync starting");
-
-    {
-        let mut s = status.lock().unwrap();
-        s.running = true;
-    }
-
-    // Initial delay to let other services stabilize
-    tokio::time::sleep(tokio::time::Duration::from_secs(INITIAL_DELAY_SECS)).await;
-
-    loop {
-        if *shutdown.borrow() {
-            break;
-        }
-
-        let mut configs = load_configs();
-
-        // Only sync configs with auto_sync enabled
-        let auto_configs: Vec<String> = configs
-            .iter()
-            .filter(|(_, c)| c.auto_sync)
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        if !auto_configs.is_empty() {
-            let adapter = NotionDatabaseAdapter::new(notion_api_key.clone());
-
-            for config_id in &auto_configs {
-                if let Some(config) = configs.get_mut(config_id) {
-                    // Check if enough time has passed since last sync (at least 1 hour)
-                    let should_sync = config.last_synced.is_empty() || {
-                        chrono::DateTime::parse_from_rfc3339(&config.last_synced)
-                            .map(|last| {
-                                let elapsed = chrono::Utc::now() - last.with_timezone(&chrono::Utc);
-                                elapsed.num_seconds() >= 3600
-                            })
-                            .unwrap_or(true)
-                    };
-
-                    if !should_sync {
-                        continue;
-                    }
-
-                    log::info!(
-                        "Notion task sync: syncing '{}' ({})",
-                        config.notion_database_name,
-                        config.sync_direction
-                    );
-
-                    let direction = config.sync_direction.clone();
-                    let mut items = 0u64;
-
-                    // Pull phase
-                    if direction == "pull" || direction == "bidirectional" {
-                        match adapter.pull_from_notion(config, &parachute).await {
-                            Ok(result) => {
-                                items += result.created as u64 + result.updated as u64;
-                                if !result.errors.is_empty() {
-                                    log::warn!(
-                                        "Notion pull had {} errors: {:?}",
-                                        result.errors.len(),
-                                        &result.errors[..result.errors.len().min(3)]
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("Notion pull failed for '{}': {}", config.notion_database_name, e);
-                                let mut s = status.lock().unwrap();
-                                s.last_error = Some(format!("Pull failed: {}", e));
-                            }
-                        }
-                    }
-
-                    // Push phase
-                    if direction == "push" || direction == "bidirectional" {
-                        match adapter.push_to_notion(config, &parachute).await {
-                            Ok(result) => {
-                                items += result.created as u64 + result.updated as u64;
-                                if !result.errors.is_empty() {
-                                    log::warn!(
-                                        "Notion push had {} errors: {:?}",
-                                        result.errors.len(),
-                                        &result.errors[..result.errors.len().min(3)]
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("Notion push failed for '{}': {}", config.notion_database_name, e);
-                                let mut s = status.lock().unwrap();
-                                s.last_error = Some(format!("Push failed: {}", e));
-                            }
-                        }
-                    }
-
-                    config.last_synced = chrono::Utc::now().to_rfc3339();
-
-                    let mut s = status.lock().unwrap();
-                    s.last_run = Some(chrono::Utc::now().to_rfc3339());
-                    s.items_processed += items;
-                    s.last_error = None;
-
-                    log::info!(
-                        "Notion task sync: '{}' complete, {} items processed",
-                        config.notion_database_name,
-                        items
-                    );
-                }
-            }
-
-            // Persist updated configs (id_map, last_synced)
-            save_configs(&configs);
-        }
-
-        tokio::select! {
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(SYNC_INTERVAL_SECS)) => {},
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() { break; }
-            }
-        }
-    }
-
-    let mut s = status.lock().unwrap();
-    s.running = false;
-    log::info!("Notion task sync stopped");
 }
 
 /// Create a pre-configured sync for a Notion tasks database.
