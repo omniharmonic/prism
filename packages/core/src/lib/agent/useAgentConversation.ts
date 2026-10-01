@@ -174,11 +174,16 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
 
   /** Send a prompt in this session. Returns false on failure (error is set). */
   const send = useCallback(
-    async (prompt: string, opts: { noteId?: string } = {}): Promise<boolean> => {
+    async (prompt: string, opts: { noteId?: string; requestId?: string } = {}): Promise<boolean> => {
       if (!sessionId) return false;
       setError(null);
       try {
         const r = await client.sendTurn(sessionId, prompt, opts);
+        if (isTerminalTurn(r.status)) {
+          await load();
+          refreshLists();
+          return true;
+        }
         dispatch({ type: "pending", id: r.turnId, prompt, noteId: opts.noteId ?? null });
         openStream(sessionId, stateRef.current.lastSeq);
         refreshLists();

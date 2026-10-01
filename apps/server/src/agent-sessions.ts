@@ -29,7 +29,7 @@
 import { settleAgentPolicy, auditPolicy } from "./agent-policy";
 import { modeProfile, profileMode, type AgentPermissionMode } from "./agent-profiles";
 import { notifyTurnEnd } from "./push";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "./db";
@@ -241,10 +241,11 @@ export function purgeCliArtifacts(projectDir: string, sessionId: string): void {
 
 const q = {
   insertSession: db.prepare(
-    `INSERT INTO agent_sessions (id, vault_id, owner_email, title, profile, permission_mode, note_id, status, cost_usd, created_at, updated_at)
-     VALUES (@id, @vault_id, @owner_email, @title, @profile, @permission_mode, @note_id, 'idle', 0, @created_at, @updated_at)`,
+    `INSERT INTO agent_sessions (id, vault_id, owner_email, title, profile, permission_mode, note_id, status, cost_usd, created_at, updated_at, request_id, request_hash)
+     VALUES (@id, @vault_id, @owner_email, @title, @profile, @permission_mode, @note_id, 'idle', 0, @created_at, @updated_at, @request_id, @request_hash)`,
   ),
   getSession: db.prepare("SELECT * FROM agent_sessions WHERE id = ?"),
+  sessionRequest: db.prepare("SELECT * FROM agent_sessions WHERE vault_id = ? AND owner_email = ? AND request_id = ?"),
   listSessions: db.prepare(
     `SELECT * FROM agent_sessions WHERE vault_id = ? AND owner_email = ? AND (status != 'archived' OR ? = 1)
      ORDER BY updated_at DESC LIMIT ?`,
@@ -254,9 +255,11 @@ const q = {
   setSessionCost: db.prepare("UPDATE agent_sessions SET cost_usd = ?, updated_at = ? WHERE id = ?"),
   setTranscript: db.prepare("UPDATE agent_sessions SET transcript_note_id = ? WHERE id = ?"),
   insertTurn: db.prepare(
-    `INSERT INTO agent_turns (id, session_id, prompt, note_id, status, started_at, profile, permission_mode, policy_version)
-     VALUES (@id, @session_id, @prompt, @note_id, 'queued', @started_at, @profile, @permission_mode, @policy_version)`,
+    `INSERT INTO agent_turns (id, session_id, prompt, note_id, status, started_at, profile, permission_mode, policy_version, request_id, request_hash)
+     VALUES (@id, @session_id, @prompt, @note_id, 'queued', @started_at, @profile, @permission_mode, @policy_version, @request_id, @request_hash)`,
   ),
+  turnRequest: db.prepare("SELECT * FROM agent_turns WHERE session_id = ? AND request_id = ?"),
+  readyRequest: db.prepare("UPDATE agent_turns SET request_ready = 1 WHERE id = ?"),
   deleteTurn: db.prepare("DELETE FROM agent_turns WHERE id = ?"),
   getTurn: db.prepare("SELECT * FROM agent_turns WHERE id = ?"),
   turnsFor: db.prepare("SELECT * FROM agent_turns WHERE session_id = ? ORDER BY started_at, rowid"),
@@ -403,6 +406,7 @@ export function createSession(p: {
   noteId?: string | null;
   profile?: AgentProfile;
   permissionMode?: AgentPermissionMode;
+  requestId?: string;
 }): SessionRow {
   if (p.permissionMode && !prismProfilesEnabled()) throw new ProfileUnavailableError("Prism session permissions are disabled on this server");
   const now = deps.now();
@@ -416,9 +420,25 @@ export function createSession(p: {
     note_id: p.noteId ?? null,
     created_at: now,
     updated_at: now,
+    request_id: p.requestId ?? null,
+    request_hash: requestHash([p.title?.trim().slice(0, 200) || null, p.noteId ?? null, p.permissionMode ? modeProfile(p.permissionMode) : p.profile ?? "vault-rw", p.permissionMode ?? null]),
   };
+  if (p.requestId) {
+    const existing = q.sessionRequest.get(row.vault_id, row.owner_email, p.requestId) as (SessionRow & { request_hash: string }) | undefined;
+    if (existing) {
+      if (existing.request_hash !== row.request_hash) throw new AgentRequestError("request_mismatch", "This request identifier was already used with different session settings.");
+      if (existing.status === "archived") throw new SessionArchivedError("session is archived");
+      return existing;
+    }
+  }
   q.insertSession.run(row);
   return getSession(row.id)!;
+}
+
+export const isAgentRequestId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{16,100}$/.test(value);
+const requestHash = (values: unknown[]) => createHash("sha256").update(JSON.stringify(values)).digest("hex");
+export class AgentRequestError extends Error {
+  constructor(public code: "request_mismatch" | "request_pending", message: string) { super(message); }
 }
 
 export class AgentPolicyConflictError extends Error {
@@ -601,14 +621,23 @@ function deleteSessionRows(sessionId: string): void {
 export async function startTurn(
   sessionId: string,
   entry: VaultEntry,
-  req: { prompt: string; noteId?: string | null },
+  req: { prompt: string; noteId?: string | null; requestId?: string },
   access?: TurnAccess,
 ): Promise<TurnRow> {
   const s = getSession(sessionId);
   if (!s) throw new SessionNotFoundError("session not found");
   if (s.status === "archived") throw new SessionArchivedError("session is archived");
-  if (s.pending_mode) throw new AgentPolicyConflictError("permission_change_pending", "The previous turn is stopping before permissions change.");
   if (entry.id !== s.vault_id) throw new SessionNotFoundError("session belongs to another vault");
+  const hash = requestHash([req.prompt, req.noteId ?? null]);
+  if (req.requestId) {
+    const existing = q.turnRequest.get(sessionId, req.requestId) as (TurnRow & { request_hash: string; request_ready: number }) | undefined;
+    if (existing) {
+      if (existing.request_hash !== hash) throw new AgentRequestError("request_mismatch", "This request identifier was already used for another message.");
+      if (!existing.request_ready && !isTerminal(existing.status)) throw new AgentRequestError("request_pending", "The original request is still being checked. Retry shortly with the same message.");
+      return existing;
+    }
+  }
+  if (s.pending_mode) throw new AgentPolicyConflictError("permission_change_pending", "The previous turn is stopping before permissions change.");
   const busy = activeTurn(sessionId);
   if (busy) throw new TurnConflictError(busy.id);
   if (deps.sessionBudgetUsd != null && s.cost_usd >= deps.sessionBudgetUsd) {
@@ -635,7 +664,7 @@ export async function startTurn(
   const email = s.owner_email;
   // Reserve the turn SYNCHRONOUSLY (before any await) so a concurrent POST sees
   // it and 409s — the note fetch below must not open a race window.
-  q.insertTurn.run({ id: turnId, session_id: sessionId, prompt: req.prompt, note_id: noteId, started_at: deps.now(), profile: s.profile, permission_mode: s.permission_mode ?? profileMode(s.profile), policy_version: s.policy_version });
+  q.insertTurn.run({ id: turnId, session_id: sessionId, prompt: req.prompt, note_id: noteId, started_at: deps.now(), profile: s.profile, permission_mode: s.permission_mode ?? profileMode(s.profile), policy_version: s.policy_version, request_id: req.requestId ?? null, request_hash: hash });
   q.setSessionStatus.run("running", deps.now(), sessionId);
   const rollback = () => {
     dropToken(turnId);
@@ -803,6 +832,7 @@ export async function startTurn(
     });
     userWaiting.set(email, list);
     record(sessionId, turnId, statusEv("queued", "waiting for your other agent turn to finish"));
+    q.readyRequest.run(turnId);
     return getTurn(turnId)!;
   }
   userSlot.set(email, turnId);
@@ -813,6 +843,7 @@ export async function startTurn(
     releaseUserSlot(email, turnId);
     throw e;
   }
+  q.readyRequest.run(turnId);
   return getTurn(turnId)!;
 }
 

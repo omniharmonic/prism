@@ -70,7 +70,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
       return call("GET", `/sessions${s ? `?${s}` : ""}`);
     },
     getSession: (id) => call("GET", `/sessions/${enc(id)}`),
-    sendTurn: (id, prompt, o = {}) => call("POST", `/sessions/${enc(id)}/turns`, { prompt, ...(o.noteId ? { noteId: o.noteId } : {}) }),
+    sendTurn: (id, prompt, o = {}) => call("POST", `/sessions/${enc(id)}/turns`, { prompt, ...(o.noteId ? { noteId: o.noteId } : {}), ...(o.requestId ? { requestId: o.requestId } : {}) }),
     getLimits: () => call("GET", "/limits"),
     cancelTurn: async (turnId) => (await call<{ ok: boolean }>("POST", `/turns/${enc(turnId)}/cancel`)).ok,
     archiveSession: async (id) => {

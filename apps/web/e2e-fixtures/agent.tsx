@@ -8,13 +8,16 @@ import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAg
 import AgentChat, { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
 import { AgentMarkdown } from "../../../packages/core/src/components/agent/AgentMarkdown";
 
-const permissionsFixture = new URLSearchParams(location.search).has("permissions");
+const retryFixture = new URLSearchParams(location.search).has("retry");
+const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture;
 const contextFixture = new URLSearchParams(location.search).has("context");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
 const vault = { getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
-const controls = { attempts: 0, reject: !permissionsFixture, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {} };
+const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
+const limitsReady = new Promise<void>((resolve) => { controls.releaseLimits = resolve; if (!new URLSearchParams(location.search).has("slow-limits")) resolve(); });
+const sessionReady = new Promise<void>((resolve) => { controls.releaseSession = resolve; if (!new URLSearchParams(location.search).has("slow-session")) resolve(); });
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismFixtureUI: useUIStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const audience = (owner: string) => JSON.stringify(["https://fixture.example.test/api", "workspace", "vault", owner]);
@@ -26,11 +29,21 @@ if (permissionsFixture) Object.assign(session, JSON.parse(localStorage.getItem("
 let settleAfter = 0;
 const policyProfile = (mode: AgentPermissionMode) => mode === "read-only" ? "prism-ro" : mode === "suggest" ? "prism-suggest" : "prism-rw";
 const persistPolicy = () => localStorage.setItem("fixture-agent-policy", JSON.stringify(session));
+function acceptRetryRequest(kind: "session" | "turn", requestId?: string) {
+  if (!requestId) throw new Error("Missing retry identifier");
+  const key = `fixture-accepted-${kind}`;
+  const accepted: string[] = JSON.parse(localStorage.getItem(key) ?? "[]");
+  if (accepted.includes(requestId)) return;
+  accepted.push(requestId);
+  localStorage.setItem(key, JSON.stringify(accepted));
+  throw new Error(`Fixture lost ${kind} response after acceptance`);
+}
 const client: AgentClient = {
   scope: () => scope,
-  createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
+  createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (retryFixture) acceptRetryRequest("session", params?.requestId); if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
   listSessions: async () => historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: Date.now(), lastTurnStatus: "done" as const })) : [],
   getSession: async () => {
+    await sessionReady;
     if (session.pending_mode && --settleAfter <= 0) {
       session.permission_mode = session.pending_mode; session.pending_mode = null;
       session.profile = policyProfile(session.permission_mode); session.policy_version!++; persistPolicy();
@@ -38,7 +51,7 @@ const client: AgentClient = {
     return { session: { ...session }, turns: historyFixture ? [{ id: "history-turn", session_id: session.id, prompt: "Help me make the launch brief clearer. Keep the original tone and suggest a stronger opening.", note_id: session.note_id, status: "done", pid: null, exit_code: 0, error: null, cost_usd: 0.06, started_at: Date.now() - 60_000, ended_at: Date.now() - 58_000, finalText: "The brief already has a clear purpose. I would bring that purpose into the first sentence:\n\n**A shared place to think, write, and build—with your context close at hand.**\n\nThis keeps the focus on collaboration and gives the reader a concrete sense of what Prism helps them do.\n\nWould you like me to suggest this change in the document?", tools: [], touched: [] }] : [] };
   },
   ...(permissionsFixture ? {
-    getLimits: async () => ({ billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[] }),
+    getLimits: async () => { await limitsReady; return { billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[], idempotentRequests: true }; },
     updatePermissions: async (_id: string, mode: AgentPermissionMode, version: number) => {
       if (version !== session.policy_version) throw new Error("Policy changed elsewhere");
       if (controls.pendingMode) { session.pending_mode = mode; settleAfter = 2; }
@@ -47,7 +60,7 @@ const client: AgentClient = {
       return { session: { ...session } };
     },
   } : {}),
-  sendTurn: async () => ({ turnId: "fixture-turn", status: "done" }),
+  sendTurn: async (_id, _prompt, options) => { controls.turnAttempts++; if (retryFixture) acceptRetryRequest("turn", options?.requestId); return { turnId: "fixture-turn", status: retryFixture ? "done" : "running" }; },
   cancelTurn: async () => true,
   archiveSession: async (id) => { controls.archived.push(id); },
   streamSession: (_id, _after, handlers) => {

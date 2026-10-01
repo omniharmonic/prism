@@ -74,14 +74,17 @@ export function useAgentAvailable(): boolean {
  * first answer or on an older server — callers must degrade to the old labels.
  */
 export function useAgentLimits(): AgentLimits | undefined {
+  return useAgentLimitsQuery().data;
+}
+
+export function useAgentLimitsQuery() {
   const client = useAgentClient();
   const keys = agentKeys(client);
-  const { data } = useQuery({
+  return useQuery({
     queryKey: keys.limits,
     enabled: !!client?.getLimits && (!client.scope || !!client.scope()),
     staleTime: 30_000,
     retry: false,
     queryFn: () => client!.getLimits!(),
   });
-  return data;
 }

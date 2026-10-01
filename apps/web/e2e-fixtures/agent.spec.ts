@@ -267,3 +267,60 @@ test("source preview preserves the draft and refuses cached text after access is
   await expect(input).toHaveValue("Keep this thought while I inspect the source");
   await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
 });
+
+test("lost create and first-turn responses retry the same request after reload", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?retry");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await expect(page.getByRole("combobox", { name: "Agent permissions" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Agent permissions" }).selectOption("read-write");
+  await input.fill("Do this once, even if the connection drops");
+  await send.click();
+  await expect(page.getByRole("alert")).toContainText("lost session response after acceptance");
+  await page.reload();
+  await expect(input).toHaveValue("Do this once, even if the connection drops");
+  await expect(page.getByRole("combobox", { name: "Agent permissions" })).toHaveValue("read-write");
+  await send.click();
+  await expect(page.getByRole("alert")).toContainText("lost turn response after acceptance");
+  await page.reload();
+  await expect(input).toHaveValue("Do this once, even if the connection drops");
+  await expect(page.getByRole("combobox", { name: "Agent permissions" })).toHaveValue("read-write");
+  await send.click();
+  await expect(page.getByTestId("agent-conversation-title")).toHaveText("Document conversation");
+  await expect(input).toHaveValue("");
+  const accepted = await page.evaluate(() => ["session", "turn"].map((kind) => JSON.parse(localStorage.getItem(`fixture-accepted-${kind}`) ?? "[]")));
+  expect(accepted[0]).toHaveLength(1);
+  expect(accepted[1]).toEqual(accepted[0]);
+});
+
+test("an unavailable durable retry receipt prevents a new agent request and retains its draft", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?retry");
+  await expect(page.getByRole("combobox", { name: "Agent permissions" })).toBeVisible();
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await input.fill("Keep this request until it can be retried safely");
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new DOMException("Full", "QuotaExceededError"); }; });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("couldn't save a retry receipt");
+  await expect(input).toHaveValue("Keep this request until it can be retried safely");
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
+});
+
+test("sending waits for advertised capabilities and the selected session's document context", async ({ page }) => {
+  await page.goto("/e2e-fixtures/agent.html?permissions&slow-limits");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await input.fill("Wait for the server settings");
+  await expect(send).toBeDisabled();
+  await input.press("Enter");
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
+  await page.evaluate(() => (window as any).prismAgentFixture.releaseLimits());
+  await expect(send).toBeEnabled();
+  await page.goto("/e2e-fixtures/agent.html?history&slow-session");
+  await input.fill("Keep this bound to the working document");
+  await expect(send).toBeDisabled();
+  await input.press("Enter");
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.turnAttempts)).toBe(0);
+  await page.evaluate(() => (window as any).prismAgentFixture.releaseSession());
+  await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
+  await expect(send).toBeEnabled();
+});

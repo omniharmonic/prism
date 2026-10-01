@@ -66,6 +66,8 @@ import {
   createSession,
   changeSessionMode,
   AgentPolicyConflictError,
+  AgentRequestError,
+  isAgentRequestId,
   listSessions,
   getOwnedSession,
   listTurns,
@@ -188,6 +190,7 @@ agentApi.get("/limits", (c) => {
     profiles: availableSessionProfiles(),
     defaultProfile: "vault-ro",
     permissionModes: prismProfilesEnabled() ? PERMISSION_MODES : [],
+    idempotentRequests: true,
   });
 });
 
@@ -386,25 +389,33 @@ function sessionDetail(s: SessionRow) {
   return { session: s, turns, lastSeq };
 }
 
-type SessionBody = { title?: unknown; noteId?: unknown; profile?: unknown; permissionMode?: unknown };
+type SessionBody = { title?: unknown; noteId?: unknown; profile?: unknown; permissionMode?: unknown; requestId?: unknown };
 agentApi.post("/sessions", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "forbidden" }, 403);
   const body = await c.req.json<SessionBody>().catch(() => ({}) as SessionBody);
+  if (body.requestId !== undefined && !isAgentRequestId(body.requestId)) return c.json({ error: "bad_request", detail: "invalid request identifier" }, 400);
   if (body.profile !== undefined && !isSessionProfile(body.profile)) {
     return c.json({ error: "bad_request", detail: `profile must be one of ${availableSessionProfiles().join(", ")}` }, 400);
   }
   if (body.permissionMode !== undefined && !isPermissionMode(body.permissionMode)) return c.json({ error: "bad_request", detail: "invalid permission mode" }, 400);
   if (body.permissionMode !== undefined && !prismProfilesEnabled()) return c.json({ error: "profile_unavailable" }, 409);
-  const s = createSession({
-    vaultId: actor.vaultId,
-    ownerEmail: actor.email,
-    title: typeof body.title === "string" ? body.title : null,
-    noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null,
-    profile: isSessionProfile(body.profile) ? body.profile : "vault-rw",
-    permissionMode: isPermissionMode(body.permissionMode) ? body.permissionMode : undefined,
-  });
-  return c.json({ sessionId: s.id, session: s });
+  try {
+    const s = createSession({
+      vaultId: actor.vaultId,
+      ownerEmail: actor.email,
+      title: typeof body.title === "string" ? body.title : null,
+      noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null,
+      profile: isSessionProfile(body.profile) ? body.profile : "vault-rw",
+      permissionMode: isPermissionMode(body.permissionMode) ? body.permissionMode : undefined,
+      requestId: typeof body.requestId === "string" ? body.requestId : undefined,
+    });
+    return c.json({ sessionId: s.id, session: s });
+  } catch (e) {
+    if (e instanceof AgentRequestError) return c.json({ error: e.code, detail: e.message }, 409);
+    if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);
+    throw e;
+  }
 });
 
 agentApi.get("/sessions", (c) => {
@@ -443,11 +454,12 @@ agentApi.patch("/sessions/:id/permissions", async (c) => {
   }
 });
 
-type TurnBody = { prompt?: unknown; noteId?: unknown };
+type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown };
 agentApi.post("/sessions/:id/turns", async (c) => {
   const s = ownedSession(c);
   if (!s) return c.json({ error: "not_found" }, 404);
   const body = await c.req.json<TurnBody>().catch(() => ({}) as TurnBody);
+  if (body.requestId !== undefined && !isAgentRequestId(body.requestId)) return c.json({ error: "bad_request", detail: "invalid request identifier" }, 400);
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
     return c.json({ error: "bad_request", detail: "prompt required" }, 400);
   }
@@ -460,11 +472,12 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     const t = await startTurn(
       s.id,
       resolveVaultEntry(s.vault_id),
-      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null },
+      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null, requestId: typeof body.requestId === "string" ? body.requestId : undefined },
       { grants: actor.grants, role: actor.role, subject: actor.email },
     );
     return c.json({ turnId: t.id, status: t.status });
   } catch (e) {
+    if (e instanceof AgentRequestError) return c.json({ error: e.code, detail: e.message }, 409);
     if (e instanceof AgentPolicyConflictError) return c.json({ error: e.code, detail: e.message }, 409);
     if (e instanceof TurnConflictError) return c.json({ error: "conflict", detail: e.message, turnId: e.turnId }, 409);
     if (e instanceof SessionArchivedError) return c.json({ error: "conflict", detail: e.message }, 409);

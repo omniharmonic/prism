@@ -1,6 +1,6 @@
 # Prism collaborative workspace: final redesign plan
 
-**Status: awaiting user approval and the final migration handoff. No application implementation is authorized by this document alone.**
+**Status: approved by the user on 2026-10-01; implementation in progress. See [implementation evidence and remaining work](IMPLEMENTATION.md).**
 
 Prepared 2026-10-01 against `29d18b3a712072494f46105fcc514de88c7e0603`, with the host verification fix at `55de6007b946398a47f9f805242ff8b3d9ef9ad3` incorporated and retested. This is the authoritative successor to the original F00–F11 plan in this directory. It incorporates the user's expanded product brief and the actual server/client migration, including the parity A, B, and C merges. See the [audit](ARCHITECTURE-AUDIT.md), [additive contracts](DOMAIN-CONTRACTS.md), [brand direction](BRAND.md), and [release gates](RELEASE-GATES.md).
 

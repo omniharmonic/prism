@@ -26,11 +26,12 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useAgentClient, useAgentAvailability, useAgentLimits, agentKeys } from "../../data/AgentClientContext";
+import { useAgentClient, useAgentAvailability, useAgentLimits, useAgentLimitsQuery, agentKeys } from "../../data/AgentClientContext";
 import { AgentBudgetLine } from "./AgentBudget";
 import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
 import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk, type AgentDraftContext } from "../../lib/agent/chatStore";
 import { useComposerDraft } from "../../lib/agent/useComposerDraft";
+import { requestReceipt, clearRequestReceipt } from "../../lib/agent/requestReceipt";
 import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
@@ -410,17 +411,21 @@ export function Conversation({
   const conv = useAgentConversation(client, sessionId);
   const mobileComposer = useIsMobile();
   const queryClient = useQueryClient();
-  const limits = useAgentLimits();
+  const limitsQuery = useAgentLimitsQuery();
+  const limits = limitsQuery.data;
+  const limitsUnavailable = !!client.getLimits && !limits && !(limitsQuery.error instanceof AgentApiError && limitsQuery.error.status === 404);
   // The profiles the server offers (prism-* only when enabled); older servers: the two vault profiles.
   const pickable: AgentProfile[] = limits?.profiles?.length ? limits.profiles : ["vault-ro", "vault-rw"];
   const composerDraft = useComposerDraft(client.scope?.() || null, sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`);
   const { text: input, setText: setInput, clearIfUnchanged } = composerDraft;
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [profile, setProfile] = useState<AgentProfile>("vault-ro");
-  const [draftMode, setDraftMode] = useState<AgentPermissionMode>("read-only");
+  const draftPermissions = useComposerDraft(client.scope?.() || null, `permissions:note:${draft?.noteId ?? "new"}`);
+  const profile: AgentProfile = ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest"].includes(draftPermissions.text) ? draftPermissions.text as AgentProfile : "vault-ro";
+  const draftMode: AgentPermissionMode = ["read-only", "suggest", "read-write"].includes(draftPermissions.text) ? draftPermissions.text as AgentPermissionMode : "read-only";
   const [changingMode, setChangingMode] = useState(false);
   const permissionModes = limits?.permissionModes;
+  const idempotentRequests = limits?.idempotentRequests === true;
   const modeLabels: Record<AgentPermissionMode, string> = { "read-only": "Read-only", suggest: "Suggested edits only", "read-write": "Read/write" };
   const permissionPending = conv.session?.pending_mode;
   useEffect(() => {
@@ -429,7 +434,7 @@ export function Conversation({
     return () => window.clearInterval(timer);
   }, [permissionPending, conv.reload]);
   const changeMode = async (mode: AgentPermissionMode) => {
-    if (!sessionId) { setDraftMode(mode); return; }
+    if (!sessionId) { draftPermissions.setText(mode); return; }
     if (!client.updatePermissions || !conv.session?.policy_version || changingMode) return;
     setChangingMode(true);
     try {
@@ -448,6 +453,7 @@ export function Conversation({
   const vvh = useVisualViewportHeight(!!fullScreen);
 
   const isDraft = !sessionId;
+  const awaitingSession = !isDraft && (conv.loading || conv.session?.id !== sessionId);
   const running = !!conv.active;
   // A turn just finished → today's spend changed: refresh the budget line.
   const wasRunning = useRef(false);
@@ -480,21 +486,39 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || running || creating || sendingRef.current || permissionPending || changingMode) return;
+      if (!text || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
       const sentDraft = textArg ?? input;
       if (textArg !== undefined) setInput(textArg);
       sendingRef.current = true;
       setSending(true);
       stickToBottom.current = true;
+      const scope = client.scope?.();
+      const conversation = sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`;
+      let requestId: string | undefined;
+      if (idempotentRequests) {
+        try {
+          if (!scope) throw new Error("Wait for your workspace identity before sending.");
+          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}) });
+          if (scope !== client.scope?.()) throw new Error("Workspace changed. Reopen the draft in its original workspace.");
+          requestId = receipt.id;
+        } catch (error) {
+          if (isDraft) setDraftError(agentErrorText(error)); else conv.setError(agentErrorText(error));
+          sendingRef.current = false;
+          setSending(false);
+          return;
+        }
+      }
       if (isDraft) {
         setDraftError(null);
         setCreating(text);
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
-          const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId });
-          await client.sendTurn(id, text, draft?.noteId ? { noteId: draft.noteId } : {});
+          const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId, ...(requestId ? { requestId } : {}) });
+          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}) });
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
           clearIfUnchanged(sentDraft);
+          draftPermissions.clearIfUnchanged(draftPermissions.text);
+          if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
           onCreated(id);
         } catch (e) {
           setDraftError(agentErrorText(e));
@@ -506,24 +530,27 @@ export function Conversation({
         return;
       }
       const noteId = conv.session?.note_id ?? undefined;
-      const ok = await conv.send(text, noteId ? { noteId } : {});
-      if (ok) clearIfUnchanged(sentDraft);
+      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}) });
+      if (ok) {
+        clearIfUnchanged(sentDraft);
+        if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
+      }
       sendingRef.current = false;
       setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
   // under StrictMode's double effect run).
   const autoSent = useRef<string | null>(null);
   useEffect(() => {
-    if (isDraft && autoPrompt && autoSent.current !== autoPrompt) {
+    if (isDraft && !limitsUnavailable && autoPrompt && autoSent.current !== autoPrompt) {
       autoSent.current = autoPrompt;
       onAutoPromptConsumed?.();
       void submit(autoPrompt);
     }
-  }, [autoPrompt, isDraft]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoPrompt, isDraft, limitsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Focus the composer for a fresh draft (not on touch — avoids popping the keyboard unasked).
   useEffect(() => {
@@ -617,7 +644,7 @@ export function Conversation({
                 role="radio"
                 aria-checked={profile === p}
                 data-testid={`agent-profile-${p}`}
-                onClick={() => setProfile(p)}
+                onClick={() => draftPermissions.setText(p)}
                 className="flex items-center gap-1 rounded-full px-2.5 py-1"
                 style={{
                   background: profile === p ? "var(--color-accent)" : "transparent",
@@ -651,6 +678,10 @@ export function Conversation({
         </div>
       )}
       {isDraft && <AgentBudgetLine />}
+      {limitsUnavailable && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        {limitsQuery.isError ? <>Couldn't check agent settings. <button className="underline" onClick={() => void limitsQuery.refetch()}>Try again</button></> : "Checking agent settings…"}
+      </p>}
+      {isDraft && draftPermissions.error && <p role="status" className="mb-2 text-xs">{draftPermissions.error}</p>}
       {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
       <div className="flex items-end gap-2">
         <textarea
@@ -689,7 +720,7 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || sending || changingMode || !!permissionPending}
+            disabled={!input.trim() || sending || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
             aria-label="Send"
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"

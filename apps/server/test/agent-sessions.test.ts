@@ -259,6 +259,71 @@ function parseSSE(text: string): SSE[] {
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
+test("request identifiers recover accepted sessions and finished turns without executing twice", async () => {
+  const requestId = "fixture-retry-request-0001";
+  const sid = await newSession({ title: "Retry safely", profile: "vault-ro", requestId });
+  assert.equal(await newSession({ title: "Retry safely", profile: "vault-ro", requestId }), sid);
+  const mismatch = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ title: "Different request", profile: "vault-ro", requestId }) });
+  assert.equal(mismatch.status, 409);
+  assert.equal((await mismatch.json() as { error: string }).error, "request_mismatch");
+  const turnId = await runTurn(sid, "one request", "agent-stream-turn1.jsonl", { requestId });
+  configureAgentSessions({ sessionBudgetUsd: 0 }); // Receipt recovery must not charge/admit again.
+  const retried = await postTurn(sid, { prompt: "one request", requestId });
+  assert.equal(retried.status, 200);
+  assert.deepEqual(await retried.json(), { turnId, status: "done" });
+  assert.equal(calls.length, 1);
+  assert.equal(listTurns(sid).length, 1);
+  const changed = await postTurn(sid, { prompt: "different request", requestId });
+  assert.equal(changed.status, 409);
+  assert.equal((await changed.json() as { error: string }).error, "request_mismatch");
+  const other = createSession({ vaultId: resolveVaultEntry().id, ownerEmail: "another@example.test", title: "Retry safely", profile: "vault-ro", requestId });
+  assert.notEqual(other.id, sid, "request identifiers are scoped to the authenticated owner and vault");
+});
+
+test("a retry during admission is pending, then resolves to the one admitted turn", async () => {
+  const sid = await newSession({ profile: "vault-ro" });
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  configureAgentSessions({ mintReadToken: async () => { entered(); await barrier; return { token: "read-token", jti: "retry-jti" }; } });
+  const requestId = "fixture-retry-request-0002";
+  const first = postTurn(sid, { prompt: "read once", requestId });
+  await waiting;
+  const during = await postTurn(sid, { prompt: "read once", requestId });
+  assert.equal(during.status, 409);
+  assert.equal((await during.json() as { error: string }).error, "request_pending");
+  assert.equal(calls.length, 0);
+  release();
+  const accepted = await (await first).json();
+  const retry = await postTurn(sid, { prompt: "read once", requestId });
+  assert.equal(retry.status, 200);
+  assert.deepEqual(await retry.json(), accepted);
+  assert.equal(calls.length, 1);
+});
+
+test("malformed request identifiers are rejected before creating work", async () => {
+  const sid = await newSession();
+  for (const requestId of ["short", 123, "x".repeat(101), "unsafe/identifier/value"]) {
+    assert.equal((await postTurn(sid, { prompt: "no work", requestId })).status, 400);
+  }
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("failed admission can retry its identifier after rollback without a phantom accepted turn", async () => {
+  const sid = await newSession({ profile: "vault-ro" });
+  const requestId = "fixture-retry-request-0003";
+  mintFails = true;
+  assert.equal((await postTurn(sid, { prompt: "read safely", requestId })).status, 503);
+  assert.equal(listTurns(sid).length, 0);
+  assert.equal(calls.length, 0);
+  mintFails = false;
+  assert.equal((await postTurn(sid, { prompt: "read safely", requestId })).status, 200);
+  assert.equal(listTurns(sid).length, 1);
+  assert.equal(calls.length, 1);
+});
+
 test("create → turn → normalized events persisted with a monotonic seq; deltas NOT persisted; turn done", async () => {
   const sid = await newSession({ title: "Fruit" });
   const turnId = await runTurn(sid, "find apples, add pears", "agent-stream-turn1.jsonl");
