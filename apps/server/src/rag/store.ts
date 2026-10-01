@@ -1,154 +1,71 @@
-/**
- * Vector store for semantic search, on the same SQLite db as identity/ACL.
- * One row per (note, chunk): the normalized embedding as a BLOB plus the chunk
- * text and a content hash for incremental re-indexing (skip notes whose content
- * is unchanged). Retrieval is brute-force cosine top-K — exact and simple, and
- * fine for a personal vault (thousands of notes × a few chunks). An ANN index
- * (HNSW / sqlite-vec) is a drop-in upgrade behind `queryTopK` if scale demands.
- */
-import { db } from "../db";
+/** Exact cosine retrieval isolated by vault, model and chunker. No new infrastructure. */
+import { db, resolveVaultEntry } from "../db";
 import { cosine, type Embedder } from "./embedder";
+import { CHUNKER_ID, initializeScopedIndex } from "./migration";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS embeddings (
-    chunk_id     TEXT PRIMARY KEY,      -- \`\${note_id}#\${idx}\`
-    note_id      TEXT NOT NULL,
-    idx          INTEGER NOT NULL,
-    model        TEXT NOT NULL,         -- embedder id; rows from other models are ignored
-    dim          INTEGER NOT NULL,
-    vec          BLOB NOT NULL,         -- Float32 LE
-    text         TEXT NOT NULL,         -- chunk plain text (for snippets)
-    content_hash TEXT NOT NULL,         -- hash of the source note content
-    updated_at   INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS embeddings_note  ON embeddings(note_id);
-  CREATE INDEX IF NOT EXISTS embeddings_model ON embeddings(model);
-`);
+initializeScopedIndex(db, resolveVaultEntry().id);
+export interface IndexScope { vaultId: string; chunker: string }
+export const indexScope = (vaultId = resolveVaultEntry().id): IndexScope => ({ vaultId, chunker: CHUNKER_ID });
+const namespace = (scope: IndexScope, model: string) => [scope.vaultId, model, scope.chunker];
+const deleteNote = db.prepare("DELETE FROM embeddings_v2 WHERE vault_id = ? AND note_id = ?");
+const deleteVersion = db.prepare("DELETE FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ? AND note_id = ?");
+const insertChunk = db.prepare(`INSERT INTO embeddings_v2 (vault_id, model, chunker, note_id, idx, dim, vec, text, content_hash, updated_at)
+  VALUES (@vault_id, @model, @chunker, @note_id, @idx, @dim, @vec, @text, @content_hash, @updated_at)`);
+const selectHash = db.prepare("SELECT content_hash FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ? AND note_id = ? LIMIT 1");
+const selectChunks = db.prepare("SELECT note_id, idx, dim, vec, text, content_hash FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ? AND dim = ?");
+const countChunks = db.prepare("SELECT COUNT(*) AS n FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ?");
+const countNotes = db.prepare("SELECT COUNT(DISTINCT note_id) AS n FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ?");
+const selectIds = db.prepare("SELECT DISTINCT note_id FROM embeddings_v2 WHERE vault_id = ? AND model = ? AND chunker = ?");
+const selectAllIds = db.prepare("SELECT DISTINCT note_id FROM embeddings_v2 WHERE vault_id = ?");
 
-const delByNote = db.prepare("DELETE FROM embeddings WHERE note_id = ?");
-const insertChunk = db.prepare(
-  `INSERT INTO embeddings (chunk_id, note_id, idx, model, dim, vec, text, content_hash, updated_at)
-   VALUES (@chunk_id, @note_id, @idx, @model, @dim, @vec, @text, @content_hash, @updated_at)
-   ON CONFLICT(chunk_id) DO UPDATE SET
-     model=@model, dim=@dim, vec=@vec, text=@text, content_hash=@content_hash, updated_at=@updated_at`,
-);
-const selectHashForNote = db.prepare(
-  "SELECT content_hash FROM embeddings WHERE note_id = ? AND model = ? LIMIT 1",
-);
-const selectByModel = db.prepare(
-  "SELECT chunk_id, note_id, idx, vec, text, content_hash FROM embeddings WHERE model = ?",
-);
-const countByModel = db.prepare("SELECT COUNT(*) AS n FROM embeddings WHERE model = ?");
-const countNotesByModel = db.prepare(
-  "SELECT COUNT(DISTINCT note_id) AS n FROM embeddings WHERE model = ?",
-);
-const selectNoteIdsByModel = db.prepare(
-  "SELECT DISTINCT note_id FROM embeddings WHERE model = ?",
-);
-const selectAllNoteIds = db.prepare("SELECT DISTINCT note_id FROM embeddings");
+export interface StoredChunk { chunkId: string; noteId: string; idx: number; vec: Float32Array; text: string }
+export interface ChunkInput { idx: number; text: string; vec: Float32Array }
+export interface ScoredChunk { contentHash: string; noteId: string; idx: number; text: string; score: number }
 
-function vecToBuf(v: Float32Array): Buffer {
-  return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+/** Preserve previous model/chunker generations until explicit deletion or retirement. */
+export const upsertNoteChunks = db.transaction((noteId: string, contentHash: string, model: string, chunks: ChunkInput[], scope = indexScope()) => {
+  deleteVersion.run(...namespace(scope, model), noteId);
+  for (const chunk of chunks) {
+    if (!chunk.vec.length || ![...chunk.vec].every(Number.isFinite)) throw new Error("Invalid embedding vector");
+    insertChunk.run({ vault_id: scope.vaultId, model, chunker: scope.chunker, note_id: noteId, idx: chunk.idx,
+      dim: chunk.vec.length, vec: Buffer.from(chunk.vec.buffer, chunk.vec.byteOffset, chunk.vec.byteLength),
+      text: chunk.text, content_hash: contentHash, updated_at: Date.now() });
+  }
+});
+
+/** A removed note loses all model/chunker generations, only in its own vault. */
+export function removeNoteChunks(noteId: string, scope = indexScope()): void { deleteNote.run(scope.vaultId, noteId); }
+export function indexedHash(noteId: string, model: string, scope = indexScope()): string | null {
+  return (selectHash.get(...namespace(scope, model), noteId) as { content_hash: string } | undefined)?.content_hash ?? null;
 }
-function bufToVec(b: Buffer): Float32Array {
-  // Copy into an aligned buffer (SQLite blobs aren't guaranteed 4-byte aligned).
-  return new Float32Array(new Uint8Array(b).buffer.slice(0));
+export function indexedNoteIds(model: string, scope = indexScope()): Set<string> {
+  return new Set((selectIds.all(...namespace(scope, model)) as { note_id: string }[]).map(row => row.note_id));
+}
+export function allIndexedNoteIds(scope = indexScope()): Set<string> {
+  return new Set((selectAllIds.all(scope.vaultId) as { note_id: string }[]).map(row => row.note_id));
 }
 
-export interface StoredChunk {
-  chunkId: string;
-  noteId: string;
-  idx: number;
-  vec: Float32Array;
-  text: string;
+/** Bounded top-K memory; mismatched dimensions and corrupt vectors cannot enter ranking. */
+export function queryTopK(model: string, query: Float32Array, k: number, scope = indexScope()): ScoredChunk[] {
+  const top: ScoredChunk[] = [];
+  if (!Number.isInteger(k) || k < 1 || !query.length || ![...query].every(Number.isFinite)) return top;
+  for (const raw of selectChunks.iterate(...namespace(scope, model), query.length)) {
+    const row = raw as { note_id: string; idx: number; dim: number; vec: Buffer; text: string; content_hash: string };
+    if (row.vec.byteLength !== row.dim * 4) continue;
+    const vector = new Float32Array(new Uint8Array(row.vec).buffer);
+    const score = cosine(query, vector);
+    if (!Number.isFinite(score)) continue;
+    const candidate = { noteId: row.note_id, idx: row.idx, text: row.text, contentHash: row.content_hash, score };
+    const position = top.findIndex(item => score > item.score || (score === item.score && `${candidate.noteId}:${candidate.idx}` < `${item.noteId}:${item.idx}`));
+    if (position >= 0) top.splice(position, 0, candidate);
+    else if (top.length < k) top.push(candidate);
+    if (top.length > k) top.pop();
+  }
+  return top;
 }
 
-export interface ChunkInput {
-  idx: number;
-  text: string;
-  vec: Float32Array;
-}
-
-/** Replace all chunks for a note atomically (delete + insert in one tx). */
-export const upsertNoteChunks = db.transaction(
-  (noteId: string, contentHash: string, model: string, chunks: ChunkInput[]) => {
-    delByNote.run(noteId);
-    const ts = Date.now();
-    for (const c of chunks) {
-      insertChunk.run({
-        chunk_id: `${noteId}#${c.idx}`,
-        note_id: noteId,
-        idx: c.idx,
-        model,
-        dim: c.vec.length,
-        vec: vecToBuf(c.vec),
-        text: c.text,
-        content_hash: contentHash,
-        updated_at: ts,
-      });
-    }
-  },
-);
-
-export function removeNoteChunks(noteId: string): void {
-  delByNote.run(noteId);
-}
-
-/** The content hash currently indexed for a note under `model`, or null. */
-export function indexedHash(noteId: string, model: string): string | null {
-  const row = selectHashForNote.get(noteId, model) as { content_hash: string } | undefined;
-  return row?.content_hash ?? null;
-}
-
-/** Every note id that has chunks under `model` — i.e. what the sweep considers
- *  already done. Use `allIndexedNoteIds` for deletion cleanup, not this. */
-export function indexedNoteIds(model: string): Set<string> {
-  const rows = selectNoteIdsByModel.all(model) as Array<{ note_id: string }>;
-  return new Set(rows.map((r) => r.note_id));
-}
-
-/** Every note id with chunks under ANY model. Deletion cleanup must use this,
- *  not the current-model set: after a model switch, rows left by the PREVIOUS
- *  model for notes deleted in the meantime are invisible to a model-scoped scan
- *  and would never be collected. */
-export function allIndexedNoteIds(): Set<string> {
-  const rows = selectAllNoteIds.all() as Array<{ note_id: string }>;
-  return new Set(rows.map((r) => r.note_id));
-}
-
-export interface ScoredChunk {
-  contentHash: string;
-  noteId: string;
-  idx: number;
-  text: string;
-  score: number;
-}
-
-/**
- * Brute-force cosine top-K chunks for a query vector under one model. Returns
- * chunks (a note may appear multiple times); callers collapse to notes.
- */
-export function queryTopK(model: string, query: Float32Array, k: number): ScoredChunk[] {
-  const rows = selectByModel.all(model) as Array<{
-    note_id: string;
-    idx: number;
-    vec: Buffer;
-    text: string;
-    content_hash: string;
-  }>;
-  const scored = rows.map((r) => ({
-    noteId: r.note_id,
-    contentHash: r.content_hash,
-    idx: r.idx,
-    text: r.text,
-    score: cosine(query, bufToVec(r.vec)),
-  }));
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, k);
-}
-
-export function indexStats(embedder: Embedder): { model: string; chunks: number; notes: number } {
-  const chunks = (countByModel.get(embedder.id) as { n: number }).n;
-  const notes = (countNotesByModel.get(embedder.id) as { n: number }).n;
-  return { model: embedder.id, chunks, notes };
+export function indexStats(embedder: Embedder, scope = indexScope()) {
+  return { model: embedder.id, vaultId: scope.vaultId, chunker: scope.chunker,
+    chunks: (countChunks.get(...namespace(scope, embedder.id)) as { n: number }).n,
+    notes: (countNotes.get(...namespace(scope, embedder.id)) as { n: number }).n };
 }

@@ -4,6 +4,8 @@
  * app pipeline (actor resolution + authorization), with a fake vault and the
  * deterministic offline HashEmbedder (no model/network needed).
  */
+import Database from "better-sqlite3";
+import { initializeScopedIndex, CHUNKER_ID } from "../src/rag/migration";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app";
@@ -32,7 +34,7 @@ const OWNER = "owner@test.local"; // matches .env.test OWNER_EMAIL
 let fv: FakeVault;
 beforeEach(() => {
   resetDb();
-  db.exec("DELETE FROM embeddings");
+  db.exec("DELETE FROM embeddings; DELETE FROM embeddings_v2");
   fv = installFakeVault();
 });
 afterEach(() => fv.restore());
@@ -289,7 +291,7 @@ test("index routes refuse a non-primary vault even for the owner (no cross-vault
     });
     assert.equal(r.status, 409, `${method} ${path}`);
   }
-  const n = (db.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number }).n;
+  const n = (db.prepare("SELECT COUNT(*) AS n FROM embeddings_v2").get() as { n: number }).n;
   assert.equal(n, 0, "nothing was written to the primary index");
 });
 
@@ -421,13 +423,13 @@ test("deletion cleanup collects orphans left by a PREVIOUS embedder model", asyn
   // cannot see them, so they survive every sweep forever.
   const stale = new Float32Array([1, 0, 0, 0]);
   upsertNoteChunks("ghost-note", "hash-abc", "hash:384", [{ idx: 0, text: "gone", vec: stale }]);
-  assert.ok(db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"), "seeded");
+  assert.ok(db.prepare("SELECT 1 FROM embeddings_v2 WHERE note_id = ?").get("ghost-note"), "seeded");
 
   fv.put({ id: "live", content: "still here", path: "a", metadata: null, tags: [] });
   await runIndexOnce(); // "ghost-note" is not in the vault → must be collected
 
   assert.equal(
-    db.prepare("SELECT 1 FROM embeddings WHERE note_id = ?").get("ghost-note"),
+    db.prepare("SELECT 1 FROM embeddings_v2 WHERE note_id = ?").get("ghost-note"),
     undefined,
     "old-model orphan dropped even though the sweep runs a different model",
   );
@@ -458,4 +460,48 @@ test("hidden semantic hits do not consume the visible result limit", async () =>
   grantUser("reader@test.local", "tag", "shared", "view");
   const result = await app.request("/api/search/semantic?q=soil&limit=1", { headers: { cookie: sessionCookie(makeSession("reader@test.local")) } });
   assert.deepEqual((await result.json() as Array<{ id: string }>).map(hit => hit.id), ["visible"]);
+});
+
+test("index namespaces isolate identical note IDs across vaults, models and chunkers", () => {
+  const vec = new Float32Array([1, 0]);
+  const a = { vaultId: "a", chunker: CHUNKER_ID }, b = { ...a, vaultId: "b" }, next = { ...a, chunker: "next" };
+  for (const [scope, model, text] of [[a, "model", "A"], [b, "model", "B"], [next, "model", "NEXT"], [a, "other-model", "MODEL"]] as const) {
+    upsertNoteChunks("same-note", text, model, [{ idx: 0, text, vec }], scope);
+  }
+  assert.deepEqual(queryTopK("model", vec, 10, a).map(hit => hit.text), ["A"]);
+  assert.deepEqual(queryTopK("model", vec, 10, b).map(hit => hit.text), ["B"]);
+  assert.deepEqual(queryTopK("model", vec, 10, next).map(hit => hit.text), ["NEXT"]);
+  assert.deepEqual(queryTopK("other-model", vec, 10, a).map(hit => hit.text), ["MODEL"]);
+  assert.deepEqual(queryTopK("model", new Float32Array([1, 0, 0]), 10, a), []);
+  removeNoteChunks("same-note", a);
+  assert.deepEqual(queryTopK("model", vec, 10, a), []);
+  assert.deepEqual(queryTopK("model", vec, 10, next), []);
+  assert.deepEqual(queryTopK("other-model", vec, 10, a), []);
+  assert.equal(queryTopK("model", vec, 10, b)[0]?.text, "B");
+});
+
+test("legacy index migration is additive, atomic and never resurrects removed rows", () => {
+  const copy = new Database(":memory:");
+  try {
+    copy.exec(`CREATE TABLE embeddings (chunk_id TEXT PRIMARY KEY, note_id TEXT, idx INTEGER, model TEXT, dim INTEGER, vec BLOB, text TEXT, content_hash TEXT, updated_at INTEGER)`);
+    copy.prepare("INSERT INTO embeddings VALUES (?,?,?,?,?,?,?,?,?)").run("note#0", "note", 0, "model", 2, Buffer.from(new Float32Array([1, 0]).buffer), "legacy", "hash", 1);
+    initializeScopedIndex(copy, "original-vault");
+    assert.deepEqual(copy.prepare("SELECT vault_id, chunker, text FROM embeddings_v2").all(), [{ vault_id: "original-vault", chunker: CHUNKER_ID, text: "legacy" }]);
+    assert.equal((copy.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number }).n, 1, "rollback index retained");
+    copy.exec("DELETE FROM embeddings_v2");
+    initializeScopedIndex(copy, "another-default");
+    assert.equal((copy.prepare("SELECT COUNT(*) AS n FROM embeddings_v2").get() as { n: number }).n, 0, "one-time migration cannot revive an obsolete row into a changed default");
+    assert.equal(copy.pragma("integrity_check", { simple: true }), "ok");
+  } finally { copy.close(); }
+});
+
+test("an invalid legacy row rolls back the entire index migration", () => {
+  const copy = new Database(":memory:");
+  try {
+    copy.exec(`CREATE TABLE embeddings (chunk_id TEXT PRIMARY KEY, note_id TEXT, idx INTEGER, model TEXT, dim INTEGER, vec BLOB, text TEXT, content_hash TEXT, updated_at INTEGER)`);
+    copy.prepare("INSERT INTO embeddings VALUES (?,?,?,?,?,?,?,?,?)").run("invalid#0", "invalid", 0, null, 2, Buffer.alloc(8), "text", "hash", 1);
+    assert.throws(() => initializeScopedIndex(copy, "primary"), /NOT NULL/);
+    assert.equal(copy.prepare("SELECT name FROM sqlite_master WHERE name='embeddings_v2'").get(), undefined);
+    assert.equal((copy.prepare("SELECT COUNT(*) AS n FROM embeddings").get() as { n: number }).n, 1);
+  } finally { copy.close(); }
 });
