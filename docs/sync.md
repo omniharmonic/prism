@@ -16,12 +16,33 @@ the `HostServices.githubSync` / `notionDbSync` seam (`packages/core/src/lib/host
 
 ## Who can use it
 
-Every route is under `/api/sync` (admin gate, like the other sync routes) and scoped to
-the actor's active vault (`X-Prism-Vault`): a config of another vault is a 404. The client
-seam is provided to the **server owner** only, so the modals show a notice to anyone else.
-The import route is **server owner** only. Credentials are the vault's stored `github`
-(`{token}`) and `notion` (`{apiKey}`) secrets from Network → Server → Sync integrations.
-No route ever returns them.
+Every route is under `/api/sync` and scoped to the actor's active vault (`X-Prism-Vault`):
+a config of another vault is a 404. **Everything is SERVER-OWNER only** (security review
+H2) except three status reads a vault admin keeps: `GET /api/sync/github/configs`,
+`GET /api/sync/notion-db/configs` and `GET /api/sync/audit`. Creating, importing, pushing,
+syncing, changing or removing a config, `GET /github/auth`, listing Notion databases or
+schemas, and the stateless `POST /github/push|pull` all act with the owner's token, so a
+vault admin gets 403. The gate is an allow-list in `routes/sync.ts`: any path that isn't one
+of those reads (or the pre-existing per-note routes) needs the owner. Owner write requests
+must send `Content-Type: application/json` (otherwise 415), which blocks form-based CSRF.
+The client seam is provided to the server owner only.
+
+Credentials are the vault's stored `github` (`{token}`) and `notion` (`{apiKey}`) secrets
+from Network → Server → Sync integrations. Writing or deleting them is server-owner only
+too, like `matrix` / `google`. No route ever returns them.
+
+**What a sync may export.** A config acts for the account that created it (`created_by`).
+It only sends notes that account can view, using the same `effectiveCaps` check as the
+gateway (`worker/sync-visibility.ts`). It never sends a private note
+(`prism_visibility: "private"`) that belongs to someone else, even when the server owner
+created the config. Notion pulls also leave such notes alone.
+
+**Public repositories.** Every config records the repository's visibility
+(`repoPrivate`). Auto-sync into a **public** repo is refused when the config is created,
+when it is enabled (PATCH), and again at each auto-push, unless the config carries the
+explicit opt-in `allowPublic: true` (`PATCH {allowPublic: true}`, API only). The dialog
+warns about public repos. A manual push to a public repo is allowed: it is a deliberate,
+one-off act.
 
 ## GitHub folder sync
 
@@ -44,8 +65,10 @@ repos). A branch that doesn't exist is created from the default branch.
 ### Behaviour kept from the desktop
 
 - Scope: notes whose path is under the folder on a segment boundary.
-- Repo path: the vault path minus the folder, plus the file extension when the leaf has
-  none (`md` and `.md` both accepted).
+- Repo path: the vault path minus the folder, plus the sync extension (`md` and `.md`
+  both accepted). **Change:** every file written ends in the sync extension. A leaf with
+  another extension gets it appended (`file.txt` → `file.txt.md`); the desktop wrote
+  `file.txt` as is.
 - File: YAML frontmatter (`title`, `tags`, `vault_path`, then every metadata key, sorted)
   and the body with `[[wikilinks]]` rewritten to relative links inside the synced set.
   The YAML follows serde_yaml's output so the repos the desktop wrote don't churn.
@@ -62,9 +85,21 @@ repos). A branch that doesn't exist is created from the default branch.
   it, `remote-wins` keeps it and reports a conflict. The desktop compared against its own
   clone, so under remote-wins it never pushed a note again after its first local edit.
   Its UI also sent `remote_wins`, which the adapter never matched. Both spellings work now.
-- **Path safety.** Every repo path passes `safeRepoPath`: no `..`, no absolute path, no
-  `.git` segment, no control characters or backslashes, and length limits. Remotes must
-  be `github.com/<owner>/<repo>`. Branch names follow git ref rules.
+- **Path safety.** Every repo path passes `safeRepoPath`, which refuses:
+  - `..`, absolute paths, control characters, backslashes and invisible characters
+    (zero-width, bidi, BOM);
+  - **any segment starting with `.`**, so no `.github/` workflows, `.gitmodules` or
+    `.gitattributes`;
+  - git's `verify_path` variants of `.git` (any case, trailing dots or spaces, `git~1`,
+    after NFKC);
+  - segments ending in a dot or space;
+  - over-long paths and segments.
+
+  Remotes must be `github.com/<owner>/<repo>`, with owner and repo validated and every URL
+  segment encoded. This is in **both** GitHub clients, including the stateless one, whose
+  unvalidated `repo` could previously reach arbitrary API paths (review H1). Branch names
+  follow git ref rules. A folder of `/` or `""` (the whole vault) is refused. Requests use
+  `redirect: "error"`.
 - **Caps.** `GITHUB_SYNC_MAX_FILE_BYTES` (5 MiB), `GITHUB_SYNC_MAX_BATCH_BYTES` (50 MiB),
   `GITHUB_SYNC_MAX_FILES` (5000) per commit. Over the cap, the rest go out on the next
   push. A repository whose tree is too large for one listing is refused.
@@ -81,8 +116,9 @@ feed (`subscribeTreeChanges`, the vault's own subscribe socket, so there is no p
 - An upsert whose path (old or new) is under an auto-sync folder marks that note dirty.
 - After `GITHUB_AUTOSYNC_DEBOUNCE_MS` (30 s) of quiet, or `GITHUB_AUTOSYNC_MAX_WAIT_MS`
   (5 min) after the first change, the dirty notes go out as **one commit**.
-- A projection `resync` (a socket reconnect or rebuild) can hide changes, so it schedules a
-  full folder push. Unchanged files cost nothing.
+- A projection `resync` (a socket reconnect or rebuild) can hide changes. It triggers one
+  lean listing (no content) of the folder, and only notes updated after the config's
+  `last_synced` are pushed. With none, GitHub isn't contacted at all (review M5).
 - `commit_strategy: manual` never auto-pushes. `GITHUB_AUTOSYNC_ENABLED=false` turns the
   listener off for every config.
 
@@ -98,7 +134,7 @@ two pushes never interleave.
 | `POST /configs` `{vaultPath, remoteUrl, branch, commitStrategy, conflictStrategy, autoSync}` | checks the repo is pushable, creates the config, pushes the folder. A failed first push removes the config again |
 | `POST /configs/:id/push` | push the whole folder → `{pushed, pulled, conflicts, errors, unchanged, commit}` |
 | `POST /configs/:id/push-file` `{noteId}` | push one note |
-| `PATCH /configs/:id` `{autoSync?, commitStrategy?, conflictStrategy?}` | e.g. re-enable an imported config |
+| `PATCH /configs/:id` `{autoSync?, allowPublic?, commitStrategy?, conflictStrategy?}` | e.g. re-enable an imported config. Turning auto-sync on checks the repo's visibility |
 | `DELETE /configs/:id` | remove the config (the repository is untouched) |
 | `POST /import` (server owner) | import the desktop's `github-sync-configs.json` (below) |
 
@@ -124,6 +160,22 @@ Deliberate changes:
 - The push filters by tag + path prefix on a segment boundary. The desktop passed the
   prefix as an exact path, so its push found nothing.
 - `status` properties are supported in both directions.
+- With **no content property**, the note body is never compared or written (review M3).
+  The desktop compared it against `""` and wiped it.
+- **Reserved names (review M4, `worker/sync-reserved.ts`).** A Notion property can't map
+  to a metadata key the server acts on: `prism_*`, `gov_*`, `runner`, `enabled`,
+  `skillName`, `intervalSecs`, `runAtHour`, `dependsOn`, `lastRun`, `executionMode`,
+  `provider`, `model`, `structured`, `sourceTags`, `excludeTags`, `alsoAddTags`,
+  `allowlist`, `type`, `sync`, `layout`, `calendarEventId`, `threadId`, `matrixRoomId`,
+  `source_id`, `event_status`, `notion_page_id`, `title`. These are dropped at config time
+  and again at run time. The config's tag can't be one the server reads: `agent-skill`,
+  `agent-dispatch`, `agent-output`, `agent-session`, `alert`, `dashboard`,
+  `message-thread`, `message-archive`, `email`, `meeting`, `calendar-archived`,
+  `transcript`, `person`, `triaged`, `triage-failed`, `publication`, or any
+  `governance-*`. The stateless GitHub pull drops the same tags from a file's frontmatter.
+- A mapped note that has since left the folder or tag, or become someone else's private
+  note, is left alone (`skipped`). Archived or trashed Notion pages are ignored, and
+  their notes are not pushed back.
 - A created note whose path is taken gets a `-<page id>` suffix instead of failing.
 - Notion requests are rate-limited to `NOTION_DB_RPS` (3/s) per token, and a 429 is
   retried after `Retry-After`.
@@ -187,9 +239,15 @@ with auto-sync **off**, push each one by hand once, then re-enable the ones that
 4. **First push, one config at a time** (Prism → open the folder's "Sync to GitHub…" →
    **Push now**, or `POST /api/sync/github/configs/<id>/push`). Expect one commit holding
    every change since July. `blob_map` starts empty, so a file that differs on GitHub
-   counts as a conflict once: `local-wins` (the desktop default) overwrites it,
-   `remote-wins` keeps it and lists it under `conflicts`. The first commit may also carry
-   small frontmatter formatting differences. Review the commit on GitHub. A later push with
+   counts as a conflict: `local-wins` (the desktop default) overwrites it. Under
+   `remote-wins` the file is kept and listed under `conflicts` on **every** push until it
+   matches what Prism would write; `blob_map` is deliberately not seeded from the remote,
+   because seeding it would make the next push overwrite the remote file without a local
+   edit. To adopt Prism's version, switch that config to `local-wins` for one push. Files
+   with a non-`.md` leaf now land as `<name>.<ext>.md`, and dot-paths are skipped with an
+   error. Other users' private notes are not exported. The first commit may also carry
+   small frontmatter formatting differences. If `repoPrivate` comes back `false` (a
+   public repo), auto-sync stays refused unless you also send `allowPublic: true`. Review the commit on GitHub. A later push with
    nothing changed must report `commit: null`.
 5. **Re-enable auto-sync** for the ones that should follow edits: the checkbox in the
    folder's GitHub dialog, or `PATCH /api/sync/github/configs/<id> {"autoSync": true}`.

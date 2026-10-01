@@ -541,6 +541,8 @@ db.exec(`
     commit_strategy   TEXT NOT NULL,            -- per_save | batched | manual
     conflict_strategy TEXT NOT NULL,            -- local-wins | remote-wins
     auto_sync         INTEGER NOT NULL DEFAULT 0,
+    allow_public      INTEGER NOT NULL DEFAULT 0, -- auto-sync into a PUBLIC repo needs this explicit opt-in
+    repo_private      INTEGER,                  -- last seen visibility (1/0), null = unknown
     id_map            TEXT NOT NULL DEFAULT '{}', -- note id -> repo path
     blob_map          TEXT NOT NULL DEFAULT '{}', -- repo path -> blob sha Prism last wrote/saw
     last_synced       TEXT NOT NULL DEFAULT '',
@@ -552,6 +554,7 @@ db.exec(`
     updated_at        INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS github_sync_configs_vault ON github_sync_configs(vault_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS github_sync_configs_target ON github_sync_configs(vault_id, vault_path, owner, repo, branch);
   CREATE TABLE IF NOT EXISTS notion_db_sync_configs (
     id                TEXT PRIMARY KEY,
     vault_id          TEXT NOT NULL,

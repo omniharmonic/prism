@@ -28,7 +28,10 @@ integrations.use("*", async (c, next) => {
 // SERVER-OWNER only, in every vault (security review M2) — a vault admin could
 // otherwise point the owner's sends at an attacker homeserver or pick the gog
 // account. Status (GET) and a manual sync stay admin-visible.
-for (const kind of ["matrix", "google"]) {
+// `github` and `notion` joined them in Client parity B (security review H2): the
+// folder/database syncs push to whatever repo/database that token reaches, so a
+// vault admin must not be able to swap in (or remove) the owner's token either.
+for (const kind of ["matrix", "google", "github", "notion"]) {
   integrations.on(["PUT", "DELETE"], `/${kind}`, async (c, next) => {
     const a = resolveActor(c);
     if (!(a.kind === "user" && a.email === config.ownerEmail)) return c.json({ error: "forbidden", detail: "only the server owner may change this credential" }, 403);

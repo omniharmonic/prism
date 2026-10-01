@@ -113,6 +113,8 @@ interface GhRow {
   commit_strategy: string;
   conflict_strategy: string;
   auto_sync: number;
+  allow_public: number;
+  repo_private: number | null;
   id_map: string;
   blob_map: string;
   last_synced: string;
@@ -125,6 +127,10 @@ interface GhRow {
 }
 
 export interface StoredGitHubConfig extends GitHubDirConfig {
+  /** Explicit opt-in to auto-sync into a PUBLIC repository (review M1). */
+  allowPublic: boolean;
+  /** Last seen repository visibility; null = not checked yet. */
+  repoPrivate: boolean | null;
   lastResult: Record<string, unknown> | null;
   lastError: string | null;
   importedFrom: string | null;
@@ -155,6 +161,8 @@ function ghFromRow(r: GhRow): StoredGitHubConfig {
     commitStrategy: r.commit_strategy as CommitStrategy,
     conflictStrategy: r.conflict_strategy as GhConflictStrategy,
     autoSync: r.auto_sync === 1,
+    allowPublic: r.allow_public === 1,
+    repoPrivate: r.repo_private === null ? null : r.repo_private === 1,
     idMap: parseJson(r.id_map, {}),
     blobMap: parseJson(r.blob_map, {}),
     lastSynced: r.last_synced,
@@ -167,13 +175,19 @@ function ghFromRow(r: GhRow): StoredGitHubConfig {
   };
 }
 
-export function insertGitHubConfig(c: Omit<StoredGitHubConfig, "id" | "createdAt" | "updatedAt" | "lastResult" | "lastError"> & { id?: string }): StoredGitHubConfig {
+export function insertGitHubConfig(
+  c: Omit<StoredGitHubConfig, "id" | "createdAt" | "updatedAt" | "lastResult" | "lastError" | "allowPublic" | "repoPrivate"> & {
+    id?: string;
+    allowPublic?: boolean;
+    repoPrivate?: boolean | null;
+  },
+): StoredGitHubConfig {
   const id = c.id ?? randomUUID();
   const now = Date.now();
   db.prepare(
     `INSERT INTO github_sync_configs (id, vault_id, vault_path, owner, repo, branch, file_extension, commit_strategy, conflict_strategy,
-       auto_sync, id_map, blob_map, last_synced, imported_from, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       auto_sync, allow_public, repo_private, id_map, blob_map, last_synced, imported_from, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     c.vaultId,
@@ -185,6 +199,8 @@ export function insertGitHubConfig(c: Omit<StoredGitHubConfig, "id" | "createdAt
     c.commitStrategy,
     c.conflictStrategy,
     c.autoSync ? 1 : 0,
+    c.allowPublic ? 1 : 0,
+    c.repoPrivate === undefined || c.repoPrivate === null ? null : c.repoPrivate ? 1 : 0,
     JSON.stringify(c.idMap ?? {}),
     JSON.stringify(c.blobMap ?? {}),
     c.lastSynced ?? "",
@@ -212,7 +228,9 @@ export function listGitHubConfigs(vaultId?: string): StoredGitHubConfig[] {
 
 export function updateGitHubConfig(
   id: string,
-  p: Partial<Pick<StoredGitHubConfig, "autoSync" | "commitStrategy" | "conflictStrategy" | "idMap" | "blobMap" | "lastSynced" | "lastResult" | "lastError">>,
+  p: Partial<
+    Pick<StoredGitHubConfig, "autoSync" | "allowPublic" | "repoPrivate" | "commitStrategy" | "conflictStrategy" | "idMap" | "blobMap" | "lastSynced" | "lastResult" | "lastError">
+  >,
 ): void {
   const sets: string[] = [];
   const args: unknown[] = [];
@@ -221,6 +239,8 @@ export function updateGitHubConfig(
     args.push(v);
   };
   if (p.autoSync !== undefined) set("auto_sync", p.autoSync ? 1 : 0);
+  if (p.allowPublic !== undefined) set("allow_public", p.allowPublic ? 1 : 0);
+  if (p.repoPrivate !== undefined) set("repo_private", p.repoPrivate === null ? null : p.repoPrivate ? 1 : 0);
   if (p.commitStrategy !== undefined) set("commit_strategy", p.commitStrategy);
   if (p.conflictStrategy !== undefined) set("conflict_strategy", p.conflictStrategy);
   if (p.idMap !== undefined) set("id_map", JSON.stringify(p.idMap));

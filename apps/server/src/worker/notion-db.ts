@@ -34,6 +34,7 @@ import { createHash } from "node:crypto";
 import type { Note } from "../parachute";
 import { VaultConflictError } from "../parachute";
 import type { NotionConflict, NotionDbConfig, NotionDirection, PropertyMapping } from "./sync-store";
+import { isReservedMetaKey } from "./sync-reserved";
 
 // ── pure helpers (desktop parity) ────────────────────────────────────────────
 
@@ -325,7 +326,9 @@ export function normalizeMappings(raw: unknown): { mappings: PropertyMapping[]; 
     }
     if (field === "metadata.custom") field = slugify(notionProperty);
     field = field.replace(/^metadata\./, "");
-    if (!FIELD_RE.test(field) || field === "notion_page_id" || field === "__proto__" || field === "constructor") continue;
+    // Reserved keys (prism_*, gov_*, runner, enabled, skillName, type, …) are what the
+    // server's schedulers/governance/sharing read — never writable from Notion (review M4).
+    if (!FIELD_RE.test(field) || isReservedMetaKey(field)) continue;
     const transform = TRANSFORM_ALIASES[String(o.transform ?? "identity")] ?? "identity";
     const vm = (o.valueMap ?? o.value_map) as unknown;
     const valueMap: Record<string, string> = {};
@@ -476,6 +479,8 @@ export interface NotionDbSyncResult {
   conflicts: number;
   /** Rows / notes already identical (no write made). */
   unchanged: number;
+  /** Mapped notes/pages left alone: moved out of scope, private, or archived in Notion. */
+  skipped: number;
   errors: string[];
 }
 
@@ -490,14 +495,23 @@ export async function runNotionDbSync(
   client: NotionDbClient,
   vault: NotionDbVault,
   cfg: NotionDbConfig,
+  /** Review M1: notes the config's creator may view (never others' private notes). */
+  canView: (n: Note) => boolean = () => true,
 ): Promise<{ result: NotionDbSyncResult; idMap: Record<string, string> }> {
-  const result: NotionDbSyncResult = { created: 0, updated: 0, deleted: 0, conflicts: 0, unchanged: 0, errors: [] };
+  const result: NotionDbSyncResult = { created: 0, updated: 0, deleted: 0, conflicts: 0, unchanged: 0, skipped: 0, errors: [] };
   const idMap = { ...cfg.idMap };
   const prevSynced = cfg.lastSynced;
-  const pages = await client.queryAll(cfg.databaseId);
+  // Defense in depth for configs stored before the reserved-name rules (review M4).
+  const mappings = cfg.propertyMap.filter((m) => !isReservedMetaKey(m.parachuteField));
+  const live = (p: any) => p && p.archived !== true && p.in_trash !== true;
+  const pages = (await client.queryAll(cfg.databaseId)).filter(live);
   const pageById = new Map<string, any>(pages.filter((p) => typeof p?.id === "string").map((p) => [p.id, p]));
   const pullDirs: NotionDirection[] = ["pull", "bidirectional"];
   const pushDirs: NotionDirection[] = ["push", "bidirectional"];
+  // Review M3: with no content property the note BODY is not synced at all —
+  // never compared, never written (a mapped note keeps whatever body it has).
+  const syncsContent = !!cfg.contentProperty;
+  const inScope = (n: Note) => underPrefix(n.path, cfg.pathPrefix) && (n.tags ?? []).includes(cfg.parachuteTag) && canView(n);
 
   if (pullDirs.includes(cfg.syncDirection)) {
     for (const page of pages) {
@@ -506,9 +520,9 @@ export async function runNotionDbSync(
       if (typeof pageId !== "string" || !props || typeof props !== "object") continue;
       try {
         const title = props[cfg.titleProperty] ? extractPropertyValue(props[cfg.titleProperty], "title") : "Untitled";
-        const content = cfg.contentProperty && props[cfg.contentProperty] ? extractPropertyValue(props[cfg.contentProperty], "rich_text") : "";
+        const content = syncsContent && props[cfg.contentProperty!] ? extractPropertyValue(props[cfg.contentProperty!], "rich_text") : "";
         const meta: Record<string, unknown> = { notion_page_id: pageId, title };
-        for (const m of cfg.propertyMap) {
+        for (const m of mappings) {
           if (props[m.notionProperty]) meta[m.parachuteField] = applyTransform(extractPropertyValue(props[m.notionProperty], m.notionType), m.transform, m.valueMap ?? {});
         }
         const noteId = idMap[pageId];
@@ -520,7 +534,13 @@ export async function runNotionDbSync(
             result.errors.push(`Read ${pageId} for conflict check: ${(e as Error).message}`);
             continue;
           }
-          if (note.content === content && metadataUnchanged(meta, note.metadata)) {
+          // The note left the synced folder/tag, or became someone else's private
+          // note, since it was mapped: leave it alone (review Low).
+          if (!inScope(note)) {
+            result.skipped++;
+            continue;
+          }
+          if ((!syncsContent || note.content === content) && metadataUnchanged(meta, note.metadata)) {
             result.unchanged++;
             continue;
           }
@@ -529,7 +549,7 @@ export async function runNotionDbSync(
             continue;
           }
           try {
-            await vault.updateNote(noteId, { content, metadata: meta, ...(note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}) });
+            await vault.updateNote(noteId, { ...(syncsContent ? { content } : {}), metadata: meta, ...(note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}) });
             result.updated++;
           } catch (e) {
             if (e instanceof VaultConflictError) result.conflicts++;
@@ -555,20 +575,26 @@ export async function runNotionDbSync(
 
   if (pushDirs.includes(cfg.syncDirection)) {
     const reverse = new Map(Object.entries(idMap).map(([page, note]) => [note, page] as const));
-    const notes = (await vault.listNotes({ tags: [cfg.parachuteTag], pathPrefix: cfg.pathPrefix })).filter((n) => underPrefix(n.path, cfg.pathPrefix));
+    const notes = (await vault.listNotes({ tags: [cfg.parachuteTag], pathPrefix: cfg.pathPrefix })).filter(inScope);
+    const pushCfg = { ...cfg, propertyMap: mappings };
     for (const note of notes) {
       try {
         const meta = note.metadata && typeof note.metadata === "object" ? note.metadata : {};
         const title = typeof meta.title === "string" ? meta.title : (note.path?.split("/").pop() ?? "Untitled");
-        const props = withTitle(cfg.titleProperty, title, buildNotionProperties(meta, cfg.propertyMap));
+        const props = withTitle(cfg.titleProperty, title, buildNotionProperties(meta, mappings));
         const pageId = reverse.get(note.id);
         if (pageId) {
           const page = pageById.get(pageId);
-          if (page && pageMatchesNote(page, cfg, meta, title)) {
+          if (!page) {
+            // Archived / trashed / deleted in Notion: not an error, and never re-created.
+            result.skipped++;
+            continue;
+          }
+          if (pageMatchesNote(page, pushCfg, meta, title)) {
             result.unchanged++;
             continue;
           }
-          if (page && notionWinsPush(cfg.conflictStrategy, page.last_edited_time, note.updatedAt, prevSynced)) {
+          if (notionWinsPush(cfg.conflictStrategy, page.last_edited_time, note.updatedAt, prevSynced)) {
             result.conflicts++;
             continue;
           }

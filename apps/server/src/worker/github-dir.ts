@@ -125,7 +125,8 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  slashes trimmed. Returns null when unsafe. "" (whole vault) is refused. */
 export function normalizeVaultPath(p: string): string | null {
   const t = (p ?? "").trim().replace(/\/+$/, "");
-  if (!t || t.length > 1000 || CONTROL.test(t) || t.includes("\\")) return null;
+  // "/" and "" would put the WHOLE vault in scope; a leading "/" is never a vault path.
+  if (!t || t.startsWith("/") || t.length > 1000 || CONTROL.test(t) || t.includes("\\")) return null;
   const segs = t.replace(/^\/+/, "").split("/");
   if (segs.some((s) => !s || s === "." || s === "..")) return null;
   return t;
@@ -138,15 +139,28 @@ export function safeRepoPath(p: string): string {
   if (CONTROL.test(p) || p.includes("\\")) throw new Error("repo path has control characters or a backslash");
   if (p.startsWith("/")) throw new Error("absolute repo path");
   if (Buffer.byteLength(p) > 4096) throw new Error("repo path too long");
+  // Invisible / bidi characters can make ".git" look like something else (and
+  // some filesystems fold them away): refuse them outright.
+  if (INVISIBLE.test(p)) throw new Error("repo path has invisible characters");
   const segs = p.split("/");
   for (const s of segs) {
     if (!s) throw new Error("empty path segment");
     if (s === "." || s === "..") throw new Error("path traversal segment");
-    if (s.toLowerCase() === ".git") throw new Error(".git is not writable");
+    // Mirrors git's verify_path: ".git" in any case, with trailing dots/spaces
+    // (Windows folds them), its NTFS 8.3 short name "git~1", and after NFKC.
+    const folded = s.normalize("NFKC").toLowerCase().replace(/[. ]+$/, "");
+    if (folded === ".git" || folded === "git~1" || folded.startsWith(".git")) throw new Error(".git is not writable");
+    // Review M2: no dot-files/dirs at all — .github/ (Actions workflows),
+    // .gitmodules, .gitattributes, .gitignore change how the repo behaves.
+    if (s.startsWith(".") || s.normalize("NFKC").startsWith(".")) throw new Error("dot-files and dot-directories are not writable");
+    if (/[. ]$/.test(s)) throw new Error("path segment ends with a dot or space");
     if (Buffer.byteLength(s) > 255) throw new Error("path segment too long");
   }
   return p;
 }
+
+// Zero-width, bidi controls, soft hyphen, BOM.
+const INVISIBLE = /[­᠎​-‏‪-‮⁠-⁤⁦-⁩﻿]/;
 
 // ── path mapping (desktop is_under_vault_path / map_vault_path_to_repo_path) ──
 
@@ -170,8 +184,12 @@ function hasExtension(p: string): boolean {
 
 export function mapVaultPathToRepoPath(vaultPath: string, cfg: Pick<GitHubDirConfig, "vaultPath" | "fileExtension">): string {
   const stripped = (vaultPath.startsWith(cfg.vaultPath) ? vaultPath.slice(cfg.vaultPath.length) : vaultPath).replace(/^\/+/, "");
-  if (hasExtension(stripped)) return stripped;
-  return `${stripped}${normalizeExtension(cfg.fileExtension) ?? ".md"}`;
+  const ext = normalizeExtension(cfg.fileExtension) || ".md";
+  // Review M2: every written file carries the sync extension. A leaf that already
+  // ends in it is kept; any other "extension" (file.txt, v1.2) gets it appended
+  // (file.txt.md) — the desktop wrote file.txt / any extension as-is.
+  if (hasExtension(stripped) && stripped.toLowerCase().endsWith(ext.toLowerCase())) return stripped;
+  return `${stripped}${ext}`;
 }
 
 // ── wikilinks (desktop build_wikilink_lookup / relative_link / convert_wikilinks) ─
@@ -585,22 +603,26 @@ export async function pushDirectory(
   cfg: GitHubDirConfig,
   scope: PushScope,
   limits: PushLimits = pushLimits(),
+  /** May this note leave the vault? (security review M1: the config creator's
+   *  view right; others' private notes never). Default: every note. */
+  canView: (n: Note) => boolean = () => true,
 ): Promise<PushOutcome> {
   const result: DirectorySyncResult = { pushed: [], pulled: [], conflicts: [], errors: [], unchanged: 0, commit: null };
   const idMap = { ...cfg.idMap };
   const blobMap = { ...cfg.blobMap };
-  const ext = normalizeExtension(cfg.fileExtension) ?? ".md";
+  const ext = normalizeExtension(cfg.fileExtension) || ".md";
+  const inFolder = (n: Note) => !!n.path && isUnderVaultPath(n.path, cfg.vaultPath) && canView(n);
 
   // 1. What to push, and the in-scope set for wikilink resolution.
   let inScope: Note[];
   let targets: Note[];
   if (scope.kind === "all") {
-    inScope = (await vault.listNotes({ pathPrefix: cfg.vaultPath, includeContent: true })).filter((n) => n.path && isUnderVaultPath(n.path, cfg.vaultPath));
+    inScope = (await vault.listNotes({ pathPrefix: cfg.vaultPath, includeContent: true })).filter(inFolder);
     targets = inScope;
   } else {
-    inScope = (await vault.listNotes({ pathPrefix: cfg.vaultPath, includeContent: false, includeMetadata: ["title"] })).filter(
-      (n) => n.path && isUnderVaultPath(n.path, cfg.vaultPath),
-    );
+    inScope = (
+      await vault.listNotes({ pathPrefix: cfg.vaultPath, includeContent: false, includeMetadata: ["title", "prism_creator", "prism_visibility"] })
+    ).filter(inFolder);
     targets = [];
     for (const id of [...new Set(scope.ids)]) {
       let n: Note;
@@ -613,6 +635,10 @@ export async function pushDirectory(
       if (!n.path || !isUnderVaultPath(n.path, cfg.vaultPath)) {
         // A note moved out of the folder (auto-sync) or the wrong note (push-file).
         if (scope.single) result.errors.push([id, "note is not under the sync folder"]);
+        continue;
+      }
+      if (!canView(n)) {
+        if (scope.single) result.errors.push([id, "note is private to someone else"]);
         continue;
       }
       targets.push(n);

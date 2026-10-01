@@ -88,6 +88,10 @@ export interface GitHubSyncInfo {
   conflictStrategy?: string;
   syncedCount?: number;
   lastError?: string | null;
+  /** Server: last seen repository visibility (false = PUBLIC repo), null = unknown. */
+  repoPrivate?: boolean | null;
+  /** Server: explicit opt-in to auto-sync into a public repo. */
+  allowPublic?: boolean;
 }
 
 export interface GitHubPushResult {
@@ -107,7 +111,7 @@ export interface GitHubSyncHost {
   status(): Promise<GitHubSyncInfo[]>;
   remove(configId: string): Promise<void>;
   /** Server only: toggle auto-sync / strategies (e.g. re-enable an imported config). */
-  update?(configId: string, patch: { autoSync?: boolean; commitStrategy?: string; conflictStrategy?: string }): Promise<GitHubSyncInfo>;
+  update?(configId: string, patch: { autoSync?: boolean; allowPublic?: boolean; commitStrategy?: string; conflictStrategy?: string }): Promise<GitHubSyncInfo>;
 }
 
 export interface NotionPropertyMappingInput {
@@ -337,6 +341,10 @@ export function hostServiceErrorText(e: unknown): string {
       return "The server agent is still working. Check Agent activity.";
     case "calendar_sync_disabled":
       return "Calendar sync is off on the server.";
+    case "public_repo":
+      return "That repository is PUBLIC: auto-sync would publish every note in the folder. Make it private, or opt in with allowPublic.";
+    case "unsupported_media_type":
+      return "The request was refused (wrong content type).";
     case "google_not_configured":
     case "notion_not_configured":
       return "The server has no credential for this service yet (Network → Server).";

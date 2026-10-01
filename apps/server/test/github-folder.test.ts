@@ -99,6 +99,110 @@ test("gates: no session / capability / plain member → 403 on every folder + da
   assert.equal(gh.calls.length, 0);
 });
 
+test("H2: a VAULT ADMIN gets only the status reads; every outbound / token-using route is server-owner only", async () => {
+  const { id } = (await (await init()).json()) as { id: string };
+  setMembership("primary", "admin@x.co", "admin", config.ownerEmail);
+  const admin = sessionCookie(makeSession("admin@x.co"));
+  for (const path of ["/github/configs", "/notion-db/configs", "/audit"]) {
+    assert.equal((await sync.request(path, { headers: { cookie: admin } })).status, 200, path);
+  }
+  gh.calls.length = 0;
+  const denied: Array<[string, string]> = [
+    ["GET", "/github/auth"],
+    ["POST", "/github/configs"],
+    ["POST", `/github/configs/${id}/push`],
+    ["POST", `/github/configs/${id}/push-file`],
+    ["PATCH", `/github/configs/${id}`],
+    ["DELETE", `/github/configs/${id}`],
+    ["POST", "/github/import"],
+    ["POST", "/github/push"],
+    ["POST", "/github/pull"],
+    ["GET", "/notion-db/databases"],
+    ["GET", "/notion-db/databases/0123456789abcdef0123456789abcdef/schema"],
+    ["POST", "/notion-db/configs"],
+    ["POST", "/notion-db/configs/x/sync"],
+    ["PATCH", "/notion-db/configs/x"],
+    ["DELETE", "/notion-db/configs/x"],
+    ["GET", "/github/configs/../auth"],
+  ];
+  for (const [method, path] of denied) {
+    const r = await sync.request(path, { method, headers: { ...J, cookie: admin }, body: method === "GET" || method === "DELETE" ? undefined : JSON.stringify({ owner: "acme", repo: "notes", vaultPath: "vault/docs", noteId: "a" }) });
+    assert.equal(r.status, 403, `${method} ${path}`);
+  }
+  assert.equal(gh.calls.length, 0, "an admin never reaches GitHub");
+  assert.ok(getGitHubConfig(id), "and can't delete the owner's config");
+});
+
+test("H1: the stateless /github/push|pull validates owner/repo/branch/vaultPath (no API-path injection) and encodes segments", async () => {
+  const bad: Array<Record<string, string>> = [
+    { owner: "acme", repo: "secret/collaborators/attacker?x=", vaultPath: "vault/docs" },
+    { owner: "acme", repo: "..", vaultPath: "vault/docs" },
+    { owner: "../orgs/x", repo: "notes", vaultPath: "vault/docs" },
+    { owner: "acme", repo: "notes#frag", vaultPath: "vault/docs" },
+    { owner: "acme", repo: "notes", branch: "../../collaborators/x", vaultPath: "vault/docs" },
+    { owner: "acme", repo: "notes", vaultPath: "/" },
+    { owner: "acme", repo: "notes", vaultPath: "" },
+    { owner: "acme", repo: "notes", vaultPath: "vault/../.." },
+  ];
+  for (const b of bad) {
+    for (const dir of ["push", "pull"]) {
+      const r = await sync.request(`/github/${dir}`, { method: "POST", headers: { ...J, cookie: owner() }, body: JSON.stringify(b) });
+      assert.equal(r.status, 400, `${dir} ${JSON.stringify(b)}`);
+    }
+  }
+  assert.equal(gh.calls.length, 0, "nothing reached GitHub");
+});
+
+test("H1: the stateless GitHubClient refuses an injected repo even when called directly, and sends redirect:error", async () => {
+  const { GitHubClient } = await import("../src/worker/github");
+  const seen: RequestInit[] = [];
+  const client = new GitHubClient(gh.tokenOk, (async (u: string, init: RequestInit) => {
+    seen.push(init);
+    return gh.fetch(u, init);
+  }) as unknown as typeof fetch);
+  await assert.rejects(client.putFile("acme", "secret/collaborators/attacker?x=", "a.md", "x", "m", "main"), /invalid GitHub owner\/repo/);
+  await assert.rejects(client.getFile("acme", "notes", "../x.md", "main"));
+  await assert.rejects(client.listTree("acme", "notes", "main/../../x"), /invalid branch/);
+  await client.listTree("acme", "notes", "main");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.redirect, "error");
+});
+
+test("form CSRF: owner write routes require application/json", async () => {
+  const r = await sync.request("/github/configs", { method: "POST", headers: { cookie: owner(), "content-type": "application/x-www-form-urlencoded" }, body: "vaultPath=vault/docs" });
+  assert.equal(r.status, 415);
+});
+
+test("M1: public repository — auto-sync refused without allowPublic (init, PATCH, and at auto-push time)", async () => {
+  gh.isPrivate = false;
+  const r = await init({ autoSync: true });
+  assert.equal(r.status, 400);
+  assert.equal(((await r.json()) as { error: string }).error, "public_repo");
+  const ok = (await (await init({ autoSync: false })).json()) as { id: string; config: { repoPrivate: boolean } };
+  assert.equal(ok.config.repoPrivate, false);
+  const p = await sync.request(`/github/configs/${ok.id}`, { method: "PATCH", headers: { ...J, cookie: owner() }, body: JSON.stringify({ autoSync: true }) });
+  assert.equal(((await p.json()) as { error: string }).error, "public_repo");
+  const p2 = await sync.request(`/github/configs/${ok.id}`, { method: "PATCH", headers: { ...J, cookie: owner() }, body: JSON.stringify({ autoSync: true, allowPublic: true }) });
+  assert.equal(p2.status, 200);
+  // Revoke the opt-in behind the PATCH (stored flag) → the auto-push itself refuses.
+  const { updateGitHubConfig } = await import("../src/worker/sync-store");
+  updateGitHubConfig(ok.id, { allowPublic: false });
+  const before = gh.commitCount("main");
+  vault.notes.get("a")!.content = "changed";
+  const { runGitHubPush } = await import("../src/worker/github-folder");
+  await assert.rejects(runGitHubPush(ok.id, { kind: "all" }, "auto-sync", "auto-push"), /public/);
+  assert.equal(gh.commitCount("main"), before);
+});
+
+test("M1: configs push only what their creator may see — another user's private note stays home", async () => {
+  vault.put({ id: "priv", path: "vault/docs/diary", content: "secret diary", metadata: { prism_visibility: "private", prism_creator: "someone@x.co" } });
+  vault.put({ id: "mine", path: "vault/docs/owner-private", content: "owner private", metadata: { prism_visibility: "private", prism_creator: config.ownerEmail } });
+  const j = (await (await init()).json()) as { result: { pushed: string[] } };
+  assert.ok(j.result.pushed.includes("owner-private.md"));
+  assert.ok(!j.result.pushed.includes("diary.md"));
+  assert.ok(!JSON.stringify(gh.calls.map((c) => c.body)).includes("secret diary"));
+});
+
 test("check-auth: reports the account, never the token; unconfigured → configured:false with no network", async () => {
   const r = await sync.request("/github/auth", { headers: { cookie: owner() } });
   const text = await r.text();
@@ -147,7 +251,7 @@ test("init: read-only token or missing repo → 400 and no config is kept", asyn
 test("push / push-file / patch / delete; other vault's config is a 404", async () => {
   const { id } = (await (await init()).json()) as { id: string };
   vault.notes.get("a")!.content = "Alpha v2";
-  const p = (await (await sync.request(`/github/configs/${id}/push`, { method: "POST", headers: { cookie: owner() } })).json()) as { pushed: string[]; unchanged: number };
+  const p = (await (await sync.request(`/github/configs/${id}/push`, { method: "POST", headers: { ...J, cookie: owner() } })).json()) as { pushed: string[]; unchanged: number };
   assert.deepEqual(p.pushed, ["alpha.md"]);
   assert.equal(p.unchanged, 1);
   vault.notes.get("b")!.content = "Beta v2";
@@ -158,7 +262,7 @@ test("push / push-file / patch / delete; other vault's config is a 404", async (
   assert.equal(refused.status, 400);
   // A config bound to another vault is invisible from this one.
   const foreign = insertGitHubConfig({ ...getGitHubConfig(id)!, id: undefined, vaultId: "other-vault", branch: "other" });
-  assert.equal((await sync.request(`/github/configs/${foreign.id}/push`, { method: "POST", headers: { cookie: owner() } })).status, 404);
+  assert.equal((await sync.request(`/github/configs/${foreign.id}/push`, { method: "POST", headers: { ...J, cookie: owner() } })).status, 404);
   assert.equal((await sync.request(`/github/configs/${foreign.id}`, { method: "DELETE", headers: { cookie: owner() } })).status, 404);
   const listed = (await (await sync.request("/github/configs", { headers: { cookie: owner() } })).json()) as Array<{ id: string }>;
   assert.ok(!listed.some((x) => x.id === foreign.id));
@@ -168,7 +272,7 @@ test("push / push-file / patch / delete; other vault's config is a 404", async (
   assert.equal((await sync.request(`/github/configs/${id}`, { method: "PATCH", headers: { ...J, cookie: owner() }, body: JSON.stringify({ autoSync: "yes" }) })).status, 400);
   assert.equal((await sync.request(`/github/configs/${id}`, { method: "DELETE", headers: { cookie: owner() } })).status, 200);
   assert.equal(getGitHubConfig(id), null);
-  assert.equal((await sync.request(`/github/configs/${id}/push`, { method: "POST", headers: { cookie: owner() } })).status, 404);
+  assert.equal((await sync.request(`/github/configs/${id}/push`, { method: "POST", headers: { ...J, cookie: owner() } })).status, 404);
 });
 
 test("import: maps the desktop file, keeps id_map, ignores local_clone_path, forces auto-sync OFF, idempotent; owner only", async () => {
@@ -242,8 +346,18 @@ test("auto-sync: a resync schedules a full push; manual strategy and auto_sync=f
   await new Promise((r) => setTimeout(r, 5));
   feedListener!({ kind: "resync" });
   assert.deepEqual(githubAutoSyncState().pending, [{ id, notes: 0, full: true }]);
+  gh.calls.length = 0;
   const r = await flushGitHubAutoSync(id);
-  assert.equal(r!.commit, null); // nothing changed since init
+  assert.equal(r, null, "M5: nothing updated since the last sync → no push at all");
+  assert.equal(gh.calls.length, 0, "and GitHub is not even contacted");
+  // A note updated after the last sync IS pushed on the next resync — only that one.
+  const n = vault.notes.get("a")!;
+  n.content = "Alpha after resync";
+  n.updatedAt = new Date(Date.now() + 60_000).toISOString();
+  feedListener!({ kind: "resync" });
+  const r2 = await flushGitHubAutoSync(id);
+  assert.deepEqual(r2!.pushed, ["alpha.md"]);
+  assert.equal(r2!.unchanged, 0);
   // manual: changes are ignored by the listener
   await sync.request(`/github/configs/${id}`, { method: "PATCH", headers: { ...J, cookie: owner() }, body: JSON.stringify({ commitStrategy: "manual" }) });
   feedListener?.({ kind: "upsert", row: row("a", "vault/docs/alpha"), prev: undefined });

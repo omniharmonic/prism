@@ -21,6 +21,7 @@ import { resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
 import { vaultClient } from "../parachute";
 import { subscribeTreeChanges, type TreeChange } from "../tree";
+import { viewableBy } from "./sync-visibility";
 import {
   GitHubApiError,
   GitHubGitClient,
@@ -111,6 +112,8 @@ export interface GitHubConfigInput {
   conflictStrategy?: string;
   autoSync?: boolean;
   fileExtension?: string;
+  /** Explicit opt-in to auto-sync into a PUBLIC repository (review M1). */
+  allowPublic?: boolean;
 }
 
 export function validateGitHubInput(b: GitHubConfigInput): {
@@ -121,6 +124,7 @@ export function validateGitHubInput(b: GitHubConfigInput): {
   commitStrategy: CommitStrategy;
   conflictStrategy: GhConflictStrategy;
   autoSync: boolean;
+  allowPublic: boolean;
   fileExtension: string;
 } {
   const vaultPath = normalizeVaultPath(b.vaultPath);
@@ -135,7 +139,7 @@ export function validateGitHubInput(b: GitHubConfigInput): {
   if (!conflictStrategy) throw new SyncInputError("bad_request", "conflictStrategy must be local-wins or remote-wins");
   const fileExtension = normalizeExtension(b.fileExtension ?? ".md");
   if (fileExtension === null) throw new SyncInputError("bad_request", "invalid fileExtension");
-  return { vaultPath, ...remote, branch, commitStrategy, conflictStrategy, autoSync: b.autoSync === true, fileExtension: fileExtension || ".md" };
+  return { vaultPath, ...remote, branch, commitStrategy, conflictStrategy, autoSync: b.autoSync === true, allowPublic: b.allowPublic === true, fileExtension: fileExtension || ".md" };
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
@@ -158,6 +162,9 @@ export function githubConfigView(c: StoredGitHubConfig) {
     lastResult: c.lastResult,
     lastError: c.lastError,
     importedFrom: c.importedFrom,
+    allowPublic: c.allowPublic,
+    /** null = not checked yet; false → the UI warns: notes go to a PUBLIC repo. */
+    repoPrivate: c.repoPrivate,
   };
 }
 
@@ -189,7 +196,15 @@ export async function runGitHubPush(
     if (!gh) throw new SyncInputError("github_not_configured", "store a GitHub token in Network → Server → Sync integrations");
     const startedAt = new Date().toISOString();
     try {
-      const out = await pushDirectory(gh, vaultFor(cfg.vaultId), cfg, scope);
+      // Visibility first (review M1): record it, and never AUTO-push into a public
+      // repository without the explicit allowPublic opt-in.
+      const info = await gh.repo(cfg.owner, cfg.repo);
+      if (!info) throw new SyncInputError("repo_not_found", "repository not found, or the stored token cannot see it");
+      if (cfg.repoPrivate !== info.private) updateGitHubConfig(cfg.id, { repoPrivate: info.private });
+      if (action === "auto-push" && !info.private && !cfg.allowPublic) {
+        throw new SyncInputError("public_repo", "the repository is public; auto-sync needs allowPublic");
+      }
+      const out = await pushDirectory(gh, vaultFor(cfg.vaultId), cfg, scope, undefined, viewableBy(cfg.createdBy, cfg.vaultId));
       const r = out.result;
       updateGitHubConfig(cfg.id, {
         idMap: out.idMap,
@@ -231,6 +246,9 @@ export async function initGitHubSync(vaultId: string, actor: string, input: GitH
   const info = await gh.repo(v.owner, v.repo);
   if (!info) throw new SyncInputError("repo_not_found", "repository not found, or the stored token cannot see it");
   if (!info.canPush) throw new SyncInputError("repo_read_only", "the stored token cannot push to this repository");
+  if (v.autoSync && !info.private && !v.allowPublic) {
+    throw new SyncInputError("public_repo", "this repository is PUBLIC: every note in the folder would be published. Set allowPublic to auto-sync anyway");
+  }
   const cfg = insertGitHubConfig({
     vaultId,
     vaultPath: v.vaultPath,
@@ -241,6 +259,8 @@ export async function initGitHubSync(vaultId: string, actor: string, input: GitH
     commitStrategy: v.commitStrategy,
     conflictStrategy: v.conflictStrategy,
     autoSync: v.autoSync,
+    allowPublic: v.allowPublic,
+    repoPrivate: info.private,
     idMap: {},
     blobMap: {},
     lastSynced: "",
@@ -254,6 +274,19 @@ export async function initGitHubSync(vaultId: string, actor: string, input: GitH
   } catch (e) {
     deleteGitHubConfig(cfg.id);
     throw e;
+  }
+}
+
+/** Turning auto-sync ON: refuse a PUBLIC repository unless allowPublic (review M1).
+ *  Checks the live visibility (one GET) and records it. */
+export async function assertAutoSyncAllowed(cfg: StoredGitHubConfig, allowPublic: boolean): Promise<void> {
+  const gh = githubClient(cfg.vaultId);
+  if (!gh) throw new SyncInputError("github_not_configured", "store a GitHub token in Network → Server → Sync integrations");
+  const info = await gh.repo(cfg.owner, cfg.repo);
+  if (!info) throw new SyncInputError("repo_not_found", "repository not found, or the stored token cannot see it");
+  updateGitHubConfig(cfg.id, { repoPrivate: info.private });
+  if (!info.private && !allowPublic) {
+    throw new SyncInputError("public_repo", "this repository is PUBLIC: every note in the folder would be published. Set allowPublic to auto-sync anyway");
   }
 }
 
@@ -402,7 +435,27 @@ export async function flushGitHubAutoSync(cfgId: string): Promise<DirectorySyncR
   if (p.timer) clearTimeout(p.timer);
   const cfg = getGitHubConfig(cfgId);
   if (!cfg || !cfg.autoSync || cfg.commitStrategy === "manual" || !autoOpts.enabled()) return null;
-  const scope: PushScope = p.full ? { kind: "all" } : { kind: "notes", ids: [...p.ids] };
+  let ids = [...p.ids];
+  if (p.full) {
+    // A projection resync hides WHICH notes changed (review M5): find them with a
+    // lean listing (no content) — only notes updated since the last sync go out,
+    // and nothing at all touches GitHub when there are none.
+    try {
+      const since = Date.parse(cfg.lastSynced);
+      const lean = await vaultFor(cfg.vaultId).listNotes({ pathPrefix: cfg.vaultPath, includeContent: false, includeMetadata: ["title"] });
+      for (const n of lean) {
+        if (!n.path || !isUnderVaultPath(n.path, cfg.vaultPath)) continue;
+        const u = Date.parse(n.updatedAt ?? "");
+        if (!Number.isFinite(since) || !Number.isFinite(u) || u > since) ids.push(n.id);
+      }
+    } catch (e) {
+      console.warn(`[github-sync] resync scan for ${target(cfg)} failed: ${(e as Error).message}`);
+      return null;
+    }
+    ids = [...new Set(ids)];
+  }
+  if (!ids.length) return null;
+  const scope: PushScope = { kind: "notes", ids };
   const run = runGitHubPush(cfgId, scope, "auto-sync", "auto-push").catch((e) => {
     console.warn(`[github-sync] auto-push ${target(cfg)} failed: ${e instanceof GitHubApiError || e instanceof SyncInputError ? e.message : (e as Error).message}`);
     return null;

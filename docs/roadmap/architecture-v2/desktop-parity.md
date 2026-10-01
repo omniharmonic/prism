@@ -91,6 +91,12 @@ Details, routes, env and the import runbook: **`docs/sync.md`**.
 | GitHub folder sync (setup modal, push, push-file, auto-push on save) | `github_check_auth` `github_sync_init` `github_sync_push` `github_sync_push_file` `github_sync_status` `github_sync_remove` | Configs in SQLite `github_sync_configs` (desktop fields + `blob_map`), the stored `github` token, the **Git Data API** (one commit per push, blob-SHA no-op skip, no clone). Routes `/api/sync/github/{auth,configs,configs/:id/push,…/push-file,PATCH,DELETE}`. **Auto-sync** = the tree projection's change feed, debounced (30 s) into one commit; resync → full push. `POST /api/sync/github/import` (server owner) takes the desktop's `github-sync-configs.json` (auto-sync forced off, `id_map` kept) |
 | Notion database sync | `notion_db_list` `notion_db_schema` `notion_db_sync_init` `notion_db_sync` `notion_db_sync_status` `notion_db_sync_remove` | Configs in SQLite `notion_db_sync_configs`, the stored `notion` token; `notion_db.rs` ported (`should_overwrite`, no-op skip both ways, `if_updated_at`, 3 rps). Routes `/api/sync/notion-db/*`. Background pass for `autoSync` configs only with `NOTION_DB_SYNC_ENABLED=true` (10 min) |
 
+Access (security review H2): every one of these routes is **server-owner only**. Vault admins
+keep only the status reads (`GET /api/sync/github/configs`, `GET /api/sync/notion-db/configs`,
+`GET /api/sync/audit`), and the `github` / `notion` credential writes are owner-only too.
+Exports skip notes the config's creator can't view (never another user's private note), and
+auto-sync into a public repo needs `allowPublic`. See `docs/sync.md` § Who can use it.
+
 Client: `HostServices.githubSync` / `notionDbSync` (owner), selected by
 `useGitHubSyncApi` / `useNotionDbSyncApi` (`packages/core/src/lib/host/folderSync.ts`), so the
 same modals run on the desktop (Tauri) and the client (server). The note Sync panel offers

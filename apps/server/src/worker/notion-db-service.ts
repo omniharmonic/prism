@@ -25,6 +25,8 @@ import {
   type NotionDbVault,
 } from "./notion-db";
 import { normalizeVaultPath } from "./github-dir";
+import { isReservedTag } from "./sync-reserved";
+import { viewableBy } from "./sync-visibility";
 import {
   SyncInputError,
   auditSync,
@@ -112,6 +114,7 @@ export function initNotionDbSync(vaultId: string, actor: string, b: NotionDbInit
   if (!NOTION_ID_RE.test(databaseId)) throw new SyncInputError("bad_request", "databaseId must be a Notion database id");
   const tag = String(b.parachuteTag ?? "").trim();
   if (!TAG_RE.test(tag)) throw new SyncInputError("bad_request", "parachuteTag must be a tag name");
+  if (isReservedTag(tag)) throw new SyncInputError("bad_request", `"${tag}" is a reserved tag the server itself acts on; pick another`);
   const prefix = normalizeVaultPath(String(b.parachutePathPrefix ?? ""));
   if (!prefix) throw new SyncInputError("bad_request", "parachutePathPrefix must be a folder path with no '..' segments");
   const titleProperty = String(b.titleProperty ?? "").trim();
@@ -149,7 +152,7 @@ export async function runNotionDbConfig(configId: string, actor: string, action:
     if (!client) throw notConfigured();
     const startedAt = new Date().toISOString();
     try {
-      const { result, idMap } = await runNotionDbSync(client, vaultFor(cfg.vaultId), cfg);
+      const { result, idMap } = await runNotionDbSync(client, vaultFor(cfg.vaultId), cfg, viewableBy(cfg.createdBy, cfg.vaultId));
       updateNotionDbConfig(cfg.id, {
         idMap,
         lastSynced: startedAt,

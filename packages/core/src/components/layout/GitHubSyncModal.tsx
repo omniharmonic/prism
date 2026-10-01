@@ -273,6 +273,11 @@ export function GitHubSyncModal({
                         </label>
                       )}
                     </div>
+                    {c.repoPrivate === false && (
+                      <div className="text-xs text-amber-300">
+                        Public repository: every note in this folder is published.{c.allowPublic ? "" : " Auto-sync stays off unless you opt in (allowPublic)."}
+                      </div>
+                    )}
                     {c.lastError && <div className="text-xs text-red-300/80 truncate">{c.lastError}</div>}
                   </div>
                 ))}

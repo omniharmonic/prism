@@ -3,7 +3,11 @@
  *
  *  - Legacy desktop → its Tauri commands (`githubSyncApi` / `notionDbSyncApi`).
  *  - Web / Prism Client → the Prism Server through HostServices
- *    (`/api/sync/github/*`, `/api/sync/notion-db/*`), owner only.
+ *    (`/api/sync/github/*`, `/api/sync/notion-db/*`). Those routes are
+ *    SERVER-OWNER only on the server (they act with the owner's stored GitHub /
+ *    Notion token; a vault admin can only READ config status), and the web shell
+ *    provides HostServices to the server owner only — so this is null for
+ *    everyone else.
  *  - Anyone else (non-owner, capability viewer) → null: the modal shows a notice.
  *
  * Both transports expose the same shape, so GitHubSyncModal / NotionDbSyncModal /

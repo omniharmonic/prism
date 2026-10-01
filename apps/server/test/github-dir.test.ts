@@ -48,11 +48,14 @@ const note = (over: Partial<Note> & { id: string }): Note => ({ content: "", pat
 
 // ── desktop parity: pure rules ───────────────────────────────────────────────
 
-test("map_vault_path: strips the prefix, adds the extension, keeps an existing one; 'md' == '.md'", () => {
+test("map_vault_path: strips the prefix, always ends in the sync extension; 'md' == '.md'", () => {
   const c = cfg({ vaultPath: "vault/projects/docs" });
   assert.equal(mapVaultPathToRepoPath("vault/projects/docs/readme", c), "readme.md");
   assert.equal(mapVaultPathToRepoPath("vault/projects/docs/sub/page", c), "sub/page.md");
-  assert.equal(mapVaultPathToRepoPath("vault/projects/docs/file.txt", c), "file.txt");
+  // Review M2: only the sync extension is ever written (the desktop kept file.txt).
+  assert.equal(mapVaultPathToRepoPath("vault/projects/docs/file.txt", c), "file.txt.md");
+  assert.equal(mapVaultPathToRepoPath("vault/projects/docs/v1.2", c), "v1.2.md");
+  assert.equal(mapVaultPathToRepoPath("vault/projects/docs/done.md", c), "done.md");
   assert.equal(mapVaultPathToRepoPath("vault/docs/john-thiel", cfg({ fileExtension: "md" })), "john-thiel.md");
   assert.equal(normalizeExtension("md"), ".md");
   assert.equal(normalizeExtension(".md"), ".md");
@@ -104,8 +107,24 @@ test("safeRepoPath refuses traversal, absolute paths, .git and control character
   for (const bad of ["../x.md", "a/../../x.md", "/etc/passwd", ".git/config", "a/.GIT/hooks/x", "a//b.md", "a\\b.md", "a/\u0000.md", "./x.md", ""]) {
     assert.throws(() => safeRepoPath(bad), Error, bad);
   }
+  // Review M2: no dot-files/dirs at all, and git verify_path's .git variants.
+  for (const bad of [".github/workflows/x.md", ".gitmodules", "a/.gitattributes", ".git./x", ".git /x", "GIT~1/config", "a/.Git../x", "​.git/x", "a/.​git/x", "．git/x", "x./y.md", "x /y.md"]) {
+    assert.throws(() => safeRepoPath(bad), Error, JSON.stringify(bad));
+  }
   assert.equal(safeRepoPath("people/peter-thiel.md"), "people/peter-thiel.md");
-  assert.equal(safeRepoPath(".github/notes.md"), ".github/notes.md");
+});
+
+test("M1: a note the config's creator can't view (another user's private note) never leaves the vault", async () => {
+  const { gh, client, vault, c } = setup();
+  vault.put({ id: "p", path: "vault/docs/secret", content: "private body", metadata: { prism_visibility: "private", prism_creator: "someone@x.co" } });
+  vault.put({ id: "q", path: "vault/docs/mine", content: "my private", metadata: { prism_visibility: "private", prism_creator: "me@x.co" } });
+  const canView = (n: Note) => n.metadata?.prism_visibility !== "private" || n.metadata?.prism_creator === "me@x.co";
+  const out = await pushDirectory(client, vault, c, { kind: "all" }, undefined, canView);
+  assert.ok(out.result.pushed.includes("mine.md"));
+  assert.equal(gh.file("main", "secret.md"), undefined);
+  const single = await pushDirectory(client, vault, c, { kind: "notes", ids: ["p"], single: true }, undefined, canView);
+  assert.match(single.result.errors[0]![1], /private/);
+  assert.ok(!JSON.stringify(gh.calls).includes("private body"));
 });
 
 test("remote / branch / folder validation", () => {

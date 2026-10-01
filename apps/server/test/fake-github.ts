@@ -21,6 +21,7 @@ export interface FakeGitHub {
   repo: string;
   defaultBranch: string;
   canPush: boolean;
+  isPrivate: boolean;
   tokenOk: string;
   branches: Map<string, string>; // branch → commit sha
   commits: Map<string, { tree: string; parents: string[]; message: string }>;
@@ -46,6 +47,7 @@ export function createFakeGitHub(opts: { owner?: string; repo?: string; empty?: 
     repo: opts.repo ?? "notes",
     defaultBranch: "main",
     canPush: opts.canPush ?? true,
+    isPrivate: true,
     tokenOk: opts.token ?? "ghp_testtoken",
     branches: new Map(),
     commits: new Map(),
@@ -104,7 +106,7 @@ export function createFakeGitHub(opts: { owner?: string; repo?: string; empty?: 
     const base = `/repos/${gh.owner}/${gh.repo}`;
     if (!p.startsWith(base)) return json({ message: "Not Found" }, 404);
     const sub = p.slice(base.length);
-    if (sub === "" && method === "GET") return json({ default_branch: gh.defaultBranch, private: true, permissions: { push: gh.canPush } });
+    if (sub === "" && method === "GET") return json({ default_branch: gh.defaultBranch, private: gh.isPrivate, permissions: { push: gh.canPush } });
     let m: RegExpMatchArray | null;
     if ((m = sub.match(/^\/git\/ref\/heads\/(.+)$/)) && method === "GET") {
       if (gh.branches.size === 0) return json({ message: "Git Repository is empty." }, 409);

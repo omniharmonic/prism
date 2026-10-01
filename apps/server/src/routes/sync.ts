@@ -9,12 +9,14 @@
  */
 import { Hono, type Context } from "hono";
 import { resolveActor } from "../auth/actor";
-import { GitHubApiError } from "../worker/github-dir";
+import { GitHubApiError, normalizeVaultPath, parseRemote, validBranch } from "../worker/github-dir";
+import { viewableBy } from "../worker/sync-visibility";
 import {
   githubClient,
   githubConfigView,
   importDesktopGitHubConfigs,
   initGitHubSync,
+  assertAutoSyncAllowed,
   normCommitStrategy,
   normGhConflict,
   refreshGitHubAutoSync,
@@ -166,9 +168,34 @@ sync.get("/notion/pages", async (c) => {
 
 // ── Stored folder / database syncs (Client parity B) ──────────────────────────
 // The desktop's GitHub folder sync and Notion DATABASE sync, now server-side with
-// stored configs (worker/sync-store.ts). Admin (the router gate above), scoped to
-// the actor's active vault: a config of another vault is a 404. No route ever
-// returns a token; outbound targets are api.github.com / api.notion.com only.
+// stored configs (worker/sync-store.ts), scoped to the actor's active vault: a
+// config of another vault is a 404. No route ever returns a token; outbound
+// targets are api.github.com / api.notion.com only.
+//
+// SERVER-OWNER ONLY (security review H2): every one of these routes either
+// writes outward AS the owner (the stored github/notion token reaches whatever
+// the owner can reach), reveals what that token sees (/github/auth login, the
+// Notion database list/schema), or creates a config that will. A vault admin
+// keeps exactly the READ of status: GET /github/configs, GET /notion-db/configs,
+// GET /audit. The stateless /github/push|pull (H1) is owner-only too.
+const ADMIN_READABLE = new Set(["/github/configs", "/notion-db/configs", "/audit"]);
+const isServerOwner = (c: Context) => {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail;
+};
+sync.use("*", async (c, next) => {
+  // Allow-list, not deny-list: only the pre-existing per-note routes and the
+  // status reads stay admin; ANY other path (incl. odd spellings) needs the owner.
+  const sub = new URL(c.req.url).pathname.replace(/^\/api\/sync(?=\/)/, "");
+  if (/^\/note\/[^/]+\/(push|pull)$/.test(sub) || (c.req.method === "GET" && sub === "/notion/pages")) return next();
+  if (c.req.method === "GET" && ADMIN_READABLE.has(sub)) return next();
+  if (!isServerOwner(c)) return c.json({ error: "forbidden", detail: "only the server owner may do this" }, 403);
+  // Form-CSRF (review Low): a cross-site <form> can't send application/json.
+  if ((c.req.method === "POST" || c.req.method === "PATCH") && !(c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json")) {
+    return c.json({ error: "unsupported_media_type", detail: "Content-Type: application/json required" }, 415);
+  }
+  return next();
+});
 
 function syncError(c: Context, e: unknown) {
   if (e instanceof SyncInputError) return c.json({ error: e.code, detail: e.message }, e.status as 400);
@@ -258,12 +285,26 @@ sync.post("/github/configs/:id/push-file", async (c) => {
 sync.patch("/github/configs/:id", async (c) => {
   const cfg = ownGitHubConfig(c);
   if (!cfg) return c.json({ error: "not_found" }, 404);
-  const b = await body<{ autoSync?: unknown; commitStrategy?: unknown; conflictStrategy?: unknown }>(c);
+  const b = await body<{ autoSync?: unknown; allowPublic?: unknown; commitStrategy?: unknown; conflictStrategy?: unknown }>(c);
   if (!b) return c.json({ error: "bad_request" }, 400);
   const patch: Parameters<typeof updateGitHubConfig>[1] = {};
+  if (b.allowPublic !== undefined) {
+    if (typeof b.allowPublic !== "boolean") return c.json({ error: "bad_request", detail: "allowPublic must be a boolean" }, 400);
+    patch.allowPublic = b.allowPublic;
+  }
   if (b.autoSync !== undefined) {
     if (typeof b.autoSync !== "boolean") return c.json({ error: "bad_request", detail: "autoSync must be a boolean" }, 400);
     patch.autoSync = b.autoSync;
+  }
+  // Turning auto-sync on (or keeping it on while revoking allowPublic) re-checks
+  // the repository's visibility: a PUBLIC repo needs allowPublic (review M1).
+  const willAuto = patch.autoSync ?? cfg.autoSync;
+  if (willAuto && (patch.autoSync === true || patch.allowPublic === false)) {
+    try {
+      await assertAutoSyncAllowed(cfg, patch.allowPublic ?? cfg.allowPublic);
+    } catch (e) {
+      return syncError(c, e);
+    }
   }
   if (b.commitStrategy !== undefined) {
     const v = normCommitStrategy(b.commitStrategy);
@@ -405,13 +446,21 @@ sync.post("/github/:dir", async (c) => {
     .json<{ owner?: string; repo?: string; branch?: string; vaultPath?: string }>()
     .catch(() => ({}) as { owner?: string; repo?: string; branch?: string; vaultPath?: string });
   if (!body.owner || !body.repo || !body.vaultPath) return c.json({ error: "bad_request", detail: "owner, repo, vaultPath required" }, 400);
-  const cfg = { owner: body.owner!, repo: body.repo!, branch: body.branch ?? "main", vaultPath: body.vaultPath!, fileExtension: ".md" };
+  // Security review H1: these strings become GitHub API URL segments and the
+  // sync scope — validate them all (the client re-validates + encodes too).
+  const remote = typeof body.owner === "string" && typeof body.repo === "string" ? parseRemote(`${body.owner}/${body.repo}`) : null;
+  if (!remote || remote.owner !== body.owner || remote.repo !== body.repo) return c.json({ error: "bad_request", detail: "invalid owner/repo" }, 400);
+  const branch = typeof body.branch === "string" ? body.branch : "main";
+  if (!validBranch(branch)) return c.json({ error: "bad_request", detail: "invalid branch" }, 400);
+  const vaultPath = typeof body.vaultPath === "string" ? normalizeVaultPath(body.vaultPath) : null;
+  if (!vaultPath || vaultPath === "/" || vaultPath.startsWith("/")) return c.json({ error: "bad_request", detail: "vaultPath must be a folder (not the whole vault)" }, 400);
+  const cfg = { owner: remote.owner, repo: remote.repo, branch, vaultPath, fileExtension: ".md" };
   const client = new GitHubClient(gh.token);
   try {
-    if (dir === "push") return c.json({ pushed: await pushToGitHub(client, vaultClient(actor.vaultId), cfg) });
+    if (dir === "push") return c.json({ pushed: await pushToGitHub(client, vaultClient(actor.vaultId), cfg, viewableBy(actor.kind === "user" ? actor.email : "", actor.vaultId)) });
     if (dir === "pull") return c.json({ pulled: await pullFromGitHub(client, vaultClient(actor.vaultId), cfg) });
     return c.json({ error: "bad_request", detail: "use /github/push or /github/pull" }, 400);
   } catch (e) {
-    return c.json({ error: "sync_failed", detail: (e as Error).message }, 502);
+    return syncError(c, e);
   }
 });

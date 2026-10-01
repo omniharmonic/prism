@@ -316,6 +316,80 @@ test("newer-wins + a concurrent vault edit (409) is a conflict, never a blind ov
   assert.equal(vault.notes.get(noteId)!.metadata!.status, "todo");
 });
 
+test("M3: with no content property the note body is never compared or overwritten", async () => {
+  const f = fakeNotion();
+  addPage(f, 1, "Task", "Todo", "notion text");
+  const vault = new FakeSyncVault();
+  const client = new NotionDbClient("secret_test", f.fetch, noSleep);
+  const c = cfgOf({ contentProperty: null, syncDirection: "pull" });
+  const r1 = await runNotionDbSync(client, vault, c);
+  const noteId = r1.idMap[pid(1)]!;
+  vault.notes.get(noteId)!.content = "body written in Prism";
+  const writes = vault.writes.length;
+  const r2 = await runNotionDbSync(client, vault, { ...c, idMap: r1.idMap, lastSynced: tick() });
+  assert.equal(r2.result.unchanged, 1, "a body-only difference is not a change");
+  assert.equal(vault.writes.length, writes);
+  f.pages.get(pid(1))!.properties.Status.select.name = "In Progress";
+  f.pages.get(pid(1))!.last_edited_time = tick();
+  await runNotionDbSync(client, vault, { ...c, idMap: r1.idMap, lastSynced: "" });
+  assert.equal(vault.notes.get(noteId)!.content, "body written in Prism");
+  assert.equal(vault.notes.get(noteId)!.metadata!.status, "in-progress");
+  assert.ok(!("content" in (vault.writes[vault.writes.length - 1]!.body as object)));
+});
+
+test("M4: reserved tags and metadata keys can't be mapped from Notion", async () => {
+  const n = normalizeMappings(
+    ["prism_visibility", "prism_creator", "gov_sig", "runner", "enabled", "skillName", "type", "structured", "lastRun", "notion_page_id", "title", "layout", "sync"].map((k) => ({
+      notionProperty: k,
+      notionType: "rich_text",
+      parachuteField: k,
+      transform: "identity",
+    })),
+  );
+  assert.deepEqual(n.mappings, []);
+  // Even a mapping stored before the rule is ignored at run time.
+  const f = fakeNotion();
+  f.pages.set(pid(9), { id: pid(9), last_edited_time: tick(), properties: { Name: { type: "title", title: [{ plain_text: "X" }] }, Vis: { type: "rich_text", rich_text: [{ plain_text: "workspace" }] } } });
+  const vault = new FakeSyncVault();
+  const map = [{ notionProperty: "Vis", notionType: "rich_text", parachuteField: "prism_visibility", transform: "identity", valueMap: {}, relationshipType: null }];
+  await runNotionDbSync(new NotionDbClient("secret_test", f.fetch, noSleep), vault, cfgOf({ propertyMap: map, syncDirection: "pull" }));
+  assert.ok(!("prism_visibility" in ([...vault.notes.values()][0]!.metadata ?? {})));
+});
+
+test("M4: a reserved parachuteTag is refused at init", async () => {
+  putSecret("primary", config.ownerEmail, "notion", JSON.stringify({ apiKey: "secret_test" }));
+  for (const tag of ["agent-skill", "governance-role", "dashboard", "message-thread", "agent-dispatch"]) {
+    const r = await sync.request("/notion-db/configs", { method: "POST", headers: { ...J, cookie: owner() }, body: JSON.stringify({ databaseId: DB, parachuteTag: tag, parachutePathPrefix: "vault/x", titleProperty: "Name" }) });
+    assert.equal(r.status, 400, tag);
+  }
+});
+
+test("pull leaves a mapped note alone once it left the folder/tag or became someone else's private note; archived pages are skipped", async () => {
+  const f = fakeNotion();
+  addPage(f, 1, "One", "Todo");
+  addPage(f, 2, "Two", "Todo");
+  const vault = new FakeSyncVault();
+  const client = new NotionDbClient("secret_test", f.fetch, noSleep);
+  const r1 = await runNotionDbSync(client, vault, cfgOf({ syncDirection: "pull" }));
+  vault.notes.get(r1.idMap[pid(1)]!)!.path = "vault/elsewhere/one";
+  vault.notes.get(r1.idMap[pid(2)]!)!.metadata = { ...vault.notes.get(r1.idMap[pid(2)]!)!.metadata, prism_visibility: "private", prism_creator: "other@x.co" };
+  for (const i of [1, 2]) {
+    f.pages.get(pid(i))!.properties.Status.select.name = "Done";
+    f.pages.get(pid(i))!.last_edited_time = tick();
+  }
+  const canView = (n: { metadata: Record<string, unknown> | null }) => n.metadata?.prism_visibility !== "private";
+  const r2 = await runNotionDbSync(client, vault, cfgOf({ syncDirection: "bidirectional", idMap: r1.idMap, lastSynced: "" }), canView as never);
+  assert.equal(r2.result.skipped, 2);
+  assert.equal(r2.result.updated, 0);
+  assert.equal(vault.notes.get(r1.idMap[pid(1)]!)!.metadata!.status, "todo");
+  // Archived page: not pulled, and its mapped note is not pushed back (no error).
+  f.pages.get(pid(1))!.archived = true;
+  vault.notes.get(r1.idMap[pid(1)]!)!.path = "vault/tasks/notion/one";
+  const r3 = await runNotionDbSync(client, vault, cfgOf({ syncDirection: "bidirectional", idMap: r1.idMap, lastSynced: "" }), canView as never);
+  assert.equal(r3.result.errors.length, 0);
+  assert.ok(r3.result.skipped >= 1);
+});
+
 test("push creates pages for unmapped notes under the prefix (segment-safe) and records them", async () => {
   const f = fakeNotion();
   const vault = new FakeSyncVault();
@@ -390,7 +464,7 @@ test("routes: unconfigured → 400 before any network; list/schema/init/sync/pat
   const { id, config: view } = (await created.json()) as { id: string; config: { syncDirection: string; conflictStrategy: string } };
   assert.deepEqual([view.syncDirection, view.conflictStrategy], ["pull", "newer-wins"]);
   addPage(f, 1, "Alpha", "Todo");
-  const res = await sync.request(`/notion-db/configs/${id}/sync`, { method: "POST", headers: { cookie: owner() } });
+  const res = await sync.request(`/notion-db/configs/${id}/sync`, { method: "POST", headers: { ...J, cookie: owner() } });
   const text = await res.text();
   assert.equal(JSON.parse(text).created, 1);
   assert.ok(!text.includes("secret_test"));
@@ -404,7 +478,7 @@ test("routes: unconfigured → 400 before any network; list/schema/init/sync/pat
   assert.equal((await sync.request(`/notion-db/configs/${id}`, { method: "PATCH", headers: { ...J, cookie: owner() }, body: JSON.stringify({ autoSync: true }) })).status, 200);
   // Another vault's config is invisible.
   const foreign = insertNotionDbConfig({ ...cfgOf(), vaultId: "elsewhere", createdBy: "t" });
-  assert.equal((await sync.request(`/notion-db/configs/${foreign.id}/sync`, { method: "POST", headers: { cookie: owner() } })).status, 404);
+  assert.equal((await sync.request(`/notion-db/configs/${foreign.id}/sync`, { method: "POST", headers: { ...J, cookie: owner() } })).status, 404);
   assert.equal((await sync.request(`/notion-db/configs/${id}`, { method: "DELETE", headers: { cookie: owner() } })).status, 200);
   assert.equal(getNotionDbConfig(id), null);
 });
