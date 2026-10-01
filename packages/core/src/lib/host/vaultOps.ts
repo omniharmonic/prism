@@ -6,6 +6,7 @@
  *   syncStatusFromNote / addSyncConfig / removeSyncConfig   ← sync_status / sync_add_config / sync_remove_config
  *   extractWikilinks / resolveWikilinks                     ← resolve_wikilinks (single note)
  *   queueSkillRun                                            ← "run this skill now" (server scheduler)
+ *   updateSkillNote / validateSkillPatch                     ← agent_update_skill (skill config card)
  */
 import type { Note, NoteTreeEntry, UpdateNoteParams } from "../types";
 
@@ -168,4 +169,168 @@ export async function queueSkillRun(vc: VaultOpsClient, skillNoteId: string): Pr
   const note = await vc.getNote(skillNoteId);
   if (!(note.tags ?? []).includes("agent-skill")) throw new Error("not an agent-skill note");
   await vc.updateNote(skillNoteId, { metadata: { ...(note.metadata ?? {}), lastRun: "" }, ifUpdatedAt: note.updatedAt ?? undefined });
+}
+
+// ── skill-note config (port of the desktop `agent_update_skill`, parity A) ────
+//
+// The agent-skill note's metadata IS the server scheduler's source of truth
+// (apps/server/src/worker/skills.ts reads skillName, enabled, intervalSecs,
+// runAtHour, dependsOn, lastRun, executionMode, provider/model, structured; the
+// prompt is the content). The skill config card on a thin client writes it here,
+// through the VaultClient (the signed-in user's grants), never via a server
+// route. `runner` (the server's lease) and `lastRun` are never touched.
+
+export type SkillProvider = "" | "claude" | "local";
+export const SKILL_PROVIDERS: readonly SkillProvider[] = ["", "claude", "local"];
+export const SKILL_EXECUTION_MODES = ["agentic", "structured"] as const;
+
+export interface SkillPatch {
+  enabled?: boolean;
+  intervalSecs?: number;
+  /** null clears it (an hourly-style skill). */
+  runAtHour?: number | null;
+  /** A skill name, or null to clear. */
+  dependsOn?: string | null;
+  /** "" = the server default (SKILLS_DEFAULT_PROVIDER) — the desktop's sentinel. */
+  provider?: SkillProvider;
+  /** "" = the default model for the provider. */
+  model?: string;
+  executionMode?: (typeof SKILL_EXECUTION_MODES)[number];
+  /** The structured-mode config block (validated like the server's parser). */
+  structured?: Record<string, unknown> | null;
+  description?: string;
+  /** The prompt / rubric (note content). */
+  prompt?: string;
+}
+
+/** Smallest interval the scheduler is asked to honour (its tick is 60 s). */
+export const MIN_SKILL_INTERVAL_SECS = 60;
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
+
+/**
+ * Mirror of the server's `parseStructuredConfig` (worker/skills.ts): returns
+ * the error the scheduler would fail the run with, or null when it would parse.
+ * Stricter only where the server would silently drop data (non-string tags).
+ */
+export function validateStructuredBlock(s: unknown): string | null {
+  if (s === null || s === undefined) return "missing 'structured' config block";
+  if (typeof s !== "object" || Array.isArray(s)) return "'structured' must be an object";
+  const o = s as Record<string, unknown>;
+  const strList = (k: string, required: boolean): string | null => {
+    const v = o[k];
+    if (v === undefined) return required ? `'structured.${k}' is missing or empty` : null;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) return `'structured.${k}' must be a list of strings`;
+    if (required && v.length === 0) return `'structured.${k}' is missing or empty`;
+    return null;
+  };
+  const e = strList("sourceTags", true) ?? strList("excludeTags", false) ?? strList("allowedValues", false) ?? strList("alsoAddTags", false);
+  if (e) return e;
+  if (!("schema" in o)) return "'structured.schema' is missing";
+  if (o.schema === null || typeof o.schema !== "object") return "'structured.schema' must be a JSON schema object";
+  if (typeof o.resultField !== "string" || !o.resultField) return "'structured.resultField' is missing";
+  if (o.limit !== undefined && !(typeof o.limit === "number" && Number.isInteger(o.limit) && o.limit > 0 && o.limit <= 1000)) {
+    return "'structured.limit' must be a whole number from 1 to 1000";
+  }
+  if (o.shortcutLabels !== undefined) {
+    const sl = o.shortcutLabels;
+    if (!sl || typeof sl !== "object" || Array.isArray(sl) || Object.values(sl).some((v) => typeof v !== "string")) {
+      return "'structured.shortcutLabels' must map labels to strings";
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate a skill patch the way the desktop card constrained it (fixed interval
+ * choices became "a whole number of seconds ≥ 60"; runAtHour 0–23; provider
+ * claude|local|"" default) plus the fields the card now also edits: dependsOn
+ * must name ANOTHER existing skill, structured mode needs a parseable block,
+ * the prompt may not be blank. Returns the first error, or null.
+ */
+export function validateSkillPatch(
+  patch: SkillPatch,
+  ctx: { skillName: string; skillNames: string[]; currentMode?: string; currentStructured?: unknown },
+): string | null {
+  if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") return "enabled must be true or false";
+  if (patch.intervalSecs !== undefined) {
+    const v = patch.intervalSecs;
+    if (!Number.isInteger(v) || v < MIN_SKILL_INTERVAL_SECS || v > 30 * 86400) return `interval must be a whole number of seconds from ${MIN_SKILL_INTERVAL_SECS} to 30 days`;
+  }
+  if (patch.runAtHour !== undefined && patch.runAtHour !== null) {
+    if (!Number.isInteger(patch.runAtHour) || patch.runAtHour < 0 || patch.runAtHour > 23) return "run hour must be 0–23";
+  }
+  if (patch.dependsOn !== undefined && patch.dependsOn !== null) {
+    if (patch.dependsOn === ctx.skillName) return "a skill cannot depend on itself";
+    if (!ctx.skillNames.includes(patch.dependsOn)) return `no skill named '${patch.dependsOn}'`;
+  }
+  if (patch.provider !== undefined && !SKILL_PROVIDERS.includes(patch.provider)) return "provider must be claude, local or the default";
+  if (patch.model !== undefined && patch.model !== "" && !MODEL_RE.test(patch.model)) return "model id has invalid characters";
+  if (patch.executionMode !== undefined && !(SKILL_EXECUTION_MODES as readonly string[]).includes(patch.executionMode)) return "mode must be agentic or structured";
+  if (patch.structured !== undefined && patch.structured !== null) {
+    const e = validateStructuredBlock(patch.structured);
+    if (e) return e;
+  }
+  const mode = patch.executionMode ?? ctx.currentMode;
+  const block = patch.structured !== undefined ? patch.structured : ctx.currentStructured;
+  if (mode === "structured" && (patch.executionMode !== undefined || patch.structured !== undefined)) {
+    const e = validateStructuredBlock(block);
+    if (e) return `structured mode needs a valid config block: ${e}`;
+  }
+  if (patch.description !== undefined && (typeof patch.description !== "string" || patch.description.length > 500)) return "description is too long";
+  if (patch.prompt !== undefined && (typeof patch.prompt !== "string" || !patch.prompt.trim())) return "the prompt may not be empty";
+  return null;
+}
+
+/** The patch merged onto the CURRENT note's metadata, so `runner`, `lastRun`
+ *  and every key this card doesn't know survive. */
+export function mergeSkillMetadata(current: Record<string, unknown> | null | undefined, patch: SkillPatch): Record<string, unknown> {
+  const md: Record<string, unknown> = { ...(current ?? {}) };
+  for (const k of ["enabled", "intervalSecs", "runAtHour", "dependsOn", "provider", "model", "executionMode", "structured", "description"] as const) {
+    if (patch[k] !== undefined) md[k] = patch[k];
+  }
+  return md;
+}
+
+const isConflict = (e: unknown): boolean => /\b409\b|conflict/i.test(String((e as Error)?.message ?? e));
+
+/**
+ * Write a skill config change (`agent_update_skill`). Reads the note, checks it
+ * is an `agent-skill`, validates against the vault's other skills, and writes
+ * metadata (+ content for a prompt change) with `if_updated_at` — the desktop
+ * forced it. A conflict on a METADATA-only change (the scheduler stamps
+ * `lastRun`/`runner` on its own) is refetched and merged once; a prompt change
+ * that conflicts is surfaced instead of clobbering someone else's edit.
+ */
+export async function updateSkillNote(
+  vc: VaultOpsClient & { listNotes?: (q: { tag?: string; limit?: number }) => Promise<Note[]> },
+  skillNoteId: string,
+  patch: SkillPatch,
+): Promise<Note> {
+  const write = async (note: Note): Promise<Note> => {
+    if (!(note.tags ?? []).includes("agent-skill")) throw new Error("not an agent-skill note");
+    const md = (note.metadata ?? {}) as Record<string, unknown>;
+    let skillNames: string[] = [];
+    if (patch.dependsOn) {
+      const all = vc.listNotes ? await vc.listNotes({ tag: "agent-skill", limit: 200 }) : [];
+      skillNames = all.map((n) => String((n.metadata as Record<string, unknown> | null)?.skillName ?? "")).filter(Boolean);
+    }
+    const err = validateSkillPatch(patch, {
+      skillName: String(md.skillName ?? ""),
+      skillNames,
+      currentMode: typeof md.executionMode === "string" ? md.executionMode : "agentic",
+      currentStructured: md.structured,
+    });
+    if (err) throw new Error(err);
+    return vc.updateNote(skillNoteId, {
+      metadata: mergeSkillMetadata(md, patch),
+      ...(patch.prompt !== undefined ? { content: patch.prompt } : {}),
+      ifUpdatedAt: note.updatedAt ?? undefined,
+    });
+  };
+  try {
+    return await write(await vc.getNote(skillNoteId));
+  } catch (e) {
+    if (!isConflict(e) || patch.prompt !== undefined) throw e;
+    return write(await vc.getNote(skillNoteId));
+  }
 }

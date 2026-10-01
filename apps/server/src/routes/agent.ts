@@ -24,15 +24,33 @@ import { getBillingMode } from "../agent-billing";
 import { profileAllowedTools } from "../agent-profiles";
 import {
   startDispatch,
+  startExternalDispatch,
   getDispatch,
   listDispatches,
   cancelDispatch,
   subscribe,
   runnerStatus,
+  isClaudeModel,
   AgentBusyError,
   type Dispatch,
   type DispatchEvent,
 } from "../agent-exec";
+import { config } from "../config";
+import { csrfRefusal } from "./actions";
+import { requestVia } from "../auth/actor";
+import { cancelSkillRun, listRunningSkills } from "../worker/skills";
+import {
+  INTERACTIVE_SKILLS,
+  isInteractiveSkill,
+  mergeRouting,
+  modelsOverview,
+  readRouting,
+  routeFor,
+  runLocalInteractive,
+  testRoute,
+  validateRoute,
+  writeRouting,
+} from "../local-ai";
 import {
   createSession,
   listSessions,
@@ -101,18 +119,29 @@ agentApi.post("/dispatch", async (c) => {
     return c.json({ error: "bad_request", detail: "profile may only be \"vault-ro\"" }, 400);
   }
   const entry = resolveVaultEntry(actor.vaultId);
+  const skill = typeof body.skill === "string" ? body.skill : null;
+  const noteId = typeof body.noteId === "string" ? body.noteId : null;
+  // Interactive routing (parity A): the client's read-only inline AI (edit /
+  // transform / generate / chat) follows the server-side per-skill routing.
+  // Only the narrowed `vault-ro` one-shot is routed — a full-tools dispatch
+  // always stays on claude.
+  const route = body.profile === "vault-ro" && isInteractiveSkill(skill) ? routeFor(skill) : null;
+  if (route?.provider === "local") {
+    const prompt = body.prompt;
+    const d = startExternalDispatch(entry, { skill, noteId }, (signal) => runLocalInteractive(route.model, prompt, signal));
+    return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason, provider: "local", model: route.model });
+  }
   try {
     // Only prompt/skill/noteId (+ an optional NARROWING profile) cross from the
     // client — never runner options.
     const allowedTools = dispatchAllowedTools(body.profile);
     const d = startDispatch(
       entry,
+      { prompt: body.prompt, skill, noteId },
       {
-        prompt: body.prompt,
-        skill: typeof body.skill === "string" ? body.skill : null,
-        noteId: typeof body.noteId === "string" ? body.noteId : null,
+        ...(allowedTools ? { allowedTools } : {}),
+        ...(route?.provider === "claude" && isClaudeModel(route.model) ? { model: route.model } : {}),
       },
-      allowedTools ? { allowedTools } : {},
     );
     return c.json({ id: d.id, status: d.status, queuedReason: d.queuedReason });
   } catch (e) {
@@ -156,6 +185,85 @@ agentApi.post("/dispatches/:id/cancel", (c) => {
   const d = getDispatch(c.req.param("id"));
   if (!d || d.vaultId !== actor.vaultId) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: cancelDispatch(d.id) });
+});
+
+// ── Server skills + interactive model routing (parity A) ─────────────────────
+// Stricter than the router gate: the SERVER owner by email (like live actions),
+// never a vault-role owner of another vault — skills run on the primary vault
+// and routing is server-wide. Mutations also pass the live-actions CSRF guard
+// (JSON content type; no cross-/same-site browser fetch; Origin allowlist).
+
+const isServerOwner = (c: Context): boolean => {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail;
+};
+const ownerOnly = (c: Context): Response | null => (isServerOwner(c) ? null : c.json({ error: "forbidden" }, 403));
+const ownerMutation = (c: Context): Response | null => ownerOnly(c) ?? csrfRefusal(c, requestVia(c));
+
+/** In-flight server skill runs (the AgentActivity "running" list + Stop). */
+agentApi.get("/skills/running", (c) => {
+  const denied = ownerOnly(c);
+  if (denied) return denied;
+  c.header("Cache-Control", "no-store");
+  return c.json({ running: listRunningSkills() });
+});
+
+/** Stop a running server skill run (local: between notes + abort the in-flight
+ *  LM Studio request; claude: kill through the run queue). Recorded as a
+ *  `cancelled` dispatch note. 404 when nothing by that name is running. */
+agentApi.post("/skills/:skillName/cancel", (c) => {
+  const denied = ownerMutation(c);
+  if (denied) return denied;
+  const name = c.req.param("skillName");
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/.test(name)) return c.json({ error: "bad_request", detail: "invalid skill name" }, 400);
+  const r = cancelSkillRun(name);
+  if (r === "not_running") return c.json({ error: "not_running", detail: `no run of '${name}' is in progress` }, 404);
+  console.log(`[skills] '${name}' cancelled by the owner`);
+  return c.json({ ok: true, skill: name });
+});
+
+/** Local models on the server's LM Studio + whether claude is available. */
+agentApi.get("/models", async (c) => {
+  const denied = ownerOnly(c);
+  if (denied) return denied;
+  c.header("Cache-Control", "no-store");
+  return c.json(await modelsOverview());
+});
+
+/** Per-skill interactive routing (edit | chat | transform | generate). */
+agentApi.get("/routing", (c) => {
+  const denied = ownerOnly(c);
+  if (denied) return denied;
+  c.header("Cache-Control", "no-store");
+  return c.json({ skills: INTERACTIVE_SKILLS, routing: readRouting() });
+});
+
+agentApi.put("/routing", async (c) => {
+  const denied = ownerMutation(c);
+  if (denied) return denied;
+  const body = await c.req.json<{ routing?: unknown }>().catch(() => null);
+  try {
+    const next = mergeRouting(readRouting(), body?.routing);
+    writeRouting(next);
+    return c.json({ skills: INTERACTIVE_SKILLS, routing: next });
+  } catch (e) {
+    return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
+  }
+});
+
+/** Settings "Test": a tiny server-side round trip on a route (local = one short
+ *  completion behind the admission guard; claude = the CLI is present). */
+agentApi.post("/routing/test", async (c) => {
+  const denied = ownerMutation(c);
+  if (denied) return denied;
+  const body = await c.req.json<{ skill?: unknown; route?: unknown }>().catch(() => null);
+  try {
+    const route = body?.route !== undefined ? validateRoute("route", body.route) : isInteractiveSkill(body?.skill) ? routeFor(body.skill) : null;
+    if (!route) return c.json({ error: "bad_request", detail: "send {skill} or {route: {provider, model}}" }, 400);
+    return c.json(await testRoute(route));
+  } catch (e) {
+    return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
+  }
 });
 
 const TERMINAL = new Set(["done", "error", "cancelled"]);
