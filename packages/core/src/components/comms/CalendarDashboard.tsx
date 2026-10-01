@@ -1,18 +1,22 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Clock, RefreshCw, Plus, MapPin, Users, ExternalLink, FileText, Trash2, Pencil, X, Video } from "lucide-react";
-import { calendarApi } from "../../lib/sync/client";
-import { vaultApi } from "../../lib/parachute/client";
+import { calendarApi, calendarDate } from "../../lib/sync/client";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { isDesktop } from "../../lib/platform";
 import { useHostServices } from "../../data/HostServicesContext";
 import { useLiveActions } from "../../data/LiveActionsContext";
 import { LiveActionError, liveActionErrorText, type CalendarUpdateParams, type LiveActionsClient, type RsvpResponse } from "../../lib/actions/client";
 import { useUIStore } from "../../app/stores/ui";
 import { Spinner } from "../ui/Spinner";
+import { EventTranscripts } from "./EventTranscripts";
 import type { RendererProps } from "../renderers/RendererProps";
 
 type CalEvent = {
   id?: string;
+  vaultNoteId?: string;
   summary?: string;
   start?: { dateTime?: string; date?: string };
   end?: { dateTime?: string; date?: string };
@@ -70,8 +74,19 @@ function dateKey(d: Date): string {
 }
 
 export default function CalendarDashboard(_props: RendererProps) {
+  const scope = useAgentChatStore((s) => s.scope);
+  return <ScopedCalendarDashboard key={scope ?? "legacy-local"} />;
+}
+
+function ScopedCalendarDashboard() {
+  const client = useVaultClient();
+  const scope = useAgentChatStore((s) => s.scope);
+  const mobile = useIsMobile();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const today = new Date();
-  const [view, setView] = useState<ViewMode>("month");
+  const [view, setView] = useState<ViewMode>(mobile ? "day" : "month");
+  const [noteError, setNoteError] = useState<string | null>(null);
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [weekStart, setWeekStart] = useState(startOfWeek(today));
@@ -106,19 +121,20 @@ export default function CalendarDashboard(_props: RendererProps) {
   }, [view, year, month, weekStart, dayDate]);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["calendar", view, rangeStart.toISOString(), rangeEnd.toISOString()],
+    queryKey: ["calendar", scope, view, rangeStart.toISOString(), rangeEnd.toISOString()],
     // Read from the vault (works on web + desktop), not live from Google.
-    queryFn: () => calendarApi.listEventsFromVault(rangeStart.toISOString(), rangeEnd.toISOString()),
+    queryFn: () => calendarApi.listEventsFromVault(rangeStart.toISOString(), rangeEnd.toISOString(), client),
     retry: 1,
   });
 
-  const events: CalEvent[] = Array.isArray(data) ? (data as CalEvent[]) : [];
+  const events: CalEvent[] = !isError && Array.isArray(data) ? (data as CalEvent[]) : [];
 
   const refreshEvents = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["calendar"] });
   }, [queryClient]);
 
   const handleEventClick = useCallback((ev: CalEvent) => {
+    setNoteError(null);
     setSelectedEvent(ev);
     setShowCreateForm(false);
     setEditingEvent(null);
@@ -148,31 +164,17 @@ export default function CalendarDashboard(_props: RendererProps) {
   }, [refreshEvents, liveCal]);
 
   const handleOpenMeetingNote = useCallback(async (ev: CalEvent) => {
+    setNoteError(null);
     try {
-      const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
-      const slug = (ev.summary || "untitled").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
-      const path = `vault/meetings/${dateStr}/${slug}`;
+      if (!ev.vaultNoteId) throw new Error("Missing meeting identity");
+      const note = await client.getNote(ev.vaultNoteId);
+      if (!mounted.current || useAgentChatStore.getState().scope !== scope) return;
+      if ((note.metadata?.calendarEventId || note.id) !== ev.id) throw new Error("Meeting identity changed");
+      openTab(note.id, note.path?.split("/").pop() || "Meeting Notes", "document");
+    } catch { setNoteError("This meeting note is unavailable. Refresh the calendar and try again."); }
+  }, [openTab, client, scope]);
 
-      // Search by title (not event ID — Parachute search doesn't index metadata)
-      const existing = await vaultApi.search(ev.summary || slug, ["meeting"], 10);
-      const match = existing.find((n) =>
-        n.path === path ||
-        (n.metadata as Record<string, unknown>)?.calendarEventId === ev.id
-      );
-
-      if (match) {
-        openTab(match.id, match.path?.split("/").pop() || "Meeting Notes", "document");
-      } else {
-        const content = `# ${ev.summary || "Meeting"}\n\n**Date:** ${dateStr}\n**Time:** ${formatTime(ev.start?.dateTime)} – ${formatTime(ev.end?.dateTime)}\n${ev.location ? `**Location:** ${ev.location}\n` : ""}\n---\n\n## Notes\n\n`;
-        const note = await vaultApi.createNote({ content, path, tags: ["meeting"], metadata: { type: "meeting", calendarEventId: ev.id, date: dateStr } });
-        if (note?.id) {
-          openTab(note.id, slug, "document");
-        }
-      }
-    } catch (err) {
-      console.error("Failed to open/create meeting note:", err);
-    }
-  }, [openTab]);
+  const closePanel = useCallback(() => { setSelectedEvent(null); setShowCreateForm(false); setEditingEvent(null); setSelectedDate(null); }, []);
 
   // On-demand sync: when the view range changes, sync that range into Parachute
   const [syncing, setSyncing] = useState(false);
@@ -216,7 +218,7 @@ export default function CalendarDashboard(_props: RendererProps) {
     for (const ev of events) {
       const ds = ev.start?.dateTime || ev.start?.date;
       if (!ds) continue;
-      const d = new Date(ds);
+      const d = calendarDate(ds);
       const k = dateKey(d);
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(ev);
@@ -250,12 +252,12 @@ export default function CalendarDashboard(_props: RendererProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>{title}</h2>
           <div className="flex items-center gap-1">
-            <button onClick={prev} className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
-            <button onClick={next} className="p-1 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
+            <button aria-label="Previous period" onClick={prev} className="p-2 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
+            <button aria-label="Next period" onClick={next} className="p-2 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
           </div>
           <button onClick={goToday} className="px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
           {syncing && (
@@ -279,12 +281,13 @@ export default function CalendarDashboard(_props: RendererProps) {
           {(["month", "week", "day"] as ViewMode[]).map((v) => (
             <button
               key={v}
+              aria-pressed={view === v}
               onClick={() => {
                 setView(v);
                 if (v === "week") setWeekStart(startOfWeek(selectedDate || today));
                 if (v === "day") setDayDate(selectedDate || today);
               }}
-              className="px-2.5 py-1 rounded text-xs transition-colors"
+              className="px-3 py-2 rounded text-xs transition-colors"
               style={{
                 background: view === v ? "var(--color-accent)" : "transparent",
                 color: view === v ? "white" : "var(--text-secondary)",
@@ -300,16 +303,18 @@ export default function CalendarDashboard(_props: RendererProps) {
 
       <div className="flex-1 flex min-h-0">
         {/* Main calendar area */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="min-w-0 flex-1 flex flex-col min-h-0 overflow-auto">
           {view === "month" && <MonthView days={getMonthDays(year, month)} month={month} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
           {view === "week" && <WeekView days={getWeekDays(weekStart)} today={today} selectedDate={selectedDate} eventsByDate={eventsByDate} onSelect={setSelectedDate} onEventClick={handleEventClick} />}
           {view === "day" && <DayView date={dayDate} today={today} events={eventsByDate.get(dateKey(dayDate)) || []} onEventClick={handleEventClick} />}
         </div>
 
         {/* Side panel — event detail, create form, or day overview */}
-        <div className="flex-shrink-0 overflow-auto" style={{ width: 300, borderLeft: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
+        <CalendarDetailsPanel open={!!selectedEvent || showCreateForm || !!selectedDate} onClose={closePanel}>
+          {noteError && <p role="alert" className="px-4 py-2 text-sm">{noteError}</p>}
           {selectedEvent ? (
             <EventDetailPanel
+              key={selectedEvent.vaultNoteId ?? selectedEvent.id}
               event={selectedEvent}
               onClose={() => setSelectedEvent(null)}
               onEdit={() => { setEditingEvent(selectedEvent); setSelectedEvent(null); setShowCreateForm(true); }}
@@ -320,6 +325,7 @@ export default function CalendarDashboard(_props: RendererProps) {
             />
           ) : showCreateForm ? (
             <EventFormPanel
+              key={editingEvent?.id ?? createDate?.toISOString() ?? "new"}
               event={editingEvent}
               defaultDate={createDate}
               live={isDesktop ? null : liveCal}
@@ -351,10 +357,27 @@ export default function CalendarDashboard(_props: RendererProps) {
           ) : (
             <div className="p-3 text-xs" style={{ color: "var(--text-muted)" }}>Select a date to see events</div>
           )}
-        </div>
+        </CalendarDetailsPanel>
       </div>
     </div>
   );
+}
+
+function CalendarDetailsPanel({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  const mobile = useIsMobile();
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (!mobile || !open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const element = dialog.current;
+    element?.showModal();
+    return () => { element?.close(); if (previous?.isConnected) previous.focus(); };
+  }, [mobile, open]);
+  if (!mobile) return open ? <aside className="w-[300px] flex-shrink-0 overflow-auto border-l" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>{children}</aside> : null;
+  return <dialog ref={dialog} aria-label="Calendar details" onCancel={(e) => { e.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-[100dvh] max-h-none w-full max-w-none overflow-auto border-0 p-4" style={{ background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+    <div className="mb-3 flex items-center justify-between"><h2 className="font-medium">Calendar details</h2><button aria-label="Close calendar details" className="focus-ring rounded-lg p-3" onClick={onClose}><X size={18} /></button></div>
+    {children}
+  </dialog>;
 }
 
 // ─── Month View ──────────────────────────────────────────────
@@ -375,17 +398,17 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
           const isSel = selectedDate ? isSameDay(day, selectedDate) : false;
           const dayEvts = eventsByDate.get(dateKey(day)) || [];
           return (
-            <button key={i} onClick={() => onSelect(day)} className="flex flex-col p-1 text-left transition-colors hover:bg-[var(--glass-hover)]"
+            <div key={i} className="flex min-w-0 flex-col p-1 text-left"
               style={{ background: isSel ? "var(--glass-active)" : "var(--bg-surface)", opacity: isMonth ? 1 : 0.4, minHeight: 60 }}>
-              <span className="text-xs font-medium self-end w-5 h-5 flex items-center justify-center rounded-full"
+              <button aria-label={`Select ${day.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`} onClick={() => onSelect(day)} className="focus-ring text-xs font-medium self-end min-w-8 min-h-8 flex items-center justify-center rounded-full"
                 style={{ color: isToday ? "white" : "var(--text-primary)", background: isToday ? "var(--color-accent)" : "transparent" }}>
                 {day.getDate()}
-              </span>
+              </button>
               {dayEvts.slice(0, 3).map((ev, j) => (
-                <div key={j} onClick={(e) => { e.stopPropagation(); onEventClick(ev); }} className="text-[9px] truncate px-0.5 rounded mt-0.5 cursor-pointer hover:opacity-100" style={{ background: "var(--color-accent)", color: "white", opacity: 0.85 }}>{ev.summary || "Event"}</div>
+                <button key={ev.vaultNoteId ?? j} onClick={() => onEventClick(ev)} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--color-accent)", color: "white", opacity: 0.85 }}>{ev.summary || "Event"}</button>
               ))}
-              {dayEvts.length > 3 && <div className="text-[8px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</div>}
-            </button>
+              {dayEvts.length > 3 && <button onClick={() => onSelect(day)} className="focus-ring text-left text-[10px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</button>}
+            </div>
           );
         })}
       </div>
@@ -400,7 +423,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
   eventsByDate: Map<string, CalEvent[]>; onSelect: (d: Date) => void; onEventClick: (ev: CalEvent) => void;
 }) {
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="min-w-[640px] flex-1 flex flex-col min-h-0">
       {/* Day headers */}
       <div className="grid grid-cols-8 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
         <div /> {/* empty corner for time column */}
@@ -420,6 +443,12 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
         })}
       </div>
 
+      <div className="grid grid-cols-8 border-b text-xs" style={{ borderColor: "var(--glass-border)" }}>
+        <span className="p-2" style={{ color: "var(--text-muted)" }}>All day</span>
+        {days.map((day) => <div key={dateKey(day)} className="min-w-0 space-y-1 border-l p-1" style={{ borderColor: "var(--glass-border)" }}>
+          {(eventsByDate.get(dateKey(day)) ?? []).filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="focus-ring w-full truncate rounded px-1 py-2 text-left" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
+        </div>)}
+      </div>
       {/* Time grid */}
       <div className="flex-1 overflow-auto">
         <div className="grid grid-cols-8" style={{ minHeight: 24 * 48 }}>
@@ -440,16 +469,16 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
                   <div key={h} style={{ height: 48, borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }} />
                 ))}
                 {/* Event blocks */}
-                {dayEvts.map((ev, ei) => {
-                  const hour = getHour(ev.start?.dateTime);
-                  const endHour = ev.end?.dateTime ? getHour(ev.end.dateTime) : hour + 1;
-                  const duration = Math.max(1, endHour - hour);
+                {dayEvts.filter((event) => !!event.start?.dateTime).map((ev, ei) => {
+                  const hour = getHour(ev.start?.dateTime) + new Date(ev.start!.dateTime!).getMinutes() / 60;
+                  const endHour = ev.end?.dateTime ? getHour(ev.end.dateTime) + new Date(ev.end.dateTime).getMinutes() / 60 : hour + 1;
+                  const duration = Math.max(0.5, endHour - hour);
                   return (
-                    <div key={ei} onClick={() => onEventClick(ev)} className="absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[9px] overflow-hidden cursor-pointer hover:opacity-100 transition-opacity"
+                    <button key={ei} onClick={() => onEventClick(ev)} className="focus-ring absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
                       style={{ top: hour * 48 + 2, height: duration * 48 - 4, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                       <div className="font-medium truncate">{ev.summary || "Event"}</div>
                       <div className="opacity-75">{formatTime(ev.start?.dateTime)}</div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -464,10 +493,23 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
 // ─── Day View ────────────────────────────────────────────────
 
 function DayView({ date, today, events, onEventClick }: { date: Date; today: Date; events: CalEvent[]; onEventClick: (ev: CalEvent) => void }) {
+  const mobile = useIsMobile();
   const isToday = isSameDay(date, today);
+  if (mobile) return <div className="space-y-3 overflow-auto p-4">
+    {!events.length && <p className="py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No events for this day.</p>}
+    {[...events].sort((a, b) => (a.start?.dateTime ?? "").localeCompare(b.start?.dateTime ?? "")).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${formatTime(event.start.dateTime)}${event.end?.dateTime ? ` – ${formatTime(event.end.dateTime)}` : ""}` : "All day"}</span>
+      <span className="mt-1 block break-words text-sm font-medium">{event.summary || "Untitled event"}</span>
+      {event.location && <span className="mt-2 block break-words text-xs" style={{ color: "var(--text-secondary)" }}>{event.location}</span>}
+    </button>)}
+  </div>;
 
   return (
     <div className="flex-1 overflow-auto">
+      {events.some((event) => !event.start?.dateTime) && <div className="space-y-2 border-b p-3" style={{ borderColor: "var(--glass-border)" }}>
+        <h3 className="text-xs" style={{ color: "var(--text-muted)" }}>All day</h3>
+        {events.filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring block w-full rounded-lg px-3 py-2 text-left text-sm" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
+      </div>}
       <div className="grid grid-cols-[60px_1fr]" style={{ minHeight: 24 * 48 }}>
         {/* Time labels */}
         <div>
@@ -488,7 +530,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
             </div>
           ))}
           {/* Event blocks */}
-          {events.map((ev, i) => {
+          {events.filter((event) => !!event.start?.dateTime).map((ev, i) => {
             const hour = getHour(ev.start?.dateTime);
             const endHour = ev.end?.dateTime ? getHour(ev.end.dateTime) : hour + 1;
             const startMin = ev.start?.dateTime ? new Date(ev.start.dateTime).getMinutes() : 0;
@@ -496,12 +538,12 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
             const topPx = hour * 48 + (startMin / 60) * 48;
             const heightPx = Math.max(24, (endHour - hour) * 48 + ((endMin - startMin) / 60) * 48);
             return (
-              <div key={i} onClick={() => onEventClick(ev)} className="absolute left-1 right-1 rounded-md px-2 py-1 overflow-hidden cursor-pointer hover:opacity-100 transition-opacity"
+              <button key={i} onClick={() => onEventClick(ev)} className="focus-ring absolute left-1 right-1 rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
                 style={{ top: topPx, height: heightPx, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                 <div className="text-xs font-medium truncate">{ev.summary || "Event"}</div>
                 <div className="text-[10px] opacity-80">{formatTime(ev.start?.dateTime)} – {formatTime(ev.end?.dateTime)}</div>
                 {ev.location && <div className="text-[10px] opacity-70 truncate mt-0.5">{ev.location}</div>}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -584,58 +626,12 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
     }
   };
 
-  // Check for linked transcript
-  const dateStr = (event.start?.dateTime || event.start?.date || "").slice(0, 10);
-  const { data: transcriptMatch } = useQuery({
-    queryKey: ["transcript-link", event.id, dateStr],
-    queryFn: async () => {
-      // 1. Resolve the meeting note for this event (match on the stored event ID).
-      const meetingCandidates = await vaultApi.search(event.summary || dateStr, ["meeting"], 10);
-      const meetingNote = meetingCandidates.find(
-        (n) => (n.metadata as Record<string, unknown> | undefined)?.calendarEventId === event.id
-      );
-
-      // 2. Prefer the link the backend linker writes — the meeting note's
-      //    `transcriptNoteId` metadata, or its `has-transcript` graph edge.
-      //    (The UI previously ignored these and re-searched from scratch.)
-      if (meetingNote) {
-        const transcriptId = (meetingNote.metadata as Record<string, unknown> | undefined)?.transcriptNoteId as
-          | string
-          | undefined;
-        if (transcriptId) {
-          try {
-            return await vaultApi.getNote(transcriptId);
-          } catch { /* note may have been deleted — fall through */ }
-        }
-        const links = await vaultApi.getLinks(meetingNote.id, "has-transcript");
-        const target = links.find((l) => l.sourceId === meetingNote.id)?.targetId;
-        if (target) {
-          try {
-            return await vaultApi.getNote(target);
-          } catch { /* fall through */ }
-        }
-      }
-
-      // 3. Fallback: best-effort search by date + title, but ONLY accept a
-      //    same-date hit. (The old code returned results[0] unconditionally,
-      //    which could surface a transcript from an unrelated meeting.)
-      const slug = (event.summary || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      const searchTerms = slug ? `${dateStr} ${slug}` : dateStr;
-      const results = await vaultApi.search(searchTerms, ["transcript"], 5);
-      const match = results.find(
-        (n) => (n.metadata as Record<string, unknown> | undefined)?.date === dateStr
-      );
-      return match || null;
-    },
-    enabled: !!dateStr,
-    staleTime: 60_000,
-  });
 
   return (
     <div className="p-3 space-y-3">
       <div className="flex items-start justify-between">
         <h3 className="text-sm font-semibold pr-2" style={{ color: "var(--text-primary)" }}>{event.summary || "Untitled"}</h3>
-        <button onClick={onClose} className="p-0.5 rounded hover:bg-[var(--glass-hover)] flex-shrink-0">
+        <button aria-label="Close event details" onClick={onClose} className="hidden md:block p-2 rounded hover:bg-[var(--glass-hover)] flex-shrink-0">
           <X size={14} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
@@ -644,7 +640,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       <div className="flex items-center gap-2">
         <Clock size={12} style={{ color: "var(--text-muted)" }} />
         <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
-          <div>{event.start?.dateTime ? new Date(event.start.dateTime).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : event.start?.date}</div>
+          <div>{event.start?.dateTime || event.start?.date ? calendarDate(event.start.dateTime || event.start.date!).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "Date unavailable"}</div>
           <div>
             {formatTime(event.start?.dateTime) || "All day"}
             {event.end?.dateTime && ` – ${formatTime(event.end.dateTime)}`}
@@ -698,18 +694,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         </div>
       )}
 
-      {/* Transcript link */}
-      {transcriptMatch && (
-        <button
-          onClick={() => onOpenTranscript(transcriptMatch.id, transcriptMatch.path?.split("/").pop() || "Transcript")}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]"
-          style={{ color: "var(--text-secondary)", background: "var(--glass)", border: "1px solid var(--glass-border)" }}
-        >
-          <FileText size={12} style={{ color: "var(--color-accent)" }} />
-          <span className="truncate">Transcript available</span>
-          <ExternalLink size={10} className="ml-auto flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-        </button>
-      )}
+      <EventTranscripts noteId={event.vaultNoteId} eventId={event.id} onOpen={onOpenTranscript} />
 
       {/* Actions */}
       <div className="flex items-center gap-2 pt-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
@@ -818,11 +803,14 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   const [attendeesVal, setAttendeesVal] = useState("");
   const [notifyAttendees, setNotifyAttendees] = useState(true);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const canSave = isDesktop || !!live;
   // The form's starting values, to send only real changes on a live edit.
   const [initial] = useState(() => ({ date, startTime, endTime }));
 
   const handleSave = async (scopeAll = false) => {
-    if (!summary.trim()) return;
+    if (!summary.trim() || !canSave || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       const start = `${date}T${startTime}:00`;
@@ -866,9 +854,10 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
       onSaved();
     } catch (e) {
       console.error("Failed to save event:", e);
-      if (live) setSaveError(liveActionErrorText(e));
+      setSaveError(liveActionErrorText(e));
       if (e instanceof LiveActionError && e.code === "recurring_series") setSeriesEdit(true);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -877,7 +866,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
     <div className="p-3 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{isEdit ? "Edit Event" : "New Event"}</h3>
-        <button onClick={onClose} className="p-0.5 rounded hover:bg-[var(--glass-hover)]">
+        <button aria-label="Close event details" onClick={onClose} className="p-2 rounded hover:bg-[var(--glass-hover)]">
           <X size={14} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
@@ -892,15 +881,15 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
           autoFocus
         />
 
-        <div className="grid grid-cols-3 gap-1.5">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            className="col-span-1 rounded px-2 py-1.5 text-xs outline-none"
+        <div className="grid grid-cols-2 gap-2">
+          <input aria-label="Event date" type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            className="col-span-2 min-w-0 rounded px-2 py-2 text-base outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-          <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
-            className="rounded px-2 py-1.5 text-xs outline-none"
+          <input aria-label="Start time" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+            className="min-w-0 rounded px-2 py-2 text-base outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
-          <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)}
-            className="rounded px-2 py-1.5 text-xs outline-none"
+          <input aria-label="End time" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)}
+            className="min-w-0 rounded px-2 py-2 text-base outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }} />
         </div>
 
@@ -949,13 +938,14 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
 
       <button
         onClick={() => void handleSave()}
-        disabled={!summary.trim() || saving}
+        disabled={!summary.trim() || saving || !canSave}
         className="w-full py-2 rounded text-xs font-medium transition-colors disabled:opacity-50"
         style={{ background: "var(--color-accent)", color: "white" }}
       >
         {saving ? "Saving..." : isEdit ? "Update Event" : "Create Event"}
       </button>
-      {saveError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{saveError}</div>}
+      {!canSave && <p role="status" className="text-xs">Calendar editing is unavailable. Reconnect to your server and try again.</p>}
+      {saveError && <div role="alert" className="text-xs" style={{ color: "var(--color-danger)" }}>{saveError}</div>}
       {seriesEdit && live && isEdit && (
         <button
           onClick={() => void handleSave(true)}

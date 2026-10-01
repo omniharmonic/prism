@@ -152,7 +152,7 @@ test("mobile agent controls fit the screen and Enter keeps a multiline draft", a
   await input.pressSequentially("More context");
   await expect(input).toHaveValue("First thought\nMore context");
   expect(await page.evaluate(() => (window as any).prismAgentFixture.attempts)).toBe(0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("agent-permissions-mobile.png") });
 });
 
@@ -211,7 +211,7 @@ test("conversation identifies its authors and archive is a separate keyboard act
   await page.screenshot({ path: testInfo.outputPath("document-conversation-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("textbox", { name: "Message the agent" })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("document-conversation-mobile.png") });
 });
 

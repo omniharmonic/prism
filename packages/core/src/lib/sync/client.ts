@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { vaultApi } from "../parachute/client";
+import type { VaultClient } from "../../data/VaultClient";
+
+/** All-day dates are local calendar days, not midnight UTC. */
+export function calendarDate(value: string): Date {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return day ? new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])) : new Date(value);
+}
 
 export interface SyncConfig {
   adapter: string;
@@ -28,6 +35,7 @@ export interface SyncResult {
 
 export interface CalendarEvent {
   id: string;
+  vaultNoteId?: string;
   summary: string;
   description: string | null;
   start: { dateTime: string | null; date: string | null; timeZone: string | null };
@@ -88,10 +96,10 @@ export const calendarApi = {
    * `from`/`to` are ISO datetime strings; an event is included when it overlaps
    * that window.
    */
-  listEventsFromVault: async (from: string, to: string): Promise<CalendarEvent[]> => {
+  listEventsFromVault: async (from: string, to: string, client: Pick<VaultClient, "listNotes"> = vaultApi): Promise<CalendarEvent[]> => {
     const fromMs = Date.parse(from);
     const toMs = Date.parse(to);
-    const notes = await vaultApi.listNotes({ tag: "meeting", limit: 5000 });
+    const notes = await client.listNotes({ tag: "meeting", limit: 5000 });
 
     const events: CalendarEvent[] = [];
     for (const note of notes) {
@@ -103,25 +111,26 @@ export const calendarApi = {
       if (!startRaw) continue;
       const endRaw = (m.end as string) || startRaw;
 
-      const startMs = Date.parse(startRaw);
+      const startMs = calendarDate(startRaw).getTime();
       if (Number.isNaN(startMs)) continue;
-      const endMs = Date.parse(endRaw);
+      const endMs = calendarDate(endRaw).getTime();
       // Overlap test: event ends after the window starts AND starts before it ends.
-      if ((Number.isNaN(endMs) ? startMs : endMs) < fromMs || startMs > toMs) continue;
+      if ((endMs > startMs ? endMs <= fromMs : startMs < fromMs) || startMs > toMs) continue;
 
       const hasTime = startRaw.includes("T");
       const attendees = Array.isArray(m.attendees) ? (m.attendees as unknown[]) : [];
 
       events.push({
         id: (m.calendarEventId as string) || note.id,
+        vaultNoteId: note.id,
         summary: (m.title as string) || note.path?.split("/").pop() || "Untitled Event",
         description: (m.description as string) ?? null,
-        start: { dateTime: hasTime ? startRaw : null, date: hasTime ? null : startRaw, timeZone: null },
-        end: { dateTime: hasTime ? endRaw : null, date: hasTime ? null : endRaw, timeZone: null },
+        start: { dateTime: hasTime ? startRaw : null, date: hasTime ? null : startRaw, timeZone: typeof m.timeZone === "string" ? m.timeZone : null },
+        end: { dateTime: hasTime ? endRaw : null, date: hasTime ? null : endRaw, timeZone: typeof m.timeZone === "string" ? m.timeZone : null },
         location: (m.location as string) ?? null,
         attendees: attendees.map((a) => {
           const s = String(a);
-          return { email: s, displayName: s, responseStatus: null };
+          return { email: s.includes("@") ? s : "", displayName: s, responseStatus: null };
         }),
         meetUrl: (m.meetLink as string) ?? null,
         calendarId: "primary",

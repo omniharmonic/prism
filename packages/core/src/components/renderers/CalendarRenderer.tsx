@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, eachDayOfInterval, isSameDay } from "date-fns";
 import type { RendererProps } from "./RendererProps";
-import { calendarApi, type CalendarEvent } from "../../lib/sync/client";
+import { calendarApi, calendarDate, type CalendarEvent } from "../../lib/sync/client";
 
 export default function CalendarRenderer({ note: _note }: RendererProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -95,7 +95,7 @@ export default function CalendarRenderer({ note: _note }: RendererProps) {
         ) : (
           <DayView date={currentDate} events={(events || []).filter((e) => {
             const eventDate = e.start.dateTime || e.start.date || "";
-            return isSameDay(new Date(eventDate), currentDate);
+            return isSameDay(calendarDate(eventDate), currentDate);
           })} />
         )}
       </div>
@@ -121,7 +121,7 @@ function WeekView({ days, events }: { days: Date[]; events: CalendarEvent[] }) {
       {days.map((day) => {
         const dayEvents = events.filter((e) => {
           const eventDate = e.start.dateTime || e.start.date || "";
-          return isSameDay(new Date(eventDate), day);
+          return isSameDay(calendarDate(eventDate), day);
         });
         const isToday = isSameDay(day, new Date());
 
