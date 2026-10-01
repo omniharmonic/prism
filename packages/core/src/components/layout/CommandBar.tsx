@@ -16,6 +16,7 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { buildTransformPrompt, hostServiceErrorText } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
+import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 
 interface Command {
   id: string;
@@ -208,6 +209,16 @@ export function CommandBar() {
         },
       },
     ] : []),
+    // Notion database sync setup / management (desktop: Tauri; thin client: the
+    // server, owner only — Client parity B).
+    ...(hostCmds ? [{
+      id: "notion-db-sync", label: "Notion Database Sync…", category: "sync" as const,
+      icon: <RefreshCw size={15} />,
+      action: () => {
+        closeCommandBar();
+        useNotionDbSyncModal.getState().setOpen(true);
+      },
+    }] : []),
     // Global utility (desktop only: it scans every note's content on the host)
     ...(isDesktop ? [{
       id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,

@@ -65,7 +65,114 @@ export interface AgentTextOptions {
   signal?: AbortSignal;
 }
 
+// ── Folder / database sync (Client parity B) ─────────────────────────────────
+// Same shapes as the desktop's `githubSyncApi` / `notionDbSyncApi` (lib/parachute/
+// client.ts), so the setup modals run unchanged on either transport.
+
+export interface GitHubAuthStatus {
+  authenticated: boolean;
+  username: string | null;
+  message: string;
+  /** Server only: whether a token is stored at all. */
+  configured?: boolean;
+}
+
+export interface GitHubSyncInfo {
+  id: string;
+  vaultPath: string;
+  remoteUrl: string;
+  branch: string;
+  lastSynced: string;
+  autoSync: boolean;
+  commitStrategy?: string;
+  conflictStrategy?: string;
+  syncedCount?: number;
+  lastError?: string | null;
+  /** Server: last seen repository visibility (false = PUBLIC repo), null = unknown. */
+  repoPrivate?: boolean | null;
+  /** Server: explicit opt-in to auto-sync into a public repo. */
+  allowPublic?: boolean;
+}
+
+export interface GitHubPushResult {
+  pushed: string[];
+  pulled: string[];
+  conflicts: Array<{ path: string; reason?: string }>;
+  errors: Array<[string, string]>;
+  unchanged?: number;
+  commit?: string | null;
+}
+
+export interface GitHubSyncHost {
+  checkAuth(): Promise<GitHubAuthStatus>;
+  init(params: { vaultPath: string; remoteUrl: string; branch: string; commitStrategy: string; conflictStrategy: string; autoSync: boolean }): Promise<string>;
+  push(configId: string): Promise<GitHubPushResult>;
+  pushFile(configId: string, noteId: string): Promise<void>;
+  status(): Promise<GitHubSyncInfo[]>;
+  remove(configId: string): Promise<void>;
+  /** Server only: toggle auto-sync / strategies (e.g. re-enable an imported config). */
+  update?(configId: string, patch: { autoSync?: boolean; allowPublic?: boolean; commitStrategy?: string; conflictStrategy?: string }): Promise<GitHubSyncInfo>;
+}
+
+export interface NotionPropertyMappingInput {
+  notionProperty: string;
+  notionType: string;
+  parachuteField: string;
+  transform: string;
+  valueMap?: Record<string, string>;
+  relationshipType?: string | null;
+}
+
+export interface NotionDbSyncInfo {
+  id: string;
+  notionDatabaseName: string;
+  parachuteTag: string;
+  lastSynced: string;
+  autoSync: boolean;
+  syncedCount: number;
+  syncDirection?: string;
+  conflictStrategy?: string;
+  lastError?: string | null;
+}
+
+export interface NotionDbSyncRunResult {
+  created: number;
+  updated: number;
+  deleted: number;
+  conflicts: number;
+  errors: string[];
+  unchanged?: number;
+}
+
+export interface NotionDbSyncHost {
+  listDatabases(): Promise<Array<{ id: string; title: string; propertyCount: number }>>;
+  getSchema(databaseId: string): Promise<{
+    properties: Array<{ name: string; propertyType: string; options: string[] }>;
+    suggestedMappings: Array<NotionPropertyMappingInput & { valueMap: Record<string, string>; relationshipType: string | null }>;
+  }>;
+  init(params: {
+    databaseId: string;
+    databaseName: string;
+    parachuteTag: string;
+    parachutePathPrefix: string;
+    propertyMap: NotionPropertyMappingInput[];
+    titleProperty: string;
+    contentProperty?: string;
+    syncDirection: string;
+    conflictStrategy: string;
+    autoSync: boolean;
+  }): Promise<string>;
+  sync(configId: string): Promise<NotionDbSyncRunResult>;
+  status(): Promise<NotionDbSyncInfo[]>;
+  remove(configId: string): Promise<void>;
+  update?(configId: string, patch: { autoSync?: boolean; conflictStrategy?: string; syncDirection?: string }): Promise<NotionDbSyncInfo>;
+}
+
 export interface HostServices {
+  /** GitHub folder sync on the server (`/api/sync/github/*`). */
+  githubSync?: GitHubSyncHost;
+  /** Notion database sync on the server (`/api/sync/notion-db/*`). */
+  notionDbSync?: NotionDbSyncHost;
   calendarSyncRange(from: string, to: string): Promise<CalendarRangeResult>;
   notePush(noteId: string): Promise<NoteSyncOutcome[]>;
   notePull(noteId: string): Promise<NoteSyncOutcome>;
@@ -115,7 +222,35 @@ export function createHttpHostServices(opts: HttpHostServicesOptions): HostServi
     return (j ?? {}) as T;
   }
 
+  const githubSync: GitHubSyncHost = {
+    checkAuth: () => call("GET", "/api/sync/github/auth"),
+    init: async (p) => (await call<{ id: string }>("POST", "/api/sync/github/configs", p)).id,
+    push: (id) => call("POST", `/api/sync/github/configs/${enc(id)}/push`, {}),
+    pushFile: async (id, noteId) => {
+      await call("POST", `/api/sync/github/configs/${enc(id)}/push-file`, { noteId });
+    },
+    status: () => call("GET", "/api/sync/github/configs"),
+    remove: async (id) => {
+      await call("DELETE", `/api/sync/github/configs/${enc(id)}`);
+    },
+    update: (id, patch) => call("PATCH", `/api/sync/github/configs/${enc(id)}`, patch),
+  };
+
+  const notionDbSync: NotionDbSyncHost = {
+    listDatabases: () => call("GET", "/api/sync/notion-db/databases"),
+    getSchema: (databaseId) => call("GET", `/api/sync/notion-db/databases/${enc(databaseId)}/schema`),
+    init: async (p) => (await call<{ id: string }>("POST", "/api/sync/notion-db/configs", p)).id,
+    sync: (id) => call("POST", `/api/sync/notion-db/configs/${enc(id)}/sync`, {}),
+    status: () => call("GET", "/api/sync/notion-db/configs"),
+    remove: async (id) => {
+      await call("DELETE", `/api/sync/notion-db/configs/${enc(id)}`);
+    },
+    update: (id, patch) => call("PATCH", `/api/sync/notion-db/configs/${enc(id)}`, patch),
+  };
+
   return {
+    githubSync,
+    notionDbSync,
     calendarSyncRange: (from, to) => {
       if (!ISO_DAY.test(from) || !ISO_DAY.test(to)) return Promise.reject(new HostServiceError(400, "bad_request", "dates must be YYYY-MM-DD"));
       return call("POST", `/api/calendar/sync?from=${enc(from)}&to=${enc(to)}`);
@@ -206,6 +341,10 @@ export function hostServiceErrorText(e: unknown): string {
       return "The server agent is still working. Check Agent activity.";
     case "calendar_sync_disabled":
       return "Calendar sync is off on the server.";
+    case "public_repo":
+      return "That repository is PUBLIC: auto-sync would publish every note in the folder. Make it private, or opt in with allowPublic.";
+    case "unsupported_media_type":
+      return "The request was refused (wrong content type).";
     case "google_not_configured":
     case "notion_not_configured":
       return "The server has no credential for this service yet (Network → Server).";

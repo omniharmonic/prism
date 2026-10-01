@@ -36,7 +36,7 @@ test("repoPathFor strips the vault prefix and ensures the extension", () => {
   const cfg = { owner: "o", repo: "r", branch: "main", vaultPath: "vault/projects", fileExtension: ".md" };
   assert.equal(repoPathFor(note({ path: "vault/projects/hello" }), cfg), "hello.md");
   assert.equal(repoPathFor(note({ path: "vault/projects/sub/deep" }), cfg), "sub/deep.md");
-  assert.equal(repoPathFor(note({ path: "vault/projects/keep.txt" }), cfg), "keep.txt"); // existing ext kept
+  assert.equal(repoPathFor(note({ path: "vault/projects/keep.txt" }), cfg), "keep.txt.md"); // only the sync extension is written
 });
 
 test("parseFrontmatter extracts title/tags/vault_path + strips the block", () => {

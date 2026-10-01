@@ -523,6 +523,76 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS mcp_pats_email ON mcp_pats(email);
 `);
 
+// ── Folder / database sync configs (Client parity B, worker/sync-store.ts) ────
+// The server ports of the desktop's GitHub folder sync (github-sync-configs.json)
+// and Notion DATABASE sync (notion-sync-configs.json). No credential lives here:
+// pushes use the vault's stored `github` / `notion` secret (tenant_secrets).
+// sync_audit has one row per outbound write batch (and per config change): ids,
+// repo/database names, counts and a scrubbed error — never note content.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS github_sync_configs (
+    id                TEXT PRIMARY KEY,
+    vault_id          TEXT NOT NULL,
+    vault_path        TEXT NOT NULL,
+    owner             TEXT NOT NULL,
+    repo              TEXT NOT NULL,
+    branch            TEXT NOT NULL,
+    file_extension    TEXT NOT NULL DEFAULT '.md',
+    commit_strategy   TEXT NOT NULL,            -- per_save | batched | manual
+    conflict_strategy TEXT NOT NULL,            -- local-wins | remote-wins
+    auto_sync         INTEGER NOT NULL DEFAULT 0,
+    allow_public      INTEGER NOT NULL DEFAULT 0, -- auto-sync into a PUBLIC repo needs this explicit opt-in
+    repo_private      INTEGER,                  -- last seen visibility (1/0), null = unknown
+    id_map            TEXT NOT NULL DEFAULT '{}', -- note id -> repo path
+    blob_map          TEXT NOT NULL DEFAULT '{}', -- repo path -> blob sha Prism last wrote/saw
+    last_synced       TEXT NOT NULL DEFAULT '',
+    last_result       TEXT,                     -- JSON counts of the last push
+    last_error        TEXT,
+    imported_from     TEXT,                     -- desktop config id (import)
+    created_by        TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS github_sync_configs_vault ON github_sync_configs(vault_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS github_sync_configs_target ON github_sync_configs(vault_id, vault_path, owner, repo, branch);
+  CREATE TABLE IF NOT EXISTS notion_db_sync_configs (
+    id                TEXT PRIMARY KEY,
+    vault_id          TEXT NOT NULL,
+    database_id       TEXT NOT NULL,
+    database_name     TEXT NOT NULL,
+    parachute_tag     TEXT NOT NULL,
+    path_prefix       TEXT NOT NULL,
+    property_map      TEXT NOT NULL DEFAULT '[]',
+    title_property    TEXT NOT NULL,
+    content_property  TEXT,
+    sync_direction    TEXT NOT NULL,            -- bidirectional | pull | push
+    conflict_strategy TEXT NOT NULL,            -- notion-wins | parachute-wins | newer-wins
+    auto_sync         INTEGER NOT NULL DEFAULT 0,
+    id_map            TEXT NOT NULL DEFAULT '{}', -- notion page id -> note id
+    last_synced       TEXT NOT NULL DEFAULT '',
+    last_result       TEXT,
+    last_error        TEXT,
+    created_by        TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS notion_db_sync_configs_vault ON notion_db_sync_configs(vault_id);
+  CREATE TABLE IF NOT EXISTS sync_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,
+    actor      TEXT NOT NULL,                   -- email, or "auto-sync" / "worker"
+    vault_id   TEXT NOT NULL,
+    kind       TEXT NOT NULL,                   -- github | notion-db
+    config_id  TEXT,
+    action     TEXT NOT NULL,                   -- init | push | push-file | auto-push | sync | import | update | remove
+    target     TEXT NOT NULL,                   -- owner/repo@branch | notion database id
+    status     TEXT NOT NULL,                   -- ok | noop | failed
+    detail     TEXT,                            -- JSON counts / commit sha (never content)
+    error      TEXT
+  );
+  CREATE INDEX IF NOT EXISTS sync_audit_ts ON sync_audit(ts);
+`);
+
 // Migration: accounts now carry a password. Add the column if an older db
 // predates it (CREATE TABLE IF NOT EXISTS won't alter an existing table).
 {

@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import { integrations } from "../src/routes/integrations";
 import { config } from "../src/config";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
+import { setMembership } from "../src/db";
 
 const J = { "content-type": "application/json" };
 const ownerCookie = () => sessionCookie(makeSession(config.ownerEmail));
@@ -89,6 +90,16 @@ for (const [kind, field, val] of [
     assert.equal(((await (await integrations.request(`/${kind}`, { headers: { cookie } })).json()) as { configured: boolean }).configured, false);
   });
 }
+
+test("github/notion credential WRITE/DELETE is server-owner only (parity B review H2); admins keep status", async () => {
+  setMembership("primary", "admin2@x.co", "admin", config.ownerEmail);
+  const admin = sessionCookie(makeSession("admin2@x.co"));
+  for (const [kind, field] of [["github", "token"], ["notion", "apiKey"]] as const) {
+    assert.equal((await integrations.request(`/${kind}`, { method: "PUT", headers: { ...J, cookie: admin }, body: JSON.stringify({ [field]: "x" }) })).status, 403);
+    assert.equal((await integrations.request(`/${kind}`, { method: "DELETE", headers: { cookie: admin } })).status, 403);
+    assert.equal((await integrations.request(`/${kind}`, { headers: { cookie: admin } })).status, 200);
+  }
+});
 
 test("fathom config: gating + store→status→delete round-trip", async () => {
   const cookie = ownerCookie();

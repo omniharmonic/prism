@@ -245,4 +245,55 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   ok("edit/transform prompts: read-only rule, fenced data, desktop caps");
 }
 
+// ── folder / database sync (Client parity B) ─────────────────────────────────
+{
+  const s = fakeServer((c) => {
+    if (c.path === "/api/sync/github/auth") return json(200, { authenticated: true, configured: true, username: "octo", message: "Authenticated as @octo" });
+    if (c.path === "/api/sync/github/configs" && c.method === "POST") return json(200, { id: "g1", config: {}, result: { pushed: ["a.md"] } });
+    if (c.path === "/api/sync/github/configs") return json(200, [{ id: "g1", vaultPath: "vault/docs", remoteUrl: "https://github.com/acme/notes", branch: "main", lastSynced: "", autoSync: false }]);
+    if (c.path.endsWith("/push-file")) return json(400, { error: "push_refused", detail: "note is not under the sync folder" });
+    if (c.path.endsWith("/push")) return json(200, { pushed: ["a.md"], pulled: [], conflicts: [], errors: [], unchanged: 1, commit: "abc" });
+    if (c.method === "PATCH") return json(200, { id: "g1", autoSync: true });
+    if (c.method === "DELETE") return json(200, { ok: true });
+    return json(404, { error: "not_found" });
+  });
+  const h = createHttpHostServices({ fetch: s.fetch, headers: () => ({ "X-Prism-Vault": "v2" }) });
+  const gs = h.githubSync!;
+  assert.equal((await gs.checkAuth()).username, "octo");
+  const id = await gs.init({ vaultPath: "vault/docs", remoteUrl: "acme/notes", branch: "main", commitStrategy: "batched", conflictStrategy: "local_wins", autoSync: false });
+  assert.equal(id, "g1");
+  assert.deepEqual(s.calls[1]!.body, { vaultPath: "vault/docs", remoteUrl: "acme/notes", branch: "main", commitStrategy: "batched", conflictStrategy: "local_wins", autoSync: false });
+  assert.equal((await gs.push("g1")).commit, "abc");
+  assert.equal(s.calls[2]!.path, "/api/sync/github/configs/g1/push");
+  await assert.rejects(gs.pushFile("g1", "n9"), (e: unknown) => e instanceof HostServiceError && e.code === "push_refused");
+  assert.deepEqual(s.calls[3]!.body, { noteId: "n9" });
+  assert.equal((await gs.status())[0]!.vaultPath, "vault/docs");
+  await gs.update!("g 1", { autoSync: true });
+  assert.equal(s.calls[5]!.path, "/api/sync/github/configs/g%201");
+  assert.equal(s.calls[5]!.method, "PATCH");
+  await gs.remove("g1");
+  assert.equal(s.calls[6]!.method, "DELETE");
+  assert.ok(s.calls.every((c) => c.headers["X-Prism-Vault"] === "v2"));
+  ok("githubSync → /api/sync/github/{auth,configs,…/push,…/push-file} (+ vault header, error codes mapped)");
+}
+{
+  const s = fakeServer((c) => {
+    if (c.path === "/api/sync/notion-db/databases") return json(200, [{ id: "d1", title: "Tasks", propertyCount: 3 }]);
+    if (c.path.endsWith("/schema")) return json(200, { properties: [{ name: "Name", propertyType: "title", options: [] }], suggestedMappings: [] });
+    if (c.path === "/api/sync/notion-db/configs" && c.method === "POST") return json(200, { id: "n1" });
+    if (c.path.endsWith("/sync")) return json(200, { created: 1, updated: 0, deleted: 0, conflicts: 0, unchanged: 0, errors: [] });
+    if (c.path === "/api/sync/notion-db/configs") return json(200, []);
+    return json(400, { error: "notion_not_configured" });
+  });
+  const nd = createHttpHostServices({ fetch: s.fetch }).notionDbSync!;
+  assert.equal((await nd.listDatabases())[0]!.title, "Tasks");
+  await nd.getSchema("d/1");
+  assert.equal(s.calls[1]!.path, "/api/sync/notion-db/databases/d%2F1/schema", "ids are path-encoded");
+  assert.equal(await nd.init({ databaseId: "d1", databaseName: "Tasks", parachuteTag: "task", parachutePathPrefix: "vault/tasks", propertyMap: [], titleProperty: "Name", syncDirection: "pull", conflictStrategy: "newer-wins", autoSync: false }), "n1");
+  assert.equal((await nd.sync("n1")).created, 1);
+  assert.deepEqual(await nd.status(), []);
+  await assert.rejects(nd.update!("n1", { autoSync: true }), (e: unknown) => e instanceof HostServiceError && hostServiceErrorText(e).includes("no credential"));
+  ok("notionDbSync → /api/sync/notion-db/{databases,…/schema,configs,…/sync} (+ not-configured copy)");
+}
+
 console.log(`\nverify-host-services: ${passed} checks passed`);

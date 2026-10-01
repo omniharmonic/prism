@@ -38,6 +38,7 @@ import { indexedNoteIds, allIndexedNoteIds } from "../rag/store";
 import { runHistoryCompactOnce } from "./history-compact";
 import { recordSourceOutcome, runHealthCheckOnce } from "./health";
 import { defaultSkillsDeps, runSkillsOnce, type PassResult, type SkillsDeps } from "./skills";
+import { notionDbBackgroundEnabled, runNotionDbPassOnce } from "./notion-db-service";
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -758,6 +759,11 @@ async function tick(): Promise<void> {
       skillsInFlight = false;
     });
   }
+
+  // Notion DATABASE sync (Client parity B): auto-sync configs every
+  // NOTION_DB_SYNC_INTERVAL_MS, only with NOTION_DB_SYNC_ENABLED=true. Fire-and-
+  // forget with its own in-flight guard (it is rate-limited to 3 Notion req/s).
+  if (notionDbBackgroundEnabled()) void runNotionDbPassOnce();
 
   // Staleness alerts last, so this tick's outcomes are already recorded. Never
   // throws; desktop freshness is cached (WORKER_DESKTOP_PROBE_MS).

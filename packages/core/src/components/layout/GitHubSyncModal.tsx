@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   X,
   GitFork,
@@ -8,9 +8,11 @@ import {
   Loader2,
   Check,
   Circle,
+  RefreshCw,
+  Trash2,
 } from "lucide-react";
-import { githubSyncApi } from "../../lib/parachute/client";
-import { useIsWeb } from "../../data/Platform";
+import { useGitHubSyncApi } from "../../lib/host/folderSync";
+import { hostServiceErrorText, type GitHubSyncInfo } from "../../lib/host/services";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 
 interface GitHubSyncModalProps {
@@ -31,7 +33,9 @@ export function GitHubSyncModal({
   onClose,
   vaultPath,
 }: GitHubSyncModalProps) {
-  const isWeb = useIsWeb();
+  // Desktop → its Tauri commands; web / Prism Client → the Prism Server (owner),
+  // which pushes with ITS stored GitHub token (Client parity B).
+  const { api, viaServer } = useGitHubSyncApi();
   const [step, setStep] = useState(0);
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
@@ -44,7 +48,7 @@ export function GitHubSyncModal({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  // GitHub CLI auth state
+  // Auth state (gh CLI on the desktop, the stored token on the server)
   const [authChecking, setAuthChecking] = useState(false);
   const [authStatus, setAuthStatus] = useState<{
     authenticated: boolean;
@@ -52,22 +56,38 @@ export function GitHubSyncModal({
     message: string;
   } | null>(null);
 
-  // Check gh auth status when the modal opens
+  // Existing syncs of THIS folder (manage: push now, auto-sync, remove).
+  const [existing, setExisting] = useState<GitHubSyncInfo[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const errText = (e: unknown) => (viaServer ? hostServiceErrorText(e) : e instanceof Error ? e.message : String(e));
+
+  const refreshExisting = useCallback(async () => {
+    if (!api) return;
+    try {
+      const all = await api.status();
+      setExisting(all.filter((c) => c.vaultPath.replace(/\/+$/, "") === vaultPath.replace(/\/+$/, "")));
+    } catch {
+      setExisting([]);
+    }
+  }, [api, vaultPath]);
+
+  // Check auth + load existing syncs when the modal opens
   useEffect(() => {
-    if (!isOpen || isWeb) return;
+    if (!isOpen || !api) return;
     let cancelled = false;
 
     async function checkAuth() {
       setAuthChecking(true);
       try {
-        const status = await githubSyncApi.checkAuth();
+        const status = await api!.checkAuth();
         if (!cancelled) setAuthStatus(status);
       } catch {
         if (!cancelled)
           setAuthStatus({
             authenticated: false,
             username: null,
-            message: "Could not reach GitHub CLI. Is `gh` installed?",
+            message: viaServer ? "Could not reach the Prism Server." : "Could not reach GitHub CLI. Is `gh` installed?",
           });
       } finally {
         if (!cancelled) setAuthChecking(false);
@@ -75,12 +95,13 @@ export function GitHubSyncModal({
     }
 
     checkAuth();
+    void refreshExisting();
     return () => { cancelled = true; };
-  }, [isOpen, isWeb]);
+  }, [isOpen, api, viaServer, refreshExisting]);
 
   if (!isOpen) return null;
 
-  if (isWeb) {
+  if (!api) {
     return (
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
@@ -98,7 +119,7 @@ export function GitHubSyncModal({
           </div>
           <DesktopOnlyNotice
             feature="GitHub sync"
-            detail="Folder sync to GitHub has no client UI yet. The Prism Server can push or pull a folder with its stored GitHub token (POST /api/sync/github/push|pull)."
+            detail="Folder sync runs on the Prism Server with its stored GitHub token, so only the server owner can set it up."
           />
         </div>
       </div>
@@ -113,7 +134,7 @@ export function GitHubSyncModal({
     setLoading(true);
     setError(null);
     try {
-      await githubSyncApi.init({
+      await api.init({
         vaultPath,
         remoteUrl: repoUrl,
         branch,
@@ -122,10 +143,36 @@ export function GitHubSyncModal({
         autoSync,
       });
       setSuccess(true);
+      void refreshExisting();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync initialization failed");
+      setError(viaServer ? hostServiceErrorText(err) : err instanceof Error ? err.message : "Sync initialization failed");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const manage = async (id: string, what: "push" | "auto-on" | "auto-off" | "remove") => {
+    setBusyId(id);
+    setNotice(null);
+    try {
+      if (what === "push") {
+        const r = await api.push(id);
+        setNotice(
+          `Pushed ${r.pushed.length} file(s)` +
+            (r.unchanged !== undefined ? `, ${r.unchanged} unchanged` : "") +
+            (r.conflicts.length ? `, ${r.conflicts.length} conflict(s) kept on GitHub` : "") +
+            (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors[0]![0]}: ${r.errors[0]![1]}` : ""),
+        );
+      } else if (what === "remove") {
+        await api.remove(id);
+      } else if (api.update) {
+        await api.update(id, { autoSync: what === "auto-on" });
+      }
+      await refreshExisting();
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -136,11 +183,11 @@ export function GitHubSyncModal({
   const commitLabels: Record<CommitStrategy, { label: string; desc: string }> = {
     per_save: {
       label: "Per Save",
-      desc: "Commit and push after every save",
+      desc: viaServer ? "Auto-sync pushes saved notes within ~30 s, one commit per batch" : "Commit and push after every save",
     },
     batched: {
       label: "Batched",
-      desc: "Batch changes into a single commit on manual sync",
+      desc: viaServer ? "Auto-sync batches changes into one commit per window; Push now any time" : "Batch changes into a single commit on manual sync",
     },
     manual: {
       label: "Manual",
@@ -184,9 +231,63 @@ export function GitHubSyncModal({
         {/* Step 0: Repository + Auth */}
         {step === 0 && (
           <div className="space-y-4">
-            {/* GitHub CLI auth status */}
+            {/* Existing syncs of this folder */}
+            {existing.length > 0 && (
+              <div className="rounded-lg bg-white/5 border border-white/10 p-3 space-y-2">
+                <label className={`${labelClass} block`}>Already syncing</label>
+                {existing.map((c) => (
+                  <div key={c.id} className="text-sm text-white space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate">{c.remoteUrl.replace(/^https:\/\/github\.com\//, "")} @ {c.branch}</span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => manage(c.id, "push")}
+                          disabled={busyId !== null}
+                          className="px-2 py-1 rounded text-xs bg-white/10 hover:bg-white/20 disabled:opacity-40 flex items-center gap-1"
+                        >
+                          {busyId === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                          Push now
+                        </button>
+                        <button
+                          onClick={() => manage(c.id, "remove")}
+                          disabled={busyId !== null}
+                          aria-label="Remove sync"
+                          className="p-1 rounded text-white/50 hover:text-red-300 hover:bg-white/10 disabled:opacity-40"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-white/40">
+                      <span>{c.lastSynced ? `Last synced ${new Date(c.lastSynced).toLocaleString()}` : "Never synced from here"}</span>
+                      {api.update && (
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={c.autoSync}
+                            disabled={busyId !== null}
+                            onChange={(e) => manage(c.id, e.target.checked ? "auto-on" : "auto-off")}
+                            className="accent-blue-500"
+                          />
+                          Auto-sync
+                        </label>
+                      )}
+                    </div>
+                    {c.repoPrivate === false && (
+                      <div className="text-xs text-amber-300">
+                        Public repository: every note in this folder is published.{c.allowPublic ? "" : " Auto-sync stays off unless you opt in (allowPublic)."}
+                      </div>
+                    )}
+                    {c.lastError && <div className="text-xs text-red-300/80 truncate">{c.lastError}</div>}
+                  </div>
+                ))}
+                {notice && <p className="text-xs text-white/60">{notice}</p>}
+              </div>
+            )}
+
+            {/* Auth status: gh CLI (desktop) or the server's stored token */}
             <div className="rounded-lg bg-white/5 border border-white/10 p-3">
-              <label className={`${labelClass} mb-2 block`}>GitHub CLI</label>
+              <label className={`${labelClass} mb-2 block`}>{viaServer ? "GitHub token (Prism Server)" : "GitHub CLI"}</label>
               {authChecking ? (
                 <div className="flex items-center gap-2 text-white/50 text-sm">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -205,9 +306,15 @@ export function GitHubSyncModal({
                     <Circle className="w-2.5 h-2.5 fill-red-400 text-red-400" />
                     <span className="text-red-400">Not authenticated</span>
                   </div>
-                  <p className="text-xs text-white/40">
-                    Run <code className="px-1.5 py-0.5 rounded bg-white/10 text-white/70 font-mono text-[11px]">gh auth login</code> in your terminal, then reopen this dialog.
-                  </p>
+                  {viaServer ? (
+                    <p className="text-xs text-white/40">
+                      {authStatus?.message ?? "No GitHub token on the server."} Store one in Network → Server → Sync integrations, then reopen this dialog.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-white/40">
+                      Run <code className="px-1.5 py-0.5 rounded bg-white/10 text-white/70 font-mono text-[11px]">gh auth login</code> in your terminal, then reopen this dialog.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -292,7 +399,7 @@ export function GitHubSyncModal({
                 onChange={(e) => setAutoSync(e.target.checked)}
                 className="accent-blue-500"
               />
-              <span className="text-sm text-white">Enable auto-sync</span>
+              <span className="text-sm text-white">{viaServer ? "Enable auto-sync (the server pushes saved notes in this folder)" : "Enable auto-sync"}</span>
             </label>
           </div>
         )}

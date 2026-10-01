@@ -30,8 +30,11 @@ the user has to copy it once.
 Stored with `putSecret(vault, owner, kind)` in SQLite, AES-encrypted. `GET
 /api/integrations/<kind>` returns `{secretsAvailable, configured}` plus, for some kinds,
 the **non-secret** scope fields listed below. Set them in **Network → Server → Sync
-integrations**. A `PUT` replaces the whole credential and `DELETE` removes it. Admin+
-for every kind except `proton-bridge`, which is **server-owner only**.
+integrations**. A `PUT` replaces the whole credential and `DELETE` removes it. Reading the
+status is admin+. Writing or deleting is admin+ for `fathom`, `fireflies` and `clickup`,
+and **server-owner only** for `matrix`, `google`, `github`, `notion` and `proton-bridge`
+(proton-bridge is owner-only for reads too). Those are the identities the server acts
+as outward.
 
 | Kind | Fields (secret in **bold**) | Echoed by GET (non-secret only) | Displayed |
 |---|---|---|---|
@@ -43,6 +46,13 @@ for every kind except `proton-bridge`, which is **server-owner only**.
 | `notion` | **apiKey** | — | never |
 | `google` | account (not a secret: the `gog` account name) | — | n/a |
 | `proton-bridge` | username, **password**, certSha256, host, port, security | host, port, username, security, certSha256, `mode` | never |
+
+`github` and `notion` also back the server's folder and database syncs (`docs/sync.md`),
+so writing or deleting them is **server-owner only**, like `matrix` and `google`. Vault
+admins still see the configured/not-configured status.
+Those configs are stored without any credential, the token is read at push time, and
+requests go only to `api.github.com` / `api.notion.com`. A GitHub token for folder sync
+needs Contents read/write on the target repositories.
 
 `google` holds only the account name. Gmail, Calendar and Docs all read just
 `{account}`. The OAuth tokens belong to the `gog` CLI and live in the **server host's**
