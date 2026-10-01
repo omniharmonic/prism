@@ -156,6 +156,8 @@ function setup(opts: { maxConcurrent?: number; maxQueue?: number } = {}) {
     maxBudgetUsd: 0.75,
   });
   minted = [];
+  patMinted = [];
+  patRevoked = [];
   revoked = [];
   mintFails = false;
   configureAgentSessions({
@@ -175,11 +177,22 @@ function setup(opts: { maxConcurrent?: number; maxQueue?: number } = {}) {
     },
     transcriptMirror: true,
     sessionBudgetUsd: 10,
+    dailyBudgetUsd: 25,
+    // NEVER a real PAT in the default setup; tests that want one override these.
+    mintPrismToken: (p) => {
+      const id = `pat-${patMinted.length + 1}`;
+      patMinted.push({ ...p, id });
+      return { token: `pp_fake_${id}`, id };
+    },
+    revokePrismToken: (id) => void patRevoked.push(id),
+    prismPort: () => 8787,
     cliRetentionDays: 14,
     eventsRetentionDays: 30,
     now: () => Date.now(),
   });
 }
+let patMinted: Array<{ email: string; vaultId: string; scope: string; turnId: string; id: string }> = [];
+let patRevoked: string[] = [];
 let minted: Array<{ jti: string; ttl: number; sub: string }>;
 let revoked: string[];
 let mintFails: boolean;
@@ -869,4 +882,153 @@ test("push: a finished turn sends one ids-only push per subscription; a failing 
   } finally {
     _resetPush();
   }
+});
+
+// ── WP3.4: profiles, daily budget, billing ───────────────────────────────────
+
+test("WP3.4 skill profile: sessions can't pick it; its allowlist has no delete-note", async () => {
+  const bad = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ profile: "skill" }) });
+  assert.equal(bad.status, 400);
+  assert.ok(!profileAllowedTools("skill").includes("mcp__parachute-vault__delete-note"));
+});
+
+test("WP3.4 prism-* profiles are refused (400) until AGENT_PRISM_PROFILES=true", async () => {
+  const r = await agentApi.request("/sessions", { method: "POST", headers: { ...J, ...owner() }, body: JSON.stringify({ profile: "prism-ro" }) });
+  assert.equal(r.status, 400);
+  const lim = (await (await agentApi.request("/limits", { headers: owner() })).json()) as { profiles: string[]; defaultProfile: string };
+  assert.deepEqual(lim.profiles, ["vault-ro", "vault-rw"]);
+  assert.equal(lim.defaultProfile, "vault-ro");
+});
+
+test("WP3.4 prism-ro turn: per-turn PAT (scope read) minted at spawn into a /mcp config, prism allowlist, NO vault token, revoked at turn end", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const sid = await newSession({ profile: "prism-ro" });
+    const r = await postTurn(sid, { prompt: "what changed?" });
+    assert.equal(r.status, 200);
+    assert.equal(patMinted.length, 1);
+    assert.equal(patMinted[0]!.scope, "read");
+    assert.equal(patMinted[0]!.email, config.ownerEmail.toLowerCase());
+    assert.equal(minted.length, 0, "no vault read token for prism profiles");
+    const c = calls[0]!;
+    const mcp = JSON.parse(c.mcpJson) as { mcpServers: Record<string, { url: string; headers: Record<string, string> }> };
+    assert.deepEqual(Object.keys(mcp.mcpServers), ["prism"]);
+    assert.equal(mcp.mcpServers.prism!.url, "http://127.0.0.1:8787/mcp");
+    assert.equal(mcp.mcpServers.prism!.headers.Authorization, "Bearer pp_fake_pat-1");
+    assert.doesNotMatch(c.mcpJson, /parachute|read-token/);
+    assert.equal(flag(c.args, "--allowedTools"), profileAllowedTools("prism-ro").join(","));
+    assert.match(c.args.at(-1)!, /prism MCP tools[\s\S]*READ-ONLY/);
+    assert.ok(!c.args.join(" ").includes("pp_fake"), "the token is never in argv");
+    assert.deepEqual(patRevoked, []);
+    children[0]!.exit(0);
+    await sleep(1);
+    assert.deepEqual(patRevoked, ["pat-1"], "revoked at turn end");
+    assert.ok(!existsSync(c.mcpPath), "config file removed");
+  } finally {
+    delete process.env.AGENT_PRISM_PROFILES;
+  }
+});
+
+test("WP3.4 prism-rw: write-scope PAT; cancel while WAITING never mints; cancel while running revokes", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  try {
+    const a = await newSession({ profile: "prism-rw" });
+    await postTurn(a, { prompt: "one" });
+    assert.equal(patMinted[0]!.scope, "write");
+    const b = await newSession({ profile: "prism-ro" });
+    const r = await postTurn(b, { prompt: "waits behind the user slot" });
+    const { turnId } = (await r.json()) as { turnId: string };
+    assert.equal(patMinted.length, 1, "queued turn has no credential yet");
+    await agentApi.request(`/turns/${turnId}/cancel`, { method: "POST", headers: owner() });
+    assert.equal(patMinted.length, 1, "cancelled while queued: still nothing minted");
+    await agentApi.request(`/turns/${listTurns(a)[0]!.id}/cancel`, { method: "POST", headers: owner() });
+    await sleep(5);
+    assert.deepEqual(patRevoked, ["pat-1"]);
+  } finally {
+    delete process.env.AGENT_PRISM_PROFILES;
+  }
+});
+
+test("WP3.4 a prism session whose profile was switched off server-side is refused 409 profile_unavailable", async () => {
+  process.env.AGENT_PRISM_PROFILES = "true";
+  const sid = await newSession({ profile: "prism-ro" });
+  delete process.env.AGENT_PRISM_PROFILES;
+  const r = await postTurn(sid, { prompt: "x" });
+  assert.equal(r.status, 409);
+  assert.equal(((await r.json()) as { error: string }).error, "profile_unavailable");
+  assert.equal(patMinted.length, 0);
+});
+
+test("WP3.4 daily budget: spend accrues per user, 409 daily_budget_exceeded at the cap, survives ARCHIVING, shown in /limits", async () => {
+  configureAgentSessions({ dailyBudgetUsd: 0.02 }); // the turn1 fixture costs ~$0.0177
+  const sid = await newSession();
+  await runTurn(sid, "one", "agent-stream-turn1.jsonl");
+  let lim = (await (await agentApi.request("/limits", { headers: owner() })).json()) as {
+    billing: string;
+    session: { limitUsd: number };
+    daily: { limitUsd: number; spentUsd: number; remainingUsd: number; resetsAt: number };
+  };
+  assert.equal(lim.session.limitUsd, 10);
+  assert.equal(lim.daily.limitUsd, 0.02);
+  assert.ok(lim.daily.spentUsd > 0.017 && lim.daily.spentUsd < 0.018);
+  assert.ok(Math.abs(lim.daily.remainingUsd - (0.02 - lim.daily.spentUsd)) < 1e-9);
+  assert.ok(lim.daily.resetsAt > Date.now());
+  // Under the cap → a second turn still starts and pushes spend over it.
+  const sid2 = await newSession();
+  const r2 = await postTurn(sid2, { prompt: "two" });
+  assert.equal(r2.status, 200);
+  children.at(-1)!.out(turnFixture("agent-stream-turn1.jsonl", sid2));
+  children.at(-1)!.exit(0);
+  await sleep(5);
+  // Over the cap → refused, on a NEW session too, and nothing spawned.
+  const before = calls.length;
+  const sid3 = await newSession();
+  const r3 = await postTurn(sid3, { prompt: "three" });
+  assert.equal(r3.status, 409);
+  const body = (await r3.json()) as { error: string; detail: string };
+  assert.equal(body.error, "daily_budget_exceeded");
+  assert.match(body.detail, /AGENT_DAILY_BUDGET_USD/);
+  assert.equal(calls.length, before);
+  assert.equal(listTurns(sid3).length, 0, "no turn row left behind");
+  // Archiving deletes turn rows but must NOT reset the day's spend.
+  await agentApi.request(`/sessions/${sid}`, { method: "DELETE", headers: owner() });
+  await agentApi.request(`/sessions/${sid2}`, { method: "DELETE", headers: owner() });
+  assert.equal((await postTurn(sid3, { prompt: "still refused" })).status, 409);
+  lim = (await (await agentApi.request("/limits", { headers: owner() })).json()) as typeof lim;
+  assert.equal(lim.daily.remainingUsd, 0);
+});
+
+test("WP3.4 daily budget only counts since LOCAL midnight and is per user; null disables it", async () => {
+  const email = config.ownerEmail.toLowerCase();
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const ins = db.prepare("INSERT INTO agent_cost_log (turn_id, owner_email, cost_usd, at) VALUES (?,?,?,?)");
+  ins.run("old", email, 99, midnight - 1000);
+  ins.run("other", "someone@else.org", 99, midnight + 1000);
+  ins.run("today", email, 3, midnight + 1000);
+  const { dailySpentUsd } = await import("../src/agent-sessions");
+  assert.equal(dailySpentUsd(email, midnight + 5000), 3);
+  configureAgentSessions({ dailyBudgetUsd: 3 });
+  const sid = await newSession();
+  assert.equal((await postTurn(sid, { prompt: "x" })).status, 409);
+  configureAgentSessions({ dailyBudgetUsd: null });
+  assert.equal((await postTurn(sid, { prompt: "x" })).status, 200);
+});
+
+test("WP3.4 billing mode rides on /runner and /limits (subscription → label the cost as an estimate)", async () => {
+  const { configureBilling, probeBilling } = await import("../src/agent-billing");
+  configureBilling(async () => JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }));
+  const unknown = (await (await agentApi.request("/runner", { headers: owner() })).json()) as { billing: string };
+  assert.equal(unknown.billing, "unknown", "not probed yet");
+  await probeBilling();
+  const r = (await (await agentApi.request("/runner", { headers: owner() })).json()) as { billing: string; running: number };
+  assert.equal(r.billing, "subscription");
+  assert.equal(r.running, 0);
+  const l = (await (await agentApi.request("/limits", { headers: owner() })).json()) as { billing: string };
+  assert.equal(l.billing, "subscription");
+  configureBilling();
+});
+
+test("WP3.4 /limits is owner-only like the rest of /api/agent", async () => {
+  assert.equal((await agentApi.request("/limits")).status, 403);
 });

@@ -67,6 +67,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
     },
     getSession: (id) => call("GET", `/sessions/${enc(id)}`),
     sendTurn: (id, prompt, o = {}) => call("POST", `/sessions/${enc(id)}/turns`, { prompt, ...(o.noteId ? { noteId: o.noteId } : {}) }),
+    getLimits: () => call("GET", "/limits"),
     cancelTurn: async (turnId) => (await call<{ ok: boolean }>("POST", `/turns/${enc(turnId)}/cancel`)).ok,
     archiveSession: async (id) => {
       await call("DELETE", `/sessions/${enc(id)}`);

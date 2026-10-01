@@ -385,7 +385,7 @@ db.exec(`
     vault_id           TEXT NOT NULL,
     owner_email        TEXT NOT NULL,
     title              TEXT,
-    profile            TEXT NOT NULL DEFAULT 'vault-rw',   -- vault-ro | vault-rw
+    profile            TEXT NOT NULL DEFAULT 'vault-rw',   -- vault-ro | vault-rw | prism-ro | prism-rw
     note_id            TEXT,                               -- open note (context on turn 1 only)
     cli_session_id     TEXT,                               -- from system/init (== id)
     status             TEXT NOT NULL DEFAULT 'idle',       -- idle | running | archived
@@ -410,6 +410,15 @@ db.exec(`
     ended_at   INTEGER
   );
   CREATE INDEX IF NOT EXISTS agent_turns_session ON agent_turns(session_id, started_at);
+  -- Per-turn spend ledger (WP3.4 daily budget). Separate from agent_turns because
+  -- archiving a session deletes its turn rows — the day's spend must survive that.
+  CREATE TABLE IF NOT EXISTS agent_cost_log (
+    turn_id     TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    cost_usd    REAL NOT NULL,
+    at          INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS agent_cost_log_owner ON agent_cost_log(owner_email, at);
   -- Web Push subscriptions (Arch v2 WP3.3, push.ts). One row per browser
   -- endpoint; owner-only. The payload sent to them carries ids only.
   CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -681,6 +690,7 @@ const insertVaultEntry = db.prepare(
 const selectVaultEntries = db.prepare("SELECT * FROM prism_vaults ORDER BY created_at ASC");
 const selectVaultEntry = db.prepare("SELECT * FROM prism_vaults WHERE id = ?");
 const deleteVaultEntryStmt = db.prepare("DELETE FROM prism_vaults WHERE id = ?");
+const updateVaultEntryTokenStmt = db.prepare("UPDATE prism_vaults SET token = ? WHERE id = ?");
 
 const stripVaultRow = (r: VaultEntry & { created_at?: number }): VaultEntry => ({
   id: r.id,
@@ -700,6 +710,11 @@ export function listVaultEntries(): VaultEntry[] {
 export function getVaultEntry(id: string): VaultEntry | null {
   const row = selectVaultEntry.get(id) as (VaultEntry & { created_at: number }) | undefined;
   return row ? stripVaultRow(row) : null;
+}
+/** Replace an owner-ADDED vault's token (rotation). Env vaults aren't in this
+ *  table, so this returns false for them. Never returns the token. */
+export function updateVaultEntryToken(id: string, token: string): boolean {
+  return updateVaultEntryTokenStmt.run(token, id).changes > 0;
 }
 export function removeVaultEntry(id: string): void {
   deleteVaultEntryStmt.run(id);

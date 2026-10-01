@@ -82,8 +82,35 @@ export const patView = (r: PatRow): PatView => ({
 
 /** Clamp a client-supplied label to something safe to store + display. */
 export function sanitizePatLabel(label: unknown): string | null {
-  const s = typeof label === "string" ? label.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
+  let s = typeof label === "string" ? label.replace(/[\u0000-\u001f\u007f]/g, " ").trim() : "";
+  // The internal prefix is reserved: a user label can never hide a PAT from the list.
+  if (s.startsWith(INTERNAL_PAT_LABEL_PREFIX)) s = `agent-turn -${s.slice(INTERNAL_PAT_LABEL_PREFIX.length)}`;
   return s ? s.slice(0, 80) : null;
+}
+
+/** Reserved label prefix of the per-turn agent credentials (agent-sessions.ts
+ *  prism-* profiles). Such rows are minted per turn, ≤3 h, revoked at turn end,
+ *  and never listed in "Agent access tokens". */
+export const INTERNAL_PAT_LABEL_PREFIX = "agent-turn:";
+/** Hard ceiling for an internal per-turn credential. */
+export const INTERNAL_PAT_MAX_MS = 3 * 3_600_000;
+export const isInternalPat = (r: Pick<PatRow, "label">): boolean => !!r.label && r.label.startsWith(INTERNAL_PAT_LABEL_PREFIX);
+
+/** Mint a per-turn agent credential: ttl clamped to INTERNAL_PAT_MAX_MS. */
+export function issueInternalPat(opts: { email: string; vaultId: string; scope: PatScope; turnId: string; ttlMs?: number; now?: number }): { token: string; row: PatRow } {
+  return issuePat({
+    email: opts.email,
+    vaultId: opts.vaultId,
+    scope: opts.scope,
+    label: `${INTERNAL_PAT_LABEL_PREFIX}${opts.turnId}`.slice(0, 80),
+    expiresInMs: Math.min(INTERNAL_PAT_MAX_MS, Math.max(60_000, opts.ttlMs ?? INTERNAL_PAT_MAX_MS)),
+    now: opts.now,
+  });
+}
+
+/** Revoke every live internal per-turn credential (boot sweep: a crash mid-turn). */
+export function revokeInternalPats(now = Date.now()): number {
+  return db.prepare("UPDATE mcp_pats SET revoked_at = ? WHERE label LIKE ? AND revoked_at IS NULL").run(now, `${INTERNAL_PAT_LABEL_PREFIX}%`).changes;
 }
 
 /** Mint a PAT. The plaintext is returned exactly once and never stored. */
@@ -93,6 +120,8 @@ export function issuePat(opts: {
   scope: PatScope;
   label?: string | null;
   expiresInDays?: number;
+  /** Server-internal: exact lifetime in ms (overrides expiresInDays; no day floor). */
+  expiresInMs?: number;
   deviceId?: string | null;
   now?: number;
 }): { token: string; row: PatRow } {
@@ -112,7 +141,7 @@ export function issuePat(opts: {
     device_id: opts.deviceId ?? null,
     created_at: t,
     last_used_at: null,
-    expires_at: t + days * DAY_MS,
+    expires_at: t + (opts.expiresInMs != null ? opts.expiresInMs : days * DAY_MS),
     revoked_at: null,
   };
   db.prepare(

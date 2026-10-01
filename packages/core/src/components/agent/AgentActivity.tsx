@@ -9,9 +9,10 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
 import { webGetSkills, webGetDispatches } from "../../lib/agent/web-monitor";
 import type { RendererProps } from "../renderers/RendererProps";
-import { useAgentClient, useAgentAvailable, agentKeys } from "../../data/AgentClientContext";
+import { useAgentClient, useAgentAvailable, useAgentLimits, agentKeys } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 import type { AgentSessionSummary } from "../../lib/agent/sessions";
+import { formatAgentCost } from "../../lib/agent/cost";
 import { useLivePollMs } from "../../lib/events/channelStatus";
 
 function formatDuration(secs: number | null): string {
@@ -306,6 +307,7 @@ export default function AgentActivity(_props: RendererProps) {
 }
 
 function SessionsSection({ sessions }: { sessions: AgentSessionSummary[] }) {
+  const billing = useAgentLimits()?.billing;
   const [open, setOpen] = useState(true);
   const running = sessions.filter((s) => s.lastTurnStatus === "queued" || s.lastTurnStatus === "running").length;
   return (
@@ -354,6 +356,12 @@ function SessionsSection({ sessions }: { sessions: AgentSessionSummary[] }) {
                 <span className="text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>
                   {live ? (s.lastTurnStatus === "queued" ? "queued" : "running") : s.lastTurnAt ? formatTime(new Date(s.lastTurnAt).toISOString()) : ""}
                   {s.turnCount ? ` · ${s.turnCount} turn${s.turnCount === 1 ? "" : "s"}` : ""}
+                  {s.cost_usd > 0 && (
+                    <span title={formatAgentCost(s.cost_usd, billing)?.title} data-testid="activity-session-cost">
+                      {" · "}
+                      {formatAgentCost(s.cost_usd, billing)?.text}
+                    </span>
+                  )}
                 </span>
               </button>
             );
