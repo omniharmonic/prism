@@ -17,7 +17,10 @@
  *     UI placeholders/defaults of the shared UI (desktop vault-switcher, server-side hub hint) —
  *     nothing new may appear, and the CSP forbids connecting there regardless; no token-shaped literal;
  *  7. WP4.3 "no vault token on the client": the shell names no vault-token key/env/scope, the settings
- *     file has no credential field, and the web shim routes none of the desktop config commands.
+ *     file has no credential field, and the web shim routes none of the desktop config commands;
+ *  8. Client parity C: img-src stays exactly 'self' data: blob: + the server (external images and the
+ *     basemap come through the server's /api/media + /api/map proxies, never a widened CSP), and the
+ *     bundle carries the proxy wiring (blob-URL image proxy, prismmap:// basemap protocol).
  * Dependency-free (node:fs + child_process).
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
@@ -74,6 +77,14 @@ check(
   `connect-src must be self + IPC + one https origin + its wss twin, got: ${connect.join(" ")}`,
 );
 check(dirs["default-src"]?.join(" ") === "'self'", "default-src 'self'");
+// Client parity C: external images + the basemap are PROXIED by the server — img-src never widens.
+const img = dirs["img-src"] ?? [];
+check(
+  img.length === 4 && img[0] === "'self'" && img[1] === "data:" && img[2] === "blob:" && img[3] === remote[0],
+  `img-src = 'self' data: blob: ${remote[0]} (external images come through /api/media/proxy as blob: URLs)`,
+  `img-src must be exactly 'self' data: blob: <server>, got: ${img.join(" ")}`,
+);
+check(!/openfreemap|tile|\*/i.test(csp), "CSP names no tile host and no wildcard host (basemap comes through /api/map)");
 check(conf.app?.withGlobalTauri === false, "withGlobalTauri is off (no window.__TAURI__ API surface)");
 
 // 3. frontend
@@ -178,6 +189,9 @@ if (!existsSync(dist)) {
     `dist-native: ${total - inert} unexplained localhost:1940 occurrence(s) — a new vault URL crept into the bundle`,
   );
   check(js.includes("__PRISM_HOST__"), "bundle reads the host hook");
+  // Client parity C: the native bundle carries the proxy wiring.
+  check(js.includes("/api/media/proxy?u="), "bundle routes external images through /api/media/proxy (blob: URLs)");
+  check(js.includes("prismmap") && js.includes("/api/map/"), "bundle routes the basemap through the prismmap:// protocol → /api/map");
   // WP4.3: no vault credential is baked into the bundle. (The shared UI still contains the legacy
   // desktop Settings form's field NAMES `parachute_api_key` / `collab_token`; that form is gated off
   // in this shell and its config commands are refused by the shim, checked below.)

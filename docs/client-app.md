@@ -287,6 +287,79 @@ commands; quick-capture never holds `get_token`; the capture page calls only
   LaunchServices (`open`) to show the browser.
 - **Verified by** `scripts/verify-client.mjs` and the Rust unit tests.
 
+### External images and the basemap (Client parity C)
+
+The CSP above does **not** widen for these. The server fetches them instead, and the page only
+ever talks to its own server, with the bearer in a header.
+
+- **Images in notes.** `apps/web/src/native/externalImages.ts` (native build only) runs one
+  document-wide `MutationObserver`. Every `<img>` whose `src` is an external `http(s)` URL is
+  re-pointed:
+  - It calls `serverFetch("/api/media/proxy?u=<url>")`, which sends `Authorization: Bearer`.
+  - The bytes become a `blob:` URL (already allowed by `img-src`). The original URL is kept in
+    `data-prism-src`, and `srcset` is dropped.
+  - ProseMirror ignores attribute changes on leaf nodes, so the stored note HTML keeps the
+    original URL.
+  - It keeps a bounded LRU (400 entries / 96 MB, revoked on eviction), 6 fetches at a time, and
+    remembers a failure for 60 s.
+  - **Why blob URLs, not a signed media token in `<img src>`:** the device token never
+    appears in a URL, there is no new credential to mint, sign or leak through logs, and the
+    CSP does not change. The cost is no browser HTTP cache; the LRU above and the server's disk
+    cache cover it.
+- **Basemap.** While the shell has installed `setMapProxyFetch` (native only), `CommonsMap`
+  swaps an OpenFreeMap style URL for `prismmap://style/<id>`. It also registers a MapLibre
+  custom protocol (`packages/core/src/components/map/mapProxy.ts`). That protocol's handler
+  fetches `/api/map/style/<id>` and `/api/map/ofm/<path>` through `serverFetch`, for tiles,
+  glyphs and sprites alike, including worker requests. The server inlines the TileJSON and
+  rewrites every asset URL to `/api/map/ofm/…`; the client maps those to `prismmap://`. Custom
+  style URLs are not proxied: they stay blocked and the map falls back to blank, as before.
+- **Server side** (`apps/server/src/routes/media.ts`, `src/media/*`), signed-in users only:
+  a session, a device token or the loopback owner token. Capability links, anon and MCP
+  dispatches get 401.
+  - **SSRF rules.** `https` only (`http` only for `MEDIA_PROXY_HTTP_HOSTS`), port 443 only
+    (`MEDIA_PROXY_PORTS` adds others), no userinfo. The host must be a DNS name: every
+    IP-literal spelling is refused (decimal, hex, octal and short IPv4, `[v6]`, mapped). So are
+    `localhost`, `*.local` / `*.internal` / `*.home.arpa`, single-label names, and the server's
+    own, vault and hub hosts.
+  - **DNS.** The server resolves the name itself. If any answer is non-public (private,
+    loopback, link-local and the metadata IP, CGNAT, multicast, reserved, documentation,
+    benchmarking, `0.0.0.0`, IPv4-mapped/-compatible/NAT64/6to4/Teredo IPv6, ULA, …), the
+    whole host is refused.
+  - **Pinned connection.** It connects to that address, with TLS SNI, certificate check and
+    `Host` all set to the name, so there is no rebinding window.
+  - **Redirects** are followed manually, at most 3, and each hop is re-validated with fresh DNS.
+  - **What is sent upstream:** no cookies, no auth and no client headers.
+  - **Limits.** One 15 s deadline covers connect, headers and body, so a slow drip times out.
+    There is a 10 MB cap (declared and streamed, and on decompression).
+  - **Content check.** `image/*` (or a generic binary type) and magic bytes must both say
+    PNG, JPEG, GIF, WebP, AVIF, BMP or ICO. **SVG is refused.**
+  - **Response headers** are rebuilt: the sniffed type, `nosniff`,
+    `Content-Security-Policy: default-src 'none'; sandbox`, inline `Content-Disposition`,
+    `no-referrer`, CORP `same-origin` and `private, max-age`.
+  - **Rate limits and load.** Per user per minute: `MEDIA_PROXY_PER_MINUTE` (240) and
+    `MAP_PROXY_PER_MINUTE` (1500). At most `MEDIA_PROXY_MAX_INFLIGHT` (16) concurrent upstream
+    fetches (503 beyond), and identical in-flight fetches are coalesced.
+  - **Disk cache.** An on-disk LRU at `MEDIA_CACHE_DIR` (default `media-cache/` next to the
+    server DB), with `MEDIA_CACHE_MAX_BYTES` (512 MB). It is keyed by a SHA-256 of the URL and
+    honours upstream `max-age`: images 5 min–7 d, tiles 1 h–30 d; `no-store` is never
+    persisted.
+  - **Map extras.** The upstream host is pinned to `tiles.openfreemap.org`, including on
+    redirects. Paths must match `planet/<build>/<z>/<x>/<y>.pbf`, `natural_earth/ne2sr/…png`,
+    `sprites/<a>/<b>[@2x].(json|png)` or `fonts/<stack>/<a>-<b>.pbf`. Only the
+    `liberty` / `positron` / `bright` styles are served. A style that references any other host
+    after rewriting is refused (fail closed).
+  - **Switches.** `MEDIA_PROXY_ENABLED=false` / `MAP_PROXY_ENABLED=false` turn the routes off
+    (404). With either off, the client just shows what it did before: no image, or a blank
+    basemap.
+- **PWA:** unchanged. Its own CSP allows `https:` images and connections, so it loads directly.
+  Proxying there would only add load to the home server, and the browser already isolates the
+  cookie from page script.
+- Tests: `apps/server/test/media-proxy.test.ts` covers the SSRF matrix, pinning, rebinding,
+  redirects, slow drip, oversize, SVG/HTML, auth, cache, rate limit, and the map allowlist and
+  rewrite. `npm run verify:media -w @prism/web` covers the blob cache, the DOM observer and the
+  map protocol. `verify-client.mjs` and `origin.rs` tests assert that `img-src` stays
+  `'self' data: blob: <server>`.
+
 ## Switch-over runbook (WP4.3): retire the legacy desktop
 
 For the overseer (server steps) and the user (app steps). Do the Mac mini first, then the
@@ -339,7 +412,7 @@ that writes.
 - [ ] ⌘J inline edit on a selection in `_test`; Command bar → "Turn into Email Draft"
 - [ ] Note Sync panel: add Google Docs, Push, Pull on `_test` (and Notion if you use it)
 - [ ] Agent activity: queue a run of an enabled skill (▶); it shows as run within ~1 min
-- [ ] Graph; Map (the basemap is blank in the client: known limit)
+- [ ] Graph; Map (the OpenFreeMap basemap loads through the server proxy); a note with an external image shows it
 - [ ] Dashboards; Network → Server (ingest health), sharing dialog, Governance tab, a publication
 - [ ] Quick capture (⌘⇧Space), Export Note, drag a `.md` file in
 
@@ -393,13 +466,10 @@ still run step 8.
 
 ## Known limits (follow-ups)
 
-- **External images and map tiles are blocked.**
-  - `img-src` and `connect-src` allow only the server. This is deliberate: the page can read
-    the bearer token, and an arbitrary image URL is a data-exfiltration channel.
-  - External images embedded in notes don't render in the client, although they do in the
-    PWA.
-  - The Map's OpenFreeMap basemap falls back to blank.
-  - Candidate fixes (WP4.2): an image/tile proxy on the server, or an opt-in allowlist.
+- **External images and the basemap go through the server** (Client parity C, see "External
+  images and the basemap" under Security surface). Still blocked in the client: custom basemap
+  style URLs, `<picture><source srcset>` and CSS `background-image` URLs, and website-note
+  iframes (navigation lock + `default-src 'self'`).
 - Password-gated public `/p/:slug` sites need a cookie. Open them in the browser
   (native-auth.md).
 - A collab WebSocket that is already open survives revocation until it reconnects (a server
