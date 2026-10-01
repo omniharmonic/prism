@@ -1,0 +1,304 @@
+{
+ "from": [
+  {
+   "raw": "\"Ada Example\" <ada@example.org>",
+   "rendered": "Ada Example <ada@example.org>",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "Ada   Example <ada@example.org>",
+   "rendered": "Ada Example <ada@example.org>",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "\"Ada   Spaced\" <ada@example.org>",
+   "rendered": "Ada   Spaced <ada@example.org>",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "ada@example.org",
+   "rendered": "ada@example.org",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "<ada@example.org>",
+   "rendered": "ada@example.org",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "ada@example.org (Ada Comment)",
+   "rendered": "ada@example.org",
+   "addresses": [
+    "ada@example.org"
+   ],
+   "sender": [
+    "ada",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "\"Doe, Jordan\" <jordan@example.com>",
+   "rendered": "\"Doe, Jordan\" <jordan@example.com>",
+   "addresses": [
+    "jordan@example.com"
+   ],
+   "sender": [
+    "jordan",
+    "example.com"
+   ]
+  },
+  {
+   "raw": "Grace Q. Sample <grace@example.net>",
+   "rendered": "\"Grace Q. Sample\" <grace@example.net>",
+   "addresses": [
+    "grace@example.net"
+   ],
+   "sender": [
+    "grace",
+    "example.net"
+   ]
+  },
+  {
+   "raw": "=?utf-8?q?J=C3=B6rg?= =?utf-8?q?_Beispiel?= <jorg@example.de>",
+   "rendered": "Jörg  Beispiel <jorg@example.de>",
+   "addresses": [
+    "jorg@example.de"
+   ],
+   "sender": [
+    "jorg",
+    "example.de"
+   ]
+  },
+  {
+   "raw": "\"=?utf-8?b?WsO2ZQ==?=\" <zoe@example.com>",
+   "rendered": "Zöe <zoe@example.com>",
+   "addresses": [
+    "zoe@example.com"
+   ],
+   "sender": [
+    "zoe",
+    "example.com"
+   ]
+  },
+  {
+   "raw": "Team (via Example Docs) <team@example.com>",
+   "rendered": "Team <team@example.com>",
+   "addresses": [
+    "team@example.com"
+   ],
+   "sender": [
+    "team",
+    "example.com"
+   ]
+  },
+  {
+   "raw": "A <a@example.org>, B <b@example.org>",
+   "rendered": "A <a@example.org>, B <b@example.org>",
+   "addresses": [
+    "a@example.org",
+    "b@example.org"
+   ],
+   "sender": [
+    "a",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "Undisclosed recipients:;",
+   "rendered": "Undisclosed recipients:;",
+   "addresses": [],
+   "sender": [
+    "",
+    ""
+   ]
+  },
+  {
+   "raw": "Friends: a@example.org, \"B, C\" <bc@example.org>;",
+   "rendered": "Friends: a@example.org, \"B, C\" <bc@example.org>;",
+   "addresses": [
+    "a@example.org",
+    "bc@example.org"
+   ],
+   "sender": [
+    "a",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "\"quote\\\"inside\" <q@example.org>",
+   "rendered": "\"quote\\\"inside\" <q@example.org>",
+   "addresses": [
+    "q@example.org"
+   ],
+   "sender": [
+    "q",
+    "example.org"
+   ]
+  },
+  {
+   "raw": "no-at-sign",
+   "rendered": "no-at-sign",
+   "addresses": [
+    "no-at-sign"
+   ],
+   "sender": [
+    "",
+    ""
+   ]
+  },
+  {
+   "raw": "Name Only <>",
+   "rendered": "Name Only <>",
+   "addresses": [],
+   "sender": [
+    "",
+    ""
+   ]
+  },
+  {
+   "raw": "",
+   "rendered": "",
+   "addresses": [],
+   "sender": [
+    "",
+    ""
+   ]
+  }
+ ],
+ "subject": [
+  {
+   "raw": "plain subject",
+   "decoded": "plain subject"
+  },
+  {
+   "raw": "=?utf-8?q?a?= =?utf-8?q?b?= c =?utf-8?q?d?=",
+   "decoded": "ab c d"
+  },
+  {
+   "raw": "foo=?utf-8?q?bar?=",
+   "decoded": "foobar"
+  },
+  {
+   "raw": "=?UTF-8?B?w6nDqMOq?=  tail",
+   "decoded": "éèê  tail"
+  },
+  {
+   "raw": "=?iso-8859-1?q?caf=E9?=",
+   "decoded": "café"
+  },
+  {
+   "raw": "Re: [list]   spaced\t\ttabs",
+   "decoded": "Re: [list]   spaced\t\ttabs"
+  },
+  {
+   "raw": "=?utf-8?q?broken",
+   "decoded": "=?utf-8?q?broken"
+  },
+  {
+   "raw": "  leading and trailing  ",
+   "decoded": "leading and trailing"
+  }
+ ],
+ "date": [
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00 -0600",
+   "ms": 1790694900000
+  },
+  {
+   "raw": "29 Sep 2026 10:11 -0600",
+   "ms": 1790698260000
+  },
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00 -0000",
+   "ms": 1790673300000
+  },
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00 +0000",
+   "ms": 1790673300000
+  },
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00 GMT",
+   "ms": 1790673300000
+  },
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00 EDT",
+   "ms": 1790687700000
+  },
+  {
+   "raw": "Tue, 29 Sep 2026 09:15:00",
+   "ms": 1790673300000
+  },
+  {
+   "raw": "Tue,29 Sep 26 09:15:00 +0530",
+   "ms": 1790653500000
+  },
+  {
+   "raw": "Tuesday, 29-Sep-26 09:15:00 PST",
+   "ms": 1790702100000
+  },
+  {
+   "raw": "29 Sep 2026 09.15.30 +0100",
+   "ms": 1790669730000
+  },
+  {
+   "raw": "Sep 29 2026 09:15:00 +0100",
+   "ms": 1790669700000
+  },
+  {
+   "raw": "Tue, 31 Sep 2026 09:15:00 +0000",
+   "ms": null
+  },
+  {
+   "raw": "garbage",
+   "ms": null
+  }
+ ],
+ "html": [
+  {
+   "raw": "&amp;copy &copy &copy; &notit; &notanentity; &#65;&#x42;&#128;&#0;&#1;&#xD800;&#1114112; &zz; &am",
+   "text": "&copy © © ¬it; ¬anentity; AB€��� &zz; &am"
+  },
+  {
+   "raw": "<p>a</p><div>b</div><br/><BR>c<tr>d</tr>\n\n\n\n\ne",
+   "text": "a\nb\n\nc d\n\ne"
+  },
+  {
+   "raw": "<style>x</style><SCRIPT type=\"a\">y</script>  z  \t  w  v",
+   "text": "z w v"
+  },
+  {
+   "raw": "  line one  \n\u000b\f\u001c line two　\n\n\n\n",
+   "text": "line one\n\nline two"
+  }
+ ]
+}

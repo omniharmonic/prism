@@ -27,6 +27,7 @@ import { FirefliesClient, ingestAndCleanupFireflies, type FirefliesBudget, type 
 import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault } from "./clickup";
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
+import { protonMode, runProtonOnce } from "./proton";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -324,6 +325,7 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
 /** Vaults whose Gmail 14-day body backfill already ran in this process (the
  *  desktop did it once per app launch; the server does it once per boot). */
 const gmailBackfilled = new Set<string>();
+let gmailProtonWarned = false;
 
 /**
  * Run one Gmail ingest pass for a vault (WP1.2). No-op unless GMAIL_SYNC_ENABLED
@@ -336,6 +338,16 @@ const gmailBackfilled = new Set<string>();
  */
 export async function runGmailOnce(entry: VaultEntry, opts: { force?: boolean; run?: GogRunner } = {}): Promise<number> {
   if (!config.gmailSyncEnabled) return 0;
+  // Gmail dedupes by metadata.threadId over the WHOLE email set, and Proton notes
+  // carry threadIds too: with both on, a Gmail pass would rewrite Proton notes in
+  // place. Proton (WP1.2b) is the real email source, so it wins.
+  if (protonMode() !== "off") {
+    if (!gmailProtonWarned) {
+      gmailProtonWarned = true;
+      console.warn("[worker] gmail: GMAIL_SYNC_ENABLED ignored while the Proton ingest is on (both would write vault/messages/email/)");
+    }
+    return 0;
+  }
   const raw = getSecret(entry.id, config.ownerEmail, "google");
   if (!raw) {
     warnMissingSecret(entry.id, "google");
@@ -695,6 +707,8 @@ async function tick(): Promise<void> {
         // "calendar" when the server owns it (live), "calendar-shadow" while it only
         // diffs alongside the desktop (worker/calendar.ts). Off → not run at all.
         ...(calendarMode() !== "off" ? ([[calendarSourceName(), runCalendarOnce]] as const) : []),
+        // Proton Bridge mail (WP1.2b): "proton" while shadowing OR live. Off → not run.
+        ...(protonMode() !== "off" ? ([["proton", runProtonOnce]] as const) : []),
       ] as const) {
         try {
           await run(entry);

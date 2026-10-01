@@ -11,6 +11,7 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
 import { getSourceHealth } from "../worker/health";
 import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
+import { protonMode, readProtonIntents, readProtonLastPass, verifyProtonIntents } from "../worker/proton";
 import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
@@ -970,12 +971,38 @@ acl.get("/workers/calendar/intents", async (c) => {
   return c.json(body);
 });
 
+/** Server Proton Bridge ingest (WP1.2b): the last persisted intents (what the
+ *  server wrote or WOULD write — create / update-flags / skip-collision; never a
+ *  subject, body or address, only paths, uids and hashes) + the last pass
+ *  summary, for comparing against the agent's proton_mail.py during the shadow
+ *  period. `?vault=<id>` (default primary), `?limit=N` (newest N, default 200),
+ *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the
+ *  script actually wrote for each intent (match / differs + which keys /
+ *  missing) — read-only. Server-owner only. */
+acl.get("/workers/proton/intents", async (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const vaultId = c.req.query("vault") || "primary";
+  if (!getVaultRegistry().some((v) => v.id === vaultId)) return c.json({ error: "not_found" }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 200) || 200, 1), 5000);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  let intents = readProtonIntents(vaultId);
+  if (actions.length) intents = intents.filter((i) => actions.includes(i.action));
+  const body: Record<string, unknown> = {
+    mode: protonMode(),
+    lastPass: readProtonLastPass(vaultId),
+    total: intents.length,
+    intents: intents.slice(-limit).reverse(),
+  };
+  if (c.req.query("verify") === "1") body.verify = await verifyProtonIntents(vaultId, intents);
+  return c.json(body);
+});
+
 /** Server config + status snapshot. NEVER returns a secret/token value — only
  *  whether each is configured. */
 acl.get("/server", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const integrations: Record<string, boolean> = {};
-  for (const k of ["matrix", "fathom", "fireflies", "clickup", "github", "google", "notion"]) {
+  for (const k of ["matrix", "fathom", "fireflies", "clickup", "github", "google", "notion", "proton-bridge"]) {
     integrations[k] = secretsConfigured() && !!getSecret("primary", config.ownerEmail, k);
   }
   return c.json({

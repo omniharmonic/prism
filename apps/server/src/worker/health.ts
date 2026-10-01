@@ -20,7 +20,10 @@
  *     Likewise with GMAIL_SYNC_ENABLED=true "email" is a SERVER source, reported
  *     by the scheduler's `runGmailOnce` (worker/gmail.ts) per run. And with
  *     CALENDAR_SYNC_ENABLED=true (not shadow) "calendar" is a SERVER source
- *     (worker/calendar.ts); CALENDAR_SHADOW adds a separate "calendar-shadow"
+ *     (worker/calendar.ts). PROTON_SYNC_ENABLED or PROTON_SHADOW adds a "proton"
+ *     SERVER source (worker/proton.ts); a LIVE Proton ingest also drops the
+ *     inferred "email" source (it writes those notes itself).
+ *     CALENDAR_SHADOW adds a separate "calendar-shadow"
  *     server source and leaves "calendar" inferred from the desktop's notes.
  *
  * Status: disabled (not configured / no data ever) | failing (streak >=
@@ -36,6 +39,7 @@ import { getSecret, secretsConfigured } from "../secrets";
 import { vaultClient } from "../parachute";
 import { sendEmail } from "../auth/email";
 import { calendarMode, calendarSourceName } from "./calendar";
+import { PROTON_CREDENTIAL, protonMode } from "./proton";
 
 export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
 export type SourceKind = "server" | "desktop";
@@ -131,6 +135,8 @@ const desktopSpecs = (): DesktopSpec[] =>
     (s) =>
       !(s.name === "skills" && config.skillsEnabled) &&
       !(s.name === "email" && config.gmailSyncEnabled) &&
+      // A LIVE server Proton ingest writes the email notes itself (WP1.2b).
+      !(s.name === "email" && protonMode() === "live") &&
       // Only a LIVE server calendar owns the source; a shadow run leaves the desktop inferred.
       !(s.name === "calendar" && calendarMode() === "live"),
   );
@@ -268,6 +274,26 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       const staleAfterMs = config.calendarIntervalMs <= 0 ? 0 : config.workerStaleMs.calendarServer;
       out.push({
         name: entry.id === "primary" ? src : `${src}@${entry.id}`,
+        kind: "server",
+        vaultId: entry.id,
+        lastSuccessAt: iso(r?.lastSuccessAt ?? null),
+        lastError: r?.lastError ?? null,
+        failureStreak: r?.streak ?? 0,
+        staleAfterMs,
+        status: computeStatus({ configured, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      });
+    }
+  }
+
+  if (protonMode() !== "off") {
+    // Server Proton Bridge ingest (WP1.2b): one "proton" source in shadow AND live
+    // (a shadow pass connects + diffs every interval too); configured = credential.
+    for (const entry of getVaultRegistry()) {
+      const r = records.get(key(entry.id, "proton"));
+      const configured = secretsConfigured() && !!getSecret(entry.id, config.ownerEmail, PROTON_CREDENTIAL);
+      const staleAfterMs = config.protonIntervalMs <= 0 ? 0 : config.workerStaleMs.proton;
+      out.push({
+        name: entry.id === "primary" ? "proton" : `proton@${entry.id}`,
         kind: "server",
         vaultId: entry.id,
         lastSuccessAt: iso(r?.lastSuccessAt ?? null),
