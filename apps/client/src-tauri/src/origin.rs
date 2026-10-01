@@ -110,7 +110,11 @@ impl ServerOrigin {
 ///
 /// `connect-src` (fetch/XHR/WebSocket/SSE) is the hard boundary: the app shell,
 /// Tauri IPC and the one configured server, nothing else. `img-src` is limited
-/// the same way (an image URL is a GET that could carry data out). Fonts and
+/// the same way (an image URL is a GET that could carry data out). External
+/// images in notes and the OpenFreeMap basemap are NOT allowed here: the page
+/// fetches them through the server's SSRF-guarded `/api/media/proxy` (shown as
+/// `blob:` URLs) and `/api/map/*` proxies, with the bearer in a header (Client
+/// parity C), so this CSP never widens for them. Fonts and
 /// stylesheets may still come from Google Fonts / esm.sh (Excalidraw's font
 /// files), matching the PWA's server CSP; they cannot carry script.
 pub fn build_csp(origin: &ServerOrigin) -> String {
@@ -210,6 +214,17 @@ mod tests {
         assert!(!csp.contains("localhost:"));
         assert!(!csp.contains(" https: "));
         assert!(!csp.contains(" wss: ") && !csp.ends_with(" wss:"));
+    }
+
+    #[test]
+    fn img_src_is_only_self_data_blob_and_the_origin() {
+        // Client parity C: external images/tiles are proxied by the server, never allowed here.
+        let o = ServerOrigin::parse("https://prism.example.com").unwrap();
+        let csp = build_csp(&o);
+        let img = csp.split("; ").find(|d| d.starts_with("img-src")).unwrap();
+        assert_eq!(img, "img-src 'self' data: blob: https://prism.example.com");
+        assert!(!csp.contains("openfreemap"));
+        assert!(!csp.contains('*'));
     }
 
     #[test]

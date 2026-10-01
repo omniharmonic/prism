@@ -12,7 +12,7 @@ import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen } from "./auth/NativeSignInScreen";
-import { isNative } from "./transport";
+import { isNative, serverFetch, gatewayOrigin } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
@@ -26,6 +26,7 @@ import { UpdatePrompt } from "./offline/UpdatePrompt";
 import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
+import { installExternalImageProxy } from "./native/externalImages";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
@@ -223,6 +224,9 @@ async function start() {
 
   startOutboxSync();
   if (!capability && isNative) initNativeExtras(); // WP4.2: export + drag-drop (page half)
+  // Client parity C: external note images via the server's SSRF-guarded proxy
+  // (blob: URLs; the client CSP only allows its own server). PWA loads directly.
+  if (!capability && isNative) installExternalImageProxy({ fetch: serverFetch, apiOrigin: gatewayOrigin });
   if (!capability) {
     initAgentDeepLink(); // push notification → /agent/:id (WP3.3); cold start is handled by agentLink above
     // Warm start: the app is already open when a notification is tapped — the SW

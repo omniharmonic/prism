@@ -6,7 +6,8 @@
  * Design notes:
  *  - Two GeoJSON sources: a CLUSTERED point source (points + geo centroids) and
  *    an unclustered shape source (lines/polygons). Data-driven color by `kind`.
- *  - Basemap defaults to OpenFreeMap vector tiles but ALWAYS degrades to a
+ *  - Basemap defaults to OpenFreeMap vector tiles (through the Prism Server's
+ *    /api/map proxy in the native client, see mapProxy.ts) but ALWAYS degrades to a
  *    network-free blank style when tiles can't load (offline, CSP-locked, tile
  *    host down) — the note geometry renders regardless.
  *  - No WebGL (rare headless case) → a graceful fallback panel; the surrounding
@@ -20,6 +21,7 @@ import maplibregl, { type Map as MLMap, type StyleSpecification, type GeoJSONSou
 import "maplibre-gl/dist/maplibre-gl.css";
 import { resolveBasemap, kindColor, kindColorExpression, BLANK_STYLE, BASEMAPS, type Basemap } from "./basemaps";
 import { DrawController, type DrawKind, type DrawMode } from "./draw";
+import { ensureMapProtocol, proxiedStyle } from "./mapProxy";
 
 export interface MapFeature {
   id: string;
@@ -320,10 +322,12 @@ export function CommonsMap({ features, basemap, height = 460, onPick, onSelect, 
       return;
     }
     let map: MLMap;
+    // Native client: OpenFreeMap goes through the Prism Server (mapProxy.ts).
+    ensureMapProtocol(maplibregl.addProtocol as never);
     try {
       map = new maplibregl.Map({
         container: el,
-        style: current.style as string | StyleSpecification,
+        style: proxiedStyle(current.style) as string | StyleSpecification,
         center: [-105.27, 40.02],
         zoom: 8,
         attributionControl: { compact: true },
@@ -402,7 +406,7 @@ export function CommonsMap({ features, basemap, height = 460, onPick, onSelect, 
     const next = resolveBasemap(basemap);
     if (!map || next.id === current.id) return;
     setCurrent(next);
-    map.setStyle(next.style as string | StyleSpecification);
+    map.setStyle(proxiedStyle(next.style) as string | StyleSpecification);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basemap]);
 
@@ -428,7 +432,7 @@ export function CommonsMap({ features, basemap, height = 460, onPick, onSelect, 
     const next = resolveBasemap(id);
     if (!map) return;
     setCurrent(next);
-    map.setStyle(next.style as string | StyleSpecification);
+    map.setStyle(proxiedStyle(next.style) as string | StyleSpecification);
   };
 
   const kindsPresent = [...new Set(features.map((f) => f.kind))];
