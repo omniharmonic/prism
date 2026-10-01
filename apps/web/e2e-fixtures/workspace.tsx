@@ -2,6 +2,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App, PageHeader, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
+import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
 
@@ -13,7 +14,7 @@ const notes: Note[] = [
 ];
 const writes: Array<Record<string, unknown>> = [];
 const controls = { rejectWrite: false };
-Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls });
+Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram" }, createdAt: date, updatedAt: date });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
@@ -22,6 +23,7 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const method = init?.method ?? "GET";
   if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];

@@ -87,10 +87,10 @@ export function Shell() {
           <MobileActionBar />
         </div>
 
-        <CommandBar />
-        <WikilinkChooser />
-        <NotionDbSyncHost />
-        <GraphFullscreen />
+        <CommandBar key="commands" />
+        <WikilinkChooser key="wikilinks" />
+        <NotionDbSyncHost key="notion-sync" />
+        <GraphFullscreen key="graph" />
       </div>
     );
   }
@@ -130,12 +130,12 @@ export function Shell() {
       <StatusBar />
 
       {/* Command Bar overlay */}
-      <CommandBar />
-        <WikilinkChooser />
-      <NotionDbSyncHost />
+      <CommandBar key="commands" />
+      <WikilinkChooser key="wikilinks" />
+      <NotionDbSyncHost key="notion-sync" />
 
       {/* Graph fullscreen overlay */}
-      <GraphFullscreen />
+      <GraphFullscreen key="graph" />
     </div>
   );
 }

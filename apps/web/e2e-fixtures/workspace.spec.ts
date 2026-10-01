@@ -143,3 +143,23 @@ test("rich-text bold shortcut edits the document without closing navigation", as
   await expect(editor.locator("strong")).toContainText("BOLD_SHORTCUT_FIXTURE");
   await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
 });
+
+
+test("linked document choices survive desktop/mobile layout changes", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
+  await page.evaluate(() => (window as any).prismFixtureOpenLink());
+  const picker = page.getByRole("dialog", { name: "Open linked document" });
+  const choice = picker.getByRole("button", { name: "Duplicate Projects/Prism/Field notes" });
+  await expect(choice).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "Files", exact: true })).toBeAttached();
+  await expect(choice).toBeVisible();
+  expect(await picker.evaluate(e => (e as HTMLDialogElement).open)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByRole("button", { name: "Files", exact: true })).toHaveCount(0);
+  await expect(choice).toBeVisible();
+  await choice.click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Field notes", exact: true }).first()).toBeVisible();
+});
