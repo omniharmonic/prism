@@ -12,6 +12,7 @@ import { config } from "../config";
 import { getSourceHealth } from "../worker/health";
 import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
 import { protonMode, readProtonIntents, readProtonLastPass, verifyProtonIntents } from "../worker/proton";
+import { listActionAudit } from "../actions/store";
 import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
@@ -980,6 +981,17 @@ acl.get("/workers/calendar/intents", async (c) => {
  *  `?action=create,update-flags` to filter, `?verify=1` to re-read what the
  *  script actually wrote for each intent (match / differs + which keys /
  *  missing) — read-only. Server-owner only. */
+/** Live actions audit (WP1.5): newest first; `?limit=N` (default 100, max 1000),
+ *  `?action=email.send,matrix.send`, `?before=<id>` to page. Ids + hashes only —
+ *  never a body, subject or address. Server-owner only. */
+acl.get("/actions/audit", (c) => {
+  if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
+  const actions = (c.req.query("action") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const before = Number(c.req.query("before") ?? 0) || undefined;
+  const limit = Number(c.req.query("limit") ?? 100) || 100;
+  return c.json({ entries: listActionAudit({ limit, action: actions, before }) });
+});
+
 acl.get("/workers/proton/intents", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
   const vaultId = c.req.query("vault") || "primary";

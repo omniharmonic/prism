@@ -24,6 +24,7 @@ import { pushApi } from "./routes/push";
 import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
 import { calendar } from "./routes/calendar";
+import { actionsApi } from "./routes/actions";
 import { mcp } from "./routes/mcp";
 import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
@@ -151,6 +152,10 @@ export function createApp(): Hono {
   // On-demand Google Calendar range sync (WP1.3, replaces calendar_sync_range) —
   // admin-only, gated by the CALENDAR_* modes; before the gateway like /api/sync.
   app.route("/api/calendar", calendar);
+  // Live actions (WP1.5): the server acting AS the owner (email via Proton
+  // Bridge, calendar via gog, Matrix). SERVER-OWNER only, flag-gated, audited,
+  // idempotent; before the gateway like /api/calendar.
+  app.route("/api/actions", actionsApi);
   // Member self-serve MCP tokens — role-gated in-handler (member+ on the target
   // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
   // /api/mcp to the vault.

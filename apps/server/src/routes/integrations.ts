@@ -214,7 +214,7 @@ integrations.get("/proton-bridge", (c) => {
   if (raw) {
     try {
       const cred = JSON.parse(raw) as Record<string, unknown>;
-      for (const k of ["host", "port", "username", "security", "certSha256"]) if (cred[k] !== undefined) out[k] = cred[k];
+      for (const k of ["host", "port", "username", "security", "certSha256", "smtpPort", "smtpSecurity", "smtpCertSha256"]) if (cred[k] !== undefined) out[k] = cred[k];
     } catch {
       // unreadable blob — report configured only
     }
@@ -242,6 +242,11 @@ integrations.put("/proton-bridge", async (c) => {
       security: o.security ?? "starttls",
       username: o.username,
       certSha256: typeof o.certSha256 === "string" ? normalizeFingerprint(o.certSha256) : o.certSha256,
+      // WP1.5: re-pointing the SMTP listener/pin is a change too (it would hand
+      // the stored password to a different listener).
+      smtpPort: o.smtpPort === undefined || o.smtpPort === "" ? 1025 : Number(o.smtpPort),
+      smtpSecurity: o.smtpSecurity || "starttls",
+      smtpCertSha256: typeof o.smtpCertSha256 === "string" && o.smtpCertSha256 ? normalizeFingerprint(o.smtpCertSha256) : null,
     });
     if (!prev.password || JSON.stringify(norm(body)) !== JSON.stringify(norm(prev))) {
       return c.json({ error: "bad_request", detail: "password required (it may only be omitted when nothing else changes)" }, 400);

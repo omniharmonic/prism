@@ -135,3 +135,20 @@ export type {
   CreateSessionParams,
 } from "./lib/agent/sessions";
 export { openAgentChat, useAgentChatStore, AGENT_CHAT_TAB } from "./lib/agent/chatStore";
+
+// Live actions seam (Arch v2 WP1.5): email / calendar / Matrix actions via the server.
+export { LiveActionsProvider, useLiveActionsClient, useLiveActionsStatus, useLiveActions } from "./data/LiveActionsContext";
+export {
+  createHttpLiveActionsClient,
+  LiveActionError,
+  liveActionErrorText,
+  type LiveActionsClient,
+  type LiveActionsStatus,
+  type HttpLiveActionsOptions,
+  type ActionsFetch,
+  type EmailSendParams,
+  type EmailReplyParams,
+  type EmailTarget,
+  type CalendarCreateParams,
+  type RsvpResponse,
+} from "./lib/actions/client";

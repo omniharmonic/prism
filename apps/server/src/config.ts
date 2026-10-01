@@ -255,6 +255,26 @@ export const config = {
   // Messages over this RFC822.SIZE are never downloaded (intent skip-too-large, no
   // note) — bounds per-message memory; 0 = no cap.
   protonMaxMessageBytes: Number(process.env.PROTON_MAX_MESSAGE_BYTES ?? 10_485_760),
+  // Live actions (Arch v2 WP1.5, routes/actions.ts, docs/live-actions.md): the
+  // server acts AS THE OWNER (sends email, RSVPs, posts to Matrix). Each family is
+  // OFF by default; while off its routes answer 503 `actions_disabled`.
+  actionsEmailEnabled: process.env.ACTIONS_EMAIL_ENABLED === "true",
+  actionsCalendarEnabled: process.env.ACTIONS_CALENDAR_ENABLED === "true",
+  actionsMatrixEnabled: process.env.ACTIONS_MATRIX_ENABLED === "true",
+  // Matrix rooms an AGENT-originated request (Prism MCP in-process dispatch, the
+  // loopback owner token) may post/react in. The human owner via a session or
+  // device token may target any JOINED room. Empty = agents may post nowhere.
+  actionsMatrixAgentRooms: (process.env.ACTIONS_MATRIX_AGENT_ROOMS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  // Proton Bridge folder that "archive" moves a message into.
+  actionsEmailArchiveMailbox: process.env.ACTIONS_EMAIL_ARCHIVE_MAILBOX ?? "Archive",
+  actionsSmtpTimeoutMs: Number(process.env.ACTIONS_SMTP_TIMEOUT_MS ?? 30_000),
+  // Per-owner rate limits (fixed windows). Sends are the expensive/abusable ones.
+  actionsEmailSendPerHour: Number(process.env.ACTIONS_EMAIL_SEND_PER_HOUR ?? 30),
+  actionsMatrixSendPer10Min: Number(process.env.ACTIONS_MATRIX_SEND_PER_10MIN ?? 60),
+  actionsCalendarPer10Min: Number(process.env.ACTIONS_CALENDAR_PER_10MIN ?? 30),
   // How often the worker recompiles the governance constitution into grant rows
   // (governance-grants.ts). The route path already reconciles on every successful
   // mutation, so this is the SAFETY NET, not the mechanism: it catches a
