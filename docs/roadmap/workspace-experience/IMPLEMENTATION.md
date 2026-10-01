@@ -7,7 +7,8 @@ Approved by the user on 2026-10-01. Implementation branch: `feat/workspace-exper
 | R00 baseline | In progress | Isolated checkout; fixture-only default browser tests; live test credentials/origins now explicit; verifier syntax gate. Checks: verifier syntax, e2e typecheck, and 1 Chromium isolation test passed. Runtime/device inventory and feature ledger still required. |
 | R01 integrity | In progress | Scoped durable outbox; no forced conflict retries; unknown outcomes retained; temporary-ID reconciliation and local draft reads; actor-bound gateway requests; recovery UI; account-scoped read cache; removed URL-only service-worker API cache; unavailable web agent no longer falls back to Tauri. Browser regressions and server tests passing (see checkpoints). Agent/message composer draft scoping and final crash/recovery checks remain. |
 | R02 brand/primitives | In progress | Canonical vector and deterministic web/native exports; neutral surface tokens, navigation states, keyboard title rename, list marker restoration. Concept boards 17/18 added. 19 browser fixtures passed; application/e2e typechecks passed. Native rendering and remaining surfaces still require verification. |
-| R03–R16 | Not started | Follow POST-MIGRATION-PLAN.md; no completion inferred from baseline tests |
+| R03 shell/editor | In progress | Agent/Details/Activity panel; full-width mobile context dialog; native focus containment/Escape/return focus; direct mobile Agent entry; preserved property/link/graph/history access; central virtual-note classification. Four workspace browser checks and all application/e2e typechecks passed. Remaining editor/mobile/device cases still open. |
+| R04–R16 | Not started | Follow POST-MIGRATION-PLAN.md; no completion inferred from baseline tests |
 
 Every implementation commit updates this record with actual checks and limitations. Production deployment/testing has not started. Existing audit tests remain baseline evidence only.
 
@@ -20,3 +21,5 @@ Every implementation commit updates this record with actual checks and limitatio
 - Production test destinations: user authorizes only private destinations in their own accounts (self/bot rooms, self-addressed mail, private resources). Verify membership/visibility before any outward production test.
 
 - R02 working slice: real shared-workspace fixtures at 1280×720 and 390×844 uncovered a pre-existing font-registration render loop. Stable Canvas mutation callbacks and scoped store selectors fix it. These tests use fictional notes and never connect to production.
+
+- `24fc982`: brand foundation and editor loop correction. Production web build passed (128 precached entries, ~8.4 MB; existing large-chunk warnings remain a performance follow-up). No deployment performed.

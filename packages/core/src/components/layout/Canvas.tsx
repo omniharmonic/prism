@@ -1,3 +1,4 @@
+import { isVaultNoteId } from "../../lib/noteIdentity";
 import { Suspense, useCallback, useMemo } from "react";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
@@ -21,11 +22,7 @@ export function Canvas() {
   const isTagView = activeTab?.noteId.startsWith("tag:");
 
   // Virtual notes (e.g., matrix:room_id, messages-dashboard, calendar-dashboard) don't come from Parachute
-  const VIRTUAL_TAB_IDS = new Set(["messages-dashboard", "calendar-dashboard", "vault-messages", "agent-activity", "network", "map", "agent-chat"]);
-  const isVirtual = activeTab ? (
-    (activeTab.noteId.includes(":") && !activeTab.noteId.match(/^\d/)) ||
-    VIRTUAL_TAB_IDS.has(activeTab.noteId)
-  ) : false;
+  const isVirtual = !!activeTab && !isVaultNoteId(activeTab.noteId);
   const parachuteNoteId = isVirtual ? null : (activeTab?.noteId ?? null);
 
   const { data: note, isLoading } = useNote(parachuteNoteId);
@@ -97,7 +94,7 @@ export function Canvas() {
     <div className="flex flex-col h-full">
       <TabBar />
 
-      <div className="flex-1 overflow-auto">
+      <main id="workspace-document" tabIndex={-1} className="flex-1 min-h-0 overflow-auto">
         {!activeTab ? (
           <EmptyState />
         ) : isTagView ? (
@@ -127,7 +124,7 @@ export function Canvas() {
             Note not found.
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }

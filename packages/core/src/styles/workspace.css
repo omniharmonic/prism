@@ -104,3 +104,12 @@ button:disabled { cursor: not-allowed; }
   .workspace-context-header { min-height: 48px; }
   .workspace-context-tabs button { min-height: 44px; }
 }
+
+.workspace-mobile-drawer {
+  position: fixed; top: 0; bottom: 0; margin: 0; padding: 0;
+  height: 100dvh; max-height: 100dvh; max-width: 100vw; border: 0;
+  color: var(--text-primary); background: var(--bg-surface);
+  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  box-sizing: border-box;
+}
+.workspace-mobile-drawer::backdrop { background: rgb(20 22 28 / 35%); }

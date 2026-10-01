@@ -1,3 +1,4 @@
+import { isVaultNoteId } from "../../lib/noteIdentity";
 import { useState } from "react";
 import {
   PanelLeft,
@@ -57,7 +58,7 @@ export function MobileActionBar() {
   const agentChat = useAgentAvailable();
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const isRealNote = !!activeTab && !activeTab.noteId.includes(":");
+  const isRealNote = isVaultNoteId(activeTab?.noteId);
   const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
 
   const openPanel = (tab: "metadata" | "agent" | "history") => {
@@ -153,6 +154,9 @@ export function MobileActionBar() {
           <PillButton label="Files" onClick={toggleSidebar}>
             <PanelLeft size={20} />
           </PillButton>
+          <PillButton label="Agent" onClick={() => openPanel("agent")}>
+            <Bot size={20} />
+          </PillButton>
           <PillButton label="Search" onClick={openCommandBar}>
             <Search size={20} />
           </PillButton>
@@ -166,8 +170,8 @@ export function MobileActionBar() {
               width: 46,
               height: 38,
               borderRadius: 999,
-              background: "var(--color-accent)",
-              color: "#fff",
+              background: "var(--action-bg)",
+              color: "var(--action-fg)",
               boxShadow: "0 2px 8px color-mix(in srgb, var(--color-accent) 45%, transparent)",
             }}
           >

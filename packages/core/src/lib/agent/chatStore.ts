@@ -54,12 +54,7 @@ export const useAgentChatStore = create<AgentChatState>((set) => ({
 /** The Agent chat virtual tab id (Registry + Canvas + Navigation). */
 export const AGENT_CHAT_TAB = "agent-chat";
 
-const VIRTUAL_IDS = new Set(["messages-dashboard", "calendar-dashboard", "vault-messages", "agent-activity", "network", "map", AGENT_CHAT_TAB]);
-
-/** A tab id that is a real vault note (not tag:/matrix:/virtual) — "Ask about this note" applies. */
-export function isAskableNoteId(id: string | null | undefined): id is string {
-  return !!id && !id.includes(":") && !VIRTUAL_IDS.has(id);
-}
+export { isVaultNoteId as isAskableNoteId } from "../noteIdentity";
 
 /** Open the Agent chat tab, optionally on a session or with a pending ask. */
 export function openAgentChat(opts: { sessionId?: string | null; ask?: PendingAsk } = {}) {
