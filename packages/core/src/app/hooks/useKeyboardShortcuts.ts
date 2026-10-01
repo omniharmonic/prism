@@ -16,6 +16,8 @@ export function useKeyboardShortcuts() {
           if (activeTabId) closeTab(activeTabId);
           break;
         case "b":
+          // The document editor owns Cmd/Ctrl+B for rich-text bold.
+          if ((e.target as HTMLElement | null)?.closest('[contenteditable="true"], input, textarea')) return;
           e.preventDefault();
           toggleSidebar();
           break;

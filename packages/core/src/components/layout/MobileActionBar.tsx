@@ -53,7 +53,8 @@ export function MobileActionBar() {
   const [newOpen, setNewOpen] = useState(false);
   const [tabsOpen, setTabsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   // Server agent sessions (WP3.2): full-screen chat instead of the side panel.
   const agentChat = useAgentAvailable();
 

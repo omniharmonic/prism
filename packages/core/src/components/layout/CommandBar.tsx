@@ -110,7 +110,7 @@ export function CommandBar() {
     {
       id: "settings", label: "Settings", category: "navigate" as const,
       icon: <Settings size={15} />,
-      action: () => { closeCommandBar(); /* Settings button in TabBar handles this */ },
+      action: () => { closeCommandBar(); useUIStore.getState().setSettingsOpen(true); },
     },
     {
       id: "agent-panel", label: "Open Agent Panel", category: "navigate" as const,

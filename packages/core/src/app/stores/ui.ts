@@ -36,6 +36,8 @@ interface UIStore {
 
   // Command bar
   commandBarOpen: boolean;
+  settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
 
   // Inline prompt
   inlinePromptOpen: boolean;
@@ -121,6 +123,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   navIndex: -1,
   activeTabId: null,
   commandBarOpen: false,
+  settingsOpen: false,
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
   inlinePromptOpen: false,
   inlinePromptPosition: null,
   inlinePromptSelection: "",

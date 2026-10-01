@@ -14,7 +14,8 @@ export function StatusBar() {
   const { openTabs, activeTabId } = useUIStore();
   const docFont = useUIStore((s) => s.docFont);
   const docFontSetter = useUIStore((s) => s.docFontSetter);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const noteCount = stats?.totalNotes ?? 0;

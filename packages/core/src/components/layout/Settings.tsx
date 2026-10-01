@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
-import { ollamaApi, localAiApi, vaultApi } from "../../lib/parachute/client";
+import { ollamaApi, localAiApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
 import { useAccount } from "../../data/Account";
 import { AccountSettings } from "./AccountSettings";
 import { DesktopOnlyNotice } from "../ui/DesktopOnlyNotice";
 import { useHostServices } from "../../data/HostServicesContext";
+import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
 
 interface SettingsProps {
@@ -21,10 +22,20 @@ const MONO_FONT_OPTIONS = ["JetBrains Mono", "SF Mono", "Fira Code", "Source Cod
 
 export function Settings({ open, onClose }: SettingsProps) {
   const isWeb = useIsWeb();
+  const vaultClient = useVaultClient();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [settingsError, setSettingsError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const element = dialog.current;
+    element?.showModal();
+    return () => { element?.close(); if (previous?.isConnected) previous.focus(); };
+  }, [open]);
   const account = useAccount();
   // Server owner on a thin client: AI model routing lives on the Prism Server.
   const host = useHostServices();
-  const [tab, setTab] = useState<"account" | "services" | "sources" | "appearance">("services");
+  const [tab, setTab] = useState<"account" | "services" | "sources" | "appearance">("appearance");
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -56,20 +67,21 @@ export function Settings({ open, onClose }: SettingsProps) {
   const [skillModels, setSkillModels] = useState<Record<string, { provider: string; model: string }>>({});
   const { setSkillModel } = useSettingsStore();
 
-  const loadConfig = useCallback(() => {
-    invoke<Record<string, unknown>>("get_full_config").then(setConfig);
+  const loadConfig = useCallback(async () => {
+    try { setConfig(await invoke<Record<string, unknown>>("get_full_config")); }
+    catch { setConfig(null); setSettingsError("Couldn't load service settings. Try again."); }
   }, []);
 
   useEffect(() => {
     if (open) {
       loadConfig();
-      vaultApi.getVaultInfo().then((info) => {
+      vaultClient.getVaultInfo().then((info) => {
         const desc = info.description || "";
         setVaultDescription(desc);
         setVaultDescriptionDraft(desc);
       }).catch(() => {});
     }
-  }, [open, loadConfig]);
+  }, [open, loadConfig, vaultClient]);
 
   useEffect(() => {
     // Guard against browser-only mode (outside Tauri webview)
@@ -89,13 +101,15 @@ export function Settings({ open, onClose }: SettingsProps) {
 
   const handleSave = async (key: string, value: string) => {
     setSaving(key);
-    await invoke("update_config", { updates: { [key]: value } });
-    setSavedKeys((prev) => new Set(prev).add(key));
-    await loadConfig();
-    setEditValues((prev) => { const n = { ...prev }; delete n[key]; return n; });
-    setSaving(null);
-    // Clear saved indicator after 2s
-    setTimeout(() => setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
+    setSettingsError("");
+    try {
+      await invoke("update_config", { updates: { [key]: value } });
+      setSavedKeys((prev) => new Set(prev).add(key));
+      await loadConfig();
+      setEditValues((prev) => { const next = { ...prev }; delete next[key]; return next; });
+      setTimeout(() => setSavedKeys((prev) => { const next = new Set(prev); next.delete(key); return next; }), 2000);
+    } catch { setSettingsError("Couldn't save this setting. Your entered value is still here; try again."); }
+    finally { setSaving(null); }
   };
 
   // Boolean/enum config (ingest switch). update_config reads real JSON bools for these.
@@ -105,7 +119,7 @@ export function Settings({ open, onClose }: SettingsProps) {
       await invoke("update_config", { updates: { [key]: value } });
       setSavedKeys((prev) => new Set(prev).add(key));
       await loadConfig();
-    } finally {
+    } catch { setSettingsError("Couldn’t update this setting. Try again."); } finally {
       setSaving(null);
     }
     setTimeout(() => setSavedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; }), 2000);
@@ -119,7 +133,7 @@ export function Settings({ open, onClose }: SettingsProps) {
       await invoke("update_config", { updates: { [key]: null } });
       setEditValues((prev) => { const n = { ...prev }; delete n[key]; return n; });
       await loadConfig();
-    } finally {
+    } catch { setSettingsError("Couldn’t update this setting. Try again."); } finally {
       setSaving(null);
     }
   };
@@ -141,20 +155,21 @@ export function Settings({ open, onClose }: SettingsProps) {
     (isWeb && tab === "sources") || (!account && tab === "account") ? "services" : tab;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
-      <div className="glass-elevated rounded-xl w-[620px] max-h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <dialog ref={dialog} aria-label="Settings" onCancel={(event) => { event.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 p-3 text-[var(--text-primary)] z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
+      <div className="glass-elevated flex w-full max-w-[620px] max-h-[90dvh] flex-col overflow-hidden rounded-xl" onClick={(e) => e.stopPropagation()}>
         {/* Header with tabs */}
         <div className="px-6 pt-4 pb-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Settings</h2>
-            <button onClick={onClose} className="p-1 rounded hover:bg-[var(--glass-hover)]">
+            <button aria-label="Close settings" onClick={onClose} className="focus-ring p-3 rounded hover:bg-[var(--glass-hover)]">
               <X size={18} style={{ color: "var(--text-muted)" }} />
             </button>
           </div>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
             {tabs.map((t) => (
               <button
                 key={t.id}
+                aria-pressed={activeTab === t.id}
                 onClick={() => setTab(t.id)}
                 className="px-3 py-1.5 text-xs font-medium rounded-t-lg transition-colors"
                 style={{
@@ -169,7 +184,8 @@ export function Settings({ open, onClose }: SettingsProps) {
           </div>
         </div>
 
-        <div className="overflow-auto px-6 py-4 space-y-6" style={{ maxHeight: "calc(85vh - 100px)" }}>
+        <div className="min-h-0 overflow-auto px-4 py-4 space-y-6 sm:px-6">
+          {settingsError && <p role="alert" className="text-sm">{settingsError} <button className="focus-ring underline" onClick={() => { setSettingsError(""); void loadConfig(); }}>Reload settings</button></p>}
           {/* Account Tab (web session only) */}
           {activeTab === "account" && <AccountSettings />}
 
@@ -359,7 +375,7 @@ export function Settings({ open, onClose }: SettingsProps) {
                               onClick={async () => {
                                 setVaultDescriptionLoading(true);
                                 try {
-                                  await vaultApi.updateVaultDescription(vaultDescriptionDraft);
+                                  await vaultClient.updateVaultDescription(vaultDescriptionDraft);
                                   setVaultDescription(vaultDescriptionDraft);
                                   setVaultDescriptionSaved(true);
                                   setTimeout(() => setVaultDescriptionSaved(false), 2000);
@@ -559,7 +575,7 @@ export function Settings({ open, onClose }: SettingsProps) {
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 

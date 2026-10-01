@@ -111,3 +111,35 @@ test("failed document saves remain retryable without losing the typed content", 
   expect(writes).toHaveLength(2);
   expect(writes[1].content).toBe(writes[0].content);
 });
+
+test("command search opens usable phone settings and Escape closes the modal", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/workspace.html");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  const search = page.getByRole("dialog", { name: "Search workspace" });
+  await search.getByRole("combobox").fill("Settings");
+  await search.getByRole("option", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(search).toHaveCount(0);
+  await expect(settings).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Appearance", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await settings.getByRole("button", { name: "Close settings" }).focus();
+  await page.screenshot({ path: testInfo.outputPath("settings-mobile.png") });
+  await page.keyboard.press("Escape");
+  await expect(settings).toHaveCount(0);
+});
+
+test("rich-text bold shortcut edits the document without closing navigation", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await editor.click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ControlOrMeta+b");
+  await page.keyboard.type("BOLD_SHORTCUT_FIXTURE");
+  await expect(editor.locator("strong")).toContainText("BOLD_SHORTCUT_FIXTURE");
+  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+});
