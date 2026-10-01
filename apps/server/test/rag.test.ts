@@ -242,57 +242,49 @@ test("a create-only caps grant gets NO semantic hits (the ladder floor does not 
   assert.ok(ids.includes("doc-food") && !ids.includes("doc-code"));
 });
 
-test("semantic search refuses a non-primary vault (no cross-vault leak via tag-name grants)", async () => {
+test("semantic search and capabilities hydrate only their own vault even with identical IDs and tags", async () => {
   const app = createApp();
-  await seedAndIndex(app, sessionCookie(makeSession(OWNER)));
-  // A second registered vault with its own member, whose grant names the SAME
-  // tag as the primary's indexed notes. Grants match by tag name, so answering
-  // from the (primary-only) index would hand them primary content.
+  const ownerCookie = sessionCookie(makeSession(OWNER));
+  await seedAndIndex(app, ownerCookie);
   addVaultEntry({ id: "frb", label: "Other", url: "http://vault.test", vault: "frb", token: "tok-frb" });
-  fv.addVault("frb");
+  fv.putIn("frb", { id: "doc-food", content: "Secondary forest food plan", tags: ["shared"] });
+  const index = await app.request("/api/index/rebuild", { method: "POST", headers: { cookie: ownerCookie, "x-prism-vault": "frb" } });
+  assert.equal(index.status, 200);
   const member = "member-b@test.local";
   addGrant({ subject_type: "user", subject: member, resource_type: "tag", resource: "shared", level: "view", vault_id: "frb", created_by: "test" });
-  const cookie = sessionCookie(makeSession(member));
-
-  const res = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie, "x-prism-vault": "frb" } });
-  assert.equal(res.status, 409);
-  assert.equal(((await res.json()) as { error: string }).error, "semantic_index_primary_only");
-
-  // A capability link whose grant lives in the other vault is bound to THAT vault
-  // (actor.vaultId comes from the grant, not a header) — also refused.
+  const result = await app.request("/api/search/semantic?q=food", { headers: { cookie: sessionCookie(makeSession(member)), "x-prism-vault": "frb" } });
+  assert.equal(result.status, 200);
+  const hits = await result.json() as Array<{ id: string; content: string; _snippet: string }>;
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0]?.content, "Secondary forest food plan");
+  assert.equal(hits[0]?._snippet, "Secondary forest food plan");
   const capId = "cap-frb-shared";
   addGrant({ subject_type: "link", subject: capId, resource_type: "tag", resource: "shared", level: "view", vault_id: "frb", created_by: "test" });
-  const t = signCapability({ id: capId, exp: Date.now() + 60_000 });
-  const viaLink = await app.request(`/api/search/semantic?q=regenerative+food&t=${encodeURIComponent(t)}`);
-  assert.equal(viaLink.status, 409);
-
-  // The primary-vault path is unchanged for the owner.
-  const primary = await app.request("/api/search/semantic?q=regenerative+food", { headers: { cookie: sessionCookie(makeSession(OWNER)) } });
-  assert.equal(primary.status, 200);
+  const token = signCapability({ id: capId, exp: Date.now() + 60_000 });
+  const linked = await app.request(`/api/search/semantic?q=food&t=${encodeURIComponent(token)}`);
+  assert.deepEqual(await linked.json(), hits);
+  const primary = await app.request("/api/search/semantic?q=food", { headers: { cookie: ownerCookie } });
+  assert.ok(!(await primary.text()).includes("Secondary forest"));
+  db.prepare("DELETE FROM prism_vaults WHERE id = ?").run("frb");
+  const retired = await app.request(`/api/search/semantic?q=food&t=${encodeURIComponent(token)}`);
+  assert.equal(retired.status, 409, "a retired link vault cannot fall back to primary");
 });
 
-test("index routes refuse a non-primary vault even for the owner (no cross-vault index writes)", async () => {
+test("index writes, status and deletion affect only the selected vault", async () => {
   const app = createApp();
+  const cookie = sessionCookie(makeSession(OWNER));
+  await seedAndIndex(app, cookie);
   addVaultEntry({ id: "frb", label: "Other", url: "http://vault.test", vault: "frb", token: "tok-frb" });
   fv.addVault("frb");
-  const headers = { cookie: sessionCookie(makeSession(OWNER)), "x-prism-vault": "frb", "content-type": "application/json" };
-  const calls: Array<[string, string]> = [
-    ["POST", "/api/index/notes"],
-    ["POST", "/api/index/rebuild"],
-    ["DELETE", "/api/index/notes/doc-food"],
-    ["GET", "/api/index/status"],
-    ["GET", "/api/search/semantic?q=food"],
-  ];
-  for (const [method, path] of calls) {
-    const r = await app.request(path, {
-      method,
-      headers,
-      ...(method === "POST" ? { body: JSON.stringify({ notes: [{ id: "doc-food", content: "planted" }] }) } : {}),
-    });
-    assert.equal(r.status, 409, `${method} ${path}`);
-  }
-  const n = (db.prepare("SELECT COUNT(*) AS n FROM embeddings_v2").get() as { n: number }).n;
-  assert.equal(n, 0, "nothing was written to the primary index");
+  const headers = { cookie, "x-prism-vault": "frb", "content-type": "application/json" };
+  const indexed = await app.request("/api/index/notes", { method: "POST", headers, body: JSON.stringify({ notes: [{ id: "doc-food", content: "secondary" }] }) });
+  assert.equal(indexed.status, 200);
+  const status = await (await app.request("/api/index/status", { headers })).json() as { vaultId: string; notes: number };
+  assert.equal(status.vaultId, "frb");
+  assert.equal(status.notes, 1);
+  assert.equal((await app.request("/api/index/notes/doc-food", { method: "DELETE", headers })).status, 200);
+  assert.equal((await (await app.request("/api/index/status", { headers })).json() as { notes: number }).notes, 0);
+  assert.equal((await (await app.request("/api/index/status", { headers: { cookie } })).json() as { notes: number }).notes, 3);
 });
 
 // ---- worker index maintenance (audit 2026-08-13, F2) ----

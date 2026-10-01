@@ -11,17 +11,9 @@
  *  - DEL  /api/index/notes/:id   OWNER only.
  *  - GET  /api/index/status      OWNER only.
  *
- * PRIMARY VAULT ONLY. The `embeddings` table (rag/store.ts) has no vault column
- * and is fed exclusively from the primary vault (the worker sweep + the desktop
- * indexer), and `semanticSearch` hydrates hits through the primary client. So a
- * request bound to any other vault (X-Prism-Vault, or a capability link whose
- * grants live in another vault) is refused with 409 on EVERY route here — never
- * answered from the primary's index. Without that, a member of vault B holding a
- * grant on tag T would see primary-vault notes tagged T (grants are matched by
- * tag name, not vault), and an admin of vault B could write or wipe the primary
- * index. Clients fall back to plain full-text search on the refusal
- * (useVaultSearch). A per-vault index is a schema migration, deliberately
- * deferred.
+ * Every operation binds to the authenticated actor's vault. Index generations
+ * additionally bind model + chunker; hydration uses that same vault client.
+ * A retired capability vault must never fall back to the primary vault.
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -34,20 +26,12 @@ import { semanticSearch, indexNote, deindexNote, reindexAll, stats } from "../ra
 
 export const rag = new Hono();
 
-/** The only vault the semantic index covers (see header). */
-export const ragVaultId = (): string => resolveVaultEntry().id;
-
-// Refuse every RAG route for a request bound to a non-primary vault — BEFORE any
-// index read or write. The actor's vaultId is the same one the gateway uses
-// (header for sessions, the grant's own vault for capability links).
-rag.use("/search/semantic", primaryVaultOnly);
-rag.use("/index/*", primaryVaultOnly);
-async function primaryVaultOnly(c: Context, next: () => Promise<void>) {
-  if (resolveActor(c).vaultId !== ragVaultId()) {
-    return c.json(
-      { error: "semantic_index_primary_only", reason: "semantic search indexes the primary vault only" },
-      409,
-    );
+rag.use("/search/semantic", validIndexVault);
+rag.use("/index/*", validIndexVault);
+async function validIndexVault(c: Context, next: () => Promise<void>) {
+  const actor = resolveActor(c);
+  if (resolveVaultEntry(actor.vaultId).id !== actor.vaultId) {
+    return c.json({ error: "semantic_index_unavailable", reason: "This vault is no longer available" }, 409);
   }
   await next();
 }
@@ -72,7 +56,7 @@ rag.get("/search/semantic", async (c) => {
   const limit = Math.min(requestedLimit, 100);
   let hits;
   try {
-    hits = await semanticSearch(q, limit, (note) => roleAtLeast(actor.role, "admin") || effectiveCaps(actor.grants, ref(note), roleFloor(actor.role), subjectOf(actor)).has("view"));
+    hits = await semanticSearch(q, limit, (note) => roleAtLeast(actor.role, "admin") || effectiveCaps(actor.grants, ref(note), roleFloor(actor.role), subjectOf(actor)).has("view"), actor.vaultId);
   } catch {
     return c.json({ error: "search_error" }, 502);
   }
@@ -90,7 +74,7 @@ rag.post("/index/notes", async (c) => {
   for (const n of body.notes) {
     if (typeof n?.id !== "string") continue;
     try {
-      results.push(await indexNote(n.id, n.content ?? "", body.force));
+      results.push(await indexNote(n.id, n.content ?? "", body.force, resolveActor(c).vaultId));
     } catch {
       results.push({ noteId: n.id, status: "error" as const, chunks: 0 });
     }
@@ -100,7 +84,7 @@ rag.post("/index/notes", async (c) => {
 
 rag.delete("/index/notes/:id", (c) => {
   if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
-  deindexNote(c.req.param("id"));
+  deindexNote(c.req.param("id"), resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
 
@@ -108,7 +92,7 @@ rag.post("/index/rebuild", async (c) => {
   if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
   const force = c.req.query("force") === "true";
   try {
-    return c.json(await reindexAll({ force }));
+    return c.json(await reindexAll({ force, vaultId: resolveActor(c).vaultId }));
   } catch {
     return c.json({ error: "vault_error" }, 502);
   }
@@ -116,5 +100,5 @@ rag.post("/index/rebuild", async (c) => {
 
 rag.get("/index/status", (c) => {
   if (!ownerOnly(c)) return c.json({ error: "forbidden" }, 403);
-  return c.json(stats());
+  return c.json(stats(resolveActor(c).vaultId));
 });

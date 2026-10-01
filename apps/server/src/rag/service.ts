@@ -6,7 +6,7 @@
  * heavy embedding workflow lives in Rust while web/server get search instantly.
  */
 import { createHash } from "node:crypto";
-import { vault, type Note } from "../parachute";
+import { vaultClient, type Note } from "../parachute";
 import { getEmbedder } from "./embedder";
 import { chunkNote, toPlainText } from "./chunk";
 import {
@@ -15,6 +15,7 @@ import {
   indexedHash,
   queryTopK,
   indexStats,
+  indexScope,
   type ChunkInput,
 } from "./store";
 import { reciprocalRankFusion } from "./fusion";
@@ -36,41 +37,44 @@ export async function indexNote(
   noteId: string,
   content: string,
   force = false,
+  vaultId?: string,
 ): Promise<IndexResult> {
   const embedder = getEmbedder();
+  const scope = indexScope(vaultId);
   const hash = contentHash(content ?? "");
-  if (!force && indexedHash(noteId, embedder.id) === hash) {
+  if (!force && indexedHash(noteId, embedder.id, scope) === hash) {
     return { noteId, status: "skipped", chunks: 0 };
   }
   const chunks = chunkNote(content ?? "");
   if (chunks.length === 0) {
-    removeNoteChunks(noteId);
+    removeNoteChunks(noteId, scope);
     return { noteId, status: "empty", chunks: 0 };
   }
   const vectors = await embedder.embed(chunks.map((c) => c.text));
   const inputs: ChunkInput[] = chunks.map((c, i) => ({ idx: c.index, text: c.text, vec: vectors[i]! }));
-  upsertNoteChunks(noteId, hash, embedder.id, inputs);
+  upsertNoteChunks(noteId, hash, embedder.id, inputs, scope);
   return { noteId, status: "indexed", chunks: inputs.length };
 }
 
-export function deindexNote(noteId: string): void {
-  removeNoteChunks(noteId);
+export function deindexNote(noteId: string, vaultId?: string): void {
+  removeNoteChunks(noteId, indexScope(vaultId));
 }
 
 /**
  * Rebuild the index from the vault (owner-triggered). Pulls notes with content
  * and indexes each (incrementally — unchanged notes are skipped).
  */
-export async function reindexAll(opts: { force?: boolean; limit?: number } = {}): Promise<{
+export async function reindexAll(opts: { force?: boolean; limit?: number; vaultId?: string } = {}): Promise<{
   total: number;
   indexed: number;
   skipped: number;
 }> {
+  const vault = vaultClient(opts.vaultId);
   const notes = await vault.listNotes({ includeContent: true, limit: opts.limit ?? 50000 });
   let indexed = 0;
   let skipped = 0;
   for (const n of notes) {
-    const r = await indexNote(n.id, n.content ?? "", opts.force);
+    const r = await indexNote(n.id, n.content ?? "", opts.force, opts.vaultId);
     if (r.status === "indexed") indexed++;
     else skipped++;
   }
@@ -89,15 +93,17 @@ export interface SemanticHit {
  * view authorization before selecting visible results. `candidatePool` widens each signal
  * before fusion; the final list is truncated to `limit`.
  */
-export async function semanticSearch(query: string, limit: number, canRead: (note: Note) => boolean): Promise<SemanticHit[]> {
+export async function semanticSearch(query: string, limit: number, canRead: (note: Note) => boolean, vaultId: string): Promise<SemanticHit[]> {
   const q = query.trim();
   if (!q) return [];
   const embedder = getEmbedder();
   const pool = Math.max(limit * 3, 30);
+  const vault = vaultClient(vaultId);
+  const scope = indexScope(vaultId);
 
   // Dense: top chunks → best chunk per note (preserves the snippet).
   const [qvec] = await embedder.embed([q]);
-  const denseChunks = qvec ? queryTopK(embedder.id, qvec, pool * 2) : [];
+  const denseChunks = qvec ? queryTopK(embedder.id, qvec, pool * 2, scope) : [];
   const bestChunk = new Map<string, { score: number; snippet: string; contentHash: string }>();
   const denseOrder: string[] = [];
   for (const c of denseChunks) {
@@ -144,6 +150,6 @@ export async function semanticSearch(query: string, limit: number, canRead: (not
   return hits;
 }
 
-export function stats() {
-  return indexStats(getEmbedder());
+export function stats(vaultId?: string) {
+  return indexStats(getEmbedder(), indexScope(vaultId));
 }

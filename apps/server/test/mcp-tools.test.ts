@@ -219,16 +219,16 @@ test("list_tags: owner all, editor only granted tags", async () => {
   assert.deepEqual(ed.tags.map((t: any) => t.tag), ["garden"]);
 });
 
-test("semantic_search: owner ok; a PAT bound to another vault gets a clear primary-only error", async () => {
+test("semantic_search: a PAT searches only its own vault", async () => {
   const ow = await call(await connect(pat(OWNER)), "prism_semantic_search", { query: "hello garden" });
   assert.ok(Array.isArray(must(ow).results));
 
   addVaultEntry({ id: "frb", label: "Front Range", url: "http://vault.test", vault: "frb", token: "tok-frb" });
-  fv.addVault("frb");
+  fv.putIn("frb", { id: "g1", content: "hello from the secondary garden", tags: ["garden"] });
   grant(EDITOR, "tag", "garden", ["view", "edit"], "frb");
   const other = await call(await connect(pat(EDITOR, "write", "frb")), "prism_semantic_search", { query: "hello" });
-  assert.ok(!other.ok && other.error === "invalid_request");
-  assert.match(String(other.message), /primary vault only/);
+  assert.equal(must(other).results.length, 1);
+  assert.equal(must(other).results[0].snippet, "hello from the secondary garden");
 });
 
 test("a PAT bound to another vault acts only in that vault", async () => {

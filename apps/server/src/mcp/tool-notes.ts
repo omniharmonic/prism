@@ -226,14 +226,14 @@ export const semanticSearchTool = defineTool({
   title: "Semantic search",
   description:
     "Meaning-based (embedding + full-text fusion) search over notes you may view; results carry a score and snippet. " +
-    "PRIMARY VAULT ONLY: a credential bound to another vault gets a clear error — use prism_query_notes {search} there. limit ≤ 50 (default 20).",
+    "Search is isolated to this credential’s vault and your current note permissions. limit ≤ 50 (default 20).",
   inputSchema: z.object({ query: z.string().min(1).max(1000), limit: z.number().int().min(1).max(50).optional() }),
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   access: canView,
   async handler({ query, limit }, ctx) {
     const res = await ctx.dispatch(`/api/search/semantic?${new URLSearchParams({ q: query, limit: String(limit ?? 20) })}`);
     if (res.status === 409) {
-      throw new ToolError("invalid_request", "semantic search indexes the primary vault only; this credential is bound to another vault — use prism_query_notes with `search` instead");
+      throw new ToolError("invalid_request", "semantic search is unavailable for this credential’s vault; reconnect to an available vault");
     }
     if (res.status === 502) throw new ToolError("upstream_error", "semantic search is temporarily unavailable — use prism_query_notes with `search`");
     const hits = await jsonOrToolError<Array<NoteOut & { _score?: number; _snippet?: string }>>(res);
