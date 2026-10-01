@@ -85,3 +85,21 @@ if [ "$FAIL" -ne 0 ]; then
   exit 1
 fi
 log "all integrity checks ok"
+
+# Retention (only after a verified backup): keep the newest $BACKUP_KEEP snapshots
+# plus any whose label contains "baseline" or "keep" (pin a rollback point by
+# naming it, e.g. `backup-parachute.sh pre-upgrade-baseline`). Each snapshot is
+# ~850 MB, so per-deploy backups otherwise fill the disk (2026-10-01: 25 in 2 days).
+# BACKUP_KEEP=0 disables pruning.
+KEEP="${BACKUP_KEEP:-5}"
+if [ "$KEEP" -gt 0 ]; then
+  ROOT="$HOME/parachute-backups"
+  n=0
+  for d in $(ls -1 "$ROOT" | grep -E '^[0-9]{8}T[0-9]{6}Z-' | sort -r); do
+    case "$d" in *baseline*|*keep*) continue ;; esac
+    n=$((n + 1))
+    if [ "$n" -gt "$KEEP" ] && [ "$ROOT/$d" != "$DEST" ]; then
+      rm -rf -- "${ROOT:?}/$d" && log "pruned old backup $d"
+    fi
+  done
+fi
