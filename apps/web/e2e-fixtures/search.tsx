@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { VaultClientProvider, PlatformProvider, useAgentChatStore, useUIStore, type Note, type VaultClient } from "@prism/core";
+import { AgentClientProvider, type AgentClient, VaultClientProvider, PlatformProvider, useAgentChatStore, useUIStore, type Note, type VaultClient } from "@prism/core";
 import { SearchPanel } from "../../../packages/core/src/components/navigation/SearchPanel";
 import { CommandBar } from "../../../packages/core/src/components/layout/CommandBar";
 const controls = { semantic: "ok", keyword: "ok", requests: [] as string[], release: null as null | (() => void) };
@@ -16,6 +16,7 @@ const vault = {
   },
   search: async (q: string) => { controls.requests.push(`keyword:${q}`); if (controls.keyword === "fail") throw new Error("Denied"); return q === "nothing" ? [] : [note]; },
 } as unknown as VaultClient;
+const agent = { listSessions: async () => [] } as unknown as AgentClient;
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 useAgentChatStore.setState({ scope: "search-a" });
 Object.assign(window, { prismSearchFixture: controls, prismSearchUI: useUIStore, prismSearchStore: useAgentChatStore, prismSearchClient: client });
@@ -23,4 +24,4 @@ function Fixture() {
   const [query, setQuery] = useState("ideas");
   return <><button onClick={() => useUIStore.getState().openCommandBar()}>Open search</button><label>Query<input aria-label="Query" value={query} onChange={e => setQuery(e.target.value)} /></label><div style={{ width: "min(480px, 100%)" }}><SearchPanel query={query} onClose={() => {}} /></div><CommandBar /></>;
 }
-createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={client}><PlatformProvider value="web"><VaultClientProvider client={vault}><Fixture /></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={client}><PlatformProvider value="web"><VaultClientProvider client={vault}><AgentClientProvider client={agent}><Fixture /></AgentClientProvider></VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

@@ -31,7 +31,7 @@ export function CommandBar() {
   const { commandBarOpen, closeCommandBar, openTab } = useUIStore();
   const [query, setQuery] = useState("");
   const [debouncedQuery] = useDebounce(query, 200);
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const createNote = useCreateNote();
@@ -64,7 +64,7 @@ export function CommandBar() {
   useEffect(() => {
     if (commandBarOpen) {
       setQuery("");
-      setSelectedIndex(0);
+      setSelectedId(null);
       const previous = document.activeElement as HTMLElement | null;
       const dialog = dialogRef.current;
       dialog?.showModal();
@@ -285,8 +285,14 @@ export function CommandBar() {
     }));
   }, [searchResults, query, debouncedQuery, openTab, closeCommandBar]);
 
-  // Total items for keyboard navigation
-  const totalItems = filteredCommands.length + vaultItems.length + (query.trim() && agentChat ? 1 : 0); // +1 for "Ask Claude"
+  // Keep explicit selection attached to an action, even as results arrive.
+  // An agent turn must never be the automatic fallback for an unfinished or
+  // empty search. Users can still choose it with the pointer or arrow keys.
+  const itemIds = [...filteredCommands.map(c => c.id), ...vaultItems.map(n => n.id),
+    ...(query.trim() && agentChat ? ["ask-agent"] : [])];
+  const defaultId = filteredCommands[0]?.id ?? vaultItems[0]?.id;
+  const selectedIndex = itemIds.indexOf(selectedId ?? defaultId ?? "");
+  const totalItems = itemIds.length;
 
   useEffect(() => {
     if (commandBarOpen) document.getElementById(`prism-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest" });
@@ -299,11 +305,11 @@ export function CommandBar() {
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.max(0, Math.min(i + 1, totalItems - 1)));
+      setSelectedId(itemIds[Math.max(0, Math.min(selectedIndex + 1, totalItems - 1))] ?? null);
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.max(i - 1, 0));
+      setSelectedId(itemIds[Math.max(selectedIndex - 1, 0)] ?? null);
     }
     if (e.key === "Enter") {
       e.preventDefault();
@@ -354,7 +360,7 @@ export function CommandBar() {
         inputMode="search"
         enterKeyHint="search"
         value={query}
-        onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
+        onChange={(e) => { setQuery(e.target.value); setSelectedId(null); }}
         onKeyDown={handleKeyDown}
         placeholder="Search notes, create, or ask your agent…"
         className="flex-1 min-w-0 bg-transparent outline-none"
@@ -379,7 +385,7 @@ export function CommandBar() {
               id={`prism-command-${i}`}
               selected={selectedIndex === i}
               onClick={cmd.action}
-              onHover={() => setSelectedIndex(i)}
+              onHover={() => setSelectedId(cmd.id)}
               icon={cmd.icon}
               label={cmd.label}
             />
@@ -398,7 +404,7 @@ export function CommandBar() {
                 id={`prism-command-${idx}`}
                 selected={selectedIndex === idx}
                 onClick={item.action}
-                onHover={() => setSelectedIndex(idx)}
+                onHover={() => setSelectedId(item.id)}
                 icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
                 label={item.label}
                 sublabel={item.sublabel}
@@ -414,7 +420,7 @@ export function CommandBar() {
           id={`prism-command-${askIdx}`}
           selected={selectedIndex === askIdx}
           onClick={askClaude}
-          onHover={() => setSelectedIndex(askIdx)}
+          onHover={() => setSelectedId("ask-agent")}
           icon={<Bot size={15} />}
           label={`Ask your agent: "${query}"`}
           accent

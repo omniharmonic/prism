@@ -60,3 +60,54 @@ test("phone search contains focus, announces keyboard selection, opens the resul
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
 });
+
+
+test("Enter during loading or empty results cannot accidentally start an agent turn", async ({ page }) => {
+  await page.goto("/e2e-fixtures/search.html");
+  await page.getByRole("button", { name: "Open search", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  const input = dialog.getByRole("combobox");
+  await page.evaluate(() => { (window as any).prismSearchFixture.semantic = "wait"; });
+  await input.fill("missing test document");
+  await expect(dialog.getByRole("option", { name: 'Ask your agent: "missing test document"' })).toBeVisible();
+  await input.press("Enter");
+  await expect(dialog).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toBeNull();
+  await expect.poll(() => page.evaluate(() => !!(window as any).prismSearchFixture.release)).toBe(true);
+  await page.evaluate(() => { (window as any).prismSearchFixture.release(); });
+  await expect(dialog.getByRole("option", { name: /Connected ideas/ })).toBeVisible();
+  await input.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismSearchUI.getState().activeTabId)).toBe("tab-source-a");
+  await page.evaluate(() => { (window as any).prismSearchFixture.semantic = "ok"; });
+  await page.getByRole("button", { name: "Open search", exact: true }).click();
+  await input.fill("nothing");
+  await expect(dialog.getByText("No matching notes.")).toBeVisible();
+  await input.press("Enter");
+  await expect(dialog).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toBeNull();
+  await input.press("ArrowDown");
+  await expect(dialog.getByRole("option", { name: 'Ask your agent: "nothing"' })).toHaveAttribute("aria-selected", "true");
+  await input.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toEqual({ prompt: "nothing" });
+});
+
+test("an explicitly selected agent action stays selected as search results arrive", async ({ page }) => {
+  await page.goto("/e2e-fixtures/search.html");
+  await page.getByRole("button", { name: "Open search", exact: true }).click();
+  await page.evaluate(() => { (window as any).prismSearchFixture.semantic = "wait"; });
+  const dialog = page.getByRole("dialog", { name: "Search workspace" });
+  const input = dialog.getByRole("combobox");
+  await input.fill("question");
+  const ask = dialog.getByRole("option", { name: 'Ask your agent: "question"' });
+  await expect(ask).toBeVisible();
+  await input.press("ArrowDown");
+  await expect(ask).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => page.evaluate(() => !!(window as any).prismSearchFixture.release)).toBe(true);
+  await page.evaluate(() => { (window as any).prismSearchFixture.release(); });
+  await expect(dialog.getByRole("option", { name: /Connected ideas/ })).toBeVisible();
+  await expect(ask).toHaveAttribute("aria-selected", "true");
+  await input.press("Enter");
+  expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toEqual({ prompt: "question" });
+});
