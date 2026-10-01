@@ -16,7 +16,8 @@ import { config } from "../config";
 import { resolveActor, requestVia } from "../auth/actor";
 import { vaultClient } from "../parachute";
 import { csrfRefusal } from "./actions";
-import { cancelWikilinkJob, startWikilinkJob, wikilinkJobStatus, WikilinkJobBusyError } from "../wikilinks-job";
+import { cancelWikilinkJob, startWikilinkJob, wikilinkJobStatus, WikilinkJobBusyError, type WikilinkJob } from "../wikilinks-job";
+import { recordAction } from "../actions/store";
 
 export const adminApi = new Hono();
 
@@ -44,8 +45,25 @@ adminApi.post("/wikilinks/resolve", async (c) => {
   if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") return c.json({ error: "bad_request", detail: "dryRun must be true or false" }, 400);
   const dryRun = body.dryRun !== false; // dry run unless explicitly false
   const vaultId = ownerVault(c)!;
+  const actor = resolveActor(c) as Extract<ReturnType<typeof resolveActor>, { kind: "user" }>;
+  const via = requestVia(c);
+  // A WRITE run is recorded in action_audit when it ends (security review M3):
+  // counts only — no note ids, paths or link targets.
+  const onEnd = dryRun
+    ? undefined
+    : (j: WikilinkJob) =>
+        recordAction({
+          actorEmail: actor.email,
+          via,
+          origin: via === "session" || via === "device" ? "human" : "agent",
+          action: "admin.wikilinks-resolve",
+          vaultId,
+          target: { jobId: j.id, status: j.status, scanned: j.scanned, resolved: j.resolved, notesUpdated: j.notesUpdated, ambiguous: j.ambiguous, conflicts: j.conflicts, errors: j.errors },
+          status: j.status === "done" ? "ok" : "failed",
+          error: j.error,
+        });
   try {
-    const { job } = startWikilinkJob(vaultClient(vaultId), vaultId, { dryRun });
+    const { job } = startWikilinkJob(vaultClient(vaultId), vaultId, { dryRun, onEnd });
     console.log(`[admin] wikilink resolve started (${dryRun ? "dry run" : "WRITE"}) on vault ${vaultId}`);
     return c.json({ job }, 202);
   } catch (e) {

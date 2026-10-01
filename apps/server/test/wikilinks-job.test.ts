@@ -7,9 +7,9 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { Note, NoteLinkInput } from "../src/parachute";
 import { config } from "../src/config";
-import { setMembership } from "../src/db";
+import { db, setMembership } from "../src/db";
 import { adminApi } from "../src/routes/admin";
-import { _resetWikilinkJob, extractWikilinks, matchTarget, startWikilinkJob, type WikilinkJobVault } from "../src/wikilinks-job";
+import { _resetWikilinkJob, buildIndex, extractWikilinks, matchTarget, startWikilinkJob, type WikilinkJobVault } from "../src/wikilinks-job";
 import { resetDb, makeSession, sessionCookie, makeCapability, installFakeVault, type FakeVault } from "./helpers";
 
 const J = { "content-type": "application/json" };
@@ -51,16 +51,17 @@ test("extractWikilinks: desktop semantics (|label dropped, trimmed, de-duplicate
   assert.equal(extractWikilinks("x [[open and [[ok]]").balanced, false);
 });
 
-test("matchTarget: exact path, then vault/-stripped path, then file name (case-insensitive); never the note itself", () => {
-  const notes = [
-    { id: "1", path: "vault/x/Report", content: "", metadata: null, createdAt: "", updatedAt: null, tags: [] },
-    { id: "2", path: "Report", content: "", metadata: null, createdAt: "", updatedAt: null, tags: [] },
-  ] as Note[];
-  const idx = { byPath: new Map(notes.map((n) => [n.path!, n])), byStripped: new Map([["x/Report", notes[0]!], ["Report", notes[1]!]]), byName: new Map([["report", notes[0]!]]) };
-  assert.equal(matchTarget("Report", idx, "z")!.id, "2", "exact path wins over a file-name match");
-  assert.equal(matchTarget("x/Report", idx, "z")!.id, "1");
-  assert.equal(matchTarget("REPORT", idx, "z")!.id, "1");
-  assert.equal(matchTarget("x/Report", idx, "1"), null, "never links a note to itself");
+test("matchTarget: exact path, then vault/-stripped path, then a UNIQUE file name; shared names are ambiguous (M2); never self", () => {
+  const mk = (id: string, path: string) => ({ id, path, content: "", metadata: null, createdAt: "", updatedAt: null, tags: [] }) as Note;
+  const idx = buildIndex([mk("1", "vault/x/Report"), mk("2", "Report"), mk("3", "vault/a/Plan"), mk("4", "vault/b/plan"), mk("5", "vault/c/Solo")]);
+  const id = (r: ReturnType<typeof matchTarget>) => (r.kind === "match" ? r.note.id : r.kind);
+  assert.equal(id(matchTarget("Report", idx, "z")), "2", "exact path wins over a file-name match");
+  assert.equal(id(matchTarget("x/Report", idx, "z")), "1");
+  assert.equal(id(matchTarget("SOLO", idx, "z")), "5", "a unique file name, case-insensitive");
+  assert.equal(id(matchTarget("REPORT", idx, "z")), "ambiguous", "two notes are named report");
+  assert.equal(id(matchTarget("REPORT", idx, "2")), "1", "excluding self leaves one");
+  assert.equal(id(matchTarget("Plan", idx, "z")), "ambiguous");
+  assert.equal(id(matchTarget("x/Report", idx, "1")), "none", "never links a note to itself");
 });
 
 test("dry run (the default): counts what a real run would add, writes nothing", async () => {
@@ -106,6 +107,34 @@ test("real run: one links-only PATCH per note (if_updated_at, never content), al
   assert.equal(j.conflicts, 1, "d changed meanwhile → counted, not forced");
 });
 
+test("M2/M3: ambiguous file names are never linked (counted + sampled); machine-written notes are not fetched; the end hook fires", async () => {
+  const v = new MemVault();
+  v.add("r1", "vault/a/Report", "x");
+  v.add("r2", "vault/b/Report", "y");
+  v.add("e", "vault/notes/Uses", "See [[Report]] and [[a/Report]].");
+  v.add("disp", "vault/agent/dispatches/2026-10-01/run", "mentions [[Uses]]");
+  v.notes.get("disp")!.tags = ["agent-dispatch", "agent-output"];
+  const fetched: string[] = [];
+  const getNote = v.getNote.bind(v);
+  v.getNote = async (id: string) => {
+    fetched.push(id);
+    return getNote(id);
+  };
+  let ended: unknown = null;
+  const { done } = startWikilinkJob(v, "primary", { dryRun: false, paceMs: 0, onEnd: (j) => (ended = j) });
+  await done;
+  const { wikilinkJobStatus } = await import("../src/wikilinks-job");
+  const j = wikilinkJobStatus()!;
+  assert.equal(j.ambiguous, 1);
+  assert.deepEqual(j.ambiguousSample, ["Report"]);
+  assert.equal(j.resolved, 1, "only the exact a/Report path link");
+  assert.deepEqual(v.patches[0]!.add, [{ target: "r1", relationship: "references" }]);
+  assert.equal(j.total, 4);
+  assert.equal(j.candidates, 3);
+  assert.ok(!fetched.includes("disp"), "a dispatch note is never fetched");
+  assert.equal((ended as { status: string }).status, "done");
+});
+
 // ── route ────────────────────────────────────────────────────────────────────
 
 let fv: FakeVault;
@@ -149,4 +178,18 @@ test("route: server owner only (403 for anon/link/guest/member/admin/vault-role 
   assert.equal(s.job.status, "done");
   assert.equal(s.job.resolved, 1);
   assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 0, "dry run never writes");
+  assert.equal((db.prepare("SELECT count(*) n FROM action_audit").get() as { n: number }).n, 0, "a dry run is not audited");
+
+  // A WRITE run records one audit row (counts only) when it ends.
+  assert.equal((await post("/wikilinks/resolve", owner(), { dryRun: false })).status, 202);
+  for (let i = 0; i < 100; i++) {
+    const w = (await (await adminApi.request("/wikilinks/resolve", { headers: owner() })).json()) as { job: { status: string } };
+    if (w.job.status !== "running") break;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  const row = db.prepare("SELECT * FROM action_audit").get() as Record<string, unknown>;
+  assert.equal(row.action, "admin.wikilinks-resolve");
+  assert.equal(row.status, "ok");
+  assert.equal(JSON.parse(String(row.target)).resolved, 1);
+  assert.ok(!String(row.target).includes("vault/"), "no paths in the audit");
 });

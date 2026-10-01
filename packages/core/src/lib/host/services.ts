@@ -121,6 +121,11 @@ export interface WikilinkJob {
   conflicts: number;
   errors: number;
   unresolvedSample: string[];
+  /** Notes that can hold a wikilink (machine-written notes are skipped). */
+  candidates?: number;
+  /** Wikilinks whose file name matches several notes — never linked. */
+  ambiguous?: number;
+  ambiguousSample?: string[];
 }
 
 export interface AgentTextOptions {
@@ -328,6 +333,9 @@ export function wikilinkJobSummary(j: WikilinkJob): string {
   const extra = [
     j.alreadyLinked ? `${j.alreadyLinked} already linked` : "",
     j.unresolved ? `${j.unresolved} unresolved` : "",
+    j.ambiguous
+      ? `${j.ambiguous} ambiguous (several notes share the name — not linked${j.ambiguousSample?.length ? `: ${j.ambiguousSample.slice(0, 5).join(", ")}` : ""})`
+      : "",
     j.unparseable ? `${j.unparseable} note(s) with unbalanced [[ ]]` : "",
     j.conflicts ? `${j.conflicts} note(s) skipped (changed meanwhile)` : "",
     j.errors ? `${j.errors} error(s)` : "",

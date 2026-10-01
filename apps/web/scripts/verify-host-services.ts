@@ -282,7 +282,7 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   let polls = 0;
   const job = (status: string, extra: Record<string, unknown> = {}) => ({
     id: "j", vaultId: "primary", dryRun: true, status, startedAt: "t", endedAt: null, error: null, total: 10, scanned: 10, notesWithWikilinks: 3,
-    wikilinks: 7, resolved: 4, alreadyLinked: 1, unresolved: 2, unparseable: 0, notesUpdated: 2, conflicts: 0, errors: 0, unresolvedSample: [], ...extra,
+    wikilinks: 7, resolved: 4, alreadyLinked: 1, unresolved: 2, unparseable: 0, notesUpdated: 2, conflicts: 0, errors: 0, unresolvedSample: [], ambiguous: 2, ambiguousSample: ["Report"], ...extra,
   });
   const s = fakeServer((c) => {
     if (c.method === "POST" && c.path === "/api/admin/wikilinks/resolve") return json(409, { error: "busy" });
@@ -293,7 +293,7 @@ const note = (id: string, over: Partial<Note> = {}): Note =>
   const r = await runWikilinkJobToEnd(h, { dryRun: true, sleep: noSleep });
   assert.equal(r.status, "done");
   assert.equal(polls, 3, "a busy start attaches to the running job and polls it to the end");
-  assert.match(wikilinkJobSummary(r), /^Dry run: 7 wikilinks in 3 of 10 notes — would add 4 link\(s\) in 2 note\(s\); 1 already linked, 2 unresolved\.$/);
+  assert.match(wikilinkJobSummary(r), /^Dry run: 7 wikilinks in 3 of 10 notes — would add 4 link\(s\) in 2 note\(s\); 1 already linked, 2 unresolved, 2 ambiguous \(several notes share the name — not linked: Report\)\.$/);
   ok("wikilink job: busy start attaches + polls to the end; dry-run summary text");
 }
 {

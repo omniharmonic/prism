@@ -5,7 +5,8 @@
  *
  * WHAT IT DOES (the desktop's semantics): for every note, extract `[[target]]` /
  * `[[target|label]]`, match each target to another note (exact path, the path
- * with `vault/` stripped, or the file name case-insensitively) and add a
+ * with `vault/` stripped, or a file name case-insensitively — but only when
+ * exactly ONE other note has that name) and add a
  * `references` link note → target (a links-add PATCH, as the desktop sent it —
  * its `{source, original}` link metadata never reached the vault either).
  * It NEVER rewrites note content — only links are added.
@@ -14,8 +15,13 @@
  *   - DRY RUN BY DEFAULT: `dryRun` must be explicitly `false` to write anything;
  *     a dry run reports exactly what a real run would add.
  *   - The whole vault, not the first 2000 notes. The path index comes from ONE
- *     lean list (no content, with links); content is fetched per note in small
- *     concurrent batches, so memory stays bounded on a 14k-note vault.
+ *     lean list (no content, with links); content is then fetched per note, 2 at
+ *     a time with a 25 ms pause per fetch (security review M3: the vault is
+ *     single-threaded), skipping machine-written notes that never carry
+ *     hand-written wikilinks (agent dispatch/session transcripts, alerts). Memory
+ *     stays bounded on a 14k-note vault. (A vault full-text search for `[[` is NOT
+ *     used as the pre-filter: FTS tokenizers drop the brackets, so it can't be
+ *     trusted to find every candidate.)
  *   - A link that already exists (`references` to the same target) is skipped, and
  *     a note whose every resolvable link already exists is not written at all —
  *     on vault ≥0.7.9 each PATCH is a history version.
@@ -24,7 +30,10 @@
  *     a 409 (the note changed meanwhile) is counted as a conflict, never forced.
  *   - A note whose `[[` brackets don't balance is counted `unparseable` and only
  *     its well-formed links are used; matching prefers an exact path, then the
- *     stripped path, then a file name (deterministic, not list order).
+ *     stripped path, then a file name (deterministic, not list order). A file
+ *     name shared by several other notes is AMBIGUOUS: never linked, counted
+ *     `ambiguous` (+ a sample) and shown in the dry-run report (M2).
+ *   - A write run records one `action_audit` row when it ends (routes/admin.ts).
  * One job at a time (server-wide); progress is polled at
  * `GET /api/admin/wikilinks/resolve`; `POST …/cancel` stops it between notes.
  */
@@ -45,8 +54,9 @@ export interface WikilinkJob {
   startedAt: string;
   endedAt: string | null;
   error: string | null;
-  /** Notes in the vault / notes scanned so far. */
+  /** Notes in the vault / notes that can hold a wikilink (pre-filter) / scanned so far. */
   total: number;
+  candidates: number;
   scanned: number;
   notesWithWikilinks: number;
   wikilinks: number;
@@ -54,6 +64,8 @@ export interface WikilinkJob {
   resolved: number;
   alreadyLinked: number;
   unresolved: number;
+  /** Wikilinks whose file name matches several notes — never linked (M2). */
+  ambiguous: number;
   /** Notes with unbalanced `[[ ]]` (their well-formed links still count). */
   unparseable: number;
   /** Notes written (real run) / that would be written (dry run). */
@@ -62,6 +74,7 @@ export interface WikilinkJob {
   errors: number;
   /** A few unresolved targets, for the report (capped). */
   unresolvedSample: string[];
+  ambiguousSample: string[];
 }
 
 /** Desktop `extract_wikilinks`: targets in order, `|label` dropped, trimmed,
@@ -82,13 +95,14 @@ export function extractWikilinks(content: string): { links: string[]; balanced: 
   return { links, balanced: opens === matched };
 }
 
-interface PathIndex {
+export interface PathIndex {
   byPath: Map<string, Note>;
   byStripped: Map<string, Note>;
-  byName: Map<string, Note>;
+  /** Lower-cased file name → EVERY note with that name (M2: a shared name is ambiguous). */
+  byName: Map<string, Note[]>;
 }
 
-function buildIndex(notes: Note[]): PathIndex {
+export function buildIndex(notes: Note[]): PathIndex {
   const idx: PathIndex = { byPath: new Map(), byStripped: new Map(), byName: new Map() };
   for (const n of notes) {
     const path = n.path ?? "";
@@ -97,17 +111,26 @@ function buildIndex(notes: Note[]): PathIndex {
     const name = (path.split("/").pop() ?? "").toLowerCase();
     if (!idx.byPath.has(path)) idx.byPath.set(path, n);
     if (!idx.byStripped.has(stripped)) idx.byStripped.set(stripped, n);
-    if (name && !idx.byName.has(name)) idx.byName.set(name, n);
+    if (name) idx.byName.set(name, [...(idx.byName.get(name) ?? []), n]);
   }
   return idx;
 }
 
-/** The desktop matcher, deterministic: exact path → stripped path → file name (case-insensitive); never the note itself. */
-export function matchTarget(wikilink: string, idx: PathIndex, selfId: string): Note | null {
-  for (const cand of [idx.byPath.get(wikilink), idx.byStripped.get(wikilink), idx.byName.get(wikilink.toLowerCase())]) {
-    if (cand && cand.id !== selfId) return cand;
+export type MatchResult = { kind: "match"; note: Note } | { kind: "ambiguous"; candidates: number } | { kind: "none" };
+
+/**
+ * Exact path → `vault/`-stripped path → file name (case-insensitive); never the
+ * note itself. A file name shared by several OTHER notes is AMBIGUOUS and never
+ * linked (security review M2 — the desktop silently took the first in list order).
+ */
+export function matchTarget(wikilink: string, idx: PathIndex, selfId: string): MatchResult {
+  for (const cand of [idx.byPath.get(wikilink), idx.byStripped.get(wikilink)]) {
+    if (cand && cand.id !== selfId) return { kind: "match", note: cand };
   }
-  return null;
+  const byName = (idx.byName.get(wikilink.toLowerCase()) ?? []).filter((n) => n.id !== selfId);
+  if (byName.length === 1) return { kind: "match", note: byName[0]! };
+  if (byName.length > 1) return { kind: "ambiguous", candidates: byName.length };
+  return { kind: "none" };
 }
 
 const hasRef = (n: Note, targetId: string): boolean =>
@@ -116,7 +139,8 @@ const hasRef = (n: Note, targetId: string): boolean =>
 let current: WikilinkJob | null = null;
 let cancelFlag = false;
 
-export const wikilinkJobStatus = (): WikilinkJob | null => (current ? { ...current, unresolvedSample: [...current.unresolvedSample] } : null);
+export const wikilinkJobStatus = (): WikilinkJob | null =>
+  current ? { ...current, unresolvedSample: [...current.unresolvedSample], ambiguousSample: [...current.ambiguousSample] } : null;
 
 export function cancelWikilinkJob(): boolean {
   if (!current || current.status !== "running") return false;
@@ -132,11 +156,21 @@ export function _resetWikilinkJob(): void {
   cancelFlag = false;
 }
 
+export interface WikilinkJobOptions {
+  dryRun: boolean;
+  /** Concurrent note fetches (default 2, max 4 — M3: keep the single-threaded vault responsive). */
+  concurrency?: number;
+  /** Pause per worker between note fetches, ms (default 25). */
+  paceMs?: number;
+  /** Called once when the job ends (the route writes the audit row for write runs). */
+  onEnd?: (job: WikilinkJob) => void;
+}
+
 /**
  * Start a job (returns at once; `done` resolves when it ends — tests await it).
  * Throws WikilinkJobBusyError while another job runs.
  */
-export function startWikilinkJob(vault: WikilinkJobVault, vaultId: string, opts: { dryRun: boolean; concurrency?: number }): { job: WikilinkJob; done: Promise<void> } {
+export function startWikilinkJob(vault: WikilinkJobVault, vaultId: string, opts: WikilinkJobOptions): { job: WikilinkJob; done: Promise<void> } {
   if (current?.status === "running") throw new WikilinkJobBusyError("a wikilink job is already running");
   cancelFlag = false;
   const job: WikilinkJob = {
@@ -148,45 +182,64 @@ export function startWikilinkJob(vault: WikilinkJobVault, vaultId: string, opts:
     endedAt: null,
     error: null,
     total: 0,
+    candidates: 0,
     scanned: 0,
     notesWithWikilinks: 0,
     wikilinks: 0,
     resolved: 0,
     alreadyLinked: 0,
     unresolved: 0,
+    ambiguous: 0,
     unparseable: 0,
     notesUpdated: 0,
     conflicts: 0,
     errors: 0,
     unresolvedSample: [],
+    ambiguousSample: [],
   };
   current = job;
-  const done = run(vault, job, Math.max(1, Math.min(8, opts.concurrency ?? 4))).catch((e) => {
-    job.status = "error";
-    job.error = String((e as Error)?.message ?? e).replace(/https?:\/\/\S+/g, "<url>").slice(0, 200);
-    job.endedAt = new Date().toISOString();
-  });
+  const done = run(vault, job, Math.max(1, Math.min(4, opts.concurrency ?? 2)), Math.max(0, opts.paceMs ?? 25))
+    .catch((e) => {
+      job.status = "error";
+      job.error = String((e as Error)?.message ?? e).replace(/https?:\/\/\S+/g, "<url>").slice(0, 200);
+      job.endedAt = new Date().toISOString();
+    })
+    .finally(() => {
+      try {
+        opts.onEnd?.({ ...job });
+      } catch {
+        /* never let the audit hook break the job */
+      }
+    });
   return { job: { ...job }, done };
 }
 
-async function run(vault: WikilinkJobVault, job: WikilinkJob, concurrency: number): Promise<void> {
+/** Bulk machine-written notes that never carry hand-written wikilinks (M3 pre-filter):
+ *  dispatch/session transcripts and alerts. Mail and chat are KEPT (a human can type [[x]]). */
+const SKIP_TAGS = new Set(["agent-dispatch", "agent-output", "agent-session", "alert", "governance-audit"]);
+
+async function run(vault: WikilinkJobVault, job: WikilinkJob, concurrency: number, paceMs: number): Promise<void> {
   // One lean listing (no content) for the path index + existing links.
   const notes = await vault.listNotes({ includeLinks: true, includeMetadata: ["type"] });
   job.total = notes.length;
   const idx = buildIndex(notes);
+  // M3 pre-filter, content-free: only notes that can hold a wikilink are fetched.
+  const candidates = notes.filter((n) => !(n.tags ?? []).some((t) => SKIP_TAGS.has(t)));
+  job.candidates = candidates.length;
 
   let next = 0;
   const worker = async () => {
     while (!cancelFlag) {
       const i = next++;
-      if (i >= notes.length) return;
-      const lean = notes[i]!;
+      if (i >= candidates.length) return;
+      const lean = candidates[i]!;
       try {
         await processNote(vault, job, idx, lean);
       } catch {
         job.errors++;
       }
       job.scanned++;
+      if (paceMs) await new Promise((r) => setTimeout(r, paceMs));
     }
   };
   await Promise.all(Array.from({ length: concurrency }, worker));
@@ -206,18 +259,23 @@ async function processNote(vault: WikilinkJobVault, job: WikilinkJob, idx: PathI
   const seenTargets = new Set<string>();
   for (const w of links) {
     job.wikilinks++;
-    const target = matchTarget(w, idx, note.id);
-    if (!target) {
+    const m = matchTarget(w, idx, note.id);
+    if (m.kind === "none") {
       job.unresolved++;
       if (job.unresolvedSample.length < 50 && !job.unresolvedSample.includes(w)) job.unresolvedSample.push(w.slice(0, 120));
       continue;
     }
-    if (hasRef(lean, target.id) || seenTargets.has(target.id)) {
+    if (m.kind === "ambiguous") {
+      job.ambiguous++;
+      if (job.ambiguousSample.length < 50 && !job.ambiguousSample.includes(w)) job.ambiguousSample.push(w.slice(0, 120));
+      continue;
+    }
+    if (hasRef(lean, m.note.id) || seenTargets.has(m.note.id)) {
       job.alreadyLinked++;
       continue;
     }
-    seenTargets.add(target.id);
-    add.push({ target: target.id, relationship: "references" });
+    seenTargets.add(m.note.id);
+    add.push({ target: m.note.id, relationship: "references" });
   }
   if (!add.length) return;
   if (job.dryRun) {
