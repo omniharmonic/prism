@@ -23,3 +23,5 @@ Every implementation commit updates this record with actual checks and limitatio
 - R02 working slice: real shared-workspace fixtures at 1280×720 and 390×844 uncovered a pre-existing font-registration render loop. Stable Canvas mutation callbacks and scoped store selectors fix it. These tests use fictional notes and never connect to production.
 
 - `24fc982`: brand foundation and editor loop correction. Production web build passed (128 precached entries, ~8.4 MB; existing large-chunk warnings remain a performance follow-up). No deployment performed.
+
+- Autosave follow-up: stable mutation dependency restores the intended debounce; simultaneous local saves wait in order; failed content is not recorded as saved and the document offers retry. Six workspace browser checks pass, including a clock-controlled debounce and failed-save/retry using the real editor. The fixture now matches vault metadata merge semantics. Scoped durable composer drafts and complete crash recovery remain open.

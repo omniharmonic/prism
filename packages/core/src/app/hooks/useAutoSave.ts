@@ -29,48 +29,65 @@ export function useAutoSave(
   debounceMs = 2000,
   onSaved?: (content: string) => void,
 ) {
-  const updateNote = useUpdateNote();
+  const { mutateAsync } = useUpdateNote();
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savedCallback = useRef(onSaved);
+  savedCallback.current = onSaved;
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastContentRef = useRef<string>("");
   const pendingRef = useRef(false);
+  const inFlight = useRef<Promise<void> | null>(null);
 
   const doSave = useCallback(async () => {
+    if (inFlight.current) {
+      await inFlight.current;
+      if (!pendingRef.current) return;
+    }
     const content = getContent();
-    if (content === lastContentRef.current) return;
-
-    lastContentRef.current = content;
+    if (content === lastContentRef.current) { pendingRef.current = false; return; }
     pendingRef.current = false;
     setIsSaving(true);
-
-    try {
-      await updateNote.mutateAsync({ id: noteId, content });
-      setLastSaved(new Date());
-      onSaved?.(content);
-    } finally {
-      setIsSaving(false);
-    }
-  }, [noteId, getContent, updateNote]);
+    setSaveError(null);
+    const operation = (async () => {
+      try {
+        await mutateAsync({ id: noteId, content });
+        lastContentRef.current = content;
+        setLastSaved(new Date());
+        savedCallback.current?.(content);
+      } catch (error) {
+        // Failed writes must not become the baseline for later saves.
+        pendingRef.current = true;
+        setSaveError("Changes could not be saved. Keep this page open and retry when ready.");
+        throw error;
+      } finally {
+        setIsSaving(false);
+      }
+    })();
+    inFlight.current = operation;
+    try { await operation; }
+    finally { if (inFlight.current === operation) inFlight.current = null; }
+  }, [noteId, getContent, mutateAsync]);
 
   // Schedule a debounced save
   const scheduleSave = useCallback(() => {
     pendingRef.current = true;
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(doSave, debounceMs);
+    timerRef.current = setTimeout(() => { void doSave().catch(() => {}); }, debounceMs);
   }, [doSave, debounceMs]);
 
   // Flush immediately (for Cmd+S)
   const saveNow = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    doSave();
+    void doSave().catch(() => {});
   }, [doSave]);
 
   useEffect(() => {
     const handle: PendingSaveHandle = {
       flush: async () => {
         if (timerRef.current) clearTimeout(timerRef.current);
-        if (pendingRef.current) await doSave();
+        if (pendingRef.current || inFlight.current) await doSave();
       },
       discard: () => {
         if (timerRef.current) clearTimeout(timerRef.current);
@@ -91,9 +108,9 @@ export function useAutoSave(
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      if (pendingRef.current) doSave();
+      if (pendingRef.current) void doSave().catch(() => {});
     };
   }, [doSave]);
 
-  return { isSaving, lastSaved, scheduleSave, saveNow };
+  return { isSaving, lastSaved, saveError, scheduleSave, saveNow };
 }

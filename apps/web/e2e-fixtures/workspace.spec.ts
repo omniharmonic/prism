@@ -58,3 +58,43 @@ test("document title supports keyboard rename and cancel", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
   expect(await page.locator(".prose-editor ul").first().evaluate((node) => getComputedStyle(node).listStyleType)).toBe("disc");
 });
+
+test("document autosave waits through unrelated workspace rerenders", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+  await editor.press("ControlOrMeta+End");
+  await editor.pressSequentially(" A new idea.");
+  // Updating the shared font registration used to flush the debounce early.
+  await page.getByRole("button", { name: "Serif", exact: true }).click();
+  const contentWrites = () => page.evaluate(() => (window as unknown as { prismFixtureWrites: Array<{ content?: string }> }).prismFixtureWrites.filter((w) => w.content !== undefined));
+  expect(await contentWrites()).toHaveLength(0);
+  await page.clock.runFor(1900);
+  expect(await contentWrites()).toHaveLength(0);
+  await page.clock.runFor(200);
+  await expect.poll(async () => (await contentWrites()).length).toBe(1);
+  expect((await contentWrites())[0].content).toContain("A new idea.");
+  await page.clock.resume();
+  await expect(page.getByText(/^Saved /)).toBeVisible();
+});
+
+test("failed document saves remain retryable without losing the typed content", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = true; });
+  await editor.click();
+  await editor.pressSequentially("Keep this draft. ");
+  await editor.press("ControlOrMeta+s");
+  await expect(page.getByRole("alert")).toContainText("Changes could not be saved");
+  await expect(editor).toContainText("Keep this draft.");
+  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = false; });
+  await page.getByRole("button", { name: "Retry save" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText(/^Saved /)).toBeVisible();
+  const writes = await page.evaluate(() => (window as unknown as { prismFixtureWrites: Array<{ content?: string }> }).prismFixtureWrites.filter((w) => w.content !== undefined));
+  expect(writes).toHaveLength(2);
+  expect(writes[1].content).toBe(writes[0].content);
+});

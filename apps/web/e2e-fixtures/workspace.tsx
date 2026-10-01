@@ -11,6 +11,9 @@ const notes: Note[] = [
   { id: "field-notes", path: "Projects/Prism/Field notes", content: "<h1>Field notes</h1><p>Useful observations from our last conversation.</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
+const writes: Array<Record<string, unknown>> = [];
+const controls = { rejectWrite: false };
+Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -24,11 +27,16 @@ window.fetch = async (input, init) => {
   if (noteId) {
     const note = notes.find((n) => n.id === noteId);
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
-    if (method === "PATCH") Object.assign(note, JSON.parse(String(init?.body)), { updatedAt: new Date().toISOString() });
+    if (method === "PATCH") {
+      const body = JSON.parse(String(init?.body));
+      writes.push(body);
+      if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: 403 });
+      Object.assign(note, body, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: new Date().toISOString() });
+    }
     return Response.json(note);
   }
   if (path === "/api/tags") return Response.json([{ name: "project", count: 1 }, { name: "note", count: 2 }]);
-  if (path === "/api/vault" || path === "/api/vault/info") return Response.json({ name: "Personal vault", description: "A place for connected ideas." });
+  if (path === "/api/vault" || path === "/api/vault/info") return Response.json({ name: "Personal vault", description: "A place for connected ideas.", stats: { totalNotes: notes.length, totalTags: 2, totalLinks: 0 } });
   if (path === "/api/vault/stats" || path === "/api/stats") return Response.json({ totalNotes: notes.length, totalTags: 2, totalLinks: 0 });
   if (path === "/api/graph") return Response.json({ nodes: notes.map((n) => ({ id: n.id, path: n.path, tags: n.tags })), edges: [] });
   if (path === "/api/paths") return Response.json(["Projects", "Journal"]);

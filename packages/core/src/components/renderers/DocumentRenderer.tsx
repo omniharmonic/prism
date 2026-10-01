@@ -173,7 +173,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const onSaved = useCallback((content: string) => {
     lastUserSavedContent.current = content;
   }, []);
-  const { isSaving, lastSaved, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
+  const { isSaving, lastSaved, saveError, scheduleSave: rawScheduleSave, saveNow: rawSaveNow } = useAutoSave(note.id, getContent, 2000, onSaved);
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // the autosave triggers keeps every downstream call site unchanged while
   // guaranteeing no vault mutation when readOnly is set.
@@ -376,8 +376,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
         <div className="flex items-center gap-3">
+          {saveError && <span role="alert">{saveError} <button type="button" onClick={saveNow} className="underline">Retry save</button></span>}
           {isSaving && <span>Saving...</span>}
-          {lastSaved && !isSaving && (
+          {lastSaved && !isSaving && !saveError && (
             <span>Saved {lastSaved.toLocaleTimeString()}</span>
           )}
         </div>
