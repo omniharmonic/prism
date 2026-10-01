@@ -23,6 +23,10 @@ apps/collab-server    Cloudflare Worker (Yjs) — RETIRED, superseded by apps/se
 
 **VaultClient seam** (`packages/core/src/data/`): the UI core depends on a `VaultClient` interface, dependency-injected per shell — `TauriVaultClient` (invoke) for desktop, `HttpVaultClient` (fetch → gateway) for web. One UI, two transports.
 
+## Live topology (as of 2026-10-01 cutover)
+
+The Mac mini's **Prism Server** (pm2 `prism-server`) owns ALL ingest: Matrix, ClickUp, Fireflies, Fathom, embedding index, **calendar** (`CALENDAR_SYNC_ENABLED=true`, `CALENDAR_DELETE_MODE=log` → `archive` after a clean day), **Proton mail** (`PROTON_SYNC_ENABLED=true`; the `com.omniharmonic.proton-mail` launchd job running `proton_mail.py` is booted out + disabled — its `setup`/`health`/`search` CLI still work; omniharmonic_agent `check_oauth.py` reads ingest freshness from `/acl/workers`), and the **skill scheduler** (`SKILLS_ENABLED=true`). The desktop `Prism.app` on the mini runs with `ingest_mode: "client"` (starts no services/scheduler). Verify any time: `PRISM_OWNER_TOKEN=… scripts/check-desktop-independence.sh` (exit 0 = every active source server-owned + healthy). Rollback per source = the cutover runbooks below (flag off → restart pm2 → re-enable the desktop flag / `launchctl enable` + `bootstrap` the proton plist). Gmail ingest stays off (email is Proton; `assertConfig` refuses Gmail+Proton both on). Live actions (`ACTIONS_*_ENABLED`) are built but OFF.
+
 ## Commands
 
 ```bash
