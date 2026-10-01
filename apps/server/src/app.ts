@@ -25,6 +25,7 @@ import { integrations } from "./routes/integrations";
 import { sync } from "./routes/sync";
 import { calendar } from "./routes/calendar";
 import { actionsApi } from "./routes/actions";
+import { adminApi } from "./routes/admin";
 import { mcp } from "./routes/mcp";
 import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
@@ -156,6 +157,8 @@ export function createApp(): Hono {
   // Bridge, calendar via gog, Matrix). SERVER-OWNER only, flag-gated, audited,
   // idempotent; before the gateway like /api/calendar.
   app.route("/api/actions", actionsApi);
+  // Server-owner maintenance jobs (parity A: vault-wide wikilink resolve); before the gateway.
+  app.route("/api/admin", adminApi);
   // Member self-serve MCP tokens — role-gated in-handler (member+ on the target
   // vault); mounted BEFORE the gateway so the owner short-circuit never proxies
   // /api/mcp to the vault.
