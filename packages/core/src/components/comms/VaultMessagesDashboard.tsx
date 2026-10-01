@@ -1,9 +1,12 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, Send, PenSquare, AlertTriangle, Bell, Clock, Inbox, Check } from "lucide-react";
-import { vaultApi } from "../../lib/parachute/client";
+import { Search, MessageSquare, Filter, ChevronDown, ChevronRight, Link2, User, Users, PenSquare, AlertTriangle, Bell, Clock, Inbox, Check } from "lucide-react";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useIsWeb } from "../../data/Platform";
+import { MessageComposer } from "./MessageComposer";
+import { threadStatus } from "../../lib/messages/triage";
 import { matrixApi } from "../../lib/matrix/client";
-import { useLiveActions } from "../../data/LiveActionsContext";
+import { useLiveActions, useLiveActionsClient } from "../../data/LiveActionsContext";
 import { useUIStore } from "../../app/stores/ui";
 import { getPlatformConfig } from "../../lib/matrix/bridge-map";
 import { Spinner } from "../ui/Spinner";
@@ -55,41 +58,47 @@ interface PersonWithThreads {
 }
 
 export default function VaultMessagesDashboard(_props: RendererProps) {
+  const vault = useVaultClient();
+  const scope = useLiveActionsClient()?.scope?.() || null;
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("triage");
   const [platformFilter, setPlatformFilter] = useState<string>("all");
   const openTab = useUIStore((s) => s.openTab);
 
   // Fetch all message-thread notes
-  const { data: threadNotes, isLoading: threadsLoading } = useQuery({
-    queryKey: ["vault", "notes", { tag: "message-thread" }],
-    queryFn: () => vaultApi.listNotes({ tag: "message-thread", limit: 500 }),
+  const { data: loadedThreads, isLoading: threadsLoading, isError: threadsError, refetch: reloadThreads } = useQuery({
+    queryKey: ["vault", "inbox", scope, "notes", { tag: "message-thread" }],
+    queryFn: () => vault.listNotes({ tag: "message-thread", limit: 500 }),
     refetchInterval: useLivePollMs(30_000),
   });
 
   // Fetch email notes
-  const { data: emailNotes } = useQuery({
-    queryKey: ["vault", "notes", { tag: "email" }],
-    queryFn: () => vaultApi.listNotes({ tag: "email", limit: 200 }),
+  const { data: loadedEmails, isLoading: emailsLoading, isError: emailsError, refetch: reloadEmails } = useQuery({
+    queryKey: ["vault", "inbox", scope, "notes", { tag: "email" }],
+    queryFn: () => vault.listNotes({ tag: "email", limit: 200 }),
     refetchInterval: useLivePollMs(30_000),
   });
 
   // Fetch person notes (for People view)
-  const { data: personNotes } = useQuery({
-    queryKey: ["vault", "notes", { tag: "person", limit: 2000 }],
-    queryFn: () => vaultApi.listNotes({ tag: "person", limit: 2000 }),
+  const { data: loadedPeople, isError: peopleError, refetch: reloadPeople } = useQuery({
+    queryKey: ["vault", "inbox", scope, "notes", { tag: "person", limit: 2000 }],
+    queryFn: () => vault.listNotes({ tag: "person", limit: 2000 }),
     refetchInterval: useLivePollMs(60_000),
   });
 
-  const allMessages = useMemo(() => [...(threadNotes || []), ...(emailNotes || [])], [threadNotes, emailNotes]);
+  const threadNotes = threadsError ? undefined : loadedThreads;
+  const emailNotes = emailsError ? undefined : loadedEmails;
+  const personNotes = peopleError ? undefined : loadedPeople;
+  const allMessages = useMemo(() => [...new Map([...(threadNotes || []), ...(emailNotes || [])].map((note) => [note.id, note])).values()], [threadNotes, emailNotes]);
 
   // Build person→message link index from the full graph (single API call
   // instead of hundreds of individual getLinks calls that overwhelm the vault).
-  const { data: graphData } = useQuery({
-    queryKey: ["vault", "graph"],
-    queryFn: () => vaultApi.getGraph(),
+  const { data: loadedGraph, isError: graphError, refetch: reloadGraph } = useQuery({
+    queryKey: ["vault", "inbox", scope, "graph"],
+    queryFn: () => vault.getGraph(),
     staleTime: 60_000,
   });
+  const graphData = graphError ? undefined : loadedGraph;
 
   const personLinks = useMemo(() => {
     const linkMap = new Map<string, LinkData[]>();
@@ -130,7 +139,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       for (const link of links) {
         const threadId = link.sourceId === person.id ? link.targetId : link.sourceId;
         const thread = messageById.get(threadId);
-        if (thread) threads.push(thread);
+        if (thread && !threads.some((item) => item.id === thread.id)) threads.push(thread);
       }
 
       if (threads.length === 0) continue;
@@ -217,16 +226,16 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 
   const platforms = useMemo(() => Array.from(platformCounts.keys()).sort(), [platformCounts]);
 
-  if (threadsLoading) {
+  if (threadsLoading || emailsLoading) {
     return <div className="flex items-center justify-center h-full"><Spinner size={24} /></div>;
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 min-w-0 flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-4 px-6 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <div className="flex-1">
-          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Messages</h1>
+      <div className="flex flex-wrap items-center gap-3 px-4 sm:px-6 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+        <div className="min-w-[120px] flex-1">
+          <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Inbox</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
             {totalCount} conversations
             {viewMode === "people" && ` · ${filteredPeople.length} people`}
@@ -234,31 +243,31 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
         </div>
 
         {/* View toggle */}
-        <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
-          <button onClick={() => setViewMode("triage")}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs"
-            style={{ background: viewMode === "triage" ? "var(--color-accent)" : "transparent", color: viewMode === "triage" ? "white" : "var(--text-secondary)" }}>
+        <div className="flex max-w-full rounded-lg overflow-hidden" role="group" aria-label="Inbox view" style={{ border: "1px solid var(--glass-border)" }}>
+          <button aria-pressed={viewMode === "triage"} onClick={() => setViewMode("triage")}
+            className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
+            style={{ background: viewMode === "triage" ? "var(--surface-selected)" : "transparent", color: viewMode === "triage" ? "var(--text-primary)" : "var(--text-secondary)" }}>
             <Inbox size={11} /> Triage
           </button>
-          <button onClick={() => setViewMode("people")}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs"
-            style={{ background: viewMode === "people" ? "var(--color-accent)" : "transparent", color: viewMode === "people" ? "white" : "var(--text-secondary)" }}>
+          <button aria-pressed={viewMode === "people"} onClick={() => setViewMode("people")}
+            className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
+            style={{ background: viewMode === "people" ? "var(--surface-selected)" : "transparent", color: viewMode === "people" ? "var(--text-primary)" : "var(--text-secondary)" }}>
             <Users size={11} /> People
           </button>
-          <button onClick={() => setViewMode("platforms")}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs"
-            style={{ background: viewMode === "platforms" ? "var(--color-accent)" : "transparent", color: viewMode === "platforms" ? "white" : "var(--text-secondary)" }}>
+          <button aria-pressed={viewMode === "platforms"} onClick={() => setViewMode("platforms")}
+            className="interactive focus-ring flex items-center gap-1 px-3 py-2 text-xs"
+            style={{ background: viewMode === "platforms" ? "var(--surface-selected)" : "transparent", color: viewMode === "platforms" ? "var(--text-primary)" : "var(--text-secondary)" }}>
             <MessageSquare size={11} /> Platforms
           </button>
         </div>
 
         {/* Search */}
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-xs"
+        <div className="flex min-w-0 flex-[1_1_220px] items-center gap-2 px-3 py-2 rounded-lg"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
           <Search size={13} style={{ color: "var(--text-muted)" }} />
-          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+          <input aria-label="Search inbox" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={viewMode === "people" ? "Search people or messages..." : "Search messages..."}
-            className="bg-transparent text-xs outline-none w-40"
+            className="bg-transparent text-base outline-none min-w-0 w-full"
             style={{ color: "var(--text-primary)" }} />
         </div>
 
@@ -266,7 +275,7 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
         {viewMode === "platforms" && (
           <div className="flex items-center gap-1.5">
             <Filter size={12} style={{ color: "var(--text-muted)" }} />
-            <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}
+            <select aria-label="Filter inbox platform" value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}
               className="h-7 rounded-md px-2 text-xs outline-none"
               style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
               <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>
@@ -280,7 +289,10 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto">
+      {(threadsError || emailsError || (viewMode === "people" && (peopleError || graphError))) && <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-3 text-xs" style={{ color: "var(--text-secondary)" }}>
+        Some conversations or people links couldn't load. <button className="focus-ring underline" onClick={() => void Promise.all([reloadThreads(), reloadEmails(), reloadPeople(), reloadGraph()])}>Try again</button>
+      </div>}
+      <div className="flex-1 min-h-0 overflow-auto">
         {viewMode === "triage" ? (
           <TriageView messages={allMessages} onOpenThread={handleOpenThread} searchQuery={searchQuery} />
         ) : viewMode === "people" ? (
@@ -298,14 +310,15 @@ export default function VaultMessagesDashboard(_props: RendererProps) {
 // Importance tags written by the `message-triage` skill (skill_scheduler.rs).
 // Keep this list in sync with the skill prompt's Step 2 tags — a note carrying
 // any of these has been classified and must NOT fall back into "Needs Triage".
-const IMPORTANCE_TAGS = ["urgent", "action-required", "informational", "low"] as const;
 
 const PRIORITY_TIERS = [
-  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "rgba(239,68,68,0.25)", borderColor: "rgba(239,68,68,0.4)", defaultCollapsed: false },
-  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "rgba(245,158,11,0.25)", borderColor: "rgba(245,158,11,0.4)", defaultCollapsed: false },
+  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)", bgColor: "var(--bg-surface)", borderColor: "rgba(239,68,68,0.4)", defaultCollapsed: false },
+  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)", bgColor: "var(--bg-surface)", borderColor: "rgba(245,158,11,0.4)", defaultCollapsed: false },
   { tag: "unclassified", label: "Needs Triage", icon: Clock, color: "var(--text-muted)", bgColor: "var(--glass)", borderColor: "var(--glass-border)", defaultCollapsed: false },
   { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
   { tag: "low", label: "Low Priority", icon: Inbox, color: "var(--text-muted)", bgColor: "transparent", borderColor: "var(--glass-border)", defaultCollapsed: true },
+  { tag: "social", label: "Social", icon: Users, color: "var(--text-muted)", bgColor: "var(--bg-surface)", borderColor: "var(--glass-border)", defaultCollapsed: true },
+  { tag: "triaged", label: "Reviewed", icon: Check, color: "var(--text-muted)", bgColor: "var(--bg-surface)", borderColor: "var(--glass-border)", defaultCollapsed: true },
   { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)", bgColor: "transparent", borderColor: "rgba(34,197,94,0.3)", defaultCollapsed: true },
 ] as const;
 
@@ -316,19 +329,7 @@ function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[];
     const result: Array<{ tier: typeof PRIORITY_TIERS[number]; notes: Note[] }> = [];
 
     for (const tier of PRIORITY_TIERS) {
-      let notes: Note[];
-      if (tier.tag === "unclassified") {
-        // A note "needs triage" only if the skill hasn't classified it (no
-        // importance tag) and the user hasn't manually handled it. Previously
-        // this excluded "social" (a tag nothing writes) but NOT "low" — so
-        // every low-priority item the skill tagged still showed as untriaged.
-        notes = messages.filter((n) => {
-          const tags = n.tags || [];
-          return !IMPORTANCE_TAGS.some((t) => tags.includes(t)) && !tags.includes("handled") && !tags.includes("triaged");
-        });
-      } else {
-        notes = messages.filter((n) => (n.tags || []).includes(tier.tag));
-      }
+      let notes = messages.filter((note) => threadStatus(note.tags) === tier.tag);
 
       // Apply search filter
       if (q) {
@@ -353,8 +354,8 @@ function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[];
     return result;
   }, [messages, q]);
 
-  const urgentCount = messages.filter((n) => (n.tags || []).includes("urgent")).length;
-  const actionCount = messages.filter((n) => (n.tags || []).includes("action-required")).length;
+  const urgentCount = messages.filter((n) => threadStatus(n.tags) === "urgent").length;
+  const actionCount = messages.filter((n) => threadStatus(n.tags) === "action-required").length;
 
   if (messages.length === 0) {
     return (
@@ -385,26 +386,28 @@ function TriageView({ messages, onOpenThread, searchQuery }: { messages: Note[];
 
       {/* Priority tiers */}
       {tiers.map(({ tier, notes }) => (
-        <TriageTier key={tier.tag} tier={tier} notes={notes} onOpenThread={onOpenThread} />
+        <TriageTier key={`${tier.tag}:${!!searchQuery}`} forceExpanded={!!searchQuery} tier={tier} notes={notes} onOpenThread={onOpenThread} />
       ))}
     </div>
   );
 }
 
-function TriageTier({ tier, notes, onOpenThread }: {
+function TriageTier({ tier, notes, onOpenThread, forceExpanded }: {
+  forceExpanded?: boolean;
   tier: typeof PRIORITY_TIERS[number];
   notes: Note[];
   onOpenThread: (note: Note) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(tier.defaultCollapsed);
+  const [collapsed, setCollapsed] = useState(forceExpanded ? false : tier.defaultCollapsed);
   const Icon = tier.icon;
 
   return (
     <div>
       <button
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-5 py-2.5 sticky top-0 z-10 hover:bg-[var(--glass-hover)] transition-colors backdrop-blur-md"
-        style={{ background: tier.bgColor, borderBottom: `1px solid ${tier.borderColor}`, backdropFilter: "blur(12px) saturate(1.4)", WebkitBackdropFilter: "blur(12px) saturate(1.4)" }}
+        className="w-full flex items-center gap-2 px-5 py-2.5 focus-ring hover:bg-[var(--glass-hover)] transition-colors"
+        style={{ background: tier.bgColor, borderBottom: `1px solid ${tier.borderColor}` }}
       >
         {collapsed ? <ChevronRight size={13} style={{ color: tier.color }} /> : <ChevronDown size={13} style={{ color: tier.color }} />}
         <Icon size={13} style={{ color: tier.color }} />
@@ -496,37 +499,17 @@ function PeopleView({ people, onOpenThread }: { people: PersonWithThreads[]; onO
 function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; onOpenThread: (note: Note) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [composing, setComposing] = useState(false);
-  const [composeChannel, setComposeChannel] = useState("");
-  const [composeBody, setComposeBody] = useState("");
-  const [sending, setSending] = useState(false);
+  const [composeThread, setComposeThread] = useState("");
   const liveMatrix = useLiveActions("matrix");
-
-  const handleSend = async () => {
-    if (!composeBody.trim() || !composeChannel) return;
-    setSending(true);
-    try {
-      // The channel value is the Matrix room ID or user ID
-      // Find the matching thread to get the room ID
-      const matchThread = p.threads.find((t) => {
-        const meta = (t.metadata || {}) as Record<string, unknown>;
-        return (meta.platform as string) === composeChannel || (meta.matrixRoomId as string) === p.channels[composeChannel];
-      });
-      const roomId = matchThread
-        ? ((matchThread.metadata || {}) as Record<string, unknown>).matrixRoomId as string
-        : p.channels[composeChannel];
-
-      if (roomId) {
-        if (liveMatrix) await liveMatrix.matrixSend(roomId, composeBody.trim());
-        else await matrixApi.sendMessage(roomId, composeBody.trim());
-        setComposeBody("");
-        setComposing(false);
-      }
-    } catch (e) {
-      console.error("Send failed:", e);
-    } finally {
-      setSending(false);
-    }
-  };
+  const scope = useLiveActionsClient()?.scope?.() || null;
+  const isWeb = useIsWeb();
+  const destinations = p.threads.flatMap((thread) => {
+    const meta = thread.metadata || {};
+    const roomId = meta.matrixRoomId || meta.matrix_room_id;
+    return typeof roomId === "string" && roomId.startsWith("!") ? [{ thread, roomId }] : [];
+  }).filter((entry, index, all) => all.findIndex((item) => item.roomId === entry.roomId) === index);
+  const destination = destinations.find((entry) => entry.thread.id === composeThread);
+  const canSend = !!liveMatrix || !isWeb;
 
   return (
     <div style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}>
@@ -598,46 +581,37 @@ function PersonCard({ person: p, onOpenThread }: { person: PersonWithThreads; on
             );
           })}
 
-          {/* Quick compose */}
-          <div className="px-6 pl-16 pt-2">
-            {!composing ? (
-              <button
-                onClick={() => { setComposing(true); setComposeChannel(p.platforms[0] || ""); }}
-                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
-                style={{ color: "var(--color-accent)" }}
-              >
-                <PenSquare size={10} /> Send message
-              </button>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>via</span>
-                  <select value={composeChannel} onChange={(e) => setComposeChannel(e.target.value)}
-                    className="rounded px-1.5 py-0.5 text-[10px] outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
-                    {p.platforms.map((pl) => (
-                      <option key={pl} value={pl}>{getPlatformConfig(pl).label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex gap-1.5">
-                  <input
-                    value={composeBody}
-                    onChange={(e) => setComposeBody(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                    placeholder={`Message ${p.name}...`}
-                    className="flex-1 rounded px-2 py-1.5 text-xs outline-none"
-                    style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-                    autoFocus
-                  />
-                  <button onClick={handleSend} disabled={!composeBody.trim() || sending}
-                    className="p-1.5 rounded transition-colors disabled:opacity-30"
-                    style={{ background: "var(--color-accent)", color: "white" }}>
-                    <Send size={12} />
-                  </button>
-                </div>
-              </div>
-            )}
+          {/* Choose a concrete conversation; a platform or person ID is not a recipient. */}
+          <div className="px-4 sm:px-6 sm:pl-16 pt-2">
+            {!composing ? <button disabled={!destinations.length || !canSend}
+              onClick={() => { setComposing(true); setComposeThread(destinations.length === 1 ? destinations[0].thread.id : ""); }}
+              className="interactive focus-ring flex items-center gap-2 rounded-lg px-3 py-2 text-xs disabled:opacity-40">
+              <PenSquare size={14} /> Send message
+            </button> : <div className="space-y-2">
+              <label className="block text-xs">Conversation
+                <select aria-label="Message destination" value={composeThread} onChange={(event) => setComposeThread(event.target.value)}
+                  className="focus-ring mt-1 w-full rounded-lg border p-2 text-base" style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)" }}>
+                  <option value="">Choose a conversation…</option>
+                  {destinations.map(({ thread }) => <option key={thread.id} value={thread.id}>{thread.path || thread.id} · {getPlatformConfig(getPlatform(thread)).label}</option>)}
+                </select>
+              </label>
+              {destination && <>
+                <p className="text-xs break-words" style={{ color: "var(--text-muted)" }}>To conversation: {destination.thread.path || destination.roomId}</p>
+                <MessageComposer draftScope={scope} draftKey={`matrix:${destination.roomId}`} retrySafe={!!liveMatrix} disabled={!canSend}
+                  onSend={async (body, options) => {
+                    if (liveMatrix) {
+                      if (!scope || liveMatrix.scope?.() !== scope) throw new Error("Workspace changed. Reopen this conversation before sending.");
+                      await liveMatrix.matrixSend(destination.roomId, body, { idempotencyKey: options.requestId });
+                    } else {
+                      if (isWeb) throw new Error("Messaging is unavailable on this connection.");
+                      await matrixApi.sendMessage(destination.roomId, body);
+                    }
+                    setComposing(false);
+                  }} />
+              </>}
+              <button onClick={() => setComposing(false)} className="interactive focus-ring rounded-lg px-3 py-2 text-xs">Close composer</button>
+            </div>}
+            {!canSend && <p role="status" className="py-2 text-xs" style={{ color: "var(--text-muted)" }}>Messaging is unavailable on this connection.</p>}
           </div>
         </div>
       )}
@@ -734,4 +708,3 @@ function ConversationRow({ note, onClick }: { note: Note; onClick: () => void })
     </button>
   );
 }
-

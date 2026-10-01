@@ -2,7 +2,6 @@ import { useIsWeb } from "../../data/Platform";
 import { parseLegacyThread } from "../../lib/messages/legacyThread";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Bell, MessageSquare, Clock, Check, ChevronDown } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { matrixApi } from "../../lib/matrix/client";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -11,12 +10,7 @@ import { MessageThread } from "../comms/MessageThread";
 import { MessageComposer } from "../comms/MessageComposer";
 import { PlatformBadge } from "../comms/PlatformBadge";
 
-const TRIAGE_OPTIONS = [
-  { tag: "urgent", label: "Urgent", icon: AlertTriangle, color: "var(--color-danger)" },
-  { tag: "action-required", label: "Action Required", icon: Bell, color: "var(--color-warning)" },
-  { tag: "informational", label: "Informational", icon: MessageSquare, color: "var(--text-secondary)" },
-  { tag: "handled", label: "Handled", icon: Check, color: "var(--color-success)" },
-] as const;
+import { TRIAGE_TAGS, THREAD_STATUS_LABELS, threadStatus } from "../../lib/messages/triage";
 
 export default function MessageRenderer({ note }: RendererProps) {
   const actionClient = useLiveActionsClient();
@@ -40,35 +34,24 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
   const [sent, setSent] = useState(false);
   const isWeb = useIsWeb();
 
-  // Determine current triage status from tags
-  const currentTriage = useMemo(() => {
-    const tags = note.tags || [];
-    if (tags.includes("handled")) return "handled";
-    if (tags.includes("urgent")) return "urgent";
-    if (tags.includes("action-required")) return "action-required";
-    if (tags.includes("informational")) return "informational";
-    if (tags.includes("social")) return "social";
-    return null;
-  }, [note.tags]);
-
+  const currentTriage = threadStatus(note.tags);
   const [triageStatus, setTriageStatus] = useState(currentTriage);
-  const [showTriageMenu, setShowTriageMenu] = useState(false);
-
   useEffect(() => setTriageStatus(currentTriage), [currentTriage]);
 
-  const handleTriageChange = useCallback(async (newTag: string) => {
+  const handleTriageChange = useCallback(async (newTag: typeof TRIAGE_TAGS[number]) => {
     if (triagePending) return;
     setTriagePending(true);
     setTriageError(null);
     try {
-      const oldTags = ["urgent", "action-required", "informational", "social", "handled"];
+      // `triaged` is also the worker's processing marker; preserve it when
+      // choosing a more specific classification.
+      const oldTags: readonly string[] = TRIAGE_TAGS.filter((tag) => tag !== "triaged");
       // Add the new value before removing old values; a partial failure leaves
       // a visible classification to reconcile, not a silently untagged thread.
       await vault.addTags(note.id, [newTag]);
       const toRemove = (note.tags || []).filter((tag) => oldTags.includes(tag) && tag !== newTag);
       if (toRemove.length) await vault.removeTags(note.id, toRemove);
       setTriageStatus(newTag);
-      setShowTriageMenu(false);
       setSent(false);
     } catch {
       setTriageError("The status update was not confirmed. Refresh this thread before trying again.");
@@ -106,9 +89,6 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
   const showLive = view === "live" || vaultMessages.length === 0;
   const messages = showLive && liveData?.messages?.length ? [...liveData.messages].reverse() : vaultMessages;
 
-  // Determine the triage option for display
-  const triageOption = TRIAGE_OPTIONS.find((o) => o.tag === triageStatus);
-
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header with triage status */}
@@ -121,43 +101,15 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
           {note.path?.split("/").pop()?.replace(/-/g, " ") || "Chat"}
         </span>
 
-        {/* Triage status dropdown */}
-        <div className="relative">
-          <button
-            aria-label="Thread status" aria-expanded={showTriageMenu} disabled={triagePending}
-            onClick={() => setShowTriageMenu(!showTriageMenu)}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors hover:bg-[var(--glass-hover)]"
-            style={{
-              color: triageOption?.color || "var(--text-muted)",
-              border: `1px solid ${triageOption?.color || "var(--glass-border)"}`,
-            }}
-          >
-            {triageOption ? <triageOption.icon size={10} /> : <Clock size={10} />}
-            {triageOption?.label || "Unclassified"}
-            <ChevronDown size={9} />
-          </button>
-
-          {showTriageMenu && (
-            <div
-              className="absolute right-0 top-full mt-1 w-44 rounded-lg py-1 z-50"
-              style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)", boxShadow: "0 4px 12px rgba(0,0,0,0.3)" }}
-            >
-              {TRIAGE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.tag}
-                  disabled={triagePending}
-                  onClick={() => void handleTriageChange(opt.tag)}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-[var(--glass-hover)] transition-colors"
-                  style={{ color: opt.color }}
-                >
-                  <opt.icon size={11} />
-                  {opt.label}
-                  {triageStatus === opt.tag && <Check size={10} className="ml-auto" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <label className="flex shrink-0 items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+          <span className="sr-only">Thread status</span>
+          <select aria-label="Thread status" value={triageStatus} disabled={triagePending}
+            onChange={(event) => void handleTriageChange(event.target.value as typeof TRIAGE_TAGS[number])}
+            className="focus-ring rounded-lg border px-2 py-2 text-xs" style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)", color: "var(--text-secondary)", minHeight: 36 }}>
+            <option value="unclassified" disabled>Needs triage</option>
+            {TRIAGE_TAGS.map((tag) => <option key={tag} value={tag}>{THREAD_STATUS_LABELS[tag]}</option>)}
+          </select>
+        </label>
       </div>
 
       {triageError && <p role="alert" className="px-4 py-2 text-xs">{triageError}</p>}
