@@ -14,7 +14,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary:
-    "bg-accent text-white hover:bg-accent-hover active:brightness-90",
+    "bg-[var(--action-bg)] text-[var(--action-fg)] hover:bg-[var(--action-hover)] active:brightness-90",
   secondary:
     "glass-interactive",
   ghost:
@@ -32,6 +32,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <button
         ref={ref}
+        type="button"
+        aria-busy={loading || undefined}
         disabled={disabled || loading}
         className={cn(
           "inline-flex items-center justify-center font-medium transition-all",
@@ -41,7 +43,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           sizeStyles[size],
           className,
         )}
-        style={{ color: variant === "primary" ? "white" : "var(--text-primary)" }}
+        style={{ color: variant === "primary" ? "var(--action-fg)" : "var(--text-primary)" }}
         {...props}
       >
         {loading ? <Spinner size={size === "sm" ? 12 : 14} /> : icon}

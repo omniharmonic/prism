@@ -13,7 +13,8 @@ import { Skeleton } from "../ui/Skeleton";
 import type { Note } from "../../lib/types";
 
 export function Canvas() {
-  const { openTabs, activeTabId } = useUIStore();
+  const openTabs = useUIStore((s) => s.openTabs);
+  const activeTabId = useUIStore((s) => s.activeTabId);
   const activeTab = openTabs.find((t) => t.id === activeTabId);
 
   // Tag views are a special virtual tab type
@@ -28,7 +29,7 @@ export function Canvas() {
   const parachuteNoteId = isVirtual ? null : (activeTab?.noteId ?? null);
 
   const { data: note, isLoading } = useNote(parachuteNoteId);
-  const updateNote = useUpdateNote();
+  const { mutate: updateNote } = useUpdateNote();
 
   // For virtual notes, construct a synthetic Note object
   const effectiveNote: Note | null = useMemo(() => {
@@ -53,7 +54,7 @@ export function Canvas() {
   const handleSave = useCallback(
     (content: string) => {
       if (!note || isVirtual) return;
-      updateNote.mutate({ id: note.id, content });
+      updateNote({ id: note.id, content });
     },
     [note, isVirtual, updateNote],
   );
@@ -61,7 +62,7 @@ export function Canvas() {
   const handleMetadataChange = useCallback(
     (metadata: Record<string, unknown>) => {
       if (!note || isVirtual) return;
-      updateNote.mutate({ id: note.id, metadata });
+      updateNote({ id: note.id, metadata });
     },
     [note, isVirtual, updateNote],
   );

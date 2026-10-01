@@ -8,7 +8,7 @@ const LazyEmojiPicker = React.lazy(() => import("emoji-picker-react"));
 
 const titleStyle: React.CSSProperties = {
   fontFamily: "var(--font-sans)",
-  fontSize: "var(--text-3xl)",
+  fontSize: "clamp(28px, 3vw, 36px)",
   fontWeight: 700,
   letterSpacing: "-0.022em",
   lineHeight: 1.15,
@@ -41,6 +41,7 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     return (
       <input
         ref={inputRef}
+        aria-label="Document title"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
@@ -54,12 +55,11 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     );
   }
   return (
-    <h1
-      onClick={() => setEditing(true)}
-      title="Click to rename"
-      style={{ ...titleStyle, cursor: "text" }}
-    >
-      {name}
+    <h1 style={titleStyle}>
+      <button type="button" onClick={() => setEditing(true)} aria-label={`Rename ${name}`}
+        title="Rename document" style={{ font: "inherit", textAlign: "left", cursor: "text", overflowWrap: "anywhere" }}>
+        {name}
+      </button>
     </h1>
   );
 }

@@ -73,7 +73,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // PERSISTED to a note they may not write. `persistMetadata` is the single
   // choke point for that; when `_caps` is absent it is `onMetadataChange`
   // itself, so the desktop/owner path is untouched.
-  const persistMetadata = governed ? undefined : onMetadataChange;
+  const persistMetadata = governed || readOnly ? undefined : onMetadataChange;
   const changeFont = useCallback((f: ContentFont) => {
     setContentFont(f);
     persistMetadata?.({ contentFont: f });
@@ -349,9 +349,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
           <PageHeader
             path={note.path}
-            onRename={handleRename}
+            onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
-            onIconChange={(emoji) => persistMetadata?.({ icon: emoji })}
+            onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
           />
           <EditorContent editor={editor} />
         </div>

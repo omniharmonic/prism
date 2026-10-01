@@ -18,7 +18,8 @@
     "verify:media": "node --import tsx scripts/verify-media-proxy.ts",
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test --config playwright.live.config.ts",
-    "check:scripts": "node scripts/check-scripts.mjs"
+    "check:scripts": "node scripts/check-scripts.mjs",
+    "build:brand": "node --import tsx scripts/build-brand.ts"
   },
   "dependencies": {
     "@hocuspocus/provider": "^4.1.0",

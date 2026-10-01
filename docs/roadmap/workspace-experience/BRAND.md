@@ -1,6 +1,6 @@
 # Prism: many sources, one coherent workspace
 
-Design brief for R02. This document defines the next asset pass; it does not replace application assets during the planning phase.
+R02 design brief and implementation reference. The vector master is `packages/core/src/components/brand/PrismMark.tsx`; `npm run build:brand -w @prism/web` deterministically exports SVG, PNG, ICNS and ICO assets. Native installation/rendering verification is still pending.
 
 ## Core mark
 

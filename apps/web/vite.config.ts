@@ -31,11 +31,11 @@ export default defineConfig(({ mode }) => {
       // refresh and stale chunks rendered old code.
       registerType: "prompt",
       injectRegister: null,
-      includeAssets: ["apple-touch-icon.png", "vite.svg"],
+      includeAssets: ["apple-touch-icon.png", "prism-icon.svg", "prism-mark.svg"],
       manifest: {
         name: "Prism",
         short_name: "Prism",
-        description: "Your Parachute vault — notes, graph, and dashboards, anywhere.",
+        description: "Documents, people, and ideas in one collaborative workspace.",
         theme_color: "#0a0a0b",
         background_color: "#0a0a0b",
         display: "standalone",

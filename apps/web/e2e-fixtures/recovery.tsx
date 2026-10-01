@@ -1,4 +1,3 @@
-import React from "react";
 import { createRoot } from "react-dom/client";
 import { OfflineIndicator } from "../src/offline/OfflineIndicator";
 const root = document.createElement("div");

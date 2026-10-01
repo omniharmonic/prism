@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp, Sparkles } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
 import { SearchPanel } from "./SearchPanel";
@@ -93,29 +94,18 @@ export function Navigation() {
 
   return (
     <div
-      className="h-full flex flex-col"
+      className="workspace-navigation h-full flex flex-col"
       style={{
-        background: "var(--bg-surface)",
+        background: "var(--bg-sidebar)",
         borderRight: "1px solid var(--glass-border)",
       }}
     >
       {/* Workspace header — brand mark + name (Notion/Anytype space header) */}
       <div
         className="flex items-center gap-2.5 flex-shrink-0"
-        style={{ height: 52, padding: "0 14px" }}
+        style={{ height: 64, padding: "0 14px" }}
       >
-        <img
-          src="/prism-logo-nav.png"
-          alt="Prism"
-          width={26}
-          height={26}
-          className="flex-shrink-0"
-          style={{
-            borderRadius: 7,
-            objectFit: "cover",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
-          }}
-        />
+        <PrismMark decorative className="flex-shrink-0" />
         <span
           style={{
             fontSize: "var(--text-md)",
@@ -147,7 +137,8 @@ export function Navigation() {
           <div style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
             <NavItem
               icon={<MessageSquare size={15} />}
-              label="Messages"
+              label="Inbox"
+              active={openTabs.find((t) => t.id === activeTabId)?.noteId === "vault-messages"}
               onClick={handleOpenMessages}
               trailing={
                 <RowAction
@@ -157,11 +148,11 @@ export function Navigation() {
                 />
               }
             />
-            <NavItem icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
-            {agentChat && <NavItem icon={<Sparkles size={15} />} label="Agent chat" onClick={() => openAgentChat()} />}
-            <NavItem icon={<Bot size={15} />} label="Agent" onClick={handleOpenAgentActivity} />
+            <NavItem active={openTabs.find((t) => t.id === activeTabId)?.noteId === "calendar-dashboard"} icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
+            {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Conversations" onClick={() => openAgentChat()} />}
+            <NavItem icon={<Bot size={15} />} label="Automations" onClick={handleOpenAgentActivity} />
             <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
-            <NavItem icon={<Radio size={15} />} label="Network" onClick={handleOpenNetwork} />
+            <NavItem icon={<Radio size={15} />} label="Workspace settings" onClick={handleOpenNetwork} />
           </div>
 
           {/* Favorites (pinned notes) */}
@@ -172,6 +163,7 @@ export function Navigation() {
                   key={f.id}
                   icon={<Star size={14} fill="var(--color-accent)" color="var(--color-accent)" />}
                   label={f.title}
+                  active={openTabs.find((t) => t.id === activeTabId)?.noteId === f.id}
                   onClick={() => openTab(f.id, f.title, f.type)}
                   trailing={<RowAction title="Remove from Favorites" onClick={() => toggleFavorite(f)} icon={<X size={12} />} />}
                 />
@@ -187,6 +179,7 @@ export function Navigation() {
                   key={r.id}
                   icon={<FileText size={15} />}
                   label={r.title}
+                  active={openTabs.find((t) => t.id === activeTabId)?.noteId === r.id}
                   onClick={() => openTab(r.id, r.title, r.type)}
                 />
               ))}
@@ -280,38 +273,23 @@ export function Navigation() {
   );
 }
 
-/** A primary sidebar row: quiet at rest, gentle tint on hover (Notion-style).
- *  Rendered as a div so optional trailing actions can be real buttons without
- *  nesting <button> elements. */
-function NavItem({
-  icon,
-  label,
-  onClick,
-  trailing,
-}: {
+/** Primary action and trailing actions are sibling buttons for keyboard access. */
+function NavItem({ icon, label, onClick, trailing, active = false }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   trailing?: React.ReactNode;
+  active?: boolean;
 }) {
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onClick();
-        }
-      }}
-      className="interactive focus-ring group flex items-center gap-2.5"
-      style={{ height: 32, padding: "0 8px", color: "var(--text-secondary)", fontSize: "var(--text-base)" }}
-    >
-      <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}>
-        {icon}
-      </span>
-      <span className="flex-1 text-left truncate">{label}</span>
+    <div data-active={active} className="workspace-nav-row group flex items-center"
+      style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)", fontSize: "var(--text-base)", paddingRight: trailing ? 6 : 0 }}>
+      <button type="button" onClick={onClick} aria-current={active ? "page" : undefined}
+        className="interactive focus-ring flex flex-1 min-w-0 items-center gap-2.5 text-left"
+        style={{ minHeight: "var(--workspace-control-height)", padding: "0 10px" }}>
+        <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}>{icon}</span>
+        <span className="flex-1 truncate">{label}</span>
+      </button>
       {trailing}
     </div>
   );
@@ -356,7 +334,8 @@ function RowAction({ icon, title, onClick }: { icon: React.ReactNode; title: str
         onClick();
       }}
       title={title}
-      className="interactive flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+      aria-label={title}
+      className="workspace-row-action interactive flex items-center justify-center transition-opacity"
       style={{ width: 22, height: 22, color: "var(--text-muted)" }}
     >
       {icon}
@@ -391,8 +370,8 @@ function NavSection({
             padding: "0 6px",
             fontSize: "var(--text-xs)",
             fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
+            textTransform: "none",
+            letterSpacing: "0.01em",
             color: "var(--text-muted)",
           }}
         >

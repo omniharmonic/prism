@@ -4,6 +4,9 @@ import "./styles/tokens.css";
 import "./styles/glass.css";
 import "./styles/typography.css";
 import "./styles/collab.css";
+import "./styles/workspace.css";
+
+export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
 // App shell
 export { default as App, type InitialTab } from "./App";
