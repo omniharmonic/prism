@@ -69,6 +69,30 @@ export interface CalendarCreateParams {
   notify?: boolean;
 }
 export type RsvpResponse = "accepted" | "declined" | "tentative";
+/** Edit a Google-synced event. Omitted fields are left as they are. */
+export interface CalendarUpdateParams {
+  eventId: string;
+  title?: string;
+  /** RFC 3339 with offset; send start and end together. */
+  start?: string;
+  end?: string;
+  /** "" clears it. */
+  location?: string;
+  /** "" clears it. */
+  description?: string;
+  /** Replaces the whole guest list. */
+  attendees?: string[];
+  /** Email guests about the change (default true). */
+  notify?: boolean;
+  /** ONLY for a recurring SERIES id: change every occurrence (the UI's explicit
+   *  "ALL occurrences" confirmation). An occurrence id is always changed alone. */
+  scope?: "all";
+}
+/** How the server mirrored the change onto the event's meeting note. */
+export interface CalendarNoteReflection {
+  noteId: string | null;
+  outcome: "updated" | "cancelled" | "unchanged" | "no-note" | "conflict" | "failed" | "deferred";
+}
 
 type Opts = { idempotencyKey?: string };
 
@@ -80,6 +104,9 @@ export interface LiveActionsClient {
   emailMarkRead(t: EmailTarget, read: boolean): Promise<{ read: boolean }>;
   calendarRsvp(eventId: string, response: RsvpResponse): Promise<{ eventId: string; response: RsvpResponse }>;
   calendarCreate(p: CalendarCreateParams, o?: Opts): Promise<{ eventId: string | null; htmlLink: string | null }>;
+  calendarUpdate(p: CalendarUpdateParams, o?: Opts): Promise<{ eventId: string; htmlLink: string | null; note: CalendarNoteReflection }>;
+  /** Deletes the event in Google Calendar; its meeting note is soft-cancelled (kept). */
+  calendarDelete(eventId: string, o?: Opts & { notify?: boolean; scope?: "all" }): Promise<{ eventId: string; deleted: true; note: CalendarNoteReflection }>;
   matrixSend(roomId: string, body: string, o?: Opts): Promise<{ roomId: string; eventId: string }>;
   matrixReact(roomId: string, eventId: string, key: string): Promise<{ roomId: string; eventId: string }>;
   /** Cache scope (e.g. the active vault) for query keys. */
@@ -133,6 +160,9 @@ export function createHttpLiveActionsClient(opts: HttpLiveActionsOptions): LiveA
     emailMarkRead: (t, read) => call("POST", "/email/mark-read", { ...t, read }, newKey()),
     calendarRsvp: (eventId, response) => call("POST", "/calendar/rsvp", { eventId, response }, newKey()),
     calendarCreate: (p, o = {}) => call("POST", "/calendar/create", p, o.idempotencyKey ?? newKey()),
+    calendarUpdate: (p, o = {}) => call("POST", "/calendar/update", p, o.idempotencyKey ?? newKey()),
+    calendarDelete: (eventId, o = {}) =>
+      call("POST", "/calendar/delete", { eventId, ...(o.notify === false ? { notify: false } : {}), ...(o.scope === "all" ? { scope: "all" } : {}) }, o.idempotencyKey ?? newKey()),
     matrixSend: (roomId, body, o = {}) => call("POST", "/matrix/send", { roomId, body }, o.idempotencyKey ?? newKey()),
     matrixReact: (roomId, eventId, key) => call("POST", "/matrix/react", { roomId, eventId, key }, newKey()),
     scope: opts.scope,
@@ -161,6 +191,15 @@ export function liveActionErrorText(e: unknown): string {
       return e.sent === "unknown" ? "The service did not confirm — it may have gone through. Check before retrying." : "The service could not be reached. Nothing was sent.";
     case "rsvp_not_applicable":
       return e.detail ?? "There is no invitation to respond to on this event.";
+    case "event_not_found":
+      return e.detail ?? "That event no longer exists in Google Calendar.";
+    case "recurring_series":
+      return e.detail ?? "This is a recurring series: confirm that ALL occurrences should change.";
+    case "unsupported_instance":
+    case "event_mismatch":
+      return e.detail ?? "Prism can't safely change this occurrence — use Google Calendar.";
+    case "not_editable":
+      return e.detail ?? "Google Calendar does not let this account change that event.";
     case "bad_request":
       return e.detail ?? "That request was not valid.";
     default:

@@ -745,6 +745,14 @@ export function setWorkerCursor(vaultId: string, kind: string, cursor: string): 
   setSetting(`cursor:${kind}:${vaultId}`, cursor);
 }
 
+/** Interactive AI routing (parity A, local-ai.ts): raw JSON, validated by the caller. */
+export function getAgentRoutingSetting(): string | null {
+  return getSetting("agent-routing");
+}
+export function setAgentRoutingSetting(json: string): void {
+  setSetting("agent-routing", json);
+}
+
 /**
  * Federation enablement is runtime-mutable so the owner can flip the bridge from
  * the UI (no .env edit / restart). Persisted in `settings`, defaulting to the

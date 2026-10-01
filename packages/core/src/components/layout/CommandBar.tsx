@@ -14,7 +14,7 @@ import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
 import { isDesktop } from "../../lib/platform";
 import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
-import { buildTransformPrompt, hostServiceErrorText } from "../../lib/host/services";
+import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 
@@ -54,7 +54,7 @@ export function CommandBar() {
   const transformNote = useCallback(async (noteId: string, targetType: string): Promise<string> => {
     if (isDesktop) return invoke<string>("agent_transform", { noteId, targetType });
     const note = await vaultClient.getNote(noteId);
-    return host!.agentText(buildTransformPrompt(note, targetType), { noteId, timeoutMs: 10 * 60_000 });
+    return host!.agentText(buildTransformPrompt(note, targetType), { skill: "transform", noteId, timeoutMs: 10 * 60_000 });
   }, [host, vaultClient]);
 
   const { data: searchResults } = useVaultSearch(debouncedQuery);
@@ -219,7 +219,31 @@ export function CommandBar() {
         useNotionDbSyncModal.getState().setOpen(true);
       },
     }] : []),
-    // Global utility (desktop only: it scans every note's content on the host)
+    // Vault-wide resolve on a thin client (server owner): the server job
+    // (/api/admin/wikilinks/resolve) — a dry run first, then a confirmed write.
+    ...(!isDesktop && host ? [{
+      id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
+      icon: <RefreshCw size={15} />,
+      action: async () => {
+        closeCommandBar();
+        await surface(async () => {
+          const dry = await runWikilinkJobToEnd(host, { dryRun: true });
+          if (dry.status !== "done") {
+            alert(`The wikilink scan ${dry.status}${dry.error ? `: ${dry.error}` : ""}.`);
+            return;
+          }
+          const summary = wikilinkJobSummary(dry);
+          if (!dry.resolved) {
+            alert(`${summary}\n\nNothing to add.`);
+            return;
+          }
+          if (!confirm(`${summary}\n\nAdd these ${dry.resolved} links now? (Only links are added; note text is never changed.)`)) return;
+          const real = await runWikilinkJobToEnd(host, { dryRun: false });
+          alert(wikilinkJobSummary(real));
+        });
+      },
+    }] : []),
+    // Global utility (desktop: its Tauri command scans every note on the host)
     ...(isDesktop ? [{
       id: "resolve-all-wikilinks", label: "Resolve All Wikilinks (Vault-wide)", category: "sync" as const,
       icon: <RefreshCw size={15} />,

@@ -28,6 +28,18 @@ Each prism-* turn gets its own Prism personal access token (`pp_…`), minted wh
 Because the PAT is the owner's own actor, Prism's per-note grants, private-note rule and caps still apply to whatever
 the agent does.
 
+## Interactive model routing (parity A)
+
+Settings → AI models (server owner) sets, per interactive skill (`edit`, `chat`, `transform`,
+`generate`), either Claude (`sonnet` / `opus` / `haiku` → the runner's `--model`) or a **local**
+model on the server's LM Studio (`SKILLS_LOCAL_BASE_URL`). It applies only to the read-only
+one-shot dispatch the client's inline AI uses (`POST /api/agent/dispatch {profile:"vault-ro",
+skill}`). A local route is one plain completion (no tools) behind the skills' memory admission
+guard and the shared one-local-run slot; if the guard refuses, the run fails — it never falls
+back to Claude. **Agent chat sessions (any profile above) always run on Claude.** Routes:
+`GET /api/agent/models`, `GET|PUT /api/agent/routing`, `POST /api/agent/routing/test`
+(details in CLAUDE.md, "Interactive model routing").
+
 ## Budgets (server config; shown read-only in the UI)
 
 | Env | Default | Meaning |

@@ -40,7 +40,7 @@ export function InlinePrompt({ noteId, selection, position, onAccept, onReject }
         replacement = await agentApi.edit(noteId, selection, prompt);
       } else {
         const note = await vaultClient.getNote(noteId);
-        replacement = await host.agentText(buildEditPrompt(note, selection, prompt), { noteId, timeoutMs: 3 * 60_000 });
+        replacement = await host.agentText(buildEditPrompt(note, selection, prompt), { skill: "edit", noteId, timeoutMs: 3 * 60_000 });
       }
       setResult(replacement);
     } catch (e) {

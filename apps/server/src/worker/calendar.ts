@@ -774,6 +774,105 @@ function summarize(tag: string, res: CalendarPassResult): string {
   );
 }
 
+// ── live-action reflection (parity A) ────────────────────────────────────────
+
+/** The vault surface `reflectLiveCalendarChange` uses. */
+export interface ReflectVault {
+  listNotes(opts: { tags?: string[]; includeMetadata?: string[] }): Promise<Note[]>;
+  updateNote(id: string, p: { metadata?: Record<string, unknown>; ifUpdatedAt?: string }): Promise<Note>;
+}
+
+export type LiveCalendarChange =
+  /** gog's updated event (preferred), else the fields the owner sent. */
+  | { kind: "update"; event: CalEvent | null; fields: { title?: string; start?: string; end?: string; location?: string; attendees?: string[] } }
+  | { kind: "delete" };
+
+const REFLECT_LOCK_WAIT_MS = 5_000;
+
+export interface ReflectResult {
+  noteId: string | null;
+  /** "deferred" = an ingest pass held the lock longer than the bounded wait. */
+  outcome: "updated" | "cancelled" | "unchanged" | "no-note" | "conflict" | "failed" | "deferred";
+}
+
+/**
+ * Mirror a live-action edit/delete (routes/actions.ts calendar/update|delete)
+ * onto the event's meeting note right away, so the Calendar does not wait for the
+ * next 5-min ingest pass. Uses the INGEST'S conventions exactly, so the next pass
+ * sees nothing to change:
+ *   - update → the metadata `buildMeetingNote` derives from gog's returned event
+ *     (only the keys that differ are written; path and body are never touched —
+ *     the ingest never moves or rewrites an existing note either). If gog's output
+ *     had no event, the owner's own fields are mapped onto title/start/end/date/
+ *     location/attendees;
+ *   - delete → SOFT-CANCEL: `event_status: "cancelled"` (the ingest's reconcile
+ *     leaves an already-cancelled note alone, and the Calendar hides it). Never a
+ *     hard delete — the note may hold the owner's meeting notes.
+ * Found by `metadata.calendarEventId` only (a hand-made note is never matched).
+ * Every write carries `if_updated_at`; a conflict is reported, not retried (the
+ * ingest converges it). Serialized with the ingest passes (same per-vault lock).
+ * Best-effort: never throws.
+ */
+export async function reflectLiveCalendarChange(
+  vault: ReflectVault,
+  vaultId: string,
+  eventId: string,
+  change: LiveCalendarChange,
+  opts: { lockWaitMs?: number } = {},
+): Promise<ReflectResult> {
+  // Bounded wait for a running ingest pass (security review L1): a long pass
+  // must never hold the owner's HTTP response; the next pass converges the note.
+  const deadline = Date.now() + (opts.lockWaitMs ?? REFLECT_LOCK_WAIT_MS);
+  while (locks.has(vaultId)) {
+    const left = deadline - Date.now();
+    if (left <= 0) return { noteId: null, outcome: "deferred" };
+    const prev = locks.get(vaultId)!;
+    await Promise.race([prev.catch(() => {}), new Promise((r) => setTimeout(r, left))]);
+  }
+  // No await between the check above and withLock registering itself.
+  return withLock(vaultId, async (): Promise<ReflectResult> => {
+    let note: Note | undefined;
+    try {
+      const meetings = await vault.listNotes({ tags: ["meeting"] });
+      note = meetings.find((n) => asStr(n.metadata?.calendarEventId) === eventId);
+    } catch {
+      return { noteId: null, outcome: "failed" };
+    }
+    if (!note) return { noteId: null, outcome: "no-note" };
+    const md = note.metadata ?? {};
+    let patch: Record<string, unknown>;
+    if (change.kind === "delete") {
+      if (asStr(md.event_status) === "cancelled") return { noteId: note.id, outcome: "unchanged" };
+      patch = { event_status: "cancelled" };
+    } else {
+      let want: Record<string, unknown>;
+      if (change.event && asStr(change.event.id) === eventId) {
+        want = buildMeetingNote(change.event).metadata;
+      } else {
+        const f = change.fields;
+        want = {};
+        if (f.title !== undefined) want.title = f.title;
+        if (f.start !== undefined) {
+          want.start = f.start;
+          want.date = f.start.slice(0, 10);
+        }
+        if (f.end !== undefined) want.end = f.end;
+        if (f.location !== undefined) want.location = f.location === "" ? null : f.location;
+        if (f.attendees !== undefined) want.attendees = f.attendees;
+      }
+      patch = {};
+      for (const [k, v] of Object.entries(want)) if (!sameJson(md[k], v)) patch[k] = v;
+      if (!Object.keys(patch).length) return { noteId: note.id, outcome: "unchanged" };
+    }
+    try {
+      await vault.updateNote(note.id, { metadata: patch, ...(note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}) });
+      return { noteId: note.id, outcome: change.kind === "delete" ? "cancelled" : "updated" };
+    } catch (e) {
+      return { noteId: note.id, outcome: (e as { status?: number }).status === 409 ? "conflict" : "failed" };
+    }
+  });
+}
+
 let testRunner: GogRunner | null = null;
 /** Tests only: make the route + worker use a fake gog. Never the real CLI in tests. */
 export function setCalendarGogRunnerForTests(run: GogRunner | null): void {

@@ -31,7 +31,8 @@
  *     the same summary text. A misconfigured block is a FAILED dispatch.
  *   - Structured with no local model → the rubric runs agentically on claude
  *     with the desktop's fallback prompt.
- *   - Every finished run (completed/failed; not cancelled) is persisted as an
+ *   - Every finished run (completed/failed, and — a parity-A change — one the
+ *     owner cancelled via POST /api/agent/skills/:name/cancel) is persisted as an
  *     `agent-dispatch` + `agent-output` note at
  *     `vault/agent/dispatches/<date>/<slug>-<id8>` with the desktop's content
  *     and metadata shape (AgentActivity reads it unchanged).
@@ -73,6 +74,7 @@ import {
   startDispatch,
   subscribe,
   getDispatch,
+  cancelDispatch,
   type Dispatch,
   type MemoryProbe,
   type MemorySample,
@@ -115,12 +117,13 @@ export interface LocalStatus {
 export interface LocalModel {
   status(model: string): Promise<LocalStatus>;
   /** One grammar-constrained call → parsed JSON (throws on transport/model error). */
-  structured(system: string, user: string, schemaName: string, schema: unknown, model: string, timeoutMs: number): Promise<unknown>;
+  structured(system: string, user: string, schemaName: string, schema: unknown, model: string, timeoutMs: number, signal?: AbortSignal): Promise<unknown>;
 }
 
 /** A finished run, as persisted in the dispatch note. */
 export interface RunResult {
-  status: "completed" | "failed";
+  /** "cancelled" = stopped by the owner (POST /api/agent/skills/:name/cancel). */
+  status: "completed" | "failed" | "cancelled";
   output: string | null;
   error: string | null;
   /** Epoch ms the run was accepted / finished. */
@@ -130,9 +133,10 @@ export interface RunResult {
 }
 
 /** Hand a prompt to the claude runner (WP0.1). Returns once ACCEPTED (running or
- *  queued); `onFinish` fires once when it ends (not for a cancelled run). Throws
- *  if the runner refuses (e.g. its queue is full). */
-export type ClaudeDispatcher = (req: { skill: string; prompt: string }, onFinish: (id: string, r: RunResult) => void) => { id: string };
+ *  queued); `onFinish` fires once when it ends (a cancelled run reports status
+ *  "cancelled"). `cancel` kills it through the run queue. Throws if the runner
+ *  refuses (e.g. its queue is full). */
+export type ClaudeDispatcher = (req: { skill: string; prompt: string }, onFinish: (id: string, r: RunResult) => void) => { id: string; cancel?: () => boolean };
 
 export interface SkillsSettings {
   enabled: boolean;
@@ -352,8 +356,18 @@ export class LocalUnavailableError extends Error {
   }
 }
 
+/** Thrown when the owner cancels a run (the in-flight model request is aborted).
+ *  Never a classification failure: the note in flight is left untagged. */
+export class SkillCancelledError extends Error {
+  constructor(msg = "cancelled by the owner") {
+    super(msg);
+    this.name = "SkillCancelledError";
+  }
+}
+
 /** Classify one note with a truncated retry. Returns the label, or a failure
- *  reason. LocalUnavailableError propagates (the run aborts; nothing is flagged). */
+ *  reason. LocalUnavailableError / SkillCancelledError propagate (the run stops;
+ *  nothing is flagged). */
 async function classifyOne(
   local: LocalModel,
   rubric: string,
@@ -361,15 +375,18 @@ async function classifyOne(
   model: string,
   note: Note,
   today: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; label: string } | { ok: false; reason: string }> {
   const caps = [MAX_NOTE_CHARS, RETRY_NOTE_CHARS];
   for (let i = 0; i < caps.length; i++) {
     const user = buildNotePrompt(note, today, caps[i]!);
     let json: unknown;
     try {
-      json = await local.structured(rubric, user, "classification", cfg.schema, model, PER_NOTE_TIMEOUT_MS);
+      if (signal?.aborted) throw new SkillCancelledError();
+      json = await local.structured(rubric, user, "classification", cfg.schema, model, PER_NOTE_TIMEOUT_MS, signal);
     } catch (e) {
-      if (e instanceof LocalUnavailableError) throw e;
+      if (e instanceof LocalUnavailableError || e instanceof SkillCancelledError) throw e;
+      if (signal?.aborted) throw new SkillCancelledError();
       if (i + 1 === caps.length) return { ok: false, reason: (e as Error).message };
       continue; // retry truncated
     }
@@ -390,6 +407,9 @@ export interface StructuredRunOptions {
   deadline?: number;
   /** Re-checked between notes; a reason stops the run early. */
   pressure?: () => string | null;
+  /** The owner's cancel: checked before every note AND aborts the in-flight
+   *  model request. A cancelled run says so in its summary. */
+  signal?: AbortSignal;
 }
 
 /** Run a structured skill end to end → the desktop's summary text. */
@@ -427,6 +447,10 @@ export async function runStructured(
   let processed = 0;
   let stopped: string | null = null;
   for (const note of todo) {
+    if (opts.signal?.aborted) {
+      stopped = "cancelled by the owner";
+      break;
+    }
     if (processed > 0) {
       if (opts.deadline !== undefined && Date.now() > opts.deadline) {
         stopped = "run deadline reached";
@@ -441,7 +465,15 @@ export async function runStructured(
     processed++;
     let label = shortcutLabel(note, cfg);
     if (label === null) {
-      const r = await classifyOne(local, rubric, cfg, model, note, opts.today);
+      let r: Awaited<ReturnType<typeof classifyOne>>;
+      try {
+        r = await classifyOne(local, rubric, cfg, model, note, opts.today, opts.signal);
+      } catch (e) {
+        if (!(e instanceof SkillCancelledError)) throw e;
+        processed--; // the in-flight note was not classified (and is not flagged)
+        stopped = "cancelled by the owner";
+        break;
+      }
       if (!r.ok) {
         try {
           await vault.addTags(note.id, [REVIEW_TAG]);
@@ -514,7 +546,7 @@ export function dispatchNote(id: string, skill: string, r: RunResult): {
   const startedAt = new Date(r.startedAt).toISOString();
   const completedAt = new Date(r.completedAt).toISOString();
   const slug = skill.replaceAll(" ", "-").toLowerCase();
-  const statusWord = r.status === "completed" ? "Completed" : "Failed";
+  const statusWord = r.status === "completed" ? "Completed" : r.status === "cancelled" ? "Cancelled" : "Failed";
   let content = `# Agent: ${skill}\n\n`;
   content += `**Status:** ${statusWord}\n`;
   content += `**Started:** ${startedAt}\n`;
@@ -554,8 +586,26 @@ export interface PassResult {
 /** Last refusal reason per skill — log on change only (no spam). */
 const lastRefusal = new Map<string, string>();
 const pinnedWarned = new Set<string>();
-/** One local-model run at a time, process-wide. */
-let localBusy = false;
+/**
+ * One local-model run at a time, process-wide — shared with interactive local
+ * AI (local-ai.ts), so a skill run and an inline edit never load/infer on LM
+ * Studio together (security review M1). Acquire is a synchronous test-and-set
+ * that returns an OWNERSHIP TOKEN; only the holder of that token can release the
+ * slot. Callers acquire AFTER their (async) admission check, never before it,
+ * and treat a failed acquire as "busy, try later".
+ */
+export type LocalSlotToken = symbol;
+let localOwner: LocalSlotToken | null = null;
+export function tryAcquireLocalModel(): LocalSlotToken | null {
+  if (localOwner !== null) return null;
+  localOwner = Symbol("local-model-run");
+  return localOwner;
+}
+/** Release the slot — a no-op unless `token` is the current holder's. */
+export function releaseLocalModel(token: LocalSlotToken | null): void {
+  if (token !== null && localOwner === token) localOwner = null;
+}
+export const localModelBusy = (): boolean => localOwner !== null;
 /** Pending async writes (claude-run dispatch notes) — awaited by tests. */
 const pendingWrites = new Set<Promise<unknown>>();
 
@@ -572,8 +622,67 @@ export async function settleSkillWrites(): Promise<void> {
 export function _resetSkillsState(): void {
   lastRefusal.clear();
   pinnedWarned.clear();
-  localBusy = false;
+  localOwner = null;
   pendingWrites.clear();
+  runningSkills.clear();
+}
+
+// ── in-flight runs (parity A: the owner can see and cancel them) ─────────────
+
+interface RunningSkill {
+  skill: string;
+  kind: "local" | "claude";
+  /** The dispatch id (= the dispatch note's id suffix); for claude also the runner's id. */
+  id: string;
+  startedAt: number;
+  model: string | null;
+  /** Local runs: aborts the loop between notes AND the in-flight LM Studio request. */
+  abort: AbortController | null;
+  /** Claude runs: kills the process through the run queue. */
+  cancel: (() => boolean) | null;
+  cancelRequested: boolean;
+}
+
+/** In-flight server skill runs by RUN id (L7: a skill may have several claude
+ *  runs in flight — e.g. "run now" queued while one is still running). */
+const runningSkills = new Map<string, RunningSkill>();
+
+export interface RunningSkillInfo {
+  skill: string;
+  kind: "local" | "claude";
+  id: string;
+  startedAt: string;
+  model: string | null;
+  cancelRequested: boolean;
+}
+
+/** What is running right now (GET /api/agent/skills/running). */
+export function listRunningSkills(): RunningSkillInfo[] {
+  return [...runningSkills.values()]
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map((r) => ({ skill: r.skill, kind: r.kind, id: r.id, startedAt: new Date(r.startedAt).toISOString(), model: r.model, cancelRequested: r.cancelRequested }));
+}
+
+/**
+ * Cancel a running skill (POST /api/agent/skills/:skillName/cancel). A local
+ * structured run stops before its next note and its in-flight LM Studio request
+ * is aborted (that note stays untagged); a claude run is killed through the run
+ * queue (SIGTERM, SIGKILL after the grace). Either way the run is persisted as a
+ * `cancelled` dispatch note. lastRun stays as written at acceptance, so the
+ * skill is NOT immediately due again.
+ */
+export function cancelSkillRun(skill: string): "cancelled" | "not_running" | "not_cancellable" {
+  const runs = [...runningSkills.values()].filter((r) => r.skill === skill);
+  if (!runs.length) return "not_running";
+  let any = false;
+  for (const r of runs) {
+    if (!r.abort && !r.cancel) continue; // no handle (L7): reported, never pretended
+    r.cancelRequested = true;
+    r.abort?.abort();
+    r.cancel?.();
+    any = true;
+  }
+  return any ? "cancelled" : "not_cancellable";
 }
 
 /** Merge `patch` into a skill note's metadata with optimistic concurrency: one
@@ -671,16 +780,21 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
       }
 
       const verdict = await admitLocal(deps, route.model);
-      if (!verdict.ok) {
-        res.refused.push({ skill: skillName, reason: verdict.reason! });
-        if (lastRefusal.get(skillName) !== verdict.reason) {
-          lastRefusal.set(skillName, verdict.reason!);
-          deps.log(`[skills] '${skillName}' deferred: ${verdict.reason} (stays due; retried next tick)`);
+      // Acquire the slot AFTER the async admission (M1): someone else may have
+      // taken it while we awaited LM Studio / the memory probe → defer.
+      const slot = verdict.ok ? tryAcquireLocalModel() : null;
+      if (!verdict.ok || !slot) {
+        const reason = verdict.ok ? "another local-model run is in progress" : verdict.reason!;
+        res.refused.push({ skill: skillName, reason });
+        if (lastRefusal.get(skillName) !== reason) {
+          lastRefusal.set(skillName, reason);
+          deps.log(`[skills] '${skillName}' deferred: ${reason} (stays due; retried next tick)`);
         }
         continue;
       }
 
-      localBusy = true;
+      const abort = new AbortController();
+      runningSkills.set(id, { skill: skillName, kind: "local", id, startedAt: Date.now(), model: route.model, abort, cancel: null, cancelRequested: false });
       try {
         await markRun();
         const start = Date.now();
@@ -693,15 +807,18 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
               const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.runFreeMinPct ?? deps.settings.freeMinPct, deps.settings.swapMinFreeMb, 4);
               return v.ok ? null : v.reason;
             },
+            signal: abort.signal,
           });
-          r = finished("completed", summary, null, start);
+          r = finished(abort.signal.aborted ? "cancelled" : "completed", summary, null, start);
         } catch (e) {
-          r = finished("failed", null, (e as Error).message, start);
+          r = abort.signal.aborted ? finished("cancelled", null, "cancelled by the owner", start) : finished("failed", null, (e as Error).message, start);
         }
+        runningSkills.delete(id);
         await persist(deps, id, skillName, r, onOutcome);
         res.finished.push({ skill: skillName, status: r.status });
       } finally {
-        localBusy = false;
+        runningSkills.delete(id);
+        releaseLocalModel(slot);
       }
       continue;
     }
@@ -710,9 +827,15 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
     // skills with no local model get the desktop's fallback prompt).
     const claudePrompt = mode === "structured" ? structuredFallbackPrompt(prompt) : prompt;
     try {
-      deps.claude({ skill: skillName, prompt: claudePrompt }, (id, r) => {
+      let ended = false;
+      const h = deps.claude({ skill: skillName, prompt: claudePrompt }, (id, r) => {
+        ended = true;
+        runningSkills.delete(id);
         track(persist(deps, id, skillName, r, onOutcome));
       });
+      if (!ended) {
+        runningSkills.set(h.id, { skill: skillName, kind: "claude", id: h.id, startedAt: Date.now(), model: null, abort: null, cancel: h.cancel ?? null, cancelRequested: false });
+      }
       await markRun();
     } catch (e) {
       const reason = `claude runner refused: ${(e as Error).message}`;
@@ -739,8 +862,9 @@ function safeProbe(p: MemoryProbe): MemorySample | null {
   }
 }
 
-async function admitLocal(deps: SkillsDeps, model: string): Promise<{ ok: boolean; reason: string | null }> {
-  if (localBusy) return { ok: false, reason: "another local-model run is in progress" };
+export async function admitLocal(deps: Pick<SkillsDeps, "local" | "memoryProbe" | "settings">, model: string): Promise<{ ok: boolean; reason: string | null }> {
+  // Advisory early-out only; the authoritative check is tryAcquireLocalModel().
+  if (localModelBusy()) return { ok: false, reason: "another local-model run is in progress" };
   let status: LocalStatus;
   try {
     status = await deps.local.status(model);
@@ -776,7 +900,7 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
         return { reachable: false, loaded: null, error: (e as Error).message };
       }
     },
-    async structured(system, user, schemaName, schema, model, timeoutMs) {
+    async structured(system, user, schemaName, schema, model, timeoutMs, signal) {
       const body = {
         model,
         messages: [
@@ -792,10 +916,11 @@ export function lmStudioClient(baseUrl: string, fetchImpl: FetchLike = (u, i) =>
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
         });
       } catch (e) {
         const err = e as Error;
+        if (signal?.aborted) throw new SkillCancelledError();
         if (err.name === "TimeoutError" || err.name === "AbortError") {
           throw new Error(`local AI request timed out after ${Math.round(timeoutMs / 1000)}s`);
         }
@@ -828,14 +953,15 @@ export const runnerDispatcher: ClaudeDispatcher = (req, onFinish) => {
     if (done || !(x.status === "done" || x.status === "error" || x.status === "cancelled")) return;
     done = true;
     unsub();
-    if (x.status === "cancelled") return; // the desktop never persisted cancelled runs
+    // A cancelled run IS persisted now (parity A: the owner's Stop is recorded as
+    // a `cancelled` dispatch note, with whatever output it produced).
     const start = x.startedAt;
     const end = x.endedAt ?? Date.now();
     const out = x.output.trim();
     onFinish(x.id, {
-      status: x.status === "done" ? "completed" : "failed",
-      output: x.status === "done" ? out : null,
-      error: x.status === "error" ? out || x.error || "failed" : null,
+      status: x.status === "done" ? "completed" : x.status === "cancelled" ? "cancelled" : "failed",
+      output: x.status === "done" || (x.status === "cancelled" && out) ? out : null,
+      error: x.status === "error" ? out || x.error || "failed" : x.status === "cancelled" ? "cancelled by the owner" : null,
       startedAt: start,
       completedAt: end,
       durationSecs: Math.floor((end - (x.runStartedAt ?? start)) / 1000),
@@ -845,7 +971,7 @@ export const runnerDispatcher: ClaudeDispatcher = (req, onFinish) => {
     if (ev.type === "status") finish(ev.dispatch);
   });
   finish(getDispatch(d.id) ?? d); // a spawn failure can end it before we subscribed
-  return { id: d.id };
+  return { id: d.id, cancel: () => cancelDispatch(d.id) };
 };
 
 export function settingsFromConfig(): SkillsSettings {

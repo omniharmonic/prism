@@ -7,7 +7,7 @@ app:
 | Family | Routes (`POST /api/actions/…`) | Transport |
 |---|---|---|
 | Email | `email/send`, `email/reply`, `email/archive`, `email/mark-read` | Proton Mail Bridge on loopback: SMTP (send/reply), IMAP (archive/flags) |
-| Calendar | `calendar/rsvp`, `calendar/create` | the `gog` CLI (Google Calendar) |
+| Calendar | `calendar/rsvp`, `calendar/create`, `calendar/update`, `calendar/delete` | the `gog` CLI (Google Calendar) |
 | Matrix | `matrix/send`, `matrix/react` | the stored Matrix access token |
 
 `GET /api/actions` reports `{email, calendar, matrix}` → `{enabled, configured}`
@@ -111,8 +111,8 @@ account itself as the trust boundary.
 ## Idempotency
 
 Send the `Idempotency-Key: <fresh UUID per user action>` header. A body field is
-**not** accepted (CSRF, above). It is **required** for `email/send`, `email/reply`, `calendar/create` and
-`matrix/send`, and optional for the naturally idempotent ones.
+**not** accepted (CSRF, above). It is **required** for `email/send`, `email/reply`, `calendar/create`,
+`calendar/update`, `calendar/delete` and `matrix/send`, and optional for the naturally idempotent ones.
 
 - Same key + same request → the first outcome is replayed with
   `Idempotent-Replayed: true`. Nothing is sent again.
@@ -205,7 +205,63 @@ Times must be RFC 3339 with an offset, end after start, and the span at most 31
 days. A create runs with at most 50 attendees. `notify: false` →
 `--send-updates=none`.
 
-`calendar/rsvp` classifies gog's pre-send refusals ("event has no attendees", "cannot respond to your own event (you are the organizer)", not-a-guest) as `409 rsvp_not_applicable` with `sent: false`; the idempotency key is released. Unrecognised gog failures stay `502 upstream_failed`, `sent: "unknown"`.
+`calendar/rsvp` classifies gog's pre-send refusals (from its stderr only, see "Edit and delete" below) ("event has no attendees", "cannot respond to your own event (you are the organizer)", not-a-guest) as `409 rsvp_not_applicable` with `sent: false`; the idempotency key is released. Unrecognised gog failures stay `502 upstream_failed`, `sent: "unknown"`.
+
+### Edit and delete (parity A)
+
+```
+update: gog calendar update primary <eventId> [--summary=…] [--from=<RFC3339> --to=<RFC3339>]
+        [--location=…] [--description=…] [--attendees=a,b] --send-updates=all|none
+        --account=<a> --json --no-input
+delete: gog calendar delete primary <eventId> --send-updates=all|none --force
+        --account=<a> --json --no-input
+```
+
+- `calendar/update {eventId, title?, start?, end?, location?, description?, attendees?, notify?}`:
+  at least one field; `start` and `end` together (same RFC 3339 / 31-day rules as create);
+  `location` / `description` = `""` clears them; `attendees` **replaces** the guest list (≤ 50
+  plain addresses); `notify: false` → `--send-updates=none` (default `all`).
+- `calendar/delete {eventId, notify?}`: `--force` because gog otherwise asks for confirmation,
+  which `--no-input` turns into a failure.
+- **Recurring events.** gog defaults to `--scope=all` (the whole series), so both actions first
+  read the event (`gog calendar event primary <id> --account=… --json --no-input`) and always
+  pass an explicit scope:
+  - one **occurrence** (`recurringEventId` set) → `--scope=single
+    --original-start=<originalStartTime.dateTime>`. The start must be strict RFC 3339 and agree
+    with an `_YYYYMMDDTHHMMSSZ` id suffix. All-day occurrences → `409 unsupported_instance`; an
+    id that looks like an occurrence but Google reports as standalone → `409 event_mismatch`;
+  - a **series** (`recurrence` set) → `409 recurring_series` (`sent: false`, key released)
+    unless the body carries `scope: "all"`, which the UI sends only from its separate
+    "Delete ALL occurrences" / "Apply to ALL occurrences" button → `--scope=all`;
+  - a plain event → `--scope=all` (that one event). `scope: "all"` on anything but a series is
+    a 400. A failed pre-read is `502`, `sent: false`.
+- **Classification reads gog's stderr only.** Node's execFile error message starts with
+  `Command failed: <argv>` — the owner's title or description — so it is never inspected. A
+  killed / signalled / timed-out run is always `sent: "unknown"`; a missing binary is recognised
+  only by `err.code === "ENOENT"`. This applies to rsvp and create as well. Errors and audit
+  rows hold the exit code + scrubbed stderr, never argv.
+- Both require an `Idempotency-Key`, are refused for agent origin, use the calendar rate bucket
+  and are audited as `calendar.update` (target: event id, the NAMES of the changed fields,
+  `attendeesHash`, notify — never the title or an address) / `calendar.delete`.
+- **Nothing-changed refusals** (`classifyCalendarWriteRefusal`): Google 404 / 410 / "not found" →
+  `404 event_not_found`; 403 / "writer access" / not the organizer → `409 not_editable`; gog's
+  own flag validation → `409 rejected`. All carry `sent: false` and release the key. Anything
+  else is `502 upstream_failed`, `sent: "unknown"`, key kept.
+- **The meeting note is updated right away** (`reflectLiveCalendarChange`, under the calendar
+  ingest's per-vault lock) instead of waiting for the next 5-minute pass. Update: the metadata
+  the ingest would derive from gog's returned event (`buildMeetingNote`), only the keys that
+  differ, `if_updated_at`, path and body untouched (fallback when gog returns no event: the
+  owner's own title/start/end/location/attendees). Delete: **soft-cancel**
+  (`event_status: "cancelled"`), never a hard delete — the note may hold meeting notes; the
+  reconcile skips cancelled notes and the Calendar hides them. The result is reported in the
+  response's `note: {noteId, outcome}` (`updated | cancelled | unchanged | no-note | conflict |
+  failed`) and never fails the action (Google already changed).
+- UI: `CalendarDashboard` shows Edit / Delete on Google-synced events (they carry an
+  `htmlLink`). Edit sends only the fields the owner changed (an untouched all-day event is never
+  turned into a timed one; an empty attendees box keeps the guest list) with an "email guests"
+  checkbox; Delete is a two-step inline confirm ("Delete this occurrence") with "email guests a
+  cancellation". A `recurring_series` answer reveals a distinct "Delete ALL occurrences" /
+  "Apply to ALL occurrences" button. The form shows date and time in the browser's zone.
 
 **Gotcha:** real gog reads its OAuth token from the macOS login keychain. That
 works under pm2, which runs in the GUI session, but **not** from a plain ssh or
@@ -219,7 +275,7 @@ Every attempt past the owner gate writes one `action_audit` row (SQLite, `db.ts`
 | column | |
 |---|---|
 | `ts`, `actor_email`, `via`, `origin` | who, and how they authenticated |
-| `action` | `email.send`, `email.reply`, `email.archive`, `email.mark-read`, `calendar.rsvp`, `calendar.create`, `matrix.send`, `matrix.react` |
+| `action` | `email.send`, `email.reply`, `email.archive`, `email.mark-read`, `calendar.rsvp`, `calendar.create`, `calendar.update`, `calendar.delete`, `matrix.send`, `matrix.react` |
 | `vault_id` | the primary vault (whose credentials every action uses) |
 | `target` | JSON with **ids and hashes only**: note id, room id, event ids, `recipients` count + `recipientsHash`, `messageIdHash`, `inReplyToHash`, `attendeesHash`, size |
 | `idempotency_key` | |
@@ -236,7 +292,7 @@ The audit never holds a message body, a subject or a plain address. Read it at
 |---|---|---|
 | email send + reply | 30 / hour | `ACTIONS_EMAIL_SEND_PER_HOUR` |
 | email archive + mark-read | 120 / 10 min | — |
-| calendar rsvp + create | 30 / 10 min | `ACTIONS_CALENDAR_PER_10MIN` |
+| calendar rsvp + create + update + delete | 30 / 10 min | `ACTIONS_CALENDAR_PER_10MIN` |
 | matrix send | 60 / 10 min | `ACTIONS_MATRIX_SEND_PER_10MIN` |
 | matrix react | 120 / 10 min | — |
 
@@ -254,7 +310,7 @@ The audit never holds a message body, a subject or a plain address. Read it at
   wired to `notify` (unchecked → `--send-updates=none`).
 - **Wired:** Matrix send in `MessageRenderer` and `VaultMessagesDashboard`; email
   reply, compose-send, **Archive** and **Mark read/unread** in `EmailRenderer`;
-  calendar **create** and **RSVP** (Google-synced events with guests) in
+  calendar **create**, **RSVP** (Google-synced events with guests), **edit** and **delete** (Google-synced events) in
   `CalendarDashboard`. Each falls back to the existing Tauri path when there is
   no live client.
 - **Desktop:** unchanged. It has no provider and keeps its Tauri commands, which
@@ -283,6 +339,6 @@ Rollback: set the flag(s) back to `false` and restart.
 - MCP tools for these actions (agent-initiated outward actions need an
   explicit per-action confirmation design).
 - Desktop on the server path; Gmail on the server (the account has none).
-- Calendar update/delete and Matrix read-receipts / room listing on the server.
+- Matrix read-receipts / room listing on the server. (Calendar update/delete shipped in parity A.)
 - Reflecting `archive` on the vault note (the ingest never reflects moves; the
   note keeps its INBOX labels).

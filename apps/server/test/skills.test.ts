@@ -14,6 +14,11 @@ import { VaultConflictError, type Note } from "../src/parachute";
 import { config } from "../src/config";
 import {
   _resetSkillsState,
+  cancelSkillRun,
+  tryAcquireLocalModel,
+  releaseLocalModel,
+  listRunningSkills,
+  SkillCancelledError,
   buildNotePrompt,
   dependencyRanToday,
   dispatchNote,
@@ -111,13 +116,13 @@ class FakeLocal implements LocalModel {
   status_: LocalStatus = { reachable: true, loaded: true };
   calls: Array<{ system: string; user: string; schemaName: string; model: string }> = [];
   /** Per-call responder: return JSON or throw. */
-  respond: (user: string, attempt: number) => unknown = () => ({ importance: "informational" });
+  respond: (user: string, attempt: number, signal?: AbortSignal) => unknown = () => ({ importance: "informational" });
   async status(): Promise<LocalStatus> {
     return this.status_;
   }
-  async structured(system: string, user: string, schemaName: string, _schema: unknown, model: string): Promise<unknown> {
+  async structured(system: string, user: string, schemaName: string, _schema: unknown, model: string, _timeoutMs?: number, signal?: AbortSignal): Promise<unknown> {
     this.calls.push({ system, user, schemaName, model });
-    return this.respond(user, this.calls.length);
+    return this.respond(user, this.calls.length, signal);
   }
 }
 
@@ -725,6 +730,195 @@ test("runnerDispatcher: hands the prompt to the WP0.1 runner and reports the fin
     _resetDispatches();
     rmSync(cwdRoot, { recursive: true, force: true });
   }
+});
+
+// ── parity A: see + cancel running server skills ─────────────────────────────
+
+test("cancel a LOCAL structured run: in-flight request aborted, that note NOT flagged, run persisted as cancelled", async () => {
+  const { deps, vault, local } = makeDeps();
+  seedCandidates(vault);
+  classifierSkill(vault, { runner: "server" });
+  let seenRunning: ReturnType<typeof listRunningSkills> = [];
+  // Call 1 classifies; call 2 is "in flight" when the owner presses Stop: the
+  // abort reaches the request (as lmStudioClient turns it into SkillCancelledError).
+  local.respond = (_user, attempt, signal) => {
+    if (attempt === 1) return { importance: "alpha" };
+    seenRunning = listRunningSkills();
+    assert.equal(cancelSkillRun("test-classify"), "cancelled");
+    assert.equal(signal?.aborted, true, "the in-flight request's signal fired");
+    throw new SkillCancelledError();
+  };
+  const res = await runSkillsOnce(deps);
+  assert.deepEqual(res.finished, [{ skill: "test-classify", status: "cancelled" }]);
+  assert.equal(seenRunning.length, 1);
+  assert.equal(seenRunning[0]!.skill, "test-classify");
+  assert.equal(seenRunning[0]!.kind, "local");
+  assert.equal(seenRunning[0]!.model, SETTINGS.localModel);
+  assert.deepEqual(listRunningSkills(), [], "unregistered once it ends");
+  assert.equal([...vault.notes.values()].filter((n) => (n.tags ?? []).includes(REVIEW_TAG)).length, 1, "only the pre-existing flag — the aborted note is untouched");
+  const [d] = vault.dispatchNotes();
+  assert.equal(d!.metadata!.status, "cancelled");
+  assert.match(d!.content, /\*\*Status:\*\* Cancelled/);
+  assert.match(d!.content, /Stopped early after 1 of 4 \(cancelled by the owner\)/);
+  assert.equal(cancelSkillRun("test-classify"), "not_running");
+});
+
+test("cancel a local run between notes: the loop stops before the next note", async () => {
+  const vault = new FakeVault();
+  const local = new FakeLocal();
+  seedCandidates(vault);
+  const cfg = parseStructuredConfig(classifierSkill(vault).metadata!);
+  const ac = new AbortController();
+  local.respond = () => {
+    ac.abort();
+    return { importance: "alpha" };
+  };
+  const summary = await runStructured(vault, local, "R", cfg, "m", { today: "d", signal: ac.signal });
+  assert.equal(local.calls.length, 1);
+  assert.match(summary, /1 of 4 note\(s\) classified[\s\S]*Stopped early after 1 of 4 \(cancelled by the owner\)/);
+});
+
+test("cancel a CLAUDE skill run: the run queue's cancel is called and the dispatch note says cancelled", async () => {
+  const { deps, vault } = makeDeps();
+  vault.add({ id: "ag", tags: ["agent-skill"], content: "Do it.", metadata: { skillName: "agentic-one", enabled: true, runner: "server" } });
+  let finish: ((r: RunResult) => void) | null = null;
+  let cancelled = 0;
+  deps.claude = (_req, onFinish) => {
+    finish = (r) => onFinish("cafe0000-1111", r);
+    return {
+      id: "cafe0000-1111",
+      cancel: () => {
+        cancelled++;
+        finish!({ status: "cancelled", output: null, error: "cancelled by the owner", startedAt: NOW.getTime(), completedAt: NOW.getTime() + 1000, durationSecs: 1 });
+        return true;
+      },
+    };
+  };
+  await runSkillsOnce(deps);
+  assert.deepEqual(listRunningSkills().map((r) => [r.skill, r.kind, r.id]), [["agentic-one", "claude", "cafe0000-1111"]]);
+  assert.equal(cancelSkillRun("agentic-one"), "cancelled");
+  assert.equal(cancelled, 1);
+  await settleSkillWrites();
+  assert.deepEqual(listRunningSkills(), []);
+  const [d] = vault.dispatchNotes();
+  assert.equal(d!.metadata!.status, "cancelled");
+  assert.equal(d!.path, "vault/agent/dispatches/2026-03-10/agentic-one-cafe0000");
+});
+
+test("runnerDispatcher: a cancelled run is reported (status cancelled) through its cancel handle", async () => {
+  const cwdRoot = mkdtempSync(join(tmpdir(), "prism-skills-test-"));
+  _resetDispatches();
+  let exit: ((c: number | null) => void) | null = null;
+  configureAgentRunner({
+    spawner: () => ({
+      stdout: { on: () => {} },
+      stderr: { on: () => {} },
+      on: (ev, cb) => {
+        if (ev === "exit") exit = cb as (c: number | null) => void;
+      },
+      kill: () => exit?.(null),
+    }),
+    cwd: () => ensureAgentCwd(join(cwdRoot, "agent-cwd")),
+    claudePath: () => "/opt/fake/claude",
+    memoryProbe: () => ({ swapUsedPct: 1, freePct: 90 }),
+  });
+  try {
+    const results: RunResult[] = [];
+    const h = runnerDispatcher({ skill: "syn", prompt: "x" }, (_id, r) => results.push(r));
+    assert.equal(h.cancel!(), true);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.status, "cancelled");
+    assert.equal(results[0]!.error, "cancelled by the owner");
+  } finally {
+    _resetDispatches();
+    rmSync(cwdRoot, { recursive: true, force: true });
+  }
+});
+
+test("lmStudioClient.structured: an aborted signal is a cancel (SkillCancelledError), not a timeout/failure", async () => {
+  const f = async (_url: string, init?: RequestInit) =>
+    new Promise<Response>((_res, rej) => {
+      init!.signal!.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" })));
+    });
+  const ac = new AbortController();
+  const p = lmStudioClient("http://lm.test/v1", f).structured("S", "U", "n", {}, "m", 60_000, ac.signal);
+  ac.abort();
+  await assert.rejects(p, (e: Error) => e instanceof SkillCancelledError);
+});
+
+test("L7: several claude runs of one skill are all tracked + cancelled; a run without a cancel handle → not_cancellable", async () => {
+  const { deps, vault } = makeDeps();
+  vault.add({ id: "ag", tags: ["agent-skill"], content: "Do it.", metadata: { skillName: "multi", enabled: true, runner: "server" } });
+  let n = 0;
+  const cancelled: string[] = [];
+  deps.claude = (_req, onFinish) => {
+    const id = `run${++n}000-0000`;
+    return {
+      id,
+      cancel: () => {
+        cancelled.push(id);
+        onFinish(id, { status: "cancelled", output: null, error: "cancelled by the owner", startedAt: 0, completedAt: 1, durationSecs: 0 });
+        return true;
+      },
+    };
+  };
+  await runSkillsOnce(deps);
+  vault.notes.get("ag")!.metadata!.lastRun = ""; // "run now" while the first is still running
+  await runSkillsOnce(deps);
+  assert.deepEqual(listRunningSkills().map((r) => r.id), ["run1000-0000", "run2000-0000"]);
+  assert.equal(cancelSkillRun("multi"), "cancelled");
+  assert.deepEqual(cancelled, ["run1000-0000", "run2000-0000"]);
+  assert.deepEqual(listRunningSkills(), []);
+  // A dispatcher that gives no cancel handle: reported honestly.
+  deps.claude = () => ({ id: "nocancel-0000" });
+  vault.notes.get("ag")!.metadata!.lastRun = "";
+  await runSkillsOnce(deps);
+  assert.equal(cancelSkillRun("multi"), "not_cancellable");
+  assert.equal(listRunningSkills()[0]!.cancelRequested, false);
+});
+
+// ── M1: the one-local-run slot is exclusive and owned ────────────────────────
+
+test("M1: the local slot is a token: a second acquire fails, only the holder's token releases it", () => {
+  const a = tryAcquireLocalModel();
+  assert.ok(a);
+  assert.equal(tryAcquireLocalModel(), null);
+  releaseLocalModel(Symbol("not-the-holder"));
+  releaseLocalModel(null);
+  assert.equal(tryAcquireLocalModel(), null, "a foreign token never frees the slot");
+  releaseLocalModel(a);
+  const b = tryAcquireLocalModel();
+  assert.ok(b);
+  releaseLocalModel(a);
+  assert.equal(tryAcquireLocalModel(), null, "a stale token cannot free the NEW holder's slot");
+  releaseLocalModel(b);
+});
+
+test("M1 race: the slot is taken while the skill awaits admission → the skill defers (no run, no lastRun) and never frees the other holder's slot", async () => {
+  const { deps, vault, local } = makeDeps();
+  seedCandidates(vault);
+  classifierSkill(vault, { runner: "server" });
+  let resolveStatus: (s: LocalStatus) => void = () => {};
+  local.status = () => new Promise<LocalStatus>((r) => (resolveStatus = r));
+  const pass = runSkillsOnce(deps);
+  await new Promise((r) => setTimeout(r, 5)); // the pass is now inside admitLocal
+  const other = tryAcquireLocalModel(); // e.g. an interactive inline edit
+  assert.ok(other);
+  resolveStatus({ reachable: true, loaded: true });
+  const res = await pass;
+  assert.deepEqual(res.refused.map((r) => r.reason), ["another local-model run is in progress"]);
+  assert.deepEqual(res.dispatched, []);
+  assert.equal(local.calls.length, 0, "no model call");
+  assert.equal(vault.notes.get("skill-classify")!.metadata!.lastRun, null, "stays due");
+  assert.equal(tryAcquireLocalModel(), null, "the other holder still owns the slot");
+  releaseLocalModel(other);
+  // Next tick, with the slot free, the skill runs and releases its own slot after.
+  local.status = async () => ({ reachable: true, loaded: true });
+  const res2 = await runSkillsOnce(deps);
+  assert.deepEqual(res2.dispatched, ["test-classify"]);
+  const after = tryAcquireLocalModel();
+  assert.ok(after, "released after the run");
+  releaseLocalModel(after);
 });
 
 afterEach(async () => {

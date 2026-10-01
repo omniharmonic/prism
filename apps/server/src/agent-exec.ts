@@ -130,7 +130,14 @@ export interface ArgOptions {
   /** Which server the allowlist is for (default "vault"). "prism" = the server's
    *  own /mcp (prism-* profiles); entries must then be that server's tools. */
   server?: McpServerKind;
+  /** `--model` alias (default "sonnet"). Allowlisted: never free text. */
+  model?: ClaudeModel;
 }
+
+/** The claude model aliases a routing choice may name. */
+export const CLAUDE_MODELS = ["sonnet", "opus", "haiku"] as const;
+export type ClaudeModel = (typeof CLAUDE_MODELS)[number];
+export const isClaudeModel = (m: unknown): m is ClaudeModel => typeof m === "string" && (CLAUDE_MODELS as readonly string[]).includes(m);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VAULT_TOOL_RE = new RegExp(`^${VAULT_MCP_ALLOW}(__[a-z][a-z0-9-]*)?$`);
@@ -147,6 +154,7 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
     throw new Error(`allowedTools may only name the ${server} MCP server or its tools`);
   }
   if (opts.session && !UUID_RE.test(opts.session.id)) throw new Error("session id must be a uuid");
+  if (opts.model !== undefined && !isClaudeModel(opts.model)) throw new Error("model must be one of sonnet, opus, haiku");
   const persistence = opts.session
     ? opts.session.resume
       ? ["--resume", opts.session.id]
@@ -155,7 +163,7 @@ export function buildClaudeArgs(prompt: string, mcpConfigPath: string, opts: Arg
   const args = [
     "-p",
     "--model",
-    "sonnet",
+    opts.model ?? "sonnet",
     "--output-format",
     fmt,
     ...(fmt === "stream-json" ? ["--verbose"] : []),
@@ -802,6 +810,8 @@ export interface DispatchOptions {
   /** Server-internal: restrict the run to these vault tools (the `skill` profile).
    *  Default: the whole vault MCP server (legacy one-shot behaviour). */
   allowedTools?: readonly string[];
+  /** Server-internal: the `--model` alias (interactive routing, parity A). */
+  model?: ClaudeModel;
 }
 
 const dispatches = new Map<string, Dispatch>();
@@ -877,7 +887,7 @@ export function startDispatch(
     h = enqueueRun({
       entry,
       spawner: opts.spawner,
-      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd, allowedTools: opts.allowedTools }),
+      args: (mcpPath) => buildClaudeArgs(prompt, mcpPath, { outputFormat: opts.outputFormat, maxBudgetUsd: cfg.maxBudgetUsd, allowedTools: opts.allowedTools, model: opts.model }),
       onQueued: (reason) => {
         if (d.status !== "queued") return;
         d.queuedReason = reason;
@@ -907,6 +917,69 @@ export function startDispatch(
     throw e;
   }
   handles.set(d.id, h);
+  return d;
+}
+
+/**
+ * A one-shot dispatch that is NOT a claude process (parity A: an interactive
+ * skill routed to the local model). It lives in the same registry, so
+ * `GET /dispatches/:id`, the SSE stream and `/cancel` work unchanged; `run`
+ * gets an AbortSignal that `cancelDispatch` fires. It never takes a claude run
+ * slot (the local path has its own admission guard).
+ */
+export function startExternalDispatch(
+  entry: VaultEntry,
+  req: { skill?: string | null; noteId?: string | null },
+  run: (signal: AbortSignal) => Promise<string>,
+): Dispatch {
+  const now = Date.now();
+  const d: Dispatch = {
+    id: randomUUID(),
+    vaultId: entry.id,
+    skill: req.skill ?? null,
+    noteId: req.noteId ?? null,
+    status: "running",
+    queuedReason: null,
+    output: "",
+    error: null,
+    startedAt: now,
+    runStartedAt: now,
+    endedAt: null,
+  };
+  const ac = new AbortController();
+  let state: "running" | "ended" = "running";
+  dispatches.set(d.id, d);
+  handles.set(d.id, {
+    id: d.id,
+    state: () => state,
+    cancel: () => {
+      if (state === "ended") return false;
+      ac.abort();
+      return true;
+    },
+  });
+  const gen = generation;
+  void (async () => {
+    let out = "";
+    let err: string | null = null;
+    try {
+      out = await run(ac.signal);
+    } catch (e) {
+      err = (e as Error)?.message ?? String(e);
+    }
+    state = "ended";
+    if (gen !== generation || d.status !== "running") return; // cancelled (already marked) or reset
+    if (err === null) {
+      d.output = out.slice(0, MAX_OUTPUT);
+      if (d.output) fire(d.id, { type: "output", text: d.output });
+      d.status = "done";
+    } else {
+      d.status = "error";
+      d.error = err;
+    }
+    d.endedAt = Date.now();
+    emitStatus(d);
+  })();
   return d;
 }
 
