@@ -313,7 +313,24 @@ api.get("/notes", async (c) => {
     const limit = Number(c.req.query("limit") ?? 50000);
     return c.json(await vault.listNotes({ includeContent, limit }));
   }
-  return c.json(await visibleNotes(actor, includeContent));
+  const limit = Number(c.req.query("limit") ?? 50000);
+  const offset = Number(c.req.query("offset") ?? 0);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50000 || !Number.isSafeInteger(offset) || offset < 0) {
+    return c.json({ error: "bad_request", detail: "limit must be 1–50000 and offset must be a nonnegative integer" }, 400);
+  }
+  // Filter permission-visible rows BEFORE paging: hidden notes must neither
+  // consume page positions nor cause unrelated note types to enter an Inbox.
+  const tags = c.req.queries("tag") ?? [];
+  let notes = await visibleNotes(actor, includeContent);
+  if (tags.length) notes = notes.filter((note) => tags.every((tag) => note.tags?.includes(tag)));
+  const sort = c.req.query("sort");
+  if (sort === "asc" || sort === "desc") {
+    const direction = sort === "asc" ? 1 : -1;
+    const byUpdated = c.req.query("order_by") === "updated_at";
+    const timestamp = (note: Note) => byUpdated ? note.updatedAt ?? note.createdAt : note.createdAt;
+    notes.sort((a, b) => direction * (timestamp(a).localeCompare(timestamp(b)) || a.id.localeCompare(b.id)));
+  }
+  return c.json(notes.slice(offset, offset + limit));
 });
 
 api.get("/notes/:id", async (c) => {
