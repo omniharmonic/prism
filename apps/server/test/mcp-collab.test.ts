@@ -465,6 +465,23 @@ test("suggest_edit: deletion + insertion marks attributed to the actor, captured
   refused(await call(sg, "prism_suggest_edit", { id: "d1", find: "absent", replace: "x" }), "invalid_request");
 });
 
+test("suggest_edit refuses repeated quotes and overlapping pending changes without changing the document", { timeout: 20000 }, async () => {
+  fv.put({ id: "d1", tags: ["garden"], content: "<p>beta beta</p><p>beta</p>", updatedAt: T0 });
+  const hd = await human("d1");
+  const sg = await connectMcp(SUGGESTER);
+  const before = yDocToHtml(hd);
+  refused(await call(sg, "prism_suggest_edit", { id: "d1", find: "beta", replace: "wrong passage" }), "conflict");
+  await settle();
+  assert.equal(yDocToHtml(hd), before);
+  must(await call(sg, "prism_suggest_edit", { id: "d1", find: "beta beta", replace: "one passage" }));
+  await settle();
+  const suggested = yDocToHtml(hd);
+  refused(await call(sg, "prism_suggest_edit", { id: "d1", find: "beta beta", replace: "overwrite earlier proposal" }), "conflict");
+  refused(await call(sg, "prism_suggest_edit", { id: "d1", find: "one passage", replace: "edit pending insertion" }), "conflict");
+  await settle();
+  assert.equal(yDocToHtml(hd), suggested);
+});
+
 // ── permissions ─────────────────────────────────────────────────────────────
 
 test("permission matrix: viewer / commenter / suggester / editor; private note invisible", { timeout: 20000 }, async () => {
