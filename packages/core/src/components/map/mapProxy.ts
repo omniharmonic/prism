@@ -51,7 +51,20 @@ export function protocolUrlToPath(url: string): string | null {
   if (!url.startsWith(pre)) return null;
   const rest = url.slice(pre.length);
   if (!/^(style|ofm)\/[A-Za-z0-9_@.,%\- /]{1,400}$/.test(rest) || rest.includes("..") || rest.includes("//")) return null;
-  return LOCAL_PREFIX + rest;
+  // Encoded dot / slash / backslash would be decoded by URL normalisation into a
+  // traversal ("%2e%2e/%2e%2e/acl/x" → /api/acl/x) — with the bearer attached.
+  if (/%(2e|2f|5c)/i.test(rest)) return null;
+  const path = LOCAL_PREFIX + rest;
+  // Belt and braces: what the browser will ACTUALLY request must still be under
+  // one of the two map roots after normalisation.
+  let normalized: string;
+  try {
+    normalized = new URL(path, "https://prism.invalid").pathname;
+  } catch {
+    return null;
+  }
+  if (!normalized.startsWith(`${LOCAL_PREFIX}style/`) && !normalized.startsWith(`${LOCAL_PREFIX}ofm/`)) return null;
+  return path;
 }
 
 /** Rewrite the server's `/api/map/…` URLs inside a style to `prismmap://…`. */

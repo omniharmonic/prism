@@ -126,7 +126,23 @@ assert.equal(proxiedStyle("https://tiles.openfreemap.org/styles/evil"), "https:/
 assert.equal(proxiedStyle("https://other.example/style.json"), "https://other.example/style.json", "custom styles are not proxied");
 assert.equal(protocolUrlToPath("prismmap://ofm/planet/x/1/2/3.pbf"), "/api/map/ofm/planet/x/1/2/3.pbf");
 assert.equal(protocolUrlToPath("prismmap://ofm/fonts/Noto Sans Regular/0-255.pbf"), "/api/map/ofm/fonts/Noto Sans Regular/0-255.pbf");
-for (const bad of ["prismmap://ofm/../acl/x", "prismmap://other/x", "https://tiles.openfreemap.org/x", "prismmap://ofm/a?x=1", "prismmap://ofm//x"]) assert.equal(protocolUrlToPath(bad), null, bad);
+for (const bad of [
+  "prismmap://ofm/../acl/x",
+  "prismmap://other/x",
+  "https://tiles.openfreemap.org/x",
+  "prismmap://ofm/a?x=1",
+  "prismmap://ofm//x",
+  // encoded traversal: URL normalisation would turn these into /api/acl/workers (with the bearer)
+  "prismmap://ofm/%2e%2e/%2e%2e/acl/workers",
+  "prismmap://ofm/%2E%2E/%2E%2E/acl/workers",
+  "prismmap://style/%2e%2e/%2e%2e/notes",
+  "prismmap://ofm/.%2e/x",
+  "prismmap://ofm/a%2fb",
+  "prismmap://ofm/a%5Cb",
+]) {
+  assert.equal(protocolUrlToPath(bad), null, bad);
+}
+assert.equal(protocolUrlToPath("prismmap://ofm/fonts/Noto%20Sans/0-255.pbf"), "/api/map/ofm/fonts/Noto%20Sans/0-255.pbf", "ordinary escapes still fine");
 assert.deepEqual(localizeStyle({ a: "/api/map/ofm/x", b: ["/api/notes", 1] }), { a: "prismmap://ofm/x", b: ["/api/notes", 1] });
 const handler = createMapProtocolHandler(mapFetch);
 const style = (await handler({ url: "prismmap://style/liberty", type: "json" }, new AbortController())).data as Record<string, unknown>;

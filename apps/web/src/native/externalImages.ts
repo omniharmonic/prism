@@ -48,6 +48,8 @@ interface Entry {
   url: string | null; // blob URL, or null = failed
   bytes: number;
   failedAt?: number;
+  /** Transient (server busy / rate-limited): retry much sooner. */
+  transient?: boolean;
 }
 
 export interface ImageCacheOptions {
@@ -89,7 +91,7 @@ export class ImageBlobCache {
   get(src: string): Promise<string | null> {
     const e = this.entries.get(src);
     if (e) {
-      if (e.url === null && this.o.now() - (e.failedAt ?? 0) > this.o.failureTtlMs) {
+      if (e.url === null && this.o.now() - (e.failedAt ?? 0) > (e.transient ? Math.min(5_000, this.o.failureTtlMs) : this.o.failureTtlMs)) {
         this.entries.delete(src);
       } else {
         this.entries.delete(src); // touch
@@ -100,9 +102,11 @@ export class ImageBlobCache {
     const p = this.pending.get(src);
     if (p) return p;
     const run = this.slot().then(async (release) => {
+      let transient = false;
       try {
         const res = await this.fetchImpl(proxyPath(src));
         const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+        if (res.status === 503 || res.status === 429) transient = true;
         if (!res.ok || !RASTER.test(type)) throw new Error(`proxy ${res.status}`);
         const buf = await res.arrayBuffer();
         // Re-type the blob ourselves: never trust a type we didn't allow.
@@ -110,7 +114,7 @@ export class ImageBlobCache {
         this.store(src, { url, bytes: buf.byteLength });
         return url;
       } catch {
-        this.store(src, { url: null, bytes: 0, failedAt: this.o.now() });
+        this.store(src, { url: null, bytes: 0, failedAt: this.o.now(), transient });
         return null;
       } finally {
         release();

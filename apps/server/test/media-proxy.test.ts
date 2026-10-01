@@ -17,11 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
 import { issueDeviceToken } from "../src/auth/device";
-import { isPublicAddress, parseIPv6, parseTarget, resolvePublic, setResolver, GuardError } from "../src/media/netguard";
+import { isPublicAddress, parseIPv6, parseTarget, resolvePublic, setResolver, clearDnsNegativeCache, createCaresResolver, GuardError, type CaresResolverLike } from "../src/media/netguard";
 import { guardedFetch, nodeTransport, cacheSeconds, FetchError, type Transport, type TransportRequest } from "../src/media/fetcher";
 import { sniffRaster } from "../src/media/sniff";
 import { DiskCache } from "../src/media/cache";
-import { configureMedia, classifyMapPath, rewriteOfmUrls, mediaCache } from "../src/routes/media";
+import { configureMedia, classifyMapPath, rewriteOfmUrls, mediaCache, assertStyleLocal } from "../src/routes/media";
+import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { resetDb, makeSession, sessionCookie, makeCapability } from "./helpers";
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c80000000049454e44ae426082", "hex");
@@ -82,6 +84,7 @@ beforeEach(() => {
   if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
   cacheDir = mkdtempSync(join(tmpdir(), "prism-media-test-"));
   configureMedia({ cacheDir, transport: cannedTransport, timeoutMs: 2000 });
+  clearDnsNegativeCache();
 });
 
 // ---------------------------------------------------------------------------
@@ -353,7 +356,7 @@ test("media proxy: SVG, HTML, mislabelled HTML and oversize are refused; nothing
 test("media proxy: SSRF refusals surface as 400 with a reason; the server's own hosts are never proxied", async () => {
   dns.set("evil.example.com", ["127.0.0.1"]);
   const cases: Array<[string, string]> = [
-    ["https://evil.example.com/a.png", "private_address"],
+    ["https://evil.example.com/a.png", "refused"], // post-parse refusals are ONE generic code (no DNS oracle)
     ["https://169.254.169.254/latest/meta-data/", "ip_literal"],
     ["http://img.example.com/a.png", "bad_scheme"],
     ["https://vault.test/vault/default/api/notes", "forbidden_host"], // PARACHUTE_URL host (.env.test)
@@ -395,6 +398,7 @@ test("DiskCache: LRU eviction under the byte cap, expiry, survives a reload from
     assert.ok(await c.get("a".repeat(64)));
     assert.equal(c.stats().bytes, 200);
     const reloaded = new DiskCache(dir, 250, () => now);
+    await reloaded.ready();
     assert.equal(reloaded.stats().entries, 2);
     now += 61_000;
     assert.equal(await reloaded.get("a".repeat(64)), null, "expired");
@@ -509,7 +513,7 @@ test("map: signed-in only; host allowlist is enforced even on redirects", async 
   routes.set("tiles.openfreemap.org/planet/20260927_080001_pt/1/1/1.pbf", { status: 302, headers: { location: "https://cdn.example.com/x.pbf" } });
   const r = await app.request("/api/map/ofm/planet/20260927_080001_pt/1/1/1.pbf", { headers: asUser() });
   assert.equal(r.status, 400);
-  assert.equal(((await r.json()) as { reason: string }).reason, "host_not_allowed");
+  assert.equal(((await r.json()) as { reason: string }).reason, "refused");
   assert.ok(!dials.some((d) => d.host === "cdn.example.com"));
 });
 
@@ -518,4 +522,255 @@ test("rewriteOfmUrls only touches strings that START with the OpenFreeMap origin
     a: ["/api/map/ofm/x", "see https://tiles.openfreemap.org/x"],
     b: 1,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Security review fixes (M1, L1, L3, L4, L5, L6, env-proxy pin)
+// ---------------------------------------------------------------------------
+
+/** Canned transport + a host whose connection hangs until the request deadline aborts it. */
+const hangingTransport: Transport = (req) => {
+  if (req.host !== "slow.example.com") return cannedTransport(req);
+  dials.push(req);
+  return new Promise((_resolve, reject) => {
+    req.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
+};
+
+test("M1: a user saturating their in-flight cap blocks neither another user nor the map pool", async () => {
+  dns.set("slow.example.com", [PUBLIC_V4]);
+  configureMedia({ cacheDir, transport: hangingTransport, timeoutMs: 800, mediaPerUser: 2, mediaInflight: 4, mapPerUser: 2, mapInflight: 4, queueWaitMs: 50 });
+  routes.set("img.example.com/ok.png", { headers: { "content-type": "image/png" }, body: PNG });
+  routes.set("tiles.openfreemap.org/planet/20260927_080001_pt/1/1/1.pbf", { body: Buffer.from([1]) });
+  const attacker = asUser("attacker@test.local");
+  // Two slow-drip URLs fill the attacker's two media slots...
+  const parked = [1, 2].map((i) => app.request(proxyUrl(`https://slow.example.com/${i}.png`), { headers: attacker }));
+  await new Promise((r) => setTimeout(r, 20));
+  // ...a third unique URL waits queueWaitMs for the attacker's OWN slot, then 503.
+  const third = await app.request(proxyUrl("https://slow.example.com/3.png"), { headers: attacker });
+  assert.equal(third.status, 503);
+  // Another user is unaffected (their own per-user slots; the global pool still has room).
+  assert.equal((await app.request(proxyUrl("https://img.example.com/ok.png"), { headers: asUser("victim@test.local") })).status, 200);
+  // The map is a SEPARATE pool: even the attacker's own basemap still loads.
+  assert.equal((await app.request("/api/map/ofm/planet/20260927_080001_pt/1/1/1.pbf", { headers: attacker })).status, 200);
+  // The parked requests end at the deadline (504), freeing the slots.
+  for (const p of parked) assert.equal((await p).status, 504);
+});
+
+test("M1: the global pool still caps total upstream fetches across users", async () => {
+  dns.set("slow.example.com", [PUBLIC_V4]);
+  configureMedia({ cacheDir, transport: hangingTransport, timeoutMs: 600, mediaPerUser: 3, mediaInflight: 2, queueWaitMs: 50 });
+  const parked = ["u1@test.local", "u2@test.local"].map((u, i) => app.request(proxyUrl(`https://slow.example.com/g${i}.png`), { headers: asUser(u) }));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await app.request(proxyUrl("https://slow.example.com/g9.png"), { headers: asUser("u3@test.local") })).status, 503);
+  for (const p of parked) assert.equal((await p).status, 504);
+});
+
+test("M1: a hung resolver is cut off at the deadline (signal aborted) and the host is negative-cached", async () => {
+  let calls = 0;
+  let sawAbort = false;
+  setResolver((_host, signal) => {
+    calls++;
+    return new Promise((_r, reject) => {
+      signal.addEventListener("abort", () => {
+        sawAbort = true;
+        reject(new Error("cancelled"));
+      });
+    });
+  });
+  try {
+    configureMedia({ cacheDir, transport: cannedTransport, timeoutMs: 300 });
+    const started = Date.now();
+    const r = await app.request(proxyUrl("https://blackhole.example.com/a.png"), { headers: asUser() });
+    assert.equal(r.status, 400);
+    assert.deepEqual(await r.json(), { error: "refused", reason: "refused" });
+    assert.ok(Date.now() - started < 1500, "bounded by the request deadline");
+    assert.equal(sawAbort, true, "the resolver was told to cancel");
+    // Within the negative TTL: no new DNS query for that host, even for another URL.
+    assert.equal((await app.request(proxyUrl("https://blackhole.example.com/other.png"), { headers: asUser() })).status, 400);
+    assert.equal(calls, 1);
+    assert.equal(dials.length, 0);
+  } finally {
+    setResolver(async (h) => {
+      dnsCalls.push(h);
+      const a = dns.get(h);
+      if (!a) throw new Error("NXDOMAIN");
+      return a;
+    });
+  }
+});
+
+test("M1: the production resolver is c-ares (dns.promises.Resolver) with timeout/tries, cancelled on abort — never getaddrinfo", async () => {
+  const made: Array<{ opts: { timeout: number; tries: number }; cancelled: boolean }> = [];
+  class FakeResolver implements CaresResolverLike {
+    rec: { opts: { timeout: number; tries: number }; cancelled: boolean };
+    constructor(opts: { timeout: number; tries: number }) {
+      this.rec = { opts, cancelled: false };
+      made.push(this.rec);
+    }
+    resolve4(): Promise<string[]> {
+      return new Promise(() => {}); // hangs forever
+    }
+    resolve6(): Promise<string[]> {
+      return new Promise(() => {});
+    }
+    cancel(): void {
+      this.rec.cancelled = true;
+    }
+  }
+  const resolve = createCaresResolver(FakeResolver);
+  const ctl = new AbortController();
+  const p = resolve("hang.example.com", ctl.signal);
+  setTimeout(() => ctl.abort(), 20);
+  await assert.rejects(p, /aborted/);
+  assert.equal(made.length, 1);
+  assert.equal(made[0]!.cancelled, true);
+  assert.ok(made[0]!.opts.timeout > 0 && made[0]!.opts.timeout <= 5000 && made[0]!.opts.tries >= 1);
+  // A normal answer merges A + AAAA.
+  class OkResolver extends FakeResolver {
+    override resolve4() {
+      return Promise.resolve([PUBLIC_V4]);
+    }
+    override resolve6() {
+      return Promise.reject(Object.assign(new Error("ENODATA"), { code: "ENODATA" }));
+    }
+  }
+  assert.deepEqual(await createCaresResolver(OkResolver)("ok.example.com", new AbortController().signal), [PUBLIC_V4]);
+  // And the module never calls getaddrinfo (dns.lookup) — it would block libuv's threadpool.
+  const src = readFileSync(new URL("../src/media/netguard.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, ""); // code only, not comments
+  assert.ok(/import \{ Resolver as DnsResolver \} from "node:dns\/promises"/.test(src));
+  assert.ok(!/\blookup\b\s*\(/.test(src) && !/import\s*\{[^}]*\blookup\b/.test(src), "no dns.lookup");
+});
+
+test("negative cache: an upstream failure is remembered per URL (no re-fetch within the TTL)", async () => {
+  routes.set("img.example.com/gone.png", { status: 404, body: Buffer.from("x") });
+  const h = asUser();
+  assert.equal((await app.request(proxyUrl("https://img.example.com/gone.png"), { headers: h })).status, 404);
+  assert.equal((await app.request(proxyUrl("https://img.example.com/gone.png"), { headers: h })).status, 404);
+  assert.equal(dials.length, 1);
+});
+
+test("L3: DNS failure, private answer and a refused redirect hop all look the same to the client", async () => {
+  dns.set("internal-only.example.com", ["10.1.1.1"]);
+  dns.set("redir.example.com", [PUBLIC_V4]);
+  routes.set("redir.example.com/r", { status: 302, headers: { location: "https://127.0.0.1/x" } });
+  const bodies = [];
+  for (const u of ["https://nxdomain.example.com/a.png", "https://internal-only.example.com/a.png", "https://redir.example.com/r"]) {
+    const r = await app.request(proxyUrl(u), { headers: asUser() });
+    bodies.push([r.status, await r.json()]);
+  }
+  for (const b of bodies) assert.deepEqual(b, [400, { error: "refused", reason: "refused" }]);
+});
+
+test("L4: trailing dots stripped; empty and hyphen-edged labels refused", () => {
+  assert.equal(parseTarget("https://img.example.com../a.png").host, "img.example.com");
+  for (const u of ["https://a..example.com/x", "https://-a.example.com/x", "https://a-.example.com/x", "https://img.-example.com/x", `https://${"a".repeat(64)}.example.com/x`]) {
+    assert.throws(() => parseTarget(u), (e: unknown) => e instanceof GuardError && e.code === "bad_host", u);
+  }
+});
+
+test("L5: BMP/ICO need valid header fields, not just magic bytes", () => {
+  const bmp = Buffer.alloc(80);
+  bmp.write("BM", 0, "latin1");
+  bmp.writeUInt32LE(80, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  assert.equal(sniffRaster(bmp), "image/bmp");
+  assert.equal(sniffRaster(Buffer.concat([Buffer.from("BM", "latin1"), Buffer.from("<html><script>x</script></html>........")])), null);
+  const ico = Buffer.alloc(6 + 16 + 8);
+  ico.writeUInt16LE(1, 2);
+  ico.writeUInt16LE(1, 4);
+  ico.writeUInt32LE(8, 6 + 8);
+  ico.writeUInt32LE(22, 6 + 12);
+  assert.equal(sniffRaster(ico), "image/x-icon");
+  assert.equal(sniffRaster(Buffer.from([0, 0, 1, 0, 0, 0, 0x3c, 0x68])), null, "zero entries");
+  const badIco = Buffer.from(ico);
+  badIco.writeUInt32LE(9999, 6 + 12);
+  assert.equal(sniffRaster(badIco), null, "image data outside the file");
+});
+
+test("L6: cache load removes stray temp files and orphaned bodies", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prism-media-stray-"));
+  try {
+    const c = new DiskCache(dir, 10_000);
+    await c.put("d".repeat(64), "image/png", Buffer.alloc(10), 60);
+    writeFileSync(join(dir, `${"e".repeat(64)}.bin.tmp-abc123`), "half");
+    writeFileSync(join(dir, `${"f".repeat(64)}.bin`), "orphan");
+    writeFileSync(join(dir, `${"0".repeat(64)}.json`), "{not json");
+    const fresh = new DiskCache(dir, 10_000);
+    await fresh.ready();
+    assert.deepEqual(readdirSync(dir).sort(), [`${"d".repeat(64)}.bin`, `${"d".repeat(64)}.json`]);
+    assert.equal(fresh.stats().entries, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("L1 (server): every rewritten tile/glyph/sprite template must match the path allowlist (fail closed)", async () => {
+  const good = { version: 8, sprite: "/api/map/ofm/sprites/ofm_f384/ofm", glyphs: "/api/map/ofm/fonts/{fontstack}/{range}.pbf", sources: { o: { type: "vector", tiles: ["/api/map/ofm/planet/20260927_080001_pt/{z}/{x}/{y}.pbf"] }, r: { type: "raster", tiles: ["/api/map/ofm/natural_earth/ne2sr/{z}/{x}/{y}.png"] } } };
+  assertStyleLocal(good);
+  const bad: Array<Record<string, unknown>> = [
+    { ...good, sprite: "/api/map/ofm/planet" },
+    { ...good, sprite: "/api/map/ofm/%2e%2e/%2e%2e/acl/workers" },
+    { ...good, glyphs: "/api/map/ofm/fonts/{fontstack}/x.pbf" },
+    { ...good, glyphs: "/api/acl/workers" },
+    { ...good, sources: { o: { type: "vector", tiles: ["/api/map/ofm/%2e%2e/%2e%2e/acl/{z}/{x}/{y}"] } } },
+    { ...good, sources: { o: { type: "vector", tiles: ["/api/map/ofm/planet/20260927_080001_pt/{z}/{x}/{y}.pbf?x={q}"] } } },
+    { ...good, sources: { o: { type: "vector", url: "/api/map/ofm/planet" } } },
+    { ...good, sources: { o: { type: "geojson", data: "https://evil.example.com/x.json" } } },
+  ];
+  for (const s of bad) assert.throws(() => assertStyleLocal(s), /non-allowlisted/, JSON.stringify(s).slice(0, 120));
+  // End to end: an upstream style whose sprite rewrites to a non-sprite path is refused.
+  routes.set("tiles.openfreemap.org/styles/liberty", { body: Buffer.from(JSON.stringify({ ...STYLE, sources: {}, sprite: `${OFM}/planet` })) });
+  assert.equal((await app.request("/api/map/style/liberty", { headers: asUser() })).status, 502);
+});
+
+test("env proxy is bypassed: with NODE_USE_ENV_PROXY + HTTP(S)_PROXY set, the pinned transport still dials the checked IP directly", async () => {
+  const proxyHits: string[] = [];
+  const targetHits: string[] = [];
+  const proxy = http.createServer((req, res) => {
+    proxyHits.push(req.url ?? "");
+    res.writeHead(502).end();
+  });
+  const target = http.createServer((req, res) => {
+    targetHits.push(req.headers.host ?? "");
+    res.writeHead(200, { "content-type": "image/png" }).end(PNG);
+  });
+  await Promise.all([new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r)), new Promise<void>((r) => target.listen(0, "127.0.0.1", r))]);
+  const pPort = (proxy.address() as { port: number }).port;
+  const tPort = (target.address() as { port: number }).port;
+  const fetcher = new URL("../src/media/fetcher.ts", import.meta.url).href;
+  // Child process: the proxy env must be present at startup for Node to honour it.
+  const code = `
+    import http from "node:http";
+    const { nodeTransport } = await import(${JSON.stringify(fetcher)});
+    const ctl = new AbortController();
+    const res = await nodeTransport({ ip: "127.0.0.1", port: ${tPort}, protocol: "http:", host: "img.example.com", path: "/pinned.png", headers: {}, signal: ctl.signal });
+    for await (const _ of res.body) {}
+    // Control: a default-agent request in the same process (goes via the env proxy when Node supports it).
+    await new Promise((resolve) => { const r = http.get("http://127.0.0.1:${tPort}/control", (x) => { x.resume(); x.on("end", resolve); }); r.on("error", resolve); });
+    console.log("status=" + res.status);
+  `;
+  const out = await new Promise<string>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
+      env: { ...process.env, NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${pPort}`, HTTPS_PROXY: `http://127.0.0.1:${pPort}`, http_proxy: `http://127.0.0.1:${pPort}`, https_proxy: `http://127.0.0.1:${pPort}`, NO_PROXY: "", no_proxy: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let o = "";
+    let e = "";
+    child.stdout.on("data", (d) => (o += d));
+    child.stderr.on("data", (d) => (e += d));
+    child.on("error", reject);
+    child.on("close", () => resolve(o + e));
+  });
+  proxy.close();
+  target.close();
+  assert.match(out, /status=200/, out);
+  assert.ok(targetHits.includes(`img.example.com:${tPort}`), "the pinned request reached the target directly");
+  assert.ok(!proxyHits.some((u) => u.includes("/pinned.png")), "the pinned request never went through the env proxy");
+  if (!proxyHits.some((u) => u.includes("/control"))) {
+    console.log("# note: this Node did not route the control request via NODE_USE_ENV_PROXY; the bypass assertion still holds");
+  }
 });

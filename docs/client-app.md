@@ -325,32 +325,71 @@ ever talks to its own server, with the bearer in a header.
     loopback, link-local and the metadata IP, CGNAT, multicast, reserved, documentation,
     benchmarking, `0.0.0.0`, IPv4-mapped/-compatible/NAT64/6to4/Teredo IPv6, ULA, …), the
     whole host is refused.
+    - Resolution uses c-ares (`dns.promises.Resolver`, 2.5 s timeout, 2 tries), never
+      `dns.lookup`. getaddrinfo runs on libuv's 4-thread pool and can't be aborted, so hung
+      lookups would also stall fs reads and async scrypt (login).
+    - The query is `cancel()`ed at the request deadline.
+    - A host that failed or resolved non-public is negative-cached for 60 s.
+    - Host names: trailing dots are stripped; empty labels, labels over 63 characters and
+      labels starting or ending with `-` are refused.
   - **Pinned connection.** It connects to that address, with TLS SNI, certificate check and
     `Host` all set to the name, so there is no rebinding window.
+    - It uses `agent: false`, so `NODE_USE_ENV_PROXY` / `HTTP(S)_PROXY` never route the request
+      through a proxy that would re-resolve the name. A test pins this with the proxy env set
+      in a child process.
   - **Redirects** are followed manually, at most 3, and each hop is re-validated with fresh DNS.
   - **What is sent upstream:** no cookies, no auth and no client headers.
   - **Limits.** One 15 s deadline covers connect, headers and body, so a slow drip times out.
-    There is a 10 MB cap (declared and streamed, and on decompression).
+    There is a 5 MB cap (`MEDIA_PROXY_MAX_BYTES`; declared and streamed, and on
+    decompression).
   - **Content check.** `image/*` (or a generic binary type) and magic bytes must both say
     PNG, JPEG, GIF, WebP, AVIF, BMP or ICO. **SVG is refused.**
   - **Response headers** are rebuilt: the sniffed type, `nosniff`,
     `Content-Security-Policy: default-src 'none'; sandbox`, inline `Content-Disposition`,
     `no-referrer`, CORP `same-origin` and `private, max-age`.
   - **Rate limits and load.** Per user per minute: `MEDIA_PROXY_PER_MINUTE` (240) and
-    `MAP_PROXY_PER_MINUTE` (1500). At most `MEDIA_PROXY_MAX_INFLIGHT` (16) concurrent upstream
-    fetches (503 beyond), and identical in-flight fetches are coalesced.
+    `MAP_PROXY_PER_MINUTE` (1500).
+  - **Concurrency pools.** Upstream concurrency is split into two separate pools, images and
+    the map, so neither can starve the other. Each pool has a global cap and a per-user cap.
+    - Images: `MEDIA_PROXY_MAX_INFLIGHT` (12) global, `MEDIA_PROXY_PER_USER_INFLIGHT` (3)
+      per user.
+    - Map: `MAP_PROXY_MAX_INFLIGHT` (16) global, `MAP_PROXY_PER_USER_INFLIGHT` (4) per user.
+    - A request waits at most `MEDIA_PROXY_QUEUE_WAIT_MS` (5 s) in a bounded queue, then gets
+      503. One user parking slow URLs only fills their own slots.
+    - Identical in-flight fetches are coalesced, and an upstream failure is remembered per
+      URL for 60 s.
+    - Concurrent cache-hit disk reads are bounded (8).
+  - **Errors.** Every refusal after the pre-network URL check (DNS failure, private answer, a
+    bad redirect hop) answers with one generic `{"error":"refused","reason":"refused"}`. That
+    way the response is not an oracle for which internal names exist; the detail is logged on
+    the server only.
   - **Disk cache.** An on-disk LRU at `MEDIA_CACHE_DIR` (default `media-cache/` next to the
     server DB), with `MEDIA_CACHE_MAX_BYTES` (512 MB). It is keyed by a SHA-256 of the URL and
     honours upstream `max-age`: images 5 min–7 d, tiles 1 h–30 d; `no-store` is never
-    persisted.
+    persisted. Its index loads asynchronously, and the first load deletes stray `*.tmp-*`
+    files and orphaned bodies.
   - **Map extras.** The upstream host is pinned to `tiles.openfreemap.org`, including on
     redirects. Paths must match `planet/<build>/<z>/<x>/<y>.pbf`, `natural_earth/ne2sr/…png`,
     `sprites/<a>/<b>[@2x].(json|png)` or `fonts/<stack>/<a>-<b>.pbf`. Only the
-    `liberty` / `positron` / `bright` styles are served. A style that references any other host
-    after rewriting is refused (fail closed).
+    `liberty` / `positron` / `bright` styles are served. After rewriting, every tile, glyph and
+    sprite template in the style must expand to a path the allowlist above would serve.
+    Otherwise the style is refused (fail closed).
+  - **Client side of the map.** `protocolUrlToPath` refuses `..`, `//` and
+    `%2e`/`%2f`/`%5c` (any case). It also requires the URL-normalised path to stay under
+    `/api/map/style/` or `/api/map/ofm/`, so a crafted `prismmap://` URL can never point the
+    bearer at another `/api` route.
   - **Switches.** `MEDIA_PROXY_ENABLED=false` / `MAP_PROXY_ENABLED=false` turn the routes off
     (404). With either off, the client just shows what it did before: no image, or a blank
     basemap.
+- **Privacy (L2).** Image fetches reveal the home server's IP address and the timing of
+  views to the image's host. That applies to every signed-in user, members included, and is
+  how a tracking pixel in a note sees "someone opened this".
+  - Compared with the PWA (where each viewer's own IP and browser go out), the client exposes
+    less per person but more about the server.
+  - Mitigations: the cache (repeat views within `max-age` make no upstream request), no
+    cookies/referrer/client headers forwarded, the fixed User-Agent, and
+    `MEDIA_PROXY_ENABLED=false` to turn image proxying off.
+  - Not done: a fetch-only-from-trusted-authors mode, or an egress proxy/VPN for the server.
 - **PWA:** unchanged. Its own CSP allows `https:` images and connections, so it loads directly.
   Proxying there would only add load to the home server, and the browser already isolates the
   cookie from page script.

@@ -33,7 +33,8 @@ import { requestVia, resolveActor } from "../auth/actor";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { DiskCache } from "../media/cache";
 import { cacheSeconds, FetchError, guardedFetch, type Transport } from "../media/fetcher";
-import { GuardError, type TargetPolicy } from "../media/netguard";
+import { GuardError, parseTarget, type TargetPolicy } from "../media/netguard";
+import { BusyError, KeyedSemaphore, Semaphore } from "../media/limits";
 import { RASTER_EXT, sniffRaster, upstreamTypeAllowed, type RasterType } from "../media/sniff";
 
 // ---------------------------------------------------------------------------
@@ -69,7 +70,14 @@ export interface MediaConfig {
   extraPorts: number[];
   imagesPerMinute: number;
   mapPerMinute: number;
-  maxInflight: number;
+  /** Upstream fetches in flight, images pool: global / per user. */
+  mediaInflight: number;
+  mediaPerUser: number;
+  /** Upstream fetches in flight, map pool: global / per user. */
+  mapInflight: number;
+  mapPerUser: number;
+  /** How long a request may wait for a slot before 503. */
+  queueWaitMs: number;
   cacheDir: string;
   cacheMaxBytes: number;
   transport?: Transport;
@@ -79,7 +87,7 @@ function envConfig(): MediaConfig {
   return {
     mediaEnabled: process.env.MEDIA_PROXY_ENABLED !== "false",
     mapEnabled: process.env.MAP_PROXY_ENABLED !== "false",
-    maxImageBytes: envNum("MEDIA_PROXY_MAX_BYTES", 10 * 1024 * 1024),
+    maxImageBytes: envNum("MEDIA_PROXY_MAX_BYTES", 5 * 1024 * 1024),
     maxMapBytes: 4 * 1024 * 1024,
     timeoutMs: envNum("MEDIA_PROXY_TIMEOUT_MS", 15_000),
     httpHosts: envList("MEDIA_PROXY_HTTP_HOSTS"),
@@ -88,7 +96,11 @@ function envConfig(): MediaConfig {
       .filter((p) => Number.isInteger(p) && p > 0 && p < 65536),
     imagesPerMinute: envNum("MEDIA_PROXY_PER_MINUTE", 240),
     mapPerMinute: envNum("MAP_PROXY_PER_MINUTE", 1500),
-    maxInflight: envNum("MEDIA_PROXY_MAX_INFLIGHT", 16),
+    mediaInflight: envNum("MEDIA_PROXY_MAX_INFLIGHT", 12),
+    mediaPerUser: envNum("MEDIA_PROXY_PER_USER_INFLIGHT", 3),
+    mapInflight: envNum("MAP_PROXY_MAX_INFLIGHT", 16),
+    mapPerUser: envNum("MAP_PROXY_PER_USER_INFLIGHT", 4),
+    queueWaitMs: envNum("MEDIA_PROXY_QUEUE_WAIT_MS", 5_000),
     cacheDir: defaultCacheDir(),
     cacheMaxBytes: envNum("MEDIA_CACHE_MAX_BYTES", 512 * 1024 * 1024),
   };
@@ -102,7 +114,8 @@ export function configureMedia(over: Partial<MediaConfig> | null): void {
   cfg = over ? { ...envConfig(), ...over } : envConfig();
   cache = new DiskCache(cfg.cacheDir, cfg.cacheMaxBytes);
   inflight.clear();
-  active = 0;
+  failures.clear();
+  pools = makePools();
 }
 export const mediaCache = (): DiskCache => cache;
 
@@ -131,9 +144,6 @@ function signedInKey(c: Context): string | null {
   return actor.kind === "user" ? actor.email.toLowerCase() : null;
 }
 
-const inflight = new Map<string, Promise<CachedAsset>>();
-let active = 0;
-
 interface CachedAsset {
   contentType: string;
   body: Buffer;
@@ -141,35 +151,89 @@ interface CachedAsset {
   maxAge: number;
 }
 
-class BusyError extends Error {}
+/**
+ * Upstream concurrency, in two SEPARATE pools (images can never starve the
+ * basemap, nor the reverse), each with a global cap AND a per-user cap — so one
+ * user parking slow-drip / slow-DNS URLs fills only their own few slots.
+ * Waiting is bounded (queue length + `queueWaitMs`); past that → 503 busy.
+ */
+interface Pool {
+  global: Semaphore;
+  perUser: KeyedSemaphore;
+}
+function makePools(): Record<"media" | "map", Pool> {
+  return {
+    media: { global: new Semaphore(cfg.mediaInflight, 64), perUser: new KeyedSemaphore(cfg.mediaPerUser, 32) },
+    map: { global: new Semaphore(cfg.mapInflight, 128), perUser: new KeyedSemaphore(cfg.mapPerUser, 64) },
+  };
+}
+let pools = makePools();
+const inflight = new Map<string, Promise<CachedAsset>>();
 
-/** Cache → coalesced in-flight → bounded upstream fetch. */
-async function cached(namespace: string, url: string, produce: () => Promise<{ asset: CachedAsset; ttl: number }>): Promise<CachedAsset> {
+/** Upstream failures (policy refusals, dead hosts, non-images) are remembered per URL for NEGATIVE_MS. */
+const NEGATIVE_MS = 60_000;
+const failures = new Map<string, { err: unknown; until: number }>();
+function rememberFailure(key: string, err: unknown): void {
+  if (!(err instanceof GuardError || err instanceof FetchError)) return;
+  if (failures.size > 10_000) failures.clear(); // bound memory
+  failures.set(key, { err, until: Date.now() + NEGATIVE_MS });
+}
+
+/** Cache → recent failure → coalesced in-flight → per-user + global slot → bounded upstream fetch. */
+async function cached(pool: "media" | "map", user: string, namespace: string, url: string, produce: () => Promise<{ asset: CachedAsset; ttl: number }>): Promise<CachedAsset> {
   const key = DiskCache.key(namespace, url);
   const hit = await cache.get(key);
   if (hit) {
     return { contentType: hit.meta.contentType, body: hit.body, maxAge: Math.max(0, Math.floor((hit.meta.expiresAt - Date.now()) / 1000)) };
   }
+  const failed = failures.get(key);
+  if (failed) {
+    if (failed.until > Date.now()) throw failed.err;
+    failures.delete(key);
+  }
   const pending = inflight.get(key);
   if (pending) return pending;
-  if (active >= cfg.maxInflight) throw new BusyError();
-  active++;
-  const p = (async () => {
+  const p = pools[pool];
+  const releaseUser = await p.perUser.acquire(user, cfg.queueWaitMs);
+  let releaseGlobal: () => void;
+  try {
+    releaseGlobal = await p.global.acquire(cfg.queueWaitMs);
+  } catch (e) {
+    releaseUser();
+    throw e;
+  }
+  const again = inflight.get(key); // someone started it while we waited
+  if (again) {
+    releaseGlobal();
+    releaseUser();
+    return again;
+  }
+  const run = (async () => {
     try {
       const { asset, ttl } = await produce();
       await cache.put(key, asset.contentType, asset.body, ttl);
       return asset;
+    } catch (e) {
+      rememberFailure(key, e);
+      throw e;
     } finally {
-      active--;
+      releaseGlobal();
+      releaseUser();
       inflight.delete(key);
     }
   })();
-  inflight.set(key, p);
-  return p;
+  inflight.set(key, run);
+  return run;
 }
 
 function errorResponse(c: Context, e: unknown): Response {
-  if (e instanceof GuardError) return c.json({ error: "refused", reason: e.code }, 400);
+  if (e instanceof GuardError) {
+    // ONE generic code for every refusal found after the pre-network URL check
+    // (DNS failure vs. private answer vs. a bad redirect hop): the client must not
+    // learn which internal names exist. The detail stays in the server log.
+    console.warn(`[media] refused: ${e.code}`);
+    return c.json({ error: "refused", reason: "refused" }, 400);
+  }
   if (e instanceof FetchError) {
     const status = e.status === 404 ? 404 : e.status === 413 ? 413 : e.status === 415 ? 415 : e.status === 504 ? 504 : 502;
     return c.json({ error: "upstream", reason: e.code }, status);
@@ -222,8 +286,16 @@ media.get("/proxy", async (c) => {
   if (g instanceof Response) return g;
   const raw = c.req.query("u") ?? "";
   const policy: TargetPolicy = { httpHosts: cfg.httpHosts, extraPorts: cfg.extraPorts, forbiddenHosts: forbiddenHosts() };
+  // Pre-network check of the URL the CLIENT supplied: its reason is safe to echo
+  // (it says nothing about our network). Everything after it is collapsed.
   try {
-    const asset = await cached("img", raw, async () => {
+    parseTarget(raw, policy);
+  } catch (e) {
+    if (e instanceof GuardError) return c.json({ error: "refused", reason: e.code }, 400);
+    throw e;
+  }
+  try {
+    const asset = await cached("media", g.key, "img", raw, async () => {
       const r = await guardedFetch(raw, {
         policy,
         maxBytes: cfg.maxImageBytes,
@@ -289,19 +361,38 @@ export function rewriteOfmUrls<T>(v: T): T {
 
 const isAbsUrl = (s: unknown): boolean => typeof s === "string" && /^[a-z][a-z0-9+.-]*:/i.test(s);
 
-/** After rewriting, sources/sprite/glyphs must hold no absolute URL (fail closed). */
+/**
+ * After rewriting, every asset URL in the style must be a LOCAL template whose
+ * concrete form our own path allowlist would serve (fail closed). This is what
+ * keeps a tampered or surprising upstream style from steering the client's map
+ * protocol anywhere but /api/map/ofm/<allowlisted shape>.
+ */
 export function assertStyleLocal(style: Record<string, unknown>): void {
-  const bad = (s: unknown) => {
-    if (isAbsUrl(s)) throw new FetchError("style_foreign_url", 502, "style references a non-allowlisted host");
+  const refuse = (): never => {
+    throw new FetchError("style_foreign_url", 502, "style references a non-allowlisted URL");
   };
-  bad(style.glyphs);
+  const local = (u: unknown, samples: string[]) => {
+    if (typeof u !== "string" || !u.startsWith(MAP_PREFIX) || isAbsUrl(u)) refuse();
+    const rest = (u as string).slice(MAP_PREFIX.length);
+    for (const sample of samples) {
+      const concrete = rest
+        .replace(/\{z\}/g, "3")
+        .replace(/\{x\}/g, "1")
+        .replace(/\{y\}/g, "2")
+        .replace(/\{fontstack\}/g, "Noto Sans Regular")
+        .replace(/\{range\}/g, "0-255") + sample;
+      if (/[{}]/.test(concrete) || !classifyMapPath(concrete)) refuse();
+    }
+  };
+  if (style.glyphs !== undefined) local(style.glyphs, [""]);
   const sprite = style.sprite;
-  if (Array.isArray(sprite)) sprite.forEach((s) => bad((s as { url?: unknown })?.url));
-  else bad(sprite);
+  const spriteSamples = [".json", ".png", "@2x.json", "@2x.png"];
+  if (Array.isArray(sprite)) sprite.forEach((s) => local((s as { url?: unknown })?.url, spriteSamples));
+  else if (sprite !== undefined) local(sprite, spriteSamples);
   for (const src of Object.values((style.sources ?? {}) as Record<string, Record<string, unknown>>)) {
-    bad(src?.url);
-    for (const t of (src?.tiles as unknown[]) ?? []) bad(t);
-    bad(src?.data);
+    if (src?.url !== undefined) refuse(); // TileJSON is always inlined server-side
+    if (src?.data !== undefined && typeof src.data !== "object") refuse(); // no remote GeoJSON
+    for (const t of (src?.tiles as unknown[]) ?? []) local(t, [""]);
   }
 }
 
@@ -339,7 +430,7 @@ map.get("/style/:id", async (c) => {
   const id = c.req.param("id");
   if (!(MAP_STYLES as readonly string[]).includes(id)) return c.json({ error: "refused", reason: "unknown_style" }, 400);
   try {
-    const asset = await cached("map-style", id, async () => {
+    const asset = await cached("map", g.key, "map-style", id, async () => {
       const s = await fetchOfm(`styles/${id}`, "json");
       const style = JSON.parse(s.body.toString("utf8")) as Record<string, unknown>;
       // Inline each source's TileJSON so the client never resolves a relative
@@ -377,7 +468,7 @@ map.get("/ofm/*", async (c) => {
   const cls = classifyMapPath(rest);
   if (!cls) return c.json({ error: "refused", reason: "path_not_allowed" }, 400);
   try {
-    const asset = await cached("map", cls.upstream, async () => {
+    const asset = await cached("map", g.key, "map", cls.upstream, async () => {
       const r = await fetchOfm(cls.upstream, cls.kind);
       return { asset: { contentType: r.contentType, body: r.body, maxAge: r.ttl }, ttl: r.ttl };
     });

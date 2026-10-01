@@ -55,6 +55,11 @@ export const nodeTransport: Transport = (req) =>
         method: "GET",
         headers: { ...req.headers, Host: hostHeader },
         servername: req.protocol === "https:" ? req.host : undefined, // SNI + cert check against the NAME
+        // agent:false = a fresh, non-pooled Agent built from THESE options. It is
+        // load-bearing for the pin: the global agents are where Node applies
+        // NODE_USE_ENV_PROXY + HTTP(S)_PROXY, and a proxy would re-resolve the
+        // NAME itself (undoing the IP check). Pinned by media-proxy.test.ts
+        // ("env proxy is bypassed").
         agent: false,
         signal: req.signal,
       },
@@ -150,12 +155,11 @@ export async function guardedFetch(rawUrl: string, opts: GuardedFetchOptions): P
     timedOut = true;
     ctl.abort();
   }, opts.timeoutMs);
-  timer.unref?.();
   let current: Target = parseTarget(rawUrl, opts.policy);
   let live: TransportResponse | null = null;
   try {
     for (let hop = 0; ; hop++) {
-      const ip = await resolvePublic(current.host);
+      const ip = await resolvePublic(current.host, ctl.signal);
       if (ctl.signal.aborted) throw new FetchError("timeout", 504, "upstream timed out");
       const res = await transport({
         ip,
@@ -199,6 +203,8 @@ export async function guardedFetch(rawUrl: string, opts: GuardedFetchOptions): P
     }
   } catch (e) {
     live?.destroy();
+    // A refusal (incl. DNS that did not answer before the deadline) stays a refusal.
+    if (e instanceof GuardError) throw e;
     if (timedOut) throw new FetchError("timeout", 504, "upstream timed out");
     if (e instanceof GuardError || e instanceof FetchError) throw e;
     throw new FetchError("upstream_error", 502, "upstream fetch failed");

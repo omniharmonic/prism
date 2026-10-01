@@ -20,7 +20,7 @@
  * Pure apart from the injectable resolver (tests stub it; nothing here touches
  * the network in tests).
  */
-import { lookup } from "node:dns/promises";
+import { Resolver as DnsResolver } from "node:dns/promises";
 import { isIP } from "node:net";
 
 // ---------------------------------------------------------------------------
@@ -213,8 +213,16 @@ export function parseTarget(raw: string, policy: TargetPolicy = {}): Target {
   if (hostRaw.startsWith("[") || isIP(hostRaw) !== 0 || /^[\d.]+$/.test(hostRaw)) {
     throw new GuardError("ip_literal", "IP-address hosts are not allowed");
   }
-  const host = hostRaw.replace(/\.$/, ""); // a trailing-dot FQDN is the same host
-  if (!host || !/^[a-z0-9.-]+$/.test(host) || !host.includes(".") || host.length > 253) {
+  const host = hostRaw.replace(/\.+$/, ""); // trailing-dot FQDN(s) name the same host
+  const labels = host.split(".");
+  if (
+    !host ||
+    !/^[a-z0-9.-]+$/.test(host) ||
+    labels.length < 2 ||
+    host.length > 253 ||
+    // empty labels ("a..b"), over-long labels, and labels starting/ending with "-"
+    labels.some((l) => l.length === 0 || l.length > 63 || l.startsWith("-") || l.endsWith("-"))
+  ) {
     // "localhost", single-label intranet names, IDN that didn't punycode, etc.
     throw new GuardError("bad_host", "host must be a public DNS name");
   }
@@ -241,35 +249,104 @@ export function parseTarget(raw: string, policy: TargetPolicy = {}): Target {
 // ---------------------------------------------------------------------------
 // DNS
 // ---------------------------------------------------------------------------
+//
+// Resolution uses c-ares (`dns.promises.Resolver`), NOT `dns.lookup`:
+// getaddrinfo runs on libuv's 4-thread pool and cannot be aborted, so a few
+// hung lookups (a slow authoritative server, an attacker's black-hole zone)
+// would also stall fs reads and async scrypt (login) for everyone. A c-ares
+// query runs on the event loop's own socket, has its own `timeout`/`tries`, and
+// is `cancel()`ed when the request deadline fires. (c-ares does not read
+// /etc/hosts — irrelevant here: only public DNS names are ever resolved.)
 
-export type Resolver = (host: string) => Promise<string[]>;
+/** Resolve `host` to addresses. Must reject (or settle) when `signal` aborts. */
+export type Resolver = (host: string, signal: AbortSignal) => Promise<string[]>;
 
-const systemResolver: Resolver = async (host) => {
-  const res = await lookup(host, { all: true, verbatim: true });
-  return res.map((r) => r.address);
-};
+/** The constructor shape we need from `dns.promises.Resolver` (injectable for tests). */
+export interface CaresResolverLike {
+  resolve4(host: string): Promise<string[]>;
+  resolve6(host: string): Promise<string[]>;
+  cancel(): void;
+}
+export type CaresResolverCtor = new (opts: { timeout: number; tries: number }) => CaresResolverLike;
+
+export const DNS_TIMEOUT_MS = 2500;
+export const DNS_TRIES = 2;
+
+/**
+ * Build the production resolver around a c-ares Resolver class. One Resolver
+ * instance per lookup, so `cancel()` on abort only cancels that lookup's queries.
+ */
+export function createCaresResolver(Ctor: CaresResolverCtor = DnsResolver as unknown as CaresResolverCtor): Resolver {
+  return (host, signal) =>
+    new Promise<string[]>((resolve, reject) => {
+      const r = new Ctor({ timeout: DNS_TIMEOUT_MS, tries: DNS_TRIES });
+      const onAbort = () => {
+        r.cancel();
+        reject(new Error("dns aborted"));
+      };
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.allSettled([r.resolve4(host), r.resolve6(host)])
+        .then(([a, b]) => {
+          const out = [...(a.status === "fulfilled" ? a.value : []), ...(b.status === "fulfilled" ? b.value : [])];
+          if (out.length) resolve(out);
+          else reject(new Error("no addresses"));
+        })
+        .finally(() => signal.removeEventListener("abort", onAbort));
+    });
+}
+
+const systemResolver: Resolver = createCaresResolver();
 
 let resolver: Resolver = systemResolver;
-/** Test seam: replace the DNS resolver (null = system). */
+/** Test seam: replace the DNS resolver (null = the c-ares system resolver). */
 export function setResolver(r: Resolver | null): void {
   resolver = r ?? systemResolver;
+  negative.clear();
+}
+
+/** Hosts that recently failed to resolve or resolved non-public: refused for NEGATIVE_TTL_MS without a new query. */
+const negative = new Map<string, number>();
+export const NEGATIVE_TTL_MS = 60_000;
+export function clearDnsNegativeCache(): void {
+  negative.clear();
 }
 
 /**
  * Resolve `host` and return ONE address to pin the connection to. Refuses the
  * host if the answer is empty or if ANY address is non-public (a split answer
- * like [public, 127.0.0.1] is an attack, not a fallback).
+ * like [public, 127.0.0.1] is an attack, not a fallback). `signal` bounds the
+ * lookup (the request deadline): on abort the c-ares query is cancelled.
  */
-export async function resolvePublic(host: string): Promise<string> {
-  let addrs: string[];
-  try {
-    addrs = await resolver(host);
-  } catch {
-    throw new GuardError("dns_failed", "could not resolve host");
+export async function resolvePublic(host: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
+  const neg = negative.get(host);
+  if (neg !== undefined) {
+    if (neg > Date.now()) throw new GuardError("dns_failed", "host recently failed to resolve");
+    negative.delete(host);
   }
-  if (!Array.isArray(addrs) || addrs.length === 0) throw new GuardError("dns_failed", "could not resolve host");
+  const fail = (code: string, msg: string): never => {
+    if (negative.size > 5000) negative.clear(); // bound memory
+    negative.set(host, Date.now() + NEGATIVE_TTL_MS);
+    throw new GuardError(code, msg);
+  };
+  let addrs: string[] = [];
+  try {
+    // Race the resolver against the deadline too, so even a resolver that
+    // ignores the signal can't hold the request past it.
+    addrs = await new Promise<string[]>((resolve, reject) => {
+      if (signal.aborted) return reject(new Error("aborted"));
+      const onAbort = () => reject(new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      resolver(host, signal)
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  } catch {
+    fail("dns_failed", "could not resolve host");
+  }
+  if (!Array.isArray(addrs) || addrs.length === 0) fail("dns_failed", "could not resolve host");
   for (const a of addrs) {
-    if (typeof a !== "string" || !isPublicAddress(a)) throw new GuardError("private_address", "host resolves to a non-public address");
+    if (typeof a !== "string" || !isPublicAddress(a)) fail("private_address", "host resolves to a non-public address");
   }
   // Prefer IPv4 (most home hosts lack IPv6 egress), else the first answer.
   return addrs.find((a) => isIP(a) === 4) ?? addrs[0]!;
