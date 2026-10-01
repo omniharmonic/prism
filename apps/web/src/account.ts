@@ -66,6 +66,39 @@ export const webAccount: AccountClient = {
     const r = await authFetch("/pats", { method: "POST", headers: vaultHeader(), body: JSON.stringify(opts) });
     return (await r.json()) as CreatedAgentToken;
   },
+  async listAgentVaults() {
+    const r = await serverFetch("/api/vaults", { headers: vaultHeader() });
+    if (!r.ok) throw new Error(`Couldn't load vaults (${r.status}).`);
+    const rows = (await r.json()) as Array<{ id: string; label: string; active?: boolean }>;
+    return rows.map((v) => ({ id: v.id, label: v.label, active: !!v.active }));
+  },
+  // "Test connection": a stateless MCP tools/list with the NEW token (never the
+  // session). The token is used for this one request and not stored anywhere.
+  async testAgentConnection(token: string): Promise<{ toolCount: number }> {
+    const r = await serverFetch("/mcp", {
+      method: "POST",
+      credentials: "omit",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "MCP-Protocol-Version": "2026-07-28",
+        "MCP-Method": "tools/list",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} } },
+      }),
+    });
+    if (!r.ok) throw new Error(r.status === 401 ? "The server rejected the token." : `The server answered ${r.status}.`);
+    const text = await r.text();
+    const data = text.split("\n").find((l) => l.startsWith("data: "));
+    const msg = JSON.parse(data ? data.slice(6) : text) as { result?: { tools?: unknown[] }; error?: { message?: string } };
+    if (!msg.result?.tools) throw new Error(msg.error?.message ?? "Unexpected response from the MCP endpoint.");
+    return { toolCount: msg.result.tools.length };
+  },
   async revokeAgentToken(id: string): Promise<void> {
     await authFetch(`/pats/${encodeURIComponent(id)}`, { method: "DELETE" });
   },

@@ -26,7 +26,8 @@ import { Hono } from "hono";
 import { config } from "../config";
 import { resolveActor } from "../auth/actor";
 import { roleAtLeast, workspaceRole, type Role } from "../roles";
-import { resolveVaultEntry, getVaultRegistry, recordMcpToken, listMcpTokens, getMcpToken, setMcpTokenRevoked, type McpTokenRow } from "../db";
+import { resolveVaultEntry, getVaultRegistry, recordMcpToken, listMcpTokens, getMcpToken, setMcpTokenRevoked, listActiveMcpTokens, recordMcpTokenRevocation, listMcpTokenRevocations, markMcpRevocationNotified, type McpTokenRow } from "../db";
+import { sendEmail } from "../auth/email";
 import { mintVaultToken, revokeVaultToken } from "../mcp-token";
 
 export const mcp = new Hono();
@@ -191,4 +192,105 @@ mcp.delete("/tokens/:jti", async (c) => {
   setMcpTokenRevoked(row.jti);
   console.log(`[mcp] revoked jti=${row.jti} (${row.scope}, minted by ${row.email}) by ${m.email}`);
   return c.json({ ok: true, note: "hub enforces revocation within ~60s" });
+});
+
+// ── Owner-only migration surface (WP6.5): legacy whole-vault member tokens ────
+//
+//   GET  /api/mcp/legacy-tokens          active tokens, all vaults (no token material)
+//   POST /api/mcp/legacy-tokens/revoke   { jtis?: string[], notify?: boolean, dryRun?: boolean }
+//
+// SERVER OWNER only (config.ownerEmail). `jtis` omitted = every active token
+// ("revoke all"). `dryRun` DEFAULTS TO TRUE — nothing is revoked or emailed unless
+// the caller sends `dryRun: false` explicitly. Idempotent: only unrevoked tokens
+// are touched, so a repeat call is a no-op. Revocation goes through the same
+// injected hub revoker as DELETE /tokens/:jti; a token whose revoke fails stays
+// un-marked (retry-able) and its member is NOT told it was replaced. Every
+// attempt writes an mcp_token_revocations audit row (jti/email/vault/outcome).
+// Notify = ONE email per affected member (however many tokens), sent only after
+// at least one of theirs was revoked, pointing at Settings → Account → Connect
+// your agent. Mail failures never undo a revocation.
+
+type Notifier = (to: string, subject: string, html: string, devLine?: string) => Promise<boolean>;
+let notifier: Notifier = sendEmail;
+/** Test seam: replace the email sender (null restores the real one). */
+export function setLegacyTokenNotifier(fn: Notifier | null): void {
+  notifier = fn ?? sendEmail;
+}
+
+function ownerEmail(c: Parameters<typeof resolveActor>[0]): string | null {
+  const a = resolveActor(c);
+  return a.kind === "user" && a.email === config.ownerEmail ? a.email : null;
+}
+
+const legacyView = (r: McpTokenRow) => ({ ...tokenView(r), vaultLabel: getVaultRegistry().find((v) => v.id === r.vault_id)?.label ?? r.vault_id });
+
+mcp.get("/legacy-tokens", (c) => {
+  if (!ownerEmail(c)) return c.json({ error: "forbidden" }, 403);
+  c.header("Cache-Control", "no-store");
+  return c.json({ tokens: listActiveMcpTokens().map(legacyView), recent: listMcpTokenRevocations(50) });
+});
+
+const escHtml = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
+
+mcp.post("/legacy-tokens/revoke", async (c) => {
+  const owner = ownerEmail(c);
+  if (!owner) return c.json({ error: "forbidden" }, 403);
+  if (!(c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json")) {
+    return c.json({ error: "unsupported_media_type" }, 415);
+  }
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (!body || typeof body !== "object") return c.json({ error: "bad_request" }, 400);
+  const dryRun = body.dryRun !== false;
+  const notify = body.notify === true;
+  let jtis: Set<string> | null = null;
+  if (body.jtis !== undefined) {
+    if (!Array.isArray(body.jtis) || body.jtis.some((j) => typeof j !== "string")) return c.json({ error: "bad_request", detail: "jtis must be an array of strings" }, 400);
+    jtis = new Set(body.jtis as string[]);
+  }
+  const targets = listActiveMcpTokens().filter((t) => !jtis || jtis.has(t.jti));
+  const byMember = new Map<string, McpTokenRow[]>();
+  for (const t of targets) byMember.set(t.email, [...(byMember.get(t.email) ?? []), t]);
+  const affected = [...byMember].map(([email, rows]) => ({ email, tokens: rows.map(legacyView) }));
+  c.header("Cache-Control", "no-store");
+  if (dryRun) return c.json({ dryRun: true, wouldRevoke: targets.length, notify, affected });
+
+  const revoked: string[] = [];
+  const failed: Array<{ jti: string; error: string }> = [];
+  for (const t of targets) {
+    try {
+      await revokeVaultToken(t.jti);
+      setMcpTokenRevoked(t.jti);
+      revoked.push(t.jti);
+      recordMcpTokenRevocation({ actor: owner, jti: t.jti, email: t.email, vault_id: t.vault_id, outcome: "revoked", notified: false });
+    } catch (e) {
+      const msg = (e as Error).message.slice(0, 200);
+      failed.push({ jti: t.jti, error: msg });
+      recordMcpTokenRevocation({ actor: owner, jti: t.jti, email: t.email, vault_id: t.vault_id, outcome: "failed", notified: false, error: msg });
+    }
+  }
+  console.log(`[mcp] legacy tokens: ${revoked.length} revoked, ${failed.length} failed by ${owner}`);
+
+  const notified: string[] = [];
+  const notifyFailed: string[] = [];
+  if (notify) {
+    const link = `${config.appOrigin}/`;
+    for (const [email, rows] of byMember) {
+      const done = rows.filter((r) => revoked.includes(r.jti));
+      if (done.length === 0) continue;
+      const vaults = [...new Set(done.map((r) => legacyView(r).vaultLabel))].map(escHtml).join(", ");
+      const html =
+        `<p>Hi,</p><p>The agent access token(s) you created earlier for <b>${vaults}</b> have been revoked and replaced by Prism access tokens. ` +
+        `The old tokens gave an agent whole-vault access; the new ones act as your Prism account and only see what you can see.</p>` +
+        `<p>To reconnect your agent: open Prism (<a href="${link}">${escHtml(link)}</a>), go to <b>Settings &rarr; Account &rarr; Connect your agent</b>, create a token and paste the config it shows.</p>`;
+      try {
+        await notifier(email, "Your Prism agent token was replaced", html, `legacy MCP token replaced -> reconnect at ${link}`);
+        notified.push(email);
+        for (const r of done) markMcpRevocationNotified(r.jti);
+      } catch (e) {
+        console.error(`[mcp] notify failed for ${email}:`, (e as Error).message);
+        notifyFailed.push(email);
+      }
+    }
+  }
+  return c.json({ dryRun: false, revoked, failed, notified, notifyFailed, note: "hub enforces revocation within ~60s" });
 });

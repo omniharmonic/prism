@@ -361,6 +361,10 @@ export interface CollabSharing {
   getServerInfo?(): Promise<ServerInfo>;
   /** Per-source ingest health + staleness (server-owner). Absent → card hidden. */
   getWorkerHealth?(): Promise<{ sources: WorkerSourceHealth[]; checkedAt: string }>;
+  /** Legacy whole-vault member MCP tokens (WP6.5, server-owner). List active ones; revoke
+   *  (dryRun defaults to true server-side — pass `dryRun: false` to act). Absent → card hidden. */
+  getLegacyMcpTokens?(): Promise<{ tokens: LegacyMcpToken[] }>;
+  revokeLegacyMcpTokens?(opts: { jtis?: string[]; notify?: boolean; dryRun?: boolean }): Promise<LegacyRevokeResult>;
   controlTunnel?(action: "start" | "stop" | "restart"): Promise<{ tunnel: TunnelStatus }>;
   setServerConfig?(key: string, value: string): Promise<{ restartRequired: boolean }>;
   /** Cloudflare tunnel ingress: which workspace subdomains still need routing, the
@@ -508,4 +512,24 @@ export function CollabSharingProvider({
 /** Returns the host-provided sharing impl, or null when sharing isn't available. */
 export function useCollabSharing(): CollabSharing | null {
   return useContext(CollabSharingContext);
+}
+
+/** An active legacy whole-vault member token as listed (never the token). Times are epoch ms. */
+export interface LegacyMcpToken {
+  jti: string;
+  email: string;
+  vaultId: string;
+  vaultLabel: string;
+  scope: string;
+  createdAt: number;
+  expiresAt: number;
+}
+export interface LegacyRevokeResult {
+  dryRun: boolean;
+  wouldRevoke?: number;
+  affected?: Array<{ email: string; tokens: LegacyMcpToken[] }>;
+  revoked?: string[];
+  failed?: Array<{ jti: string; error: string }>;
+  notified?: string[];
+  notifyFailed?: string[];
 }

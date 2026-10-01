@@ -1,10 +1,12 @@
-// AgentAccessTokens — Settings → Account → "Agent access tokens" (WP6.1).
+// AgentAccessTokens — Settings → Account → "Agent access tokens" / "Connect your agent" (WP6.1, WP6.5).
 // Lets the signed-in user mint a Prism MCP personal access token for an AI agent
 // (Claude Code, Claude Desktop, any MCP client), bound to the ACTIVE vault and
 // limited to what their own Prism account can see/do. The secret is shown ONCE,
-// with paste-ready client config; afterwards only its prefix is listed.
+// with paste-ready client config (Claude Code, Claude Desktop, generic) and a
+// "Test connection" button; afterwards only its prefix is listed. The secret lives
+// in component state only (never localStorage) and is dropped on Done / unmount.
 import { useCallback, useEffect, useState } from "react";
-import { Bot, Copy, Check, X, Plus } from "lucide-react";
+import { Bot, Copy, Check, X, Plus, Plug } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { useAccount, type AgentToken, type CreatedAgentToken } from "../../data/Account";
@@ -66,6 +68,20 @@ export function AgentAccessTokens() {
   const [days, setDays] = useState(90);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<CreatedAgentToken | null>(null);
+  const [vaults, setVaults] = useState<Array<{ id: string; label: string; active: boolean }>>([]);
+  const [vaultId, setVaultId] = useState<string>("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Drop the secret when the dialog/panel goes away.
+  useEffect(() => () => setCreated(null), []);
+  useEffect(() => {
+    if (!account?.listAgentVaults) return;
+    account.listAgentVaults().then((v) => {
+      setVaults(v);
+      setVaultId((cur) => cur || v.find((x) => x.active)?.id || v[0]?.id || "");
+    }).catch(() => {});
+  }, [account]);
 
   const load = useCallback(async () => {
     if (!account?.listAgentTokens) return;
@@ -83,7 +99,8 @@ export function AgentAccessTokens() {
     setBusy(true);
     setError(null);
     try {
-      setCreated(await account.createAgentToken({ label: label.trim() || undefined, scope, expiresInDays: days }));
+      setTestResult(null);
+      setCreated(await account.createAgentToken({ label: label.trim() || undefined, scope, expiresInDays: days, ...(vaultId ? { vaultId } : {}) }));
       setLabel("");
       await load();
     } catch (e) {
@@ -91,7 +108,21 @@ export function AgentAccessTokens() {
     } finally {
       setBusy(false);
     }
-  }, [account, label, scope, days, load]);
+  }, [account, label, scope, days, vaultId, load]);
+
+  const testConnection = useCallback(async (token: string) => {
+    if (!account?.testAgentConnection) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { toolCount } = await account.testAgentConnection(token);
+      setTestResult({ ok: true, text: `Connected: the endpoint exposes ${toolCount} tool${toolCount === 1 ? "" : "s"} to this token.` });
+    } catch (e) {
+      setTestResult({ ok: false, text: e instanceof Error ? e.message : "Connection test failed." });
+    } finally {
+      setTesting(false);
+    }
+  }, [account]);
 
   const revoke = useCallback(async (t: AgentToken) => {
     if (!account?.revokeAgentToken) return;
@@ -113,7 +144,7 @@ export function AgentAccessTokens() {
     <div style={cardStyle}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <Bot size={14} />
-        <div style={{ ...labelStyle, marginBottom: 0 }}>Agent access tokens</div>
+        <div style={{ ...labelStyle, marginBottom: 0 }}>Connect your agent</div>
       </div>
       <p style={{ ...mutedStyle, margin: "0 0 12px" }}>
         Connect an AI agent (Claude Code, Claude Desktop, any MCP client) to Prism. It acts as you, in the current
@@ -128,22 +159,35 @@ export function AgentAccessTokens() {
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
               Copy your token now — it won't be shown again.
             </div>
-            <Button variant="ghost" onClick={() => setCreated(null)} title="Done (discard the secret from this screen)">
+            <Button variant="ghost" onClick={() => { setCreated(null); setTestResult(null); }} title="Done (discard the secret from this screen)">
               <X size={13} /> Done
             </Button>
           </div>
           <CopyBlock title="Token" text={created.token} />
           <CopyBlock title="Claude Code (terminal)" text={created.claudeCodeCommand} />
           <CopyBlock title="Claude Code .mcp.json" text={JSON.stringify(created.mcpJson, null, 2)} />
-          <CopyBlock title="Claude Desktop (claude_desktop_config.json)" text={JSON.stringify(created.claudeDesktopJson, null, 2)} />
-          <p style={{ ...mutedStyle, margin: "10px 0 0" }}>
-            Any other MCP client: server URL <code>{created.url}</code> with header <code>Authorization: Bearer &lt;token&gt;</code>.
-          </p>
+          <CopyBlock title="Claude Desktop (claude_desktop_config.json, via the mcp-remote bridge)" text={JSON.stringify(created.claudeDesktopJson, null, 2)} />
+          <CopyBlock title="Any other MCP client (Streamable HTTP)" text={`URL:    ${created.url}\nHeader: Authorization: Bearer ${created.token}`} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+            {account?.testAgentConnection && (
+              <Button onClick={() => void testConnection(created.token)} disabled={testing}>
+                <Plug size={13} /> {testing ? "Testing…" : "Test connection"}
+              </Button>
+            )}
+            {testResult && (
+              <span style={{ ...mutedStyle, color: testResult.ok ? "var(--color-success, #2a9d5c)" : "var(--color-error, #d33)" }}>{testResult.text}</span>
+            )}
+          </div>
         </div>
       )}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <Input placeholder="Label (e.g. laptop agent)" value={label} onChange={(e) => setLabel(e.target.value)} style={{ flex: "1 1 160px" }} />
+        {vaults.length > 1 && (
+          <select value={vaultId} onChange={(e) => setVaultId(e.target.value)} style={selectStyle} aria-label="Vault">
+            {vaults.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
+        )}
         <select
           value={scope}
           onChange={(e) => {

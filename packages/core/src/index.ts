@@ -77,6 +77,8 @@ export type {
   TunnelIngress,
   ServerInfo,
   WorkerSourceHealth,
+  LegacyMcpToken,
+  LegacyRevokeResult,
   IntegrationStatus,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
