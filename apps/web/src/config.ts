@@ -1,3 +1,4 @@
+import { useAgentChatStore } from "@prism/core";
 /**
  * Web connection config: which Parachute vault to talk to, and the bearer token.
  *
@@ -124,6 +125,7 @@ export async function fetchMe(): Promise<Me> {
     if (isNative && !getCapabilityToken() && !(await getDeviceToken())) {
       cachedMe = { authenticated: false };
       cachedMeContext = context;
+      useAgentChatStore.getState().bindScope(null);
       return cachedMe;
     }
     const r = await serverFetch("/auth/me", { headers: { ...capabilityHeader(), ...contextHeaders() } });
@@ -132,6 +134,7 @@ export async function fetchMe(): Promise<Me> {
     if (identityContext() !== context) return getMe() ?? { authenticated: false };
     cachedMe = me;
     cachedMeContext = context;
+    useAgentChatStore.getState().bindScope(agentScope());
     await bindCacheUser(cachedMe.email);
     return cachedMe;
   } catch {
@@ -146,6 +149,13 @@ export async function fetchMe(): Promise<Me> {
  *  Use with fetchMe() to guarantee freshness. */
 export function getMe(): Me | null {
   return cachedMeContext === identityContext() ? cachedMe : null;
+}
+
+/** Resolved conversation audience; never contains a token or defaults to another vault. */
+export function agentScope(): string | null {
+  const me = getMe();
+  if (getCapabilityToken() || !me?.authenticated || !me.email || !me.vaultId || !me.workspace?.id) return null;
+  return JSON.stringify([new URL(apiBase(), location.origin).href, me.workspace.id, me.vaultId, me.email]);
 }
 
 /** True only for the signed-in vault owner with no capability token in play.
@@ -300,6 +310,7 @@ export function getActiveVault(): string | null {
 }
 
 export function setActiveVault(id: string | null): void {
+  useAgentChatStore.getState().bindScope(null);
   try {
     if (id) localStorage.setItem(ACTIVE_VAULT_KEY, id);
     else localStorage.removeItem(ACTIVE_VAULT_KEY);
@@ -333,6 +344,7 @@ export function getActiveWorkspace(): string | null {
 }
 
 export function setActiveWorkspace(id: string | null): void {
+  useAgentChatStore.getState().bindScope(null);
   try {
     if (id) localStorage.setItem(ACTIVE_WORKSPACE_KEY, id);
     else localStorage.removeItem(ACTIVE_WORKSPACE_KEY);

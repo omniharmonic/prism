@@ -179,7 +179,6 @@ export async function start() {
   // /agent[/<sessionId>] opens the Agent chat (WP3.2; the push deep link of WP3.3).
   // A client route: the SW denylist stays /api/* + /auth/*.
   const agentLink = path.match(/^\/agent(?:\/([0-9a-f-]{36}))?\/?$/i);
-  if (agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
   const initialTab: InitialTab | undefined =
     path === "/map" || path === "/bioregion"
       ? { id: "map", title: "Map", type: "map" }
@@ -225,6 +224,8 @@ export async function start() {
     isViewer = !(allowOwnerOnboarding && me.isOwner);
   }
 
+  if (!capability && agentLink?.[1]) useAgentChatStore.getState().setActiveSession(agentLink[1]);
+  window.addEventListener("prism:vault-changed", () => { void fetchMe(); });
   window.addEventListener("prism:offline-note-resolved", (event) => {
     const { temporaryId, noteId } = (event as CustomEvent<{ temporaryId: string; noteId: string }>).detail;
     // Keep tab IDs/history stable; only its resource identity changes.

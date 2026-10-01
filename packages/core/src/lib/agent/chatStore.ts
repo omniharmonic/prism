@@ -8,22 +8,18 @@ import { create } from "zustand";
 import type { ContentType } from "../types";
 import { useUIStore } from "../../app/stores/ui";
 
-const KEY = "prism:agent-session";
-
-function load(): string | null {
-  try {
-    return localStorage.getItem(KEY);
-  } catch {
-    return null;
-  }
+// Legacy unscoped IDs are deliberately not restored: their account/vault is unknown.
+const key = (scope: string) => `prism:agent-session:v2:${scope}`;
+function load(scope: string | null): string | null {
+  try { return scope ? localStorage.getItem(key(scope)) : null; }
+  catch { return null; }
 }
-function save(id: string | null) {
+function save(scope: string | null, id: string | null) {
+  if (!scope) return;
   try {
-    if (id) localStorage.setItem(KEY, id);
-    else localStorage.removeItem(KEY);
-  } catch {
-    /* storage unavailable */
-  }
+    if (id) localStorage.setItem(key(scope), id);
+    else localStorage.removeItem(key(scope));
+  } catch { /* Navigation still works without persistent storage. */ }
 }
 
 export interface PendingAsk {
@@ -35,17 +31,24 @@ export interface PendingAsk {
 }
 
 interface AgentChatState {
+  scope: string | null;
+  bindScope: (scope: string | null) => void;
   activeSessionId: string | null;
   pendingAsk: PendingAsk | null;
   setActiveSession: (id: string | null) => void;
   setPendingAsk: (a: PendingAsk | null) => void;
 }
 
-export const useAgentChatStore = create<AgentChatState>((set) => ({
-  activeSessionId: load(),
+export const useAgentChatStore = create<AgentChatState>((set, get) => ({
+  scope: null,
+  bindScope: (scope) => {
+    if (get().scope === scope) return;
+    set({ scope, activeSessionId: load(scope), pendingAsk: null });
+  },
+  activeSessionId: null,
   pendingAsk: null,
   setActiveSession: (id) => {
-    save(id);
+    save(get().scope, id);
     set({ activeSessionId: id });
   },
   setPendingAsk: (a) => set({ pendingAsk: a }),

@@ -30,6 +30,8 @@ import { useAgentClient, useAgentAvailability, useAgentLimits, agentKeys } from 
 import { AgentBudgetLine } from "./AgentBudget";
 import { formatAgentCost, PROFILE_LABELS, isReadOnlyProfile } from "../../lib/agent/cost";
 import { useAgentChatStore, openAgentChat, isAskableNoteId, type PendingAsk } from "../../lib/agent/chatStore";
+import { useComposerDraft } from "../../lib/agent/useComposerDraft";
+import { AgentApiError } from "../../lib/agent/sessions";
 import { useAgentConversation, agentErrorText } from "../../lib/agent/useAgentConversation";
 import { turnProblem, type TurnView } from "../../lib/agent/sessionReducer";
 import type { AgentClient, AgentProfile, AgentSessionSummary } from "../../lib/agent/sessions";
@@ -131,7 +133,7 @@ export default function AgentChat(_props: RendererProps) {
   }
   if (availability === "error") return <Unavailable text="Can't reach the Prism server right now." />;
   if (availability === "no") return <Unavailable text="Agent chat is available to the server owner only." />;
-  return <AgentChatView client={client} />;
+  return <AgentChatView key={client.scope?.() ?? ""} client={client} />;
 }
 
 function Unavailable({ text }: { text: string }) {
@@ -172,7 +174,10 @@ function AgentChatView({ client }: { client: AgentClient }) {
   useEffect(() => {
     if (activeSessionId && sessions && !sessions.some((s) => s.id === activeSessionId)) {
       // It may be brand new (list not refetched yet) — only drop it if the list is fresh.
-      void client.getSession(activeSessionId).catch(() => setActiveSession(null));
+      const scope = client.scope?.();
+      void client.getSession(activeSessionId).catch((error) => {
+        if (error instanceof AgentApiError && error.status === 404 && scope === client.scope?.() && useAgentChatStore.getState().activeSessionId === activeSessionId) setActiveSession(null);
+      });
     }
   }, [activeSessionId, sessions, client, setActiveSession]);
 
@@ -438,7 +443,10 @@ export function Conversation({
   const limits = useAgentLimits();
   // The profiles the server offers (prism-* only when enabled); older servers: the two vault profiles.
   const pickable: AgentProfile[] = limits?.profiles?.length ? limits.profiles : ["vault-ro", "vault-rw"];
-  const [input, setInput] = useState("");
+  const composerDraft = useComposerDraft(client.scope?.() || null, sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`);
+  const { text: input, setText: setInput, clearIfUnchanged } = composerDraft;
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [profile, setProfile] = useState<AgentProfile>("vault-ro");
   const [creating, setCreating] = useState<string | null>(null); // prompt being sent in a draft
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -480,31 +488,38 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || running || creating) return;
+      if (!text || running || creating || sendingRef.current) return;
+      const sentDraft = textArg ?? input;
+      if (textArg !== undefined) setInput(textArg);
+      sendingRef.current = true;
+      setSending(true);
       stickToBottom.current = true;
       if (isDraft) {
         setDraftError(null);
         setCreating(text);
-        setInput("");
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
           const { sessionId: id } = await client.createSession({ title, profile, noteId: draft?.noteId });
           await client.sendTurn(id, text, draft?.noteId ? { noteId: draft.noteId } : {});
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
+          clearIfUnchanged(sentDraft);
           onCreated(id);
         } catch (e) {
           setDraftError(agentErrorText(e));
-          setInput(text);
           setCreating(null);
+        } finally {
+          sendingRef.current = false;
+          setSending(false);
         }
         return;
       }
-      setInput("");
       const noteId = conv.session?.note_id ?? undefined;
       const ok = await conv.send(text, noteId ? { noteId } : {});
-      if (!ok) setInput((cur) => cur || text);
+      if (ok) clearIfUnchanged(sentDraft);
+      sendingRef.current = false;
+      setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
@@ -627,10 +642,13 @@ export function Conversation({
         </div>
       )}
       {isDraft && <AgentBudgetLine />}
+      {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
       <div className="flex items-end gap-2">
         <textarea
           ref={inputRef}
           value={input}
+          aria-label="Message the agent"
+          disabled={sending}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           rows={1}
@@ -662,7 +680,7 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || !!creating}
+            disabled={!input.trim() || sending}
             aria-label="Send"
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
@@ -877,7 +895,7 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
       </div>
       <div className="min-h-0 flex-1">
         <Conversation
-          key={activeSessionId ?? `draft:${noteId ?? ""}`}
+          key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${noteId ?? ""}`}`}
           client={client}
           sessionId={activeSessionId}
           draft={draft}

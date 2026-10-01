@@ -42,6 +42,7 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
   const sse: AgentSSE = opts.sse ?? ((path, o) => streamSSE(path, { ...o, fetch: (u, init) => opts.fetch(u, init) }));
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const scope = opts.scope?.();
     const headers: Record<string, string> = { ...hdrs() };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const resp = await opts.fetch(`${base}${path}`, {
@@ -49,11 +50,13 @@ export function createHttpAgentClient(opts: HttpAgentClientOptions): AgentClient
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    const data = await resp.json().catch((error) => { if (resp.ok) throw error; return null; });
+    if (scope !== opts.scope?.()) throw new Error("Workspace changed while waiting for the agent. Reopen the conversation in its original workspace.");
     if (!resp.ok) {
-      const j = (await resp.json().catch(() => null)) as { error?: string; detail?: string; turnId?: string } | null;
+      const j = data as { error?: string; detail?: string; turnId?: string } | null;
       throw new AgentApiError(resp.status, j?.error ?? `http_${resp.status}`, j?.detail, j?.turnId);
     }
-    return (await resp.json()) as T;
+    return data as T;
   }
 
   return {
