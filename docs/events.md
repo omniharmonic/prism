@@ -61,9 +61,17 @@ session list 20 s → 60 s live (sessions are not vault notes, so events don't c
 ## Measuring (overseer; do NOT point at prod)
 
 1. Start a sandbox server (not :8787) against a sandbox vault copy with `PRISM_VAULT_TRACE=1`, logging to a file.
-2. Baseline: `node --import tsx apps/server/scripts/measure-idle-clients.ts --base http://127.0.0.1:<port> --token <pd_ token> --clients 3 --mode poll --seconds 300`,
-   then `grep -c '\[trace\]' server.log` for that window (or count `proxy GET`/`vault GET` lines).
-3. Restart the log, run the same with `--mode events`, count again. Acceptance: >= 80 % fewer vault calls with 3 idle clients.
-   (Real browsers: open 3 tabs with the WP7.2 build vs. the previous build, leave idle 5 min, same grep.)
+2. Baseline: `node --import tsx apps/server/scripts/measure-idle-clients.ts --base http://127.0.0.1:<port> --token <pd_ token> --clients 3 --mode poll --seconds 300`.
+   **Count real vault calls, not `[trace]` lines**: a `[trace] proxy` line is logged for every gateway request even when
+   the 5 s read cache answers it without touching the vault (≈0 ms lines). Put a tiny counting HTTP proxy between the
+   sandbox server and the sandbox vault (point `PARACHUTE_URL` at it) and count forwarded requests per window.
+3. Restart the counter, run the same with `--mode events`, count again. Acceptance: >= 80 % fewer vault calls with 3 idle clients.
+   (Real browsers: open 3 tabs with the WP7.2 build vs. the previous build, leave idle 5 min.)
+
+**Result (2026-10-01, sandbox copy of the 14k-note default vault, vault 0.7.9):** poll 50 vault calls / 300 s →
+events 5 (only the one-time lists at connect) + 1 subscribe socket = **−90 %** (−88 % counting the socket). Vault
+write → client `upsert` frame 10–27 ms. Synchronized simulated clients share the 5 s cache 3:1, so real drifting
+clients poll the vault more and the real-world reduction is larger. Note: the first events connection triggers the
+tree's full subscribe snapshot (~14k rows), so lists issued in the same second take ~3 s once.
 
 Owner reads are coalesced (5 s), so compare the vault-side `[trace]` counts, not client-side request counts.
