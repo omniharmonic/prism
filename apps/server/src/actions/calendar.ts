@@ -109,6 +109,20 @@ export function parseCreated(stdout: string): { eventId: string | null; htmlLink
   }
 }
 
+/**
+ * gog refuses some RSVPs BEFORE calling Google (nothing changed upstream). These
+ * are not failures to retry: they mean the action does not apply to this event.
+ * Returns a friendly detail, or null for anything unrecognised (stays outcome-unknown).
+ */
+export function classifyRsvpRefusal(message: string): string | null {
+  if (/cannot respond to your own event|you are the organizer/i.test(message))
+    return "You organize this event, so there is no invitation to respond to.";
+  if (/event has no attendees/i.test(message)) return "This event has no guests, so there is no invitation to respond to.";
+  if (/not (an )?(attendee|invited)|you are not (a )?(guest|attendee)/i.test(message))
+    return "You are not listed as a guest on this event, so there is no invitation to respond to.";
+  return null;
+}
+
 let testRunner: GogRunner | null = null;
 /** Inject a fake gog (tests). `null` restores the real binary. */
 export function setActionsGogRunnerForTests(run: GogRunner | null): void {
