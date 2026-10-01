@@ -267,29 +267,37 @@ impl AppConfig {
     /// so Settings UI always has a file to read/write. Users configure
     /// everything through Settings; no external .env required.
     pub fn load() -> Result<Self, PrismError> {
-        let config_path = Self::config_path();
+        Self::load_from(&Self::config_path())
+    }
+
+    /// `load()` against an explicit path (tests use a temp dir).
+    ///
+    /// STRICT about an existing file: if it exists but can't be read or parsed,
+    /// this returns an error — it must NEVER fall into the first-launch branch,
+    /// which writes defaults and would wipe every stored credential. Callers fall
+    /// back to the launch-time managed state instead.
+    pub fn load_from(config_path: &std::path::Path) -> Result<Self, PrismError> {
         log::debug!("Loading config from {:?} (exists: {})", config_path, config_path.exists());
 
-        // Try loading existing config
         if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(mut config) = serde_json::from_str::<AppConfig>(&content) {
-                    // Try macOS Keychain for Anthropic key if not in config
-                    if config.anthropic_api_key.is_empty() {
-                        if let Some(key) = try_keychain_anthropic() {
-                            config.anthropic_api_key = key;
-                        }
-                    }
-                    // Auto-discover Meetily if not configured
-                    if config.meetily_db_path.is_empty() {
-                        config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
-                    }
-                    // Migrate/normalize the vault registry (synthesizes "primary"
-                    // for legacy single-vault configs; mirrors the active entry).
-                    config.normalize_vaults();
-                    return Ok(config);
+            let content = std::fs::read_to_string(config_path)
+                .map_err(|e| PrismError::Io(format!("Read config {:?}: {}", config_path, e)))?;
+            let mut config = serde_json::from_str::<AppConfig>(&content)
+                .map_err(|e| PrismError::Config(format!("Config {:?} is not valid (left untouched): {}", config_path, e)))?;
+            // Try macOS Keychain for Anthropic key if not in config
+            if config.anthropic_api_key.is_empty() {
+                if let Some(key) = try_keychain_anthropic() {
+                    config.anthropic_api_key = key;
                 }
             }
+            // Auto-discover Meetily if not configured
+            if config.meetily_db_path.is_empty() {
+                config.meetily_db_path = auto_discover_meetily().unwrap_or_default();
+            }
+            // Migrate/normalize the vault registry (synthesizes "primary"
+            // for legacy single-vault configs; mirrors the active entry).
+            config.normalize_vaults();
+            return Ok(config);
         }
 
         // First launch — check for legacy omniharmonic .env to migrate from
@@ -333,7 +341,7 @@ impl AppConfig {
         config.normalize_vaults();
 
         // Always persist so the file exists for future launches
-        match config.save() {
+        match config.save_to(config_path) {
             Ok(_) => log::info!("Created initial config at {:?}", config_path),
             Err(e) => log::error!("Failed to save initial config to {:?}: {}", config_path, e),
         }
@@ -353,17 +361,62 @@ impl AppConfig {
 
     /// Save config to prism-config.json
     pub fn save(&self) -> Result<(), PrismError> {
-        let path = Self::config_path();
+        self.save_to(&Self::config_path())
+    }
+
+    /// Atomic, private save: write a 0600 temp file in the SAME directory, fsync
+    /// it, rename it over the target (atomic on POSIX), fsync the directory. A
+    /// crash mid-save can never leave a truncated/half-written config (which the
+    /// strict `load_from` would then refuse). An existing file that doesn't parse
+    /// is first copied aside to `<name>.corrupt-<ts>` so it is never silently lost.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), PrismError> {
+        use std::io::Write;
         log::debug!("Saving config to {:?}", path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
-        }
+        let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&parent)
+            .map_err(|e| PrismError::Io(format!("Create config dir {:?}: {}", parent, e)))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| PrismError::Other(format!("Serialize config: {}", e)))?;
-        std::fs::write(&path, json)
-            .map_err(|e| PrismError::Io(format!("Write config to {:?}: {}", path, e)))?;
-        Ok(())
+
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            if serde_json::from_str::<AppConfig>(&existing).is_err() {
+                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                let aside = path.with_extension(format!("json.corrupt-{ts}"));
+                let _ = std::fs::copy(path, &aside);
+                log::warn!("Existing config {:?} did not parse; kept a copy at {:?}", path, aside);
+            }
+        }
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("prism-config.json");
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()));
+        let write = || -> std::io::Result<()> {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
+            f.write_all(json.as_bytes())?;
+            f.sync_all()?;
+            drop(f);
+            std::fs::rename(&tmp, path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                if let Ok(d) = std::fs::File::open(&parent) {
+                    let _ = d.sync_all();
+                }
+            }
+            Ok(())
+        };
+        write().map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            PrismError::Io(format!("Write config to {:?}: {}", path, e))
+        })
     }
 
     fn config_path() -> PathBuf {
@@ -505,17 +558,28 @@ pub fn get_collab_config(
 /// `/integrations/../vaults` to `/api/vaults` and escape the allowlist — and no
 /// query/fragment.
 pub fn api_path_allowed(path: &str) -> bool {
+    // 1. Strict character allowlist on the RAW path: letters, digits, '-', '_',
+    //    '/'. No '.', '%', '\\', whitespace/tab/newline (the WHATWG parser strips
+    //    tab/newline, so `/.\t./` would become `/../`), '?', '#'.
+    if path.is_empty() || !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/') {
+        return false;
+    }
     if !(path == "/integrations" || path.starts_with("/integrations/")) {
         return false;
     }
-    if path.contains('?') || path.contains('#') || path.contains('\\') {
-        return false;
+    // 2. Parse exactly as reqwest will (same `url` crate) and assert the RESULTING
+    //    path is still under /api/integrations and unchanged by normalization.
+    let raw = format!("/api{path}");
+    match url::Url::parse(&format!("http://prism.invalid{raw}")) {
+        Ok(u) => {
+            let p = u.path();
+            u.query().is_none()
+                && u.fragment().is_none()
+                && p == raw
+                && (p == "/api/integrations" || p.starts_with("/api/integrations/"))
+        }
+        Err(_) => false,
     }
-    let lower = path.to_ascii_lowercase();
-    if lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") {
-        return false;
-    }
-    !path.split('/').any(|seg| seg == "." || seg == "..")
 }
 
 /// HTTP base of the Prism Server (derived from the collab WS url) + the owner
@@ -1050,6 +1114,25 @@ pub fn sync_active_vault_entry(c: &mut AppConfig) {
     c.parachute_api_key = tok;
 }
 
+/// The pure core of `update_config`: STRICT re-read of the on-disk config (a
+/// missing/corrupt/unreadable file falls back to the launch-time `managed` state
+/// — it never triggers the first-launch save of defaults), then merge `updates`
+/// and keep the active vault entry in step. Returns the merged config and the
+/// secret keys cleared.
+pub fn merged_config_for_update(path: &std::path::Path, managed: &AppConfig, updates: &serde_json::Value) -> (AppConfig, Vec<String>) {
+    let mut c = if path.exists() {
+        AppConfig::load_from(path).unwrap_or_else(|e| {
+            log::warn!("update_config: {e} — merging into the in-memory config instead");
+            managed.clone()
+        })
+    } else {
+        managed.clone()
+    };
+    let cleared = apply_config_updates(&mut c, updates);
+    sync_active_vault_entry(&mut c);
+    (c, cleared)
+}
+
 /// Get the config for the Settings UI. Secrets are REDACTED (`""` + `<key>_set`);
 /// see `redacted_config_view`.
 #[tauri::command]
@@ -1077,9 +1160,7 @@ pub fn update_config(
     // state never sees this session's saves, so building on it made a second save
     // silently revert the first (e.g. saving the Notion key dropped a Matrix token
     // saved a minute earlier).
-    let mut new_config = AppConfig::load().unwrap_or_else(|_| config.inner().clone());
-
-    let cleared = apply_config_updates(&mut new_config, &updates);
+    let (new_config, cleared) = merged_config_for_update(&AppConfig::config_path(), config.inner(), &updates);
     if cleared.iter().any(|k| k == "anthropic_api_key") {
         // `load()` falls back to the Keychain item, so a clear must remove it too
         // or the key silently comes back on the next read.
@@ -1087,8 +1168,6 @@ pub fn update_config(
             .args(["delete-generic-password", "-s", "com.prism.anthropic"])
             .output();
     }
-
-    sync_active_vault_entry(&mut new_config);
 
     // Hot-reload the running client to the (possibly new) url/vault/key so edits
     // take effect immediately without restarting the app.
@@ -1350,9 +1429,78 @@ mod tests {
             "/vaults", "/integrationsX", "/integrations/../vaults", "/integrations/%2e%2e/vaults",
             "/integrations/%2E%2E/notes", "/integrations/x%2f..%2fnotes", "/integrations/./x", "/integrations/x?y=1",
             "/integrations\\..\\vaults", "/integrations/x#frag",
+            // security review M1: the WHATWG parser strips tab/CR/LF, so these
+            // would resolve to /api/vaults.
+            "/integrations/.\t./vaults", "/integrations/\n../vaults", "/integrations/..\r/vaults",
+            "/integrations/.\n./.\t./notes", "/integrations/ ../vaults", "/integrations/x\u{0}",
+            "/integrations/%09..%2fvaults", "", "integrations", "/integrations/\u{2028}",
         ] {
-            assert!(!api_path_allowed(bad), "{bad}");
+            assert!(!api_path_allowed(bad), "{bad:?}");
         }
+        // Sanity: the url crate really does collapse the tab trick, i.e. the
+        // allowlist is what stops it.
+        let u = url::Url::parse("http://h/api/integrations/.\t./vaults").unwrap();
+        assert_eq!(u.path(), "/api/vaults");
+    }
+
+    // ── M2: strict load + atomic save never wipe stored credentials ─────────
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("prism-config-test-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn corrupt_file_is_an_error_and_is_never_overwritten_with_defaults_by_load() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("prism-config.json");
+        std::fs::write(&path, "{ this is not json").unwrap();
+        assert!(AppConfig::load_from(&path).is_err(), "strict: no first-launch fallback");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json", "file untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_on_corrupt_file_merges_into_managed_state_and_keeps_its_secrets() {
+        let dir = temp_dir("update");
+        let path = dir.join("prism-config.json");
+        std::fs::write(&path, "{\"truncated\": ").unwrap();
+        let managed = all_secrets_set();
+        let (merged, _) = merged_config_for_update(&path, &managed, &serde_json::json!({ "matrix_user": "@me:example.test" }));
+        for k in SECRET_FIELDS {
+            let (mut a, mut b) = (managed.clone(), merged.clone());
+            assert_eq!(secret_slot(&mut a, k).unwrap(), secret_slot(&mut b, k).unwrap(), "{k} preserved");
+        }
+        assert_eq!(merged.matrix_user, "@me:example.test");
+        // Saving keeps a copy of the unparseable file and writes a valid, private one.
+        merged.save_to(&path).unwrap();
+        let written: AppConfig = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written.notion_api_key, managed.notion_api_key);
+        let aside: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(aside.iter().any(|n| n.contains(".corrupt-")), "corrupt original kept: {aside:?}");
+        assert!(!aside.iter().any(|n| n.contains(".tmp-")), "no temp file left: {aside:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_on_valid_file_builds_on_disk_not_launch_state() {
+        let dir = temp_dir("valid");
+        let path = dir.join("prism-config.json");
+        let mut on_disk = all_secrets_set();
+        on_disk.meetily_db_path = "/nonexistent/meetily.sqlite".into(); // skip auto-discovery
+        on_disk.save_to(&path).unwrap();
+        let launch = AppConfig::default(); // stale launch-time state: no secrets
+        let (merged, _) = merged_config_for_update(&path, &launch, &serde_json::json!({ "fathom_api_key": "new-fathom" }));
+        assert_eq!(merged.fathom_api_key, "new-fathom");
+        assert_eq!(merged.notion_api_key, on_disk.notion_api_key, "earlier save not reverted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

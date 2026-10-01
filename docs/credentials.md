@@ -54,7 +54,7 @@ form, and Prism never sees them.
 
 | Credential | Stored | How to set | Displayed |
 |---|---|---|---|
-| Vault token of an **owner-added** vault (linked or created in the app) | SQLite `prism_vaults.token` | Link: **Network → Vaults → Link**. Rotate: **Network → Server → Vault access tokens → key icon** (`PUT /acl/vaults/:id/token`, server-owner only). The new token is probed against the vault before it is stored. | never (only expiry date + status) |
+| Vault token of an **owner-added** vault (linked or created in the app) | SQLite `prism_vaults.token` | Link: **Network → Vaults → Link**. Rotate: **Network → Server → Vault access tokens → key icon** (`PUT /acl/vaults/:id/token`, server-owner only). The new token is probed against the vault (10 s timeout) before it is stored. **Rotation does not revoke the old token**: run `parachute auth revoke-token <jti>` on the hub afterwards (the vault enforces it within ~60 s). | never (only expiry date + status) |
 | Vault token of an **env** vault (`PARACHUTE_TOKEN`, `PRISM_VAULTS`) | `.env` | Host only, then restart | never |
 
 ### Prism Server: host bootstrap secrets (`apps/server/.env`, host only)
@@ -74,8 +74,24 @@ form, and Prism never sees them.
 | `EMBED_API_KEY` | embedding endpoint key | never |
 
 Set them by editing `.env` (`chmod 600`; `prism-setup.ts` generates the random ones), then
-restart pm2 `prism-server`. **Network → Server → App settings** can edit only
-`APP_ORIGIN` and `MAGIC_FROM`, which are not secrets.
+restart pm2 `prism-server`. `APP_ORIGIN` and `OWNER_EMAIL` are host-only too, though
+they aren't secrets (see below).
+
+**Network → Server → App settings** can edit exactly one key: `MAGIC_FROM`, the
+`From:` header of sign-in and invite mail. It is kept because it can't redirect anything.
+Mail still goes to the recipient through the operator's Resend account, and Resend only
+sends from verified domains, so the worst a hostile change can do is make sends fail
+until the host fixes it.
+
+Every value goes through one central guard (`apps/server/src/env-edit.ts`
+`isSafeEnvValue`): no CR, LF, NUL, U+2028/2029 or other control characters, and no
+leading or trailing space. `MAGIC_FROM` must also match a strict
+`addr@domain.tld` / `Name <addr@domain.tld>` pattern, which rules out quotes, `#` and `$`.
+The line is replaced with a function replacer, so `$&` / `$'` in a value are literal, and
+every duplicate `MAGIC_FROM=` line is rewritten. Tests (`test/env-edit.test.ts`) parse the
+result with Node's own `util.parseEnv` and assert it holds exactly the intended keys.
+(This closes a pre-existing hole: an unanchored `APP_ORIGIN` check let
+`https://x\nOWNER_EMAIL=attacker@…` add lines that `node --env-file` honoured.)
 
 ### Accounts and agent access (Prism Server)
 
@@ -115,9 +131,29 @@ exception. It isn't worth doing for a shell that WP4.3 retires.
 
 The `acl_request` / `api_request` proxies and collab config now read `collab_url` /
 `collab_token` fresh from disk, so a value saved in Settings applies without a restart.
-Background services (embedding index) still pick it up at the next launch. The
-`/api` proxy allowlist also refuses dot segments (raw or `%2e`), so
-`/integrations/../vaults` can't escape it.
+Background services (embedding index) still pick it up at the next launch.
+
+The `/api` proxy (`api_path_allowed`) checks the path in two ways:
+- **Characters:** the raw path may contain only `[A-Za-z0-9_/-]`. That rules out
+  `.`, `%`, `\`, spaces, tab, CR and LF. The WHATWG URL parser drops tab and newline,
+  so `/integrations/.\t./vaults` would otherwise resolve to `/api/vaults`.
+- **Parse:** the path is then parsed with the same `url` crate reqwest uses, and the
+  *resulting* path must equal the raw one and stay under `/api/integrations`.
+
+**Config file integrity.**
+- `AppConfig::load` is strict. An existing file that can't be read or parsed is an
+  error; it never falls into the first-launch branch that writes defaults.
+  `update_config` and `get_full_config` then fall back to the in-memory state.
+- `save` is atomic: a 0600 temp file in the same directory, fsync, rename, then a
+  directory fsync. If the file it replaces doesn't parse, `save` first keeps a copy
+  as `prism-config.json.corrupt-<ts>`.
+
+**Known limit (L1).** The desktop does not make you re-enter a secret when its
+destination changes (`parachute_url`, `collab_url`, `matrix_homeserver`). Settings
+saves one field at a time, so changing the URL keeps the stored token, and the next
+call sends that token to the new URL. The desktop webview is trusted local code, so
+this is accepted for now. The server-side Proton credential does enforce re-entry: its
+password is required whenever host, port, security, username or pin changes.
 
 ### Prism Client (`apps/client`)
 
@@ -140,8 +176,15 @@ laptop) could rotate the server's root of trust**:
 The last one is why `RESEND_API_KEY` was **removed** from the editable `.env` allowlist
 (`PUT /acl/server/config`). It used to be there. Every later magic link would then sit
 in the attacker's Resend logs, so the attacker keeps owner access even after the stolen
-session is revoked. Host secrets therefore require host access, the same bar as the
-data they protect.
+session is revoked.
+
+`APP_ORIGIN` was removed for the same reason, although it isn't a secret. It builds
+every magic-link and invite URL, and it also sets the credentialed-CORS origin, the MCP
+`Origin` allowlist and the cookie `secure` flag. A stolen session could point future
+owner sign-in links at an origin it controls.
+
+Host secrets and the values that route sign-in therefore require host access, the same
+bar as the data they protect.
 
 Integration credentials are different. They are scoped (one vault, one third-party
 account) and encrypted under `SECRETS_KEY`. Replacing one can only redirect *that*
@@ -159,7 +202,8 @@ certificate. A missing pin fails closed.
 is server-owner only.
 
 1. The host must be loopback (`127.0.0.1`, `::1`, `localhost`). Any other host is
-   refused **before a socket opens**, so the probe can't reach the network.
+   refused **before a socket opens**, so the probe can't reach the network. The port
+   must be 1024–65535, so privileged local services (ssh, smtp, …) can't be probed.
 2. **STARTTLS mode:** wait for the IMAP `* OK` greeting, send exactly `A1 STARTTLS`,
    complete the TLS handshake, read the peer certificate, close. **TLS mode:**
    handshake, read, close. Nothing else is sent: no CAPABILITY, no LOGIN or

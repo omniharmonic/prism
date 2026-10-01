@@ -13,11 +13,11 @@ import { Badge } from "../../ui/Badge";
 import { Input } from "../../ui/Input";
 import { useCollabSharing, useVaultChangeSignal, type CollabSharing, type IntegrationStatus, type ServerInfo, type TunnelIngress, type WorkerSourceHealth } from "../../../data/CollabSharing";
 
-const EDITABLE: { key: string; label: string; help: string; secret?: boolean }[] = [
-  { key: "APP_ORIGIN", label: "App origin (public URL)", help: "The public https origin — must match the tunnel hostname. Changing it affects cookies; restart required." },
-  { key: "MAGIC_FROM", label: "Email 'from' address", help: "Sender for magic-link / invite emails." },
-  // RESEND_API_KEY is deliberately NOT here: it carries owner sign-in links, so it
-  // is host-only (server .env) — see docs/credentials.md.
+const EDITABLE: { key: string; label: string; help: string }[] = [
+  { key: "MAGIC_FROM", label: "Email 'from' address", help: "Sender for magic-link / invite emails: you@example.com or Name <you@example.com> (must be a Resend-verified domain)." },
+  // APP_ORIGIN and RESEND_API_KEY are deliberately NOT here: they decide where and
+  // through whom owner sign-in links travel, so they are host-only (server .env)
+  // — see docs/credentials.md.
 ];
 
 // ── Server-side sync integrations: which credential fields each kind takes.
@@ -698,13 +698,13 @@ export function ServerPanel() {
         <div style={labelStyle}>App settings</div>
         <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 12px" }}>
           These write to the server's <code>.env</code> (backed up first) and take effect after a restart. Host secrets
-          (session/capability/secrets keys, vault and collab tokens, the Resend key) and the owner email aren't editable
-          from a browser: changing them here would let a stolen session take over the server's root of trust. Set them in
-          the server <code>.env</code>. Email delivery: {info?.emailConfigured ? "Resend configured" : "console only (RESEND_API_KEY unset)"}.
+          (session/capability/secrets keys, vault and collab tokens, the Resend key), the public origin and the owner email
+          aren't editable from a browser: changing them here would let a stolen session take over the server's root of trust
+          or redirect owner sign-in links. Set them in the server <code>.env</code>. Public origin: {info?.appOrigin ?? "—"}. Email delivery: {info?.emailConfigured ? "Resend configured" : "console only (RESEND_API_KEY unset)"}.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {EDITABLE.map((f) => {
-            const current = f.key === "APP_ORIGIN" ? info?.appOrigin : f.key === "MAGIC_FROM" ? info?.magicFrom : info?.emailConfigured ? "•••• configured" : "";
+            const current = f.key === "MAGIC_FROM" ? info?.magicFrom : "";
             const dirty = edits[f.key] !== undefined;
             return (
               <div key={f.key}>
@@ -713,9 +713,9 @@ export function ServerPanel() {
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <Input
-                    type={f.secret ? "password" : "text"}
-                    placeholder={f.secret ? (current || "not set") : (current ?? "")}
-                    value={edits[f.key] ?? (f.secret ? "" : (current ?? ""))}
+                    type="text"
+                    placeholder={current ?? ""}
+                    value={edits[f.key] ?? (current ?? "")}
                     onChange={(e) => setEdits((s) => ({ ...s, [f.key]: e.target.value }))}
                     style={{ flex: 1 }}
                   />

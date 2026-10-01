@@ -192,13 +192,28 @@ const dn = (o: unknown): string | undefined => {
  * (trust-on-first-use, but deliberate and loopback-only; the worker itself still
  * never trusts anything it hasn't been given as a pin).
  */
-export function detectBridgeCert(opts: { host?: unknown; port?: unknown; security?: unknown; timeoutMs?: number }): Promise<DetectedBridgeCert> {
+/** Validate a detect target (throws `bad_request`). Separate so the route can
+ *  refuse bad input before it spends rate-limit budget. */
+export function validateDetectTarget(opts: { host?: unknown; port?: unknown; security?: unknown }): { host: string; port: number; security: ProtonSecurity } {
   const host = typeof opts.host === "string" && opts.host.trim() ? opts.host.trim().toLowerCase() : "127.0.0.1";
-  if (!isLoopbackHost(host)) return Promise.reject(new BridgeCertDetectError("host must be a loopback address (127.0.0.1, ::1 or localhost)", "bad_request"));
+  if (!isLoopbackHost(host)) throw new BridgeCertDetectError("host must be a loopback address (127.0.0.1, ::1 or localhost)", "bad_request");
   const port = opts.port === undefined || opts.port === null || opts.port === "" ? 1143 : Number(opts.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.reject(new BridgeCertDetectError("port must be an integer 1-65535", "bad_request"));
+  // Unprivileged ports only: Bridge listens on 1143/1025-style ports, and a
+  // privileged system service (ssh, smtp…) has no business being probed.
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new BridgeCertDetectError("port must be an integer 1024-65535", "bad_request");
   const security = opts.security === undefined || opts.security === null || opts.security === "" ? "starttls" : opts.security;
-  if (security !== "starttls" && security !== "tls") return Promise.reject(new BridgeCertDetectError('security must be "starttls" or "tls"', "bad_request"));
+  if (security !== "starttls" && security !== "tls") throw new BridgeCertDetectError('security must be "starttls" or "tls"', "bad_request");
+  return { host, port, security };
+}
+
+export function detectBridgeCert(opts: { host?: unknown; port?: unknown; security?: unknown; timeoutMs?: number }): Promise<DetectedBridgeCert> {
+  let target: { host: string; port: number; security: ProtonSecurity };
+  try {
+    target = validateDetectTarget(opts);
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  const { host, port, security } = target;
   const timeoutMs = opts.timeoutMs ?? 10_000;
 
   return new Promise<DetectedBridgeCert>((resolve, reject) => {

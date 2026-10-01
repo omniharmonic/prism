@@ -46,15 +46,28 @@ test("tunnel control validates the action", async () => {
 });
 
 test("config editor refuses keys outside the curated allowlist", async () => {
-  for (const key of ["OWNER_EMAIL", "PARACHUTE_TOKEN", "SESSION_SECRET", "DB_PATH", "RESEND_API_KEY", "SECRETS_KEY", "COLLAB_TOKEN"]) {
+  for (const key of ["OWNER_EMAIL", "PARACHUTE_TOKEN", "SESSION_SECRET", "DB_PATH", "RESEND_API_KEY", "SECRETS_KEY", "COLLAB_TOKEN", "APP_ORIGIN", "__proto__", "constructor", "toString"]) {
     const r = await acl.request("/server/config", { method: "PUT", headers: { ...J, cookie: ownerCookie() }, body: JSON.stringify({ key, value: "whatever" }) });
     assert.equal(r.status, 400, `${key} must be rejected`);
     assert.equal(((await r.json()) as { error: string }).error, "not_editable");
   }
 });
 
-test("config editor validates the value (bad APP_ORIGIN → 400, no write)", async () => {
-  const r = await acl.request("/server/config", { method: "PUT", headers: { ...J, cookie: ownerCookie() }, body: JSON.stringify({ key: "APP_ORIGIN", value: "not-a-url" }) });
-  assert.equal(r.status, 400);
-  assert.equal(((await r.json()) as { error: string }).error, "bad_value");
+test("config editor rejects injection in MAGIC_FROM before any write (route never reaches the .env writer)", async () => {
+  // Only REJECTION paths are exercised here: a valid value would write the real
+  // apps/server/.env. The writer itself is unit-tested in env-edit.test.ts.
+  for (const value of [
+    "not-an-address",
+    "a@b.co\nOWNER_EMAIL=attacker@evil.test",
+    "a@b.co\rRESEND_API_KEY=re_x",
+    "a@b.co\u0000",
+    "Prism <a@b.co>\nAPP_ORIGIN=https://evil.test",
+    "$& <a@b.co>",
+    "\"Prism\" <a@b.co>",
+    "Prism <a@b.co> # x",
+  ]) {
+    const r = await acl.request("/server/config", { method: "PUT", headers: { ...J, cookie: ownerCookie() }, body: JSON.stringify({ key: "MAGIC_FROM", value }) });
+    assert.equal(r.status, 400, JSON.stringify(value));
+    assert.equal(((await r.json()) as { error: string }).error, "bad_value");
+  }
 });

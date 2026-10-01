@@ -1045,6 +1045,7 @@ test("detect-cert: non-loopback hosts are refused before any socket opens; bad p
     assert.equal(((await r.json()) as { error: string }).error, "bad_request");
   }
   assert.equal((await detect({ port: 70000 })).status, 400);
+  for (const port of [22, 25, 993, 1023]) assert.equal((await detect({ port })).status, 400, `privileged port ${port}`);
   assert.equal((await detect({ security: "plain" })).status, 400);
   await assert.rejects(detectBridgeCert({ host: "example.test" }), (e: BridgeCertDetectError) => e.code === "bad_request");
 });

@@ -12,7 +12,7 @@ import { config } from "../config";
 import { resolveVaultEntry } from "../db";
 import { putSecret, getSecret, deleteSecret, secretsConfigured } from "../secrets";
 import { runMatrixOnce, runFathomOnce, runFirefliesOnce, runClickUpOnce } from "../worker/scheduler";
-import { BridgeCertDetectError, PROTON_CREDENTIAL, detectBridgeCert, normalizeFingerprint, protonMode, protonPassRunning, runProtonOnce, validateProtonCredential } from "../worker/proton";
+import { BridgeCertDetectError, PROTON_CREDENTIAL, detectBridgeCert, validateDetectTarget, normalizeFingerprint, protonMode, protonPassRunning, runProtonOnce, validateProtonCredential } from "../worker/proton";
 import { consumeRateLimit } from "../middleware/ratelimit";
 
 export const integrations = new Hono();
@@ -285,6 +285,12 @@ integrations.post("/proton-bridge/sync", async (c) => {
 let detectInFlight = false;
 integrations.post("/proton-bridge/detect-cert", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  // Bad input is refused before it can spend rate-limit budget or open a socket.
+  try {
+    validateDetectTarget(body);
+  } catch (e) {
+    return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
+  }
   if (detectInFlight) return c.json({ error: "busy", detail: "a certificate check is already running" }, 409);
   const wait = consumeRateLimit("proton-bridge:detect-cert", 10, 60_000);
   if (wait !== null) {

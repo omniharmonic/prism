@@ -16,6 +16,7 @@ import { vault, vaultClient, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { tokenExpiries } from "../auth/vault-token";
+import { EDITABLE_ENV, applyEnvEdit, validateEnvEdit } from "../env-edit";
 import { serverKeyPair, fingerprint } from "../auth/peer";
 import { CAPS, LEVELS, effectiveCaps, expandLevel, isCap, levelForCaps, type Cap, type Level, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
@@ -337,6 +338,7 @@ async function probeVault(url: string, vault: string, token: string): Promise<bo
   try {
     const resp = await fetch(`${url}/vault/${encodeURIComponent(vault)}/api/tags`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
     });
     return resp.ok;
   } catch {
@@ -1163,28 +1165,26 @@ acl.post("/server/tunnel/ingress", async (c) => {
 // delivers owner magic links, so a stolen owner session could swap in an
 // attacker-owned Resend account, read every later sign-in link in that account's
 // logs, and keep owner access after the session is revoked. Set it in .env.
-const EDITABLE_ENV: Record<string, (v: string) => boolean> = {
-  APP_ORIGIN: (v) => /^https?:\/\/.+/.test(v),
-  MAGIC_FROM: (v) => v.length > 0 && v.length < 200,
-};
-
+// APP_ORIGIN was removed too (security review H1): it drives magic-link/invite
+// URLs, credentialed CORS, the MCP Origin allowlist and the cookie `secure` flag,
+// so a stolen session could point future owner sign-in links at its own origin.
+// The allowlist + the central injection guard live in env-edit.ts (C1).
 acl.put("/server/config", async (c) => {
   if (!isServerOwner(c)) return c.json({ error: "forbidden" }, 403);
-  const { key, value } = await c.req.json<{ key?: string; value?: string }>().catch(() => ({}) as { key?: string; value?: string });
-  if (typeof key !== "string" || !(key in EDITABLE_ENV)) {
-    return c.json({ error: "not_editable", detail: `only ${Object.keys(EDITABLE_ENV).join(", ")} are editable here` }, 400);
+  const body = await c.req.json<{ key?: unknown; value?: unknown }>().catch(() => ({}) as { key?: unknown; value?: unknown });
+  const v = validateEnvEdit(body.key, body.value);
+  if (!v.ok) {
+    return v.error === "not_editable"
+      ? c.json({ error: "not_editable", detail: `only ${Object.keys(EDITABLE_ENV).join(", ")} are editable here` }, 400)
+      : c.json({ error: "bad_value", detail: `invalid value for ${String(body.key)}` }, 400);
   }
-  if (typeof value !== "string" || !EDITABLE_ENV[key]!(value)) {
-    return c.json({ error: "bad_value", detail: `invalid value for ${key}` }, 400);
-  }
+  const { key, value } = v;
   const envPath = `${process.cwd()}/.env`;
   try {
     const raw = await readFile(envPath, "utf8");
     // Back up before any write (timestamped, gitignored *.env.bak-*).
     await copyFile(envPath, `${envPath}.bak-${Date.now()}`).catch(() => {});
-    const line = `${key}=${value}`;
-    const re = new RegExp(`^${key}=.*$`, "m");
-    const next = re.test(raw) ? raw.replace(re, line) : `${raw.replace(/\n?$/, "\n")}${line}\n`;
+    const next = applyEnvEdit(raw, key, value);
     await writeFile(envPath, next, { mode: 0o600 });
     return c.json({ ok: true, key, restartRequired: true });
   } catch (e) {
