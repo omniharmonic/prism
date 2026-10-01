@@ -141,6 +141,10 @@ export interface SkillsSettings {
   swapMaxPct: number | null;
   swapMinFreeMb: number;
   freeMinPct: number;
+  /** Between-notes floor while the model is already loaded and running (lower than
+   *  freeMinPct: a resident 12B model alone holds a 16 GB host at ~13-20% free, so the
+   *  start threshold stopped every run after a note or two). The swap floor still applies. */
+  runFreeMinPct?: number;
   loadFreeMinPct: number;
   localRunTimeoutMs: number;
 }
@@ -685,7 +689,7 @@ export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult)
             today: deps.localParts(now).day,
             deadline: start + deps.settings.localRunTimeoutMs,
             pressure: () => {
-              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.freeMinPct, deps.settings.swapMinFreeMb);
+              const v = admissionVerdict(safeProbe(deps.memoryProbe), deps.settings.swapMaxPct, deps.settings.runFreeMinPct ?? deps.settings.freeMinPct, deps.settings.swapMinFreeMb);
               return v.ok ? null : v.reason;
             },
           });
@@ -852,6 +856,7 @@ export function settingsFromConfig(): SkillsSettings {
     swapMaxPct: config.skillsSwapMaxPct,
     swapMinFreeMb: config.skillsSwapMinFreeMb,
     freeMinPct: config.skillsFreeMinPct,
+    runFreeMinPct: config.skillsRunFreeMinPct,
     loadFreeMinPct: config.skillsLoadFreeMinPct,
     localRunTimeoutMs: config.skillsLocalRunTimeoutMs,
   };

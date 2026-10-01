@@ -449,6 +449,34 @@ test("pass: structured local run writes lastRun (metadata preserved) + a desktop
   assert.deepEqual(again.dispatched, []);
 });
 
+test("pass: mid-run uses runFreeMinPct (resident model holds ~13% free), start still uses freeMinPct", async () => {
+  const { deps, vault, local, setMemory } = makeDeps({ settings: { ...SETTINGS, runFreeMinPct: 8 } });
+  seedCandidates(vault);
+  classifierSkill(vault, { runner: "server" });
+  // Admitted at 60% free; once the model is running the host sits at 12% — below the
+  // 15% start floor but above the 8% run floor, so the whole batch must finish.
+  local.respond = () => {
+    setMemory({ swapUsedPct: 10, freePct: 12 });
+    return { importance: "alpha" };
+  };
+  await runSkillsOnce(deps);
+  const [d] = vault.dispatchNotes();
+  assert.ok(d);
+  assert.doesNotMatch(d.content, /Stopped early/);
+
+  // Below the run floor it still stops early.
+  const b = makeDeps({ settings: { ...SETTINGS, runFreeMinPct: 8 } });
+  seedCandidates(b.vault);
+  classifierSkill(b.vault, { runner: "server" });
+  b.local.respond = () => {
+    b.setMemory({ swapUsedPct: 10, freePct: 5 });
+    return { importance: "alpha" };
+  };
+  await runSkillsOnce(b.deps);
+  const [d2] = b.vault.dispatchNotes();
+  assert.match(d2!.content, /Stopped early after 1 of \d+ \(memory pressure: 5% free/);
+});
+
 test("dispatchNote: failed shape (error section, no output), slug lowercases + dashes spaces", () => {
   const n = dispatchNote("abcdef12-3456", "My Skill", { status: "failed", output: null, error: "boom", startedAt: Date.parse("2026-03-10T01:02:03Z"), completedAt: Date.parse("2026-03-10T01:02:05Z"), durationSecs: 2 });
   assert.equal(n.path, "vault/agent/dispatches/2026-03-10/my-skill-abcdef12");

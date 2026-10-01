@@ -269,6 +269,8 @@ export const config = {
   skillsSwapMaxPct: process.env.AGENT_SWAP_MAX_PCT?.trim() ? Number(process.env.AGENT_SWAP_MAX_PCT) : (null as number | null),
   skillsSwapMinFreeMb: Number(process.env.AGENT_SWAP_MIN_FREE_MB || 512),
   skillsFreeMinPct: Number(process.env.AGENT_FREE_MIN_PCT ?? 15),
+  /** Mid-run (between notes) free-% floor for local skills; see SkillsSettings.runFreeMinPct. */
+  skillsRunFreeMinPct: Number(process.env.SKILLS_RUN_FREE_MIN_PCT ?? 8),
   skillsLocalRunTimeoutMs: Number(process.env.SKILLS_LOCAL_RUN_TIMEOUT_MS ?? 1_500_000),
   workerAlertsEnabled: (process.env.WORKER_ALERTS_ENABLED ?? "true") !== "false",
   workerFailStreak: Number(process.env.WORKER_FAIL_STREAK ?? 3),
