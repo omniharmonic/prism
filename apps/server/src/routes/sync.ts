@@ -5,8 +5,42 @@
  * under /api/sync BEFORE the gateway. Credentials come from the secret store.
  * This is what lets the web/mobile app trigger syncs with no desktop running.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { resolveActor } from "../auth/actor";
+import { GitHubApiError } from "../worker/github-dir";
+import {
+  githubClient,
+  githubConfigView,
+  importDesktopGitHubConfigs,
+  initGitHubSync,
+  normCommitStrategy,
+  normGhConflict,
+  refreshGitHubAutoSync,
+  runGitHubPush,
+  type GitHubConfigInput,
+} from "../worker/github-folder";
+import { NotionDbApiError, normDirection, normNotionConflict } from "../worker/notion-db";
+import {
+  initNotionDbSync,
+  notionDbClient,
+  notionDbConfigView,
+  notionDbSchema,
+  runNotionDbConfig,
+  type NotionDbInitInput,
+} from "../worker/notion-db-service";
+import {
+  SyncInputError,
+  auditSync,
+  deleteGitHubConfig,
+  deleteNotionDbConfig,
+  getGitHubConfig,
+  getNotionDbConfig,
+  listGitHubConfigs,
+  listNotionDbConfigs,
+  listSyncAudit,
+  updateGitHubConfig,
+  updateNotionDbConfig,
+} from "../worker/sync-store";
 import { roleAtLeast } from "../roles";
 import { config } from "../config";
 import { vaultClient } from "../parachute";
@@ -128,7 +162,238 @@ sync.get("/notion/pages", async (c) => {
   }
 });
 
-// ── GitHub directory sync ─────────────────────────────────────────────────────
+// ── Stored folder / database syncs (Client parity B) ──────────────────────────
+// The desktop's GitHub folder sync and Notion DATABASE sync, now server-side with
+// stored configs (worker/sync-store.ts). Admin (the router gate above), scoped to
+// the actor's active vault: a config of another vault is a 404. No route ever
+// returns a token; outbound targets are api.github.com / api.notion.com only.
+
+function syncError(c: Context, e: unknown) {
+  if (e instanceof SyncInputError) return c.json({ error: e.code, detail: e.message }, e.status as 400);
+  if (e instanceof GitHubApiError) return c.json({ error: "github_failed", detail: e.message }, 502);
+  if (e instanceof NotionDbApiError) return c.json({ error: "notion_failed", detail: e.message }, 502);
+  console.warn("[sync] failed:", (e as Error).message);
+  return c.json({ error: "sync_failed" }, 502);
+}
+
+const MAX_BODY = 1_000_000;
+async function body<T>(c: Context): Promise<T | null> {
+  const len = Number(c.req.header("content-length") ?? "0");
+  if (len > MAX_BODY) return null;
+  const text = await c.req.text().catch(() => "");
+  if (text.length > MAX_BODY) return null;
+  try {
+    return (text ? JSON.parse(text) : {}) as T;
+  } catch {
+    return null;
+  }
+}
+
+const actorEmail = (c: Context) => {
+  const a = resolveActor(c);
+  return a.kind === "user" ? a.email : "unknown";
+};
+
+function ownGitHubConfig(c: Context) {
+  const cfg = getGitHubConfig(c.req.param("id") ?? "");
+  return cfg && cfg.vaultId === resolveActor(c).vaultId ? cfg : null;
+}
+function ownNotionDbConfig(c: Context) {
+  const cfg = getNotionDbConfig(c.req.param("id") ?? "");
+  return cfg && cfg.vaultId === resolveActor(c).vaultId ? cfg : null;
+}
+
+// GitHub: does the server hold a working token? (desktop github_check_auth)
+sync.get("/github/auth", async (c) => {
+  const gh = githubClient(resolveActor(c).vaultId);
+  if (!gh) return c.json({ authenticated: false, configured: false, username: null, message: "No GitHub token is stored on the server (Network → Server → Sync integrations)." });
+  try {
+    const u = await gh.user();
+    if ("login" in u) return c.json({ authenticated: true, configured: true, username: u.login, message: `Authenticated as @${u.login}` });
+    return c.json({ authenticated: false, configured: true, username: null, message: `GitHub rejected the stored token (${u.status}).` });
+  } catch {
+    return c.json({ authenticated: false, configured: true, username: null, message: "Could not reach GitHub." });
+  }
+});
+
+sync.get("/github/configs", (c) => c.json(listGitHubConfigs(resolveActor(c).vaultId).map(githubConfigView)));
+
+sync.post("/github/configs", async (c) => {
+  const b = await body<GitHubConfigInput>(c);
+  if (!b) return c.json({ error: "bad_request", detail: "JSON body required" }, 400);
+  try {
+    const { config: cfg, result } = await initGitHubSync(resolveActor(c).vaultId, actorEmail(c), b);
+    return c.json({ id: cfg.id, config: githubConfigView(cfg), result });
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.post("/github/configs/:id/push", async (c) => {
+  const cfg = ownGitHubConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  try {
+    return c.json(await runGitHubPush(cfg.id, { kind: "all" }, actorEmail(c), "push"));
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.post("/github/configs/:id/push-file", async (c) => {
+  const cfg = ownGitHubConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  const b = await body<{ noteId?: unknown }>(c);
+  if (!b || typeof b.noteId !== "string" || !b.noteId || b.noteId.length > 200) return c.json({ error: "bad_request", detail: "noteId required" }, 400);
+  try {
+    const r = await runGitHubPush(cfg.id, { kind: "notes", ids: [b.noteId], single: true }, actorEmail(c), "push-file");
+    if (r.errors.length && !r.pushed.length && !r.unchanged) return c.json({ error: "push_refused", detail: r.errors[0]![1], result: r }, 400);
+    return c.json(r);
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.patch("/github/configs/:id", async (c) => {
+  const cfg = ownGitHubConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  const b = await body<{ autoSync?: unknown; commitStrategy?: unknown; conflictStrategy?: unknown }>(c);
+  if (!b) return c.json({ error: "bad_request" }, 400);
+  const patch: Parameters<typeof updateGitHubConfig>[1] = {};
+  if (b.autoSync !== undefined) {
+    if (typeof b.autoSync !== "boolean") return c.json({ error: "bad_request", detail: "autoSync must be a boolean" }, 400);
+    patch.autoSync = b.autoSync;
+  }
+  if (b.commitStrategy !== undefined) {
+    const v = normCommitStrategy(b.commitStrategy);
+    if (!v) return c.json({ error: "bad_request", detail: "commitStrategy must be per_save, batched or manual" }, 400);
+    patch.commitStrategy = v;
+  }
+  if (b.conflictStrategy !== undefined) {
+    const v = normGhConflict(b.conflictStrategy);
+    if (!v) return c.json({ error: "bad_request", detail: "conflictStrategy must be local-wins or remote-wins" }, 400);
+    patch.conflictStrategy = v;
+  }
+  updateGitHubConfig(cfg.id, patch);
+  auditSync({ actor: actorEmail(c), vaultId: cfg.vaultId, kind: "github", configId: cfg.id, action: "update", target: `${cfg.owner}/${cfg.repo}@${cfg.branch}`, status: "ok", detail: { ...patch } });
+  refreshGitHubAutoSync();
+  return c.json(githubConfigView(getGitHubConfig(cfg.id)!));
+});
+
+sync.delete("/github/configs/:id", (c) => {
+  const cfg = ownGitHubConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  deleteGitHubConfig(cfg.id);
+  auditSync({ actor: actorEmail(c), vaultId: cfg.vaultId, kind: "github", configId: cfg.id, action: "remove", target: `${cfg.owner}/${cfg.repo}@${cfg.branch}`, status: "ok" });
+  refreshGitHubAutoSync();
+  return c.json({ ok: true });
+});
+
+// Import the desktop's github-sync-configs.json (SERVER OWNER only). Body: the
+// file's JSON as-is, or {configs: <that>, enableAutoSync?: boolean}. No network.
+sync.post("/github/import", async (c) => {
+  const actor = resolveActor(c);
+  if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", detail: "server owner only" }, 403);
+  const b = await body<Record<string, unknown>>(c);
+  if (!b || typeof b !== "object") return c.json({ error: "bad_request", detail: "JSON body required (≤1 MB)" }, 400);
+  const wrapped = !Array.isArray(b) && "configs" in b;
+  const payload = wrapped ? b.configs : b;
+  const enable = wrapped && b.enableAutoSync === true;
+  try {
+    const results = importDesktopGitHubConfigs(actor.vaultId, actor.email, payload, enable);
+    return c.json({ results, created: results.filter((r) => r.status === "created").length });
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+// ── Notion database sync ──────────────────────────────────────────────────────
+sync.get("/notion-db/databases", async (c) => {
+  const client = notionDbClient(resolveActor(c).vaultId);
+  if (!client) return c.json({ error: "notion_not_configured", detail: "store a Notion integration token in Network → Server" }, 400);
+  try {
+    return c.json(await client.listDatabases());
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.get("/notion-db/databases/:id/schema", async (c) => {
+  try {
+    return c.json(await notionDbSchema(resolveActor(c).vaultId, c.req.param("id")));
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.get("/notion-db/configs", (c) => c.json(listNotionDbConfigs(resolveActor(c).vaultId).map(notionDbConfigView)));
+
+sync.post("/notion-db/configs", async (c) => {
+  const b = await body<NotionDbInitInput>(c);
+  if (!b) return c.json({ error: "bad_request", detail: "JSON body required" }, 400);
+  try {
+    const cfg = initNotionDbSync(resolveActor(c).vaultId, actorEmail(c), b);
+    return c.json({ id: cfg.id, config: notionDbConfigView(cfg) });
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.post("/notion-db/configs/:id/sync", async (c) => {
+  const cfg = ownNotionDbConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  try {
+    return c.json(await runNotionDbConfig(cfg.id, actorEmail(c), "sync"));
+  } catch (e) {
+    return syncError(c, e);
+  }
+});
+
+sync.patch("/notion-db/configs/:id", async (c) => {
+  const cfg = ownNotionDbConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  const b = await body<{ autoSync?: unknown; conflictStrategy?: unknown; syncDirection?: unknown }>(c);
+  if (!b) return c.json({ error: "bad_request" }, 400);
+  const patch: Parameters<typeof updateNotionDbConfig>[1] = {};
+  if (b.autoSync !== undefined) {
+    if (typeof b.autoSync !== "boolean") return c.json({ error: "bad_request", detail: "autoSync must be a boolean" }, 400);
+    patch.autoSync = b.autoSync;
+  }
+  if (b.conflictStrategy !== undefined) {
+    const v = normNotionConflict(b.conflictStrategy);
+    if (!v) return c.json({ error: "bad_request", detail: "conflictStrategy must be notion-wins, parachute-wins or newer-wins" }, 400);
+    patch.conflictStrategy = v;
+  }
+  if (b.syncDirection !== undefined) {
+    const v = normDirection(b.syncDirection);
+    if (!v) return c.json({ error: "bad_request", detail: "syncDirection must be bidirectional, pull or push" }, 400);
+    patch.syncDirection = v;
+  }
+  updateNotionDbConfig(cfg.id, patch);
+  auditSync({ actor: actorEmail(c), vaultId: cfg.vaultId, kind: "notion-db", configId: cfg.id, action: "update", target: cfg.databaseId, status: "ok", detail: { ...patch } });
+  return c.json(notionDbConfigView(getNotionDbConfig(cfg.id)!));
+});
+
+sync.delete("/notion-db/configs/:id", (c) => {
+  const cfg = ownNotionDbConfig(c);
+  if (!cfg) return c.json({ error: "not_found" }, 404);
+  deleteNotionDbConfig(cfg.id);
+  auditSync({ actor: actorEmail(c), vaultId: cfg.vaultId, kind: "notion-db", configId: cfg.id, action: "remove", target: cfg.databaseId, status: "ok" });
+  return c.json({ ok: true });
+});
+
+// The audit trail of the active vault's folder/database syncs (newest first).
+sync.get("/audit", (c) => {
+  const kind = c.req.query("kind");
+  return c.json(
+    listSyncAudit(resolveActor(c).vaultId, {
+      kind: kind === "github" || kind === "notion-db" ? kind : undefined,
+      configId: c.req.query("config") ?? undefined,
+      limit: Number(c.req.query("limit") ?? 50) || 50,
+    }),
+  );
+});
+
+// ── GitHub directory sync (stateless, Phase 3) ────────────────────────────────
 sync.post("/github/:dir", async (c) => {
   const dir = c.req.param("dir"); // "push" | "pull"
   const actor = resolveActor(c);

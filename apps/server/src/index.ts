@@ -11,6 +11,7 @@ import { config, assertConfig, emailEnabled, embeddingsConfigured } from "./conf
 import { getVaultRegistry } from "./db";
 import { reportRegistryTokens, startTokenExpiryWatch } from "./auth/vault-token";
 import { startWorker } from "./worker/scheduler";
+import { refreshGitHubAutoSync } from "./worker/github-folder";
 import { createApp } from "./app";
 import { bootSweepAgentSessions, startAgentMaintenance } from "./agent-sessions";
 import { startBillingProbe } from "./agent-billing";
@@ -61,6 +62,9 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.bin
   // Phase 3: the Node worker (per-tenant ingesters). No-op unless SECRETS_KEY is
   // set and a vault has an integration secret; interval is unref'd.
   startWorker();
+  // GitHub folder auto-sync (Client parity B): attach the tree change feed for
+  // vaults that have an auto-sync config. No config with auto_sync → nothing runs.
+  refreshGitHubAutoSync();
 });
 
 // Real-time collaboration shares this HTTP server (WebSocket upgrades on /collab).
