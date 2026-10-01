@@ -150,7 +150,12 @@ export function collabToken(capability: string | null): string | (() => Promise<
 // PWA keeps core's default (same-origin + cookie) untouched.
 // Native also routes the OpenFreeMap basemap through the server's /api/map proxy
 // (Client parity C): the client CSP allows only its server; the PWA loads tiles directly.
-if (isNative) {
-  installCoreFetch(serverFetch);
-  setMapProxyFetch(serverFetch);
+export function initializeTransport(): void {
+  // Call after module evaluation. @prism/core imports the web command shim,
+  // which imports this module: calling its setters at module scope accesses
+  // their still-uninitialized bindings in the bundled native build.
+  if (isNative) {
+    installCoreFetch(serverFetch);
+    setMapProxyFetch(serverFetch);
+  }
 }

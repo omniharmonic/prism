@@ -96,9 +96,19 @@ export default defineConfig(({ mode }) => {
       devOptions: { enabled: false },
     })]),
   ],
+  build: {
+    ...(native ? { outDir: "dist-native" } : {}),
+    rollupOptions: {
+      output: {
+        // Rollup can name the shared app chunk after a lazy math module. Keep
+        // the boot dependency out of the intentionally uncached diagram names.
+        chunkFileNames: (chunk) => chunk.moduleIds.some((id) => id.endsWith("/apps/web/src/main.tsx"))
+          ? "assets/workspace-[hash].js" : "assets/[name]-[hash].js",
+      },
+    },
+  },
   ...(native
     ? {
-        build: { outDir: "dist-native" },
         define: { "import.meta.env.VITE_PRISM_NATIVE": JSON.stringify("1") },
       }
     : {}),

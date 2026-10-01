@@ -12,7 +12,7 @@ import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
 import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen } from "./auth/NativeSignInScreen";
-import { isNative, serverFetch, gatewayOrigin } from "./transport";
+import { isNative, serverFetch, gatewayOrigin, initializeTransport } from "./transport";
 import { RegisterScreen } from "./auth/RegisterScreen";
 import { SetPasswordScreen } from "./auth/SetPasswordScreen";
 import { ShareView } from "./share/ShareView";
@@ -57,7 +57,8 @@ window.addEventListener("vite:preloadError", () => {
   })();
 });
 
-async function start() {
+export async function start() {
+  initializeTransport();
   await clearLegacyApiCache();
   initializeSettings();
   const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
@@ -282,5 +283,3 @@ async function start() {
     </React.StrictMode>,
   );
 }
-
-void start();
