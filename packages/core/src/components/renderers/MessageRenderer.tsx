@@ -1,4 +1,4 @@
-import { AgentReplyDraft } from "../comms/AgentReplyDraft";
+import { AgentConversationSummary, AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { messageInitials, messageColor } from "../comms/messageAppearance";
 import type { CSSProperties } from "react";
 import { useIsWeb } from "../../data/Platform";
@@ -60,6 +60,7 @@ function ScopedMessageRenderer({
     [note.content],
   );
   const vaultMessages = imported.messages;
+  const [agentIntent, setAgentIntent] = useState<"reply" | "summary" | null>(null);
   const [view, setView] = useState<"saved" | "live">("saved");
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triagePending, setTriagePending] = useState(false);
@@ -294,7 +295,15 @@ function ScopedMessageRenderer({
           Replying is unavailable for this thread on this connection.
         </p>
       )}
-      <AgentReplyDraft scope={scope} noteId={note.id} title={title} draftKey={`matrix:${roomId || note.id}`} destination={JSON.stringify({ platform, roomId })} disabled={readOnly || !roomId || (isWeb && !live)} />
+      <div className="flex flex-wrap items-center gap-2">
+        <AgentConversationSummary
+          noteId={note.id}
+          title={title}
+          active={agentIntent === "summary"}
+          onActivate={() => setAgentIntent("summary")}
+        />
+        <AgentReplyDraft active={agentIntent === "reply"} onActivate={() => setAgentIntent("reply")} scope={scope} noteId={note.id} title={title} draftKey={`matrix:${roomId || note.id}`} destination={JSON.stringify({ platform, roomId })} disabled={readOnly || !roomId || (isWeb && !live)} />
+      </div>
       <MessageComposer
         draftScope={scope}
         draftKey={`matrix:${roomId || note.id}`}

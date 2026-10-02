@@ -1,7 +1,7 @@
 import "../comms/email-workspace.css";
 import { splitEmailQuote } from "../../lib/messages/emailQuote";
 import { messageInitials } from "../comms/messageAppearance";
-import { AgentReplyDraft } from "../comms/AgentReplyDraft";
+import { AgentConversationSummary, AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import { useState, useCallback, useRef } from "react";
 import {
@@ -84,6 +84,7 @@ function VaultEmailView({
     (meta?.thread_id as string) ||
     "";
   const [showReply, setShowReply] = useState(false);
+  const [agentIntent, setAgentIntent] = useState<"reply" | "summary" | null>(null);
   const [agentDock, setAgentDock] = useState<HTMLDivElement | null>(null);
   // Web/native: Proton Bridge via the server (WP1.5 live actions) when it offers
   // email actions and this note is a stored message (it has a Message-ID).
@@ -318,6 +319,13 @@ function VaultEmailView({
             )}
           </div>
 
+          <AgentConversationSummary
+            noteId={note.id}
+            title={subject || "Email conversation"}
+            dockTarget={agentDock}
+            active={agentIntent === "summary"}
+            onActivate={() => setAgentIntent("summary")}
+          />
           {!canReply && (
             <p
               role="status"
@@ -332,6 +340,8 @@ function VaultEmailView({
             <EmailReplyBar
               scope={scope}
               agentDock={agentDock}
+              agentActive={agentIntent === "reply"}
+              onAgentActivate={() => setAgentIntent("reply")}
               account={account}
               source={typeof meta?.source === "string" ? meta.source : "Email"}
               to={replyTo}
@@ -390,6 +400,8 @@ function extractEmail(raw: string): string {
 /** A reply uses the same scoped acknowledgement/draft flow as messaging. */
 function EmailReplyBar({
   agentDock,
+  agentActive,
+  onAgentActivate,
   account,
   source,
   to,
@@ -402,6 +414,8 @@ function EmailReplyBar({
   onClose,
 }: {
   agentDock: HTMLElement | null;
+  agentActive: boolean;
+  onAgentActivate: () => void;
   account: string;
   source: string;
   to: string;
@@ -444,7 +458,7 @@ function EmailReplyBar({
         {ccDraft.error && <p role="status">{ccDraft.error}</p>}
         <details className="text-[var(--text-muted)]"><summary className="cursor-pointer py-1">Reply details</summary><p className="mt-1 break-words">Subject: {subject}</p>{live && account && <p className="mt-1 break-words">Stored email account: {account}. The connected server mailbox determines the sending account.</p>}</details>
       </div>
-      <AgentReplyDraft dockTarget={agentDock} scope={scope} noteId={noteId} title={subject} draftKey={`email:${JSON.stringify([noteId, account, to])}`} destination={JSON.stringify({ to: [to], cc })} disabled={submitting || !ccValid || (isWeb && !live)} />
+      <AgentReplyDraft active={agentActive} onActivate={onAgentActivate} dockTarget={agentDock} scope={scope} noteId={noteId} title={subject} draftKey={`email:${JSON.stringify([noteId, account, to])}`} destination={JSON.stringify({ to: [to], cc })} disabled={submitting || !ccValid || (isWeb && !live)} />
       <MessageComposer
         draftScope={scope}
         draftKey={`email:${JSON.stringify([noteId, account, to])}`}

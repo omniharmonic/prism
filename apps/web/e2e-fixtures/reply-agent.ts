@@ -102,7 +102,7 @@ export function replyAgent(scope: () => string): AgentClient {
           cost_usd: 0,
           started_at: 1,
           ended_at: 2,
-          finalText:
+          finalText: detail.session.title?.startsWith("Conversation summary:") ? "The team agreed to meet Tuesday. The agenda is still an open question." :
             "Thanks, Morgan. Tuesday afternoon works well. I’ll send the agenda beforehand.",
           tools: [],
           touched: [],
