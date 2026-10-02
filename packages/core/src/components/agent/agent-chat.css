@@ -56,3 +56,22 @@
   .prism-agent-permissions select { min-height: 44px !important; }
 }
 .prism-agent-compose-surface .prism-agent-input:focus-visible { outline: none; box-shadow: none; }
+.prism-agent-context-attachments { max-width: 800px; margin-left: auto; margin-right: auto; }
+.prism-agent-context-picker { width: min(740px, calc(100vw - 24px)); }
+.prism-agent-context-search { position: relative; padding: 16px; }
+.prism-agent-context-search > svg { position: absolute; left: 30px; top: 31px; color: var(--text-muted); }
+.prism-agent-context-included { padding: 0 16px 18px; }
+.prism-agent-context-included h3, .prism-agent-context-results-label { margin-bottom: 9px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.prism-agent-context-selected { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding-left: 9px; background: var(--surface-selected); border-radius: 8px; color: var(--text-secondary); font-size: 12px; }
+.prism-agent-context-selected > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prism-agent-context-selected button { display: grid; flex-shrink: 0; place-items: center; width: 36px; height: 36px; border-radius: 7px; }
+.prism-agent-context-result { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 15px 12px; text-align: left; border-radius: 9px; border-top: 1px solid var(--glass-border); }
+.prism-agent-context-result > svg { margin-top: 2px; color: var(--text-secondary); }
+.prism-agent-context-result[data-attached] { background: var(--surface-selected); }
+.prism-agent-context-result:disabled:not([data-attached]) { opacity: .45; }
+.prism-agent-context-result-title { display: block; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.prism-agent-context-result-location { display: block; margin-top: 4px; color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.prism-agent-context-result-excerpt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 7px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.prism-agent-source-peek { width: min(640px, calc(100vw - 24px)); }
+.prism-agent-source-body { font-size: 14px; line-height: 1.8; }
+@media (max-width: 640px) { .prism-agent-context-selected button { min-width: 44px; min-height: 44px; } }
