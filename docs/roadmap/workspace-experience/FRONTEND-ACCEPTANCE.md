@@ -14,7 +14,9 @@ For each completed slice attach: source commit; fixture scenario and viewport/th
 
 ## Integrated follow-up status · October 2
 
-Current integration snapshot: **`9c84b6c`**, including reviewed backend `98287de` and D06 server adapter `7c7c2b4`. The original baseline findings below remain an audit trail. The integration branch contains the tested slices below; **none of this newer candidate is deployed or accepted as full roadmap completion**. Production web and installed desktop remain `86461c9`; production server remains `6445136` behavior. Source is in `.worktrees/workspace-experience`; backend changes have now been integrated there, not merely left in a separate branch.
+Current application source: **`252657b`**, including reviewed backend `98287de` and D06 adapter `7c7c2b4`, deployed through main merge **`cb3178a`**. The original baseline findings below remain an audit trail. Authenticated production web uses `index-BeF6y7Xx.js`; the final Mac build is installed but waiting for Keychain approval and updated native acceptance. Production health and eight enabled workers pass. See CURRENT-RELEASE for the real agent OAuth failure and pending login. This is not full roadmap completion.
+
+Final combined checks passed: 1,684 server tests; application/e2e types; 124 affected Chromium/WebKit journeys; web/Mac builds; six packaged native startup cases; static and host verifiers. Production web has confirmed contextual creation UI, saved private document edits, phone layout, retained unsent message draft across reflow, sender groups, summary entry, search-to-unsent context, publishing save/preview/publish/restore with private exclusions, and board/workspace/Connections navigation. These named checks supersede older “production pending” statements only for those exact journeys; they do not establish native/device or all mutation coverage.
 
 | Scope | Integrated work / source | Current evidence and limits |
 | --- | --- | --- |
@@ -32,7 +34,7 @@ Current integration snapshot: **`9c84b6c`**, including reviewed backend `98287de
 | D07 preferences | Settings rail/pane `6e05bc9` | [Settings evidence](verification/frontend-20261002/SETTINGS-VERIFICATION.md).38 combined workspace checks and6 final settled-theme/contrast checks pass. Integration/account controls are also integrated; see D07 connections below. Controlled provider journeys remain separate. |
 | D02 | Calendar/transcript UI `1c9ddca` | [Calendar evidence](TRANSCRIPT-CALENDAR-EVIDENCE.md):70 combined browser checks pass. The reviewed transcript routes are now included through combined backend integration. Deploy that server contract before or with this provider; actual production/native review and recovery remain release gates. |
 
-Additional integrated checkpoints (same unreleased branch):
+Additional integrated checkpoints (included in this release):
 
 | Scope | Integrated work / source | Evidence and remaining boundary |
 | --- | --- | --- |
@@ -59,7 +61,7 @@ The integrated visual audit reviewed fictional document/agent, inbox/thread, ema
 
 C07 confirmed task extraction remains a frontend/backend contract gap. D01 unsent context, C07 summaries, D06 navigation/compact preview and the inbox follow-ups are implemented in this candidate. Human command activation and physical mobile/installed/production gates E01–E04 remain open.
 
-Boards19–25 in the [gallery](mockups.html) extend the promised connected-screen references. Generated concepts are not test evidence or permission/API specifications. All production artifacts remain as recorded in CURRENT-RELEASE.md until a coordinated frontend build is installed and checked.
+Boards19–25 in the [gallery](mockups.html) extend the promised connected-screen references. Generated concepts are not test evidence or permission/API specifications. Current artifact IDs and remaining installed-app checks are recorded in CURRENT-RELEASE.md.
 
 ## Reading the original requirement tables
 
