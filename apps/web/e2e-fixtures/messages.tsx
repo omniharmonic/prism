@@ -43,6 +43,10 @@ const emailNote: Note = {
   createdAt: "2026-10-01",
   updatedAt: "2026-10-01",
 };
+if (location.search.includes("email-visual")) {
+  emailNote.content = "# Saturday workshop agenda\n\n**From:** Morgan <morgan@example.test>\n**To:** Alex <alex@example.test>\n**Date:** 2026-10-01 10:00\n**Attachments:** Agenda.pdf, workshop notes.txt\n\n---\n\nHi Alex,\n\nI’ve attached the updated agenda. Could you confirm which section you’ll facilitate?\n\nThanks,\nMorgan\n\nOn Tuesday, Alex wrote:\n> Let’s use the first half hour for introductions.\n> We can collect questions before the workshop.\n> I’ll share my notes once they’re ready.";
+  emailNote.metadata!.subject = "Saturday workshop agenda";
+}
 if (emailNote.metadata) {
   if (location.search.includes("noaccount")) delete emailNote.metadata.account;
   if (location.search.includes("draft")) emailNote.metadata.status = "draft";
