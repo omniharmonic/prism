@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAgentConversation";
 import type {
   AgentClient,
-  AgentSession,
 } from "../../../packages/core/src/lib/agent/sessions";
 const controls = {
   streams: [] as string[],
@@ -13,17 +12,28 @@ Object.assign(window, { prismLifecycle: controls });
 
 export function AgentLifecycleFixture() {
   const [sessionId, setSessionId] = useState("first");
-  const client = useMemo(() => {
+  const client = useMemo<AgentClient>(() => {
     return {
       scope: () => "fixture",
+      createSession: async () => { throw new Error("This lifecycle fixture uses existing sessions only"); },
+      listSessions: async () => [],
+      archiveSession: async () => {},
       getSession: async (id: string) => ({
         session: {
           id,
+          vault_id: "fixture-vault",
+          owner_email: "alex@example.test",
+          profile: "prism-ro",
+          cli_session_id: null,
+          transcript_note_id: null,
+          cost_usd: 0,
+          created_at: 1,
+          updated_at: 1,
           title: id,
           status: "idle",
           permission_mode: "read-only",
           note_id: "fixture",
-        } as AgentSession,
+        },
         turns: [],
       }),
       sendTurn: async () => {
@@ -40,7 +50,7 @@ export function AgentLifecycleFixture() {
         controls.cancelled.push(id);
         return true;
       },
-    } as AgentClient;
+    };
   }, []);
   const conversation = useAgentConversation(client, sessionId);
   return (

@@ -43,8 +43,10 @@ const emailNote: Note = {
   createdAt: "2026-10-01",
   updatedAt: "2026-10-01",
 };
-if (location.search.includes("noaccount")) delete emailNote.metadata.account;
-if (location.search.includes("draft")) emailNote.metadata.status = "draft";
+if (emailNote.metadata) {
+  if (location.search.includes("noaccount")) delete emailNote.metadata.account;
+  if (location.search.includes("draft")) emailNote.metadata.status = "draft";
+}
 Object.assign(window, {
   prismMessagesFixture: controls,
   prismReplyAgent: agentControls,
