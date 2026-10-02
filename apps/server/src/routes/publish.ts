@@ -291,6 +291,7 @@ publish.get("/:slug", async (c) => {
     theme: pub.theme ? (JSON.parse(pub.theme) as unknown) : null,
     homeNoteId,
     passwordRequired,
+    locked,
     notes: nav,
     mapFeatureCount,
   });

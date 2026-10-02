@@ -73,7 +73,7 @@ const MOBILE_CSS = `
   position: fixed; top: 0; bottom: 0; left: 0; z-index: 41;
   width: min(85vw, 340px);
   display: flex; flex-direction: column;
-  background: var(--bg, #16181d);
+  background: var(--bg, var(--bg-primary, #ffffff));
   border-right: 1px solid var(--glass-border, rgba(255,255,255,0.1));
   box-shadow: 12px 0 40px rgba(0,0,0,0.35);
   padding-top: env(safe-area-inset-top);
@@ -236,7 +236,7 @@ export default function WikiTemplate({
     flexDirection: "column",
     ...safeTheme.vars,
     ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily } : null),
-    ...(safeTheme.vars["--bg"] ? { background: safeTheme.vars["--bg"] } : null),
+    background: "var(--bg, var(--bg-primary, #ffffff))",
   };
 
   // Search + home + tree: one nav body, rendered in the desktop column AND the
@@ -303,7 +303,7 @@ export default function WikiTemplate({
             position: "sticky", top: 0, zIndex: 30,
             display: "flex", alignItems: "center", gap: 10,
             padding: "calc(env(safe-area-inset-top) + 8px) 12px 8px",
-            background: safeTheme.vars["--bg"] ?? "var(--bg, #16181d)",
+            background: safeTheme.vars["--bg"] ?? "var(--bg, var(--bg-primary, #ffffff))",
             borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
             minHeight: 52, boxSizing: "border-box",
           }}
@@ -355,6 +355,7 @@ export default function WikiTemplate({
                 </h1>
               )}
               {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
+              {!noteLoading && !manifest.notes.length && <PublicationEmpty />}
               {!noteLoading && note && toc.length >= 3 && (
                 <details className="pubwiki-toc" style={{ marginBottom: 14 }}>
                   <summary>On this page</summary>
@@ -539,6 +540,7 @@ export default function WikiTemplate({
               </h1>
             )}
             {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
+              {!noteLoading && !manifest.notes.length && <PublicationEmpty />}
             {!noteLoading && note && (() => { const f = articleFeature(note); return f ? (
               <div style={{ margin: "0 0 20px" }}>
                 <Suspense fallback={<div style={{ height: 360, borderRadius: 12, background: "var(--glass, rgba(128,128,128,0.08))" }} />}>
@@ -855,4 +857,12 @@ function Folder({
       {open && children}
     </div>
   );
+}
+
+
+function PublicationEmpty() {
+  return <section style={{ padding: "40px 0", color: "var(--text-secondary, #888)" }}>
+    <h1 style={{ margin: "0 0 12px", fontSize: 24, color: "var(--text-primary, #eee)" }}>No pages published yet</h1>
+    <p style={{ margin: 0, fontSize: 15, lineHeight: 1.6 }}>This site doesn’t have any visible pages yet.</p>
+  </section>;
 }

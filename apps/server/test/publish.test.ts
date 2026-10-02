@@ -599,3 +599,16 @@ test("making a published folder note private revokes every public read, even aft
   assert.deepEqual(graph.nodes.map((n: { id: string }) => n.id), ["g2"]);
   assert.equal((await publish.request(`/${created.slug}/notes/g2`, { headers })).status, 200);
 });
+
+
+test("an empty protected publication reports an explicit unlocked state after a valid password", async () => {
+  publishTag("empty-protected", "no-public-notes", { password_hash: hashPassword("isolated-password") });
+  const locked = await readJson(await publish.request("/empty-protected"));
+  assert.equal(locked.locked, true);
+  const auth = await publish.request("/empty-protected/auth", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "isolated-password" }) });
+  const cookie = auth.headers.get("set-cookie")!.split(";")[0]!;
+  const unlocked = await readJson(await publish.request("/empty-protected", { headers: { cookie } }));
+  assert.equal(unlocked.passwordRequired, true);
+  assert.equal(unlocked.locked, false);
+  assert.deepEqual(unlocked.notes, []);
+});

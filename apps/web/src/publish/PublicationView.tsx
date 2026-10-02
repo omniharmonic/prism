@@ -1,7 +1,12 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { serverFetch } from "../transport";
 import { getTemplate } from "./templates/registry";
-import type { PubGraph, PubMapFeature, PubNote, PublicationManifest } from "./templates/types";
+import type {
+  PubGraph,
+  PubMapFeature,
+  PubNote,
+  PublicationManifest,
+} from "./templates/types";
 
 /**
  * Public, anonymous, read-only view of a PUBLICATION (Horizon B). The human URL
@@ -20,12 +25,27 @@ import type { PubGraph, PubMapFeature, PubNote, PublicationManifest } from "./te
 
 const api = (path: string) => `/api/p${path}`;
 
-export function PublicationView({ slug, noteId }: { slug: string; noteId: string | null }) {
+export function PublicationView(props: {
+  slug: string;
+  noteId: string | null;
+}) {
+  return <PublicationSession key={props.slug} {...props} />;
+}
+
+function PublicationSession({
+  slug,
+  noteId,
+}: {
+  slug: string;
+  noteId: string | null;
+}) {
   const [manifest, setManifest] = useState<PublicationManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(noteId);
   const [note, setNote] = useState<PubNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [noteRetry, setNoteRetry] = useState(0);
   const [graph, setGraph] = useState<PubGraph | null>(null);
   // Map features are fetched LAZILY (the payload can be large — watershed
   // polygons); `mapRequested` flips when the template first opens the map view.
@@ -38,12 +58,15 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   const [locked, setLocked] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
-  // Load the manifest once per slug (and after a successful unlock).
+  // Load the manifest once per slug (and after a successful unlock or retry).
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     (async () => {
       try {
-        const r = await serverFetch(api(`/${encodeURIComponent(slug)}`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}`), {
+          credentials: "include",
+        });
         if (!r.ok) {
           if (!cancelled)
             setError(
@@ -57,9 +80,13 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
         if (cancelled) return;
         setManifest(m);
         // Locked when password-gated and the server withheld the nav.
-        const isLocked = m.passwordRequired && m.notes.length === 0;
+        const isLocked =
+          typeof m.locked === "boolean"
+            ? m.locked
+            : m.passwordRequired && m.notes.length === 0;
         setLocked(isLocked);
-        if (!isLocked) setActiveId((cur) => cur ?? m.homeNoteId ?? m.notes[0]?.id ?? null);
+        if (!isLocked)
+          setActiveId((cur) => cur ?? m.homeNoteId ?? m.notes[0]?.id ?? null);
       } catch {
         if (!cancelled) setError("Couldn’t reach the server.");
       }
@@ -76,7 +103,9 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     let cancelled = false;
     (async () => {
       try {
-        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/graph`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/graph`), {
+          credentials: "include",
+        });
         if (!r.ok) return;
         const g = (await r.json()) as PubGraph;
         if (!cancelled) setGraph(g);
@@ -97,10 +126,13 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     let cancelled = false;
     (async () => {
       try {
-        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/map`), { credentials: "include" });
+        const r = await serverFetch(api(`/${encodeURIComponent(slug)}/map`), {
+          credentials: "include",
+        });
         if (!r.ok) return;
         const m = (await r.json()) as { features?: PubMapFeature[] };
-        if (!cancelled) setMapFeatures(Array.isArray(m.features) ? m.features : []);
+        if (!cancelled)
+          setMapFeatures(Array.isArray(m.features) ? m.features : []);
       } catch {
         /* no map without features */
       }
@@ -120,10 +152,14 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     }
     let cancelled = false;
     setNoteLoading(true);
+    setNote(null);
+    setNoteError(null);
     (async () => {
       try {
         const r = await serverFetch(
-          api(`/${encodeURIComponent(slug)}/notes/${encodeURIComponent(activeId)}`),
+          api(
+            `/${encodeURIComponent(slug)}/notes/${encodeURIComponent(activeId)}`,
+          ),
           { credentials: "include" },
         );
         if (!r.ok) {
@@ -132,13 +168,22 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
           if (!cancelled) {
             setNote(null);
             if (r.status === 401) setLocked(true);
+            else
+              setNoteError(
+                [403, 404, 410].includes(r.status)
+                  ? "This page is no longer available in this publication."
+                  : "This page could not be loaded. Try again.",
+              );
           }
           return;
         }
         const n = (await r.json()) as PubNote;
         if (!cancelled) setNote(n);
       } catch {
-        if (!cancelled) setNote(null);
+        if (!cancelled) {
+          setNote(null);
+          setNoteError("Couldn’t reach the server. Try again.");
+        }
       } finally {
         if (!cancelled) setNoteLoading(false);
       }
@@ -146,7 +191,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
     return () => {
       cancelled = true;
     };
-  }, [slug, activeId, reloadKey]);
+  }, [slug, activeId, reloadKey, noteRetry]);
 
   // Submit the publication password; on success the server sets the unlock
   // cookie and we re-fetch everything via `reloadKey`.
@@ -160,7 +205,6 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
           body: JSON.stringify({ password }),
         });
         if (!r.ok) return false;
-        setLocked(false);
         setReloadKey((k) => k + 1);
         return true;
       } catch {
@@ -201,7 +245,7 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
       setActiveId(
         m
           ? decodeURIComponent(m[1])
-          : manifest?.homeNoteId ?? manifest?.notes[0]?.id ?? null,
+          : (manifest?.homeNoteId ?? manifest?.notes[0]?.id ?? null),
       );
     };
     window.addEventListener("popstate", onPop);
@@ -211,7 +255,16 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   if (error) {
     return (
       <Centered>
-        <p style={{ color: "var(--text-secondary, #aaa)" }}>{error}</p>
+        <div role="alert" className="max-w-md space-y-4 text-center">
+          <h1 className="text-lg font-semibold">Publication unavailable</h1>
+          <p className="text-sm text-[var(--text-secondary)]">{error}</p>
+          <button
+            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-5 text-sm"
+            onClick={() => setReloadKey((k) => k + 1)}
+          >
+            Try again
+          </button>
+        </div>
       </Centered>
     );
   }
@@ -232,12 +285,32 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
   const Template = getTemplate(manifest.template);
 
   return (
-    <Suspense fallback={<Centered><p style={{ color: "var(--text-muted, #888)" }}>Loading…</p></Centered>}>
+    <Suspense
+      fallback={
+        <Centered>
+          <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>
+        </Centered>
+      }
+    >
+      {noteError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-center gap-3 border-b border-[var(--glass-border)] bg-[var(--bg-surface)] p-3 text-sm"
+        >
+          <span>{noteError}</span>
+          <button
+            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-4"
+            onClick={() => setNoteRetry((k) => k + 1)}
+          >
+            Retry page
+          </button>
+        </div>
+      )}
       <Template
         manifest={manifest}
         slug={slug}
         activeId={activeId}
-        note={note}
+        note={note?.id === activeId ? note : null}
         noteLoading={noteLoading}
         onNavigate={onNavigate}
         graph={graph}
@@ -250,7 +323,14 @@ export function PublicationView({ slug, noteId }: { slug: string; noteId: string
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ minHeight: "100dvh", display: "grid", placeItems: "center", padding: 24 }}>
+    <div
+      style={{
+        minHeight: "100dvh",
+        display: "grid",
+        placeItems: "center",
+        padding: 24,
+      }}
+    >
       {children}
     </div>
   );
@@ -293,10 +373,23 @@ function PasswordGate({
           textAlign: "center",
         }}
       >
-        <h1 style={{ fontSize: 18, fontWeight: 600, color: "var(--text-primary, #eee)", margin: 0 }}>
+        <h1
+          style={{
+            fontSize: 18,
+            fontWeight: 600,
+            color: "var(--text-primary, #eee)",
+            margin: 0,
+          }}
+        >
           {title}
         </h1>
-        <p style={{ fontSize: 13, color: "var(--text-secondary, #aaa)", margin: 0 }}>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--text-secondary, #aaa)",
+            margin: 0,
+          }}
+        >
           This publication is password protected.
         </p>
         <input
@@ -321,7 +414,13 @@ function PasswordGate({
           }}
         />
         {wrong && (
-          <p style={{ fontSize: 13, color: "var(--accent-danger, #e5484d)", margin: 0 }}>
+          <p
+            style={{
+              fontSize: 13,
+              color: "var(--accent-danger, #e5484d)",
+              margin: 0,
+            }}
+          >
             Incorrect password.
           </p>
         )}

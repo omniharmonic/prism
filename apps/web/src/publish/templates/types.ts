@@ -25,6 +25,8 @@ export interface PublicationManifest {
   theme: PublicationTheme | null;
   homeNoteId: string | null;
   passwordRequired: boolean;
+  /** Explicit unlock state; empty publications can still be unlocked. */
+  locked?: boolean;
   notes: NavNote[];
   /** How many in-publication notes carry real geometry — drives whether the
    *  template offers a Map view (the feature payload itself is fetched lazily). */
