@@ -16,6 +16,7 @@ import { WikilinkDropdown } from "./WikilinkDropdown";
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
+import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 
@@ -195,6 +196,9 @@ export function CollabEditor({
           onSetSuggesting={onSetSuggesting}
           canReview={canReview}
         />
+      )}
+      {toolbar && editor && (!editable || commentOnly) && (
+        <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>
       )}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). */}
