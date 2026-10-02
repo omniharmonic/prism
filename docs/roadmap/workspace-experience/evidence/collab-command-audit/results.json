@@ -1,0 +1,2886 @@
+[
+  {
+    "browser": "chromium",
+    "case": "actual CollabEditor parity and readonly positions desktop",
+    "status": "expected",
+    "results": [
+      {
+        "name": "unseeded-empty-fixture",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc"
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "6bbc17ca4e8ad8480fc35c80a1ec43d8f8cc3cee74506707d74ea9b01c6893a1",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "empty",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "rich",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "projectedHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "lists",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "projectedHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "blocks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "projectedHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "review-marks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "projectedHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "comments-map",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {
+          "fixture": {
+            "id": "fixture",
+            "quote": "Alpha",
+            "comments": [
+              {
+                "id": "comment",
+                "author": "Fixture",
+                "text": "Context",
+                "createdAt": 1
+              }
+            ],
+            "resolved": false
+          }
+        },
+        "clientHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "projectedHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "readonly-range",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "Alpha beta gamma",
+          "active": "prism-agent-input min-w-0 flex-1 resize-none outline-none"
+        }
+      },
+      {
+        "name": "clicked-target",
+        "point": {
+          "x": 81.96875,
+          "y": 101.09375
+        },
+        "details": {
+          "tag": "<p>Alpha beta gamma</p>",
+          "collapsed": true,
+          "anchor": 0,
+          "focus": 0
+        }
+      },
+      {
+        "name": "readonly-caret-click",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-caret-arrow",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-explicit-position",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      }
+    ]
+  },
+  {
+    "browser": "chromium",
+    "case": "actual CollabEditor parity and readonly positions phone",
+    "status": "expected",
+    "results": [
+      {
+        "name": "unseeded-empty-fixture",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc"
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "6bbc17ca4e8ad8480fc35c80a1ec43d8f8cc3cee74506707d74ea9b01c6893a1",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "empty",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "rich",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "projectedHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "lists",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "projectedHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "blocks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "projectedHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "review-marks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "projectedHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "comments-map",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {
+          "fixture": {
+            "id": "fixture",
+            "quote": "Alpha",
+            "comments": [
+              {
+                "id": "comment",
+                "author": "Fixture",
+                "text": "Context",
+                "createdAt": 1
+              }
+            ],
+            "resolved": false
+          }
+        },
+        "clientHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "projectedHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "readonly-range",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "Alpha beta gamma",
+          "active": ""
+        }
+      },
+      {
+        "name": "clicked-target",
+        "point": {
+          "x": 75.96875,
+          "y": 251.5
+        },
+        "details": {
+          "tag": "<p>Alpha beta gamma</p>",
+          "collapsed": true,
+          "anchor": 0,
+          "focus": 0
+        }
+      },
+      {
+        "name": "readonly-caret-click",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-caret-arrow",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-explicit-position",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      }
+    ]
+  },
+  {
+    "browser": "webkit",
+    "case": "actual CollabEditor parity and readonly positions desktop",
+    "status": "expected",
+    "results": [
+      {
+        "name": "unseeded-empty-fixture",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc"
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "6bbc17ca4e8ad8480fc35c80a1ec43d8f8cc3cee74506707d74ea9b01c6893a1",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "empty",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "rich",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "projectedHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "lists",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "projectedHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "blocks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "projectedHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "review-marks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "projectedHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "comments-map",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {
+          "fixture": {
+            "id": "fixture",
+            "quote": "Alpha",
+            "comments": [
+              {
+                "id": "comment",
+                "author": "Fixture",
+                "text": "Context",
+                "createdAt": 1
+              }
+            ],
+            "resolved": false
+          }
+        },
+        "clientHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "projectedHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "readonly-range",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "Alpha beta gamma\n\n",
+          "active": "prism-agent-input min-w-0 flex-1 resize-none outline-none"
+        }
+      },
+      {
+        "name": "clicked-target",
+        "point": {
+          "x": 81,
+          "y": 101.6875
+        },
+        "details": {
+          "tag": "<p>Alpha beta gamma</p>",
+          "collapsed": true,
+          "anchor": 6,
+          "focus": 6
+        }
+      },
+      {
+        "name": "readonly-caret-click",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-caret-arrow",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-explicit-position",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      }
+    ]
+  },
+  {
+    "browser": "webkit",
+    "case": "actual CollabEditor parity and readonly positions phone",
+    "status": "expected",
+    "results": [
+      {
+        "name": "unseeded-empty-fixture",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc"
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "6bbc17ca4e8ad8480fc35c80a1ec43d8f8cc3cee74506707d74ea9b01c6893a1",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "empty",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "projectedHash": "fcc1192de6de7dd5a20d2fe3327f254ad291f089f41c10c9bbaaee8203937b78",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "rich",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "T\u00eftle \u2014 \u2713"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "\u65e5\u672c\u8a9e \ud83d\ude00 "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    }
+                  ],
+                  "text": "bold"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "bold"
+                    },
+                    {
+                      "type": "italic"
+                    },
+                    {
+                      "type": "underline"
+                    }
+                  ],
+                  "text": " combined"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://example.test/?a=1&b=2",
+                        "target": "_blank",
+                        "rel": "noopener noreferrer nofollow",
+                        "class": null,
+                        "title": null
+                      }
+                    }
+                  ],
+                  "text": " link"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "highlight",
+                      "attrs": {
+                        "color": "#ff0000"
+                      }
+                    }
+                  ],
+                  "text": " highlighted"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "projectedHash": "1279d244b748da3bf0e507e2de3daa93ac74e2f8f65b50f431a433e55da6340d",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "lists",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "taskList",
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "checked": true
+                  },
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Done"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "start": 3,
+                "type": null
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Three"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Bullet"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "projectedHash": "ff34136de79370f1854023725d600fbcc0bd299aef87ecdfb4d112b2bdd05725",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "blocks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "typescript"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "const answer = 42;"
+                }
+              ]
+            },
+            {
+              "type": "horizontalRule"
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First"
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "Second [[path/note|Display]]"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "projectedHash": "deeb7be9e17faee87157296e07422922c33ff7ad6ce65cfb35021259c76f0ba8",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "review-marks",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "existing "
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "insertion",
+                      "attrs": {
+                        "suggestionId": "s-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#22c55e"
+                      }
+                    }
+                  ],
+                  "text": "inserted"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "deletion",
+                      "attrs": {
+                        "suggestionId": "d-fixture",
+                        "actorId": "h_fixture",
+                        "turnId": null,
+                        "user": "Fixture",
+                        "color": "#ef4444"
+                      }
+                    }
+                  ],
+                  "text": " removed"
+                },
+                {
+                  "type": "text",
+                  "marks": [
+                    {
+                      "type": "comment",
+                      "attrs": {
+                        "id": "thread-fixture",
+                        "resolved": false
+                      }
+                    }
+                  ],
+                  "text": " anchored"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {},
+        "clientHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "projectedHash": "81ab874a8cdb823580d26e0484f72614c81dca366be06857bf0bbeb593f1dc0e",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "comments-map",
+        "client": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "projected": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Alpha beta gamma"
+                }
+              ]
+            }
+          ]
+        },
+        "comments": {
+          "fixture": {
+            "id": "fixture",
+            "quote": "Alpha",
+            "comments": [
+              {
+                "id": "comment",
+                "author": "Fixture",
+                "text": "Context",
+                "createdAt": 1
+              }
+            ],
+            "resolved": false
+          }
+        },
+        "clientHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "projectedHash": "a011c84c63afb54028619969464a7481381b57e33cd456247b2d090d3376a430",
+        "clientOnlyMarks": [
+          "wikilink"
+        ],
+        "clientOnlyNodes": []
+      },
+      {
+        "name": "readonly-range",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "Alpha beta gamma",
+          "active": ""
+        }
+      },
+      {
+        "name": "clicked-target",
+        "point": {
+          "x": 75,
+          "y": 252.09375
+        },
+        "details": {
+          "tag": "<p>Alpha beta gamma</p>",
+          "collapsed": true,
+          "anchor": 0,
+          "focus": 0
+        }
+      },
+      {
+        "name": "readonly-caret-click",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-caret-arrow",
+        "selection": {
+          "from": 1,
+          "to": 17,
+          "quote": "Alpha beta gamma",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      },
+      {
+        "name": "readonly-explicit-position",
+        "selection": {
+          "from": 7,
+          "to": 7,
+          "quote": "",
+          "editable": false,
+          "domSelection": "",
+          "active": ""
+        }
+      }
+    ]
+  }
+]
