@@ -111,6 +111,10 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       clearTimeout(copyTimer.current);
       element?.close();
       if (trigger?.isConnected) trigger.focus();
+      else
+        document
+          .querySelector<HTMLButtonElement>("button[data-prism-share-trigger]")
+          ?.focus();
     };
   }, []);
   const refresh = useCallback(async () => {

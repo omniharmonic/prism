@@ -8,6 +8,7 @@ import { Canvas } from "./Canvas";
 import { ContextPanel } from "./ContextPanel";
 import { StatusBar } from "./StatusBar";
 import { CommandBar } from "./CommandBar";
+import { SharingDialogHost } from "./SharingDialogHost";
 import { WikilinkChooser } from "./WikilinkChooser";
 import { NotionDbSyncHost } from "./NotionDbSyncHost";
 import { GraphFullscreen } from "./GraphFullscreen";
@@ -89,6 +90,7 @@ export function Shell() {
 
         <CommandBar key="commands" />
         <WikilinkChooser key="wikilinks" />
+        <SharingDialogHost key="sharing" />
         <NotionDbSyncHost key="notion-sync" />
         <GraphFullscreen key="graph" />
       </div>
@@ -132,6 +134,7 @@ export function Shell() {
       {/* Command Bar overlay */}
       <CommandBar key="commands" />
       <WikilinkChooser key="wikilinks" />
+        <SharingDialogHost key="sharing" />
       <NotionDbSyncHost key="notion-sync" />
 
       {/* Graph fullscreen overlay */}

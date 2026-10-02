@@ -295,4 +295,10 @@ test("real workspace sharing keeps the dialog and invitation draft across respon
   await expect(
     page.getByRole("button", { name: "Share", exact: true }),
   ).toBeFocused();
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByLabel("Add a collaborator").fill("old-audience@example.test");
+  await page.evaluate(() => (window as any).prismSharingFixture.switchScope());
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByLabel("Add a collaborator")).toHaveValue("");
 });

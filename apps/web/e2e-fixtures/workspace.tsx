@@ -1,7 +1,7 @@
 /** Real shared workspace, fictional data. Never connects to a live server. */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, PageHeader, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
+import { App, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
@@ -50,7 +50,7 @@ setActiveVault("primary");
 await fetchMe();
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}>
+  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
     {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
-  </VaultClientProvider></PlatformProvider></React.StrictMode>,
+  </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

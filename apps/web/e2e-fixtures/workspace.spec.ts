@@ -163,3 +163,21 @@ test("linked document choices survive desktop/mobile layout changes", async ({ p
   await expect(picker).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Field notes", exact: true }).first()).toBeVisible();
 });
+
+test("sharing survives the complete desktop/mobile workspace layout and restores focus", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByLabel("Add a collaborator").fill("unsent@example.test");
+  await page.getByLabel("Collaborator permission").selectOption("suggest");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "Files", exact: true })).toBeAttached();
+  await expect(page.getByLabel("Add a collaborator")).toHaveValue("unsent@example.test");
+  await expect(page.getByLabel("Collaborator permission")).toHaveValue("suggest");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByRole("button", { name: "Files", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Add a collaborator")).toHaveValue("unsent@example.test");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Share", exact: true })).toBeFocused();
+});

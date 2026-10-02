@@ -12,6 +12,7 @@ import {
 } from "@prism/core";
 import { ShareDialog } from "../../../packages/core/src/components/layout/ShareDialog";
 import { TabBar } from "../../../packages/core/src/components/layout/TabBar";
+import { SharingDialogHost } from "../../../packages/core/src/components/layout/SharingDialogHost";
 const toolbar = new URLSearchParams(location.search).has("toolbar");
 if (toolbar)
   useUIStore
@@ -171,6 +172,7 @@ function Fixture() {
       {toolbar && (
         <CollabSharingProvider value={sharing}>
           <TabBar />
+          <SharingDialogHost />
         </CollabSharingProvider>
       )}
       <h1>Prism workspace</h1>
