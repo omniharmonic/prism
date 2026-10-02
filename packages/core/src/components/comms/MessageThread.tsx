@@ -1,33 +1,32 @@
 import "./messages.css";
 import { messageInitials, messageColor } from "./messageAppearance";
 import type { CSSProperties } from "react";
-import { Fragment, useMemo, useRef, useLayoutEffect, useState } from "react";
+import { Fragment, useMemo, useRef } from "react";
+import { useThreadReadingPosition } from "./useThreadReadingPosition";
+import type { ThreadReadingIdentity } from "../../lib/messages/readingPosition";
 import type { MatrixMessage } from "../../lib/matrix/types";
 
 interface MessageThreadProps {
   messages: MatrixMessage[];
+  readingIdentity?: ThreadReadingIdentity;
   onLoadMore?: () => void;
   hasMore?: boolean;
   isLoadingMore?: boolean;
 }
 
-export function MessageThread({
+export function MessageThread(props: MessageThreadProps) {
+  return <ScopedMessageThread key={JSON.stringify(props.readingIdentity ?? null)} {...props} />;
+}
+
+function ScopedMessageThread({
   messages,
   onLoadMore,
   hasMore,
   isLoadingMore,
+  readingIdentity,
 }: MessageThreadProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const nearBottom = useRef(true);
-  const previous = useRef<{
-    first?: string;
-    last?: string;
-    height: number;
-    top: number;
-  }>({ height: 0, top: 0 });
-  const [newMessages, setNewMessages] = useState(false);
-  const first = messages[0]?.event_id;
-  const last = messages.at(-1)?.event_id;
+  const reading = useThreadReadingPosition(containerRef, messages, readingIdentity);
   const groups = useMemo(() => groupMessages(messages), [messages]);
   const ambiguousNames = useMemo(() => {
     const names = new Map<string, Set<string>>();
@@ -44,37 +43,6 @@ export function MessageThread({
     );
   }, [messages]);
 
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const before = previous.current;
-    const prepended =
-      before.first &&
-      first !== before.first &&
-      messages.some((message) => message.event_id === before.first);
-    if (prepended) {
-      container.scrollTop = before.top + container.scrollHeight - before.height;
-    } else if (!before.last || nearBottom.current) {
-      container.scrollTop = container.scrollHeight;
-      setNewMessages(false);
-    } else if (last !== before.last) {
-      setNewMessages(true);
-    }
-    previous.current = {
-      first,
-      last,
-      height: container.scrollHeight,
-      top: container.scrollTop,
-    };
-  }, [messages, first, last]);
-
-  const jump = () => {
-    const container = containerRef.current;
-    if (container) container.scrollTop = container.scrollHeight;
-    nearBottom.current = true;
-    setNewMessages(false);
-  };
-
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
       <div
@@ -83,18 +51,12 @@ export function MessageThread({
         aria-label="Conversation messages"
         tabIndex={0}
         className="workspace-message-thread prism-thread-content flex-1 min-h-0 overflow-auto px-4 py-4 space-y-4"
-        onScroll={() => {
-          const container = containerRef.current;
-          if (!container) return;
-          previous.current.top = container.scrollTop;
-          previous.current.height = container.scrollHeight;
-          nearBottom.current =
-            container.scrollHeight -
-              container.scrollTop -
-              container.clientHeight <
-            64;
-          if (nearBottom.current) setNewMessages(false);
-        }}
+        style={{ overflowAnchor: "none" }}
+        onScroll={reading.onScroll}
+        onWheel={reading.userIntent}
+        onTouchMove={reading.userIntent}
+        onKeyDown={event => {if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(event.key))reading.userIntent();}}
+        onPointerDown={event => {if(event.target === event.currentTarget)reading.userIntent();}}
       >
         {hasMore && onLoadMore && (
           <button
@@ -139,10 +101,16 @@ export function MessageThread({
           </Fragment>
         ))}
       </div>
-      {newMessages && (
+      {reading.missingPosition && (
+        <div role="status" className="px-4 py-2 text-xs" style={{color:"var(--text-secondary)"}}>
+          Your previous reading position is not in this loaded window. {hasMore && onLoadMore && <><button type="button" className="underline" onClick={onLoadMore} disabled={isLoadingMore}>{isLoadingMore ? "Loading earlier messages…" : "Load earlier messages"}</button> to look for it, or </>}
+          <button type="button" onClick={reading.jump} className="underline">jump to latest</button>.
+        </div>
+      )}
+      {reading.newMessages && (
         <button
           type="button"
-          onClick={jump}
+          onClick={reading.jump}
           className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-4 py-2 text-xs shadow-md"
           style={{ background: "var(--action-bg)", color: "var(--action-fg)" }}
         >

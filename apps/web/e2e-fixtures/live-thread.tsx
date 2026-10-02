@@ -1,8 +1,9 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { PlatformProvider, VaultClientProvider, type VaultClient, type Note, type MatrixMessage } from "@prism/core";
+import { PlatformProvider, VaultClientProvider, useAgentChatStore, type VaultClient, type Note, type MatrixMessage } from "@prism/core";
 import MessageRenderer from "../../../packages/core/src/components/renderers/MessageRenderer";
+if (new URLSearchParams(location.search).has("reading")) useAgentChatStore.setState({scope:"fixture-actor"});
 const controls = { fail: false, reads: [] as Array<string | undefined>, writes: 0 };
 Object.assign(window, { prismLiveThreadFixture: controls });
 const messages: MatrixMessage[] = Array.from({ length: 70 }, (_, i) => ({ event_id: `event-${i}`, sender: `@${i % 2 ? "alex-design" : "alex-engineering"}:example.test`, sender_name: "Alex", timestamp: Date.UTC(2026, 8, 30, 23, 0) + i * 60000, body: `Live message ${i}\nKeep this line.`, msg_type: "m.text", is_outgoing: false, media_url: null, media_info: null, source: "matrix" }));
