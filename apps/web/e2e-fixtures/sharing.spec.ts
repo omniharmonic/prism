@@ -302,3 +302,39 @@ test("real workspace sharing keeps the dialog and invitation draft across respon
   await page.getByRole("button", { name: "Share", exact: true }).click();
   await expect(page.getByLabel("Add a collaborator")).toHaveValue("");
 });
+
+test("suggest permissions disclose the trusted-collaborator limitation before granting access", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page);
+  const limitation =
+    /Use it only with trusted collaborators: the server does not yet prevent direct document changes/;
+  // Existing grants can be changed immediately, so explain this beside that list too.
+  await expect(
+    page
+      .getByRole("heading", { name: "Direct document access" })
+      .locator("..")
+      .getByText(limitation),
+  ).toBeVisible();
+  await page.getByLabel("Collaborator permission").selectOption("suggest");
+  await expect(page.locator("form").getByText(limitation)).toBeVisible();
+  await page.getByRole("button", { name: "Links", exact: true }).click();
+  await page.getByLabel("Link permission").selectOption("suggest");
+  await expect(page.getByText(limitation)).toBeVisible();
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await page.getByLabel("Peer permission").selectOption("suggest");
+  await expect(page.getByText(limitation)).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismSharingFixture.calls.filter((c: any) =>
+        ["setPerson", "createLink", "sync"].includes(c.kind),
+      ),
+    ),
+  ).toEqual([]);
+});

@@ -35,11 +35,13 @@ const LABEL: Record<ShareLevel, string> = {
   suggest: "Can suggest",
   edit: "Can edit",
 };
+const SUGGEST_HELP =
+  "Can suggest tracks edits and comments in Prism. Use it only with trusted collaborators: the server does not yet prevent direct document changes with this permission.";
 const HELP: Record<ShareLevel, string> = {
   view: "Read this document without changing it.",
   comment:
     "Read-only in the live editor. Anchored comments currently require Can suggest.",
-  suggest: "Propose changes and add anchored comments in the live editor.",
+  suggest: SUGGEST_HELP,
   edit: "Edit this document directly and review suggested changes.",
 };
 const errorText = (e: unknown, fallback: string) =>
@@ -519,6 +521,9 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                 )}
                 <section>
                   <h3>Direct document access</h3>
+                  {!!access.people.length && levels.includes("suggest") && (
+                    <p>{SUGGEST_HELP}</p>
+                  )}
                   {!access.people.length && (
                     <p>
                       No people have direct grants. Other access paths are
@@ -846,6 +851,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                       </select>
                     </label>
                     {levelSelect(peerLevel, setPeerLevel, "Peer permission")}
+                    {peerLevel === "suggest" && <p>{SUGGEST_HELP}</p>}
                     <button
                       type="button"
                       disabled={!peer}
