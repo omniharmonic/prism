@@ -826,6 +826,13 @@ function TriageView({
     return result;
   }, [messages, q]);
 
+  // Show a real conversation on entry even when every populated tier is
+  // normally collapsed. This is an initializer only: refetches must not undo
+  // a reader's deliberate collapse choice.
+  const initialExpandedTag = tiers.some(({ tier }) => !tier.defaultCollapsed)
+    ? undefined
+    : tiers[0]?.tier.tag;
+
   const urgentCount = messages.filter(
     (n) => threadStatus(n.tags) === "urgent",
   ).length;
@@ -886,6 +893,7 @@ function TriageView({
         <TriageTier
           key={`${tier.tag}:${!!searchQuery}`}
           forceExpanded={!!searchQuery}
+          defaultExpanded={tier.tag === initialExpandedTag}
           tier={tier}
           notes={notes}
           onOpenThread={onOpenThread}
@@ -900,14 +908,16 @@ function TriageTier({
   notes,
   onOpenThread,
   forceExpanded,
+  defaultExpanded,
 }: {
   forceExpanded?: boolean;
+  defaultExpanded?: boolean;
   tier: (typeof PRIORITY_TIERS)[number];
   notes: Note[];
   onOpenThread: (note: Note) => void;
 }) {
   const [collapsed, setCollapsed] = useState(
-    forceExpanded ? false : tier.defaultCollapsed,
+    () => !(forceExpanded || defaultExpanded || !tier.defaultCollapsed),
   );
   const Icon = tier.icon;
   const selectedId = useContext(SelectedConversation);
