@@ -86,12 +86,12 @@ test("Matrix page transport encodes room and opaque cursor without changing inge
 test("the real actions client discovers status at the mounted server route", async () => {
   const app = createApp();
   const client = createHttpLiveActionsClient({
-    fetch: (path, init) => app.request(path, init),
+    fetch: async (path, init) => app.request(path, init),
     headers: () => ({ cookie: sessionCookie(makeSession(config.ownerEmail)) }),
   });
   assert.equal((await client.status()).matrix.configured, true);
   const guest = createHttpLiveActionsClient({
-    fetch: (path, init) => app.request(path, init),
+    fetch: async (path, init) => app.request(path, init),
     headers: () => ({ cookie: sessionCookie(makeSession("reader@test.local")) }),
   });
   await assert.rejects(guest.status(), (error: any) => error.status === 403);
