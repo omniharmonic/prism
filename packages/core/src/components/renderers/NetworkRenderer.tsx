@@ -95,7 +95,7 @@ export default function NetworkRenderer(_props: RendererProps) {
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--bg-base)]"
     >
       <header className="shrink-0 border-b border-[var(--glass-border)] px-4 pb-3 pt-5 sm:px-7 sm:pt-7">
-        <div className="mx-auto max-w-[880px]">
+        <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
           <h1 className="m-0 text-[22px] font-semibold tracking-tight text-[var(--text-primary)]">Workspace settings</h1>
           <p className="mb-0 mt-1 text-[13px] leading-relaxed text-[var(--text-secondary)]">
             {isAdmin
@@ -115,7 +115,7 @@ export default function NetworkRenderer(_props: RendererProps) {
         </div>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-4 pb-12 pt-5 sm:px-7">
-        <div className="mx-auto max-w-[880px]">
+        <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
           {activeTab === "workspaces" && <WorkspacesPanel />}
           {activeTab === "access" && <WorkspacePanel />}
           {activeTab === "publish" && <PublishPanel />}

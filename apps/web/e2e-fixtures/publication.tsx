@@ -71,7 +71,9 @@ window.fetch = async (input, init) => {
               coverUrl: {},
               description: 3,
             }
-          : null,
+          : params.has("font")
+            ? { font: params.get("font") }
+            : null,
         homeNoteId: locked ? null : (notes[0]?.id ?? null),
         passwordRequired: controls.protected,
         locked,
@@ -97,6 +99,9 @@ window.fetch = async (input, init) => {
       metadata: {},
       content:
         `<p>PRISM_PUBLICATION_${slug}_${id}_BODY</p>` +
+        (params.has("font")
+          ? "<h2>Reading together</h2><pre><code>const source = true;</code></pre>"
+          : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`
           : ""),

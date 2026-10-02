@@ -1,0 +1,58 @@
+.prism-publication-preview-dialog {
+  margin: auto;
+  width: calc(100vw - 24px);
+  height: calc(100dvh - 24px);
+  max-width: none;
+  padding: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.prism-publication-preview-dialog::backdrop {
+  background: #0008;
+}
+.prism-publication-preview-inline {
+  height: min(760px, 85dvh);
+  min-height: 480px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.prism-publication-preview-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.prism-publication-preview-toolbar > div:first-child {
+  flex-basis: 260px;
+}
+.prism-publication-preview-toolbar h2 {
+  margin-bottom: 5px;
+}
+.prism-publication-preview-control {
+  min-height: 44px;
+  border: 1px solid var(--glass-border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 12px;
+}
+.prism-publication-preview-control:hover {
+  background: var(--glass-hover);
+}
+.prism-publication-preview-canvas {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: var(--glass-hover);
+  padding: 10px;
+}
