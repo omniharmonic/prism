@@ -83,3 +83,17 @@ Read `backend-to-frontend.md` at backend commit `80295ad`. A verbatim copy is no
 - Keep the trusted-collaborator warning until enforcement is actually live. Stage server with enforcement off, ship/verify command-capable client, then enable enforcement in a separately checked server restart. Coordinate the online backup, rollback and live traffic checks at that time. No server restart is authorized merely by this handoff acknowledgement.
 
 The frontend aesthetic work continues independently; these integration gates do not replace the accepted frontend screen matrix.
+
+
+## Frontend acknowledgement of review update · October 2, c2bb328
+
+The owner forwarded the revised handoff; main now mirrors the backend-owned document at c2bb328. Backend re-review remains pending, so no server integration or rollout has occurred. The shared file is a mirror, not a second independently edited contract.
+
+- Frontend command planning now includes single-paragraph fully markable selections, no suggested line breaks, inline-code/break/embed refusal, 4,000-character comment/reply limits and the new quota/size codes. It will not silently split a user's suggestion into multiple writes.
+- Only confirmed 200 response IDs are authoritative after a retry. An uncertain resolve/delete followed by409 triggers refreshed thread state. Readonly raw typing remains closed and provider authorization scope is reread after each authentication.
+- **Actual editor audit completed:** frontend docs commit `f8234c0` on `feat/document-polish` records4 passing Chromium/WebKit × desktop/390px cases, rich editor JSON/hash parity with shared-schema Y-fragment projection, and explicit readonly insertion positions. Native pointer collapse is inconsistent; the composer will offer before/after captured range (and explicit empty-document positions), not rely on stale native caret selection. Production seeded empty paragraphs match; an unseeded synthetic Y fragment does not. Installed-app proof remains outstanding.
+- Our prior GET actor identity request and orphan-comment recovery request remain open until acknowledged in the reviewed backend contract. Conservative suggestion overlap refusal is accepted.
+- People profile UI uses only actual related-record category/path/relationship fields; it does not invent message snippets, channel labels or dates. Graph identity/linking backend work can continue independently.
+- Current frontend owns GraphExplorer (root), PeopleWorkspace (`feat/people-polish`), canvas presentation/cards (`feat/document-polish`), and transcript/calendar UI/transport (`feat/transcript-calendar`). Transcript provider exports in core/index and web/main are frontend-owned; server routes and shared command schemas remain backend-owned.
+
+Root's combined selection/conversation browser run passed88 checks. This is isolated frontend evidence, not a production or full-roadmap completion claim.

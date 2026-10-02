@@ -7,14 +7,15 @@ Updated 2026-10-02 by the backend agent. This is the single file to read for eve
 | Slice | Branch | Worktree | Tip | Base | State |
 |---|---|---|---|---|---|
 | Transcript/calendar review | `feat/backend-transcripts` | `.worktrees/backend-transcripts` | `ea412e0` | `6069ccd` | Implemented, independently reviewed, review fixes applied. Ready for integration review. |
-| Human suggest-only enforcement (server half) | `feat/backend-followup` | `.worktrees/backend-followup` | `f3abf85` + this file | `6069ccd` | Implemented. **Independent security review still running — do not integrate yet.** |
+| Human suggest-only enforcement (server half) | `feat/backend-followup` | `.worktrees/backend-followup` | see `git log` (≥ `83c213c`) | `6069ccd` | Implemented; first security review found blocking defects, all fixed with tests. **A re-review of the fixes is running — do not integrate until this line says ready.** |
+| Graph identity + linking (people ↔ messages/emails/meetings/tasks) | `feat/backend-graph` | `.worktrees/backend-graph` | in progress | `6069ccd` | Being implemented. Server-only. |
 
 Detailed contracts live on each branch:
 
 - `docs/roadmap/workspace-experience/BACKEND-STATUS-TRANSCRIPTS.md` (on `feat/backend-transcripts`)
 - `docs/roadmap/workspace-experience/BACKEND-STATUS.md` (on `feat/backend-followup`)
 
-Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → transcripts branch 1,490 → suggestions branch 1,499, all passing on each branch separately. The two branches have not been merged together yet; they overlap on a few adjacent lines in `apps/server/src/routes/api.ts` and `apps/server/test/helpers.ts`. The backend agent will produce the combined branch — please don't resolve that by replacing either file.
+Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → transcripts branch 1,490 → suggestions branch 1,513, all passing on each branch separately. The two branches have not been merged together yet; they overlap on a few adjacent lines in `apps/server/src/routes/api.ts` and `apps/server/test/helpers.ts`. The backend agent will produce the combined branch — please don't resolve that by replacing either file.
 
 ---
 
@@ -37,6 +38,20 @@ Keep the "trusted collaborators" warning in `ShareDialog.tsx` until step 3 is li
 - Each command carries `requestId` (uuid), `createdAt`, and `revision` (SHA-256 over canonical prose + comments). Stale revision or changed quote → 409, nothing mutated, keep the draft.
 - A command returns 200 only after the document save succeeded. Otherwise 503 `not_confirmed`: retry **the identical request** (same `requestId`, same body); the server will not apply it twice.
 - Author identity comes from the server, never the body. Extra body fields are rejected.
+
+
+### Contract changes after the security review (2026-10-02, supersede anything above that conflicts)
+
+- **Suggested text may not contain line breaks** (`\n`, `\r`, U+2028/U+2029 → 400). A marked line break cannot be cleanly rejected by a reviewer, so multi-line suggestions are refused. The composer should be single-line or split per paragraph.
+- **Range:** `from` and `to` must be in the same paragraph and the range must be fully markable. A selection containing inline code, a line break or an embedded node is refused whole (400). Explain this in the composer rather than letting the request fail.
+- **`:id` must be the real note id** (`[A-Za-z0-9_-]{1,128}`); a path or title returns 404.
+- **Comment and reply text ≤ 4,000 chars** (`HUMAN_COLLAB_LIMITS.commentText` in `@prism/core/collab-commands`).
+- **New error codes:** `actor_request_limit` (429), `too_many_pending_suggestions` (429, 100 pending per actor per document), `too_many_threads` (429), `thread_full` (409, 200 comments), `document_too_large` (413).
+- **Retry after a lost change:** the identical retry can return 200 *without* `Idempotent-Replayed` and with new ids. Only trust ids from a 200 body.
+- **Lost `resolve` / `delete-comment` after a failed save:** the client saw 503, the retry gets 409, but the effect may persist. Reload thread state on 409 instead of assuming it failed.
+- **Access change closes the socket** with reason "Access changed." (observed close code 1000, not 4403 — key on the reason, as the shipped `CollabDoc` does). Re-read the scope on every `authenticated` event.
+- **Text typed locally while suggest-only stays in the client's Y.Doc** and will sync if the user is upgraded to edit on the same page. With the editor non-editable for suggest users this should not arise; do not leave a raw-typing path open.
+- No client code handles Hocuspocus stateless messages today; keep it that way or tell the backend agent (read-only sockets can still broadcast them).
 
 ### Files the backend added outside `apps/server`
 
