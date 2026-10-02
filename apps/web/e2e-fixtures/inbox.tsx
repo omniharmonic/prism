@@ -1,3 +1,4 @@
+import { identityPeople, identityEmail, identityEdges } from "./inbox-people-data";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -58,6 +59,7 @@ const notes = [
     channels: { telegram: "@not-a-room:example.test" },
   }),
 ];
+if (location.search.includes("identity")) notes.push(...identityPeople, identityEmail);
 if (location.search.includes("visual")) {
   notes[1].path = "Messages/Workshop planning";
   notes[1].content = "";
@@ -89,6 +91,7 @@ const fixtureScope = () =>
 useAgentChatStore.getState().bindScope(fixtureScope());
 const controls = {
   denyDetail: false,
+  denyPeople: false,
   switchScope: () => {
     audience = "other@example.test";
     useAgentChatStore.getState().bindScope(fixtureScope());
@@ -146,6 +149,7 @@ const vault = {
     has_more: false,
   }),
   listNotes: async (filters: Parameters<VaultClient["listNotes"]>[0]) => {
+    if (filters?.tag === "person" && controls.denyPeople) throw new Error("People unavailable");
     if (filters?.tag === "message-thread" && controls.denyThreads)
       throw new Error("Fixture unavailable");
     return (audience === "owner@example.test" ? notes : [])
@@ -155,6 +159,7 @@ const vault = {
   getGraph: async () => ({
     nodes: [],
     edges: [
+      ...(location.search.includes("identity") ? identityEdges : []),
       { source: "morgan", target: "direct", relationship: "messages-with" },
       { source: "direct", target: "morgan", relationship: "email-from" },
       { source: "morgan", target: "group", relationship: "messages-with" },
@@ -180,6 +185,7 @@ const client = {
 const query = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 });
+Object.assign(window, { prismInboxQuery: query });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={query}>
