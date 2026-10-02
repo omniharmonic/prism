@@ -14,3 +14,5 @@
  .document-formatting-commands > button, .document-review-controls button { min-width: 44px; min-height: 44px; flex-shrink: 0; }
  .document-formatting-commands > span, .document-formatting-commands > div { flex-shrink: 0; }
 }
+
+.document-formatting-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }

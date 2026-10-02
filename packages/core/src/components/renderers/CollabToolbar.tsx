@@ -16,6 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
+import { DocumentOutline } from "./DocumentOutline";
 import { FormattingBar } from "./FormattingBar";
 
 /**
@@ -83,7 +84,7 @@ export function CollabToolbar({
   const Sep = () => <span style={{ width: 1, height: 18, background: "var(--glass-border)", margin: "0 2px" }} />;
 
   return (
-    <FormattingBar reviewControls={(onSetSuggesting || canReview || suggesting) && (
+    <FormattingBar navigation={<DocumentOutline editor={editor} />} reviewControls={(onSetSuggesting || canReview || suggesting) && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
           {onSetSuggesting ? (
             <button
