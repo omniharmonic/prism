@@ -239,16 +239,16 @@ function ScopedCalendarDashboard() {
   const selectedEvents = selectedDate ? eventsByDate.get(dateKey(selectedDate)) || [] : [];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex min-w-0 flex-col h-full bg-[var(--bg-base)]">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h2 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>{title}</h2>
+          <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>{title}</h2>
           <div className="flex items-center gap-1">
-            <button aria-label="Previous period" onClick={prev} className="p-2 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
-            <button aria-label="Next period" onClick={next} className="p-2 rounded hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
+            <button aria-label="Previous period" onClick={prev} className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronLeft size={16} /></button>
+            <button aria-label="Next period" onClick={next} className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)" }}><ChevronRight size={16} /></button>
           </div>
-          <button onClick={goToday} className="px-2 py-0.5 rounded text-xs hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
+          <button onClick={goToday} className="focus-ring min-h-11 px-3 rounded-lg text-sm hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>Today</button>
           {syncing && (
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
               <RefreshCw size={10} className="animate-spin" style={{ animationDuration: "2s" }} />
@@ -258,7 +258,7 @@ function ScopedCalendarDashboard() {
           {canCreate && (
             <button
               onClick={() => handleCreateClick()}
-              className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
+              className="focus-ring min-h-11 min-w-11 p-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
               style={{ color: "var(--color-accent)" }}
               title="Create event"
             >
@@ -276,10 +276,10 @@ function ScopedCalendarDashboard() {
                 if (v === "week") setWeekStart(startOfWeek(selectedDate || today));
                 if (v === "day") setDayDate(selectedDate || today);
               }}
-              className="px-3 py-2 rounded text-xs transition-colors"
+              className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm transition-colors"
               style={{
-                background: view === v ? "var(--color-accent)" : "transparent",
-                color: view === v ? "white" : "var(--text-secondary)",
+                background: view === v ? "var(--surface-active)" : "transparent",
+                color: view === v ? "var(--text-primary)" : "var(--text-secondary)",
               }}
             >
               {v.charAt(0).toUpperCase() + v.slice(1)}
@@ -337,7 +337,7 @@ function ScopedCalendarDashboard() {
                 <div className="text-xs" style={{ color: "var(--text-muted)" }}>No events</div>
               ) : (
                 <div className="space-y-2">{selectedEvents.map((ev, i) => (
-                  <button key={i} className="w-full text-left" onClick={() => handleEventClick(ev)}>
+                  <button key={i} className="w-full text-left" onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); handleEventClick(ev); }}>
                     <EventCard event={ev} />
                   </button>
                 ))}</div>
@@ -362,8 +362,8 @@ function CalendarDetailsPanel({ open, onClose, children }: { open: boolean; onCl
     element?.showModal();
     return () => { element?.close(); if (previous?.isConnected) previous.focus(); };
   }, [mobile, open]);
-  if (!mobile) return open ? <aside className="w-[300px] flex-shrink-0 overflow-auto border-l" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>{children}</aside> : null;
-  return <dialog ref={dialog} aria-label="Calendar details" onCancel={(e) => { e.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-[100dvh] max-h-none w-full max-w-none overflow-auto border-0 p-4" style={{ background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+  if (!mobile) return open ? <aside className="w-[clamp(300px,30%,380px)] flex-shrink-0 overflow-auto border-l" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>{children}</aside> : null;
+  return <dialog ref={dialog} aria-label="Calendar details" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }} className="fixed inset-0 m-0 h-[100dvh] max-h-none w-full max-w-none overflow-auto border-0 p-4" style={{ background: "var(--bg-surface)", color: "var(--text-primary)" }}>
     <div className="mb-3 flex items-center justify-between"><h2 className="font-medium">Calendar details</h2><button aria-label="Close calendar details" className="focus-ring rounded-lg p-3" onClick={onClose}><X size={18} /></button></div>
     {children}
   </dialog>;
@@ -394,7 +394,7 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
                 {day.getDate()}
               </button>
               {dayEvts.slice(0, 3).map((ev, j) => (
-                <button key={ev.vaultNoteId ?? j} onClick={() => onEventClick(ev)} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--color-accent)", color: "white", opacity: 0.85 }}>{ev.summary || "Event"}</button>
+                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--color-accent)", color: "white", opacity: 0.85 }}>{ev.summary || "Event"}</button>
               ))}
               {dayEvts.length > 3 && <button onClick={() => onSelect(day)} className="focus-ring text-left text-[10px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</button>}
             </div>
@@ -435,7 +435,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
       <div className="grid grid-cols-8 border-b text-xs" style={{ borderColor: "var(--glass-border)" }}>
         <span className="p-2" style={{ color: "var(--text-muted)" }}>All day</span>
         {days.map((day) => <div key={dateKey(day)} className="min-w-0 space-y-1 border-l p-1" style={{ borderColor: "var(--glass-border)" }}>
-          {(eventsByDate.get(dateKey(day)) ?? []).filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="focus-ring w-full truncate rounded px-1 py-2 text-left" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
+          {(eventsByDate.get(dateKey(day)) ?? []).filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(event); }} className="focus-ring w-full truncate rounded px-1 py-2 text-left" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
         </div>)}
       </div>
       {/* Time grid */}
@@ -460,7 +460,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
                 {/* Event blocks */}
                 {layoutCalendarDay(dayEvts, d).map(({ event: ev, start, end, column, columns }, ei) => {
                   return (
-                    <button key={ei} onClick={() => onEventClick(ev)} className="focus-ring absolute rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
+                    <button key={ei} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring absolute rounded px-1 py-0.5 text-left text-[10px] overflow-hidden hover:opacity-100 transition-opacity"
                       style={{ top: start * 0.8 + 2, height: (end - start) * 0.8 - 4, left: `calc(${column / columns * 100}% + 2px)`, width: `calc(${100 / columns}% - 4px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                       <div className="font-medium truncate">{ev.summary || "Event"}</div>
                       <div className="opacity-75">{formatTime(ev.start?.dateTime)}</div>
@@ -483,7 +483,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
   const isToday = isSameDay(date, today);
   if (mobile) return <div className="space-y-3 overflow-auto p-4">
     {!events.length && <p className="py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>No events for this day.</p>}
-    {[...events].sort((a, b) => (a.start?.dateTime ? Date.parse(a.start.dateTime) : -Infinity) - (b.start?.dateTime ? Date.parse(b.start.dateTime) : -Infinity)).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}>
+    {[...events].sort((a, b) => (a.start?.dateTime ? Date.parse(a.start.dateTime) : -Infinity) - (b.start?.dateTime ? Date.parse(b.start.dateTime) : -Infinity)).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(event); }} className="interactive focus-ring w-full rounded-xl border p-4 text-left" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)", color: "var(--text-primary)" }}>
       <span className="text-xs" style={{ color: "var(--text-muted)" }}>{event.start?.dateTime ? `${timeOnDay(event.start.dateTime, date)}${event.end?.dateTime ? ` – ${timeOnDay(event.end.dateTime, date)}` : ""}` : "All day"}</span>
       <span className="mt-1 block break-words text-sm font-medium">{event.summary || "Untitled event"}</span>
       {event.location && <span className="mt-2 block break-words text-xs" style={{ color: "var(--text-secondary)" }}>{event.location}</span>}
@@ -494,7 +494,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
     <div className="flex-1 overflow-auto">
       {events.some((event) => !event.start?.dateTime) && <div className="space-y-2 border-b p-3" style={{ borderColor: "var(--glass-border)" }}>
         <h3 className="text-xs" style={{ color: "var(--text-muted)" }}>All day</h3>
-        {events.filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={() => onEventClick(event)} className="interactive focus-ring block w-full rounded-lg px-3 py-2 text-left text-sm" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
+        {events.filter((event) => !event.start?.dateTime).map((event) => <button key={event.vaultNoteId ?? event.id} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(event); }} className="interactive focus-ring block w-full rounded-lg px-3 py-2 text-left text-sm" style={{ background: "var(--glass-active)" }}>{event.summary || "Event"}</button>)}
       </div>}
       <div className="grid grid-cols-[60px_1fr]" style={{ minHeight: 24 * 48 }}>
         {/* Time labels */}
@@ -518,7 +518,7 @@ function DayView({ date, today, events, onEventClick }: { date: Date; today: Dat
           {/* Event blocks */}
           {layoutCalendarDay(events, date).map(({ event: ev, start, end, column, columns }, i) => {
             return (
-              <button key={i} onClick={() => onEventClick(ev)} className="focus-ring absolute rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
+              <button key={i} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring absolute rounded-md px-2 py-1 text-left overflow-hidden hover:opacity-100 transition-opacity"
                 style={{ top: start * 0.8, height: (end - start) * 0.8, left: `calc(${column / columns * 100}% + 4px)`, width: `calc(${100 / columns}% - 8px)`, background: "var(--color-accent)", color: "white", opacity: 0.9 }}>
                 <div className="text-xs font-medium truncate">{ev.summary || "Event"}</div>
                 <div className="text-[10px] opacity-80">{formatTime(ev.start?.dateTime)} – {formatTime(ev.end?.dateTime)}</div>
@@ -608,10 +608,10 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
 
 
   return (
-    <div className="p-3 space-y-3">
+    <div className="min-w-0 p-4 space-y-5">
       <div className="flex items-start justify-between">
-        <h3 className="text-sm font-semibold pr-2" style={{ color: "var(--text-primary)" }}>{event.summary || "Untitled"}</h3>
-        <button aria-label="Close event details" onClick={onClose} className="hidden md:block p-2 rounded hover:bg-[var(--glass-hover)] flex-shrink-0">
+        <h3 className="min-w-0 break-words text-xl font-semibold pr-2" style={{ color: "var(--text-primary)" }}>{event.summary || "Untitled"}</h3>
+        <button aria-label="Close event details" onClick={onClose} className="focus-ring hidden md:flex min-h-11 min-w-11 items-center justify-center rounded-lg hover:bg-[var(--glass-hover)] flex-shrink-0">
           <X size={14} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
@@ -619,7 +619,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       {/* Time */}
       <div className="flex items-center gap-2">
         <Clock size={12} style={{ color: "var(--text-muted)" }} />
-        <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
+        <div className="text-sm" style={{ color: "var(--text-secondary)" }}>
           <div>{event.start?.dateTime || event.start?.date ? calendarDate(event.start.dateTime || event.start.date!).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "Date unavailable"}</div>
           <div>
             {formatTime(event.start?.dateTime) || "All day"}
@@ -632,7 +632,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       {event.location && (
         <div className="flex items-center gap-2">
           <MapPin size={12} style={{ color: "var(--text-muted)" }} />
-          <span className="text-xs" style={{ color: "var(--text-secondary)" }}>{event.location}</span>
+          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>{event.location}</span>
         </div>
       )}
 
@@ -642,7 +642,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
           href={meetUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]"
+          className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
           style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}
         >
           <Video size={12} /> Join meeting
@@ -655,11 +655,11 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
         <div>
           <div className="flex items-center gap-1 mb-1">
             <Users size={12} style={{ color: "var(--text-muted)" }} />
-            <span className="text-[10px] font-medium" style={{ color: "var(--text-muted)" }}>Attendees</span>
+            <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>Attendees</span>
           </div>
           <div className="space-y-0.5">
             {event.attendees.map((a, i) => (
-              <div key={i} className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
+              <div key={i} className="min-w-0 break-words py-1 text-sm" style={{ color: "var(--text-secondary)" }}>
                 {a.displayName || a.email}
               </div>
             ))}
@@ -669,7 +669,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
 
       {/* Description */}
       {event.description && (
-        <div className="text-xs whitespace-pre-wrap rounded p-2" style={{ color: "var(--text-secondary)", background: "var(--glass)" }}>
+        <div className="break-words text-sm leading-relaxed whitespace-pre-wrap rounded-lg p-3" style={{ color: "var(--text-secondary)", background: "var(--glass)" }}>
           {event.description}
         </div>
       )}
@@ -677,20 +677,20 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       <EventTranscripts noteId={event.vaultNoteId} eventId={event.id} onOpen={onOpenTranscript} />
 
       {/* Actions */}
-      <div className="flex items-center gap-2 pt-2" style={{ borderTop: "1px solid var(--glass-border)" }}>
-        <button onClick={onOpenNotes} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
+      <div className="flex flex-wrap items-center gap-2 pt-4" style={{ borderTop: "1px solid var(--glass-border)" }}>
+        <button onClick={onOpenNotes} className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--color-accent)", border: "1px solid var(--glass-border)" }}>
           <FileText size={12} /> Meeting Notes
         </button>
         {canMutate && (
           <>
-            <button onClick={onEdit} className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button onClick={onEdit} className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               <Pencil size={12} /> Edit
             </button>
             <button
               onClick={() => (isDesktop ? void onDelete(true) : setConfirmDelete(true))}
               aria-label="Delete event"
               title="Delete event"
-              className="flex items-center gap-1 px-2 py-1.5 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]"
+              className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]"
               style={{ color: "var(--color-danger)", border: "1px solid var(--glass-border)" }}
             >
               <Trash2 size={12} />
@@ -700,7 +700,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       </div>
       {confirmDelete && !isDesktop && (
         <div className="space-y-2 rounded p-2" style={{ border: "1px solid var(--color-danger)" }} role="alertdialog" aria-label="Confirm delete">
-          <div className="text-xs" style={{ color: "var(--text-primary)" }}>
+          <div className="text-sm" style={{ color: "var(--text-primary)" }}>
             Delete this occurrence from Google Calendar? Only this one is removed if the event repeats. Its meeting note is kept (marked cancelled).
           </div>
           {(event.attendees?.length ?? 0) > 0 && (
@@ -713,16 +713,16 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
             <button
               onClick={() => void doDelete()}
               disabled={deleting}
-              className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
+              className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
               style={{ background: "var(--color-danger)", color: "white" }}
             >
               {deleting ? "Deleting..." : "Delete this occurrence"}
             </button>
-            <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="px-2 py-1 rounded text-xs" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button onClick={() => { setConfirmDelete(false); setDeleteError(null); }} disabled={deleting} className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               Cancel
             </button>
           </div>
-          {deleteError && <div className="text-xs" style={{ color: "var(--color-danger)" }}>{deleteError}</div>}
+          {deleteError && <div className="text-sm" style={{ color: "var(--color-danger)" }}>{deleteError}</div>}
           {seriesConfirm && (
             <div className="space-y-1 pt-1" style={{ borderTop: "1px solid var(--glass-border)" }}>
               <div className="text-xs font-medium" style={{ color: "var(--color-danger)" }}>
@@ -731,7 +731,7 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
               <button
                 onClick={() => void doDelete("all")}
                 disabled={deleting}
-                className="px-2 py-1 rounded text-xs font-medium disabled:opacity-50"
+                className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
                 style={{ background: "var(--color-danger)", color: "white" }}
                 data-testid="delete-all-occurrences"
               >
@@ -743,13 +743,13 @@ function EventDetailPanel({ event, onClose, onEdit, onDelete, onOpenNotes, onOpe
       )}
       {canRsvp && (
         <div className="flex items-center gap-2 flex-wrap">
-          {!rsvpNA && <span className="text-xs" style={{ color: "var(--text-muted)" }}>RSVP</span>}
+          {!rsvpNA && <span className="text-sm" style={{ color: "var(--text-muted)" }}>RSVP</span>}
           {!rsvpNA && (["accepted", "tentative", "declined"] as RsvpResponse[]).map((r) => (
-            <button key={r} onClick={() => rsvp(r)} className="px-2 py-1 rounded text-xs transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
+            <button key={r} onClick={() => rsvp(r)} className="focus-ring min-h-11 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-[var(--glass-hover)]" style={{ color: "var(--text-secondary)", border: "1px solid var(--glass-border)" }}>
               {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
             </button>
           ))}
-          {rsvpMsg && <span className="text-xs" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
+          {rsvpMsg && <span className="text-sm" style={{ color: "var(--text-muted)" }}>{rsvpMsg}</span>}
         </div>
       )}
     </div>
@@ -770,7 +770,7 @@ function EventFormPanel({ event, defaultDate, onClose, onSaved, live }: {
   // A recurring SERIES id is refused unless "ALL occurrences" is confirmed (H1).
   const [seriesEdit, setSeriesEdit] = useState(false);
   const isEdit = !!event;
-  const dateStr = defaultDate ? `${defaultDate.getFullYear()}-${String(defaultDate.getMonth() + 1).padStart(2, "0")}-${String(defaultDate.getDate()).padStart(2, "0")}` : new Date().toISOString().slice(0, 10);
+  const dateStr = defaultDate ? `${defaultDate.getFullYear()}-${String(defaultDate.getMonth() + 1).padStart(2, "0")}-${String(defaultDate.getDate()).padStart(2, "0")}` : dateKey(new Date());
 
   const [summary, setSummary] = useState(event?.summary || "");
   // Date and time both in the browser's local zone (security review L8): the
