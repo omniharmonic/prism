@@ -43,6 +43,7 @@ test("search attaches to the current session without changing its draft, mode or
   await page.keyboard.press("Escape");
   await add(page).click();
   await expect.poll(() => ids(page)).toEqual(["document-b"]);
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.sourceReads.some((read: {id:string;fresh?:boolean}) => read.id === "document-b" && read.fresh === true))).toBe(true);
   await expect(input).toHaveValue("Keep this instruction");
   await expect(
     page.getByLabel("Agent permissions", { exact: true }),

@@ -122,7 +122,7 @@ export function useSavedNoteHandoff({
     let cancelled = false;
     setFailure(null);
     void vault
-      .getNote(pending.noteId)
+      .getNote(pending.noteId, { fresh: true })
       .then((note) => {
         if (cancelled) return;
         if (note.id !== pending.noteId)
