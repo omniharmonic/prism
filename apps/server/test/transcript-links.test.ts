@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { db } from "../src/db";
+import { vaultClient } from "../src/parachute";
 import { resetDb, installFakeVault, type FakeVault } from "./helpers";
 import {
   decideTranscriptLink,
@@ -10,6 +11,7 @@ import {
   type LinkAuthorize,
   type ManualDecision,
 } from "../src/transcript-links";
+import { buildMeetingNote, syncCalendarWindow, type CalEvent, type CalendarPassOptions, type CalendarVault } from "../src/worker/calendar";
 
 let fv: FakeVault;
 const OWNER = "user:owner@test.local";
@@ -303,4 +305,138 @@ test("a half-written automatic link stays pending and the worker sweep completes
   assert.equal(meta("T1").meetingNoteId, "M");
   assert.deepEqual(journal().map((r) => [r.actor, r.state]), [["worker", "applied"]]);
   assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0 });
+});
+
+// ── calendar pass through the gate ───────────────────────────────────────────
+
+const ev = (over: CalEvent = {}): CalEvent => ({ id: "ev-m", summary: "Roadmap review", start: { dateTime: "2026-10-05T10:00:00Z" }, end: { dateTime: "2026-10-05T11:00:00Z" }, attendees: [], ...over });
+const passOpts = (over: Partial<CalendarPassOptions> = {}): CalendarPassOptions => ({ from: "2026-10-01", to: "2026-10-31", max: 250, shadow: false, deleteMode: "log", source: "worker", links: gate(), ...over });
+const pass = (events: CalEvent[], over: Partial<CalendarPassOptions> = {}) =>
+  syncCalendarWindow({ listEventsRange: async () => ({ events }) }, vaultClient("primary") as unknown as CalendarVault, passOpts(over));
+/** Seed the meeting exactly as the ingest would have written it. */
+function synced(id: string, event: CalEvent, extra: Record<string, unknown> = {}, content?: string) {
+  const m = buildMeetingNote(event);
+  return fv.put({ id, path: m.path, tags: ["meeting"], content: content ?? m.content, metadata: { ...m.metadata, ...extra } });
+}
+function fresh() {
+  fv.notes.clear();
+}
+
+test("pass: two recordings carrying the exact event id are BOTH linked (plural, singular, typed link, backpointers)", async () => {
+  fresh();
+  synced("M", ev());
+  transcript("R1", { calendarEventId: "ev-m", title: "x" });
+  transcript("R2", { calendarEventId: "ev-m", title: "y" });
+  transcript("OTHER", { calendarEventId: "ev-other" });
+  const r = await pass([ev()]);
+  assert.equal(r.transcriptLinks, 2);
+  assert.deepEqual(meta("M").transcriptNoteIds, ["R1", "R2"]);
+  assert.equal(meta("M").transcriptNoteId, "R1");
+  assert.deepEqual(typed("M"), ["R1", "R2"]);
+  assert.equal(meta("R1").meetingNoteId, "M");
+  assert.equal(meta("R2").meetingNoteId, "M");
+  assert.equal(meta("OTHER").meetingNoteId, undefined);
+  const again = await pass([ev()]);
+  assert.equal(again.transcriptLinks, 0, "idempotent: a second pass links nothing new");
+  assert.equal(patches("R1").length, 1);
+});
+
+test("pass: a recurring occurrence only takes its own recording; a timezone-offset start still matches; cancelled events take nothing", async () => {
+  fresh();
+  const monday = ev({ id: "series_20261005T160000Z", recurringEventId: "series", originalStartTime: { dateTime: "2026-10-05T10:00:00-06:00" }, start: { dateTime: "2026-10-05T10:00:00-06:00", timeZone: "America/Denver" } });
+  const tuesday = ev({ id: "series_20261006T160000Z", recurringEventId: "series", originalStartTime: { dateTime: "2026-10-06T10:00:00-06:00" }, start: { dateTime: "2026-10-06T10:00:00-06:00", timeZone: "America/Denver" }, summary: "Roadmap review" });
+  const cancelled = ev({ id: "ev-cancelled", summary: "Budget chat", status: "cancelled", start: { dateTime: "2026-10-07T10:00:00Z" } });
+  const planning = ev({ id: "ev-planning", summary: "Quarterly planning workshop", start: { dateTime: "2026-10-08T09:00:00-06:00", timeZone: "America/Denver" } });
+  synced("MON", monday);
+  synced("TUE", tuesday);
+  synced("CAN", cancelled);
+  synced("PLAN", planning);
+  transcript("R-MON", { calendarEventId: "series_20261005T160000Z" });
+  transcript("R-TUE", { calendarEventId: "series_20261006T160000Z", date: "2026-10-06" });
+  transcript("R-CAN", { calendarEventId: "ev-cancelled", title: "Budget chat", date: "2026-10-07" });
+  // Recorded 15:05Z = 09:05 Denver: same instant family, different offset notation.
+  transcript("R-TZ", { title: "Quarterly planning workshop", date: "2026-10-08", start: "2026-10-08T15:05:00Z", attendees: [] });
+  await pass([monday, tuesday, cancelled, planning]);
+  assert.equal(meta("R-MON").meetingNoteId, "MON");
+  assert.equal(meta("R-TUE").meetingNoteId, "TUE");
+  assert.deepEqual(meta("MON").transcriptNoteIds, ["R-MON"]);
+  assert.deepEqual(meta("TUE").transcriptNoteIds, ["R-TUE"]);
+  assert.equal(meta("R-CAN").meetingNoteId, undefined, "a cancelled event is excluded even on an exact id");
+  assert.equal(meta("CAN").transcriptNoteIds, undefined);
+  assert.equal(meta("R-TZ").meetingNoteId, "PLAN");
+  assert.deepEqual(meta("PLAN").transcriptLinkEvidence, ["same-date", "start-within-15m", "title-words:3"]);
+});
+
+test("pass: equal fuzzy candidates are ambiguous — a blocked intent, nothing linked, nothing journaled", async () => {
+  fresh();
+  synced("M", ev({ attendees: [{ displayName: "Ada Example", email: "ada@example.test" }] }));
+  fv.put({ id: "ada", path: "vault/people/ada-example", tags: ["person"], metadata: { name: "Ada Example", email: "ada@example.test" } });
+  transcript("one");
+  transcript("two");
+  const r = await pass([ev({ attendees: [{ displayName: "Ada Example", email: "ada@example.test" }] })]);
+  assert.equal(r.transcriptLinks, 0);
+  assert.ok(r.intents.some((i) => i.action === "link-transcript" && i.effect === "blocked" && i.reason?.includes("Ambiguous") && i.candidates?.length === 2));
+  assert.equal(meta("M").transcriptNoteId, undefined);
+  assert.equal(meta("one").meetingNoteId, undefined);
+  assert.deepEqual(journal(), []);
+});
+
+test("pass: a manual unlink survives the following worker pass, and so does a manual link", async () => {
+  fresh();
+  synced("M", ev());
+  synced("M2", ev({ id: "ev-m2", summary: "Hiring debrief", start: { dateTime: "2026-10-06T10:00:00Z" } }));
+  transcript("R1", { calendarEventId: "ev-m" });
+  transcript("R2", { calendarEventId: "ev-m" });
+  await pass([ev()]);
+  assert.equal(meta("R1").meetingNoteId, "M");
+  // Reviewer: R1 is not this meeting; R2 actually belongs to the hiring debrief.
+  assert.equal((await decide({ transcriptId: "R1", action: "unlink", requestId: "u1", expectedRevision: 1 })).status, "applied");
+  assert.equal((await decide({ transcriptId: "R2", meetingId: "M2", requestId: "mv", expectedRevision: 1 })).status, "applied");
+  const events = [ev(), ev({ id: "ev-m2", summary: "Hiring debrief", start: { dateTime: "2026-10-06T10:00:00Z" } })];
+  for (let i = 0; i < 2; i++) {
+    const r = await pass(events);
+    assert.equal(r.transcriptLinks, 0);
+    assert.equal(meta("R1").meetingNoteId, undefined, "the worker does not relink a manually unlinked recording");
+    assert.equal(meta("R2").meetingNoteId, "M2", "the worker does not pull a manually moved recording back");
+    assert.equal(meta("M").transcriptNoteIds, undefined);
+    assert.deepEqual(typed("M"), []);
+    assert.deepEqual(meta("M2").transcriptNoteIds, ["R2"]);
+  }
+});
+
+test("pass: a half-written legacy pair is completed only when the matcher agrees; editable metadata alone is no authority", async () => {
+  fresh();
+  synced("M", ev(), { transcriptNoteId: "HALF", transcriptLinkOrigin: "calendar-match-v1" });
+  transcript("HALF", { calendarEventId: "ev-m" });
+  synced("N", ev({ id: "ev-n", summary: "Unrelated standup", start: { dateTime: "2026-10-09T10:00:00Z" } }), { transcriptNoteId: "FOREIGN" });
+  transcript("FOREIGN", { title: "Something else entirely", date: "2026-03-01", attendees: [] });
+  await pass([ev(), ev({ id: "ev-n", summary: "Unrelated standup", start: { dateTime: "2026-10-09T10:00:00Z" } })]);
+  assert.equal(meta("HALF").meetingNoteId, "M");
+  assert.deepEqual(meta("M").transcriptNoteIds, ["HALF"]);
+  assert.equal(meta("FOREIGN").meetingNoteId, undefined, "a meeting's own claim never writes an unrelated transcript");
+  assert.equal(patches("FOREIGN").length, 0);
+});
+
+test("retention: a template-only meeting with ANY transcript link form is never deleted", async () => {
+  fresh();
+  const gone = (id: string) => ev({ id: `gone-${id}`, summary: `Gone ${id}` });
+  synced("singular", gone("singular"), { transcriptNoteId: "t" });
+  synced("plural", gone("plural"), { transcriptNoteIds: ["t"] });
+  const typedOnly = synced("typed", gone("typed"));
+  typedOnly.links = [{ sourceId: "typed", targetId: "t", relationship: "has-transcript" }];
+  synced("backpointer", gone("backpointer"));
+  transcript("bp", { meetingNoteId: "backpointer" });
+  synced("journal", gone("journal"));
+  transcript("j");
+  db.prepare("INSERT INTO transcript_link_state VALUES ('primary', ?, 'j', 1, 'journal', 'manual', 0)").run(JSON.stringify(["http://vault.test", "default"]));
+  synced("bare", gone("bare"));
+
+  const r = await pass([], { deleteMode: "delete" });
+  assert.equal(r.reconcile.deleted, 1);
+  assert.equal(r.reconcile.cancelled, 5);
+  assert.equal(fv.notes.has("bare"), false, "control: a template-only meeting with no link at all is deleted");
+  for (const id of ["singular", "plural", "typed", "backpointer", "journal"]) {
+    assert.ok(fv.notes.has(id), `${id} kept`);
+    assert.equal(meta(id).event_status, "cancelled");
+  }
 });
