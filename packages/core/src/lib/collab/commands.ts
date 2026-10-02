@@ -45,7 +45,12 @@ export interface HumanCollabRange {
  *  - `from === to`, non-empty `text` → suggest INSERTING `text` at that position;
  *  - `from < to`, empty `text`      → suggest DELETING the range;
  *  - `from < to`, non-empty `text`  → suggest REPLACING the range with `text`.
- * `text` is plain text; "\n" becomes a line break inside the same block.
+ * `text` is plain text WITHOUT line breaks ("\n" / "\r" are refused: a break
+ * cannot carry the suggestion mark, so it could be neither reviewed nor
+ * rejected). `from` and `to` must be inside the SAME paragraph, and the range
+ * may contain only text that can be marked — a selection that includes inline
+ * code, a line break or an embedded node is refused whole (400), never applied
+ * in part. To suggest across paragraphs, send one command per paragraph.
  */
 export interface HumanSuggestCommand extends HumanCollabCommandBase, HumanCollabRange {
   kind: "suggest";
@@ -104,13 +109,13 @@ export type HumanCollabErrorCode =
   | "unauthenticated" // 401
   | "unsupported_media_type" // 415
   | "csrf_refused" // 403
-  | "invalid_command" // 400 — body failed the strict schema / bad range
+  | "invalid_command" // 400 — strict schema, bad range, line break in text, range not fully markable
   | "unsupported_kind" // 400 — the note is code / a sheet / a canvas
   | "forbidden" // 403 — below suggest on this note
   | "access_changed" // 403 — access changed while the request was in flight
   | "vault_mismatch" // 403 — the request's workspace is not the document's
   | "not_author" // 403 — delete-comment on someone else's thread
-  | "not_found" // 404
+  | "not_found" // 404 — no such note id (a path or title is NOT an id)
   | "stale_revision" // 409 — document or comments changed; draft must be re-anchored
   | "quote_changed" // 409 — the selected passage changed
   | "suggestion_overlap" // 409 — the passage already carries a suggestion
@@ -118,7 +123,12 @@ export type HumanCollabErrorCode =
   | "request_id_reused" // 409 — same requestId, different body
   | "expired" // 409 — createdAt outside the accepted window
   | "rate_limited" // 429
-  | "document_request_limit" // 429 — per-document receipt cap
+  | "document_request_limit" // 429 — too many recent requests on this document (all actors)
+  | "actor_request_limit" // 429 — too many recent requests by THIS actor on this document
+  | "too_many_pending_suggestions" // 429 — this actor's unreviewed suggestions on this document
+  | "too_many_threads" // 429 — the document's comment-thread budget is used up
+  | "thread_full" // 409 — the thread reached its comment limit
+  | "document_too_large" // 413 — the change would push the note / its comments past the size budget
   | "not_confirmed" // 503 — applied but not yet durable: retry the SAME request
   | "upstream_error"; // 502 — outcome unknown: retry the SAME request
 
@@ -136,8 +146,10 @@ export type HumanCollabSend = (command: HumanCollabCommand) => Promise<HumanColl
 
 /** Bounds the server enforces (a larger value is a 400, not a truncation). */
 export const HUMAN_COLLAB_LIMITS = {
-  /** Max characters of `text` (suggested text, comment, reply). */
+  /** Max characters of a suggestion's `text`. No line breaks (see HumanSuggestCommand). */
   text: 10_000,
+  /** Max characters of a comment's or reply's `text`. */
+  commentText: 4_000,
   /** Max characters of `quote`. */
   quote: 10_000,
   /** Max request body, bytes. */
