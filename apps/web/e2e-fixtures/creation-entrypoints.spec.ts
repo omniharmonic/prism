@@ -66,7 +66,7 @@ test("email command preserves draft type without sending and phone cancellation 
 test("nested mobile page cancellation leaves navigation open and restores its launcher", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/workspace.html");
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
   const nav = page.getByRole("dialog", { name: "Workspace navigation" });
   const opener = nav.getByRole("button", { name: "New page", exact: true });
   await opener.click();

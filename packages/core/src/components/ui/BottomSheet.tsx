@@ -1,182 +1,181 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { X } from "lucide-react";
+import "./mobile-workspace.css";
 
-/**
- * Mobile bottom sheet — a thumb-reachable action surface that slides up from the
- * bottom edge, matching the floating-glass aesthetic. Dismisses on backdrop tap,
- * Escape, or a downward swipe past a threshold. Honors iOS safe-area insets so
- * its last row clears the home indicator.
- *
- * Compose freely (custom children) or pass `items` for the canonical
- * icon + label action list with hairline-divided groups (Obsidian-style).
- */
 export interface SheetItem {
   icon?: ReactNode;
   label: string;
   detail?: string;
   onClick: () => void;
-  /** Visually separate this item from the previous one with a hairline divider. */
   startsGroup?: boolean;
   danger?: boolean;
   active?: boolean;
 }
 
+/** A modal mobile action surface. Only the handle can dismiss by dragging;
+ * scrolling a long document list never turns into an accidental dismissal. */
 export function BottomSheet({
   open,
   onClose,
-  title,
+  title = "Page actions",
   header,
   items,
   children,
+  returnFocusRef,
 }: {
   open: boolean;
   onClose: () => void;
   title?: string;
-  /** Optional control region rendered between the title and the rows. */
   header?: ReactNode;
   items?: SheetItem[];
   children?: ReactNode;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
+  const titleId = useId();
+  const dialog = useRef<HTMLDialogElement>(null);
   const [dragY, setDragY] = useState(0);
   const startY = useRef<number | null>(null);
+  const dragDistance = useRef(0);
+  const [viewport, setViewport] = useState<{ height: number; bottom: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const element = dialog.current;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    setDragY(0);
+    startY.current = null;
+    dragDistance.current = 0;
+    document.body.style.overflow = "hidden";
+    element?.showModal();
+    const vv = window.visualViewport;
+    const update = () =>
+      setViewport(
+        vv ? { height: vv.height, bottom: Math.max(0, window.innerHeight - vv.height - vv.offsetTop) } : null,
+      );
+    update();
+    vv?.addEventListener("resize", update);
+    vv?.addEventListener("scroll", update);
+    return () => {
+      vv?.removeEventListener("resize", update);
+      vv?.removeEventListener("scroll", update);
+      element?.close();
+      document.body.style.overflow = overflow;
+      const target = returnFocusRef?.current ?? previous;
+      if (target?.isConnected) target.focus({ preventScroll: true });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  // Reset any in-progress drag when the sheet re-opens.
-  useEffect(() => {
-    if (open) setDragY(0);
-  }, [open]);
+  }, [open, returnFocusRef]);
 
   if (!open) return null;
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    startY.current = e.touches[0].clientY;
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (startY.current === null) return;
-    const dy = e.touches[0].clientY - startY.current;
-    setDragY(Math.max(0, dy));
-  };
-  const onTouchEnd = () => {
-    if (dragY > 90) onClose();
-    else setDragY(0);
+  const resetDrag = () => {
     startY.current = null;
+    dragDistance.current = 0;
+    setDragY(0);
   };
-
   return (
-    <div
-      className="fixed inset-0 flex flex-col justify-end"
-      style={{ zIndex: "var(--z-modal)" as unknown as number }}
-      role="dialog"
-      aria-modal="true"
+    <dialog
+      ref={dialog}
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      className="prism-mobile-sheet"
+      style={{
+        maxHeight: viewport ? `min(82dvh, ${Math.max(120, viewport.height - 16)}px)` : undefined,
+        bottom: viewport?.bottom ?? 0,
+      }}
+      onCancel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (
+          event.target === event.currentTarget &&
+          (event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom)
+        )
+          onClose();
+      }}
+      onKeyDown={(event) => {
+        if ((event.target as HTMLElement).closest("dialog") !== event.currentTarget) return;
+        if (event.key === "Escape") event.stopPropagation();
+        if (event.key !== "Tab") return;
+        const controls = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+          ),
+        ).filter((control) => control.getClientRects().length > 0);
+        event.preventDefault();
+        if (!controls.length) {
+          event.currentTarget.focus();
+          return;
+        }
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        controls[
+          event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length
+        ]?.focus();
+      }}
     >
       <div
-        className="sheet-backdrop absolute inset-0"
-        style={{ background: "rgba(0,0,0,0.45)" }}
-        onClick={onClose}
-      />
-      <div
-        className="sheet-panel glass-elevated relative"
-        style={{
-          // A floating rounded card, inset from every edge — reads as lifted
-          // glass over the content rather than a slab welded to the screen.
-          margin: "0 8px",
-          marginBottom: "calc(env(safe-area-inset-bottom) + 8px)",
-          borderRadius: "var(--radius-lg)",
-          paddingBottom: 8,
-          maxHeight: "82dvh",
-          overflowY: "auto",
-          transform: dragY ? `translateY(${dragY}px)` : undefined,
-          transition: startY.current === null ? "transform var(--transition-base) ease-out" : "none",
-        }}
-        onClick={(e) => e.stopPropagation()}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
+        className="prism-mobile-sheet-panel"
+        style={{ transform: dragY ? `translateY(${dragY}px)` : undefined }}
       >
-        {/* Grabber */}
-        <div className="flex justify-center pt-2.5 pb-1.5" style={{ cursor: "grab" }}>
-          <div
-            style={{
-              width: 36,
-              height: 4,
-              borderRadius: 999,
-              background: "var(--glass-border-strong)",
-            }}
-          />
+        <div
+          className="prism-mobile-sheet-handle"
+          aria-hidden="true"
+          onTouchStart={(event) => {
+            startY.current = event.touches[0].clientY;
+            dragDistance.current = 0;
+          }}
+          onTouchMove={(event) => {
+            if (startY.current !== null) {
+              dragDistance.current = Math.max(0, event.touches[0].clientY - startY.current);
+              setDragY(dragDistance.current);
+            }
+          }}
+          onTouchEnd={() => {
+            const dismiss = dragDistance.current > 90;
+            resetDrag();
+            if (dismiss) onClose();
+          }}
+          onTouchCancel={resetDrag}
+        >
+          <span />
         </div>
-
-        {title && (
-          <div
-            className="px-5 pt-1 pb-2 text-xs font-semibold uppercase tracking-wide truncate"
-            style={{ color: "var(--text-muted)", letterSpacing: "0.04em" }}
-          >
-            {title}
-          </div>
-        )}
-
-        {header && (
-          <div className="px-5 pb-2.5 pt-0.5" style={{ borderBottom: "1px solid var(--glass-border)", marginBottom: 4 }}>
-            {header}
-          </div>
-        )}
-
-        {items ? (
-          <div className="pb-1">
-            {items.map((item, i) => (
-              <button
-                key={`${item.label}-${i}`}
-                onClick={() => {
-                  item.onClick();
-                }}
-                className="interactive w-full flex items-center gap-3.5 px-5 text-left"
-                style={{
-                  minHeight: 50,
-                  color: item.danger ? "var(--color-danger)" : "var(--text-primary)",
-                  borderTop: item.startsGroup
-                    ? "1px solid var(--glass-border)"
-                    : undefined,
-                  marginTop: item.startsGroup ? 4 : 0,
-                  paddingTop: item.startsGroup ? 4 : 0,
-                  fontWeight: 460,
-                  fontSize: "0.95rem",
-                  background: item.active ? "var(--surface-selected)" : undefined,
-                }}
-              >
-                {item.icon && (
-                  <span
-                    className="flex items-center justify-center flex-shrink-0"
-                    style={{
-                      width: 22,
-                      color: item.danger
-                        ? "var(--color-danger)"
-                        : item.active
-                          ? "var(--color-accent)"
-                          : "var(--text-secondary)",
-                    }}
-                  >
-                    {item.icon}
-                  </span>
-                )}
-                <span className="flex-1 min-w-0 truncate">{item.label}</span>
-                {item.detail && (
-                  <span className="text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-                    {item.detail}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        ) : (
-          children
-        )}
+        <header className="prism-mobile-sheet-heading">
+          <h2 id={titleId}>{title || "Page actions"}</h2>
+          <button type="button" aria-label="Close sheet" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="prism-mobile-sheet-content">
+          {header && <div className="prism-mobile-sheet-context">{header}</div>}
+          {items ? (
+            <div className="prism-mobile-sheet-actions">
+              {items.map((item, index) => (
+                <button
+                  key={`${item.label}-${index}`}
+                  type="button"
+                  onClick={item.onClick}
+                  className={[
+                    item.startsGroup ? "starts-group" : "",
+                    item.danger ? "danger" : "",
+                    item.active ? "active" : "",
+                  ].join(" ")}
+                >
+                  {item.icon && <span className="prism-mobile-sheet-icon">{item.icon}</span>}
+                  <span className="prism-mobile-sheet-label">{item.label}</span>
+                  {item.detail && <span className="prism-mobile-sheet-detail">{item.detail}</span>}
+                </button>
+              ))}
+            </div>
+          ) : (
+            children
+          )}
+        </div>
       </div>
-    </div>
+    </dialog>
   );
 }

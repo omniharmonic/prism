@@ -24,7 +24,7 @@ test("phone navigation preserves document state and has readable creation and se
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => localStorage.setItem("prism-settings", JSON.stringify({ state: { theme: "light" }, version: 0 })));
   await page.goto("/e2e-fixtures/workspace.html?navigation");
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
   const nav = page.getByRole("dialog", { name: "Workspace navigation" });
   await expect(nav.getByRole("button", { name: "Switch vault" })).toBeVisible();
   await expect(nav.getByRole("button", { name: "New page", exact: true })).toBeVisible();
@@ -78,7 +78,7 @@ test("sidebar preferences pin, hide and order tools without changing document da
 test("phone sidebar customization is keyboard dismissible and fits narrow screens", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 740 });
   await page.goto("/e2e-fixtures/workspace.html?navigation");
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
   const opener = page.getByRole("button", { name: "Customize sidebar", exact: true });
   await opener.click();
   const dialog = page.getByRole("dialog", { name: "Your sidebar" });
