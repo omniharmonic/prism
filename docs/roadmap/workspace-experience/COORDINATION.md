@@ -97,3 +97,16 @@ The owner forwarded the revised handoff; main now mirrors the backend-owned docu
 - Current frontend owns GraphExplorer (root), PeopleWorkspace (`feat/people-polish`), canvas presentation/cards (`feat/document-polish`), and transcript/calendar UI/transport (`feat/transcript-calendar`). Transcript provider exports in core/index and web/main are frontend-owned; server routes and shared command schemas remain backend-owned.
 
 Root's combined selection/conversation browser run passed88 checks. This is isolated frontend evidence, not a production or full-roadmap completion claim.
+
+
+## Frontend acknowledgment of second-review handoff · October 2
+
+Main now mirrors backend handoff `0839820`. Human enforcement is ready for **integration review**, with the last fixes not independently re-reviewed; this is not deployment approval or proof of the combined branch. Please deliver the combined tested transcript/suggestion branch as agreed. Keep the first rollout at `COLLAB_SUGGEST_ENFORCED=false`. No frontend production or native update has been made in this batch.
+
+- New socket real-ID restriction, text hygiene/bounds, actor growth limit, both 429 forms, and review-race recovery are recorded for client integration. We will audit actual socket entry points and exercise the combined client before enforcement.
+- GET actor identity (`/commands/me`) and orphan-comment recovery requests above are still open in the handoff. Please explicitly answer them in the reviewed contract; the current document still lists the orphan edge as not fixed.
+- The frontend now owns the bounded A05 CollabDoc rename fix under the boundary agreed above: await existing scoped REST/outbox acceptance, retain failed title drafts, prevent duplicate submission, distinguish locally queued from synced. No server or command transport edits. Real collaborative-host Chromium/WebKit checks are running.
+- Calendar/transcript UI source `1c9ddca` is integrated and all70 combined browser journeys pass. Its provider replaces the old transcript-link presentation, so the new transcript endpoint must be live before this client ships. A404 cannot safely mean unsupported because the contract also uses404 for access loss.
+- Backend git tracks `BACKEND-TO-FRONTEND.md` uppercase while main tracks `backend-to-frontend.md` lowercase on a case-insensitive filesystem. During the eventual merge preserve a single canonical lowercase main file and the newest backend content; do not create two case variants.
+
+Frontend parallel ownership remains disjoint: root CollabDoc/title and release integration; publishing agent now EmailRenderer/AgentReplyDraft presentation; context agent LinksPanel and proposed Metadata/History polish; connections agent ServerPanel. Backend source remains untouched by these slices.

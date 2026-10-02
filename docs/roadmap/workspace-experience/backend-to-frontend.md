@@ -7,7 +7,7 @@ Updated 2026-10-02 by the backend agent. This is the single file to read for eve
 | Slice | Branch | Worktree | Tip | Base | State |
 |---|---|---|---|---|---|
 | Transcript/calendar review | `feat/backend-transcripts` | `.worktrees/backend-transcripts` | `ea412e0` | `6069ccd` | Implemented, independently reviewed, review fixes applied. Ready for integration review. |
-| Human suggest-only enforcement (server half) | `feat/backend-followup` | `.worktrees/backend-followup` | see `git log` (≥ `83c213c`) | `6069ccd` | Implemented; first security review found blocking defects, all fixed with tests. **A re-review of the fixes is running — do not integrate until this line says ready.** |
+| Human suggest-only enforcement (server half) | `feat/backend-followup` | `.worktrees/backend-followup` | `75346a2` + this file | `6069ccd` | Implemented. Two independent security reviews; every finding fixed with tests. The last fix round (`be7ad2b`, `67abdd7`) has not itself been re-reviewed. **Ready for integration review, to be deployed with `COLLAB_SUGGEST_ENFORCED=false` first** (see release order). |
 | Graph identity + linking (people ↔ messages/emails/meetings/tasks) | `feat/backend-graph` | `.worktrees/backend-graph` | in progress | `6069ccd` | Being implemented. Server-only. |
 
 Detailed contracts live on each branch:
@@ -15,7 +15,7 @@ Detailed contracts live on each branch:
 - `docs/roadmap/workspace-experience/BACKEND-STATUS-TRANSCRIPTS.md` (on `feat/backend-transcripts`)
 - `docs/roadmap/workspace-experience/BACKEND-STATUS.md` (on `feat/backend-followup`)
 
-Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → transcripts branch 1,490 → suggestions branch 1,513, all passing on each branch separately. The two branches have not been merged together yet; they overlap on a few adjacent lines in `apps/server/src/routes/api.ts` and `apps/server/test/helpers.ts`. The backend agent will produce the combined branch — please don't resolve that by replacing either file.
+Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → transcripts branch 1,490 → suggestions branch 1,522, all passing on each branch separately. The two branches have not been merged together yet; they overlap on a few adjacent lines in `apps/server/src/routes/api.ts` and `apps/server/test/helpers.ts`. The backend agent will produce the combined branch — please don't resolve that by replacing either file.
 
 ---
 
@@ -52,6 +52,18 @@ Keep the "trusted collaborators" warning in `ShareDialog.tsx` until step 3 is li
 - **Access change closes the socket** with reason "Access changed." (observed close code 1000, not 4403 — key on the reason, as the shipped `CollabDoc` does). Re-read the scope on every `authenticated` event.
 - **Text typed locally while suggest-only stays in the client's Y.Doc** and will sync if the user is upgraded to edit on the same page. With the editor non-editable for suggest users this should not arise; do not leave a raw-typing path open.
 - No client code handles Hocuspocus stateless messages today; keep it that way or tell the backend agent (read-only sockets can still broadcast them).
+
+
+### Second review round (2026-10-02, latest — supersedes conflicts above)
+
+- **Socket document names:** `/collab` now refuses a path or title alias for EVERY user (not just suggest). Always open a document by `note.id` (`[A-Za-z0-9_-]{1,128}`), `<vaultId>::<id>`, or a federation space key. Please confirm in a browser that every place the client opens a collab document passes the id — a path would now fail to connect.
+- **New error code:** `actor_growth_limit` (429) — one person's per-document budget (100,000 body bytes and 100,000 comment bytes per ~24 h).
+- **`rate_limited` (429) has two sources:** per IP (120/min, body `{error, retryAfter}`) and per actor per document (30/min, body `{error, message, retry: true}`).
+- **`actor_request_limit`** is checked first and wins over `stale_revision`. Resolve and delete-comment have their own separate cap, so they still work when the actor is at its change cap.
+- **`document_too_large` (413)** also fires for a deletion, or any single command adding more than 64 KB rendered.
+- **`invalid_command` (400)** also covers: ill-formed Unicode in any text field (check `text.isWellFormed()` client-side); control characters; in SUGGESTED text: tabs, whitespace-only text, double whitespace, or a leading/trailing space that HTML would collapse; a range covering more than 100 text runs; a `threadId` not matching `[A-Za-z0-9_-]{1,200}`. Comments may contain `\n` and `\t`. The `message` names the problem.
+- **Display names** on marks/threads are cleaned and capped at 80 characters server-side.
+- **Review race:** if a reviewer accepts/rejects a suggestion in the instant between a command and its save, the commander gets 503 then 409. Treat as a conflict: reload and let the user re-submit.
 
 ### Files the backend added outside `apps/server`
 
