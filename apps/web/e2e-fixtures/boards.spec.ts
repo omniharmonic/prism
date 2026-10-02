@@ -989,3 +989,18 @@ test("phone manual ordering keeps its earlier/later controls and respects queued
     ),
   ).toEqual(["board"]);
 });
+
+
+test("phone starts with a readable list without rewriting the saved board view", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/boards.html");
+  await expect(page.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Review with collaborators", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Board", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.getByRole("button", { name: "Board", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Board", exact: true })).toHaveAttribute("aria-pressed", "true");
+});

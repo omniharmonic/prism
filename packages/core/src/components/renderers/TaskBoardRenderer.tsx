@@ -1,3 +1,4 @@
+import "./boards/BoardWorkspace.css";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -27,6 +28,7 @@ import type { RendererProps } from "./RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
 import { noteCaps } from "../../lib/governance/review";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -42,7 +44,7 @@ import {
 import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
 
 export const boardControl =
-  "min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+  "board-control focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
 
 // Prefer the card under the pointer to its containing column. Exclude the
 // dragged card itself so overlapping its original slot cannot capture the drop.
@@ -128,7 +130,8 @@ function Board({
     !refreshing && !tasks.isFetching && !tasks.isError && config
       ? boardTasks(tasks.data ?? [], config, query)
       : [];
-  const mode = view ?? config?.view ?? "board";
+  const isMobile = useIsMobile();
+  const mode = view ?? (isMobile ? "list" : config?.view ?? "board");
   const refresh = () => queries.invalidateQueries({ queryKey: ["vault"] });
   const recover = async () => {
     if (!current() || writeLock.current || refreshLock.current) return;
@@ -400,14 +403,14 @@ function Board({
   return (
     <section
       aria-label="Task board"
-      className="flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-base)] text-[var(--text-primary)]"
+      className="board-workspace flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-base)] text-[var(--text-primary)]"
     >
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
+      <header className="board-header flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
         <div>
           <p className="text-xs text-[var(--text-secondary)]">
-            Workspace / Tasks
+            {note.path?.split("/").slice(0, -1).filter((part, index) => index !== 0 || part !== "vault").join(" / ") || "Tasks"}
           </p>
-          <h1 className="mt-1 text-xl font-semibold">{boardTitle(note)}</h1>
+          <h1 className="board-title mt-1 font-semibold">{boardTitle(note)}</h1>
         </div>
         <div className="flex gap-2">
           {canEdit(note) && (
@@ -417,14 +420,14 @@ function Board({
             </button>
           )}
           {canCreate && (
-            <button className={boardControl} onClick={() => setCreating(true)}>
+            <button className={boardControl + " board-primary"} onClick={() => setCreating(true)}>
               <Plus size={16} className="mr-1 inline" />
               New task
             </button>
           )}
         </div>
       </header>
-      <div className="flex flex-wrap items-center gap-3 px-5 py-3">
+      <div className="board-viewbar flex flex-wrap items-center gap-3 px-5 py-3">
         <div role="group" aria-label="Task view" className="flex gap-1">
           {(["board", "list"] as const).map((v) => (
             <button
@@ -450,7 +453,7 @@ function Board({
           placeholder="Filter tasks…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className={boardControl + " min-w-[180px] flex-1"}
+          className={boardControl + " board-filter min-w-0"}
         />
         <span className="text-xs text-[var(--text-secondary)]">
           {notes.length} tasks · grouped by {config.groupBy}
@@ -532,8 +535,8 @@ function Board({
             <div
               className={
                 mode === "board"
-                  ? "flex min-h-0 flex-1 gap-4 overflow-auto p-5"
-                  : "min-h-0 flex-1 overflow-auto p-5"
+                  ? "board-columns flex min-h-0 flex-1 gap-4 overflow-auto p-5"
+                  : "board-list min-h-0 flex-1 overflow-auto p-5"
               }
             >
               {mode === "list" && !notes.length && (
@@ -643,7 +646,7 @@ function Column({
       ref={setNodeRef}
       aria-label={group.label}
       className={
-        list ? "mb-6" : "flex w-[min(290px,calc(100vw-56px))] shrink-0 flex-col"
+        list ? "board-group board-list-group mb-6" : "board-group flex w-[min(280px,calc(100vw-56px))] shrink-0 flex-col"
       }
     >
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -654,8 +657,8 @@ function Column({
         </span>
       </h2>
       <div
-        className="min-h-24 space-y-2 rounded-xl p-1"
-        style={{ background: isOver ? "var(--glass-active)" : "var(--glass)" }}
+        className="board-column-body min-h-24 space-y-2 rounded-xl p-1"
+        style={{ background: isOver ? "var(--glass-active)" : "transparent" }}
       >
         {children}
         {!group.tasks.length && (
@@ -711,7 +714,7 @@ function TaskCard({
         setDropRef(node);
       }}
       aria-label={boardTitle(task)}
-      className="relative rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3 shadow-sm"
+      className="board-card relative rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3"
       style={{
         opacity: isDragging ? 0.4 : 1,
         outline: isOver ? "2px solid var(--accent)" : undefined,
@@ -721,7 +724,7 @@ function TaskCard({
       <div className="flex items-start gap-1">
         <button
           onClick={onOpen}
-          className="min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
+          className="board-card-title focus-ring min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
         >
           {boardTitle(task)}
           <ArrowUpRight
@@ -735,7 +738,7 @@ function TaskCard({
             {...listeners}
             disabled={disabled}
             aria-label={"Drag " + boardTitle(task)}
-            className="min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
+            className="board-card-drag focus-ring min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
           >
             <GripVertical size={16} />
           </button>
@@ -777,7 +780,7 @@ function TaskCard({
             task.metadata?.[field] ??
             (field === "deadline" ? task.metadata?.due : undefined);
           return value == null ? null : (
-            <div key={field} className="min-w-0 max-w-full break-words">
+            <div key={field} data-board-field={field} data-priority={field === "priority" && typeof value === "string" ? value.toLowerCase() : undefined} className="min-w-0 max-w-full break-words">
               <dt className="sr-only">{field}</dt>
               <dd>
                 {typeof value === "object"

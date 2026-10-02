@@ -1,0 +1,40 @@
+/* D04 / board20: quiet view controls and readable cards, with unchanged task semantics. */
+.board-workspace .board-header { padding: 28px 28px 20px; gap: 16px; }
+.board-workspace .board-header > div:first-child { min-width: 0; }
+.board-title { font-size: clamp(26px, 2.5vw, 34px); letter-spacing: -.03em; line-height: 1.2; overflow-wrap: anywhere; }
+.board-workspace .board-control { min-height: 36px; border-radius: 7px; }
+.board-workspace .board-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
+.board-workspace .board-primary:hover { opacity: .9; }
+.board-viewbar { padding-left: 28px; padding-right: 28px; }
+.board-viewbar [aria-label="Task view"] { align-self: stretch; gap: 8px; }
+.board-viewbar [aria-label="Task view"] button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent !important; }
+.board-viewbar [aria-label="Task view"] button[aria-pressed="true"] { border-bottom-color: var(--color-accent); color: var(--text-primary); }
+.board-viewbar .board-filter { flex: 0 1 340px; width: 240px; margin-left: auto; }
+.board-columns { padding: 16px 28px 28px; }
+.board-group > h2 { margin: 0; padding: 10px 12px; }
+.board-group > h2 > span:last-child { display: inline-flex; justify-content: center; min-width: 19px; border-radius: 5px; background: var(--glass-active); padding: 1px 4px; }
+.board-columns .board-group { background: color-mix(in srgb, var(--text-primary) 3%, var(--bg-base)); border-radius: 9px; align-self: flex-start; min-height: 210px; }
+.board-workspace .board-column-body { padding: 5px 8px 8px; border-radius: 8px; }
+.board-card { box-shadow: 0 1px 2px rgb(0 0 0 / .035); }
+.board-card:hover { border-color: var(--text-muted); }
+.board-workspace .board-card-title, .board-workspace .board-card-drag { min-height: 32px; }
+.board-card-title { line-height: 1.5; padding: 3px 0 8px; }
+.board-card-title > svg { opacity: .5; }
+.board-card dl { margin: 4px 0 12px; align-items: center; gap: 6px 10px; }
+.board-card [data-board-field="priority"] { border-radius: 5px; padding: 2px 6px; background: var(--glass-active); text-transform: capitalize; }
+.board-card [data-priority="high"] { color: var(--text-primary); background: color-mix(in srgb, #d99c6c 19%, var(--bg-surface)); }
+.board-card [data-priority="urgent"] { color: var(--text-primary); background: color-mix(in srgb, #d77878 22%, var(--bg-surface)); }
+.board-workspace .board-card select { min-height: 32px; font-size: 12px; border-color: transparent; background: var(--bg-elevated); }
+.board-list { max-width: 1100px; width: 100%; }
+.board-list-group .board-card { margin-bottom: 8px; }
+@media (max-width: 767px), (pointer: coarse) {
+  .board-workspace .board-control, .board-workspace .board-card-title, .board-workspace .board-card-drag, .board-workspace .board-card select { min-height: 44px; }
+}
+@media (max-width: 767px) {
+  .board-workspace .board-header { padding: 20px 16px 16px; }
+  .board-title { font-size: 28px; }
+  .board-viewbar { padding-left: 16px; padding-right: 16px; gap: 10px; }
+  .board-viewbar .board-filter { width: auto; flex: 1 1 150px; }
+  .board-viewbar > span { width: 100%; }
+  .board-columns, .board-list { padding: 12px 12px 24px; }
+}
