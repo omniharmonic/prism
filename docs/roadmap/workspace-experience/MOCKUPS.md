@@ -253,3 +253,21 @@ Fictional concept, not implementation evidence. Extends the neutral writing syst
 [![Configurable task board concept](assets/20-task-boards.png)](assets/20-task-boards.png)
 
 Fictional concept for view configuration, readable cards, manual ordering with keyboard alternatives and phone list mode. The same underlying tasks retain their data across views; ordering belongs to the configured view. Current client/server capabilities govern edits and conflicts. The generated logo, device furniture, bottom navigation and sample dates are illustrative; preserve the shared Prism vector and actual shell. [Generation prompt](expanded-mockup-prompts.json).
+
+### 21 · People and related records (C06 / R04)
+
+[![People directory and canonical profile concept](assets/21-people-profile.png)](assets/21-people-profile.png)
+
+Browse canonical people, explicit linked identities, conversations, meetings and tasks using existing related-record APIs. Generated snippets/platform decorations require real source data and are omitted when absent. Unknown participants remain unlinked; the illustration's review queue is unavailable until the backend contract exists. Do not infer identity from display names or add fake verified badges. Mobile uses one profile surface with a clear return to the directory.
+
+### 22 · Calendar and transcript review (D02 / R08)
+
+[![Calendar and transcript review concept](assets/22-calendar-transcripts.png)](assets/22-calendar-transcripts.png)
+
+An event connects its canonical people and conversation records. Review candidates before linking; preserve the same pending decision during uncertain outcomes. Linked-elsewhere records reveal no other meeting identity. Backend contracts govern evidence, visibility, date-only starts and retry semantics. Generated playback, inline notes, task checkboxes and participant photographs are illustrative: only surface real supported capabilities and records, never synthesize them from this board. The selected event and single-surface phone detail are the interaction reference.
+
+### 23 · Sharing and governance (D05 / R12)
+
+[![Sharing and governance concept](assets/23-sharing-governance.png)](assets/23-sharing-governance.png)
+
+Document, active-vault and publishing scopes remain distinct. Show actual access and proposal attribution, retain invitation links when clipboard access fails, and state partial success truthfully. Do not infer server enforcement from the raster's role labels: human suggest-only remains gated on the coordinated backend/client release. The generated shell, navigation additions, slogans and sample proposal content are not new requirements; use the existing Prism shell and vector brand.

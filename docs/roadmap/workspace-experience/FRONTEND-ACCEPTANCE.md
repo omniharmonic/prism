@@ -12,6 +12,23 @@ Each row has **two independent gates**: behavior and visual/interaction fidelity
 
 For each completed slice attach: source commit; fixture scenario and viewport/theme; actual screenshot path; visual comparison against the named board; focused behavior results; remaining limitations; deployed web/native IDs and actual production checks when applicable. Use fictional fixture screenshots for reviewable artifacts. Keep private production captures out of git.
 
+## Integrated follow-up status · October 2
+
+The original baseline findings below remain an audit trail. The frontend integration branch now contains these tested slices; **none is yet deployed or accepted as full roadmap completion**. Source is in `.worktrees/workspace-experience`, with the backend in its own worktree.
+
+| Scope | Integrated work / source | Current evidence and limits |
+| --- | --- | --- |
+| A02/A04 | Navigation hierarchy `883c759`; device sidebar preferences `c2344aa`; open documents `b36cd5e` | Fictional navigation screenshots retained; primary destinations/tools, 320px preferences, keyboard reorder, 20 tabs and unsaved markers checked. Final tab visibility reacts to late layout changes in `c0ca3e0`; 18 Chromium/WebKit tab/tablet checks passed. |
+| A03 | Shared title-first flow `a02fa9e`; command/tree integration `cf86872` | 34 Chromium/WebKit checks pass, including explicit tree parent, mobile modal focus, all formats and email draft preservation, create→edit. No atomic uniqueness promise beyond existing API. |
+| A04/A08 | Width-aware companion `c0ca3e0`; duplicate drawer header removed `257b984` | Actual Shell desktop→tablet→phone preserves editor DOM, text, unsent agent draft and widths. 36 workspace/layout browser checks passed after final chrome change. Physical phone keyboard/PWA acceptance remains open. |
+| A05/A06 | Shared page/properties/toolbar and outline through `701288c` | [Detailed evidence](A05-A06-VERIFICATION.md). Plain and real collaborative host tests; read-only outline and selection preservation. Collaboration host rename failure remains backend-owned; selection-to-agent discovery is in progress. |
+| B01 | Session history/header/transcript/composer `52e1b81` | Isolated 32 agent and 17 visual/reply Chromium journeys pass; root combined/release acceptance pending. B02/B03 and A06 consumer are being coordinated in separate hunks. |
+| C01/C02/C04/C05/C07 | Master/detail `c8f597d`; To/Cc `6cb8ada`; agent draft `f495ee8` | [Message](verification/frontend-20261002/MESSAGES-VERIFICATION.md) and [agent draft](verification/frontend-20261002/AGENT-REPLY-VERIFICATION.md) evidence. 39 journeys on each engine for reply slice. Docked email+agent, quoted history, attachments and contract gaps remain explicitly open. |
+| D04 | View-local drag order `6618e8b` | 58 integrated board/workspace checks pass in Chromium/WebKit. [Board20](assets/20-task-boards.png) supplies expanded visual target; whole board aesthetic acceptance remains separate. |
+| D09 | Name-first workspace setup and explicit vault moves `2a3f9e9` | Same 58 integrated checks include owner gates, failed/pending writes, scope changes and narrow/dark layout. Invitation/access D05 work is ongoing separately. |
+
+[Board19](assets/19-canvas-graph.png) and [Board20](assets/20-task-boards.png) extend the promised connected-screen references. Generated concepts are not test evidence or permission/API specifications. All production artifacts remain as recorded in CURRENT-RELEASE.md until a coordinated frontend build is installed and checked.
+
 ## A. Shared workspace and everyday writing
 
 Paths in code-evidence cells are under `packages/core/src/` unless prefixed otherwise. Inspection baseline is frontend release `86461c9`; isolated follow-up work is explicitly identified.
@@ -89,7 +106,7 @@ These screens remain in the full frontend scope. They are not all being redesign
 4. **Connected/shared screens:** C06 and D01–D09, each using its existing or newly required board and ledger. Reuse implemented features; missing backend semantics go to the separate handoff. Keep all incomplete rows visible.
 5. **Integrated acceptance:** E01–E04 plus original RELEASE-GATES and FEATURE-LEDGER. A frontend release can be accepted as that scope only; the full original roadmap remains incomplete where handed-off backend/device gates are open.
 
-## Work already in motion, not accepted
+## Original reconciliation baseline (superseded by integrated status above)
 
 - Root navigation/vault placement prototype: uncommitted at this reconciliation, no new checks run.
 - `feat/page-creation`: title-first prototype, isolated; its author is auditing original requirements before continuing.
