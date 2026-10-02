@@ -61,3 +61,25 @@ Backend work is now present in the prepared worktree. Frontend remains isolated 
 - New contract requests: [email envelope/Reply-all authority](backend-boundary-requests/email-compose-envelope.md) and [atomic agent draft policy precondition](backend-boundary-requests/agent-draft-policy-precondition.md). The frontend supports explicit To/Cc and a read-only draft workflow under the existing contracts; these notes explain remaining limits, not permission to merge incomplete semantics.
 
 Current frontend file ownership additionally reserves WorkspacesPanel/WorkspacePanel/MembersPanel presentation and invitation result handling; API signatures/authority unchanged. Root owns Shell, TabBar and common creation integration. AgentChat presentation and selection consumer work are coordinated in disjoint hunks.
+
+
+## Frontend reply to backend handoff · October 2
+
+Read `backend-to-frontend.md` at backend commit `80295ad`. A verbatim copy is now in main so the owner's shared path resolves. Backend remains owner of the source handoff; future updates should be reconciled from its combined branch.
+
+### Decisions and requests
+
+1. **Opaque actor identity:** please add `GET /api/collab/:id/commands/me` returning `{ actorId: string }`, under the same authenticated/link-token/vault/note access resolution as POST. The UI needs it before the first mutation to decide whether Delete is offered. Do not expose email or accept a client actor field. No need to change durable replay bodies merely for this. A denied/unknown identity keeps Delete unavailable; the server remains authoritative.
+2. **Suggestion overlap:** keep the conservative refusal when a caret touches a pending suggestion. Frontend will preserve draft text and explain that the passage already has a pending suggestion; user can select an unambiguous position. Do not weaken enforcement for presentation convenience.
+3. **Comment failure/unload edge:** please resolve the documented unanchored-thread case before declaring the command workflow release-ready. The retry must either complete one anchored durable thread or explicitly recover without leaving orphan data. This is backend receipt/save recovery ownership, not a UI workaround. Keep the regression test for failure→unload→identical retry.
+4. **Combined branch/review:** frontend will not integrate the suggestions branch until independent review is complete and you provide the combined tested server tip. Backend should resolve the transcript/suggestion server-test overlap. No force replacing shared files.
+
+### Frontend commitments (not yet verified)
+
+- Prove revision parity using an actual CollabEditor with its client extensions, comments, rich blocks and suggestions; compare against the server/shared-schema projection of the same Y fragment. Also prove caret/range capture in non-editable editor on Chromium/WebKit and installed client. Do not assume fixture helper parity proves this.
+- Read provider scope on each authentication/reconnect; with enforced readonly suggest sockets, use bounded commands instead of raw body/comment edits. Preserve legacy tracked typing while enforcement is off. Scope-specific command transport retains capability token even when signed in, matches vault binding, displays `message`, branches on `error`, and handles middleware 429 without assuming message exists.
+- Frontend owns CollabDoc/CollabEditor/CommentsSidebar/access/transport integration after the current A06 selection presentation checkpoint. Existing A06 edits keep command behavior unchanged. Notify backend when access table/test assertion is changed; it belongs in the same combined release.
+- Transcript UI will preserve identical request bytes/ID on pending/unknown outcomes, drop superseded pending requests, distinguish stale/vault-unavailable/actor-change/access loss, honor rate-limit retry timing, and handle absent start times without local-time date shifts. Only real note IDs are submitted.
+- Keep the trusted-collaborator warning until enforcement is actually live. Stage server with enforcement off, ship/verify command-capable client, then enable enforcement in a separately checked server restart. Coordinate the online backup, rollback and live traffic checks at that time. No server restart is authorized merely by this handoff acknowledgement.
+
+The frontend aesthetic work continues independently; these integration gates do not replace the accepted frontend screen matrix.
