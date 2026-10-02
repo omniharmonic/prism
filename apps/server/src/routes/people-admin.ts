@@ -11,6 +11,8 @@
  *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?, useMatrixMembers?=false} → 202 {job}
  *   GET  /people/link                                                                     → {job | null}
  *   POST /people/link/cancel                                                              → {ok}
+ *   GET  /people/duplicates?strength=&limit=&offset=                                      → {pairs, total, counts, next}
+ *   POST /people/merge        {personIds: [a, b], canonicalId?, dryRun?=true}             → {merge}
  *
  * Full reference: docs/roadmap/workspace-experience/BACKEND-STATUS-GRAPH.md.
  */
@@ -23,7 +25,9 @@ import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } 
 import { dismissCandidate, resolveCandidate, ReviewError, type ReviewVault } from "../identity-review";
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
-import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
+import { PHASES, cancelLinkJob, isPhase, linkJobRunning, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
+import { chooseCanonical, detectDuplicates, mergePeople, mergeRunning, MergeError, type MergeVault } from "../people-merge";
+import { PERSON_IDENTITY_KEYS } from "../people-metadata";
 
 /** OWNER_EMAIL + PEOPLE_OWNER_EMAILS / _PERSON / _ALIASES — who "me" is. */
 export const ownerConfig = (matrixId?: string | null) => ({
@@ -179,6 +183,7 @@ export function mountPeopleLinkJob(admin: Hono): void {
             status: j.status === "done" ? "ok" : "failed",
             error: j.error,
           });
+    if (mergeRunning()) return c.json({ error: "busy", detail: "a people merge is in progress" }, 409);
     try {
       const { job } = startLinkJob(vaultClient(vaultId) as unknown as LinkJobVault, vaultId, {
         dryRun,
@@ -207,4 +212,68 @@ export function mountPeopleLinkJob(admin: Hono): void {
   });
 
   admin.post("/people/link/cancel", (c) => c.json({ ok: cancelLinkJob() }));
+}
+
+export function mountPeopleMerge(admin: Hono): void {
+  admin.get("/people/duplicates", async (c) => {
+    const vaultId = ownerVaultId(c);
+    const strength = c.req.query("strength");
+    const limit = Number(c.req.query("limit") ?? 50);
+    const offset = Number(c.req.query("offset") ?? 0);
+    if ((strength !== undefined && !["strong", "medium", "weak"].includes(strength)) || !Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0)
+      return c.json({ error: "bad_request" }, 400);
+    try {
+      // Lean: identity keys + links only — never a note body.
+      const people = await vaultClient(vaultId).listNotes({ tags: ["person"], includeLinks: true, includeMetadata: PERSON_IDENTITY_KEYS });
+      if (people.length >= 50_000) return c.json({ error: "people_inventory_limit" }, 503);
+      const all = detectDuplicates(people);
+      const counts = { strong: 0, medium: 0, weak: 0 };
+      for (const p of all) counts[p.strength]++;
+      const filtered = strength ? all.filter((p) => p.strength === strength) : all;
+      const pairs = filtered.slice(offset, offset + limit);
+      c.header("Cache-Control", "private, no-store");
+      return c.json({ pairs, total: filtered.length, counts, next: offset + limit < filtered.length ? offset + limit : null });
+    } catch {
+      return c.json({ error: "people_unavailable" }, 503);
+    }
+  });
+
+  admin.post("/people/merge", async (c) => {
+    const vaultId = ownerVaultId(c);
+    const body = await jsonBody(c);
+    const dryRunIn = optBool(body?.dryRun);
+    const ids = body?.personIds;
+    if (!body || dryRunIn === null || !Array.isArray(ids) || ids.length !== 2 || !ids.every((x) => typeof x === "string" && x.length > 0 && x.length <= 2048) || ids[0] === ids[1])
+      return c.json({ error: "bad_request", detail: "personIds must be two different person note ids" }, 400);
+    const [a, b] = ids as [string, string];
+    if (body.canonicalId !== undefined && body.canonicalId !== a && body.canonicalId !== b) return c.json({ error: "bad_request", detail: "canonicalId must be one of personIds" }, 400);
+    if (linkJobRunning()) return c.json({ error: "busy", detail: "a people-link job is running" }, 409);
+    const dryRun = dryRunIn !== false; // a dry run unless explicitly false
+    const vault = vaultClient(vaultId) as unknown as MergeVault;
+    const via = requestVia(c);
+    try {
+      let canonicalId = body.canonicalId as string | undefined;
+      if (!canonicalId) {
+        const [na, nb] = await Promise.all([vault.getNote(a, { includeLinks: true }), vault.getNote(b, { includeLinks: true })]);
+        canonicalId = chooseCanonical(na, nb).id;
+      }
+      const secondaryId = canonicalId === a ? b : a;
+      const merge = await mergePeople(vault, { canonicalId, secondaryId, dryRun, by: config.ownerEmail });
+      if (!dryRun)
+        recordAction({
+          actorEmail: config.ownerEmail,
+          via,
+          origin: originOf(via),
+          action: "admin.people-merge",
+          vaultId,
+          target: { ...merge }, // note ids + counts + evidence kinds — no names, addresses or bodies
+          status: merge.complete ? "ok" : "failed",
+        });
+      return c.json({ merge });
+    } catch (e) {
+      if (e instanceof MergeError) return c.json({ error: e.code }, e.status as 400 | 404 | 409 | 503);
+      if ((e as { status?: number })?.status === 404) return c.json({ error: "not_found" }, 404);
+      return c.json({ error: "merge_failed" }, 503);
+    }
+  });
 }
