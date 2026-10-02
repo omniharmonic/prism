@@ -96,7 +96,12 @@ test("real collaborative host shares properties and readable mobile header witho
   const server = new Server({ address: '127.0.0.1', port: 0, quiet: true, debounce: 10, async onAuthenticate() { return { fixture: true }; } });
   await server.listen();
   const sockets: WebSocket[] = [];
-  const path = 'Projects/Prism/A collaborative workspace with connected ideas';
+  let path = 'Projects/Prism/A collaborative workspace with connected ideas';
+  let rejectRename = true;
+  let renameRequests = 0;
+  let releaseRename: (() => void) | undefined;
+  let holdRename = false;
+  let uncertainRename = false;
   let level = 'own';
   try {
     await page.routeWebSocket(/\/collab$/, route => {
@@ -108,7 +113,16 @@ test("real collaborative host shares properties and readable mobile header witho
       route.onClose(() => socket.close()); socket.on('close', () => route.close({ code: 1000 }));
     });
     await page.route('**/auth/me', route => route.fulfill({ json: { authenticated: true, email: 'alice@example.test', vaultId: 'primary', workspace: { id: 'workspace-a' } } }));
-    await page.route('**/api/notes/denied-note', route => route.fulfill({ json: { id: 'denied-note', path, content: '', _level: level, metadata: {}, tags: [] } }));
+    await page.route('**/api/notes/denied-note', async route => {
+      if (route.request().method() === 'PATCH') {
+        renameRequests++;
+        if (uncertainRename) return route.fulfill({ status: 503, json: { error: 'fixture_unavailable' } });
+        if (rejectRename) return route.fulfill({ status: 403, json: { error: 'fixture_denied' } });
+        if (holdRename) await new Promise<void>(resolve => { releaseRename = resolve; });
+        path = route.request().postDataJSON().path;
+      }
+      await route.fulfill({ json: { id: 'denied-note', path, content: '', _level: level, metadata: {}, tags: [] } });
+    });
     await page.route('**/api/federated/**', route => route.fulfill({ status: 204 }));
     await page.goto('/e2e-fixtures/collab-storage.html?live');
     const editor = page.locator('.tiptap[contenteditable=true]');
@@ -131,6 +145,25 @@ test("real collaborative host shares properties and readable mobile header witho
     await page.locator('.document-properties-disclosure summary').click();
     await expect(page.locator('.document-properties-content')).toContainText(path);
     await expect(page.getByText('Live · Editing', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Rename A collaborative workspace with connected ideas', exact: true }).click();
+    const renameTitle = page.getByRole('textbox', { name: 'Document title' });
+    await renameTitle.fill('A clearer shared workspace');
+    await renameTitle.press('Enter');
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not rename this page' })).toBeVisible();
+    await expect(renameTitle).toHaveValue('A clearer shared workspace');
+    await expect(renameTitle).toBeFocused();
+    expect(renameRequests).toBe(1);
+    rejectRename = false; holdRename = true;
+    await renameTitle.press('Enter');
+    await expect.poll(() => renameRequests).toBe(2);
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    expect(renameRequests).toBe(2);
+    releaseRename!();
+    await expect(page.getByRole('button', { name: 'Rename A clearer shared workspace', exact: true })).toBeVisible();
+    await expect(page.locator('.document-properties-content')).toContainText('Projects/Prism/A clearer shared workspace');
+    expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
+
     await page.screenshot({ path: info.outputPath('collaborative-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(editor).toHaveText('Our shared ideas stay connected.');
@@ -148,6 +181,13 @@ test("real collaborative host shares properties and readable mobile header witho
     await page.keyboard.type(' Together.');
     await page.getByRole('button', { name: 'Outline', exact: true }).click();
     await expect(page.getByRole('navigation', { name: 'Document outline' })).toContainText('Together.');
+    holdRename = false; uncertainRename = true;
+    await page.getByRole('button', { name: 'Rename A clearer shared workspace', exact: true }).click();
+    await renameTitle.fill('A locally queued title');
+    await renameTitle.press('Enter');
+    await expect(page.getByText('Title change saved on this device. Waiting to sync.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Rename A locally queued title', exact: true })).toBeVisible();
+    expect(path).toBe('Projects/Prism/A clearer shared workspace');
     level = 'view';
     await page.reload();
     await expect(page.locator('.tiptap[contenteditable=false]')).toBeVisible();

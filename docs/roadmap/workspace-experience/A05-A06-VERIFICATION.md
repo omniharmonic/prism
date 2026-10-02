@@ -64,3 +64,10 @@ Against boards01/12 and the desktop-collaboration reference: the page has a clea
 - A05: coordinated collab rename error handling and richer metadata; production web/installed-client verification belongs to root's integrated release.
 - A06: selection Ask agent and relevant formatting, capability-aware Comment, and slash/shortcut entry into the same durable session flow remain separate work. Existing one-shot InlinePrompt behavior is not equivalent to that requirement.
 - F03 editor adapter/schema parity, guest/governed mutation restrictions and backend human-suggestion enforcement are not completed by these presentation changes.
+
+
+### Collaborative title follow-up · October 2
+
+Frontend-owned CollabDoc now awaits the existing scoped REST/outbox rename. Rejected writes retain the editable title and focus for retry; pending Enter/blur cannot duplicate submission. Confirmed paths update the header and open tab without remounting the editor. Locally queued/uncertain acceptance explicitly says it is waiting to sync. Audience/unmount guards suppress stale UI updates.
+
+Eight combined Chromium/WebKit document journeys passed; the two real-Hocuspocus collaborative-host journeys were repeated after adding an explicit503 queued-outcome assertion. They cover403 failure→retry, held response→repeat Enter/blur→one request, accepted path/body identity, local queued notice without a server-path change, and read-only behavior. Web TypeScript passes. No production or installed-app proof of this follow-up yet.

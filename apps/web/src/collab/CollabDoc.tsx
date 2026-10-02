@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
@@ -6,7 +6,7 @@ import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
-import { apiBase, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
+import { apiBase, agentScope, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
 
 /** The vault-scoped collab documentName: the primary vault uses a BARE note id
  *  (backward-compatible), every other vault prefixes `${vaultId}::` so the server
@@ -16,7 +16,7 @@ function vaultDocName(noteId: string): string {
   const v = getActiveVault();
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
-import { updateNote as restUpdateNote } from "../parachute/rest";
+import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -135,6 +135,9 @@ function ScopedCollabDoc({
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
+  const [titleNotice, setTitleNotice] = useState("");
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [path, setPath] = useState<string | null>(null);
   const [contentFont, setContentFont] = useState<ContentFont>("sans");
   const [icon, setIcon] = useState<string | null>(null);
@@ -161,12 +164,22 @@ function ScopedCollabDoc({
 
   // Rename via the editable page title (preserves folder + extension). Uses the
   // REST client directly (no VaultClient provider on the full-page share route).
-  const handleRename = (newName: string) => {
+  const handleRename = async (newName: string) => {
     const next = renamePath(path, newName);
     if (!next) return;
-    void restUpdateNote(noteId, { path: next }).catch(() => {});
-    setPath(next);
-    try { useUIStore.getState().renameTab(noteId, newName.trim()); } catch { /* no tab (share route) */ }
+    const audience = agentScope();
+    setTitleNotice("");
+    // Await the scoped REST write so PageHeader retains failed drafts and
+    // prevents double activation. Offline acceptance remains distinct from sync.
+    const saved = await restUpdateNote(noteId, { path: next }, { expectedScope: audience ?? undefined });
+    const pending = await hasPendingWrites();
+    if (!mounted.current || agentScope() !== audience) return;
+    const confirmedPath = saved.path ?? next;
+    setPath(confirmedPath);
+    const name = confirmedPath.split("/").pop() || newName.trim();
+    setTitle(name);
+    useUIStore.getState().renameTab(noteId, name);
+    setTitleNotice(pending ? "Title change saved on this device. Waiting to sync." : "");
   };
 
   const handleIconChange = (emoji: string | null) => {
@@ -459,6 +472,8 @@ function ScopedCollabDoc({
             </div>
           }
         />
+
+        {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
