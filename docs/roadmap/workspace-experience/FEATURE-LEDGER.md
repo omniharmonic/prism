@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `d5248bd`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `69e2662`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -35,7 +35,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Dashboard and widgets | Registered configurable dashboard retained | Widget inventory, filters/layout persistence, shared board source semantics, mobile scroll and read-only states |
 | Canvas (legacy/local path) | Real Excalidraw fixture proves showing/hiding derived arrows does not mutate links; preview serialization isolated | Durable authored assertion ownership, retry/reload, alternate host runtime verification |
 | Collaborative canvas | Existing Y.Map element merge/cursors retained | Two-client cards/arrows, offline/retry, remove one contributor without deleting another/manual relation; permission checks on both endpoints |
-| Focused graph / fullscreen | Scoped server neighborhood tests; 2D/list navigation, filters, access revalidation, mobile/fullscreen and 3D failure fixtures | Private production checks; indexed/paginated large neighborhoods, saved exploration, performance/reduced-motion acceptance |
+| Focused graph / fullscreen | Scoped server neighborhood tests; 2D/list navigation, filters, access revalidation, mobile/fullscreen and 3D failure fixtures | Private web/native navigation verified; indexed/paginated large neighborhoods, saved exploration, performance/reduced-motion acceptance |
 | 3D graph / publication graph | Existing renderer preserved behind lazy load; actual tooltip consumer treats markup as text | Actual WebGL interaction on installed client and public/private publication fixtures |
 | Bioregion entity | Registered renderer retained | Type-specific properties, map/entity links and access-limited view |
 | Map | Registered virtual renderer and media/map proxy seams retained | Private markers, filtering/detail navigation, token-free proxy on native, unavailable-provider fallback |
@@ -51,7 +51,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Search/index | Scoped vectors, fresh snippets, durable job and permission tests; production private semantic result and index status | Secondary-vault private index lifecycle, production pause/resume if needed, recall/latency benchmark, large-inventory pagination |
 | Wikilinks/backlinks | Unified ID/path/alias resolution; copy/paste/keyboard/rename fixtures; production aliases and ambiguous choices | Property/backlink polish; split-mark rich formatting; batch preview→cancel→resume on synthetic notes |
 | Comments / suggestions | Shared schema/anchors and suggestion review tests; actual private agent edits | Guest comment/suggest/edit matrix; anchored-comment limits; concurrent review decisions |
-| Guests/sharing | Existing auth/capability server tests; temporary guest link used for real collaboration and revoked | Account invitation/onboarding; active-session role/link revocation; capability expiration and effective-access preview |
+| Guests/sharing | Responsive sharing panels and scoped role controls; real web guest-link revocation and installed owner reconnect; idle expiration and downgrade regressions | Production acceptance of new presentation; account invitation/onboarding; full guest role matrix and effective-access preview |
 | Governance | Existing signed policy/proposal services retained | Isolated shared vault: presets→policy preview→proposal→vote/quorum→apply/audit; bypass attempts through properties/agent/canvas/sync |
 | Wiki publishing | Existing templates/scoped routes retained; graph export compatibility retained | Owner-private draft/preview/settings revision/restore, password and revoked access, private-link redaction, navigation/themes/assets |
 | GitHub folder sync | Host seam and server implementation retained | Owner-private test repository; mapping/conflict/dry-run where supported; verify scope before any automatic push |
