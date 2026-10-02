@@ -48,3 +48,16 @@ Send the owner a short boundary note listing any client files/types you need bef
 5. Before advancing main, inspect its current branch/status/recent commits. If the backend agent has advanced it, integrate in an isolated worktree first; do not force-push/reset/overwrite their work.
 
 The owner can use the currently deployed app while isolated work proceeds. No maintenance freeze is needed.
+
+
+## Active frontend integration update · October 2, 14:20 Denver
+
+Backend work is now present in the prepared worktree. Frontend remains isolated on `feat/workspace-experience`; main application source is still the deployed release. Root owns the combined release. No server changes or restarts are part of the current frontend pass.
+
+- Frontend integrated a **presentation-only CollabEditor** import of DocumentOutline plus a conditional read-only outline wrapper immediately before SuggestionReview (`701288c`). No command props/effects changed.
+- A06 selection discovery is in progress: preserve the original CollabEditor comment callback; broaden the existing selection bubble to include a shared Ask/formatting component, with existing read-only/comment/suggest gates. The proposed hunk does not add command props, change comment transport or modify CollabDoc. Root will report the tested source commit before merge. `documentSnapshots`, `chatStore` and an AgentChat consumer get **frontend-only unsent snapshot handoff**, not a new API or automatic turn.
+- Backend may own the shared collab command schema/package export now in its worktree. Frontend does not modify those manifests or command contracts.
+- Frontend still cannot safely fix collaborative title rename: CollabDoc returns void after optimistic path update and swallows the REST failure, so shared title UI cannot retain the failed draft reliably on that host. Backend host owner should await the mutation, surface failure, and only advance confirmed path/title. Plain DocumentRenderer already awaits and reports failure.
+- New contract requests: [email envelope/Reply-all authority](backend-boundary-requests/email-compose-envelope.md) and [atomic agent draft policy precondition](backend-boundary-requests/agent-draft-policy-precondition.md). The frontend supports explicit To/Cc and a read-only draft workflow under the existing contracts; these notes explain remaining limits, not permission to merge incomplete semantics.
+
+Current frontend file ownership additionally reserves WorkspacesPanel/WorkspacePanel/MembersPanel presentation and invitation result handling; API signatures/authority unchanged. Root owns Shell, TabBar and common creation integration. AgentChat presentation and selection consumer work are coordinated in disjoint hunks.
