@@ -19,7 +19,7 @@ const message = (id: number): MatrixMessage => ({
   media_url: null,
   media_info: null,
 });
-const controls = { reject: true, attempts: 0 };
+const controls = { reject: true, attempts: 0, replyCalls: [] as Array<{ params: unknown; key?: string }> };
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 });
@@ -69,6 +69,7 @@ function Fixture() {
       calendar: { enabled: false, configured: false },
     }),
     emailReply: async (_params, options) => {
+      controls.replyCalls.push({ params: _params, key: options?.idempotencyKey });
       controls.attempts++;
       const key = options?.idempotencyKey;
       if (!key) throw new Error("Missing retry identifier");

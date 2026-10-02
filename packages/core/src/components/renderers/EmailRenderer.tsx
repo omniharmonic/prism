@@ -1,3 +1,4 @@
+import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import { useState, useCallback, useRef } from "react";
 import {
   Send,
@@ -324,6 +325,7 @@ function VaultEmailView({
         <EmailReplyBar
           scope={scope}
           account={account}
+          source={typeof meta?.source === "string" ? meta.source : "Email"}
           to={replyTo}
           subject={replySubject}
           threadId={threadId}
@@ -377,6 +379,7 @@ function extractEmail(raw: string): string {
 /** A reply uses the same scoped acknowledgement/draft flow as messaging. */
 function EmailReplyBar({
   account,
+  source,
   to,
   subject,
   threadId,
@@ -387,6 +390,7 @@ function EmailReplyBar({
   onClose,
 }: {
   account: string;
+  source: string;
   to: string;
   subject: string;
   threadId: string;
@@ -397,6 +401,10 @@ function EmailReplyBar({
   onClose: () => void;
 }) {
   const isWeb = useIsWeb();
+  const ccDraft = useScopedDraft("email-cc", scope, JSON.stringify([noteId, account, to]));
+  const cc = [...new Set(ccDraft.text.split(",").map(value => value.trim()).filter(Boolean))];
+  const ccValid = cc.every(address => address.length <= 254 && /^[^\s@<>,;]+@[^\s@<>,;]+$/.test(address));
+  const [submitting, setSubmitting] = useState(false);
   return (
     <div className="shrink-0" style={{ background: "var(--bg-surface)" }}>
       <div className="flex items-center gap-2 px-4 pt-3 text-xs">
@@ -412,21 +420,37 @@ function EmailReplyBar({
           <X size={16} />
         </button>
       </div>
+      <div className="space-y-2 px-4 pt-2 text-xs">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[var(--text-muted)]">
+          <span>From: {live ? "Connected server mailbox" : account}</span>
+          <span>Source: {source === "proton-bridge" ? "Proton Bridge" : source}</span>
+        </div>
+        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">To</span><input aria-label="Reply recipients" readOnly value={to} className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" /></label>
+        <label className="flex min-w-0 items-center gap-3"><span className="w-10 shrink-0 text-[var(--text-muted)]">Cc</span><input aria-label="Reply Cc" value={ccDraft.text} onChange={event => ccDraft.setText(event.target.value)} disabled={submitting} placeholder="Optional addresses, separated by commas" className="min-h-11 min-w-0 flex-1 rounded-lg border border-[var(--glass-border)] bg-transparent px-3 text-sm" autoComplete="off" spellCheck={false} /></label>
+        {!ccValid && <p role="alert" className="text-[var(--color-danger)]">Enter complete email addresses separated by commas.</p>}
+        {ccDraft.error && <p role="status">{ccDraft.error}</p>}
+        <details className="text-[var(--text-muted)]"><summary className="cursor-pointer py-1">Reply details</summary><p className="mt-1 break-words">Subject: {subject}</p>{live && account && <p className="mt-1 break-words">Stored email account: {account}. The connected server mailbox determines the sending account.</p>}</details>
+      </div>
       <MessageComposer
         draftScope={scope}
         draftKey={`email:${JSON.stringify([noteId, account, to])}`}
         retrySafe={!!live}
+        deliveryContext={JSON.stringify({ to: [to], cc })}
         enterToSend={false}
         placeholder="Write your reply…"
         disabled={isWeb && !live}
+        sendDisabled={!ccValid}
         onSend={async (body, options) => {
+          if (!ccValid) throw Error("Check Cc addresses before sending.");
+          setSubmitting(true);
+          try {
           if (live) {
             if (!scope || live.scope?.() !== scope)
               throw new Error(
                 "Workspace changed. Reopen the email before replying.",
               );
             await live.emailReply(
-              { noteId, expectTo: [to], body },
+              { noteId, expectTo: [to], body, ...(cc.length ? { cc } : {}) },
               { idempotencyKey: options.requestId },
             );
           } else {
@@ -437,11 +461,13 @@ function EmailReplyBar({
               [to],
               subject,
               body,
-              undefined,
+              cc.length ? cc : undefined,
               threadId || undefined,
             );
           }
+          ccDraft.clearIfUnchanged(ccDraft.text);
           onSent();
+          } finally { setSubmitting(false); }
         }}
       />
     </div>
