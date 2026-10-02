@@ -75,6 +75,8 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
   // A send can settle after navigation/unmount. Its old continuation must not
   // attach a new stream or alter the replacement conversation.
   const lifecycle = useRef(0);
+  const pendingCancel = useRef<{ turnId: string; owner: number } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const refetchedTurns = useRef(new Set<string>());
 
   const stopStream = useCallback(() => {
@@ -114,6 +116,10 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
           }
           if (msg.t === "note_touched") void queryClient.invalidateQueries({ queryKey: ["vault"] });
           if (msg.t === "status" && isTerminalTurn(msg.status)) {
+            if (pendingCancel.current?.turnId === msg.turnId) {
+              pendingCancel.current = null;
+              setCancelling(false);
+            }
             refreshLists();
             // The server commits cost and session metadata before this event.
             // Refresh the open conversation too, not only its sidebar row.
@@ -150,6 +156,8 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
   // (Re)load on session change; tear the stream down on leave.
   useEffect(() => {
     lifecycle.current++;
+    pendingCancel.current = null;
+    setCancelling(false);
     dispatch({ type: "reset", state: emptyConversation });
     setSession(null);
     setError(null);
@@ -213,15 +221,41 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
     [client, sessionId, openStream, load, refreshLists],
   );
 
+  useEffect(() => {
+    const request = pendingCancel.current;
+    if (request && activeTurn(state)?.id !== request.turnId) {
+      pendingCancel.current = null;
+      setCancelling(false);
+    }
+  }, [state]);
+
   const cancel = useCallback(async () => {
     const t = activeTurn(stateRef.current);
-    if (!t) return;
+    if (!t || pendingCancel.current) return;
+    const request = { turnId: t.id, owner: lifecycle.current };
+    pendingCancel.current = request;
+    setCancelling(true);
+    setError(null);
     try {
-      await client.cancelTurn(t.id);
+      const accepted = await client.cancelTurn(t.id);
+      if (request.owner !== lifecycle.current || pendingCancel.current !== request) return;
+      // A false acknowledgement means the server found no cancellable work.
+      // Reload its status rather than declaring the turn complete locally.
+      if (!accepted) {
+        await load();
+        if (request.owner !== lifecycle.current || pendingCancel.current !== request) return;
+        pendingCancel.current = null;
+        setCancelling(false);
+        if (activeTurn(stateRef.current)?.id === request.turnId)
+          setError("Stopping was not confirmed. The task may still be running; check its status before trying again.");
+      }
     } catch (e) {
-      setError(agentErrorText(e));
+      if (request.owner !== lifecycle.current || pendingCancel.current !== request) return;
+      pendingCancel.current = null;
+      setCancelling(false);
+      setError(`Stopping was not confirmed. The task may still be running. ${agentErrorText(e)}`);
     }
-  }, [client]);
+  }, [client, load]);
 
-  return { state, session, loading, error, setError, conn, send, cancel, reload: load, active: activeTurn(state) };
+  return { state, session, loading, error, setError, conn, send, cancel, cancelling, reload: load, active: activeTurn(state) };
 }

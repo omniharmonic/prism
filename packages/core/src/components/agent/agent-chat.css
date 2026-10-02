@@ -75,3 +75,17 @@
 .prism-agent-source-peek { width: min(640px, calc(100vw - 24px)); }
 .prism-agent-source-body { font-size: 14px; line-height: 1.8; }
 @media (max-width: 640px) { .prism-agent-context-selected button { min-width: 44px; min-height: 44px; } }
+.prism-agent-activity { margin: 4px 0 8px 37px; padding: 9px 12px; border: 1px solid var(--glass-border); border-radius: 9px; font-size: 12px; }
+.prism-agent-activity summary { cursor: pointer; min-height: 24px; color: var(--text-secondary); font-weight: 500; }
+.prism-agent-activity summary > span { margin-left: 8px; color: var(--text-muted); font-weight: 400; }
+.prism-agent-activity ol { margin-top: 8px; display: grid; gap: 12px; }
+.prism-agent-activity li { display: flex; align-items: flex-start; gap: 9px; }
+.prism-agent-activity-icon { flex-shrink: 0; margin-top: 2px; color: var(--text-muted); }
+.prism-agent-activity-title { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px; }
+.prism-agent-activity-title > span:first-child { text-transform: capitalize; overflow-wrap: anywhere; }
+.prism-agent-activity-title > span:last-child { color: var(--text-muted); font-size: 11px; }
+.prism-agent-activity-summary { margin-top: 4px; max-height: 130px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; color: var(--text-secondary); }
+.prism-agent-stop-status { margin: 0 auto 8px; max-width: 800px; font-size: 12px; color: var(--text-secondary); }
+.prism-agent-followups { max-width: 800px; margin-left: auto; margin-right: auto; background: var(--bg-surface); }
+@media (max-width: 640px) { .prism-agent-activity { margin-left: 0; } }
+.prism-agent-context-result[data-attached]:disabled { opacity: 1; }

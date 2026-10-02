@@ -13,10 +13,10 @@ export function AgentContextAttachments({ ids, onChange, onPreview, disabled, ma
   return <div className="prism-agent-context-attachments mb-2 text-xs" data-testid="agent-context-attachments">
     <div className="flex flex-wrap items-center gap-2">
       {ids.map((id, index) => <div key={id} className="flex min-w-0 max-w-full items-center rounded-lg border" style={{ borderColor: "var(--glass-border)" }}>
-        <button onClick={() => onPreview(id)} className="interactive focus-ring flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-2"><FileText size={13} className="shrink-0" /><AttachedNoteName id={id} fallback={`Note ${index + 1}`} /></button>
+        <button onClick={event => { event.currentTarget.focus({ preventScroll: true }); onPreview(id); }} className="interactive focus-ring flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-2"><FileText size={13} className="shrink-0" /><AttachedNoteName id={id} fallback={`Note ${index + 1}`} /></button>
         <button disabled={disabled} onClick={() => onChange(ids.filter((item) => item !== id))} aria-label={`Remove attached note ${index + 1}`} className="interactive focus-ring flex h-9 w-9 items-center justify-center rounded-lg"><X size={13} /></button>
       </div>)}
-      <button disabled={disabled || ids.length >= maxNotes} onClick={() => setOpen(true)} className="interactive focus-ring flex items-center gap-1.5 rounded-lg px-2 py-2 disabled:opacity-40"><Paperclip size={14} />Attach notes</button>
+      <button disabled={disabled || ids.length >= maxNotes} onClick={event => { event.currentTarget.focus({ preventScroll: true }); setOpen(true); }} className="interactive focus-ring flex items-center gap-1.5 rounded-lg px-2 py-2 disabled:opacity-40"><Paperclip size={14} />Attach notes</button>
     </div>
     {ids.length > 0 && <p className="mt-1" style={{ color: "var(--text-muted)" }}>Saved text is read when you send; up to {maxCharacters.toLocaleString()} characters per note.</p>}
     {open && <ContextPicker ids={ids} onChange={onChange} maxNotes={maxNotes} onClose={() => setOpen(false)} />}
