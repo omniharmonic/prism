@@ -25,6 +25,7 @@ import {
 } from "./helpers";
 import {
   addVaultEntry,
+  setMembership,
   getPublicationBySlug,
   grantsForResource,
 } from "../src/db";
@@ -287,4 +288,32 @@ test("path publication in vault B serves that vault's prefix", async () => {
 
   const manifest = await readJson(await publish.request("/frb-places"));
   assert.deepEqual(manifest.notes.map((n: { id: string }) => n.id).sort(), ["f1", "f2"]);
+});
+
+test("owner preview reads the publication vault even while the owner is managing another vault", async () => {
+  seedBothVaults();
+  await ownerReq("/tags/commons/publish", { method: "POST", body: JSON.stringify({ slug: "preview-other-vault" }) }, "frb");
+  const result = await readJson(await ownerReq("/publications/preview-other-vault/preview"));
+  assert.equal(result.vaultId, "frb");
+  assert.equal(result.publishedCount, 2);
+  assert.deepEqual(result.notes.map((n: { id: string }) => n.id).sort(), ["f1", "f2"]);
+});
+
+
+test("a delegated vault admin cannot list, preview, change or remove another vault's publication", async () => {
+  seedBothVaults();
+  await ownerReq("/tags/commons/publish", { method: "POST", body: JSON.stringify({ slug: "primary-site" }) });
+  await ownerReq("/tags/commons/publish", { method: "POST", body: JSON.stringify({ slug: "other-site", password: "private-other-site" }) }, "frb");
+  setMembership("primary", "delegate@test.local", "admin", OWNER);
+  const cookie = sessionCookie(makeSession("delegate@test.local"));
+  const request = (path: string, init: RequestInit = {}) => acl.request(path, { ...init, headers: { "content-type": "application/json", cookie } });
+  const rows = await readJson(await request("/publications"));
+  assert.deepEqual(rows.map((p: { slug: string }) => p.slug), ["primary-site"]);
+  assert.equal((await request("/publications/primary-site/preview")).status, 200);
+  assert.equal((await request("/publications/other-site/preview")).status, 404);
+  assert.equal((await request("/publications/other-site/settings", { method: "PUT", body: JSON.stringify({ title: "forbidden-change" }) })).status, 404);
+  assert.equal((await request("/publications/other-site/password", { method: "PUT", body: JSON.stringify({ password: "" }) })).status, 404);
+  assert.equal((await request("/publications/other-site", { method: "DELETE" })).status, 404);
+  assert.ok(getPublicationBySlug("other-site")?.password_hash);
+  assert.notEqual(getPublicationBySlug("other-site")?.title, "forbidden-change");
 });

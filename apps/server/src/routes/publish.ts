@@ -16,25 +16,15 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { vaultClient, VaultError, type Note } from "../parachute";
-import type { Actor } from "../auth/actor";
-import { getPublicationBySlug, grantsForResource, excludedNoteIds, publicationVaultId, type Publication } from "../db";
-import { effectiveCaps, type NoteRef } from "../permissions";
+import { VaultError, type Note } from "../parachute";
+import { getPublicationBySlug, excludedNoteIds, type Publication } from "../db";
 import { pathPublicationIncludes } from "../paths";
 import { config } from "../config";
+import { publicationActor, canPublicView, pubVault, publicationNotes, deriveTitle, navTitle } from "../publication-content";
+export { canPublicView } from "../publication-content";
 import { verifyPassword } from "../auth/password";
 
 export const publish = new Hono();
-
-// Includes `visibility` so a PRIVATE note carrying a published tag is excluded
-// from the public set: effectiveCaps returns nothing for a private note unless the
-// anon actor holds an explicit per-note grant (it never does). Without this a
-// private note could leak onto a public wiki via a shared tag.
-const ref = (n: Note): NoteRef => ({
-  id: n.id,
-  tags: n.tags ?? [],
-  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
-});
 
 /** Local equivalent of api.ts `vaultErr` (not exported there): 404 → 404, else 502/500. */
 function vaultErr(c: Context, e: unknown) {
@@ -102,106 +92,6 @@ function verifyUnlock(slug: string, token: string | undefined): boolean {
 function unlocked(c: Context, pub: Publication): boolean {
   if (!pub.password_hash) return true;
   return verifyUnlock(pub.id, getCookie(c, unlockCookieName(pub.id)));
-}
-
-/**
- * Synthetic anon actor for a publication. Its grants are ONLY the "anyone"
- * grant(s) (subject_type='anyone', resource_type='tag', resource=tag,
- * level='view') the owner created at publish time. We deliberately FILTER OUT
- * any user-/link-/peer-scoped grants that also happen to sit on the same tag —
- * an anonymous visitor must never inherit a specific person's higher (edit/own)
- * grant. (Defense-in-depth: today every /api/p route only needs `view`, but this
- * keeps the anon actor from ever computing a level above what `anyone` allows.)
- */
-function publicationActor(pub: Publication): Actor {
-  const vaultId = publicationVaultId(pub);
-  return {
-    kind: "anon",
-    role: "guest",
-    // The publication's OWN vault (stamped at publish time; 'primary' for
-    // pre-multi-vault rows) — its grants are looked up in that vault only, so a
-    // publication of tag T in vault A never picks up grants on tag T in vault B.
-    vaultId,
-    grants: grantsForResource(pub.resource_type, pub.resource, vaultId).filter((g) => g.subject_type === "anyone"),
-  };
-}
-
-/**
- * The public read gate: the anon actor holds the `view` CAP on the note (no role
- * floor, no subject). Caps, not the level ladder: an `anyone` grant carrying an
- * explicit cap list without `view` (e.g. ["create"]) projects to level "view"
- * (permissions.ts levelForCaps) yet confers no read — a ladder check would leak
- * it onto the public site. For the level-only grant publish creates, caps are
- * exactly the level's expansion, so this is identical to the old check.
- */
-export const canPublicView = (grants: Actor["grants"], note: Note): boolean =>
-  effectiveCaps(grants, ref(note), null).has("view");
-
-/** The vault client bound to the publication's own vault — EVERY vault read on
- *  the public path goes through this, never the primary singleton. */
-const pubVault = (pub: Publication) => vaultClient(publicationVaultId(pub));
-
-/**
- * The note set this publication exposes.
- *
- * - `tag` pubs: notes under the publication's tag, filtered to
- *   the `view` cap (canPublicView) against the anon actor's grants. Mirrors
- *   `visibleNotes` in api.ts — tag scoping only narrows; effectiveCaps is the
- *   authoritative guard.
- * - `path` pubs: notes whose `path` is inside the publication's prefix. The
- *   path-membership predicate (evaluated on the vault's OWN `path` field) is the
- *   directory guard, with explicit private notes excluded — grants/caps play no
- *   part. We fetch all notes and filter in-process because Parachute's `?path=`
- *   is an exact match, not a prefix filter; publish.ts must guarantee prefix
- *   membership itself regardless.
- */
-async function publicationNotes(pub: Publication, includeContent: boolean): Promise<Note[]> {
-  // Per-publication "tending": note ids the owner explicitly dropped from the
-  // public set even though they match the tag/path. Excluding here makes the
-  // exclusion authoritative for EVERY reader path (manifest nav, graph, and —
-  // because the single-note route re-checks membership against this same set —
-  // direct id access too).
-  const excluded = new Set(excludedNoteIds(pub));
-  if (pub.resource_type === "path") {
-    const notes = await pubVault(pub).listNotes({ includeContent });
-    return notes.filter((n) => !excluded.has(n.id) && pathPublicationIncludes(n, pub.resource));
-  }
-  const actor = publicationActor(pub);
-  const notes = await pubVault(pub).listNotes({ tags: [pub.resource], includeContent });
-  return notes.filter((n) => !excluded.has(n.id) && canPublicView(actor.grants, n));
-}
-
-/** A short display title derived from a note's content. Handles BOTH shapes the
- *  vault stores: markdown (first non-empty line, leading `#` stripped) AND
- *  TipTap HTML — which is often a SINGLE LINE with no `\n`, so a naive
- *  split("\n")[0] returns the ENTIRE document. Always strip tags and cap the
- *  length so the title can never become the whole note body. */
-function deriveTitle(content: string | null | undefined): string {
-  const c = (content ?? "").trim();
-  if (!c) return "Untitled";
-  // HTML body: prefer the first heading's text; else strip all tags.
-  if (/^<|<[a-z][^>]*>/i.test(c)) {
-    const h = c.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-    const text = (h?.[1] ?? c).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    return text.slice(0, 120) || "Untitled";
-  }
-  // Markdown / plain text: first non-empty line, leading markdown markers off.
-  for (const raw of c.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    return line.replace(/^#+\s*/, "").trim().slice(0, 120) || "Untitled";
-  }
-  return "Untitled";
-}
-
-/** Title for the nav list, where content isn't fetched (cheap). Prefer the
- *  content heading when present, else the note's path basename (sans extension),
- *  else "Untitled". */
-function navTitle(note: Note): string {
-  if (note.content && note.content.trim()) return deriveTitle(note.content);
-  const base = (note.path ?? "").split("/").pop() ?? "";
-  const cleaned = base.replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim();
-  return cleaned || "Untitled";
 }
 
 interface NavNote {

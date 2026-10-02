@@ -7,6 +7,7 @@ import type {
   PeerInfo,
   PeerEditInfo,
   PublicationInfo,
+  PublicationPreview,
   PublicationTheme,
   SetPersonResult,
   ShareLevel,
@@ -267,6 +268,9 @@ export const webCollabSharing: CollabSharing = {
   // ── Publishing (turn a tag into a public, read-only Wiki) ──
   async listPublications(): Promise<PublicationInfo[]> {
     return (await acl(`/publications`)).json();
+  },
+  async previewPublication(slug: string): Promise<PublicationPreview> {
+    return (await acl(`/publications/${enc(slug)}/preview`)).json();
   },
   async publishTag(
     tag: string,

@@ -6,6 +6,7 @@
  * ("share everything tagged X with this person"). Authorization for the shared
  * content itself is still enforced by the /api gateway via these grants.
  */
+import { publicationInventory, publicationNotes, navTitle } from "../publication-content";
 import { notifyAccessChanged } from "../access-events";
 import { Hono, type Context } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
@@ -21,7 +22,7 @@ import { tokenExpiries } from "../auth/vault-token";
 import { EDITABLE_ENV, applyEnvEdit, validateEnvEdit } from "../env-edit";
 import { serverKeyPair, fingerprint } from "../auth/peer";
 import { CAPS, LEVELS, effectiveCaps, expandLevel, isCap, levelForCaps, type Cap, type Level, type NoteRef } from "../permissions";
-import { roleAtLeast, roleFloor } from "../roles";
+import { roleAtLeast, roleFloor, workspaceRole } from "../roles";
 import {
   ensureUser,
   hasAccount,
@@ -94,13 +95,14 @@ import {
   type MirrorDeleteMode,
   type VaultMirror,
   type Space,
+  type Publication,
 } from "../db";
 import { runVaultMirrorOnce } from "../worker/vault-mirror";
 import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtml } from "../collab";
-import { normalizePathPrefix, pathInPrefix, pathPublicationIncludes } from "../paths";
+import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 import { getSecret, secretsConfigured } from "../secrets";
@@ -1299,15 +1301,27 @@ function validateTheme(value: unknown): { json: string | null } | { error: strin
   return { json };
 }
 
+function canManagePublication(c: Context, pub: Publication): boolean {
+  const actor = resolveActor(c);
+  return actor.kind === "user" && roleAtLeast(workspaceRole(actor.email, publicationVaultId(pub)), "admin");
+}
+function managedPublication(c: Context): Publication | null {
+  const slug = c.req.param("slug");
+  const pub = slug ? getPublicationBySlug(slug) : null;
+  return pub && canManagePublication(c, pub) ? pub : null;
+}
+
 acl.get("/publications", (c) =>
   c.json(
-    listPublications().map((p) => {
+    listPublications().filter(p => canManagePublication(c, p)).map((p) => {
       const kind = p.resource_type === "path" ? "path" : "tag";
       return {
         slug: p.id,
         kind,
         // Which vault this publication serves from ('primary' = the default).
         vaultId: publicationVaultId(p),
+        vaultLabel: getVaultRegistry().find(v => v.id === publicationVaultId(p))?.label ?? publicationVaultId(p),
+        isCurrentVault: publicationVaultId(p) === resolveActor(c).vaultId,
         // Keep `tag` populated for tag pubs (existing UI/e2e), add `pathPrefix`
         // for path pubs. Both echo `resource` for their respective kind; the
         // other is empty/null to match core's PublicationInfo contract.
@@ -1326,6 +1340,22 @@ acl.get("/publications", (c) =>
     }),
   ),
 );
+
+/** Owner-only preview of the SAME membership used by every public reader.
+ * Slug management remains server-wide for owners; always use the publication's
+ * own vault, never whichever vault happens to be selected in the client. */
+acl.get("/publications/:slug/preview", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  try {
+    const { candidates, privateExcludedCount } = await publicationInventory(pub);
+    const excluded = new Set(excludedNoteIds(pub));
+    const expired = pub.expires_at !== null && pub.expires_at <= Date.now();
+    const notes = candidates.map(n => ({ id: n.id, title: navTitle(n), path: n.path, excluded: excluded.has(n.id) }));
+    return c.json({ slug: pub.id, vaultId: publicationVaultId(pub), notes, privateExcludedCount,
+      publishedCount: expired ? 0 : notes.filter(n => !n.excluded).length, expired });
+  } catch { return c.json({ error: "preview_unavailable" }, 502); }
+});
 
 acl.post("/tags/:tag/publish", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));
@@ -1370,7 +1400,7 @@ acl.post("/tags/:tag/publish", async (c) => {
   // Live count for the UI warning ("this will publish N notes" — and is dynamic),
   // counted in the publication's own vault.
   let count = 0;
-  try { count = (await vaultClient(vaultId).listNotes({ tags: [tag] })).length; } catch { /* best-effort */ }
+  try { const published = getPublicationBySlug(slug); if (published && (!published.expires_at || published.expires_at > Date.now())) count = (await publicationNotes(published, false)).length; } catch { /* best-effort */ }
   return c.json({ slug, tag, url: `${config.appOrigin}/p/${slug}`, count, passwordRequired: !!passwordHash });
 });
 
@@ -1442,7 +1472,8 @@ acl.post("/publish/path", async (c) => {
   // path uses — never trust a vault query.
   let count = 0;
   try {
-    count = (await vaultClient(vaultId).listNotes({})).filter((n) => pathPublicationIncludes(n, prefix)).length;
+    const published = getPublicationBySlug(slug);
+    if (published && (!published.expires_at || published.expires_at > Date.now())) count = (await publicationNotes(published, false)).length;
   } catch {
     /* best-effort */
   }
@@ -1452,7 +1483,7 @@ acl.post("/publish/path", async (c) => {
 // ── Slug-based publication management (works for BOTH tag and path pubs) ──
 /** Set or clear a publication's password by slug (clear by omitting/empty password). */
 acl.put("/publications/:slug/password", async (c) => {
-  const pub = getPublicationBySlug(c.req.param("slug"));
+  const pub = managedPublication(c);
   if (!pub) return c.json({ error: "not_found" }, 404);
   const { password } = await c.req.json<{ password?: string }>().catch(() => ({}) as { password?: string });
   updatePublication(pub.id, { password_hash: password ? hashPassword(password) : null });
@@ -1468,7 +1499,7 @@ acl.put("/publications/:slug/password", async (c) => {
  *    site (http(s) logo, color patterns) — never trusted as raw HTML.
  *  Only the provided fields are patched. Returns 404 for an unknown slug. */
 acl.put("/publications/:slug/settings", async (c) => {
-  const pub = getPublicationBySlug(c.req.param("slug"));
+  const pub = managedPublication(c);
   if (!pub) return c.json({ error: "not_found" }, 404);
   const body = await c.req
     .json<{ title?: string | null; homeNoteId?: string | null; excludeNoteIds?: unknown; theme?: unknown }>()
@@ -1517,7 +1548,7 @@ acl.put("/publications/:slug/settings", async (c) => {
 /** Unpublish by slug. Removes the row; for a tag pub it also drops the backing
  *  `anyone/tag/view` grant. (Path pubs have no grant to remove.) */
 acl.delete("/publications/:slug", (c) => {
-  const pub = getPublicationBySlug(c.req.param("slug"));
+  const pub = managedPublication(c);
   if (!pub) return c.json({ error: "not_found" }, 404);
   deletePublication(pub.id);
   if (pub.resource_type === "tag") {

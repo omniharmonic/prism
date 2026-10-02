@@ -612,3 +612,23 @@ test("an empty protected publication reports an explicit unlocked state after a 
   assert.equal(unlocked.locked, false);
   assert.deepEqual(unlocked.notes, []);
 });
+
+test("owner publication preview matches public membership and preserves explicit exclusions without exposing private names", async () => {
+  seedThree();
+  fv.put({ id: "private-preview", path: "wiki/private-preview.md", tags: ["wiki"], content: "# PRISM_PRIVATE_PREVIEW_BODY", metadata: { prism_visibility: "private", title: "PRISM_PRIVATE_PREVIEW_TITLE" } });
+  publishTag("preview-site", "wiki");
+  await ownerReq("/publications/preview-site/settings", { method: "PUT", body: JSON.stringify({ excludeNoteIds: ["t2", "unknown-old-id"] }) });
+  const res = await ownerReq("/publications/preview-site/preview");
+  assert.equal(res.status, 200);
+  const preview = await readJson(res);
+  assert.equal(preview.publishedCount, 2);
+  assert.equal(preview.privateExcludedCount, 1);
+  assert.deepEqual(preview.notes.map((n: {id:string}) => n.id).sort(), ["t1", "t2", "t3"]);
+  assert.equal(preview.notes.find((n: {id:string}) => n.id === "t2").excluded, true);
+  assert.ok(preview.notes.every((n: object) => !("content" in n)));
+  assert.ok(!JSON.stringify(preview).includes("PRISM_PRIVATE_PREVIEW"));
+  const manifest = await readJson(await publish.request("/preview-site"));
+  assert.deepEqual(manifest.notes.map((n: {id:string}) => n.id).sort(), preview.notes.filter((n: {excluded:boolean}) => !n.excluded).map((n: {id:string}) => n.id).sort());
+  assert.ok([401, 403].includes((await acl.request("/publications/preview-site/preview")).status));
+  assert.equal((await ownerReq("/publications/missing/preview")).status, 404);
+});

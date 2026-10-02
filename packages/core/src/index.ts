@@ -63,6 +63,7 @@ export type {
   NoteAccess,
   SetPersonResult,
   PublicationInfo,
+  PublicationPreview,
   PublicationTheme,
   NodeIdentity,
   PeerInfo,

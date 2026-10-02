@@ -209,6 +209,9 @@ export interface PublicationTheme {
  *  carries the tag — dynamic, so future notes with the tag are included too. */
 export interface PublicationInfo {
   slug: string;
+  vaultId?: string;
+  vaultLabel?: string;
+  isCurrentVault?: boolean;
   /** What slice is published: a tag, or a path/directory prefix. */
   kind: "tag" | "path";
   /** The published tag (when kind === "tag"). Empty for path publications. */
@@ -227,6 +230,17 @@ export interface PublicationInfo {
   /** Presentation overrides for the public site (logo/colors/font); null/absent
    *  → the default theme. */
   theme?: PublicationTheme | null;
+}
+
+/** Owner preview: public-eligible candidates, including manual exclusions.
+ * Private titles/bodies never enter this projection. */
+export interface PublicationPreview {
+  slug: string;
+  vaultId: string;
+  notes: Array<{ id: string; title: string; path: string | null; excluded: boolean }>;
+  privateExcludedCount: number;
+  publishedCount: number;
+  expired: boolean;
 }
 
 // ── Federation (peer-to-peer vault sync) ──────────────────────────────────────
@@ -424,6 +438,7 @@ export interface CollabSharing {
   /** Publishing — turn a tag into a public, read-only site. Optional so shells
    *  without it (desktop no-op, capability viewers) simply never show the tab. */
   listPublications?(): Promise<PublicationInfo[]>;
+  previewPublication?(slug: string): Promise<PublicationPreview>;
   publishTag?(
     tag: string,
     opts?: { template?: string; title?: string; password?: string },
