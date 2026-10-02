@@ -33,7 +33,7 @@ import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { EditorToolbar } from "./EditorToolbar";
-import { PageHeader, renamePath, type ContentFont } from "./DocumentChrome";
+import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
@@ -91,11 +91,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // extension; updates the open tab's label).
   const updateNote = useUpdateNote();
   const renameTab = useUIStore((s) => s.renameTab);
-  const handleRename = useCallback((newName: string) => {
+  const handleRename = useCallback(async (newName: string) => {
     if (readOnly || governed) return; // read-only surface / no edit access: never rename/persist
     const next = renamePath(note.path, newName);
     if (!next) return;
-    updateNote.mutate({ id: note.id, path: next });
+    await updateNote.mutateAsync({ id: note.id, path: next });
     renameTab(note.id, newName.trim());
   }, [note.path, note.id, updateNote, renameTab, readOnly, governed]);
 
@@ -351,12 +351,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         <div className="document-writing-measure">
           <PageHeader
             path={note.path}
-            details={<>
-              {note.updatedAt && !Number.isNaN(new Date(note.updatedAt).getTime()) && <span>Updated {new Date(note.updatedAt).toLocaleDateString(undefined, {month:"short",day:"numeric"})}</span>}
-              <button type="button" className="document-properties-control focus-ring" onClick={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}>
-                Properties <span aria-hidden="true">›</span>
-              </button>
-            </>}
+            details={<PageProperties path={note.path} tags={note.tags ?? []} updatedAt={note.updatedAt} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}/>}
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}

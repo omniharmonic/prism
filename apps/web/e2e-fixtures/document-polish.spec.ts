@@ -1,0 +1,67 @@
+import { test, expect } from "@playwright/test";
+import { Server } from "@hocuspocus/server";
+import WebSocket from "ws";
+
+test("page properties preserve the editor and failed title changes remain recoverable", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  const editor = page.locator('.tiptap[contenteditable=true]');
+  await expect(editor).toBeVisible();
+  await editor.evaluate(node => { (window as any).originalWritingEditor = node; });
+  await page.locator('.document-properties-disclosure summary').click();
+  await expect(page.locator('.document-properties-content')).toContainText('Projects/Prism/A living workspace');
+  await expect(page.locator('.document-property-tag')).toHaveText('project');
+  expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
+  await page.evaluate(() => { (window as any).prismFixtureControls.rejectWrite = true; });
+  await page.getByRole('button', { name: 'Rename A living workspace', exact: true }).click();
+  const title = page.getByRole('textbox', { name: 'Document title' });
+  await title.fill('A clearer workspace');
+  await title.press('Enter');
+  await expect(page.getByRole('alert').filter({ hasText: 'Could not rename this page' })).toBeVisible();
+  await expect(title).toHaveValue('A clearer workspace');
+  await expect(title).toBeFocused();
+  await page.evaluate(() => { (window as any).prismFixtureControls.rejectWrite = false; });
+  await title.press('Enter');
+  await expect(page.getByRole('button', { name: 'Rename A clearer workspace', exact: true })).toBeVisible();
+  await expect(page.locator('.document-properties-content')).toContainText('Projects/Prism/A clearer workspace');
+  expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
+  await page.screenshot({ path: info.outputPath('document-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.document-page-header')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('document-phone.png'), fullPage: true });
+});
+
+test("real collaborative host shares properties and readable mobile header without replacing its live editor", async ({ page }, info) => {
+  const server = new Server({ address: '127.0.0.1', port: 0, quiet: true, debounce: 10, async onAuthenticate() { return { fixture: true }; } });
+  await server.listen();
+  const sockets: WebSocket[] = [];
+  const path = 'Projects/Prism/A collaborative workspace with connected ideas';
+  try {
+    await page.routeWebSocket(/\/collab$/, route => {
+      const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
+      const pending: (string | Buffer)[] = [];
+      route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));
+      socket.on('open', () => { for (const message of pending) socket.send(message); });
+      socket.on('message', (message, binary) => route.send(binary ? Buffer.from(message as Buffer) : message.toString()));
+      route.onClose(() => socket.close()); socket.on('close', () => route.close({ code: 1000 }));
+    });
+    await page.route('**/auth/me', route => route.fulfill({ json: { authenticated: true, email: 'alice@example.test', vaultId: 'primary', workspace: { id: 'workspace-a' } } }));
+    await page.route('**/api/notes/denied-note', route => route.fulfill({ json: { id: 'denied-note', path, content: '', _level: 'own', metadata: {}, tags: [] } }));
+    await page.route('**/api/federated/**', route => route.fulfill({ status: 204 }));
+    await page.goto('/e2e-fixtures/collab-storage.html?live');
+    const editor = page.locator('.tiptap[contenteditable=true]');
+    await expect(editor).toBeVisible();
+    await editor.fill('Our shared ideas stay connected.');
+    await editor.evaluate(node => { (window as any).originalWritingEditor = node; });
+    await page.locator('.document-properties-disclosure summary').click();
+    await expect(page.locator('.document-properties-content')).toContainText(path);
+    await expect(page.getByText('Live · Editing', { exact: true })).toBeVisible();
+    await page.screenshot({ path: info.outputPath('collaborative-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(editor).toHaveText('Our shared ideas stay connected.');
+    expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath('collaborative-phone.png'), fullPage: true });
+    await page.goto('about:blank');
+  } finally { for (const socket of sockets) socket.terminate(); await server.destroy(); }
+});
