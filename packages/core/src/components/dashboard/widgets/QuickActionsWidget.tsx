@@ -12,6 +12,7 @@ import type { DashboardWidgetConfig, QuickAction } from "../../../lib/dashboard/
 
 interface QuickActionsWidgetProps {
   config: DashboardWidgetConfig;
+  readOnly?: boolean;
 }
 
 const ICON_MAP: Record<string, LucideIcon> = {
@@ -22,13 +23,14 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Zap,
 };
 
-export function QuickActionsWidget({ config }: QuickActionsWidgetProps) {
+export function QuickActionsWidget({ config, readOnly }: QuickActionsWidgetProps) {
   const actions = config.actions ?? [];
   const createNote = useCreateNote();
   const openCommandBar = useUIStore((s) => s.openCommandBar);
   const openTab = useUIStore((s) => s.openTab);
 
   const handleAction = (action: QuickAction) => {
+    if (readOnly && action.action === "create-note") return;
     switch (action.action) {
       case "create-note": {
         createNote.mutate(
@@ -70,6 +72,7 @@ export function QuickActionsWidget({ config }: QuickActionsWidgetProps) {
         return (
           <button
             key={action.id}
+            disabled={readOnly && action.action === "create-note"}
             onClick={() => handleAction(action)}
             className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-[var(--glass-hover)]"
             style={{

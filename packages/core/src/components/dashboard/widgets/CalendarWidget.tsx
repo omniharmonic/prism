@@ -1,20 +1,30 @@
 import { useQuery } from "@tanstack/react-query";
 import { Clock, Calendar } from "lucide-react";
 import { format } from "date-fns";
+import { useVaultClient } from "../../../data/VaultClientContext";
+import { useAgentChatStore } from "../../../lib/agent/chatStore";
 import { calendarApi } from "../../../lib/sync/client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GogEvent = any;
 
 export function CalendarWidget() {
+  const client = useVaultClient();
+  const audience = useAgentChatStore((state) => state.scope);
+  const scope = client.scope?.();
   const now = new Date();
   const { data, isError, isLoading } = useQuery({
-    queryKey: ["calendar", "today", format(now, "yyyy-MM-dd")],
-    queryFn: () =>
-      calendarApi.listEventsFromVault(
+    queryKey: ["vault", "dashboard-calendar", audience, scope, format(now, "yyyy-MM-dd")],
+    queryFn: async ({ signal }) => {
+      const events = await calendarApi.listEventsFromVault(
         new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
         new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
-      ),
+        client,
+      );
+      if (signal.aborted || client.scope?.() !== scope || useAgentChatStore.getState().scope !== audience)
+        throw new Error("Workspace changed before loading calendar events.");
+      return events;
+    },
     retry: 1,
     refetchInterval: 60_000,
   });

@@ -94,11 +94,11 @@ export default function MapRenderer(_props: RendererProps) {
   // Load geo-bearing notes across the mapped tags (deduped — a note can carry
   // several). Handled through the VaultClient seam, so it works on desktop
   // (Tauri) and web (gateway) alike.
-  const { data: features = [], isLoading } = useQuery({
+  const { data: features = [], isLoading, isError, refetch } = useQuery({
     queryKey: ["vault", "geo-features"] as const,
     queryFn: async () => {
       const lists = await Promise.all(
-        GEO_TAGS.map((t) => client.listNotes({ tag: t }).catch(() => [] as Note[])),
+        GEO_TAGS.map((t) => client.listNotes({ tag: t })),
       );
       const seen = new Set<string>();
       const out: MapFeature[] = [];
@@ -128,7 +128,8 @@ export default function MapRenderer(_props: RendererProps) {
   };
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "auto", containerType: "inline-size" }}>
+      <style>{`@container (max-width: 640px) { .prism-vault-map-layout { flex-direction: column; height: auto !important; } .prism-vault-map-layout > div { min-height: 280px; height: 42dvh; flex: none !important; } .prism-vault-map-layout > aside { width: 100% !important; max-height: 40dvh; flex-shrink: 0; } }`}</style>
       <header style={{ padding: "20px 28px 12px", borderBottom: "1px solid var(--glass-border)", flexShrink: 0 }}>
         <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: 8 }}>
           <MapPin size={20} /> Map
@@ -162,13 +163,15 @@ export default function MapRenderer(_props: RendererProps) {
         )}
       </header>
 
-      <div style={{ height: "min(72dvh, 900px)", display: "flex" }}>
+      <div className="prism-vault-map-layout" style={{ height: "min(72dvh, 900px)", display: "flex" }}>
         {/* The map */}
         <div style={{ flex: 1, minWidth: 0, padding: 16 }}>
           {isLoading ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
               Loading locations…
             </div>
+          ) : isError ? (
+            <div role="alert" className="p-4">Locations could not be loaded. <button onClick={() => void refetch()}>Retry locations</button></div>
           ) : features.length === 0 ? (
             <EmptyState />
           ) : (
@@ -184,7 +187,7 @@ export default function MapRenderer(_props: RendererProps) {
         </div>
 
         {/* The list — a linked index of what's on the map */}
-        {features.length > 0 && (
+        {!isError && features.length > 0 && (
           <aside style={{ width: 280, flexShrink: 0, borderLeft: "1px solid var(--glass-border)", overflow: "auto", padding: "12px 0" }} data-testid="map-list">
             <div style={{ padding: "0 16px 8px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--text-muted)" }}>
               {shown.length} located {shown.length === 1 ? "note" : "notes"}
