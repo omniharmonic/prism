@@ -105,7 +105,8 @@ test("reviewed identity changes retain failed drafts across layouts and preserve
     "new@example.test",
   );
   await page.setViewportSize({ width: 390, height: 844 });
-  await people.getByText("Manage accounts", { exact: true }).click();
+  // The same document area now stays mounted: its disclosure stays open too.
+  await expect(people.getByLabel("Account identifier")).toBeVisible();
   await expect(people.getByLabel("Account identifier")).toHaveValue(
     "new@example.test",
   );

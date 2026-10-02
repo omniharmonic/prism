@@ -15,19 +15,28 @@ export function useCanvasPresentation() {
   useEffect(() => {
     if (!expanded || !ref.current) return;
     // Keep the rest of the workspace out of keyboard/screen-reader navigation.
-    const siblings: Array<[HTMLElement, boolean]> = [];
-    let child: HTMLElement = ref.current;
-    while (child.parentElement && child !== document.body) {
-      for (const node of child.parentElement.children) {
-        if (node !== child && node instanceof HTMLElement) {
-          siblings.push([node, node.inert]);
-          node.inert = true;
+    const siblings = new Map<HTMLElement, boolean>();
+    const observers = new MutationObserver(() => applyInert());
+    const applyInert = () => {
+      if (!ref.current) return;
+      let child: HTMLElement = ref.current;
+      while (child.parentElement && child !== document.body) {
+        const parent = child.parentElement;
+        // Responsive navigation can appear while the existing canvas is focused.
+        observers.observe(parent, { childList: true });
+        for (const node of parent.children) {
+          if (node !== child && node instanceof HTMLElement) {
+            if (!siblings.has(node)) siblings.set(node, node.inert);
+            node.inert = true;
+          }
         }
+        child = parent;
       }
-      child = child.parentElement;
-    }
+    };
+    applyInert();
     button.current?.focus();
     return () => {
+      observers.disconnect();
       for (const [node, inert] of siblings) node.inert = inert;
       button.current?.focus();
     };

@@ -197,3 +197,58 @@ test("phone thread composer stays above the floating workspace controls", async 
   await expect(composer).toBeVisible();
   expect(await composer.locator("..").locator("..").evaluate(e => getComputedStyle(e).paddingBottom)).toBe("12px");
 });
+
+
+test("the same editor and unsaved text survive both responsive breakpoints", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+  await editor.press("ControlOrMeta+End");
+  await editor.pressSequentially(" RESPONSIVE_DRAFT_STAYS");
+  await page.evaluate(() => (window as any).prismEditorBeforeResize = document.querySelector(".tiptap[contenteditable=true]"));
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(page.locator(".command-pill")).toHaveCount(width === 390 ? 1 : 0);
+    expect(await page.evaluate(() => (window as any).prismEditorBeforeResize === document.querySelector(".tiptap[contenteditable=true]"))).toBe(true);
+    await expect(editor).toContainText("RESPONSIVE_DRAFT_STAYS");
+    expect(await page.evaluate(() => (window as any).prismFixtureWrites.filter((w: any) => w.content !== undefined))).toEqual([]);
+  }
+  await page.clock.runFor(2100);
+  await expect.poll(() => page.evaluate(() => (window as any).prismFixtureWrites.filter((w: any) => w.content !== undefined).length)).toBe(1);
+  await page.clock.resume();
+});
+
+
+test("live thread view survives desktop and phone layout changes", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html?thread&live");
+  await page.getByRole("button", { name: "View latest messages" }).click();
+  await expect(page.getByText("LIVE_RESPONSIVE_THREAD_FIXTURE", { exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).prismThreadBeforeResize = document.querySelector(".workspace-message-thread"));
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(page.locator(".command-pill")).toHaveCount(width === 390 ? 1 : 0);
+    await expect(page.getByText("LIVE_RESPONSIVE_THREAD_FIXTURE", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).prismThreadBeforeResize === document.querySelector(".workspace-message-thread"))).toBe(true);
+  }
+});
+
+test("focused canvas remains mounted and keeps new mobile controls inert until it closes", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html?session&canvas");
+  await expect(page.getByText("Open a document", { exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("focus-canvas", "Canvas fixture", "canvas"));
+  await page.getByRole("button", { name: "Focus canvas", exact: true }).click();
+  await page.evaluate(() => (window as any).prismCanvasBeforeResize = document.querySelector(".excalidraw"));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".command-pill")).toHaveCount(1);
+  const focused = page.getByRole("dialog", { name: "Focused canvas" });
+  await expect(focused).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismCanvasBeforeResize === document.querySelector(".excalidraw"))).toBe(true);
+  expect(await page.locator(".command-pill").evaluate(e => !!e.closest("[inert]"))).toBe(true);
+  expect((await focused.boundingBox())!.width).toBe(390);
+  await focused.getByRole("button", { name: "Back to document", exact: true }).click();
+  expect(await page.locator(".command-pill").evaluate(e => !!e.closest("[inert]"))).toBe(false);
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
+});

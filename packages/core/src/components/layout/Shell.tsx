@@ -67,54 +67,12 @@ export function Shell() {
     boxSizing: "border-box",
   };
 
-  if (isMobile) {
-    return (
-      <div className="flex flex-col overflow-hidden" style={rootStyle}>
-        {restoreNotice}
-        <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
-        <div className="relative flex-1 min-h-0">
-          {/* Canvas fills the screen; the pill floats over it and content scrolls
-              beneath (renderers add bottom clearance so the last line clears). */}
-          <div className="absolute inset-0" style={{ "--workspace-bottom-inset": "76px" } as React.CSSProperties}>
-            <Canvas />
-          </div>
-
-          {/* Sidebar as a left drawer */}
-          {sidebarOpen && (
-            <MobileDrawer side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
-              <Navigation />
-            </MobileDrawer>
-          )}
-
-          {/* Context panel as a right drawer */}
-          {contextPanelOpen && (
-            <MobileDrawer side="right" onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
-              <ContextPanel />
-            </MobileDrawer>
-          )}
-
-          {/* Floating command pill — the mobile navigation/action surface.
-              Replaces the bottom StatusBar; Settings + sync live in its More sheet. */}
-          <MobileActionBar />
-        </div>
-
-        <CommandBar key="commands" />
-        <WikilinkChooser key="wikilinks" />
-        <SharingDialogHost key="sharing" />
-        <NotionDbSyncHost key="notion-sync" />
-        <GraphFullscreen key="graph" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col overflow-hidden" style={rootStyle}>
-        {restoreNotice}
-        <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
-      {/* Main content area */}
-      <div className="flex flex-1 min-h-0">
-        {/* Sidebar */}
-        {sidebarOpen && (
+      {restoreNotice}
+      <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
+      <div key="workspace" className="relative flex flex-1 min-h-0">
+        {!isMobile && sidebarOpen && (
           <>
             <div style={{ width: sidebarWidth, minWidth: 200, maxWidth: 400 }} className="flex-shrink-0">
               <Navigation />
@@ -123,13 +81,13 @@ export function Shell() {
           </>
         )}
 
-        {/* Canvas */}
-        <div className="flex-1 min-w-0">
+        {/* Keep this parent and Canvas mounted across breakpoints. Responsive
+            navigation must not recreate an editor, socket, thread or draft. */}
+        <div key="document" className="flex-1 min-w-0 min-h-0" style={{ "--workspace-bottom-inset": isMobile ? "76px" : "0px" } as React.CSSProperties}>
           <Canvas />
         </div>
 
-        {/* Context Panel */}
-        {contextPanelOpen && (
+        {!isMobile && contextPanelOpen && (
           <>
             <ResizeHandle onResize={setContextPanelWidth} initialSize={contextPanelWidth} side="right" />
             <div style={{ width: contextPanelWidth, minWidth: 260, maxWidth: 480 }} className="flex-shrink-0">
@@ -137,18 +95,23 @@ export function Shell() {
             </div>
           </>
         )}
+        {isMobile && sidebarOpen && (
+          <MobileDrawer key="mobile-navigation" side="left" onClose={() => useUIStore.setState({ sidebarOpen: false })}>
+            <Navigation />
+          </MobileDrawer>
+        )}
+        {isMobile && contextPanelOpen && (
+          <MobileDrawer key="mobile-panel" side="right" onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
+            <ContextPanel />
+          </MobileDrawer>
+        )}
+        {isMobile && <MobileActionBar key="mobile-actions" />}
       </div>
-
-      {/* Status Bar */}
-      <StatusBar />
-
-      {/* Command Bar overlay */}
+      {!isMobile && <StatusBar key="status" />}
       <CommandBar key="commands" />
       <WikilinkChooser key="wikilinks" />
-        <SharingDialogHost key="sharing" />
+      <SharingDialogHost key="sharing" />
       <NotionDbSyncHost key="notion-sync" />
-
-      {/* Graph fullscreen overlay */}
       <GraphFullscreen key="graph" />
     </div>
   );

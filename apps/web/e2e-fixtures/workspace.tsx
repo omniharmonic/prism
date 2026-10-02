@@ -23,7 +23,8 @@ Object.assign(window, {
   prismFixtureReleaseRead: (id: string) => { readGates.get(id)?.(); readGates.delete(id); },
   prismFixtureSwitchVault: async (id: string) => { setActiveVault(id); window.dispatchEvent(new Event("prism:vault-changed")); await fetchMe(); },
   prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
-notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram" }, createdAt: date, updatedAt: date });
+notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram", ...(params.has("live") ? { matrixRoomId: "!fixture:example.test" } : {}) }, createdAt: date, updatedAt: date });
+if (params.has("canvas")) notes.push({ id: "focus-canvas", path: "Projects/Prism/Canvas fixture", content: JSON.stringify({ elements: [], appState: {} }), metadata: { type: "canvas" }, tags: ["canvas"], createdAt: date, updatedAt: date });
 const fixturePeople = [
       { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-a", name: "Alex Morgan", path: "People/Alex Morgan A", role: "Designer", identities: [{ kind: "email", value: "alex.design@example.test" }] },
       { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-b", name: "Alex Morgan", path: "People/Alex Morgan B", role: "Engineer", identities: [{ kind: "email", value: "alex.engineering@example.test" }] },
@@ -59,6 +60,7 @@ window.fetch = async (input, init) => {
     return Response.json({ person, related: [{id:"field-notes",title:"Project conversation",path:"Projects/Prism/Field notes",category:"conversations",relationships:["email_from"]},{id:"weekly-review",title:"Weekly planning",path:"Journal/Weekly review",category:"meetings",relationships:["attendee"]}], next:null });
   }
   if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/api/threads/thread/live") return Response.json({ messages: [{ event_id: "$fixture", sender: "@fixture:example.test", sender_name: "Fixture", body: "LIVE_RESPONSIVE_THREAD_FIXTURE", timestamp: Date.UTC(2026, 9, 1), is_outgoing: false, msg_type: "m.text", media_url: null, media_info: null }], start: null, end: null, has_more: false });
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
