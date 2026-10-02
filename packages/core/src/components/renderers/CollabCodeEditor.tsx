@@ -15,7 +15,7 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
-import { yCollab } from "y-codemirror.next";
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type { Awareness } from "y-protocols/awareness";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -66,14 +66,14 @@ export function CollabCodeEditor({
       closeBrackets(),
       foldGutter(),
       highlightSelectionMatches(),
-      keymap.of([...defaultKeymap, ...closeBracketsKeymap, ...searchKeymap, indentWithTab]),
+      keymap.of([...(editable ? yUndoManagerKeymap : []), ...defaultKeymap, ...closeBracketsKeymap, ...searchKeymap, indentWithTab]),
       // yCollab supplies the doc content + sync + remote cursors + collaborative undo.
-      yCollab(ytext, awareness, { undoManager }),
+      yCollab(ytext, awareness, { undoManager: editable ? undoManager : false }),
       oneDark,
       EditorView.theme({
         // 16px on touch devices prevents iOS Safari from auto-zooming the page
         // when the editor gains focus (it zooms any focused field below 16px).
-        "&": { height: "100%", fontSize: isMobile ? "16px" : "13px", background: "transparent" },
+        "&": { height: "100%", fontSize: "inherit", background: "transparent" },
         ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6", WebkitOverflowScrolling: "touch" },
       }),
       EditorView.editable.of(editable),
@@ -94,10 +94,10 @@ export function CollabCodeEditor({
       view.destroy();
       viewRef.current = null;
     };
-    // Rebuild only when the doc/provider/editability/language/size identity changes.
-  }, [ydoc, provider, language, editable, user.name, user.color, isMobile]);
+    // Rebuild only when the doc/provider/editability/language identity changes.
+  }, [ydoc, provider, language, editable, user.name, user.color]);
 
-  return <div ref={hostRef} style={{ height: "100%", minHeight: "60vh", overflow: "auto" }} />;
+  return <div ref={hostRef} style={{ height: "100%", minHeight: "60vh", overflow: "auto", fontSize: isMobile ? 16 : 13 }} />;
 }
 
 function getLanguageExtension(lang: string): Extension | null {

@@ -5,7 +5,9 @@ import * as Y from "yjs";
 
 async function collaborativeFixture(page: Page, kind: "code" | "spreadsheet" | "canvas" | "document") {
   let saved: Uint8Array | undefined;
+  let level: "own" | "view" = "own";
   const server = new Server({ address: "127.0.0.1", port: 0, quiet: true, debounce: 10,
+    async onAuthenticate({ connectionConfig }) { connectionConfig.readOnly = level === "view"; return { fixture: true }; },
     async onLoadDocument({ document }) {
       if (saved) Y.applyUpdate(document, saved);
       else if (kind === "code") document.getText("codemirror").insert(0, "// LAZY_CODE_BASE");
@@ -31,10 +33,15 @@ async function collaborativeFixture(page: Page, kind: "code" | "spreadsheet" | "
     route.onClose(() => socket.close()); socket.on("close", () => route.close({ code: 1000 }));
   });
   await page.route("**/auth/me", route => route.fulfill({ json: { authenticated: true, email: "alice@example.test", vaultId: "primary", workspace: { id: "lazy-workspace" } } }));
-  await page.route("**/api/notes/denied-note", route => route.fulfill({ json: { id: "denied-note", path: "Lazy fixture", content: "", _level: "own", metadata: { type: kind, language: "typescript" }, tags: [] } }));
+  await page.route("**/api/notes/denied-note", route => route.fulfill({ json: { id: "denied-note", path: "Lazy fixture", content: "", _level: level, metadata: { type: kind, language: "typescript" }, tags: [] } }));
   await page.route("**/api/federated/**", route => route.fulfill({ status: 204 }));
   return {
     server,
+    downgrade() {
+      level = "view";
+      for (const doc of server.hocuspocus.documents.values()) for (const connection of doc.getConnections())
+        connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    },
     doc: () => [...server.hocuspocus.documents.values()][0]!,
     async close() { await page.goto("about:blank"); for (const socket of sockets) socket.terminate(); await server.destroy(); },
   };
@@ -71,9 +78,30 @@ test("a delayed code engine retains its live session and receives remote edits b
     await editor.press("ControlOrMeta+End");
     await editor.pressSequentially(" LOCAL_LAZY_EDIT");
     await expect.poll(() => doc.getText("codemirror").toString()).toContain("LOCAL_LAZY_EDIT");
+    await page.evaluate(() => (window as any).prismCodeBeforeResize = document.querySelector(".cm-content"));
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(editor).toHaveCSS("font-size", width === 390 ? "16px" : "13px");
+      expect(await page.evaluate(() => (window as any).prismCodeBeforeResize === document.querySelector(".cm-content"))).toBe(true);
+      await expect(editor).toBeFocused();
+    }
+    await editor.press("ControlOrMeta+z");
+    await expect(editor).not.toContainText("LOCAL_LAZY_EDIT");
+    await expect(editor).toContainText("REMOTE_DURING_LOAD");
+    await editor.press("ControlOrMeta+Shift+z");
+    await expect(editor).toContainText("LOCAL_LAZY_EDIT");
     await page.reload();
     await expect(editor).toContainText("LOCAL_LAZY_EDIT");
     await expect(editor).toContainText("REMOTE_DURING_LOAD");
+    fixture.downgrade();
+    const reader = page.locator(".cm-content[contenteditable=false]");
+    await expect(reader).toContainText("LOCAL_LAZY_EDIT");
+    await expect(page.getByText("Live · View only", { exact: true })).toBeVisible();
+    const source = fixture.doc().getText("codemirror").toString();
+    await reader.dispatchEvent("beforeinput", { inputType: "historyUndo", bubbles: true, cancelable: true });
+    await reader.press("ControlOrMeta+z");
+    expect(fixture.doc().getText("codemirror").toString()).toBe(source);
+    await expect(reader).toContainText("LOCAL_LAZY_EDIT");
   } finally { release(); await fixture.close(); }
 });
 
