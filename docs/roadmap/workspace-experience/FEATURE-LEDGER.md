@@ -20,11 +20,11 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 
 | Feature | Current evidence | Required next journey / completion gate |
 | --- | --- | --- |
-| Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production check pending |
+| Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production web snapshot receipt verified |
 | Collaborative rich text | Scoped CRDT storage, actual web/native concurrent edits, individual agent suggestion accept/reject | Two reviewers with conflicting decisions, durable review audit, legacy draft recovery, physical offline reconnect |
 | Message thread | Legacy multiline reader, sender grouping, scroll/draft and failure fixtures | Private Telegram-via-Matrix inbound→canonical person→reply reconciliation; paginated archives and stable source events |
 | Email | Rendering/composer fixtures and server source support | Private self-mail inbound→person link→Reply/Reply all/attachments, retained failed draft, no duplicate send |
-| People | Access-filtered directory/profiles, explicit canonical links, guarded email/Matrix decisions and mobile/draft/error fixtures | Production private account add/remove and linked-record navigation; identity repair preview/resume and ambiguity review queue |
+| People | Access-filtered directory/profiles, explicit canonical links, guarded email/Matrix decisions and mobile/draft/error fixtures | Private production account add/remove and linked-record navigation verified; remaining identity repair preview/resume and ambiguity review queue |
 | Inbox (`messages-dashboard`, `vault-messages`) | Triage, channel labels, limited-result disclosure, phone screenshots | Summary projection/paging; desktop split view; canonical People detail/review |
 | Event and Calendar dashboard | Matching ambiguity/time tests; actual private event→exact meeting/transcript navigation on web/native; overlap/multi-day layout | Private external-calendar update/recurrence/notification readback; manual transcript overrides and multiple-recording writer |
 | Code / collaborative code | Registered renderer and host/collab implementation retained | Two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
@@ -40,7 +40,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | 3D graph / publication graph | Existing renderer preserved behind lazy load; actual tooltip consumer treats markup as text | Actual WebGL interaction on installed client and public/private publication fixtures |
 | Bioregion entity | Registered renderer retained | Type-specific properties, map/entity links and access-limited view |
 | Map | Registered virtual renderer and media/map proxy seams retained | Private markers, filtering/detail navigation, token-free proxy on native, unavailable-provider fallback |
-| Agent chat / document panel | Actual private read-only, suggest-only and read/write tool flows; persisted sessions/cost/context/drafts | Active-tool downgrade barrier in production, source preview continuity and broader document adapters; selected/unsaved/text-file snapshots verified in production web, durable follow-ups pass fixtures with production acceptance pending |
+| Agent chat / document panel | Actual private read-only, suggest-only and read/write tool flows; persisted sessions/cost/context/drafts | Active-tool downgrade barrier in production, source preview continuity and broader document adapters; selected/unsaved/text-file snapshots verified in production web, durable follow-ups execute once without an open production browser |
 | Agent activity / Automations | Registered activity dashboard and HostServices retained | Schedule/lease/history/cancel, local-vs-Claude routing and failure recovery using an isolated skill |
 | Network administration | Workspace/vault/member/server/federation/governance/publishing panels retained | Rows below; every control must honor effective capabilities |
 | Unknown content type | Placeholder remains the fallback | Unsupported type is visibly recoverable; raw content survives without being rewritten |

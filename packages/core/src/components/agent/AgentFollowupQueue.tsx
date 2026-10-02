@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { X } from "lucide-react";
+import { AgentSourcePreview } from "./AgentSourcePreview";
+import { AgentSnapshotPreview } from "./AgentSnapshotAttachments";
+import type { AgentContextSnapshot } from "../../lib/agent/contextSnapshots";
 import type {
   AgentClient,
   AgentFollowup,
@@ -196,15 +199,25 @@ function FollowupEditor({
   const dialog = useRef<HTMLDialogElement>(null);
   const lock = useRef(false);
   const [reviewedPolicy] = useState({ mode, version: policyVersion });
+  const [source, setSource] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<AgentContextSnapshot | null>(null);
+  const savedSources = [
+    ...new Set(
+      [row.payload.noteId, ...(row.payload.contextNoteIds ?? [])].filter(
+        (id): id is string => !!id,
+      ),
+    ),
+  ];
   const draft = useScopedDraft("agent-followup-edit", scope, row.id);
   const [text, setText] = useState(draft.text || row.payload.prompt);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    dialog.current?.showModal();
+    const modal = dialog.current;
+    modal?.showModal();
     return () => {
-      dialog.current?.close();
+      modal?.close();
       if (previous?.isConnected) previous.focus();
     };
   }, []);
@@ -239,6 +252,7 @@ function FollowupEditor({
       className="agent-source-preview"
       aria-label="Edit queued message"
       onCancel={(e) => {
+        if (e.target !== e.currentTarget) return;
         e.preventDefault();
         onClose();
       }}
@@ -270,10 +284,45 @@ function FollowupEditor({
           {row.status === "blocked"
             ? `Resuming uses the session’s current permissions: ${modeLabel(reviewedPolicy.mode)}.`
             : `Queued with ${modeLabel(row.permissionMode)} permissions. A change pauses this message for review.`}{" "}
-          {(row.payload.contextNoteIds?.length ?? 0) +
-            (row.payload.contextSnapshots?.length ?? 0)}{" "}
-          attached sources will be retained.
+          Sources are checked again before this message starts.
         </p>
+        {(savedSources.length > 0 ||
+          !!row.payload.contextSnapshots?.length) && (
+          <section
+            aria-label="Queued context"
+            className="space-y-2 rounded-lg border border-[var(--glass-border)] p-3"
+          >
+            <h3 className="text-xs font-medium">Context for this message</h3>
+            <p className="text-xs text-[var(--text-muted)]">
+              Saved notes use their latest text when the turn starts. Captured
+              text stays exactly as attached.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {savedSources.map((id, index) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={button + " border border-[var(--glass-border)]"}
+                  onClick={() => setSource(id)}
+                >
+                  {id === row.payload.noteId
+                    ? "Preview working document"
+                    : `Preview saved note ${index + 1}`}
+                </button>
+              ))}
+              {row.payload.contextSnapshots?.map((item, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  className={button + " border border-[var(--glass-border)]"}
+                  onClick={() => setSnapshot(item)}
+                >
+                  Preview captured {item.kind} {index + 1}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         <textarea
           autoFocus
           aria-label="Queued instruction"
@@ -308,6 +357,15 @@ function FollowupEditor({
               : "Save queued message"}
         </button>
       </form>
+      {source && (
+        <AgentSourcePreview noteId={source} onClose={() => setSource(null)} />
+      )}
+      {snapshot && (
+        <AgentSnapshotPreview
+          snapshot={snapshot}
+          onClose={() => setSnapshot(null)}
+        />
+      )}
     </dialog>
   );
 }

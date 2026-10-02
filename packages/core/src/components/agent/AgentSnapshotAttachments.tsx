@@ -204,7 +204,8 @@ export function AgentSnapshotPreview({
   useEffect(() => {
     let active = true;
     const prior = document.activeElement as HTMLElement | null;
-    dialog.current?.showModal();
+    const modal = dialog.current;
+    modal?.showModal();
     if (!snapshot.noteId) setResult({ scope, snapshot, status: "ready" });
     else
       client
@@ -218,7 +219,7 @@ export function AgentSnapshotPreview({
         });
     return () => {
       active = false;
-      dialog.current?.close();
+      modal?.close();
       if (prior?.isConnected) prior.focus();
     };
   }, [client, snapshot, scope]);

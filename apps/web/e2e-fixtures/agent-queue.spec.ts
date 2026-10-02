@@ -145,3 +145,35 @@ test('queueing stops before execution when its durable pending receipt cannot be
  await expect(page.getByRole('region',{name:'Queued follow-ups'})).toContainText('Keep my queued instruction');
  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('fixture-followups')??'[]').length)).toBe(1);
 });
+
+test('queued context previews retain the instruction and recheck revoked source access',async({page})=>{
+ await page.goto('/e2e-fixtures/agent.html?queue&context&snapshots');
+ const composer=page.getByRole('textbox',{name:'Message the agent'});
+ await composer.fill('First instruction');await page.getByRole('button',{name:'Send',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Queue follow-up'})).toBeVisible();
+ await page.getByText('Capture text',{exact:true}).click();
+ await page.getByRole('button',{name:'Attach document snapshot',exact:true}).click();
+ await composer.fill('Discuss captured context');await page.getByRole('button',{name:'Queue follow-up'}).click();
+ await page.getByRole('region',{name:'Queued follow-ups'}).getByRole('button',{name:'Edit',exact:true}).click();
+ const editor=page.getByRole('dialog',{name:'Edit queued message'});
+ await editor.getByRole('textbox',{name:'Queued instruction'}).fill('Keep this edited instruction');
+ await editor.getByRole('button',{name:'Preview captured document 1'}).click();
+ const preview=page.getByRole('dialog',{name:'Captured context'});
+ await expect(preview).toContainText('Initial captured draft.');
+ await preview.press('Escape');
+ await expect(editor.getByRole('textbox',{name:'Queued instruction'})).toHaveValue('Keep this edited instruction');
+ await expect(editor.getByRole('button',{name:'Preview captured document 1'})).toBeFocused();
+ await page.evaluate(()=>{(window as any).prismAgentFixture.denySource=true;});
+ await editor.getByRole('button',{name:'Preview captured document 1'}).click();
+ await expect(preview).toContainText('This source is unavailable');
+ await expect(preview).not.toContainText('Initial captured draft.');
+ await preview.press('Escape');
+ await editor.getByRole('button',{name:'Preview working document'}).click();
+ const saved=page.getByRole('dialog',{name:'Source preview'});
+ await expect(saved).toContainText('This source is unavailable');
+ await expect(saved).not.toContainText('Fixture');
+ await saved.press('Escape');
+ await editor.getByRole('button',{name:'Save queued message'}).click();
+ await expect(editor).not.toBeVisible();
+ await expect(page.getByRole('region',{name:'Queued follow-ups'})).toContainText('Keep this edited instruction');
+});

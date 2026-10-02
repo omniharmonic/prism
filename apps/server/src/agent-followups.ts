@@ -220,7 +220,11 @@ export function scheduleFollowups(sessionId: string) {
   if (scheduled.has(sessionId)) return;
   const timer = setTimeout(() => {
     scheduled.delete(sessionId);
-    void drainFollowups(sessionId);
+    void drainFollowups(sessionId).catch(() => {
+      // Never turn an unexpected storage failure into an unhandled rejection.
+      // The durable row remains available for restart recovery and review.
+      console.error("Agent follow-up scheduling failed");
+    });
   }, 25);
   timer.unref();
   scheduled.set(sessionId, timer);
@@ -315,10 +319,11 @@ export function recoverFollowups() {
       )
       .get(row.session_id, `followup_${row.id}`) as { id: string } | undefined;
     db.prepare(
-      "UPDATE agent_followups SET status=?,turn_id=?,error=?,version=version+1 WHERE id=?",
+      "UPDATE agent_followups SET status=?,turn_id=?,payload=?,error=?,version=version+1 WHERE id=?",
     ).run(
       turn ? "accepted" : "blocked",
       turn?.id ?? null,
+      turn ? JSON.stringify({ prompt: "" }) : row.payload,
       turn
         ? null
         : "Server restarted while admitting this message. Review before retrying.",

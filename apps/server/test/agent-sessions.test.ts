@@ -1349,9 +1349,10 @@ test('successful turn completion automatically drains the durable queue without 
  assert.equal(calls.length,2);assert.match(calls[1]!.args.at(-1)!,/Automatic next/);
  const accepted=db.prepare('SELECT * FROM agent_followups WHERE session_id=?').get(sid) as any;
  assert.equal(accepted.status,'accepted');assert.equal(accepted.payload,'{"prompt":""}');
- db.prepare("UPDATE agent_followups SET status='dispatching' WHERE id=?").run(accepted.id);
+ db.prepare("UPDATE agent_followups SET status='dispatching',payload=? WHERE id=?").run(JSON.stringify({prompt:"Private retained instruction"}), accepted.id);
  recoverFollowups();await drainFollowups(sid);
  assert.equal(listFollowups(sid).length,0);assert.equal(calls.length,2);
+ assert.equal((db.prepare('SELECT payload FROM agent_followups WHERE id=?').get(accepted.id) as any).payload, JSON.stringify({prompt:''}));
 });
 test('queue capacity, actor isolation and stale permission reviews fail before admission',async()=>{
  const sid=await newSession();await postTurn(sid,{prompt:'First'});
