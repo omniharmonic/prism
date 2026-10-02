@@ -2,7 +2,7 @@ import { PublicationNavigationEditor } from "./PublicationNavigationEditor";
 import { parsePublicationNavigation } from "../../../../lib/publishing/navigation";
 import { Eye, Globe, FileText } from "lucide-react";
 import "./publishing-studio.css";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
 import type {
   CollabSharing,
   PublicationInfo,
@@ -24,6 +24,10 @@ export function PresentationDraft({
   sharing: CollabSharing;
   onChanged: () => void | Promise<void>;
 }) {
+  const paneId = useId();
+  const [mobilePane, setMobilePane] = useState<"settings" | "preview">(
+    "settings",
+  );
   const [state, setState] = useState<PublicationPresentationState | null>(null);
   const [draft, setDraft] = useState<PublicationPresentation | null>(null);
   const [error, setError] = useState("");
@@ -48,11 +52,14 @@ export function PresentationDraft({
         : studio.current?.querySelector<HTMLButtonElement>(
             "[data-inline-preview]",
           );
-      if (target?.disabled)
-        studio.current
-          ?.querySelector<HTMLInputElement>('[aria-label="Draft site title"]')
-          ?.focus({ preventScroll: true });
-      else target?.focus({ preventScroll: true });
+      if (target?.disabled) {
+        setMobilePane("settings");
+        requestAnimationFrame(() =>
+          studio.current
+            ?.querySelector<HTMLInputElement>('[aria-label="Draft site title"]')
+            ?.focus({ preventScroll: true }),
+        );
+      } else target?.focus({ preventScroll: true });
     });
   }
   const lock = useRef(false);
@@ -91,12 +98,24 @@ export function PresentationDraft({
     revision?: number,
   ) {
     if (!state || !draft || lock.current) return;
-    if (action === "save" && draft.theme?.navigation && !parsePublicationNavigation(draft.theme.navigation)) {
-      setError("Name every navigation section. Use up to 8 sections and 64 unique eligible pages.");
+    if (
+      action === "save" &&
+      draft.theme?.navigation &&
+      !parsePublicationNavigation(draft.theme.navigation)
+    ) {
+      setError(
+        "Name every navigation section. Use up to 8 sections and 64 unique eligible pages.",
+      );
       return;
     }
-    if (action === "save" && draft.theme && new TextEncoder().encode(JSON.stringify(draft.theme)).length > 4096) {
-      setError("Site settings exceed the 4 KB limit. Shorten navigation labels or image URLs, or use fewer navigation pages. Your draft is still here.");
+    if (
+      action === "save" &&
+      draft.theme &&
+      new TextEncoder().encode(JSON.stringify(draft.theme)).length > 4096
+    ) {
+      setError(
+        "Site settings exceed the 4 KB limit. Shorten navigation labels or image URLs, or use fewer navigation pages. Your draft is still here.",
+      );
       return;
     }
     lock.current = true;
@@ -232,8 +251,41 @@ export function PresentationDraft({
                     : "Live appearance"}
             </span>
           </div>
-          <div className="prism-site-studio-grid">
-            <div className="prism-site-studio-settings">
+          <div
+            className="prism-site-studio-switch"
+            role="group"
+            aria-label="Studio view"
+          >
+            <button
+              type="button"
+              className="focus-ring"
+              aria-pressed={mobilePane === "settings"}
+              aria-controls={`${paneId}-settings`}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                setMobilePane("settings");
+              }}
+            >
+              Settings view
+            </button>
+            <button
+              type="button"
+              className="focus-ring"
+              aria-pressed={mobilePane === "preview"}
+              aria-controls={`${paneId}-preview`}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                setMobilePane("preview");
+              }}
+            >
+              Preview view
+            </button>
+          </div>
+          <div className="prism-site-studio-grid" data-mobile-pane={mobilePane}>
+            <div
+              id={`${paneId}-settings`}
+              className="prism-site-studio-settings"
+            >
               <h4>Site settings</h4>
               <p className="prism-site-studio-hint">
                 Shape how your collection looks and reads.
@@ -430,9 +482,16 @@ export function PresentationDraft({
               </div>
             </div>
             <aside
+              id={`${paneId}-preview`}
               className="prism-site-studio-review"
               aria-label="Appearance review"
             >
+              {preview !== "closed" && dirty && (
+                <p className="prism-site-preview-stale" role="status">
+                  Preview shows saved draft {state.draftRevision}. Unsaved
+                  settings are not shown.
+                </p>
+              )}
               {preview === "closed" ? (
                 <div className="prism-site-preview-empty">
                   <Eye size={28} aria-hidden="true" />
@@ -452,6 +511,7 @@ export function PresentationDraft({
                         event.currentTarget.focus({ preventScroll: true });
                         previewLaunch.current = event.currentTarget;
                         previewReturn.current = "closed";
+                        setMobilePane("preview");
                         setPreview("inline");
                       }}
                     >
