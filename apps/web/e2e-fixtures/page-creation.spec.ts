@@ -163,10 +163,11 @@ test("all specialized page defaults and dedicated Task/Message entry points rema
     ["Code file", "code"],
     ["Dashboard", "dashboard"],
     ["Website", "website"],
+    ["Email draft", "email"],
   ]) {
     await open(page);
     await page.getByRole("button", { name: "Page", exact: true }).click();
-    await expect(page.locator("#creation-formats button")).toHaveCount(9);
+    await expect(page.locator("#creation-formats button")).toHaveCount(10);
     await page.getByRole("button", { name: label, exact: true }).click();
     await page.getByRole("button", { name: "Create", exact: true }).click();
     expect(

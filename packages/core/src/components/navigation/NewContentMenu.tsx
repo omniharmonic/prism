@@ -5,6 +5,7 @@ import {
   Presentation,
   Code,
   MessageSquare,
+  Mail,
   Table2,
   Globe,
   CheckSquare,
@@ -80,6 +81,12 @@ const OPTIONS = [
     label: "Task",
     detail: "Capture something to do.",
     icon: CheckSquare,
+  },
+  {
+    type: "email",
+    label: "Email draft",
+    detail: "Write an email draft in your vault.",
+    icon: Mail,
   },
   {
     type: "message",

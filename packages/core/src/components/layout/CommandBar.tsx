@@ -7,7 +7,7 @@ import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useDebounce } from "use-debounce";
-import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
+import { type ContentType } from "../../lib/types";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
@@ -17,6 +17,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
 import { searchModeLabel, searchPreview } from "../navigation/searchPresentation";
+import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 
 interface Command {
@@ -32,6 +33,8 @@ export function CommandBar() {
   const [query, setQuery] = useState("");
   const [debouncedQuery] = useDebounce(query, 200);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creationType, setCreationType] = useState<ContentType | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const createNote = useCreateNote();
@@ -66,6 +69,7 @@ export function CommandBar() {
       setQuery("");
       setSelectedId(null);
       const previous = document.activeElement as HTMLElement | null;
+      returnFocus.current = previous;
       const dialog = dialogRef.current;
       dialog?.showModal();
       inputRef.current?.focus();
@@ -79,19 +83,11 @@ export function CommandBar() {
     label: `New ${label}`,
     category: "create" as const,
     icon,
-    action: async () => {
-      const defaults = CONTENT_DEFAULTS[type];
-      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-      const title = `Untitled ${label} ${ts}`;
-      const note = await createNote.mutateAsync({
-        content: defaults.content || " ",
-        metadata: defaults.metadata,
-        path: title,
-      });
-      openTab(note.id, title, type);
+    action: () => {
+      setCreationType(type);
       closeCommandBar();
     },
-  }), [createNote, openTab, closeCommandBar]);
+  }), [closeCommandBar]);
 
   const { toggleContextPanel, setContextPanelTab, openTabs, activeTabId } = useUIStore();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
@@ -335,6 +331,7 @@ export function CommandBar() {
     closeCommandBar();
   };
 
+  if (creationType) return <NewContentMenu initialType={creationType} returnFocus={returnFocus.current} onClose={() => setCreationType(null)} />;
   if (!commandBarOpen) return null;
 
   const askIdx = filteredCommands.length + vaultItems.length;

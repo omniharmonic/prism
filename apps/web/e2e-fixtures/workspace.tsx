@@ -70,6 +70,14 @@ window.fetch = async (input, init) => {
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
+  if (path === "/api/notes" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    writes.push(body);
+    if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: controls.rejectWriteStatus });
+    const note: Note = { id: `created-${notes.length}`, content: " ", metadata: {}, tags: [], ...body, createdAt: date, updatedAt: date };
+    notes.push(note);
+    return Response.json(note);
+  }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
     if (method === "GET") {
