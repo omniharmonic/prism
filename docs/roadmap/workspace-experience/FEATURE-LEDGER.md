@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `bad73dc`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `ced95c1`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -20,7 +20,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 
 | Feature | Current evidence | Required next journey / completion gate |
 | --- | --- | --- |
-| Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production web snapshot receipt verified |
+| Document, note, briefing | Workspace/autosave/formatting/rename/recovery checks; private live web/native editing; production removed-note recovery | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production web snapshot receipt verified |
 | Collaborative rich text | Scoped CRDT storage, actual web/native concurrent edits, individual agent suggestion accept/reject | Two reviewers with conflicting decisions, durable review audit, legacy draft recovery, physical offline reconnect |
 | Message thread | Server live-source pages on web/thin client, stable event-ID deduplication, saved-window paging, identity/date labels and failure fixtures; production private self-room send→live read→reload verified exactly once | Private Telegram-via-Matrix inbound→canonical person; structured ingest/archives, edit/redaction reconciliation, media; installed batch acceptance (mobile composer clearance and stable responsive live reader verified) |
 | Email | Rendering/composer fixtures and server source support | Private self-mail inbound→person link→Reply/Reply all/attachments, retained failed draft, no duplicate send |
@@ -67,6 +67,6 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Native menus/windows/tray/shortcuts | Rust modules retained; earlier isolated native tests | Multiwindow, tray open/quit, menu accelerators, deep links and quick capture without disturbing real work |
 | Native file drop / export / capture | `dropfiles.rs`, `export.rs`, `capture*.rs` retained | Synthetic files only; cancellation, destination handling, attachment round-trip and permission-denied recovery |
 | Notifications/push | Server/native implementations retained | Private synthetic notification, click-back target, opt-out and permission denial |
-| Offline/outbox/storage | Browser conflict/idempotency/scope/quota tests; production reconnect/scoped CRDT; account-scoped shortcuts and query cache isolation; private production favorite/recent reload | Legacy queue recovery, crash during write, multi-tab composer conflicts, physical PWA cold-start recovery |
+| Offline/outbox/storage | Browser conflict/idempotency/scope/quota tests; production reconnect/scoped CRDT; account-scoped shortcuts and query cache isolation; private production favorite/recent reload; original-audience autosave and blocked-draft recovery fixtures | Legacy queue recovery, crash during write, multi-tab composer conflicts, physical PWA cold-start recovery |
 
 A feature is complete only when its implementation and relevant client/production journey have named evidence. Empty cells, retained code, test counts and migration handoff assertions do not count as a pass.
