@@ -29,6 +29,7 @@ const PEOPLE = [
   note("p-blake", "vault/people/Blake Example", ["person"], { name: "Blake Example", channels: { matrix: "@telegram_5550001:h.test" } }),
   note("p-drew1", "vault/people/Drew Twin", ["person"], { name: "Drew Twin" }),
   note("p-drew2", "vault/people/drew-twin", ["person"], { name: "Drew Twin" }),
+  note("p-team", "vault/people/Acme Team", ["person"], { name: "Acme Team", email: "team@acme.test" }),
   note("proj-1", "vault/projects/proj-one", ["project"], { name: "Project One" }),
 ];
 
@@ -75,6 +76,10 @@ test("ForwardLinker.email: EXACT addresses only — a display name never links m
   assert.deepEqual((await f.email({ from: "Alex Example <alex@example.test>" }, { sender: false, recipients: true })).links, [], "sender not requested");
   const role = await f.email({ from: "Casey Example <noreply@service.test>", to: "owner@example.test" }, { sender: true, recipients: true });
   assert.deepEqual([role.links, role.pending], [[], []], "a role mailbox nobody claims: nothing, not even a review");
+  // M-3: a role mailbox never links — even when a person note holds that very address.
+  const claimed = await f.email({ from: "Acme Team <team@acme.test>", to: "team@acme.test, alex@example.test" }, { sender: true, recipients: true });
+  assert.deepEqual(targets(claimed.links), ["email-to->p-alex"]);
+  assert.deepEqual((await f.attendees([], ["team@acme.test"])).links, []);
   // Owner decision: an exact address match links even on bulk mail — and nothing else does.
   const bulk = await f.email({ from: "Alex Example <alex@example.test>", to: "alex@example.test, casey@example.test", labels: ["INBOX", "BULK"] }, { sender: true, recipients: true });
   assert.deepEqual(targets(bulk.links), ["email-from->p-alex"]);

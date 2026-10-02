@@ -10,9 +10,9 @@ import type { Note, NoteLink, NoteLinkInput } from "../src/parachute";
 import { config } from "../src/config";
 import { db, setMembership } from "../src/db";
 import { adminApi } from "../src/routes/admin";
-import { IdentityIndex } from "../src/identity";
+import { IdentityIndex, ownerMatch, ownerProfile } from "../src/identity";
 import { stripIdentityPatch, unionIdentities } from "../src/people-metadata";
-import { bodyBeyondHeading, chooseCanonical, detectDuplicates, mergePeople, MergeError, type MergeOptions, type MergeVault } from "../src/people-merge";
+import { bodyBeyondHeading, chooseCanonical, detectDuplicates, mergePeople, mergedByThisModule, MergeError, type MergeOptions, type MergeVault } from "../src/people-merge";
 import { _resetPeopleCache } from "../src/people-cache";
 import { _resetPeopleLock, acquirePeopleLock } from "../src/people-lock";
 import { saveOwnerSettings } from "../src/people-owner";
@@ -243,7 +243,7 @@ for (const deep of [true, false])
     // Secondary: the owner's tombstone convention; only verifiably-moved keys are gone.
     const s = v.notes.get("stub")!;
     assert.ok(s.tags!.includes("merged-stub") && s.tags!.includes("person"));
-    assert.equal(s.metadata!.merged_into, "vault/people/Morgan Example");
+    assert.equal(s.metadata!.merged_into, "canon", "the pointer is the note ID");
     assert.equal(s.metadata!.status, "merged_into_canonical");
     assert.equal(s.metadata!.merged_at, "2026-10-02T12:00:00.000Z");
     for (const k of ["email", "emails", "phone"]) assert.ok(!(k in s.metadata!), `${k} stripped`);
@@ -267,7 +267,7 @@ for (const deep of [true, false])
     const n = v.writes.length;
     const again = await merge(v);
     assert.equal(v.writes.length, n, "idempotent: zero writes");
-    assert.deepEqual({ resumed: again.resumed, notesToWrite: again.notesToWrite, complete: again.complete }, { resumed: true, notesToWrite: 0, complete: true });
+    assert.deepEqual({ resumed: again.resumed, ownMerge: again.ownMerge, notesToWrite: again.notesToWrite, complete: again.complete }, { resumed: true, ownMerge: true, notesToWrite: 0, complete: true });
   });
 
 test("merge: a failure at EACH step leaves more links, never fewer, and the same call finishes it", async () => {
@@ -334,6 +334,43 @@ test("merge: a failure at EACH step leaves more links, never fewer, and the same
   for (const id of ["email-1", "email-2", "thread-1", "doc-1"]) f.failOn.add(id);
   const ab = await merge(f, { maxConsecutiveErrors: 2 });
   assert.deepEqual({ aborted: ab.aborted, errors: ab.errors, tombstoned: ab.tombstoned, complete: ab.complete }, { aborted: true, errors: 2, tombstoned: false, complete: false });
+});
+
+test("merge strips the secondary only against a RE-READ of the canonical; if that read fails nothing is stripped and the merge resumes", async () => {
+  const v = new MemVault();
+  seed(v);
+  const realGet = v.getNote.bind(v);
+  let canonReads = 0;
+  // The canonical can be read to plan the merge, but not after its write.
+  v.getNote = async (id: string) => {
+    if (id === "canon" && ++canonReads > 1) throw Object.assign(new Error("boom"), { status: 500 });
+    return realGet(id);
+  };
+  const r = await merge(v);
+  assert.deepEqual({ tombstoned: r.tombstoned, complete: r.complete, errors: r.errors }, { tombstoned: false, complete: false, errors: 1 });
+  const s = v.notes.get("stub")!;
+  assert.equal(s.metadata!.email, "morgan@example.org", "nothing stripped: the canonical could not be verified");
+  assert.ok(!s.tags!.includes("merged-stub"));
+  assert.deepEqual(v.out("email-1"), ["email-from->canon"], "links already moved (more links, never fewer)");
+  assert.equal(mergedByThisModule(v.notes.get("canon")!, "stub"), true, "the marker went in with the first write");
+  v.getNote = realGet;
+  const again = await merge(v);
+  assert.deepEqual({ tombstoned: again.tombstoned, complete: again.complete }, { tombstoned: true, complete: true });
+  assert.equal(v.notes.get("stub")!.metadata!.email, undefined);
+});
+
+test("the merge marker: written in the first step even when the canonical gains nothing; an outside tombstone carries none", async () => {
+  const v = new MemVault();
+  v.put(person("c", "vault/people/Robin Vale", { name: "Robin Vale", email: "robin@example.test" }));
+  v.put(person("s", "vault/people/robin-old", { name: "Robin Vale", email: "robin@example.test" }));
+  const r = await merge(v, { canonicalId: "c", secondaryId: "s" });
+  assert.equal(r.complete, true);
+  assert.equal(v.writes[0]!.id, "c", "the canonical is written first even with nothing to copy");
+  assert.ok(mergedByThisModule(v.notes.get("c")!, "s"));
+  // A stub an agent pointed at the canonical by hand: resumed, but NOT this module's merge.
+  v.put(person("x", "vault/people/robin-agent", { name: "robin-agent", merged_into: "c" }, { tags: ["person", "merged-stub"] }));
+  const d = await merge(v, { canonicalId: "c", secondaryId: "x", dryRun: true });
+  assert.deepEqual({ resumed: d.resumed, ownMerge: d.ownMerge }, { resumed: true, ownMerge: false });
 });
 
 test("merge: `expect` pins the reviewed versions; a large fan-in reads versions from ONE lean listing", async () => {
@@ -505,4 +542,68 @@ test("H1 merge route: a write must name the survivor, quote the reviewed version
   assert.equal((await write({ personIds: ["a", "u"], canonicalId: "a", expect: d2.merge.expect, confirmUnrelated: true })).status, 200);
   const last = db.prepare("SELECT target FROM action_audit ORDER BY id DESC LIMIT 1").get() as { target: string };
   assert.equal(JSON.parse(last.target).confirmUnrelated, true);
+});
+
+test("H-2 merge route: a stub that merely POINTS at the canonical (an agent's, or one the job repaired) gets the full checks; only this module's own unfinished merge resumes", async () => {
+  seedRoute();
+  // Repaired / hand-made tombstone: points at `a`, but `a` carries no merge marker for it.
+  fv!.put({ id: "t", path: "vault/people/pointed-here", tags: ["person", "merged-stub"], content: "# pointed-here", metadata: { name: "pointed-here", merged_into: "a", email: "someone-else@example.test" }, links: [] });
+  const dry = (await (await post("/people/merge", owner(), { personIds: ["a", "t"], canonicalId: "a" })).json()) as MergeBody & { warnings?: string[] };
+  assert.equal(dry.requiresConfirmUnrelated, true);
+  assert.ok(dry.warnings?.some((w) => w.includes("NOT A DETECTED DUPLICATE")));
+  const refused = await post("/people/merge", owner(), { personIds: ["a", "t"], canonicalId: "a", dryRun: false, expect: dry.merge.expect });
+  assert.equal(refused.status, 409);
+  assert.equal(((await refused.json()) as { error: string }).error, "not_a_duplicate");
+  assert.equal(fv!.calls.filter((c) => c.method !== "GET").length, 0);
+
+  // A merge THIS module started and could not finish resumes without the pair checks.
+  const first = (await (await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a" })).json()) as MergeBody;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => ((init?.method ?? "GET") === "PATCH" && String(input).endsWith("/notes/b") ? new Response("conflict", { status: 409 }) : realFetch(input as string, init))) as typeof fetch;
+  let partial: MergeBody;
+  try {
+    partial = (await (await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a", dryRun: false, expect: first.merge.expect })).json()) as MergeBody;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual({ complete: partial.merge.complete, tombstoned: partial.merge.tombstoned }, { complete: false, tombstoned: false });
+  // Force the tombstone by hand-finishing nothing: `b` is still live, so this is a detected pair again → allowed.
+  const again = (await (await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a" })).json()) as MergeBody;
+  const done = await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a", dryRun: false, expect: again.merge.expect });
+  assert.equal(done.status, 200);
+  assert.equal(((await done.json()) as MergeBody).merge.complete, true);
+  // Now `b` is a tombstone of `a` WITH the marker: a later resume needs no confirmUnrelated.
+  const resume = (await (await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a" })).json()) as MergeBody & { warnings?: string[] };
+  assert.equal(resume.requiresConfirmUnrelated, false);
+  assert.equal(resume.warnings, undefined);
+});
+
+test("merge route: the pair is judged on a FRESH detection for a write; merging a stranger into the owner's note carries a prominent warning", async () => {
+  seedRoute();
+  // Warm the 60 s cache while `a` and `b` share an address…
+  await adminApi.request("/people/duplicates", { headers: owner() });
+  const dry = (await (await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a" })).json()) as MergeBody;
+  assert.equal(dry.pair!.strength, "strong");
+  // …then the shared address is removed from `b` in the vault (the cache still says "strong pair").
+  fv!.notes.get("b")!.metadata = { name: "Somebody Unrelated" };
+  fv!.notes.get("b")!.path = "vault/people/Somebody Unrelated";
+  fv!.notes.get("b")!.content = "# Somebody Unrelated";
+  const w = await post("/people/merge", owner(), { personIds: ["a", "b"], canonicalId: "a", dryRun: false, expect: dry.merge.expect });
+  assert.equal(w.status, 409);
+  assert.equal(((await w.json()) as { error: string }).error, "not_a_duplicate", "decided on the listing read now, not on the cached detection");
+
+  saveOwnerSettings("primary", { person: "a", emails: [], aliases: [] });
+  _resetPeopleCache();
+  const strangerDry = (await (await post("/people/merge", owner(), { personIds: ["a", "u"], canonicalId: "a" })).json()) as MergeBody & { warnings: string[] };
+  assert.equal(strangerDry.requiresConfirmUnrelated, true);
+  assert.ok(strangerDry.warnings.some((x) => x.includes("STRANGER INTO THE OWNER")), "the dry run says so, loudly");
+  const ok = await post("/people/merge", owner(), { personIds: ["a", "u"], canonicalId: "a", dryRun: false, expect: strangerDry.merge.expect, confirmUnrelated: true });
+  assert.equal(ok.status, 200, "allowed, but only on an explicit confirmation");
+  // The absorbed name is now an alias on the owner's note — and is NOT a name that means the owner.
+  _resetPeopleCache();
+  const people = [...fv!.notes.values()].filter((n) => n.tags?.includes("person")) as never[];
+  const idx = new IdentityIndex(people);
+  const profile = ownerProfile(idx, { emails: [config.ownerEmail], person: "a" });
+  assert.ok(String(fv!.notes.get("a")!.metadata!.aliases).includes("Unrelated Person"));
+  assert.equal(ownerMatch(profile, { name: "Unrelated Person" }, { singleToken: true }), null);
 });

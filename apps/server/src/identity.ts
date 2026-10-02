@@ -172,6 +172,12 @@ export const GENERIC_NAMES = new Set(
     "Team", "The Team", "User", "Anonymous", "Member", "Owner", "Moderator", "System", "Notetaker", "Note Taker", "Assistant", "Everyone", "All",
     "Staff", "Help", "Help Desk", "Info", "Sales", "Contact", "Office", "None", "N/A", "NA", "TBD", "Unassigned", "Nobody", "No One", "Me", "You",
     "Test", "Test User", "Bot", "Customer Service", "Customer Support", "Service", "Notifications", "No Reply", "Noreply", "Mailer Daemon",
+    // meeting-tool artefacts
+    "Speaker", "Unknown Speaker", "Speaker 1", "Speaker 2", "Speaker 3", "Participant", "Unknown Participant", "Attendee", "Host", "Co-Host", "Organizer",
+    "Meeting Host", "Meeting Organizer", "Presenter", "Panelist", "Fathom", "Fathom Notetaker", "Fathom AI Notetaker", "Fireflies", "Fireflies Notetaker",
+    "Fireflies.ai Notetaker", "Fred", "Otter", "Otter.ai", "Otter Notetaker", "Otter Pilot", "OtterPilot", "Read", "Read.ai", "Read AI", "Read Notetaker",
+    "Read.ai Notetaker", "AI Notetaker", "Meeting Notetaker", "Meeting Recorder", "Recorder", "Zoom", "Zoom User", "Zoom Meeting", "Google Meet", "Meet",
+    "Microsoft Teams", "Teams", "Teams Meeting", "Webex", "Calendar", "Google Calendar", "Conference Room", "Meeting Room", "Dial-in", "Phone User", "Call-in User",
   ].map(slugKey),
 );
 export const isGenericName = (name: string): boolean => GENERIC_NAMES.has(slugKey(cleanName(name)));
@@ -197,14 +203,27 @@ export function mergedIntoRef(n: Note): string | null {
   return refTarget(md.merged_into) ?? refTarget(md.mergedInto) ?? refTarget(md.superseded_by);
 }
 
-/** A person note that was merged away (the owner's agent-repo convention). */
+/**
+ * A person note that was merged away. PRECISELY: the tag `merged-stub` or
+ * `superseded`, or `status: merged_into_canonical`. A bare `merged_into` /
+ * `superseded_by` pointer on a note with neither marker does NOT make it a
+ * tombstone — it is still a live person (somebody may have typed a note about
+ * a successor); the job reports such notes (`pointerWithoutMarker`). The People
+ * directory hides exactly what this function and `isNonHumanPerson` say.
+ */
 export function isTombstone(n: Note): boolean {
   if ((n.tags ?? []).some((t) => TOMBSTONE_TAGS.has(t))) return true;
-  const md = n.metadata ?? {};
-  return md.status === "merged_into_canonical" || mergedIntoRef(n) !== null;
+  return (n.metadata ?? {}).status === "merged_into_canonical";
 }
 
-/** Tagged `person` but not a human (a bot, an organization mis-tagged as one). */
+/** A live note that carries a merge pointer but no tombstone marker. */
+export const hasPointerWithoutMarker = (n: Note): boolean => !isTombstone(n) && mergedIntoRef(n) !== null;
+
+/**
+ * Tagged `person` but not a human: the tag `bot`, `non-human` or `organization`,
+ * or `metadata.type` `bot` / `organization`. Nothing else (a `type: document`
+ * person note is still a person).
+ */
 export function isNonHumanPerson(n: Note): boolean {
   if ((n.tags ?? []).some((t) => NON_HUMAN_TAGS.has(t))) return true;
   const type = n.metadata?.type;
@@ -309,7 +328,16 @@ export class IdentityIndex {
   private kindsOf = new Map<string, Set<string>>();
   private keysOf = new Map<string, PersonKeys>();
 
-  constructor(notes: Note[] = []) {
+  /**
+   * `refByName`: let a `merged_into` / wikilink reference that is neither an id
+   * nor a path resolve to the ONE live person of exactly that name. OFF by
+   * default — on the ingest path a name is never an identity; only the reviewed
+   * backfill job turns it on.
+   */
+  constructor(
+    notes: Note[] = [],
+    private opts: { refByName?: boolean } = {},
+  ) {
     for (const n of notes) this.register(n);
     for (const n of notes) this.index(n);
   }
@@ -332,10 +360,15 @@ export class IdentityIndex {
     this.index(n);
   }
 
-  /** id, path, `vault/people/<ref>`, or the exact name of ONE other live person. */
+  /**
+   * A note id or a full path. With `refByName` also a bare leaf
+   * (`vault/people/<ref>`) or the exact name of ONE other live person.
+   */
   private lookupRef(ref: string, from?: Note): Note | null {
-    const direct = this.notes.get(ref) ?? this.byPath.get(ref.toLowerCase()) ?? this.byPath.get(`vault/people/${ref}`.toLowerCase());
-    if (direct) return direct;
+    const direct = this.notes.get(ref) ?? this.byPath.get(ref.toLowerCase());
+    if (direct || !this.opts.refByName) return direct ?? null;
+    const leaf = this.byPath.get(`vault/people/${ref}`.toLowerCase());
+    if (leaf) return leaf;
     const named = [...(this.byExactName.get(ref.trim().toLowerCase())?.values() ?? [])].filter((n) => n.id !== from?.id && !isTombstone(n));
     return named.length === 1 ? named[0]! : null;
   }
@@ -434,8 +467,9 @@ export class IdentityIndex {
   static queryKeys(q: IdentityQuery): IdentityKey[] {
     const out = new Map<string, IdentityKey>();
     const add = (k: IdentityKey) => out.set(keyId(k), k);
-    const email = q.email && looksLikeEmail(q.email) ? q.email : q.name && looksLikeEmail(q.name) ? q.name : null;
-    if (email) add({ kind: "email", value: normalizeEmailKey(email) });
+    // Only the EXPLICIT fields are keys. A display name that happens to look like
+    // an address is free text (a chat nickname can be anything) — never a key.
+    if (q.email && looksLikeEmail(q.email)) add({ kind: "email", value: normalizeEmailKey(q.email) });
     if (q.matrixId) for (const k of matrixKeys(q.matrixId)) add(k);
     if (q.telegram) for (const k of telegramKeys(q.telegram)) add(k);
     if (q.phone) {
@@ -509,17 +543,25 @@ export interface OwnerProfile {
   /** The owner's own person note, when it can be told apart. */
   person: Note | null;
   emails: Set<string>;
-  /** slugKeys of every name that means the owner (single-token ones included). */
-  names: Set<string>;
+  /**
+   * slugKeys of the owner note's OWN multi-word names (`name`, path leaf,
+   * heading) that no other live person answers to. Never an alias on the note,
+   * never a name inherited from a merged stub.
+   */
+  fullNames: Set<string>;
+  /**
+   * slugKeys of the EXPLICITLY configured aliases (PUT /owner, PEOPLE_OWNER_ALIASES)
+   * — the only way a single token ("a first name on a task") can mean the owner —
+   * minus any that another live person also answers to.
+   */
+  aliases: Set<string>;
   matrixIds: Set<string>;
 }
 
 /**
  * Who "me" is, from CONFIGURATION and the owner's own person note — never a
- * hardcoded name. The note is PEOPLE_OWNER_PERSON, else the single live person
- * claiming one of the owner's addresses. Its names and aliases (plus
- * PEOPLE_OWNER_ALIASES) are what a task's `assigned: "<first name>"` is matched
- * against, and its addresses are what email/thread linking refuses to self-link.
+ * hardcoded name. The note is PEOPLE_OWNER_PERSON / the stored setting, else the
+ * single live person claiming one of the owner's addresses.
  */
 export function ownerProfile(idx: IdentityIndex, cfg: OwnerConfig): OwnerProfile {
   const emails = new Set(cfg.emails.map(normalizeEmailKey).filter(Boolean));
@@ -532,37 +574,45 @@ export function ownerProfile(idx: IdentityIndex, cfg: OwnerConfig): OwnerProfile
     for (const e of emails) for (const p of idx.claimants({ kind: "email", value: e })) claim.set(p.id, p);
     if (claim.size === 1) person = [...claim.values()][0]!;
   }
-  const names = new Set<string>();
+  const others = (slug: string): boolean => idx.named(slug).some((p) => p.id !== person?.id);
+  const fullNames = new Set<string>();
+  const aliases = new Set<string>();
   const matrixIds = new Set<string>();
   if (cfg.matrixId) matrixIds.add(cfg.matrixId.trim().toLowerCase());
   for (const a of cfg.aliases ?? []) {
     if (looksLikeEmail(a)) emails.add(normalizeEmailKey(a));
-    else if (slugKey(a)) names.add(slugKey(a));
+    else if (slugKey(a) && !others(slugKey(a))) aliases.add(slugKey(a));
   }
   if (person) {
-    const keys = idx.keysFor(person.id);
-    for (const n of [...keys.names, ...keys.aliases]) names.add(n);
-    for (const k of keys.strong) {
+    for (const n of personKeys(person).names) if (n.split("-").length >= 2 && !others(n)) fullNames.add(n);
+    for (const k of idx.keysFor(person.id).strong) {
       if (k.kind === "email") emails.add(k.value);
       if (k.kind === "matrix") matrixIds.add(k.value);
     }
   }
-  return { person, emails, names, matrixIds };
+  return { person, emails, fullNames, aliases, matrixIds };
 }
 
-/** Does this query name the owner (by address, Matrix id, or an owner name)? */
-export function isOwnerQuery(owner: OwnerProfile, q: IdentityQuery): boolean {
-  const email = q.email && looksLikeEmail(q.email) ? q.email : q.name && looksLikeEmail(q.name) ? q.name : null;
-  if (email && owner.emails.has(normalizeEmailKey(email))) return true;
-  if (q.matrixId && owner.matrixIds.has(q.matrixId.trim().toLowerCase())) return true;
+export type OwnerEvidence = "email" | "mxid" | "path" | "owner-full-name" | "owner-alias";
+
+/**
+ * Does this query name the owner — and on what evidence? A NAME counts only
+ * when no explicit key rode along: the owner note's own full name
+ * (`owner-full-name`), or a configured alias (`owner-alias`; a single-token
+ * alias only when the caller allows it — task assignees do, attendee lists don't).
+ */
+export function ownerMatch(owner: OwnerProfile, q: IdentityQuery, o: { singleToken?: boolean } = {}): OwnerEvidence | null {
+  if (q.email && looksLikeEmail(q.email) && owner.emails.has(normalizeEmailKey(q.email))) return "email";
+  if (q.matrixId && owner.matrixIds.has(q.matrixId.trim().toLowerCase())) return "mxid";
   if (q.ref && owner.person) {
     const r = refTarget(q.ref) ?? q.ref;
-    if (r === owner.person.id || r.toLowerCase() === (owner.person.path ?? "").toLowerCase()) return true;
+    if (r === owner.person.id || r.toLowerCase() === (owner.person.path ?? "").toLowerCase()) return "path";
   }
-  // A name alone means the owner only when no strong key says otherwise.
-  if (!email && !q.matrixId && q.name) {
+  if (!q.email && !q.matrixId && q.name && !looksLikeEmail(q.name)) {
     const k = slugKey(cleanName(q.name));
-    if (k && owner.names.has(k)) return true;
+    if (!k) return null;
+    if (owner.fullNames.has(k)) return "owner-full-name";
+    if (owner.aliases.has(k) && (o.singleToken || k.split("-").length >= 2)) return "owner-alias";
   }
-  return false;
+  return null;
 }

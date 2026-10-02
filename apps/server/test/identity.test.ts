@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Note } from "../src/parachute";
-import { IdentityIndex, aliasList, cleanName, isGenericName, isNonHumanPerson, isPuppet, isTombstone, matrixKeys, mergedIntoRef, nameTokens, normalizePhone, personKeys, slugKey, telegramKeys } from "../src/identity";
+import { IdentityIndex, aliasList, cleanName, hasPointerWithoutMarker, isGenericName, isNonHumanPerson, isPuppet, isTombstone, ownerMatch, ownerProfile, matrixKeys, mergedIntoRef, nameTokens, normalizePhone, personKeys, slugKey, telegramKeys } from "../src/identity";
 import { PeopleIndex } from "../src/worker/people";
 
 const person = (id: string, name: string, metadata: Record<string, unknown> = {}, extra: Partial<Note> = {}): Note => ({
@@ -94,16 +94,24 @@ test("personKeys reads every field shape; a number-typed telegram id counts; met
   assert.deepEqual(personKeys(person("g", "Deleted Account", {})).names, [], "a generic name is not a name key");
 });
 
-test("tombstones: tag, status or merged_into; non-humans by tag/type", () => {
+test("tombstones are PRECISELY: tag merged-stub/superseded or status merged_into_canonical; non-humans by tag/type", () => {
   assert.ok(isTombstone(stub("s", "x", "vault/people/Y")));
   assert.ok(isTombstone(person("s", "X", { status: "merged_into_canonical" })));
-  assert.ok(isTombstone(person("s", "X", { superseded_by: "[[vault/people/Y]]" })));
   assert.ok(isTombstone(person("s", "X", {}, { tags: ["person", "superseded"] })));
-  assert.ok(!isTombstone(person("s", "X", { merged_into: "" })), "an empty merged_into on a live note is not a tombstone");
+  // A bare pointer on a note with neither marker is a LIVE person (reported, never hidden or redirected).
+  for (const md of [{ superseded_by: "[[vault/people/Y]]" }, { merged_into: "vault/people/Y" }, { mergedInto: "vault/people/Y" }]) {
+    const n = person("s", "X", md);
+    assert.ok(!isTombstone(n), JSON.stringify(md));
+    assert.ok(hasPointerWithoutMarker(n));
+  }
+  assert.ok(!hasPointerWithoutMarker(person("s", "X", { merged_into: "" })));
   assert.equal(mergedIntoRef(person("s", "X", { merged_into: "[[vault/people/Y|Y]]" })), "vault/people/Y");
-  assert.ok(isTombstone(person("s", "X", { mergedInto: "vault/people/Y" })), "camelCase mergedInto too");
+  assert.equal(mergedIntoRef(person("s", "X", { mergedInto: "vault/people/Y" })), "vault/people/Y", "camelCase mergedInto too");
   assert.ok(isNonHumanPerson(person("b", "B", {}, { tags: ["person", "non-human"] })));
+  assert.ok(isNonHumanPerson(person("b", "B", {}, { tags: ["person", "organization"] })));
   assert.ok(isNonHumanPerson(person("b", "B", { type: "bot" })));
+  assert.ok(isNonHumanPerson(person("b", "B", { type: "organization" })));
+  assert.ok(!isNonHumanPerson(person("b", "B", { type: "document" })), "only bot / organization");
 });
 
 test("a tombstone never claims a key: its email resolves THROUGH merged_into to the canonical person", () => {
@@ -212,10 +220,12 @@ test("allowName: an unknown strong key beside a matching name links only when th
   assert.deepEqual(em.status === "linked" ? em.evidence : null, ["email"]);
 });
 
-test("a [[wikilink]] / path / id reference resolves directly, through tombstones", () => {
-  const idx = new IdentityIndex([person("a", "Dana Field", {}), stub("s", "dana-f", "vault/people/Dana Field")]);
+test("a [[wikilink]] / path / id reference resolves directly, through tombstones; a bare name only with refByName", () => {
+  const notes = [person("a", "Dana Field", {}), stub("s", "dana-f", "vault/people/Dana Field")];
+  const idx = new IdentityIndex(notes);
   assert.equal(linkedId(idx.match({ ref: "[[vault/people/Dana Field]]" })), "a");
-  assert.equal(linkedId(idx.match({ ref: "Dana Field" })), "a");
+  assert.equal(linkedId(idx.match({ ref: "Dana Field" })), "none", "a bare name is not an id or a path");
+  assert.equal(linkedId(new IdentityIndex(notes, { refByName: true }).match({ ref: "[[Dana Field]]" })), "a", "the reviewed job may");
   assert.equal(linkedId(idx.match({ ref: "vault/people/dana-f" })), "a");
   assert.equal(linkedId(idx.match({ ref: "s" })), "a");
 });
@@ -239,8 +249,52 @@ test("a key held only by a non-human note or an unresolvable tombstone is CLAIME
   assert.equal(idx.claimedBy({ kind: "email", value: "notetaker@bots.test" }).length, 1);
 });
 
-test("merged_into may be an exact NAME of one other live person", () => {
-  const idx = new IdentityIndex([person("c", "Fay Grove", {}), stub("s", "fay-old", "Fay Grove", { email: "fay@example.test" }), stub("t", "who-old", "Shared Name", { email: "who@example.test" }), person("x", "Shared Name", {}, { path: "vault/people/shared-1" }), person("y", "Shared Name", {}, { path: "vault/people/shared-2" })]);
-  assert.equal(linkedId(idx.match({ email: "fay@example.test" })), "c");
-  assert.deepEqual(idx.match({ email: "who@example.test" }), { status: "none", claimed: true }, "a name two people share resolves nothing");
+test("M-6: merged_into given as a NAME (or bare leaf) resolves only with refByName — never on the ingest path", () => {
+  const notes = [
+    person("c", "Fay Grove", {}, { path: "vault/people/fay-grove" }),
+    stub("s", "fay-old", "Fay Grove", { email: "fay@example.test" }),
+    person("l", "Leaf Person", {}),
+    stub("m", "leaf-old", "Leaf Person", { email: "leaf@example.test" }), // a bare leaf of vault/people/Leaf Person
+    stub("t", "who-old", "Shared Name", { email: "who@example.test" }),
+    person("x", "Shared Name", {}, { path: "vault/people/shared-1" }),
+    person("y", "Shared Name", {}, { path: "vault/people/shared-2" }),
+  ];
+  // Default (every ingester): a name is not an identity → the stub is a dead end and its address is CLAIMED.
+  const ingest = new IdentityIndex(notes);
+  assert.deepEqual(ingest.match({ email: "fay@example.test" }), { status: "none", claimed: true });
+  assert.deepEqual(ingest.match({ email: "leaf@example.test" }), { status: "none", claimed: true });
+  // The reviewed job: an exact, unique name resolves; a shared one never does.
+  const job = new IdentityIndex(notes, { refByName: true });
+  assert.equal(linkedId(job.match({ email: "fay@example.test" })), "c");
+  assert.equal(linkedId(job.match({ email: "leaf@example.test" })), "l");
+  assert.deepEqual(job.match({ email: "who@example.test" }), { status: "none", claimed: true }, "a name two people share resolves nothing");
+});
+
+test("M-1: a display name is never a strong key, however address-shaped", () => {
+  const idx = new IdentityIndex([person("a", "Avery Stone", { email: "avery@example.test" })]);
+  assert.deepEqual(IdentityIndex.queryKeys({ name: "avery@example.test" }), []);
+  assert.equal(linkedId(idx.match({ name: "avery@example.test" })), "none");
+  assert.equal(linkedId(idx.match({ name: "avery@example.test", matrixId: "@telegram_5550077:h.test" })), "none");
+  assert.equal(linkedId(idx.match({ email: "avery@example.test" })), "a", "the explicit field still is");
+});
+
+test("M-2: the owner by name — own full name or a CONFIGURED alias; single tokens only when asked and never when shared", () => {
+  const notes = [
+    person("me", "Owner Person", { email: "owner@example.test", aliases: "Oz, The Boss Person" }),
+    stub("old", "Former Name", "me"),
+    person("other", "Sam Other", { aliases: "Sammy" }),
+  ];
+  const idx = new IdentityIndex(notes);
+  const o = ownerProfile(idx, { emails: ["owner@example.test"], aliases: ["Ozzy", "Sammy", "Chief Gardener"] });
+  assert.equal(o.person?.id, "me");
+  assert.deepEqual([...o.fullNames], ["owner-person"], "only the note's OWN multi-word name — not its aliases, not a merged stub's name");
+  assert.deepEqual([...o.aliases].sort(), ["chief-gardener", "ozzy"], "configured aliases, minus one another live person answers to");
+  assert.equal(ownerMatch(o, { name: "Owner Person" }), "owner-full-name");
+  assert.equal(ownerMatch(o, { name: "Chief Gardener" }), "owner-alias");
+  assert.equal(ownerMatch(o, { name: "Ozzy" }), null, "a single token is not the owner in an attendee list");
+  assert.equal(ownerMatch(o, { name: "Ozzy" }, { singleToken: true }), "owner-alias");
+  for (const not of ["Oz", "The Boss Person", "Former Name", "Sammy", "owner@example.test"]) assert.equal(ownerMatch(o, { name: not }, { singleToken: true }), null, not);
+  assert.equal(ownerMatch(o, { email: "owner@example.test", name: "Whoever" }), "email");
+  assert.equal(ownerMatch(o, { name: "Owner Person", email: "someone@else.test" }), null, "an explicit foreign key overrides the name");
+  assert.ok(isGenericName("Fathom Notetaker") && isGenericName("Unknown Speaker") && isGenericName("Host") && isGenericName("Google Meet") && isGenericName("Read.ai"));
 });

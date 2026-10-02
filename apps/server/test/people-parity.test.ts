@@ -45,8 +45,14 @@ function corpus(): Note[] {
     // Tombstones of every shape.
     person("eve-example-test", { email: "eve@example.test", merged_into: "vault/people/Eve Field", status: "merged_into_canonical" }, { tags: ["merged-stub"], path: "vault/people/eve-example-test" }),
     person("Eve Field", { email: "eve@example.test" }),
-    person("fay-old", { email: "fay@example.test", merged_into: "Fay Grove" }, { tags: ["merged-stub"], path: "vault/people/fay-old" }), // by exact NAME
+    person("fay-old", { email: "fay@example.test", merged_into: "Fay Grove" }, { tags: ["merged-stub"], path: "vault/people/fay-old" }), // by NAME / bare leaf: not followed on ingest (M-6)
     person("Fay Grove", {}),
+    person("uma-old", { email: "uma@example.test", merged_into: "Uma Hale" }, { tags: ["merged-stub"], path: "vault/people/uma-old" }), // by exact NAME only (path differs)
+    person("Uma Hale", {}, { path: "vault/people/uma-hale" }),
+    person("wes-old", { email: "wes@example.test", merged_into: "vault/people/Wes Park" }, { tags: ["merged-stub"], path: "vault/people/wes-old" }), // the SOLE claimant, by full path
+    person("Wes Park", {}),
+    person("Vic Pointer", { email: "vic@example.test", superseded_by: "vault/people/Ada North" }), // a pointer WITHOUT a tombstone marker: a live person
+    person("existing-at-path", { email: "held@example.test" }, { path: "vault/people/path-taken" }), // for the `existed: true` branch
     person("gus-old", { email: "gus@example.test", merged_into: "vault/people/Nobody Here" }, { tags: ["merged-stub"], path: "vault/people/gus-old" }), // dangling
     person("hal-old", { email: "hal@example.test", status: "merged_into_canonical" }, { path: "vault/people/hal-old" }), // by status only
     person("ivy-old", { email: "ivy@example.test" }, { tags: ["superseded"], path: "vault/people/ivy-old" }), // by tag only
@@ -65,8 +71,8 @@ function corpus(): Note[] {
 }
 
 const QUERIES: Array<{ name: string; email?: string; matrixId?: string }> = [];
-const NAMES = ["Ada North", "Bo South", "Cy East", "Notetaker", "Acme Org", "Eve Field", "Fay Grove", "Louis Marsh", "L. Marsh", "Head of Research", "Mia Stone", "mia-stone", "Ned Pike", "Brand New", "Zed", "12345678", "someone@new.test", "Pat_Underscore", "Quinn Vale (Telegram)"];
-const EMAILS = [undefined, "ada@example.test", "cy@example.test", "bo@example.test", "dee@example.test", "d.west@example.test", "notetaker@bots.test", "recorder@bots.test", "team-inbox@acme.test", "helper@bots.test", "eve@example.test", "fay@example.test", "gus@example.test", "hal@example.test", "ivy@example.test", "jo@example.test", "kit@example.test", "ned1@example.test", "quinn@example.test", "brand@new.test", "noreply@service.test"];
+const NAMES = ["Path Taken", "Uma Hale", "Vic Pointer", "Ada North", "Bo South", "Cy East", "Notetaker", "Acme Org", "Eve Field", "Fay Grove", "Louis Marsh", "L. Marsh", "Head of Research", "Mia Stone", "mia-stone", "Ned Pike", "Brand New", "Zed", "12345678", "someone@new.test", "Pat_Underscore", "Quinn Vale (Telegram)"];
+const EMAILS = [undefined, "wes@example.test", "uma@example.test", "vic@example.test", "held@example.test", "ada@example.test", "cy@example.test", "bo@example.test", "dee@example.test", "d.west@example.test", "notetaker@bots.test", "recorder@bots.test", "team-inbox@acme.test", "helper@bots.test", "eve@example.test", "fay@example.test", "gus@example.test", "hal@example.test", "ivy@example.test", "jo@example.test", "kit@example.test", "ned1@example.test", "quinn@example.test", "brand@new.test", "noreply@service.test"];
 const MXIDS = [undefined, "@telegram_1000001:h.test", "@oz:h.test", "!dm1:h.test", "@pat_underscore:h.test", "@telegram_9999999:h.test"];
 for (const name of NAMES) for (const email of EMAILS) QUERIES.push({ name, email });
 for (const name of ["Bo South", "Oz Reed", "Brand New", "Pat_Underscore"]) for (const matrixId of MXIDS) QUERIES.push({ name, matrixId });
@@ -74,8 +80,12 @@ for (const name of ["Bo South", "Oz Reed", "Brand New", "Pat_Underscore"]) for (
 type Outcome = { kind: "link"; id: string } | { kind: "skip" } | { kind: "create" };
 async function run(Index: typeof OldIndex | typeof PeopleIndex, q: (typeof QUERIES)[number], allowCreate: boolean): Promise<Outcome> {
   const idx = new (Index as typeof PeopleIndex)(corpus());
+  // `if_exists: "ignore"` semantics: a path that is taken returns the note already there (`existed: true`).
   const vault = {
-    createNote: async (p: { path?: string; metadata?: Record<string, unknown>; tags?: string[]; content: string }) => ({ id: "created", content: p.content, path: p.path ?? null, metadata: p.metadata ?? null, tags: p.tags ?? [], createdAt: "", updatedAt: "", existed: false }),
+    createNote: async (p: { path?: string; metadata?: Record<string, unknown>; tags?: string[]; content: string }) => {
+      const taken = corpus().find((c) => c.path === p.path);
+      return taken ? { ...taken, existed: true } : { id: "created", content: p.content, path: p.path ?? null, metadata: p.metadata ?? null, tags: p.tags ?? [], createdAt: "", updatedAt: "", existed: false };
+    },
   };
   const r = await idx.findOrCreate(vault, q.name, { email: q.email, matrixId: q.matrixId, allowCreate });
   return !r ? { kind: "skip" } : r.created ? { kind: "create" } : { kind: "link", id: r.id };
@@ -120,8 +130,14 @@ test("C1: a bot-tagged person's address is never re-minted as a new human; a tom
   const bot = await run(PeopleIndex, { name: "Fathom Notetaker", email: "notetaker@bots.test" }, true);
   assert.deepEqual(bot, { kind: "skip" });
   assert.deepEqual(await run(OldIndex, { name: "Fathom Notetaker", email: "notetaker@bots.test" }, true), { kind: "link", id: "p005" }, "the old index linked the bot note");
-  const fay = await run(PeopleIndex, { name: "Fay G", email: "fay@example.test" }, true);
-  assert.equal(fay.kind, "link");
+  // M-6: on ingest a tombstone is followed by id or full path only — a NAME (or a bare leaf) is not an identity.
+  for (const q of [{ name: "Fay G", email: "fay@example.test" }, { name: "Uma H", email: "uma@example.test" }]) assert.deepEqual(await run(PeopleIndex, q, true), { kind: "skip" }, JSON.stringify(q));
+  assert.deepEqual(await run(PeopleIndex, { name: "Eve F", email: "eve@example.test" }, true), { kind: "link", id: new IdentityIndex(corpus()).get("vault/people/Eve Field")!.id }, "a full path is followed");
+  // A pointer without a tombstone marker leaves the note a live person: linked as before.
+  assert.equal((await run(PeopleIndex, { name: "Vic", email: "vic@example.test" }, true)).kind, "link");
+  // `existed: true`: a create that lands on a taken path never invents a link to the note found there.
+  assert.deepEqual(await run(PeopleIndex, { name: "Path Taken", email: "brand@new.test" }, true), { kind: "skip" });
+  assert.deepEqual(await run(OldIndex, { name: "Path Taken", email: "brand@new.test" }, true), { kind: "skip" });
   const dangling = await run(PeopleIndex, { name: "Gus Person", email: "gus@example.test" }, true);
   assert.deepEqual(dangling, { kind: "skip" }, "an unresolvable tombstone still owns its address");
 });

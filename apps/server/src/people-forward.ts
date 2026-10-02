@@ -16,7 +16,7 @@
  * Every flag that constructs one defaults to OFF (config.ts).
  */
 import type { Note, NoteLinkInput } from "./parachute";
-import { IdentityIndex, cleanName, isOwnerQuery, looksLikeEmail, nameTokens, ownerProfile, slugKey, type IdentityKey, type IdentityQuery, type NameKey, type OwnerConfig, type OwnerProfile, type ReviewReason } from "./identity";
+import { IdentityIndex, cleanName, looksLikeEmail, ownerMatch, ownerProfile, slugKey, type IdentityKey, type IdentityQuery, type NameKey, type OwnerConfig, type OwnerProfile, type ReviewReason } from "./identity";
 import { REL } from "./relationships";
 import { PERSON_IDENTITY_KEYS } from "./people-metadata";
 import { enqueueCandidate } from "./identity-store";
@@ -119,8 +119,9 @@ export class ForwardLinker {
   /**
    * `email-from` for the sender (when `sender`) and `email-to` for each direct
    * recipient (when `recipients`) — by EXACT address only. Bulk-labelled mail
-   * and role mailboxes link only an exact address and queue nothing; a mailing's
-   * recipient list is never linked. Never the owner.
+   * links only an exact sender address and queues nothing; a role mailbox
+   * (no-reply, team@, support@ …) never links; a mailing's recipient list is
+   * never linked. Never the owner.
    */
   async email(m: { from?: string | null; to?: string | null; labels?: unknown }, want: { sender: boolean; recipients: boolean }): Promise<ForwardPlan> {
     const plan: ForwardPlan = { links: [], pending: [] };
@@ -129,17 +130,16 @@ export class ForwardLinker {
     const me = owner.person?.id ?? null;
     const seen = new Set<string>();
     const from = addressList(m.from ?? "")[0];
-    if (want.sender && from && !owner.emails.has(from.email)) {
-      const quiet = bulk || isNonhumanEmail(from.email);
-      this.one(idx, plan, REL.EMAIL_FROM, quiet ? { email: from.email } : { email: from.email, name: from.name || null }, seen, { excludePerson: me, review: !quiet });
+    // A role mailbox (no-reply, team@, support@ …) is never a person, whoever's note holds the address.
+    if (want.sender && from && !owner.emails.has(from.email) && !isNonhumanEmail(from.email)) {
+      this.one(idx, plan, REL.EMAIL_FROM, bulk ? { email: from.email } : { email: from.email, name: from.name || null }, seen, { excludePerson: me, review: !bulk });
     }
     if (want.recipients && !bulk) {
       const to = addressList(m.to ?? "");
       if (to.length <= (this.opts.maxRecipients ?? 10))
         for (const r of to) {
-          if (owner.emails.has(r.email)) continue;
-          const role = isNonhumanEmail(r.email);
-          this.one(idx, plan, REL.EMAIL_TO, role ? { email: r.email } : { email: r.email, name: r.name || null }, seen, { excludePerson: me, review: !role });
+          if (owner.emails.has(r.email) || isNonhumanEmail(r.email)) continue;
+          this.one(idx, plan, REL.EMAIL_TO, { email: r.email, name: r.name || null }, seen, { excludePerson: me });
         }
     }
     return plan;
@@ -156,13 +156,14 @@ export class ForwardLinker {
     const queries: IdentityQuery[] = [...[...addrs].map((email) => ({ email })), ...plain.map((name) => ({ name }))];
     for (const q of queries) {
       if (q.email && NON_PERSON_DOMAINS.test(q.email)) continue;
-      // The owner: by address, or by a configured multi-word name.
-      if (isOwnerQuery(owner, q) && (q.email || nameTokens(q.name ?? "").length >= 2)) {
+      // The owner: by address, their note's own full name, or a configured multi-word alias.
+      if (ownerMatch(owner, q)) {
         if (owner.person) this.one(idx, plan, REL.ATTENDED_BY, { ref: owner.person.id }, seen);
         continue;
       }
+      if (q.email && isNonhumanEmail(q.email)) continue;
       if (q.name && creationRefusal(q.name)) continue;
-      this.one(idx, plan, REL.ATTENDED_BY, q, seen, { review: !(q.email && isNonhumanEmail(q.email)) });
+      this.one(idx, plan, REL.ATTENDED_BY, q, seen);
     }
     return plan;
   }
@@ -175,7 +176,7 @@ export class ForwardLinker {
     for (const a of t.assignees ?? []) {
       const q: IdentityQuery = { name: a.name ?? null, email: a.email ?? null };
       if (!q.name && !q.email) continue;
-      if (isOwnerQuery(owner, q)) {
+      if (ownerMatch(owner, q, { singleToken: true })) {
         if (owner.person) this.one(idx, plan, REL.ASSIGNED_TO, { ref: owner.person.id }, seen);
         continue;
       }

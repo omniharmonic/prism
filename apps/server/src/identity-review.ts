@@ -104,7 +104,8 @@ async function doResolve(vault: ReviewVault, vaultId: string, cand: IdentityCand
     }
     const live = opts.live?.isLive(id) ?? false;
     const updated = await vault.updateNote(id, { ...p, ifUpdatedAt: updatedAt });
-    if (live) {
+    // Checked again AFTER the write: an editor may have opened the note meanwhile.
+    if (live || (opts.live?.isLive(id) ?? false)) {
       const prev = Date.parse(updatedAt), next = Date.parse(updated?.updatedAt ?? "");
       if (Number.isFinite(prev) && Number.isFinite(next)) opts.live!.markReconciled(id, prev, next);
     }
@@ -123,7 +124,8 @@ async function doResolve(vault: ReviewVault, vaultId: string, cand: IdentityCand
       }
       if (c.relationship === MERGED_INTO) {
         // A broken tombstone: point it at the person it was merged into.
-        if (await write(src.id, { metadata: { merged_into: person.path ?? person.id } }, src.updatedAt)) {
+        const prev = typeof src.metadata?.merged_into === "string" && src.metadata.merged_into.trim() ? src.metadata.merged_into : null;
+        if (await write(src.id, { metadata: { merged_into: person.id, ...(prev ? { prism_merged_into_prev: prev } : {}) } }, src.updatedAt)) {
           out.linked++;
           done.push(c.id);
         }

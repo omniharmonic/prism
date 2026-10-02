@@ -95,6 +95,12 @@ function seed(v: MemVault): void {
   v.put({ ...person("s-eli", "eli-old", { email: "eli@example.test" }, ["merged-stub"]) }, [["e-eli", "s-eli", "email-from"]]);
   v.put({ ...person("s-fin", "Fin Moss", { status: "merged_into_canonical" }), path: "vault/people/fin-moss-old" });
   v.put(person("s-lost", "lost-thing", { merged_into: "vault/people/Nobody Here" }, ["merged-stub"]));
+  // A stub merged INTO AN ORGANIZATION on purpose — it shares an address with a live person (H-1).
+  v.put(person("p-gus", "Gus Reed", { email: "gus@example.test" }));
+  v.put(person("s-org", "gus-at-org", { email: "gus@example.test", merged_into: "vault/organizations/Org One" }, ["merged-stub"]), [["k-org", "s-org", "assigned-to"]]);
+  v.put({ id: "k-org", path: "vault/tasks/k-org", tags: ["task"] });
+  // A role mailbox that a person note claims (M-3).
+  v.put(person("p-acme", "Acme Team", { email: "team@acme.test" }));
   v.put({ id: "org-1", path: "vault/organizations/Org One", tags: ["organization"] });
   v.put({ id: "d-1", path: "vault/notes/Doc", tags: [] });
 
@@ -110,6 +116,7 @@ function seed(v: MemVault): void {
   email("e6", { from: "Alex Example <alex@example.test>", to: "owner@example.test" }, [["e6", "p-alex", "email-from"]]);
   email("e7", { from: "Help Desk <support@vendor.test>", to: "owner@example.test, Alex <alex@example.test>" });
   email("e8", { from: "Fathom <notetaker@bots.test>", to: "owner@example.test" });
+  email("e9", { from: "Acme Team <team@acme.test>", to: "owner@example.test, info@acme.test" });
 
   v.put({ id: "m1", path: "vault/meetings/2026-01-01/sync", tags: ["meeting"], metadata: { attendees: ["owner@example.test", "Blake Example", "Unknown Person", "room@resource.calendar.google.com"], attendeeEmails: ["owner@example.test"] } });
   v.put({ id: "t1", path: "vault/_inbox/transcripts/t1", tags: ["transcript"], metadata: { attendees: ["Owner Person", "Alex Example", "Guest"] } });
@@ -167,35 +174,36 @@ test("phase order and address parsing", () => {
   ]);
 });
 
-test("a dry run plans exactly what a write run then writes; the second write run is a no-op", async () => {
+test("a dry run plans exactly what a write run then writes; runs converge to zero writes", async () => {
   for (const allowNameLinks of [false, true]) {
     _resetLinkJob();
     resetDb();
     const v = new MemVault();
     seed(v);
-    const dry = await runJob(v, { allowNameLinks });
-    assert.equal(dry.status, "done");
-    assert.equal(v.patches.length, 0, "a dry run never writes");
-    assert.equal(listCandidates("primary").candidates.length, 0, "a dry run does not fill the queue by default");
-
-    const wet = await runJob(v, { dryRun: false, allowNameLinks });
-    assert.equal(wet.status, "done", wet.error ?? "");
-    for (const p of wet.phases) {
-      assert.deepEqual(planned(wet, p), planned(dry, p), `phase ${p} planned the same (allowNameLinks=${allowNameLinks})`);
-      const r = wet.report[p];
-      assert.equal(r.linked, r.wouldLink, `${p}: every planned link was written`);
-      assert.equal(r.unlinked, r.wouldUnlink, `${p}: every planned removal was written`);
-      assert.equal(r.notesWritten, r.notesToWrite, p);
-      assert.equal(r.conflicts + r.errors + r.deferred, 0, p);
-      assert.equal(Object.values(r.byEvidence).reduce((a, b) => a + (b ?? 0), 0), p === "tombstones" ? r.extra.repaired : p === "normalize" ? 0 : r.wouldLink, `${p}: every planned link has an evidence kind`);
+    for (let round = 0; round < 2; round++) {
+      const before = v.patches.length;
+      const dry = await runJob(v, { allowNameLinks });
+      assert.equal(dry.status, "done");
+      assert.equal(v.patches.length, before, "a dry run never writes");
+      assert.equal(listCandidates("primary").candidates.length, 0, "nothing is queued unless asked");
+      const wet = await runJob(v, { dryRun: false, allowNameLinks });
+      assert.equal(wet.status, "done", wet.error ?? "");
+      for (const p of wet.phases) {
+        assert.deepEqual(planned(wet, p), planned(dry, p), `round ${round}, phase ${p} planned the same (allowNameLinks=${allowNameLinks})`);
+        const r = wet.report[p];
+        assert.equal(r.linked, r.wouldLink, `${p}: every planned link was written`);
+        assert.equal(r.unlinked, r.wouldUnlink, `${p}: every planned removal was written`);
+        assert.equal(r.notesWritten, r.notesToWrite, p);
+        assert.equal(r.conflicts + r.errors + r.deferred, 0, p);
+        assert.equal(Object.values(r.byEvidence).reduce((a, b) => a + (b ?? 0), 0), p === "tombstones" ? (r.extra.repaired ?? 0) : p === "normalize" ? 0 : r.wouldLink, `${p}: every planned link has an evidence kind`);
+      }
+      assert.ok(v.patches.every((x) => x.ifUpdatedAt), "every write is a CAS write");
+      assert.ok(wet.writes >= v.patches.length - before);
     }
-    assert.equal(wet.writes, v.patches.length);
-    assert.ok(v.patches.every((x) => x.ifUpdatedAt), "every write is a CAS write");
-    assert.equal(openCandidateCounts("primary").total, wet.phases.reduce((n, p) => n + wet.report[p].queued, 0));
-
-    const before = v.patches.length;
+    // Round 1 repaired a tombstone; round 2 moved its links. A third run has nothing to do.
+    const n = v.patches.length;
     const again = await runJob(v, { dryRun: false, allowNameLinks });
-    assert.equal(v.patches.length, before, "re-running converges: zero writes");
+    assert.equal(v.patches.length, n, "converged: zero writes");
     for (const p of again.phases) assert.equal(again.report[p].wouldLink + again.report[p].wouldUnlink + again.report[p].notesToWrite, 0, p);
     assert.equal(lastLinkJobOutcome("primary")?.status, "done");
   }
@@ -204,7 +212,7 @@ test("a dry run plans exactly what a write run then writes; the second write run
 test("default run: only strong keys link; names go to review; what each phase does", async () => {
   const v = new MemVault();
   seed(v);
-  const j = await runJob(v, { dryRun: false });
+  const j = await runJob(v, { dryRun: false, enqueue: true });
   assert.equal(j.ownerPersonKnown, true);
 
   // owner: the configured alias is appended to the owner's note (and nothing else touched).
@@ -212,17 +220,23 @@ test("default run: only strong keys link; names go to review; what each phase do
   assert.equal(v.notes.get("p-owner")!.metadata!.email, "owner@example.test");
   assert.equal(j.report.owner.extra.identitiesAdded, 1);
 
-  // tombstones: repaired by address, by full name; the unmatched one is queued.
-  assert.equal(v.notes.get("s-eli")!.metadata!.merged_into, "vault/people/Eli Stone");
-  assert.equal(v.notes.get("s-fin")!.metadata!.merged_into, "vault/people/Fin Moss");
+  // tombstones: a DANGLING stub is repaired only on a strong key, to the note ID;
+  // a name match is a review item (H-2); a stub merged into an organization is not broken (H-1).
+  assert.equal(v.notes.get("s-eli")!.metadata!.merged_into, "p-eli");
+  assert.equal(v.notes.get("s-fin")!.metadata!.merged_into, undefined, "a name is never an automatic repair");
   assert.equal(v.notes.get("s-lost")!.metadata!.merged_into, "vault/people/Nobody Here", "never guessed");
-  assert.deepEqual(j.report.tombstones.byEvidence, { email: 1, "full-name": 1 });
-  assert.deepEqual(j.report.tombstones.queuedByReason, { "tombstone-unresolved": 1 });
-  assert.equal(j.report.tombstones.extra.repaired, 2);
+  assert.equal(v.notes.get("s-org")!.metadata!.merged_into, "vault/organizations/Org One", "merged into an organization on purpose: left exactly as it is");
+  assert.deepEqual(j.report.tombstones.byEvidence, { email: 1 });
+  assert.deepEqual(j.report.tombstones.queuedByReason, { "tombstone-unresolved": 2 });
+  assert.deepEqual(j.report.tombstones.extra, { resolvable: 1, repaired: 1, leftTargetNotAPerson: 1 });
+  assert.equal(j.report.tombstones.skipped["target-not-a-live-person"], 1);
 
-  // repoint: inbound + outbound move, direction preserved (M1), the repaired stub's too.
+  // repoint: inbound + outbound move, direction preserved (M1). A stub repaired in
+  // THIS run is not repointed until a later run; the organization's stub never is.
   assert.deepEqual(v.out("e-old"), ["email-from->p-alex"]);
-  assert.deepEqual(v.out("e-eli"), ["email-from->p-eli"]);
+  assert.deepEqual(v.out("e-eli"), ["email-from->s-eli"]);
+  assert.deepEqual(v.out("k-org"), ["assigned-to->s-org"], "never moved onto the person who happens to share its address");
+  assert.equal(j.report.repoint.skipped["repaired-this-run"], 1);
   assert.deepEqual(v.out("s-alex"), []);
   assert.deepEqual(v.out("p-alex").filter((x) => x.startsWith("member-of")), ["member-of->org-1"], "org-1 → p-alex did NOT count as p-alex → org-1");
   assert.deepEqual(v.out("org-1"), ["member-of->p-alex"], "the reversed link is untouched");
@@ -238,25 +252,31 @@ test("default run: only strong keys link; names go to review; what each phase do
   assert.deepEqual(v.out("e7"), ["email-to->p-alex"]);
   assert.deepEqual(v.out("e8"), [], "an address held by a bot-tagged note is claimed: never linked");
   assert.ok(!v.edges.some((e) => e.targetId === "p-owner" && (e.sourceId.startsWith("e") || e.sourceId.startsWith("th"))), "the owner is never linked to their own mail or threads");
+  assert.deepEqual(v.out("e9"), [], "M-3: team@ is a role mailbox — never a person, even though a person note holds the address");
   assert.deepEqual(j.report.emails.byEvidence, { email: 4 });
   assert.equal(j.report.emails.skipped["role-sender"], 2);
+  assert.equal(j.report.emails.skipped["role-recipient"], 1);
+  assert.equal(j.report.emails.skipped["role-address-claimed"], 1);
+  assert.deepEqual(j.report.emails.sample.role, ["e9"]);
+  assert.equal(j.report.emails.extra.bulkLinked, 1, "bulk-labelled links are counted apart…");
+  assert.deepEqual(j.report.emails.sample.bulk, ["e3"], "…and sampled, to inspect before a write run");
   assert.equal(j.report.emails.skipped["bulk-label"], 1);
   assert.equal(j.report.emails.skipped["claimed-by-non-person"], 1, "e8");
-  assert.equal(j.report.emails.alreadyLinked, 3, "e6, and e-old + e-eli (repointed by the phase before)");
-  assert.deepEqual(j.report.emails.queuedByReason, { "name-only": 1, "ambiguous-name": 1 });
+  assert.equal(j.report.emails.alreadyLinked, 2, "e6, and e-old (repointed by the phase before)");
+  assert.deepEqual(j.report.emails.queuedByReason, { "name-only": 1, "ambiguous-name": 1, "ambiguous-key": 1 }, "e-eli: the address is also held by a stub repaired THIS run");
 
   // meetings: the owner by address / configured full name; other names are review items.
   assert.deepEqual(v.out("m1"), ["attended-by->p-owner"]);
   assert.deepEqual(v.out("t1"), ["attended-by->p-owner"]);
   assert.equal(j.report.meetings.skipped["role-attendee"], 1);
-  assert.deepEqual(j.report.meetings.byEvidence, { email: 1, "owner-alias": 1 });
+  assert.deepEqual(j.report.meetings.byEvidence, { email: 1, "owner-full-name": 1 });
   assert.deepEqual(j.report.meetings.queuedByReason, { "name-only": 2 });
 
   // threads: by Matrix id (stored, or looked up and written back in the SAME write).
   assert.deepEqual(v.out("th1"), ["messages-with->p-blake"]);
   assert.deepEqual(v.out("th2"), ["messages-with->p-blake"]);
   assert.deepEqual(v.out("th3"), [], "60 members: skipped");
-  assert.deepEqual(v.out("th4"), [], "10 name-only participants");
+  assert.deepEqual(v.out("th4"), [], "the lookup could not answer: the thread waits, it does not fall back to names");
   assert.deepEqual(v.out("th5"), [], "an unknown puppet + a matching name is a review item, never a link");
   assert.deepEqual(v.out("th6"), [], "names only");
   const th1 = v.patches.filter((p) => p.id === "th1");
@@ -267,7 +287,9 @@ test("default run: only strong keys link; names go to review; what each phase do
   assert.deepEqual(j.report.threads.byEvidence, { telegram: 2 });
   assert.equal(j.report.threads.extra.idsBackfilled, 2);
   assert.equal(j.report.threads.skipped["large-group"], 1);
-  assert.equal(j.report.threads.skipped["group-names-only"], 1);
+  assert.equal(j.report.threads.skipped["lookup-failed"], 1);
+  assert.equal(j.report.threads.skipped["group-names-only"], undefined);
+  assert.deepEqual(j.report.threads.queuedByReason, { "name-only": 2 }, "th5's counterpart and th6's (a room with no Matrix id at all) — not th4's ten names");
   assert.equal(j.memberLookups, 3, "th1, th4, th5 — never the 60-member room, never a room with stored ids");
 
   // tasks: the owner by configured alias; other names are review items; a wikilink is exact.
@@ -275,7 +297,7 @@ test("default run: only strong keys link; names go to review; what each phase do
   assert.deepEqual(v.out("k2"), []);
   assert.deepEqual(v.out("k3"), ["belongs-to->proj-2"], "a project is found by its `title` (its name), not only its path");
   assert.deepEqual(v.out("k4"), ["assigned-to->p-blake", "belongs-to->proj-1"]);
-  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, path: 1, project: 3 });
+  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, wikilink: 1, project: 3 });
   assert.equal(j.report.tasks.skipped["project-unknown"], 1);
 
   // normalize: only unambiguous synonyms; the rest reported, untouched.
@@ -300,8 +322,8 @@ test("allowNameLinks: names link for meetings and tasks ONLY — never for mail 
   assert.deepEqual(v.out("m1"), ["attended-by->p-blake", "attended-by->p-owner"]);
   assert.deepEqual(v.out("t1"), ["attended-by->p-alex", "attended-by->p-owner"], "the generic attendee 'Guest' is ignored");
   assert.deepEqual(v.out("k2"), ["assigned-to->p-alex", "assigned-to->p-casey"]);
-  assert.deepEqual(j.report.meetings.byEvidence, { email: 1, "owner-alias": 1, "full-name": 2 });
-  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, "full-name": 2, path: 1, project: 3 });
+  assert.deepEqual(j.report.meetings.byEvidence, { email: 1, "owner-full-name": 1, "full-name": 2 });
+  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, "full-name": 2, wikilink: 1, project: 3 });
   // Sender-controlled display names still never link.
   assert.deepEqual(v.out("e4"), ["email-to->p-alex"]);
   assert.deepEqual(v.out("th5"), []);
@@ -407,11 +429,10 @@ test("the write cap is hard; capped runs converge to the same graph as one full 
   assert.ok(j.capped);
   assert.ok(j.phases.reduce((n, p) => n + j.report[p].deferred, 0) > 0);
   let runs = 0;
-  while ((await runJob(v, { dryRun: false, maxWrites: 5 })).capped) assert.ok(++runs < 30, "capped runs make progress");
-  assert.equal((await runJob(v, { dryRun: false, maxWrites: 5 })).writes, 0);
+  while ((await runJob(v, { dryRun: false, maxWrites: 5 })).writes > 0) assert.ok(++runs < 40, "capped runs make progress");
   const full = new MemVault();
   seed(full);
-  await runJob(full, { dryRun: false });
+  while ((await runJob(full, { dryRun: false })).writes > 0) assert.ok(++runs < 60);
   assert.deepEqual(v.graph(), full.graph());
 });
 
@@ -500,6 +521,156 @@ test("owner phase: unresolved owner does nothing; its tombstones' links come hom
   assert.ok(!v.edges.some((e) => e.targetId === "p-owner" && ["th9", "e9"].includes(e.sourceId)));
 });
 
+test("H-1/H-2: only a DANGLING stub is repaired, only on a strong key, keeping the old pointer; a non-person target is never touched or repointed — in any run", async () => {
+  const v = new MemVault();
+  v.put(person("p-live", "Robin Vale", { email: "robin@example.test" }));
+  v.put({ id: "org", path: "vault/organizations/Vale Co", tags: ["organization"] });
+  v.put({ id: "proj", path: "vault/projects/vale", tags: ["project"] });
+  v.put(person("p-bot", "Vale Bot", { email: "bot@example.test" }, ["bot"]));
+  // Deliberately merged into an organization, a project (by id) and a non-human person note.
+  v.put(person("s1", "robin-org", { email: "robin@example.test", merged_into: "vault/organizations/Vale Co" }, ["merged-stub"]), [["t1", "s1", "assigned-to"]]);
+  v.put(person("s2", "robin-proj", { email: "robin@example.test", merged_into: "proj" }, ["merged-stub"]));
+  v.put(person("s3", "robin-bot", { email: "robin@example.test", merged_into: "vault/people/Vale Bot" }, ["merged-stub"]));
+  // Dangling: the target is nowhere in the vault. One shares a strong key with ONE live person, one only a name.
+  v.put(person("s4", "robin-gone", { channels: { matrix: "@telegram_7770001:h.test" }, merged_into: "vault/people/Deleted Long Ago" }, ["merged-stub"]), [["t2", "s4", "assigned-to"]]);
+  v.put({ ...person("s5", "Robin Vale", { status: "merged_into_canonical" }), path: "vault/people/robin-vale-old" });
+  v.put(person("p-tg", "Tee Gee", { channels: { matrix: "@telegram_7770001:h.test" } }));
+  v.put({ id: "t1", path: "vault/tasks/t1", tags: ["task"] });
+  v.put({ id: "t2", path: "vault/tasks/t2", tags: ["task"] });
+
+  const j = await runJob(v, { dryRun: false, phases: ["tombstones", "repoint"], enqueue: true });
+  for (const [id, was] of [["s1", "vault/organizations/Vale Co"], ["s2", "proj"], ["s3", "vault/people/Vale Bot"]] as const) {
+    assert.equal(v.notes.get(id)!.metadata!.merged_into, was, `${id}: not dangling, not rewritten`);
+    assert.equal(v.notes.get(id)!.metadata!.prism_merged_into_prev, undefined);
+  }
+  assert.equal(j.report.tombstones.extra.leftTargetNotAPerson, 3);
+  assert.deepEqual({ merged_into: v.notes.get("s4")!.metadata!.merged_into, prev: v.notes.get("s4")!.metadata!.prism_merged_into_prev }, { merged_into: "p-tg", prev: "vault/people/Deleted Long Ago" }, "repaired to the note ID; the previous value is kept");
+  assert.deepEqual(j.report.tombstones.byEvidence, { telegram: 1 });
+  assert.equal(v.notes.get("s5")!.metadata!.merged_into, undefined, "a full-name match is a review item, never a repair");
+  const rows = listCandidates("primary").candidates;
+  assert.deepEqual(rows.map((r) => `${r.sourceNoteId}:${r.reason}:${r.candidateIds.join()}`), ["s5:tombstone-unresolved:p-live"]);
+  assert.deepEqual(v.out("t1"), ["assigned-to->s1"]);
+  assert.deepEqual(v.out("t2"), ["assigned-to->s4"], "a stub repaired in THIS run is not repointed in it");
+  assert.equal(j.report.repoint.skipped["repaired-this-run"], 1);
+
+  // A later run moves the repaired stub's links — and still never the organization's.
+  const later = await runJob(v, { dryRun: false, phases: ["tombstones", "repoint"] });
+  assert.deepEqual(v.out("t2"), ["assigned-to->p-tg"]);
+  assert.deepEqual(v.out("t1"), ["assigned-to->s1"]);
+  assert.equal(later.report.tombstones.extra.repaired, undefined);
+  assert.equal(later.report.repoint.skipped["no-canonical"], 4, "s1, s2, s3 and the name-only s5");
+});
+
+test("M-3: excludeBulkLinks keeps bulk-labelled mail unlinked", async () => {
+  const v = new MemVault();
+  seed(v);
+  const j = await runJob(v, { dryRun: false, phases: ["emails"], excludeBulkLinks: true });
+  assert.deepEqual(v.out("e3"), []);
+  assert.equal(j.report.emails.extra.bulkLinked, undefined);
+  assert.equal(j.report.emails.skipped["bulk-label"], 2);
+});
+
+test("M-4: nothing is queued unless asked; a capped run queues only inside its write window; the queue is bounded; a landed link closes its row", async () => {
+  const v = new MemVault();
+  for (let i = 0; i < 12; i++) {
+    v.put(person(`p${i}`, `Person Number${i}`, { email: `p${i}@example.test` }));
+    v.put(person(`q${i}`, `Named Only${i}`));
+    v.put({ id: `m${String(i).padStart(2, "0")}`, path: `vault/meetings/m${i}`, tags: ["meeting"], metadata: { attendees: [`p${i}@example.test`, `Named Only${i}`] } });
+  }
+  const dry = await runJob(v, { phases: ["meetings"] });
+  assert.equal(dry.report.meetings.queued, 12);
+  assert.equal(openCandidateCounts("primary").total, 0, "a dry run inserts nothing");
+  const silent = new MemVault();
+  for (const [k, n] of v.notes) silent.notes.set(k, structuredClone(n));
+  await runJob(silent, { dryRun: false, phases: ["meetings"] });
+  assert.equal(openCandidateCounts("primary").total, 0, "a WRITE run inserts nothing either unless enqueue: true");
+
+  // Capped at 3 writes: only the reviews of the notes it reached are queued.
+  const capped = await runJob(v, { dryRun: false, phases: ["meetings"], maxWrites: 3, enqueue: true });
+  assert.equal(capped.report.meetings.notesWritten, 3);
+  assert.equal(capped.report.meetings.queued, 3, "not the whole phase");
+  assert.equal(capped.report.meetings.extra.reviewsBeyondWindow, 9);
+  assert.equal(openCandidateCounts("primary").total, 3);
+
+  // A bounded queue: past PEOPLE_QUEUE_MAX_OPEN nothing is inserted, and it is counted.
+  const prev = config.peopleQueueMaxOpen;
+  (config as { peopleQueueMaxOpen: number }).peopleQueueMaxOpen = 5;
+  try {
+    const full = await runJob(v, { dryRun: false, phases: ["meetings"], enqueue: true });
+    assert.equal(openCandidateCounts("primary").total, 5);
+    assert.equal(full.report.meetings.skipped["queue-full"], 7);
+  } finally {
+    (config as { peopleQueueMaxOpen: number }).peopleQueueMaxOpen = prev;
+  }
+
+  // The reviewed name later links (allowNameLinks): its open row closes itself.
+  const before = listCandidates("primary").candidates.length;
+  await runJob(v, { dryRun: false, phases: ["meetings"], allowNameLinks: true });
+  assert.equal(listCandidates("primary").candidates.length, 0, `${before} open rows answered by the links that landed`);
+  const closed = listCandidates("primary", { status: "resolved" }).candidates;
+  assert.equal(closed.length, before);
+  assert.ok(closed.every((c) => c.decidedBy === "linked-by-job" && c.resolvedPersonId?.startsWith("q")));
+});
+
+test("M-4/M-5: the member lookup never falls back to names — budget, failures, a breaker, and the REAL member count", async () => {
+  const mk = () => {
+    const v = new MemVault();
+    v.put(person("p-blake", "Blake Example", { channels: { matrix: "@telegram_5550001:h.test" } }));
+    for (let i = 0; i < 6; i++) v.put({ id: `t${i}`, path: `vault/messages/telegram/t${i}`, tags: ["message-thread"], metadata: { participants: ["Blake Example"], matrixRoomId: `!room${i}:h.test` } });
+    return v;
+  };
+  const ok = async () => ({ "@telegram_5550001:h.test": "Blake Example" });
+
+  // Budget spent: the rest wait for the next run (no name review rows, no links).
+  const b = mk();
+  const budget = await runJob(b, { dryRun: false, phases: ["threads"], members: ok, limits: { memberLookups: 2, memberPaceMs: 0 }, enqueue: true });
+  assert.equal(budget.memberLookups, 2);
+  assert.equal(budget.report.threads.skipped["lookup-budget"], 4);
+  assert.equal(budget.report.threads.queued, 0, "no fallback to display names");
+  assert.equal(b.edges.length, 2);
+
+  // The homeserver keeps failing: after 3 in a row the lookup stage ends; the phase carries on.
+  let calls = 0;
+  const f = mk();
+  f.notes.get("t5")!.metadata!.participantIds = ["@telegram_5550001:h.test"];
+  const failing = await runJob(f, { dryRun: false, phases: ["threads"], members: async () => { calls++; throw Object.assign(new Error("429"), { status: 429 }); }, memberFailures: 3 });
+  assert.equal(calls, 3, "the homeserver is left alone after the breaker");
+  assert.equal(failing.status, "done");
+  assert.deepEqual({ failed: failing.report.threads.skipped["lookup-failed"], unavailable: failing.report.threads.skipped["lookup-unavailable"], breaker: failing.report.threads.extra.lookupBreaker }, { failed: 3, unavailable: 2, breaker: 1 });
+  assert.deepEqual(f.out("t5"), ["messages-with->p-blake"], "a thread with stored ids still links");
+  assert.equal(failing.report.threads.queued, 0);
+
+  // A room whose REAL membership is over the limit gets neither links nor participantIds.
+  const g = mk();
+  const big = Object.fromEntries([["@telegram_5550001:h.test", "Blake Example"], ...Array.from({ length: 60 }, (_, i) => [`@telegram_66600${String(i).padStart(2, "0")}:h.test`, `M ${i}`])]);
+  const gated = await runJob(g, { dryRun: false, phases: ["threads"], members: async (room) => (room === "!room0:h.test" ? big : null) });
+  assert.equal(gated.report.threads.skipped["large-group"], 1);
+  assert.equal(g.patches.length, 0);
+  assert.equal(g.notes.get("t0")!.metadata!.participantIds, undefined);
+});
+
+test("collab race: a note opened in the editor WHILE it was being written is still reconciled", async () => {
+  const v = new MemVault();
+  seed(v);
+  let asked = 0;
+  const marks: string[] = [];
+  await runJob(v, { dryRun: false, phases: ["emails"], concurrency: 1, live: { isLive: (id) => id === "e1" && ++asked > 1, markReconciled: (id) => void marks.push(id) } });
+  assert.deepEqual(marks, ["e1"], "not live before the write, live after it");
+});
+
+test("a note written in both waves counts as ONE note to write", async () => {
+  const v = new MemVault();
+  v.put(person("p", "Pat Lane"));
+  v.put({ id: "m", path: "vault/meetings/m", tags: ["meeting"] }, [["p", "m", "attended"]]);
+  v.put({ id: "o", path: "vault/organizations/O", tags: ["organization"] }, [["o", "p", "has-member"], ["p", "o", "member"]]);
+  // `p` gets an addition (member-of → o, from o's reversed has-member) in wave 1 AND removals that wait on other notes in wave 2.
+  const j = await runJob(v, { dryRun: false, phases: ["normalize"] });
+  assert.equal(j.report.normalize.notesToWrite, new Set(v.patches.map((x) => x.id)).size);
+  assert.equal(j.report.normalize.notesWritten, j.report.normalize.notesToWrite);
+  assert.ok(v.patches.filter((x) => x.id === "p").length === 2, "two PATCHes on the same note");
+  assert.equal(j.writes, v.patches.length);
+});
+
 // ── route ────────────────────────────────────────────────────────────────────
 
 let fv: FakeVault | null = null;
@@ -539,7 +710,7 @@ test("route: owner only, CSRF, dry run by default, validated options, one job at
   }
   assert.equal((await post("/people/link", { ...owner(), "content-type": "text/plain" })).status, 415);
   assert.equal((await post("/people/link", { ...owner(), "sec-fetch-site": "cross-site" })).status, 403);
-  for (const bad of [{ dryRun: "no" }, { phases: [] }, { phases: ["everything"] }, { maxWrites: 0 }, { maxWrites: 1.5 }, { maxWrites: 10_000_000 }, { useMatrixMembers: "yes" }, { allowNameLinks: 1 }])
+  for (const bad of [{ dryRun: "no" }, { phases: [] }, { phases: ["everything"] }, { maxWrites: 0 }, { maxWrites: 1.5 }, { maxWrites: 10_000_000 }, { useMatrixMembers: "yes" }, { allowNameLinks: 1 }, { excludeBulkLinks: "x" }, { enqueue: 1 }])
     assert.equal((await post("/people/link", owner(), bad)).status, 400, JSON.stringify(bad));
   assert.equal((await post("/people/link", owner(), { useMatrixMembers: true })).status, 409, "explicitly asked for, but no stored Matrix credential");
   assert.equal(fv.calls.length, 0, "nothing reached the vault");

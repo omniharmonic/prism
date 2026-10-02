@@ -9,7 +9,7 @@
  *   POST /people/candidates/:id/resolve  {personId, addIdentity?=false, applyToKey?=false}
  *   POST /people/candidates/:id/dismiss  {applyToKey?=false}
  *   GET|PUT|DELETE /people/owner         {person, emails?, aliases?}
- *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?, allowNameLinks?=false, useMatrixMembers?} → 202 {job}
+ *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?=false, allowNameLinks?=false, excludeBulkLinks?=false, useMatrixMembers?} → 202 {job}
  *   GET  /people/link                                                                     → {job | null}
  *   POST /people/link/cancel                                                              → {ok}
  *   GET  /people/duplicates?strength=&limit=&offset=                                      → {pairs, total, counts, next}
@@ -30,7 +30,7 @@ import { dismissCandidate, resolveCandidate, ReviewError, type ReviewVault } fro
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
 import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
-import { detectDuplicates, mergePeople, MergeError, type DuplicatePair, type MergeVault } from "../people-merge";
+import { detectDuplicates, mergePeople, mergedByThisModule, MergeError, type DuplicatePair, type MergeVault } from "../people-merge";
 import { PERSON_IDENTITY_KEYS } from "../people-metadata";
 import { cachedDerived, cachedPeople, invalidatePeople } from "../people-cache";
 import { peopleLockHolder } from "../people-lock";
@@ -72,6 +72,16 @@ const liveHooks = (vaultId: string) => ({
   isLive: (noteId: string) => isDocLive(vaultId, noteId),
   markReconciled: (noteId: string, prevMs: number, nextMs: number) => void markReconciled(docNameFor(vaultId, noteId), prevMs, nextMs),
 });
+
+/** Give up on a homeserver call after `ms` (the Matrix client has no read timeout of its own). */
+function bounded<T>(p: Promise<T>, ms: number): Promise<T> {
+  if (!ms) return p;
+  let timer: NodeJS.Timeout;
+  const t = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error("matrix call timed out")), ms);
+  });
+  return Promise.race([p, t]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
 
 const busy = (c: Context) => c.json({ error: "busy", detail: `another people operation is in progress (${peopleLockHolder() ?? "unknown"})` }, 409);
 
@@ -217,8 +227,9 @@ export function mountPeopleLinkJob(admin: Hono): void {
     const enqueue = optBool(body?.enqueue);
     const useMembers = optBool(body?.useMatrixMembers);
     const allowNames = optBool(body?.allowNameLinks);
-    if (!body || dryRunIn === null || enqueue === null || useMembers === null || allowNames === null)
-      return c.json({ error: "bad_request", detail: "dryRun, enqueue, useMatrixMembers and allowNameLinks must be true or false" }, 400);
+    const excludeBulk = optBool(body?.excludeBulkLinks);
+    if (!body || dryRunIn === null || enqueue === null || useMembers === null || allowNames === null || excludeBulk === null)
+      return c.json({ error: "bad_request", detail: "dryRun, enqueue, useMatrixMembers, allowNameLinks and excludeBulkLinks must be true or false" }, 400);
     const phases = body.phases;
     if (phases !== undefined && (!Array.isArray(phases) || !phases.length || !phases.every(isPhase))) return c.json({ error: "bad_request", detail: `phases must be a non-empty list of: ${PHASES.join(", ")}` }, 400);
     const dryRun = dryRunIn !== false; // a dry run unless explicitly false
@@ -241,9 +252,11 @@ export function mountPeopleLinkJob(admin: Hono): void {
       const raw = getSecret(vaultId, config.ownerEmail, "matrix");
       if (!raw && useMembers === true) return c.json({ error: "matrix_not_configured" }, 409);
       if (raw) {
+        // Every homeserver read is bounded; a failure THROWS so the job's lookup
+        // breaker can count it (it never falls back to display names).
         const client = new MatrixClient(JSON.parse(raw) as MatrixCreds);
-        self = await client.whoami().catch(() => null);
-        members = (roomId) => client.joinedMembers(roomId).catch(() => null);
+        self = await bounded(client.whoami(), config.peopleVaultTimeoutMs).catch(() => null);
+        members = (roomId) => bounded(client.joinedMembers(roomId), config.peopleVaultTimeoutMs);
       }
     }
     const via = requestVia(c);
@@ -278,8 +291,10 @@ export function mountPeopleLinkJob(admin: Hono): void {
         dryRun,
         phases: phases as LinkJob["phases"] | undefined,
         maxWrites,
-        enqueue: enqueue ?? !dryRun,
+        enqueue: enqueue === true, // the review queue is filled only when asked
         allowNameLinks: allowNames === true,
+        excludeBulkLinks: excludeBulk === true,
+        memberFailures: config.peopleLinkMemberFailures,
         paceMs: config.peopleLinkPaceMs,
         owner: ownerConfig(vaultId, self),
         members,
@@ -364,13 +379,23 @@ export function mountPeopleMerge(admin: Hono): void {
       const idx = new IdentityIndex(list);
       const na = idx.get(a), nb = idx.get(b);
       if (!na || !nb) return c.json({ error: "not_found" }, 404);
-      const pair = (await duplicates(vaultId)).find((p) => (p.a.id === na.id && p.b.id === nb.id) || (p.a.id === nb.id && p.b.id === na.id)) ?? null;
+      // A WRITE is judged on a detection run now, on the listing just read — never the 60 s cache.
+      const pairs = dryRun ? await duplicates(vaultId) : detectDuplicates(list);
+      const pair = pairs.find((p) => (p.a.id === na.id && p.b.id === nb.id) || (p.a.id === nb.id && p.b.id === na.id)) ?? null;
       const canonicalId = (body.canonicalId as string | undefined) === a ? na.id : (body.canonicalId as string | undefined) === b ? nb.id : (pair?.suggestedCanonicalId ?? na.id);
-      const secondary = canonicalId === na.id ? nb : na;
-      const resuming = isTombstone(secondary) && idx.canonicalOf(secondary)?.id === canonicalId;
+      const [canonical, secondary] = canonicalId === na.id ? [na, nb] : [nb, na];
+      // "Resuming" = finishing a merge THIS module started (its marker is on the
+      // canonical). A stub that merely points here — written by an agent, or
+      // repaired by the job — gets the full checks like any other pair.
+      const resuming = isTombstone(secondary) && idx.canonicalOf(secondary)?.id === canonicalId && mergedByThisModule(canonical, secondary.id);
       const owner = ownerProfile(idx, ownerConfigFor(vaultId)).person;
       const refusal = owner && secondary.id === owner.id ? "owner_is_secondary" : resuming ? null : !pair ? "not_a_duplicate" : pair.strength === "weak" ? "weak_match" : null;
-      const info = { pair: pair ? { strength: pair.strength, evidence: pair.evidence } : null, requiresConfirmUnrelated: refusal === "not_a_duplicate" || refusal === "weak_match" };
+      const unrelated = refusal === "not_a_duplicate" || refusal === "weak_match";
+      const warnings = [
+        ...(unrelated ? ["NOT A DETECTED DUPLICATE: these two notes share no identity the server can see; merging them is your call alone"] : []),
+        ...(unrelated && owner && canonical.id === owner.id ? ["THIS MERGES A STRANGER INTO THE OWNER'S OWN PERSON NOTE: every link of the other note will point at the owner"] : []),
+      ];
+      const info = { pair: pair ? { strength: pair.strength, evidence: pair.evidence } : null, requiresConfirmUnrelated: unrelated, ...(warnings.length ? { warnings } : {}) };
       if (!dryRun) {
         if (refusal === "owner_is_secondary") return c.json({ error: refusal, detail: "the owner's own person note can only be the surviving note" }, 409);
         if (refusal && confirmUnrelated !== true) return c.json({ error: refusal, detail: "these two notes are not a detected duplicate pair; pass confirmUnrelated: true to merge them anyway", ...info }, 409);

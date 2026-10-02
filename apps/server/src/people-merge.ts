@@ -194,14 +194,26 @@ export class MergeError extends Error {
   }
 }
 
+/**
+ * This module's own merge marker: the canonical's `prism_merge_history` names
+ * the secondary. It is written in the FIRST step of a merge, so its presence is
+ * what tells a resumed merge from a stub somebody (or some job) pointed here.
+ */
+export function mergedByThisModule(canonical: Note, secondaryId: string): boolean {
+  const h = canonical.metadata?.prism_merge_history;
+  return Array.isArray(h) && h.some((e) => (e as { secondaryId?: string })?.secondaryId === secondaryId);
+}
+
 export interface MergeReport {
   dryRun: boolean;
   canonicalId: string;
   secondaryId: string;
   /** The versions this report was computed from — a write run must send them back as `expect`. */
   expect: { canonicalUpdatedAt: string | null; secondaryUpdatedAt: string | null };
-  /** The secondary was already tombstoned into this canonical: finishing an earlier merge. */
+  /** The secondary was already tombstoned into this canonical. */
   resumed: boolean;
+  /** …and this module started that merge (the canonical carries its marker). */
+  ownMerge: boolean;
   /** What the canonical gains, by kind (counts only). */
   identities: Record<string, number>;
   /** Canonical fields left alone because their current value has an unexpected type. */
@@ -337,6 +349,7 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
     secondaryId: s.id,
     expect: { canonicalUpdatedAt: c.updatedAt ?? null, secondaryUpdatedAt: s.updatedAt ?? null },
     resumed,
+    ownMerge: mergedByThisModule(c, s.id),
     identities: {},
     skippedFields: [],
     leftOnSecondary: [],
@@ -413,9 +426,10 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
   const at = new Date(o.now ?? Date.now()).toISOString();
   const cMeta: Record<string, unknown> = { ...(union.patch ?? {}) };
   if (appendBody) cMeta.prism_merged_from = [...mergedFrom, s.id];
-  if (union.patch || appendBody) {
+  // The merge marker goes into the FIRST write, always: it is what makes this merge resumable.
+  if (!mergedByThisModule(c, s.id)) {
     const history = Array.isArray(c.metadata?.prism_merge_history) ? (c.metadata!.prism_merge_history as unknown[]) : [];
-    if (!history.some((h) => (h as { secondaryId?: string })?.secondaryId === s.id)) cMeta.prism_merge_history = [...history.slice(-49), { secondaryId: s.id, at, by: o.by }];
+    cMeta.prism_merge_history = [...history.slice(-49), { secondaryId: s.id, at, by: o.by }];
   }
   const cPatch: Parameters<MergeVault["updateNote"]>[1] = {};
   if (Object.keys(cMeta).length) cPatch.metadata = cMeta;
@@ -428,7 +442,8 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
   const secondaryPatch = (holder: Note) => {
     const strip = stripIdentityPatch(s, holder);
     const meta: Record<string, unknown> = { ...strip.patch };
-    if (!resumed) Object.assign(meta, { merged_into: c.path ?? c.id, status: "merged_into_canonical", merged_at: at, merged_by: o.by });
+    // The pointer is the note ID (a path breaks on rename; readers accept either).
+    if (!resumed) Object.assign(meta, { merged_into: c.id, status: "merged_into_canonical", merged_at: at, merged_by: o.by });
     if (Object.keys(strip.kept).length) meta.prism_merged_identities = mergePatch(s.metadata?.prism_merged_identities, strip.kept);
     return { meta, left: strip.left };
   };
@@ -454,7 +469,8 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
     try {
       const wasLive = !p.content && !!o.live?.isLive(id);
       const updated = await timed(vault.updateNote(id, { ...p, ifUpdatedAt: updatedAt }));
-      if (wasLive) {
+      // Checked again AFTER the write: an editor may have opened the note meanwhile.
+      if (wasLive || (!p.content && !!o.live?.isLive(id))) {
         const prev = Date.parse(updatedAt), next = Date.parse(updated?.updatedAt ?? "");
         if (Number.isFinite(prev) && Number.isFinite(next)) o.live!.markReconciled(id, prev, next);
       }
@@ -473,12 +489,13 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
     }
   };
 
-  let holder: Note = c;
+  // What the canonical VERIFIABLY holds: a fresh read after the write — never the
+  // plan, never the write's own response. If it cannot be read, nothing is stripped.
+  let holder: Note | null = c;
   if (canonicalWrite) {
     const updated = await write(c.id, cPatch, c.updatedAt);
     if (!updated) return rep; // nothing else moved: a retry starts clean
-    // Verify what the canonical holds NOW (the response, else a re-read) before stripping anything.
-    holder = updated.metadata && typeof updated.metadata === "object" ? updated : await load(c.id).catch(() => planned);
+    holder = await load(c.id).catch(() => null);
   }
 
   if (inbound.size) {
@@ -505,6 +522,10 @@ async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport>
     }
   }
   if (rep.aborted) return rep;
+  if (!holder) {
+    rep.errors++; // the secondary keeps everything; the same call finishes later
+    return rep;
+  }
   if (secondaryWrite) {
     const final = secondaryPatch(holder);
     rep.leftOnSecondary = final.left;

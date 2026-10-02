@@ -18,6 +18,7 @@ beforeEach(() => {
   fv.put({ id: "status-only", path: "vault/people/old-two", tags: ["person"], metadata: { name: "old-two", status: "merged_into_canonical" } });
   fv.put({ id: "bot", path: "vault/people/Notetaker", tags: ["person", "bot"], metadata: { name: "Notetaker" } });
   fv.put({ id: "org", path: "vault/people/Acme", tags: ["person"], metadata: { name: "Acme", type: "organization" } });
+  fv.put({ id: "pointer", path: "vault/people/Zed Pointer", tags: ["person"], metadata: { name: "Zed Pointer", superseded_by: "vault/people/Morgan Example" } });
   fv.put({ id: "mail", path: "vault/messages/email/m", tags: ["email", "team"], metadata: { title: "Hello" } });
 });
 afterEach(() => fv.restore());
@@ -25,7 +26,7 @@ const as = (email: string) => ({ cookie: sessionCookie(makeSession(email)) });
 
 test("the directory lists live humans only", async () => {
   const r = (await (await peopleApi.request("/", { headers: as(config.ownerEmail) })).json()) as { people: Array<{ id: string }> };
-  assert.deepEqual(r.people.map((p) => p.id), ["live"]);
+  assert.deepEqual(r.people.map((p) => p.id), ["live", "pointer"], "a bare pointer without a tombstone tag/status is still a person — the same rule the index uses");
   const q = (await (await peopleApi.request("/?q=morgan", { headers: as(config.ownerEmail) })).json()) as { people: Array<{ id: string }> };
   assert.deepEqual(q.people.map((p) => p.id), ["live"], "a search never surfaces the stub either");
 });

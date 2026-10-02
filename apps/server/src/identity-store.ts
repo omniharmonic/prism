@@ -25,6 +25,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { db, resolveVaultEntry } from "./db";
+import { config } from "./config";
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS identity_candidates (
@@ -145,10 +146,11 @@ const MAX_CANDIDATES = 20;
 
 /**
  * Queue (or refresh) one candidate. Returns what happened: `created`, `refreshed`
- * (an OPEN row got the latest candidate list) or `closed` (the owner already
- * resolved/dismissed this exact source + key — it stays closed, untouched).
+ * (an OPEN row got the latest candidate list), `closed` (the owner already
+ * resolved/dismissed this exact source + key — it stays closed, untouched) or
+ * `full` (the vault already holds PEOPLE_QUEUE_MAX_OPEN open rows — not inserted).
  */
-export function enqueueCandidate(c: CandidateInput, now = Date.now()): "created" | "refreshed" | "closed" {
+export function enqueueCandidate(c: CandidateInput, now = Date.now(), maxOpen = config.peopleQueueMaxOpen): "created" | "refreshed" | "closed" | "full" {
   const value = c.key.value.slice(0, MAX_VALUE);
   const identity = vaultIdentity(c.vaultId);
   const hash = keyHash(c.key.kind, value);
@@ -160,6 +162,11 @@ export function enqueueCandidate(c: CandidateInput, now = Date.now()): "created"
     if (existing.status !== "open") return "closed";
     db.prepare("UPDATE identity_candidates SET candidate_ids = ?, reason = ?, display = COALESCE(?, display), updated_at = ? WHERE id = ?").run(ids, c.reason, c.display?.slice(0, MAX_VALUE) ?? null, now, existing.id);
     return "refreshed";
+  }
+  // A bounded to-do list: past the cap nothing new is inserted (existing rows still refresh).
+  if (maxOpen > 0) {
+    const open = (db.prepare("SELECT count(*) n FROM identity_candidates WHERE vault_identity = ? AND status = 'open'").get(identity) as { n: number }).n;
+    if (open >= maxOpen) return "full";
   }
   db.prepare(
     `INSERT INTO identity_candidates (id, vault_id, vault_identity, source_note_id, relationship, key_kind, key_hash, key_value, display, candidate_ids, reason, origin, status, created_at, updated_at)
@@ -228,4 +235,27 @@ export function openCandidateCounts(vaultId: string): { total: number; byReason:
     total += r.n;
   }
   return { total, byReason };
+}
+
+/**
+ * A link for (source, relationship) → person landed (or was found to exist):
+ * close every OPEN row of that source + relationship that asked about that
+ * person, so the queue does not keep questions that have been answered.
+ * Marked `resolved`, decided by `linked-by-job`.
+ */
+export function closeCandidatesLinked(vaultId: string, sourceNoteId: string, relationship: string, personId: string, now = Date.now()): number {
+  const rows = db
+    .prepare("SELECT id, candidate_ids FROM identity_candidates WHERE vault_identity = ? AND source_note_id = ? AND relationship = ? AND status = 'open'")
+    .all(vaultIdentity(vaultId), sourceNoteId, relationship) as Array<{ id: string; candidate_ids: string }>;
+  const ids = rows.filter((r) => {
+    try {
+      return (JSON.parse(r.candidate_ids) as unknown[]).includes(personId);
+    } catch {
+      return false;
+    }
+  });
+  const stmt = db.prepare("UPDATE identity_candidates SET status = 'resolved', resolved_person_id = ?, decided_by = 'linked-by-job', updated_at = ? WHERE id = ? AND status = 'open'");
+  let n = 0;
+  for (const r of ids) n += stmt.run(personId, now, r.id).changes;
+  return n;
 }

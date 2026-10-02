@@ -391,6 +391,11 @@ export const config = {
   // Matrix membership lookups the backfill may make per run (0 = never ask Matrix).
   peopleLinkMemberLookups: Number(process.env.PEOPLE_LINK_MEMBER_LOOKUPS ?? 300),
   peopleLinkMemberPaceMs: Number(process.env.PEOPLE_LINK_MEMBER_PACE_MS ?? 150),
+  // The review queue never holds more than this many OPEN rows per vault; past
+  // it nothing is inserted and the caller counts `queue-full`.
+  peopleQueueMaxOpen: Number(process.env.PEOPLE_QUEUE_MAX_OPEN ?? 1000),
+  // Consecutive failed Matrix membership lookups that end a run's lookup stage.
+  peopleLinkMemberFailures: Number(process.env.PEOPLE_LINK_MEMBER_FAILURES ?? 3),
   // The job / merge abort after this many consecutive failed writes that are not
   // a 409 (a broken vault must end the run as an ERROR, not as "done").
   peopleLinkMaxConsecutiveErrors: Number(process.env.PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS ?? 5),

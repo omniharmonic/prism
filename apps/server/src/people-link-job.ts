@@ -10,28 +10,36 @@
  *   owner      — checks the configured owner person note is a live person, adds
  *                the owner's addresses / aliases to it (append-only), and moves
  *                links held by ITS tombstones onto it.
- *   tombstones — repairs merged stubs whose `merged_into` points nowhere: the
- *                canonical is the ONE live person sharing a strong key, else the
- *                one whose full name is slug-equal; no unique match → review
- *                queue (`tombstone-unresolved`). Writes only `merged_into`.
+ *   tombstones — repairs DANGLING stubs only: `merged_into` is absent or resolves
+ *                to nothing in the whole vault. The one live person sharing a
+ *                STRONG key → `merged_into` = that note's id (the old value kept
+ *                in `prism_merged_into_prev`); a name match or no match → review
+ *                queue (`tombstone-unresolved`). A stub whose target exists but
+ *                is not a live person (an organization, a project, a bot note)
+ *                is left alone. A stub repaired in this run is neither repointed
+ *                nor used for matching until the next run.
  *   repoint    — links held by a merged stub move to its canonical person
  *                (same relationship, same direction). A vault-managed `wikilink`
  *                can't move, so the canonical gets a `references` link beside it.
- *   emails     — `email-from` (sender) and `email-to` (direct `To` recipients).
- *                An exact address match to one live person links — even on
- *                BULK / AUTOMATED / PROMOTIONS mail and role mailboxes; nothing
- *                else does there. A display name never links an email: a
- *                name-only match is a review item. Never the owner.
+ *   emails     — `email-from` (sender) and `email-to` (direct `To` recipients),
+ *                by exact address. On BULK / AUTOMATED / PROMOTIONS mail only an
+ *                exact sender address links (counted in `extra.bulkLinked`,
+ *                sampled, and switchable off with `excludeBulkLinks`). A role
+ *                mailbox (no-reply, team@, support@ …) NEVER links, whoever's
+ *                note holds the address (`role-address-claimed`). A display name
+ *                never links an email: name-only is a review item. Never the owner.
  *   meetings   — `attended-by` from `attendees` / `attendeeEmails`: address
  *                first; a name links only with `allowNameLinks`. The owner IS
  *                linked (calendar ingest's convention).
  *   threads    — `messages-with`, by Matrix id: stored `participantIds`, else
  *                the membership lookup (on by default when a Matrix credential
- *                exists; paced, budgeted). Looked-up ids are written back as
- *                `participantIds` in the SAME write as the links. A display
- *                name never links a thread (review only, small rooms). Small
- *                rooms first; rooms over GROUP_MAX_MEMBERS skipped; bots and the
- *                owner never linked.
+ *                exists; paced, budgeted, with a failure breaker). Looked-up ids
+ *                are written back as `participantIds` in the SAME write as the
+ *                links. When the lookup cannot answer (budget, failure, breaker)
+ *                the thread WAITS for a later run — no fallback to display
+ *                names. A display name never links a thread and is never a key.
+ *                Rooms over GROUP_MAX_MEMBERS (by REAL membership) get neither
+ *                links nor ids; bots and the owner are never linked.
  *   tasks      — `assigned-to` (the owner by configured alias; other names only
  *                with `allowNameLinks`) and `belongs-to` (exact unique project).
  *   normalize  — long-tail relationship names → canonical (src/relationships.ts),
@@ -51,16 +59,19 @@
  *   - Notes over the vault's 2 MB history ceiling are skipped (`oversize`).
  *   - A note open in the collab editor gets its links written and the collab
  *     reconciler is told the content did not change (`markReconciled`).
- *   - Identities it will not link go to the review queue (write runs; a dry run
- *     only counts them), and an identity the owner DISMISSED never links.
+ *   - Identities it will not link are COUNTED; they are written to the review
+ *     queue only with `enqueue: true`, only for the part of a phase a capped run
+ *     actually reached, and never past PEOPLE_QUEUE_MAX_OPEN open rows. A link
+ *     that lands closes the open rows that asked about it. An identity the owner
+ *     DISMISSED never links.
  * A dry run plans exactly what a write run with the same options writes.
  */
 import { randomUUID } from "node:crypto";
 import type { Note, NoteLinkInput } from "./parachute";
-import { IdentityIndex, cleanName, isNonHumanPerson, isOwnerQuery, isTombstone, looksLikeEmail, nameTokens, ownerProfile, personKeys, slugKey, type Evidence, type IdentityKey, type IdentityQuery, type Match, type NameKey, type OwnerConfig, type OwnerProfile } from "./identity";
+import { IdentityIndex, cleanName, hasPointerWithoutMarker, isTombstone, looksLikeEmail, mergedIntoRef, nameTokens, ownerMatch, ownerProfile, personKeys, slugKey, type Evidence, type IdentityKey, type IdentityQuery, type Match, type NameKey, type OwnerConfig, type OwnerProfile } from "./identity";
 import { REL, VAULT_MANAGED, classifyRelationship, noteKinds } from "./relationships";
 import { PERSON_IDENTITY_KEYS, addKeyPatch } from "./people-metadata";
-import { candidateStatus, enqueueCandidate } from "./identity-store";
+import { candidateStatus, closeCandidatesLinked, enqueueCandidate } from "./identity-store";
 import { getWorkerCursor, setWorkerCursor } from "./db";
 import { acquirePeopleLock } from "./people-lock";
 import { creationRefusal, isNonhumanEmail } from "./worker/people";
@@ -75,8 +86,11 @@ export interface LinkJobVault {
   updateNote(id: string, p: { links?: { add?: NoteLinkInput[]; remove?: NoteLinkInput[] }; metadata?: Record<string, unknown>; ifUpdatedAt?: string }): Promise<Note>;
 }
 
-/** `owner-alias`: a name the owner CONFIGURED as meaning them. */
-export type LinkEvidence = Evidence | "owner-alias" | "project";
+/**
+ * `owner-full-name`: the owner note's own multi-word name. `owner-alias`: a name
+ * the owner CONFIGURED as meaning them. `wikilink`: a `[[reference]]` to one note.
+ */
+export type LinkEvidence = Evidence | "owner-full-name" | "owner-alias" | "wikilink" | "project";
 
 export interface PhaseReport {
   phase: Phase;
@@ -108,8 +122,8 @@ export interface PhaseReport {
   /** normalize: planned rewrites per long-tail name / synonyms left alone, per name. */
   byName?: Record<string, number>;
   untouched?: Record<string, number>;
-  /** Note ids only — never titles, paths or addresses. */
-  sample: { link: string[]; review: string[] };
+  /** Note ids only — never titles, paths or addresses. `bulk`: bulk-labelled mail that would link; `role`: role mailboxes a person note claims (never linked). */
+  sample: { link: string[]; review: string[]; bulk: string[]; role: string[] };
 }
 
 export interface LinkJob {
@@ -148,8 +162,12 @@ export interface LinkJobOptions {
   phases?: Phase[];
   /** Hard cap on note writes this run (0 = no cap). */
   maxWrites?: number;
-  /** Put unresolved identities in the review queue (default: write runs only). */
+  /** Put unresolved identities in the review queue (default FALSE, for every run). */
   enqueue?: boolean;
+  /** Do not link bulk-labelled mail at all (default: an exact address still links). */
+  excludeBulkLinks?: boolean;
+  /** Consecutive failed membership lookups that end the lookup stage (default 3). */
+  memberFailures?: number;
   /** Let a unique full name / alias LINK in the meetings and tasks phases (default: review). */
   allowNameLinks?: boolean;
   concurrency?: number;
@@ -225,7 +243,7 @@ function emptyReport(phase: Phase, selected: boolean): PhaseReport {
     errors: 0,
     oversize: 0,
     deferred: 0,
-    sample: { link: [], review: [] },
+    sample: { link: [], review: [], bulk: [], role: [] },
   };
 }
 
@@ -381,7 +399,23 @@ interface Ctx {
   overlay: { add: Array<{ sourceId: string; targetId: string; relationship: string }>; remove: Set<string> };
   consecutiveErrors: number;
   timeoutMs: number;
+  /** Per phase: scan order of notes, reviews waiting for the write window, the first capped index. */
+  order: Map<string, number>;
+  pending: Array<{ index: number; sourceId: string; rel: string; key: IdentityKey | NameKey; reason: string; candidateIds: string[]; display: string | null; origin: string }>;
+  firstDeferred: number;
+  /** Stubs whose `merged_into` this run repaired: never repointed in the same run. */
+  repaired: Set<string>;
+  lookup: { failures: number; broken: boolean };
 }
+
+const indexOf = (ctx: Ctx, noteId: string): number => {
+  let i = ctx.order.get(noteId);
+  if (i === undefined) {
+    i = ctx.order.size;
+    ctx.order.set(noteId, i);
+  }
+  return i;
+};
 
 const edgeKey = (s: string, t: string, r: string): string => `${s}\u0000${t}\u0000${r}`;
 
@@ -461,7 +495,8 @@ function applyLocally(ctx: Ctx, o: Op, removed: NoteLinkInput[], updatedAt: stri
 }
 
 function rebuildIdentity(ctx: Ctx): void {
-  ctx.idx = new IdentityIndex(ctx.people);
+  // The reviewed job may resolve a `merged_into` / `[[wikilink]]` given as an exact, unique name.
+  ctx.idx = new IdentityIndex(ctx.people, { refByName: true });
   ctx.owner = ownerProfile(ctx.idx, ctx.opts.owner);
   ctx.job.ownerPersonKnown = !!ctx.owner.person;
 }
@@ -478,6 +513,8 @@ interface PlanOpts {
   noReview?: boolean;
   /** The skip reason to count when nothing links (default `no-person`). */
   noneReason?: string;
+  /** Bulk-labelled mail: a planned link is also counted in `extra.bulkLinked` and sampled. */
+  bulk?: boolean;
   evidence?: LinkEvidence;
 }
 
@@ -487,6 +524,7 @@ interface PlanOpts {
  * this exact source + key.
  */
 function planIdentity(ctx: Ctx, rep: PhaseReport, plan: Plan, source: Note, rel: string, q: IdentityQuery, seen: Set<string>, o: PlanOpts): "linked" | "review" | "none" {
+  indexOf(ctx, source.id);
   const m: Match = ctx.idx.match(q, { allowName: o.allowName });
   if (m.status === "linked") {
     if (o.excludeOwner && ctx.owner.person && m.person.id === ctx.owner.person.id) {
@@ -497,6 +535,8 @@ function planIdentity(ctx: Ctx, rep: PhaseReport, plan: Plan, source: Note, rel:
     seen.add(m.person.id);
     if (hasOut(source, m.person.id, rel)) {
       rep.alreadyLinked++;
+      // The question a queued row asked has been answered by the link itself.
+      if (!ctx.job.dryRun) closeCandidatesLinked(ctx.job.vaultId, source.id, rel, m.person.id);
       return "linked";
     }
     // The owner dismissed exactly this identity for this note → leave it alone.
@@ -509,6 +549,10 @@ function planIdentity(ctx: Ctx, rep: PhaseReport, plan: Plan, source: Note, rel:
       rep.wouldLink++;
       const ev = o.evidence ?? evidenceOf(m);
       rep.byEvidence[ev] = (rep.byEvidence[ev] ?? 0) + 1;
+      if (o.bulk) {
+        extra(rep, "bulkLinked");
+        sampleOf(rep.sample.bulk, source.id);
+      }
     }
     sampleOf(rep.sample.link, source.id);
     return "linked";
@@ -527,17 +571,35 @@ function planIdentity(ctx: Ctx, rep: PhaseReport, plan: Plan, source: Note, rel:
   return "none";
 }
 
-function queueReview(ctx: Ctx, rep: PhaseReport, sourceId: string, rel: string, key: IdentityKey | NameKey, reason: string, candidateIds: string[], display: string | null, origin: string): void {
-  const decided = candidateStatus(ctx.job.vaultId, sourceId, rel, key);
-  if (decided && decided !== "open") {
-    bump(rep, decided === "dismissed" ? "dismissed" : "already-reviewed");
-    return;
+/**
+ * Remember a review item. Nothing is counted or written yet: `flushReviews`
+ * does that once the phase's writes are known, so a capped run only queues what
+ * lies inside the window it actually processed.
+ */
+function queueReview(ctx: Ctx, _rep: PhaseReport, sourceId: string, rel: string, key: IdentityKey | NameKey, reason: string, candidateIds: string[], display: string | null, origin: string): void {
+  ctx.pending.push({ index: indexOf(ctx, sourceId), sourceId, rel, key, reason, candidateIds, display, origin });
+}
+
+function flushReviews(ctx: Ctx, rep: PhaseReport): void {
+  for (const r of ctx.pending) {
+    if (r.index >= ctx.firstDeferred) {
+      extra(rep, "reviewsBeyondWindow"); // the next run reaches them
+      continue;
+    }
+    const decided = candidateStatus(ctx.job.vaultId, r.sourceId, r.rel, r.key);
+    if (decided && decided !== "open") {
+      bump(rep, decided === "dismissed" ? "dismissed" : "already-reviewed");
+      continue;
+    }
+    rep.queued++;
+    rep.queuedByReason[r.reason] = (rep.queuedByReason[r.reason] ?? 0) + 1;
+    sampleOf(rep.sample.review, r.sourceId);
+    if (!ctx.enqueue) continue;
+    const res = enqueueCandidate({ vaultId: ctx.job.vaultId, sourceNoteId: r.sourceId, relationship: r.rel, key: r.key, display: r.display, candidateIds: r.candidateIds, reason: r.reason, origin: r.origin });
+    if (res === "created") ctx.job.queuedNew++;
+    else if (res === "full") bump(rep, "queue-full");
   }
-  rep.queued++;
-  rep.queuedByReason[reason] = (rep.queuedByReason[reason] ?? 0) + 1;
-  sampleOf(rep.sample.review, sourceId);
-  if (!ctx.enqueue) return;
-  if (enqueueCandidate({ vaultId: ctx.job.vaultId, sourceNoteId: sourceId, relationship: rel, key, display, candidateIds, reason, origin }) === "created") ctx.job.queuedNew++;
+  ctx.pending = [];
 }
 
 const oversized = (ctx: Ctx, id: string): boolean => (ctx.sizes.get(id) ?? 0) > HISTORY_MAX_BYTES;
@@ -651,14 +713,40 @@ async function planOwner(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
   return plan;
 }
 
+/**
+ * Repair DANGLING tombstones only. A stub is dangling when it names no target,
+ * or names one that resolves to NOTHING in the whole vault. A stub whose target
+ * exists but is not a live person (an organization or project note, a non-human
+ * person note, another dead end) was merged there on purpose: it is left exactly
+ * as it is and its links are never moved onto people.
+ *
+ * The only automatic repair is a STRONG key shared with exactly one live person;
+ * a name match is a review item. The previous pointer is kept in
+ * `prism_merged_into_prev`, the new one is the note ID, and a stub repaired in
+ * this run is not repointed (or used for matching) until the next run.
+ */
 async function planTombstones(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
   const plan = new Plan();
+  let byPath: Map<string, Note> | null = null;
+  const inVault = async (ref: string): Promise<Note | null> => {
+    const g = await graph(ctx);
+    byPath ??= new Map([...g.values()].filter((n) => n.path).map((n) => [n.path!.toLowerCase(), n]));
+    return g.get(ref) ?? byPath.get(ref.toLowerCase()) ?? byPath.get(`vault/people/${ref}`.toLowerCase()) ?? null;
+  };
   for (const t of ctx.people) {
     if (cancelFlag) break;
+    if (hasPointerWithoutMarker(t)) extra(rep, "pointerWithoutMarker");
     if (!isTombstone(t)) continue;
     rep.scanned++;
     if (ctx.idx.canonicalOf(t)) {
       extra(rep, "resolvable");
+      continue;
+    }
+    const ref = mergedIntoRef(t);
+    if (ref && (await inVault(ref))) {
+      // It points at something real that is not a live person. Not broken — not ours to change.
+      extra(rep, "leftTargetNotAPerson");
+      bump(rep, "target-not-a-live-person");
       continue;
     }
     const keys = personKeys(t);
@@ -667,25 +755,26 @@ async function planTombstones(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
       if (k.kind === "matrix" && k.value.startsWith("!")) continue;
       for (const p of ctx.idx.claimants(k)) if (p.id !== t.id) strong.set(p.id, { person: p, kind: k.kind === "matrix" ? "mxid" : k.kind });
     }
-    let target: { person: Note; kind: LinkEvidence } | null = null;
+    if (strong.size === 1) {
+      const target = [...strong.values()][0]!;
+      const prev = typeof t.metadata?.merged_into === "string" && t.metadata.merged_into.trim() ? t.metadata.merged_into : null;
+      plan.metadata(t.id, { merged_into: target.person.id, ...(prev ? { prism_merged_into_prev: prev } : {}) });
+      ctx.repaired.add(t.id);
+      indexOf(ctx, t.id);
+      extra(rep, "repaired");
+      rep.byEvidence[target.kind] = (rep.byEvidence[target.kind] ?? 0) + 1;
+      sampleOf(rep.sample.link, t.id);
+      continue;
+    }
+    // No single strong match. A name is only ever a suggestion for the reviewer.
     let candidates: Note[] = [...strong.values()].map((x) => x.person);
-    if (strong.size === 1) target = [...strong.values()][0]!;
-    else if (strong.size === 0) {
-      // No shared key: the ONE live person whose own full name is slug-equal.
+    if (!candidates.length) {
       const named = new Map<string, Note>();
       for (const nm of keys.names) {
         if (nm.split("-").length < 2) continue;
         for (const p of ctx.idx.named(nm)) if (p.id !== t.id && ctx.idx.keysFor(p.id).names.includes(nm)) named.set(p.id, p);
       }
       candidates = [...named.values()];
-      if (named.size === 1) target = { person: candidates[0]!, kind: "full-name" };
-    }
-    if (target && !isNonHumanPerson(target.person)) {
-      plan.metadata(t.id, { merged_into: target.person.path ?? target.person.id });
-      extra(rep, "repaired");
-      rep.byEvidence[target.kind] = (rep.byEvidence[target.kind] ?? 0) + 1;
-      sampleOf(rep.sample.link, t.id);
-      continue;
     }
     const key: IdentityKey | NameKey = keys.strong.find((k) => !(k.kind === "matrix" && k.value.startsWith("!"))) ?? { kind: "name", value: keys.names[0] ?? slugKey(t.path ?? t.id) };
     const display = typeof t.metadata?.name === "string" ? t.metadata.name : (t.path?.split("/").pop() ?? null);
@@ -701,6 +790,10 @@ async function planRepoint(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
     if (cancelFlag) break;
     if (!isTombstone(stub)) continue;
     rep.scanned++;
+    if (ctx.repaired.has(stub.id)) {
+      bump(rep, "repaired-this-run"); // reviewed first; a later run moves its links
+      continue;
+    }
     const canonical = ctx.idx.canonicalOf(stub);
     if (!canonical) {
       bump(rep, "no-canonical");
@@ -725,11 +818,24 @@ async function planEmails(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
     const bulk = strings(n.metadata?.labels).some((l) => BULK_LABELS.has(l.toUpperCase()));
     const seen = new Set<string>();
     const from = addressList(n.metadata?.from)[0];
+    /** A role mailbox (no-reply, team@, support@ …) is never a person, whoever's note holds the address. */
+    const role = (email: string, rel: string): boolean => {
+      if (!isNonhumanEmail(email)) return false;
+      if (ctx.idx.match({ email }).status === "linked") {
+        bump(rep, "role-address-claimed");
+        sampleOf(rep.sample.role, n.id);
+      } else bump(rep, rel === REL.EMAIL_FROM ? "role-sender" : "role-recipient");
+      return true;
+    };
     if (!from) bump(rep, "no-sender");
     else if (ctx.owner.emails.has(from.email)) bump(rep, "owner");
-    else if (bulk || isNonhumanEmail(from.email)) {
-      // Bulk mail and role mailboxes: ONLY an exact address held by one live person links.
-      planIdentity(ctx, rep, plan, n, REL.EMAIL_FROM, { email: from.email }, seen, { ...o, noReview: true, noneReason: bulk ? "bulk-label" : "role-sender" });
+    else if (role(from.email, REL.EMAIL_FROM)) {
+      /* counted above */
+    } else if (bulk) {
+      // Bulk mail: ONLY an exact address held by one live person links (owner decision) —
+      // counted and sampled separately, and switchable off per run.
+      if (ctx.opts.excludeBulkLinks) bump(rep, "bulk-label");
+      else planIdentity(ctx, rep, plan, n, REL.EMAIL_FROM, { email: from.email }, seen, { ...o, noReview: true, noneReason: "bulk-label", bulk: true });
     } else planIdentity(ctx, rep, plan, n, REL.EMAIL_FROM, { email: from.email, name: from.name || null }, seen, o);
 
     if (bulk) continue; // a mailing's recipient list is not a conversation
@@ -740,8 +846,8 @@ async function planEmails(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
     }
     for (const r of to) {
       if (ctx.owner.emails.has(r.email)) continue; // the owner is every inbound mail's recipient
-      if (isNonhumanEmail(r.email)) planIdentity(ctx, rep, plan, n, REL.EMAIL_TO, { email: r.email }, seen, { ...o, noReview: true, noneReason: "role-recipient" });
-      else planIdentity(ctx, rep, plan, n, REL.EMAIL_TO, { email: r.email, name: r.name || null }, seen, o);
+      if (role(r.email, REL.EMAIL_TO)) continue;
+      planIdentity(ctx, rep, plan, n, REL.EMAIL_TO, { email: r.email, name: r.name || null }, seen, o);
     }
   }
   return plan;
@@ -790,15 +896,18 @@ async function planMeetings(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
         continue;
       }
       // Calendar ingest links the owner too (their own attendee entry) — same here.
-      // By address always; by NAME only a configured multi-word name (a first
-      // name in an attendee list could be anybody).
-      if (isOwnerQuery(ctx.owner, q) && (q.email || nameTokens(q.name ?? "").length >= 2)) {
+      const me = ownerMatch(ctx.owner, q); // multi-word names only: a first name in an attendee list could be anybody
+      if (me) {
         if (!ctx.owner.person) bump(rep, "owner-unresolved");
-        else planIdentity(ctx, rep, plan, n, REL.ATTENDED_BY, { ref: ctx.owner.person.id }, seen, { ...o, evidence: q.email ? "email" : "owner-alias" });
+        else planIdentity(ctx, rep, plan, n, REL.ATTENDED_BY, { ref: ctx.owner.person.id }, seen, { ...o, evidence: me });
         continue;
       }
       if (q.email && isNonhumanEmail(q.email)) {
-        planIdentity(ctx, rep, plan, n, REL.ATTENDED_BY, q, seen, { ...o, noReview: true, noneReason: "role-attendee" });
+        // A role mailbox is never a person, whoever's note holds the address.
+        if (ctx.idx.match({ email: q.email }).status === "linked") {
+          bump(rep, "role-address-claimed");
+          sampleOf(rep.sample.role, n.id);
+        } else bump(rep, "role-attendee");
         continue;
       }
       if (q.name && creationRefusal(q.name)) {
@@ -836,14 +945,45 @@ async function planThreads(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
     let members: Array<{ mxid: string | null; name: string | null }> = t.ids.map((mxid) => ({ mxid, name: null }));
     const roomId = typeof n.metadata?.matrixRoomId === "string" ? n.metadata.matrixRoomId : null;
     let lookedUp: string[] | null = null;
-    if (!members.length && roomId && ctx.opts.members && ctx.job.memberLookups < L.memberLookups && t.size <= L.groupMaxMembers) {
+    if (!members.length && roomId && ctx.opts.members) {
+      // The lookup is how a thread gets ids. When it cannot answer, the thread
+      // WAITS for a later run — it never falls back to display names.
+      if (t.size > L.groupMaxMembers) {
+        bump(rep, "large-group");
+        continue;
+      }
+      if (ctx.lookup.broken) {
+        bump(rep, "lookup-unavailable");
+        continue;
+      }
+      if (ctx.job.memberLookups >= L.memberLookups) {
+        bump(rep, "lookup-budget");
+        continue;
+      }
       ctx.job.memberLookups++;
-      const got = await timed(ctx, ctx.opts.members(roomId)).catch(() => null);
-      if (got && Object.keys(got).length) {
-        members = Object.entries(got).map(([mxid, name]) => ({ mxid, name: name || null }));
-        lookedUp = Object.keys(got);
-      } else bump(rep, "lookup-failed");
+      let got: Record<string, string> | null = null;
+      try {
+        got = await timed(ctx, ctx.opts.members(roomId));
+        ctx.lookup.failures = 0;
+      } catch {
+        // 429 / 5xx / timeout: after N in a row the homeserver is left alone for this run.
+        if (++ctx.lookup.failures >= (ctx.opts.memberFailures ?? 3)) {
+          ctx.lookup.broken = true;
+          extra(rep, "lookupBreaker");
+        }
+      }
       if (L.memberPaceMs) await new Promise((r) => setTimeout(r, L.memberPaceMs));
+      if (!got || !Object.keys(got).length) {
+        bump(rep, "lookup-failed");
+        continue;
+      }
+      // The REAL member count decides: a big room gets neither links nor ids.
+      if (Object.keys(got).length > L.groupMaxMembers) {
+        bump(rep, "large-group");
+        continue;
+      }
+      members = Object.entries(got).map(([mxid, name]) => ({ mxid, name: name || null }));
+      lookedUp = Object.keys(got);
     }
     if (!members.length) members = t.names.map((name) => ({ mxid: null, name }));
     if (!members.length) {
@@ -851,14 +991,15 @@ async function planThreads(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
       continue;
     }
     const size = members.length;
-    // Whatever the room's size, ids we just fetched are kept (same write as any link).
-    if (lookedUp) {
-      plan.metadata(n.id, { participantIds: lookedUp });
-      extra(rep, "idsBackfilled");
-    }
     if (size > L.groupMaxMembers) {
       bump(rep, "large-group");
       continue;
+    }
+    // Ids we just fetched are kept (in the same write as any link), so the room is not asked again.
+    if (lookedUp) {
+      indexOf(ctx, n.id);
+      plan.metadata(n.id, { participantIds: lookedUp });
+      extra(rep, "idsBackfilled");
     }
     const small = size <= L.groupNameMax;
     const cap = size > 3 ? L.groupLinkCap : Infinity;
@@ -881,7 +1022,7 @@ async function planThreads(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
         namesSkipped = true;
         continue;
       }
-      if (!m.name || isOwnerQuery(ctx.owner, { name: m.name }) || creationRefusal(m.name)) continue;
+      if (!m.name || ownerMatch(ctx.owner, { name: m.name }, { singleToken: true }) || creationRefusal(m.name)) continue;
       planIdentity(ctx, rep, plan, n, REL.MESSAGES_WITH, { name: m.name }, seen, { origin: "backfill:threads", excludeOwner: true });
     }
     if (namesSkipped) bump(rep, "group-names-only");
@@ -948,11 +1089,19 @@ async function planTasks(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
     const md = n.metadata ?? {};
     const seen = new Set<string>();
     for (const v of assigneeValues(md)) {
-      const q: IdentityQuery = v.startsWith("[[") || v.startsWith("vault/") ? { ref: v } : looksLikeEmail(v) ? { email: v } : { name: v };
-      // The owner's own tasks link to the owner (their configured names + addresses).
-      if (isOwnerQuery(ctx.owner, q)) {
+      const wikilink = v.startsWith("[[");
+      const q: IdentityQuery = wikilink || v.startsWith("vault/") ? { ref: v } : looksLikeEmail(v) ? { email: v } : { name: v };
+      // The owner's own tasks link to the owner: their address, their note's full
+      // name, or a CONFIGURED alias (the only way a first name can mean them).
+      const me = ownerMatch(ctx.owner, q, { singleToken: true });
+      if (me) {
         if (!ctx.owner.person) bump(rep, "owner-unresolved");
-        else planIdentity(ctx, rep, plan, n, REL.ASSIGNED_TO, { ref: ctx.owner.person.id }, seen, { ...o, evidence: q.name ? "owner-alias" : q.email ? "email" : "path" });
+        else planIdentity(ctx, rep, plan, n, REL.ASSIGNED_TO, { ref: ctx.owner.person.id }, seen, { ...o, evidence: me === "path" && wikilink ? "wikilink" : me });
+        continue;
+      }
+      if (q.ref) {
+        // `[[Name]]` / a path: a reference to exactly ONE person note (path, leaf, or unique exact name).
+        planIdentity(ctx, rep, plan, n, REL.ASSIGNED_TO, q, seen, { ...o, evidence: wikilink ? "wikilink" : "path", noneReason: "reference-unresolved" });
         continue;
       }
       if (q.name && nameTokens(q.name).length === 0) {
@@ -1028,12 +1177,15 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
   const paceMs = Math.max(0, ctx.opts.paceMs ?? 50);
   const maxErrors = ctx.opts.maxConsecutiveErrors ?? 5;
   const failed = new Set<string>();
+  const planned = new Set<string>(); // a note written in both waves is ONE note to write
+  const written = new Set<string>();
   let abort: Error | null = null;
   // Wave 1: everything without a cross-note dependency. Wave 2: removals that
   // wait for another note's addition (a failed or deferred addition blocks them).
   const wave1: Op[] = [];
   const wave2: Op[] = [];
-  for (const o of plan.list()) {
+  // Scan order: a capped run writes (and queues reviews for) the FRONT of the phase.
+  for (const o of plan.list().sort((a, b) => indexOf(ctx, a.noteId) - indexOf(ctx, b.noteId))) {
     const free = o.remove.filter((r) => !r.requires);
     const dep = o.remove.filter((r) => r.requires);
     if (o.add.length || free.length || o.metadata) wave1.push({ ...o, remove: free });
@@ -1059,11 +1211,15 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
           failed.add(o.noteId);
           continue;
         }
-        rep.notesToWrite++;
+        if (!planned.has(o.noteId)) {
+          planned.add(o.noteId);
+          rep.notesToWrite++;
+        }
         if (ctx.job.maxWrites && ctx.job.writes >= ctx.job.maxWrites) {
           ctx.job.capped = true;
           rep.deferred++;
           failed.add(o.noteId);
+          ctx.firstDeferred = Math.min(ctx.firstDeferred, indexOf(ctx, o.noteId));
           continue;
         }
         ctx.job.writes++;
@@ -1073,13 +1229,14 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
           continue;
         }
         try {
-          const live = ctx.opts.live?.isLive(o.noteId) ?? false;
+          const liveBefore = ctx.opts.live?.isLive(o.noteId) ?? false;
           const links = { ...(o.add.length ? { add: o.add } : {}), ...(removed.length ? { remove: removed } : {}) };
           const updated = await timed(
             ctx,
             ctx.vault.updateNote(o.noteId, { ...(Object.keys(links).length ? { links } : {}), ...(o.metadata ? { metadata: o.metadata } : {}), ifUpdatedAt }),
           );
-          if (live) {
+          // Checked again AFTER the write: an editor may have opened the note meanwhile.
+          if (liveBefore || (ctx.opts.live?.isLive(o.noteId) ?? false)) {
             // The vault version moved but the content did not: tell the collab
             // reconciler, or it folds the stored body over unsaved typing.
             ctx.job.liveNotes++;
@@ -1088,9 +1245,14 @@ async function apply(ctx: Ctx, rep: PhaseReport, plan: Plan): Promise<void> {
           }
           ctx.consecutiveErrors = 0;
           applyLocally(ctx, { ...o, remove }, removed, updated?.updatedAt ?? null);
-          rep.notesWritten++;
+          if (!written.has(o.noteId)) {
+            written.add(o.noteId);
+            rep.notesWritten++;
+          }
           rep.linked += o.add.length;
           rep.unlinked += removed.length;
+          // A link that landed answers any open review row that asked about that person.
+          for (const a of o.add) closeCandidatesLinked(ctx.job.vaultId, o.noteId, a.relationship, a.target);
           ctx.opts.onWrite?.();
         } catch (e) {
           failed.add(o.noteId);
@@ -1133,14 +1295,19 @@ async function run(vault: LinkJobVault, job: LinkJob, opts: LinkJobOptions): Pro
     limits: { ...DEFAULT_LIMITS, ...opts.limits },
     idx: new IdentityIndex(),
     people: [],
-    owner: { person: null, emails: new Set(), names: new Set(), matrixIds: new Set() },
-    enqueue: opts.enqueue ?? !opts.dryRun,
+    owner: { person: null, emails: new Set(), fullNames: new Set(), aliases: new Set(), matrixIds: new Set() },
+    enqueue: opts.enqueue === true,
     stamps: new Map(),
     sizes: new Map(),
     graph: null,
     overlay: { add: [], remove: new Set() },
     consecutiveErrors: 0,
     timeoutMs: Math.max(0, opts.callTimeoutMs ?? 30_000),
+    order: new Map(),
+    pending: [],
+    firstDeferred: Infinity,
+    repaired: new Set(),
+    lookup: { failures: 0, broken: false },
   };
   const loaded = opts.people ? await timed(ctx, opts.people()) : await list(ctx, { tags: ["person"], includeLinks: true, includeMetadata: PERSON_IDENTITY_KEYS });
   ctx.people = loaded.filter((n) => (n.tags ?? []).includes("person"));
@@ -1150,11 +1317,17 @@ async function run(vault: LinkJobVault, job: LinkJob, opts: LinkJobOptions): Pro
     if (cancelFlag) return;
     const rep = job.report[phase];
     rep.status = "running";
+    ctx.order = new Map();
+    ctx.pending = [];
+    ctx.firstDeferred = Infinity;
     const plan = await PLANNERS[phase](ctx, rep);
     if (cancelFlag) return;
     await apply(ctx, rep, plan);
-    // owner / tombstones change who a key belongs to: later phases see the result.
-    if (phase === "owner" || phase === "tombstones") rebuildIdentity(ctx);
+    if (cancelFlag) return;
+    flushReviews(ctx, rep);
+    // The owner's own identities are configuration, so later phases see them. A
+    // tombstone REPAIR is not used for matching or repointing until the next run.
+    if (phase === "owner") rebuildIdentity(ctx);
     rep.status = "done";
   }
 }

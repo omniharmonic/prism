@@ -29,6 +29,8 @@ import { aliasList, looksLikeEmail, matrixKeys, normalizeEmailKey, normalizePhon
 export const PERSON_IDENTITY_KEYS = [
   "name", "aliases", "alias", "email", "emails", "contact", "contact_emails", "channels", "matrix", "matrixId", "matrixRoomIds",
   "telegram", "phone", "type", "status", "merged_into", "mergedInto", "superseded_by", "organizations", "organization", "projects",
+  // this module's own merge marker (which stubs a canonical absorbed)
+  "prism_merge_history",
 ];
 
 const strings = (v: unknown): string[] => (typeof v === "string" ? [v] : Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);

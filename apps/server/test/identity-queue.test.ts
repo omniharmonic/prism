@@ -225,6 +225,6 @@ test("resolve: a tombstone-unresolved candidate writes merged_into on the stub, 
   const id = onlyId();
   const out = (await (await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2", addIdentity: true })).json()) as Record<string, unknown>;
   assert.deepEqual({ linked: out.linked, resolved: out.resolved, identityAdded: out.identityAdded }, { linked: 1, resolved: 1, identityAdded: false });
-  assert.equal(fv.notes.get("dead")!.metadata!.merged_into, "vault/people/Blake Example");
+  assert.equal(fv.notes.get("dead")!.metadata!.merged_into, "p2", "the note ID");
   assert.equal(fv.notes.get("dead")!.links, undefined);
 });
