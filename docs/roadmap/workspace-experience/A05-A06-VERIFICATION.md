@@ -35,7 +35,7 @@ Apply in the order shown. `f4764d3` only merges reconciliation documentation; it
 - Actual collaborative fixture uses a local Hocuspocus server and real `CollabDoc`/`CollabEditor`, not a static PageHeader substitute.
 - No owner credentials, production provider sends, native rebuild, deployment or production-state writes were used.
 
-The isolated run used fixture port **5191**, two workers, Chromium Desktop Chrome and WebKit Desktop Safari. Its ignored config is `apps/server/data/workspace-experience/checks/document-polish.config.mts`; it imports the normal web Playwright config, substitutes baseURL/server port5191, and adds the WebKit project. Final browser output is `document-polish-outline-browser.log`; final type output is `document-polish-outline-types.log` beside that config. The committed scenario source is [document-polish.spec.ts](../../../../apps/web/e2e-fixtures/document-polish.spec.ts).
+The isolated run used fixture port **5191**, two workers, Chromium Desktop Chrome and WebKit Desktop Safari. Its ignored config is `apps/server/data/workspace-experience/checks/document-polish.config.mts`; it imports the normal web Playwright config, substitutes baseURL/server port5191, and adds the WebKit project. Final browser output is `document-polish-outline-browser.log`; final type output is `document-polish-outline-types.log` beside that config. The committed scenario source is [document-polish.spec.ts](../../../apps/web/e2e-fixtures/document-polish.spec.ts).
 
 ```sh
 npm exec -w @prism/web -- playwright test \
