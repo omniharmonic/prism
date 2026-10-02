@@ -73,7 +73,7 @@ const MOBILE_CSS = `
   position: fixed; top: 0; bottom: 0; left: 0; z-index: 41;
   width: min(85vw, 340px);
   display: flex; flex-direction: column;
-  background: var(--bg, var(--bg-primary, #ffffff));
+  background: var(--bg, var(--bg-base, #191a1e));
   border-right: 1px solid var(--glass-border, rgba(255,255,255,0.1));
   box-shadow: 12px 0 40px rgba(0,0,0,0.35);
   padding-top: env(safe-area-inset-top);
@@ -236,7 +236,7 @@ export default function WikiTemplate({
     flexDirection: "column",
     ...safeTheme.vars,
     ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily } : null),
-    background: "var(--bg, var(--bg-primary, #ffffff))",
+    background: "var(--bg, var(--bg-base, #191a1e))",
   };
 
   // Search + home + tree: one nav body, rendered in the desktop column AND the
@@ -303,7 +303,7 @@ export default function WikiTemplate({
             position: "sticky", top: 0, zIndex: 30,
             display: "flex", alignItems: "center", gap: 10,
             padding: "calc(env(safe-area-inset-top) + 8px) 12px 8px",
-            background: safeTheme.vars["--bg"] ?? "var(--bg, var(--bg-primary, #ffffff))",
+            background: safeTheme.vars["--bg"] ?? "var(--bg, var(--bg-base, #191a1e))",
             borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
             minHeight: 52, boxSizing: "border-box",
           }}

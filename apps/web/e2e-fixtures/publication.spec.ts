@@ -130,3 +130,43 @@ test("an unlocked empty site has a readable phone landing page", async ({
     path: test.info().outputPath("publication-empty-mobile.png"),
   });
 });
+
+test("phone publication chrome and canvas follow both actual workspace theme palettes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/publication.html?empty");
+  await expect(
+    page.getByRole("heading", { name: "No pages published yet" }),
+  ).toBeVisible();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((theme) => {
+      document.documentElement.className = theme;
+    }, theme);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const root = document.querySelector(".pubwiki-m")!;
+          const probe = document.createElement("div");
+          probe.style.backgroundColor = "var(--bg-base)";
+          root.append(probe);
+          const background = getComputedStyle(root).backgroundColor;
+          const expected = getComputedStyle(probe).backgroundColor;
+          const header = getComputedStyle(
+            root.querySelector("header")!,
+          ).backgroundColor;
+          const text = getComputedStyle(root.querySelector("h1")!).color;
+          probe.remove();
+          return (
+            background === expected &&
+            header === expected &&
+            text !== background
+          );
+        }),
+      )
+      .toBe(true);
+  }
+  await page.screenshot({
+    path: test.info().outputPath("publication-empty-dark-mobile.png"),
+  });
+});
