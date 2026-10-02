@@ -32,3 +32,9 @@
  .prism-graph button, .prism-graph select { min-height:44px; }
  .prism-graph__toolbar { margin-top:8px; }
 }
+
+.prism-graph__saved { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.prism-graph__saved summary { cursor: pointer; min-height: 44px; align-content: center; }
+.prism-graph__saved p { margin: 8px 0; line-height: 1.5; }
+.prism-graph__saved > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.prism-graph__saved button { min-height: 44px; }

@@ -72,6 +72,7 @@ const controls = {
       }),
     );
   },
+  setRoot: null as null | ((id: string) => void),
   calls: [] as string[],
   fail: false,
   hold: false,
@@ -113,13 +114,18 @@ Object.assign(window, {
   prismGraphUI: useUIStore,
   prismGraphQuery: query,
 });
+function RootGraph() {
+  const [id, setId] = React.useState("home");
+  React.useEffect(() => { controls.setRoot = setId; return () => { controls.setRoot = null; }; }, []);
+  return <GraphExplorer noteId={id} />;
+}
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={query}>
       <PlatformProvider value="web">
         <VaultClientProvider client={client}>
           <main style={{ height: "100dvh", maxWidth: 880, margin: "auto" }}>
-            <GraphExplorer noteId="home" />
+            <RootGraph />
             <GraphFullscreen />
           </main>
         </VaultClientProvider>
