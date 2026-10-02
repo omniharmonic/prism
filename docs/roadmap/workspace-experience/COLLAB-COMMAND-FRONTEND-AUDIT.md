@@ -58,3 +58,12 @@ Integration ownership must be agreed before editing `CollabDoc`, access rules, c
 [Fictional audit results](evidence/collab-command-audit/results.json) include normalized JSON, both hashes and observed read-only positions for every browser/viewport. The probe imports the real editor capture and shared schema, and an exact copy of the backend command hash helper. The unseeded mismatch is recorded rather than hidden; passing assertions concern seeded states, usable ranges and explicit selection-only positioning.
 
 Local ignored scripts and logs are in `apps/server/data/workspace-experience/checks/`: `collab-parity-audit.spec.ts`, `collab-audit-probe.ts`, `backend-command-contract.ts`, `collab-audit.config.mts`, and `collab-audit.log`. Run from the isolated worktree with `npm exec -w @prism/web -- playwright test --config ../server/data/workspace-experience/checks/collab-audit.config.mts --workers=2`. The Vite fixture runs only on port5191. These exploratory scripts are not a shipped command test suite.
+
+
+## Shared-link entry follow-up · October 2
+
+Standalone CollabPage now resolves its route suffix through a fresh authorized note read and opens the returned canonical real ID. Its own query provider supports rich-editor selection/agent hooks outside App. Query state is isolated by note/audience/context and cleared on teardown. Denied or invalid resolution offers a safe retry and opens no socket. Native/web credentials remain on the existing transport; capability links retain their token during resolution and socket authentication.
+
+Eight Chromium/WebKit journeys invoke the actual web `start()` route with a strict real-ID Hocuspocus server: account real-ID, account path alias, capability title alias, and denied alias/retry. They assert only real-ID socket names, capability preservation, usable editable body and no page errors. Aggregate fixture types pass; eight existing document journeys also pass. The actual-entry fixture additionally exposed a Vite initialization-order error from referencing React.lazy before the transformed React import, corrected by moving that import first. No production/native verification of this batch yet.
+
+Main Canvas and Search/CommandBar already pass canonical IDs; inside-page wikilink navigation resolves note.id. This does not alter server authorization or invent IDs for unresolved paths.

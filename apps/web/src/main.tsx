@@ -1,8 +1,8 @@
+import React from "react";
 import { TranscriptReviewClientProvider } from "@prism/core";
 import { httpTranscriptReviewClient } from "./transcript-review";
 import { PublicationPreviewProvider } from "@prism/core";
 const PresentationPreview = React.lazy(() => import("./publish/PresentationPreview"));
-import React from "react";
 import ReactDOM from "react-dom/client";
 import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
