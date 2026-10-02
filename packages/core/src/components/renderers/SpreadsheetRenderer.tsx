@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { Trash2 } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
@@ -21,32 +21,39 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
   const initialData = useMemo(() => parseCSV(note.content), [note.id]);
   const [data, setData] = useState<string[][]>(initialData);
 
-  const getContent = useCallback(() => serializeCSV(data), [data]);
-  const { isSaving, lastSaved, scheduleSave: rawScheduleSave } = useAutoSave(note.id, getContent);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  // A stable getter keeps autosave cleanup from flushing the previous render.
+  const getContent = useCallback(() => serializeCSV(dataRef.current), []);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave: rawScheduleSave } = useAutoSave(note.id, getContent);
   // Read-only surfaces (published Wiki / anonymous): never write back. Wrapping
   // scheduleSave keeps the cell/row handlers unchanged while blocking mutation.
   const scheduleSave = useCallback(() => { if (!readOnly) rawScheduleSave(); }, [readOnly, rawScheduleSave]);
 
   const updateCell = useCallback((row: number, col: number, value: string) => {
+    if (readOnly) return;
     setData((prev) => {
       const next = prev.map((r) => [...r]);
       next[row][col] = value;
       return next;
     });
     scheduleSave();
-  }, [scheduleSave]);
+  }, [scheduleSave, readOnly]);
 
   const addRow = () => {
+    if (readOnly) return;
     setData((prev) => [...prev, new Array(prev[0]?.length || 1).fill("")]);
     scheduleSave();
   };
 
   const addColumn = () => {
+    if (readOnly) return;
     setData((prev) => prev.map((row) => [...row, ""]));
     scheduleSave();
   };
 
   const deleteRow = (index: number) => {
+    if (readOnly) return;
     if (data.length <= 1) return;
     setData((prev) => prev.filter((_, i) => i !== index));
     scheduleSave();
@@ -73,6 +80,7 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
         )}
       </div>
 
+      {saveError && <div role="alert" className="p-3 text-sm">{saveError} {!readOnly && <button onClick={saveNow}>Retry save</button>}</div>}
       {/* Table */}
       <div className="flex-1 overflow-auto">
         <table className="w-full border-collapse" style={{ minWidth: colCount * 120 }}>
@@ -102,6 +110,7 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
                   >
                     <input
                       value={cell}
+                      aria-label={`Row ${ri + 1}, column ${ci + 1}`}
                       onChange={(e) => updateCell(ri, ci, e.target.value)}
                       readOnly={readOnly}
                       className="w-full px-2 py-1 text-sm outline-none bg-transparent"
@@ -118,6 +127,7 @@ export default function SpreadsheetRenderer({ note, readOnly }: RendererProps) {
                 {!readOnly && (
                   <td className="w-6" style={{ borderBottom: "1px solid var(--glass-border)" }}>
                     <button
+                      aria-label={`Delete row ${ri + 1}`}
                       onClick={() => deleteRow(ri)}
                       className="p-0.5 opacity-0 hover:opacity-100 transition-opacity"
                       style={{ color: "var(--text-muted)" }}

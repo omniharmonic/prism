@@ -31,7 +31,7 @@ function serializeSlides(slides: string[]): string {
   return slides.join("\n\n---\n\n");
 }
 
-export default function PresentationRenderer({ note }: RendererProps) {
+export default function PresentationRenderer({ note, readOnly }: RendererProps) {
   const initialSlides = useMemo(() => parseSlides(note.content || "# Title Slide"), [note.id]);
   const [slides, setSlides] = useState<string[]>(initialSlides);
   const [view, setView] = useState<"grid" | "edit">("grid");
@@ -39,13 +39,14 @@ export default function PresentationRenderer({ note }: RendererProps) {
   const contentRef = useRef(serializeSlides(initialSlides));
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { scheduleSave } = useAutoSave(note.id, getContent);
+  const { scheduleSave, saveError, saveNow } = useAutoSave(note.id, getContent);
 
   const updateSlides = useCallback((newSlides: string[]) => {
+    if (readOnly) return;
     setSlides(newSlides);
     contentRef.current = serializeSlides(newSlides);
     scheduleSave();
-  }, [scheduleSave]);
+  }, [scheduleSave, readOnly]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
@@ -82,7 +83,7 @@ export default function PresentationRenderer({ note }: RendererProps) {
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div
-        className="flex items-center justify-between px-4 py-2 flex-shrink-0"
+        className="flex flex-wrap gap-2 items-center justify-between px-4 py-2 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
         <div className="flex items-center gap-2">
@@ -91,6 +92,8 @@ export default function PresentationRenderer({ note }: RendererProps) {
           </span>
           <div className="flex rounded-md overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
             <button
+              aria-label="Slide grid"
+              aria-pressed={view === "grid"}
               onClick={() => setView("grid")}
               className="p-1.5"
               style={{ background: view === "grid" ? "var(--glass-active)" : "transparent" }}
@@ -98,6 +101,8 @@ export default function PresentationRenderer({ note }: RendererProps) {
               <Grid size={14} style={{ color: "var(--text-primary)" }} />
             </button>
             <button
+              aria-label="Slide detail"
+              aria-pressed={view === "edit"}
               onClick={() => setView("edit")}
               className="p-1.5"
               style={{ background: view === "edit" ? "var(--glass-active)" : "transparent" }}
@@ -107,12 +112,13 @@ export default function PresentationRenderer({ note }: RendererProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="ghost" icon={<Plus size={14} />} onClick={addSlide}>
+          {!readOnly && <Button size="sm" variant="ghost" icon={<Plus size={14} />} onClick={addSlide}>
             Add Slide
-          </Button>
+          </Button>}
         </div>
       </div>
 
+      {saveError && <div role="alert" className="p-3 text-sm">{saveError} {!readOnly && <button onClick={saveNow}>Retry save</button>}</div>}
       {/* Content */}
       <div className="flex-1 overflow-auto">
         {view === "grid" ? (
@@ -123,10 +129,12 @@ export default function PresentationRenderer({ note }: RendererProps) {
             onDragEnd={handleDragEnd}
             onDelete={deleteSlide}
             sensors={sensors}
+            readOnly={readOnly}
           />
         ) : (
           <SlideEditor
             slides={slides}
+            readOnly={readOnly}
             activeSlide={activeSlide}
             onChangeSlide={setActiveSlide}
             onUpdateContent={updateSlideContent}
@@ -138,7 +146,7 @@ export default function PresentationRenderer({ note }: RendererProps) {
 }
 
 function SlideGrid({
-  slides, activeSlide, onSelect, onDragEnd, onDelete, sensors,
+  slides, activeSlide, onSelect, onDragEnd, onDelete, sensors, readOnly,
 }: {
   slides: string[];
   activeSlide: number;
@@ -146,11 +154,12 @@ function SlideGrid({
   onDragEnd: (e: DragEndEvent) => void;
   onDelete: (i: number) => void;
   sensors: ReturnType<typeof useSensors>;
+  readOnly?: boolean;
 }) {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <SortableContext items={slides.map((_, i) => `slide-${i}`)} strategy={rectSortingStrategy}>
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 p-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-6">
           {slides.map((content, i) => (
             <SortableSlide
               key={`slide-${i}`}
@@ -160,7 +169,8 @@ function SlideGrid({
               isActive={i === activeSlide}
               onSelect={() => onSelect(i)}
               onDelete={() => onDelete(i)}
-              canDelete={slides.length > 1}
+              canDelete={!readOnly && slides.length > 1}
+              readOnly={readOnly}
             />
           ))}
         </div>
@@ -170,7 +180,7 @@ function SlideGrid({
 }
 
 function SortableSlide({
-  id, index, content, isActive, onSelect, onDelete, canDelete,
+  id, index, content, isActive, onSelect, onDelete, canDelete, readOnly,
 }: {
   id: string;
   index: number;
@@ -179,8 +189,9 @@ function SortableSlide({
   onSelect: () => void;
   onDelete: () => void;
   canDelete: boolean;
+  readOnly?: boolean;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -193,6 +204,8 @@ function SortableSlide({
       style={style}
       {...attributes}
       {...listeners}
+      aria-label={`Open slide ${index + 1}`}
+      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onSelect(); } }}
       onClick={onSelect}
       className="group relative cursor-pointer"
     >
@@ -220,6 +233,7 @@ function SortableSlide({
       </div>
       {canDelete && (
         <button
+          aria-label={`Delete slide ${index + 1}`}
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
           className="absolute top-1 right-1 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--glass-hover)]"
           style={{ color: "var(--text-muted)" }}
@@ -232,12 +246,13 @@ function SortableSlide({
 }
 
 function SlideEditor({
-  slides, activeSlide, onChangeSlide, onUpdateContent,
+  slides, activeSlide, onChangeSlide, onUpdateContent, readOnly,
 }: {
   slides: string[];
   activeSlide: number;
   onChangeSlide: (i: number) => void;
   onUpdateContent: (i: number, content: string) => void;
+  readOnly?: boolean;
 }) {
   const slide = slides[activeSlide] || "";
 
@@ -249,6 +264,7 @@ function SlideEditor({
         style={{ borderBottom: "1px solid var(--glass-border)" }}
       >
         <button
+          aria-label="Previous slide"
           onClick={() => onChangeSlide(Math.max(0, activeSlide - 1))}
           disabled={activeSlide === 0}
           className="p-1 rounded disabled:opacity-30"
@@ -259,6 +275,7 @@ function SlideEditor({
           Slide {activeSlide + 1} of {slides.length}
         </span>
         <button
+          aria-label="Next slide"
           onClick={() => onChangeSlide(Math.min(slides.length - 1, activeSlide + 1))}
           disabled={activeSlide === slides.length - 1}
           className="p-1 rounded disabled:opacity-30"
@@ -268,9 +285,9 @@ function SlideEditor({
       </div>
 
       {/* Slide editor — 16:9 aspect ratio preview + textarea */}
-      <div className="flex-1 flex flex-col items-center p-8 overflow-auto">
+      <div className="flex-1 flex flex-col items-center p-3 sm:p-8 overflow-auto">
         <div
-          className="w-full max-w-3xl aspect-video rounded-xl p-8 flex items-center justify-center"
+          className="w-full max-w-3xl aspect-video rounded-xl p-3 sm:p-8 flex items-center justify-center"
           style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)" }}
         >
           <div className="w-full h-full">
@@ -286,8 +303,10 @@ function SlideEditor({
 
         {/* Markdown editor below */}
         <div className="w-full max-w-3xl mt-4">
-          <div className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Edit slide markdown:</div>
+          <div className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>{readOnly ? "Slide markdown:" : "Edit slide markdown:"}</div>
           <textarea
+            aria-label="Slide markdown"
+            readOnly={readOnly}
             value={slide}
             onChange={(e) => onUpdateContent(activeSlide, e.target.value)}
             className="w-full rounded-lg p-3 text-sm resize-none outline-none"

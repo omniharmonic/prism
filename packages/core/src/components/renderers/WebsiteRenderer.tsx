@@ -3,15 +3,16 @@ import { Eye, Code, Columns } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 
-export default function WebsiteRenderer({ note }: RendererProps) {
+export default function WebsiteRenderer({ note, readOnly }: RendererProps) {
   const [view, setView] = useState<"split" | "code" | "preview">("split");
   const [content, setContent] = useState(note.content || "");
   const contentRef = useRef(note.content || "");
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent);
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (readOnly) return;
     setContent(e.target.value);
     contentRef.current = e.target.value;
     scheduleSave();
@@ -20,7 +21,7 @@ export default function WebsiteRenderer({ note }: RendererProps) {
   return (
     <div className="flex flex-col h-full">
       <div
-        className="flex items-center justify-between px-4 py-1.5 flex-shrink-0"
+        className="flex flex-wrap gap-2 items-center justify-between px-4 py-1.5 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
         <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
@@ -31,6 +32,8 @@ export default function WebsiteRenderer({ note }: RendererProps) {
             {([["split", Columns], ["code", Code], ["preview", Eye]] as const).map(([v, Icon]) => (
               <button
                 key={v}
+                aria-label={`${v === "split" ? "Split" : v === "code" ? "Source" : "Preview"} view`}
+                aria-pressed={view === v}
                 onClick={() => setView(v)}
                 className="p-1.5"
                 style={{ background: view === v ? "var(--glass-active)" : "transparent" }}
@@ -45,11 +48,14 @@ export default function WebsiteRenderer({ note }: RendererProps) {
         </div>
       </div>
 
+      {saveError && <div role="alert" className="p-3 text-sm">{saveError} {!readOnly && <button onClick={saveNow}>Retry save</button>}</div>}
       <div className="flex-1 flex min-h-0">
         {(view === "split" || view === "code") && (
           <div className={view === "split" ? "w-1/2" : "w-full"} style={{ borderRight: view === "split" ? "1px solid var(--glass-border)" : "none" }}>
             <textarea
               value={content}
+              aria-label="Website source"
+              readOnly={readOnly}
               onChange={handleChange}
               spellCheck={false}
               className="w-full h-full resize-none outline-none p-4"

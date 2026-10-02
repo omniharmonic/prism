@@ -25,7 +25,7 @@ import { CalendarWidget } from "../dashboard/widgets/CalendarWidget";
 
 // ── Render dispatch ─────────────────────────────────────────────────
 
-function renderWidget(widget: DashboardWidgetConfig) {
+function renderWidget(widget: DashboardWidgetConfig, readOnly?: boolean) {
   switch (widget.type as string) {
     case "list":
       return <ListWidget config={widget} />;
@@ -44,7 +44,7 @@ function renderWidget(widget: DashboardWidgetConfig) {
     case "embed":
       return <EmbedWidget config={widget} />;
     case "quick-actions":
-      return <QuickActionsWidget config={widget} />;
+      return <QuickActionsWidget config={widget} readOnly={readOnly} />;
 
     // Legacy types (from old DashboardWidget union)
     case "task-list":
@@ -67,13 +67,14 @@ function renderWidget(widget: DashboardWidgetConfig) {
 
 // ── Main component ──────────────────────────���───────────────────────
 
-export default function DashboardRenderer({ note, onMetadataChange }: RendererProps) {
+export default function DashboardRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   const meta = note.metadata as Record<string, unknown> | null;
   const layout = meta?.layout as
     | { columns?: number; widgets: DashboardWidgetConfig[] }
     | undefined;
   const widgets: DashboardWidgetConfig[] = layout?.widgets ?? [];
-  const columns = layout?.columns ?? 2;
+  const columns = Math.max(1, Math.min(4, Number(layout?.columns) || 2));
+  const editable = !readOnly && !!onMetadataChange;
 
   const [editMode, setEditMode] = useState(false);
   const [editorWidget, setEditorWidget] = useState<DashboardWidgetConfig | null | undefined>(
@@ -85,12 +86,13 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
 
   const updateWidgets = useCallback(
     (newWidgets: DashboardWidgetConfig[]) => {
+      if (!editable) return;
       onMetadataChange?.({
         ...((meta || {}) as Record<string, unknown>),
         layout: { columns, widgets: newWidgets },
       });
     },
-    [meta, columns, onMetadataChange],
+    [meta, columns, onMetadataChange, editable],
   );
 
   const handleSaveWidget = useCallback(
@@ -116,7 +118,8 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
   );
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="prism-dashboard flex flex-col h-full min-w-0" style={{ containerType: "inline-size" }}>
+      <style>{`@container (max-width: 600px) { .prism-dashboard-grid { grid-template-columns: minmax(0, 1fr) !important; } .prism-dashboard-grid > div { grid-column: auto !important; } }`}</style>
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2 flex-shrink-0"
@@ -131,7 +134,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
         >
           {dashboardTitle}
         </span>
-        <Button
+        {editable && <Button
           size="sm"
           variant={editMode ? "primary" : "ghost"}
           icon={<Settings size={14} />}
@@ -140,18 +143,19 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
           }}
         >
           {editMode ? "Done" : "Edit Dashboard"}
-        </Button>
+        </Button>}
       </div>
 
       {/* Dashboard grid */}
       <div className="flex-1 overflow-auto p-4">
         <div
-          className="grid gap-4"
-          style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}
+          className="prism-dashboard-grid grid gap-4"
+          style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
         >
           {widgets.map((widget) => (
             <div
               key={widget.id}
+              className="min-w-0"
               style={{
                 gridColumn: widget.span
                   ? `span ${Math.min(widget.span, columns)}`
@@ -160,10 +164,10 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
             >
               <DashboardWidgetWrapper
                 title={widget.title}
-                editMode={editMode}
+                editMode={editable && editMode}
                 onRemove={() => handleRemoveWidget(widget.id)}
                 editActions={
-                  editMode ? (
+                  editable && editMode ? (
                     <button
                       onClick={() => setEditorWidget(widget)}
                       className="p-1 rounded hover:bg-[var(--glass-hover)] transition-colors"
@@ -175,7 +179,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
                   ) : undefined
                 }
               >
-                {renderWidget(widget)}
+                {renderWidget(widget, readOnly)}
               </DashboardWidgetWrapper>
             </div>
           ))}
@@ -190,7 +194,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
             >
               This dashboard is empty
             </p>
-            <Button
+            {editable && <Button
               size="sm"
               variant="secondary"
               icon={<Plus size={14} />}
@@ -200,12 +204,12 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
               }}
             >
               Add Widget
-            </Button>
+            </Button>}
           </div>
         )}
 
         {/* Add widget button in edit mode */}
-        {editMode && (
+        {editable && editMode && (
           <div className="mt-4">
             <button
               onClick={() => setEditorWidget(null)}
@@ -223,7 +227,7 @@ export default function DashboardRenderer({ note, onMetadataChange }: RendererPr
       </div>
 
       {/* Widget editor modal */}
-      {editorWidget !== undefined && (
+      {editable && editorWidget !== undefined && (
         <WidgetEditorModal
           initial={editorWidget}
           onSave={handleSaveWidget}
