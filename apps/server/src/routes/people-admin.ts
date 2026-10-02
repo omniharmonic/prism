@@ -8,6 +8,9 @@
  *   GET  /people/candidates?status=&reason=&relationship=&limit=&after=
  *   POST /people/candidates/:id/resolve  {personId, addIdentity?=true, applyToKey?=false}
  *   POST /people/candidates/:id/dismiss  {applyToKey?=false}
+ *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?, useMatrixMembers?=false} → 202 {job}
+ *   GET  /people/link                                                                     → {job | null}
+ *   POST /people/link/cancel                                                              → {ok}
  *
  * Full reference: docs/roadmap/workspace-experience/BACKEND-STATUS-GRAPH.md.
  */
@@ -18,6 +21,17 @@ import { vaultClient } from "../parachute";
 import { recordAction } from "../actions/store";
 import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } from "../identity-store";
 import { dismissCandidate, resolveCandidate, ReviewError, type ReviewVault } from "../identity-review";
+import { getSecret } from "../secrets";
+import { MatrixClient, type MatrixCreds } from "../worker/matrix";
+import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
+
+/** OWNER_EMAIL + PEOPLE_OWNER_EMAILS / _PERSON / _ALIASES — who "me" is. */
+export const ownerConfig = (matrixId?: string | null) => ({
+  emails: [config.ownerEmail, ...config.peopleOwnerEmails].filter(Boolean),
+  person: config.peopleOwnerPerson,
+  aliases: config.peopleOwnerAliases,
+  matrixId: matrixId ?? null,
+});
 
 type Via = ReturnType<typeof requestVia>;
 export const originOf = (via: Via): "human" | "agent" => (via === "session" || via === "device" ? "human" : "agent");
@@ -103,4 +117,94 @@ export function mountPeopleCandidates(admin: Hono): void {
       throw e;
     }
   });
+}
+
+export function mountPeopleLinkJob(admin: Hono): void {
+  admin.get("/people/link", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ job: linkJobStatus(), phases: PHASES });
+  });
+
+  admin.post("/people/link", async (c) => {
+    const vaultId = ownerVaultId(c);
+    const body = await jsonBody(c);
+    const dryRunIn = optBool(body?.dryRun);
+    const enqueue = optBool(body?.enqueue);
+    const useMembers = optBool(body?.useMatrixMembers);
+    if (!body || dryRunIn === null || enqueue === null || useMembers === null) return c.json({ error: "bad_request", detail: "dryRun, enqueue and useMatrixMembers must be true or false" }, 400);
+    const phases = body.phases;
+    if (phases !== undefined && (!Array.isArray(phases) || !phases.length || !phases.every(isPhase))) return c.json({ error: "bad_request", detail: `phases must be a non-empty list of: ${PHASES.join(", ")}` }, 400);
+    const dryRun = dryRunIn !== false; // a dry run unless explicitly false
+    const ceiling = Math.max(0, config.peopleLinkMaxWritesCeiling);
+    let maxWrites = dryRun ? 0 : Math.max(0, config.peopleLinkMaxWrites);
+    if (body.maxWrites !== undefined) {
+      const m = body.maxWrites;
+      if (typeof m !== "number" || !Number.isInteger(m) || m < 1 || (ceiling && m > ceiling)) return c.json({ error: "bad_request", detail: `maxWrites must be an integer from 1 to ${ceiling}` }, 400);
+      maxWrites = m;
+    }
+    if (!dryRun && !maxWrites) maxWrites = ceiling; // a write run is never uncapped
+
+    // The Matrix membership lookup is opt-in per run (it talks to the homeserver).
+    let members: ((roomId: string) => Promise<Record<string, string> | null>) | undefined;
+    let self: string | null = null;
+    if (useMembers) {
+      const raw = getSecret(vaultId, config.ownerEmail, "matrix");
+      if (!raw) return c.json({ error: "matrix_not_configured" }, 409);
+      const client = new MatrixClient(JSON.parse(raw) as MatrixCreds);
+      self = await client.whoami().catch(() => null);
+      members = (roomId) => client.joinedMembers(roomId).catch(() => null);
+    }
+    const via = requestVia(c);
+    const onEnd = dryRun
+      ? undefined
+      : (j: LinkJob) =>
+          recordAction({
+            actorEmail: config.ownerEmail,
+            via,
+            origin: originOf(via),
+            action: "admin.people-link",
+            vaultId,
+            // Counts only — no note ids, paths, names or addresses.
+            target: {
+              jobId: j.id,
+              status: j.status,
+              phases: j.phases,
+              writes: j.writes,
+              capped: j.capped,
+              queuedNew: j.queuedNew,
+              ...Object.fromEntries(
+                j.phases.map((p) => [p, { linked: j.report[p].linked, unlinked: j.report[p].unlinked, conflicts: j.report[p].conflicts, errors: j.report[p].errors, oversize: j.report[p].oversize, deferred: j.report[p].deferred }]),
+              ),
+            },
+            status: j.status === "done" ? "ok" : "failed",
+            error: j.error,
+          });
+    try {
+      const { job } = startLinkJob(vaultClient(vaultId) as unknown as LinkJobVault, vaultId, {
+        dryRun,
+        phases: phases as LinkJob["phases"] | undefined,
+        maxWrites,
+        enqueue: enqueue ?? !dryRun,
+        paceMs: config.peopleLinkPaceMs,
+        owner: ownerConfig(self),
+        members,
+        limits: {
+          groupNameMax: config.peopleLinkGroupNameMax,
+          groupMaxMembers: config.peopleLinkGroupMaxMembers,
+          groupLinkCap: config.peopleLinkGroupLinkCap,
+          maxRecipients: config.peopleLinkMaxRecipients,
+          memberLookups: config.peopleLinkMemberLookups,
+          memberPaceMs: config.peopleLinkMemberPaceMs,
+        },
+        onEnd,
+      });
+      console.log(`[admin] people link started (${dryRun ? "dry run" : `WRITE, max ${maxWrites} writes`}) on vault ${vaultId}: ${job.phases.join(",")}`);
+      return c.json({ job }, 202);
+    } catch (e) {
+      if (e instanceof LinkJobBusyError) return c.json({ error: "busy", detail: e.message, job: linkJobStatus() }, 409);
+      throw e;
+    }
+  });
+
+  admin.post("/people/link/cancel", (c) => c.json({ ok: cancelLinkJob() }));
 }
