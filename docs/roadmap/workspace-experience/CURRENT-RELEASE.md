@@ -1,6 +1,6 @@
 # Current release and remaining work
 
-Snapshot: **2026-10-02, resumed release verification**. This concise status supersedes the older deployment summary and package table at the top of IMPLEMENTATION.md; historical checkpoints remain evidence of their named versions. The [approved full plan](POST-MIGRATION-PLAN.md) is still in progress.
+Snapshot: **2026-10-02, frontend redesign integration**. This concise status supersedes the older deployment summary and package table at the top of IMPLEMENTATION.md; historical checkpoints remain evidence of their named versions. The [approved full plan](POST-MIGRATION-PLAN.md) is still in progress.
 
 ## Normal use and release state
 
@@ -10,10 +10,10 @@ Snapshot: **2026-10-02, resumed release verification**. This concise status supe
 | --- | --- |
 | Production server/web | Web `86461c9`; running server retains compatible `6445136` behavior. Main source includes the equivalent escaped-NUL cleanup; no server restart was needed for this frontend release. |
 | Verified frontend release | `86461c9` on `feat/workspace-experience`; combined builds and 218 browser journeys passed. |
-| Candidate follow-ups | Long-title reader/phone-preview wrapping (`b09a6d0`), responsive settings and available-panel handling (`0102059`), honest human suggestion-permission guidance (`86461c9`) |
+| Unreleased aesthetic revision | Active `feat/workspace-experience` worktree; see [frontend acceptance matrix](FRONTEND-ACCEPTANCE.md) for source/evidence. Latest web/native bundle checkpoint `58b68ac` passed builds and packaged startup checks; subsequent mobile/thread changes await the final combined rebuild. No artifact in this row is installed in production. |
 | Installed desktop | `86461c9`, locally signed and installed in Applications. Saved sign-in, private editing, browser/native live collaboration, document-bound read-only agent, boards, canvas and private preview exercised. |
 
-The final frontend release passed all 218 Chromium journeys, application/e2e typechecks, web/macOS builds, six packaged Chromium/WebKit startup checks, and host/agent/event/media verifiers. The overflow slice additionally passed 30 focused Chromium/WebKit journeys. The server baseline passed 1,440 tests; the equivalent source separator cleanup passed 44 focused publishing tests. These counts do not replace the actual production evidence below.
+The previously deployed frontend release passed all 218 Chromium journeys, application/e2e typechecks, web/macOS builds, six packaged Chromium/WebKit startup checks, and host/agent/event/media verifiers. The overflow slice additionally passed 30 focused Chromium/WebKit journeys. The server baseline passed 1,440 tests; the equivalent source separator cleanup passed 44 focused publishing tests. These counts do not replace the actual production evidence below.
 
 ## Implemented, with evidence
 
@@ -39,3 +39,12 @@ Evidence: [implementation log](IMPLEMENTATION-LOG.md), [historical implementatio
 Structured message edits/redactions/archives and identity repair; transcript ambiguity review/manual overrides and multi-recording reconciliation; large-inventory paging/performance; canvas claim cleanup and board drag ordering; effective-access/governance previews and guest onboarding; custom publication navigation; consolidated integration controls and controlled provider journeys remain unfinished. These are follow-on implementation or evidence requirements, not proof that ordinary document editing is unavailable.
 
 Continue these in isolated, reviewable slices while the user uses Prism. The current release must not be described as full R00–R16 completion or verified Notion parity. Update the artifact table and open gates after final acceptance, retaining the precise distinction between automated tests, production web, and installed desktop evidence.
+
+
+## Current isolated frontend checkpoint
+
+The integrated redesign now includes title-first page creation, calmer workspace/document/agent/message layouts, email’s docked agent, context links/properties/history, task/calendar/canvas/graph presentation, publishing studio, Connections, governance sections, specialist preservation, labeled phone navigation, auto-growing composition, and saved thread/graph positions. Detailed source commits, screenshots and limitations are in FRONTEND-ACCEPTANCE; these are not yet new production claims. Final active UI slices are search-to-agent context, dedicated conversation summaries and whole-screen visual review.
+
+At `58b68ac`, web build, native web build, native/client static verifiers, six packaged Chromium/WebKit startup/recovery checks, agent15/host19 checks and events/media verifiers passed. Current mobile/thread integration subsequently passed50 combined browser journeys. Normal production health still returned `{ok:true,vault:true}`. A final build and installed/production acceptance are required after all UI slices and the reviewed backend release dependency are integrated.
+
+The new transcript provider requires its reviewed server endpoint; human command helpers remain inactive pending authoritative audience identity and pre-sync cache protection. Existing agent session permission modes remain available. The separate backend owner and root release owner coordinate through main’s COORDINATION.md.
