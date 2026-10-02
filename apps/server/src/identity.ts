@@ -411,3 +411,78 @@ export class IdentityIndex {
     return { status: "linked", person, evidence: ["name"] };
   }
 }
+
+// ── the owner ────────────────────────────────────────────────────────────────
+
+export interface OwnerConfig {
+  /** OWNER_EMAIL + PEOPLE_OWNER_EMAILS. */
+  emails: string[];
+  /** PEOPLE_OWNER_PERSON: the owner's person note, by path or id ("" = infer). */
+  person?: string;
+  /** PEOPLE_OWNER_ALIASES: extra names that mean the owner. */
+  aliases?: string[];
+  /** The Matrix sync user, when known. */
+  matrixId?: string | null;
+}
+
+export interface OwnerProfile {
+  /** The owner's own person note, when it can be told apart. */
+  person: Note | null;
+  emails: Set<string>;
+  /** slugKeys of every name that means the owner (single-token ones included). */
+  names: Set<string>;
+  matrixIds: Set<string>;
+}
+
+/**
+ * Who "me" is, from CONFIGURATION and the owner's own person note — never a
+ * hardcoded name. The note is PEOPLE_OWNER_PERSON, else the single live person
+ * claiming one of the owner's addresses. Its names and aliases (plus
+ * PEOPLE_OWNER_ALIASES) are what a task's `assigned: "<first name>"` is matched
+ * against, and its addresses are what email/thread linking refuses to self-link.
+ */
+export function ownerProfile(idx: IdentityIndex, cfg: OwnerConfig): OwnerProfile {
+  const emails = new Set(cfg.emails.map(normalizeEmailKey).filter(Boolean));
+  let person: Note | null = null;
+  if (cfg.person) {
+    const n = idx.get(cfg.person);
+    person = n ? idx.canonicalOf(n) : null;
+  } else {
+    const claim = new Map<string, Note>();
+    for (const e of emails) for (const p of idx.claimants({ kind: "email", value: e })) claim.set(p.id, p);
+    if (claim.size === 1) person = [...claim.values()][0]!;
+  }
+  const names = new Set<string>();
+  const matrixIds = new Set<string>();
+  if (cfg.matrixId) matrixIds.add(cfg.matrixId.trim().toLowerCase());
+  for (const a of cfg.aliases ?? []) {
+    if (looksLikeEmail(a)) emails.add(normalizeEmailKey(a));
+    else if (slugKey(a)) names.add(slugKey(a));
+  }
+  if (person) {
+    const keys = idx.keysFor(person.id);
+    for (const n of keys.names) names.add(n);
+    for (const k of keys.strong) {
+      if (k.kind === "email") emails.add(k.value);
+      if (k.kind === "matrix") matrixIds.add(k.value);
+    }
+  }
+  return { person, emails, names, matrixIds };
+}
+
+/** Does this query name the owner (by address, Matrix id, or an owner name)? */
+export function isOwnerQuery(owner: OwnerProfile, q: IdentityQuery): boolean {
+  const email = q.email && looksLikeEmail(q.email) ? q.email : q.name && looksLikeEmail(q.name) ? q.name : null;
+  if (email && owner.emails.has(normalizeEmailKey(email))) return true;
+  if (q.matrixId && owner.matrixIds.has(q.matrixId.trim().toLowerCase())) return true;
+  if (q.ref && owner.person) {
+    const r = refTarget(q.ref) ?? q.ref;
+    if (r === owner.person.id || r.toLowerCase() === (owner.person.path ?? "").toLowerCase()) return true;
+  }
+  // A name alone means the owner only when no strong key says otherwise.
+  if (!email && !q.matrixId && q.name) {
+    const k = slugKey(cleanName(q.name));
+    if (k && owner.names.has(k)) return true;
+  }
+  return false;
+}

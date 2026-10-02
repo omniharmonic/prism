@@ -18,6 +18,7 @@ import { vaultClient } from "../parachute";
 import { csrfRefusal } from "./actions";
 import { cancelWikilinkJob, startWikilinkJob, wikilinkJobStatus, WikilinkJobBusyError, type WikilinkJob } from "../wikilinks-job";
 import { recordAction } from "../actions/store";
+import { mountPeopleCandidates } from "./people-admin";
 
 export const adminApi = new Hono();
 
@@ -73,3 +74,6 @@ adminApi.post("/wikilinks/resolve", async (c) => {
 });
 
 adminApi.post("/wikilinks/resolve/cancel", (c) => c.json({ ok: cancelWikilinkJob() }));
+
+// Identity + linking layer (review queue, backfill job, duplicate merge): /api/admin/people/*.
+mountPeopleCandidates(adminApi);
