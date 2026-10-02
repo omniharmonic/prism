@@ -8,11 +8,12 @@ import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useCanvasConnectionMode } from "./CanvasConnectionMode";
+import { useCanvasRelationSync } from "./useCanvasRelationSync";
 import { useCanvasPresentation } from "./CanvasPresentation";
 import { useCanvasCardNavigation } from "./CanvasCardList";
 import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { authoredCanvasElements } from "./canvas-scene";
-import { useQueryClient } from "@tanstack/react-query";
 import type { Note } from "../../lib/types";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
@@ -55,24 +56,21 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const linkArrowIds = useRef<Set<string>>(new Set());
   const openTab = useUIStore((s) => s.openTab);
-  const queryClient = useQueryClient();
+  const relations = useCanvasRelationSync(note.id, !readOnly);
+  const connectionMode = useCanvasConnectionMode(apiRef, !readOnly);
 
   const getContent = useCallback(() => contentRef.current, []);
-  const { isSaving, lastSaved, scheduleSave } = useAutoSave(note.id, getContent);
+  const { isSaving, lastSaved, saveError, saveNow, scheduleSave } = useAutoSave(note.id, getContent);
   const scheduleSaveRef = useRef(scheduleSave);
   scheduleSaveRef.current = scheduleSave;
 
   const initialData = parseCanvasData(note.content);
 
-  // ─── Arrow → Link sync (scan-based, not diff-based) ────
-
-  // Track which arrow IDs have been synced to Parachute
-  const syncedArrows = useRef<Map<string, { sourceId: string; targetId: string; relationship: string }>>(new Map());
-
   const handleChange = useCallback((elements: readonly any[], appState: any, files: any) => {
     // Read-only surfaces (published Wiki / anonymous): never serialize, save, or
     // sync links. Excalidraw still fires onChange for pan/zoom in view mode.
     updateCards(elements);
+    connectionMode.observe(elements, appState);
     if (readOnly) return;
     // Serialize canvas state
     const serialized = JSON.stringify({
@@ -103,59 +101,8 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     }
     setSelectedNoteId(foundNoteId);
 
-    // ── Scan ALL arrows for link sync ──
-    for (const el of elements) {
-      if (el.type !== "arrow" || el.isDeleted || el.customData?.prismLinkViz) continue;
-      if (linkArrowIds.current.has(el.id)) continue;
-
-      const startBound = el.startBinding?.elementId;
-      const endBound = el.endBinding?.elementId;
-      if (!startBound || !endBound) continue;
-
-      const startEl = elements.find((e: any) => e.id === startBound);
-      const endEl = elements.find((e: any) => e.id === endBound);
-
-      if (!startEl?.customData?.prismNoteId || !endEl?.customData?.prismNoteId) {
-        continue;
-      }
-
-      const sourceId = startEl.customData.prismNoteId;
-      const targetId = endEl.customData.prismNoteId;
-      if (sourceId === targetId) {
-        continue;
-      }
-
-      const labelEl = elements.find((e: any) => e.type === "text" && e.containerId === el.id);
-      const relationship = labelEl?.text?.trim() || "related";
-
-      const existing = syncedArrows.current.get(el.id);
-      if (existing && existing.sourceId === sourceId && existing.targetId === targetId && existing.relationship === relationship) {
-        continue;
-      }
-
-      // If relationship changed, delete old link first
-      if (existing) {
-        client.deleteLink(existing.sourceId, existing.targetId, existing.relationship).catch(() => {});
-      }
-
-      // Create the Parachute link
-      client.createLink(sourceId, targetId, relationship).then(() => {
-        queryClient.invalidateQueries({ queryKey: ["vault", "links"] });
-      }).catch((err) => {
-        console.error("Failed to create link:", err);
-      });
-      syncedArrows.current.set(el.id, { sourceId, targetId, relationship });
-    }
-
-    // Check for deleted arrows that had links
-    for (const [arrowId, link] of syncedArrows.current) {
-      const el = elements.find((e: any) => e.id === arrowId);
-      if (!el || el.isDeleted) {
-        client.deleteLink(link.sourceId, link.targetId, link.relationship).catch(() => {});
-        syncedArrows.current.delete(arrowId);
-      }
-    }
-  }, [readOnly, client, queryClient, updateCards]);
+    relations.observe(elements);
+  }, [readOnly, updateCards, relations.observe, connectionMode.observe]);
 
   // ─── Add note card ──────────────────────────────────────
 
@@ -327,6 +274,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
             </button>
           )}
           </>}
+          {connectionMode.control}
           {browseCards}
           {presentation.control}
         </div>
@@ -335,6 +283,8 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
         </span>
       </div>
 
+      {saveError && <p role="alert" className="px-3 py-2 text-xs">{saveError} <button type="button" className="focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3" onClick={saveNow}>Retry canvas save</button></p>}
+      {relations.status}
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
       <div className="relative flex-1 flex min-h-0">
         {cardList}

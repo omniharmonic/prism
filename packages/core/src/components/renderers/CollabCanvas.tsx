@@ -9,6 +9,8 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
 import type { Note } from "../../lib/types";
+import { useCanvasConnectionMode } from "./CanvasConnectionMode";
+import { useCanvasRelationSync } from "./useCanvasRelationSync";
 import { useCanvasPresentation } from "./CanvasPresentation";
 import { useCanvasCardNavigation } from "./CanvasCardList";
 import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
@@ -50,17 +52,21 @@ export function CollabCanvas({
   provider,
   user,
   editable = true,
+  noteId,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider;
   user: CollabUser;
   editable?: boolean;
+  noteId?: string;
 }) {
   const apiRef = useRef<any>(null);
   const theme = useSettingsStore((s) => s.theme);
   const isDark = theme === "dark";
   const client = useVaultClient();
   const access = useCanvasNoteAccess();
+  const relations = useCanvasRelationSync(noteId, editable);
+  const connectionMode = useCanvasConnectionMode(apiRef, editable);
   const presentation = useCanvasPresentation();
   const editableRef = useRef(editable);
   editableRef.current = editable;
@@ -72,9 +78,8 @@ export function CollabCanvas({
   const [includeBody, setIncludeBody] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
 
-  // In-session bookkeeping for the arrow⇄link bridge.
+  // Per-viewer derived overlay IDs, never used as deletion authority.
   const linkArrowIds = useRef<Set<string>>(new Set()); // ids of derived "Show links" arrows
-  const syncedArrows = useRef<Map<string, { sourceId: string; targetId: string; relationship: string }>>(new Map());
   // Per-element version we've already reconciled with the CRDT (Excalidraw's collab
   // pattern). Updated both when we APPLY a remote element and when we PERSIST a
   // local one — so a repaint's echo onChange is a no-op instead of re-writing the
@@ -284,6 +289,7 @@ export function CollabCanvas({
   const onChange = useCallback(
     (elements: readonly any[], appState?: any) => {
       updateCards(elements);
+      connectionMode.observe(elements, appState);
       if (!editable) return;
       const map = elementsMap();
 
@@ -315,44 +321,9 @@ export function CollabCanvas({
       }
       setSelectedNoteId(foundNoteId);
 
-      // 3. Arrow drawn between two cards → create the Parachute link.
-      for (const el of elements) {
-        if (el.type !== "arrow" || el.isDeleted) continue;
-        if (el.customData?.prismLinkViz) continue; // derived overlay — never authored
-        if (linkArrowIds.current.has(el.id)) continue;
-
-        const startBound = el.startBinding?.elementId;
-        const endBound = el.endBinding?.elementId;
-        if (!startBound || !endBound) continue;
-
-        const startEl = elements.find((e: any) => e.id === startBound);
-        const endEl = elements.find((e: any) => e.id === endBound);
-        if (!startEl?.customData?.prismNoteId || !endEl?.customData?.prismNoteId) continue;
-
-        const sourceId = startEl.customData.prismNoteId;
-        const targetId = endEl.customData.prismNoteId;
-        if (sourceId === targetId) continue;
-
-        const labelEl = elements.find((e: any) => e.type === "text" && e.containerId === el.id);
-        const relationship = labelEl?.text?.trim() || "related";
-
-        const existing = syncedArrows.current.get(el.id);
-        if (existing && existing.sourceId === sourceId && existing.targetId === targetId && existing.relationship === relationship) continue;
-        if (existing) client.deleteLink(existing.sourceId, existing.targetId, existing.relationship).catch(() => {});
-        client.createLink(sourceId, targetId, relationship).catch((err) => console.error("Failed to create link:", err));
-        syncedArrows.current.set(el.id, { sourceId, targetId, relationship });
-      }
-
-      // 4. An authored link-arrow deleted → remove the Parachute link.
-      for (const [arrowId, link] of syncedArrows.current) {
-        const el = elements.find((e: any) => e.id === arrowId);
-        if (!el || el.isDeleted) {
-          client.deleteLink(link.sourceId, link.targetId, link.relationship).catch(() => {});
-          syncedArrows.current.delete(arrowId);
-        }
-      }
+      relations.observe(elements);
     },
-    [editable, elementsMap, ydoc, client, updateCards],
+    [editable, elementsMap, ydoc, updateCards, relations.observe, connectionMode.observe],
   );
 
   const onPointerUpdate = (payload: any) => {
@@ -405,11 +376,13 @@ export function CollabCanvas({
             </button>
           )}
           </>}
+          {connectionMode.control}
           {browseCards}
           {presentation.control}
           {!editable && <span className="px-3 text-[var(--text-muted)]">View only</span>}
         </div>
 
+      {relations.status}
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
       <div className="relative flex-1 flex min-h-0">
         {cardList}

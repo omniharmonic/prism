@@ -1,0 +1,9 @@
+# Implementation log
+
+## Durable canvas relationships (R10)
+
+Authored arrows now reconcile through a server route bound to the current canvas scene, with fresh edit checks on the canvas and both endpoints. A SQLite ledger retains one assertion per vault/canvas/arrow, plus pending source reconciliation and confirmation receipts. It reads the active collaborative scene when loaded and the saved scene otherwise; mismatched client scenes do not execute. Vault identity changes clear stale assertion ownership.
+
+Vault links are projected with source revision guards. Multiple arrows/canvases can assert the same edge. Existing manual edges remain unowned; any unobserved source revision forfeits deletion ownership conservatively. Thus an unrelated external source edit can cause an orphaned canonical link to be retained after its final arrow is removed. The UI explains retained links; it never silently assumes permission to delete a possibly manual relation. A future explicit owner review can clean these up. Interrupted jobs retry from durable scene/assertion state, with uncertain writes preserving rather than stealing ownership. Canvas deletion does not automatically garbage-collect its claims; that needs a separately reviewed cleanup flow.
+
+The shared renderer shows pending/confirmed/failure states, retries scene races, and supports a selected arrow's relationship/decorative mode without removing the drawing. Fresh note cards use regular sans-serif text and clean outlines. Both modern clients and the legacy desktop bridge call the same assertion service. Offline work retains the drawing; relation projection waits for server access. Limits are explicit: 250 bound arrows per scene and bounded affected-note reads. Large-vault indexing, raw Yjs suggest-only enforcement, and the other R00–R16 gates remain open.

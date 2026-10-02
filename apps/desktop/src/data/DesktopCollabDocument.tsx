@@ -217,7 +217,7 @@ export function CollabDocument({ noteId, note }: { noteId: string; note: Note })
             }}
           >
             {kind === "canvas" ? (
-              <CollabCanvas ydoc={ydoc} provider={provider as never} user={user} editable />
+              <CollabCanvas noteId={noteId} ydoc={ydoc} provider={provider as never} user={user} editable />
             ) : kind === "code" ? (
               <CollabCodeEditor ydoc={ydoc} provider={provider as never} user={user} language={language} editable />
             ) : kind === "spreadsheet" ? (

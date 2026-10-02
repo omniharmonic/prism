@@ -113,3 +113,40 @@ for (const mode of ['', 'collab']) {
   expect(result.writes).toEqual([]);expect(result.links).toEqual([]);expect(result.elements).toBe(4);
  });
 }
+
+for(const mode of ["","&collab"]){
+ test(`authored relationships wait for acknowledgement and retry visibly without generic link deletion ${mode}`,async({page})=>{
+  await page.goto("/e2e-fixtures/canvas.html?relations"+mode);
+  await expect(page.getByRole("button",{name:"Retry relationships"})).toBeVisible();
+  await expect(page.getByText("Relationships saved",{exact:true})).not.toBeVisible();
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.rejectRelations=false;});
+  await page.getByRole("button",{name:"Retry relationships"}).click();
+  await expect(page.getByText("Relationships saved",{exact:true})).toBeVisible();
+  const attempts=await page.evaluate(()=>(window as any).prismCanvasFixture.syncAttempts.map((x:string)=>JSON.parse(x)));
+  expect(attempts).toHaveLength(2);
+  for(const attempt of attempts)expect(attempt).toEqual([{arrowId:"authored-arrow",sourceId:"Card A",targetId:"Card B",relationship:"related"}]);
+  expect(await page.evaluate(()=>(window as any).prismCanvasFixture.linkWrites)).toEqual([]);
+  await page.getByRole("button",{name:"Show links",exact:true}).click();
+  await page.getByRole("button",{name:"Hide links",exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).prismCanvasFixture.linkWrites)).toEqual([]);
+ });
+}
+
+for(const mode of ["","&collab"]){
+ test(`a connection can become decorative without deleting its drawing ${mode}`,async({page})=>{
+  await page.goto("/e2e-fixtures/canvas.html?relations"+mode);
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.rejectRelations=false;});
+  await expect(page.getByText("Relationships saved",{exact:true})).toBeVisible();
+  await page.locator("canvas.interactive").click({position:{x:30,y:250}});
+  await page.keyboard.press("Meta+a");
+  await page.getByRole("checkbox",{name:"Link this arrow to notes"}).uncheck();
+  await expect(page.getByRole("checkbox",{name:"Decorative arrow"})).not.toBeChecked();
+  await expect.poll(()=>page.evaluate(()=>(window as any).prismCanvasFixture.syncAttempts.at(-1))).toBe("[]");
+  if(!mode)await expect.poll(()=>page.evaluate(()=>(window as any).prismCanvasFixture.writes.some((w:any)=>w.content&&JSON.parse(w.content).elements.some((e:any)=>e.id==="authored-arrow"&&e.customData?.prismRelationship===false)))).toBe(true);
+  const result=await page.evaluate(()=>{const c=(window as any).prismCanvasFixture;const elements=location.search.includes("collab")?[...c.doc.getMap("elements").values()]:JSON.parse(c.writes.filter((w:any)=>w.content).at(-1).content).elements;return {arrow:elements.find((e:any)=>e.id==="authored-arrow"),links:c.linkWrites};});
+  expect(result.arrow.isDeleted).toBeFalsy();expect(result.arrow.customData.prismRelationship).toBe(false);expect(result.links).toEqual([]);
+  await page.getByRole("checkbox",{name:"Decorative arrow"}).check();
+  await expect(page.getByText("Relationships saved",{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>JSON.parse((window as any).prismCanvasFixture.syncAttempts.at(-1)).length)).toBe(1);
+ });
+}

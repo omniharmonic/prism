@@ -47,6 +47,10 @@ export const tauriVaultClient: VaultClient = {
   deleteLink: (sourceId, targetId, relationship) =>
     vaultApi.deleteLink(sourceId, targetId, relationship),
   getGraph: (depth, centerId) => vaultApi.getGraph(depth, centerId),
+  reconcileCanvasRelations: async (canvasId, fingerprint) => {
+    try { return await invoke<{synced:number;retained:boolean}>("vault_canvas_reconcile", {canvasId, fingerprint}); }
+    catch (e) { throw new Error(String(e).includes("canvas_scene_changed") ? "canvas_scene_changed" : "canvas_relationships_unavailable"); }
+  },
   getVaultInfo: () => vaultApi.getVaultInfo(),
   updateVaultDescription: (description) => vaultApi.updateVaultDescription(description),
   listNoteVersions: async (id, opts) => {

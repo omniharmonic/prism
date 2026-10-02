@@ -62,3 +62,36 @@ pub async fn embedding_reindex(
     }
     resp.json().await.map_err(|e| PrismError::Other(format!("reindex parse: {e}")))
 }
+
+/// Project the saved canvas's authored arrows through the server's guarded
+/// durable assertion ledger, using the selected vault and existing owner bridge.
+#[tauri::command]
+pub async fn vault_canvas_reconcile(
+    canvas_id: String,
+    fingerprint: String,
+    config: tauri::State<'_, AppConfig>,
+) -> Result<serde_json::Value, PrismError> {
+    if fingerprint.len() > 200_000 {
+        return Err(PrismError::Other("canvas relationship limit reached".into()));
+    }
+    let base = server_base(&config)?;
+    let mut url = reqwest::Url::parse(&base)
+        .map_err(|_| PrismError::Config("Invalid Prism Server address".into()))?;
+    url.path_segments_mut()
+        .map_err(|_| PrismError::Config("Invalid Prism Server address".into()))?
+        .extend(["api", "canvas", canvas_id.as_str(), "relationships"]);
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(&config.collab_token)
+        .header("X-Prism-Vault", &config.active_vault_id)
+        .json(&serde_json::json!({"fingerprint":fingerprint}))
+        .timeout(std::time::Duration::from_secs(60))
+        .send().await
+        .map_err(|_| PrismError::Other("canvas_relationships_unavailable".into()))?;
+    if !response.status().is_success() {
+        return Err(PrismError::Other(if response.status().as_u16() == 409 {
+            "canvas_scene_changed".into()
+        } else { "canvas_relationships_unavailable".into() }));
+    }
+    response.json().await.map_err(|_| PrismError::Other("Invalid canvas receipt".into()))
+}

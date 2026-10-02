@@ -414,3 +414,11 @@ export async function changePersonIdentity(id: string, change: { kind: "email" |
   if (!response.ok) throw new Error(response.status === 409 ? "This identity or person changed. Reload the profile before trying again." : "The account could not be changed. Reload the profile to check its current state.");
   return response.json();
 }
+
+/** Do not put projections in the generic outbox: the current canvas is authority. */
+export async function reconcileCanvasRelations(id: string, fingerprint: string): Promise<{synced:number;retained:boolean}> {
+  const context = await captureWriteContext();
+  const response = await serverFetch(`${context.scope.api}/canvas/${encodeURIComponent(id)}/relationships`, {method:"POST",headers:context.headers,body:JSON.stringify({fingerprint})});
+  if(!response.ok)throw new Error(response.status===409 ? "canvas_scene_changed" : "canvas_relationships_unavailable");
+  return response.json();
+}

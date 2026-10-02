@@ -27,6 +27,30 @@ if (config.dbPath !== ":memory:" && !config.dbPath.startsWith(":")) {
 }
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS canvas_relation_vaults (vault_id TEXT PRIMARY KEY, identity TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS canvas_assertions (
+    vault_id TEXT NOT NULL, canvas_id TEXT NOT NULL, arrow_id TEXT NOT NULL,
+    source_id TEXT NOT NULL, target_id TEXT NOT NULL, relationship TEXT NOT NULL,
+    PRIMARY KEY(vault_id,canvas_id,arrow_id)
+  );
+  CREATE INDEX IF NOT EXISTS canvas_assertions_edge ON canvas_assertions(vault_id,source_id,target_id,relationship);
+  CREATE TABLE IF NOT EXISTS canvas_relations (
+    vault_id TEXT NOT NULL, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relationship TEXT NOT NULL,
+    owned INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(vault_id,source_id,target_id,relationship)
+  );
+  CREATE TABLE IF NOT EXISTS canvas_relation_sources (
+    vault_id TEXT NOT NULL, source_id TEXT NOT NULL, updated_at TEXT,
+    PRIMARY KEY(vault_id,source_id)
+  );
+  CREATE TABLE IF NOT EXISTS canvas_relation_jobs (
+    vault_id TEXT NOT NULL, canvas_id TEXT NOT NULL, source_id TEXT NOT NULL,
+    PRIMARY KEY(vault_id,canvas_id,source_id)
+  );
+  CREATE TABLE IF NOT EXISTS canvas_relation_receipts (
+    vault_id TEXT NOT NULL, canvas_id TEXT NOT NULL, fingerprint TEXT NOT NULL, retained INTEGER NOT NULL,
+    PRIMARY KEY(vault_id,canvas_id)
+  );
   CREATE TABLE IF NOT EXISTS users (
     email      TEXT PRIMARY KEY,
     name       TEXT,
@@ -846,7 +870,12 @@ export function updateVaultEntryToken(id: string, token: string): boolean {
   return updateVaultEntryTokenStmt.run(token, id).changes > 0;
 }
 export function removeVaultEntry(id: string): void {
-  deleteVaultEntryStmt.run(id);
+  db.transaction(() => {
+    deleteVaultEntryStmt.run(id);
+    for (const table of ["canvas_assertions", "canvas_relations", "canvas_relation_sources", "canvas_relation_jobs", "canvas_relation_receipts", "canvas_relation_vaults"]) {
+      db.prepare(`DELETE FROM ${table} WHERE vault_id=?`).run(id);
+    }
+  })();
 }
 
 /**

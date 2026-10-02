@@ -22,6 +22,7 @@ import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
 import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
+import { canvasApi } from "./canvas";
 import { peopleApi } from "./people";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
@@ -173,6 +174,13 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
  */
 /** Bounded, permission-filtered graph response. No note bodies or hidden totals. */
 api.route("/people", peopleApi);
+api.use("/canvas/*", async (c, next) => {
+  await next();
+  // Projection writes bypass the transparent owner proxy. Never reuse a
+  // pre-projection note/link response after a confirmed reconciliation.
+  readCache.clear();
+});
+api.route("/canvas", canvasApi);
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);

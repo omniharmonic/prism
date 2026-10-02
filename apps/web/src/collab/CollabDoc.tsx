@@ -482,7 +482,7 @@ function ScopedCollabDoc({
             }}
           >
             {isCanvas ? (
-              <CollabCanvas ydoc={ydoc} provider={provider as never} user={user} editable={editable} />
+              <CollabCanvas noteId={noteId} ydoc={ydoc} provider={provider as never} user={user} editable={editable} />
             ) : isCode ? (
               <CollabCodeEditor
                 ydoc={ydoc}

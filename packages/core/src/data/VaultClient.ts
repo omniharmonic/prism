@@ -155,6 +155,7 @@ export interface VaultClient {
   ): Promise<VaultLink>;
   deleteLink(sourceId: string, targetId: string, relationship: string): Promise<void>;
   getGraph(depth?: number, centerId?: string): Promise<VaultGraph>;
+  reconcileCanvasRelations?(canvasId: string, fingerprint: string): Promise<{synced: number; retained: boolean}>;
   changePersonIdentity?(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }>;
   listPeople?(query?: string, after?: string): Promise<PeoplePage>;
   getPerson?(id: string, after?: string): Promise<PersonPage>;

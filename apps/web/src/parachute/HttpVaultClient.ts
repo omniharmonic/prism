@@ -31,6 +31,7 @@ export const httpVaultClient: VaultClient = {
   deleteLink: rest.deleteLink,
   getGraph: rest.getGraph,
   getNeighborhood: rest.getNeighborhood,
+  reconcileCanvasRelations: rest.reconcileCanvasRelations,
   getVaultInfo: rest.getVaultInfo,
   updateVaultDescription: rest.updateVaultDescription,
   listNoteVersions: rest.listNoteVersions,

@@ -32,6 +32,7 @@ if (config.dbPath !== ":memory:") {
 }
 
 export interface FakeNote {
+  links?: Array<{sourceId:string;targetId:string;relationship:string}>;
   id: string;
   content: string;
   path: string | null;
@@ -278,7 +279,20 @@ export function installFakeVault(): FakeVault {
           return new Response("conflict", { status: 409 });
         }
         const b = (body ?? {}) as Record<string, unknown>;
+        if (b.if_updated_at !== undefined && b.if_updated_at !== existing.updatedAt) return json({error:"conflict"},409);
         captureVersion(existing, "update");
+        const linkOps = b.links as {add?: Array<{target:string;relationship:string}>;remove?: Array<{target:string;relationship:string}>} | undefined;
+        if (linkOps) {
+          const links = [...(existing.links ?? [])];
+          for (const link of linkOps.remove ?? []) {
+            const index = links.findIndex(e=>e.sourceId===id && e.targetId===link.target && e.relationship===link.relationship);
+            if(index>=0)links.splice(index,1);
+          }
+          for (const link of linkOps.add ?? []) {
+            if(!links.some(e=>e.sourceId===id && e.targetId===link.target && e.relationship===link.relationship))links.push({sourceId:id,targetId:link.target,relationship:link.relationship});
+          }
+          existing.links=links;
+        }
         // tag add/remove form
         const tagsOp = b.tags as { add?: string[]; remove?: string[] } | undefined;
         if (tagsOp) {
@@ -312,7 +326,7 @@ export function installFakeVault(): FakeVault {
 
 export function resetDb(): void {
   db.exec(
-    "DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
+    "DELETE FROM canvas_relation_vaults; DELETE FROM canvas_assertions; DELETE FROM canvas_relations; DELETE FROM canvas_relation_sources; DELETE FROM canvas_relation_jobs; DELETE FROM canvas_relation_receipts; DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
       // Horizon B/C tables — kept in sync so every test file starts from a clean db.
       "DELETE FROM publications; DELETE FROM peers; DELETE FROM peer_pairings; DELETE FROM spaces; DELETE FROM federated_notes; DELETE FROM federation_outbox; DELETE FROM pending_suggestions; DELETE FROM federation_mirror_requests; DELETE FROM settings; DELETE FROM prism_vaults; DELETE FROM workspaces; DELETE FROM vault_workspaces; DELETE FROM vault_mirrors; DELETE FROM mcp_tokens; DELETE FROM mcp_token_revocations; DELETE FROM governance_sig_ledger;" +
       "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +

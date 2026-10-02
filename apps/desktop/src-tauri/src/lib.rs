@@ -167,6 +167,7 @@ pub fn run() {
             vault::vault_get_graph,
             // Semantic search (RAG via Prism Server)
             semantic::vault_semantic_search,
+            semantic::vault_canvas_reconcile,
             semantic::embedding_reindex,
             // Markdown conversion
             convert::markdown_to_html,
