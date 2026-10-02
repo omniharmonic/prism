@@ -31,11 +31,33 @@ test("page properties preserve the editor and failed title changes remain recove
   await page.screenshot({ path: info.outputPath('document-phone.png'), fullPage: true });
 });
 
+test("formatting is discoverable, preserves selection and remembers the full toolbar preference", async ({ page }) => {
+  await page.goto('/e2e-fixtures/workspace.html');
+  const editor = page.locator('.tiptap[contenteditable=true]');
+  await expect(editor).toBeVisible();
+  await editor.fill('Selected writing');
+  await editor.press('ControlOrMeta+a');
+  const formatting = page.getByRole('button', { name: 'Formatting', exact: true });
+  await expect(formatting).toHaveAttribute('aria-expanded', 'false');
+  await formatting.click();
+  await page.getByRole('group', { name: 'Text formatting' }).getByRole('button', { name: /Bold/ }).click();
+  await expect(editor.locator('strong')).toHaveText('Selected writing');
+  await page.getByRole('checkbox', { name: 'Always show formatting toolbar' }).check();
+  await formatting.click();
+  await expect(formatting).toHaveAttribute('aria-expanded', 'false');
+  await page.reload();
+  await expect(formatting).toHaveAttribute('aria-expanded', 'true');
+  await page.getByRole('checkbox', { name: 'Always show formatting toolbar' }).uncheck();
+  await page.reload();
+  await expect(formatting).toHaveAttribute('aria-expanded', 'false');
+});
+
 test("real collaborative host shares properties and readable mobile header without replacing its live editor", async ({ page }, info) => {
   const server = new Server({ address: '127.0.0.1', port: 0, quiet: true, debounce: 10, async onAuthenticate() { return { fixture: true }; } });
   await server.listen();
   const sockets: WebSocket[] = [];
   const path = 'Projects/Prism/A collaborative workspace with connected ideas';
+  let level = 'own';
   try {
     await page.routeWebSocket(/\/collab$/, route => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
@@ -46,12 +68,25 @@ test("real collaborative host shares properties and readable mobile header witho
       route.onClose(() => socket.close()); socket.on('close', () => route.close({ code: 1000 }));
     });
     await page.route('**/auth/me', route => route.fulfill({ json: { authenticated: true, email: 'alice@example.test', vaultId: 'primary', workspace: { id: 'workspace-a' } } }));
-    await page.route('**/api/notes/denied-note', route => route.fulfill({ json: { id: 'denied-note', path, content: '', _level: 'own', metadata: {}, tags: [] } }));
+    await page.route('**/api/notes/denied-note', route => route.fulfill({ json: { id: 'denied-note', path, content: '', _level: level, metadata: {}, tags: [] } }));
     await page.route('**/api/federated/**', route => route.fulfill({ status: 204 }));
     await page.goto('/e2e-fixtures/collab-storage.html?live');
     const editor = page.locator('.tiptap[contenteditable=true]');
     await expect(editor).toBeVisible();
     await editor.fill('Our shared ideas stay connected.');
+    const formatting = page.getByRole('button', { name: 'Formatting', exact: true });
+    await expect(formatting).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('button', { name: 'Editing', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Accept all suggestions', exact: true })).toBeVisible();
+    await editor.press('ControlOrMeta+a');
+    await formatting.click();
+    await page.getByRole('group', { name: 'Text formatting' }).getByRole('button', { name: 'Bold', exact: true }).click();
+    await expect(editor.locator('strong')).toHaveText('Our shared ideas stay connected.');
+    await page.getByRole('checkbox', { name: 'Always show formatting toolbar' }).check();
+    await page.reload();
+    await expect(formatting).toHaveAttribute('aria-expanded', 'true');
+    await expect(editor.locator('strong')).toHaveText('Our shared ideas stay connected.');
+    await formatting.click();
     await editor.evaluate(node => { (window as any).originalWritingEditor = node; });
     await page.locator('.document-properties-disclosure summary').click();
     await expect(page.locator('.document-properties-content')).toContainText(path);
@@ -62,6 +97,14 @@ test("real collaborative host shares properties and readable mobile header witho
     expect(await editor.evaluate(node => node === (window as any).originalWritingEditor)).toBe(true);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: info.outputPath('collaborative-phone.png'), fullPage: true });
+    level = 'view';
+    await page.reload();
+    await expect(page.locator('.tiptap[contenteditable=false]')).toBeVisible();
+    await expect(formatting).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Rename / })).toHaveCount(0);
+    await expect(page.locator('.document-properties-disclosure summary')).toBeVisible();
+    await page.goto('/e2e-fixtures/workspace.html');
+    await expect(page.getByRole('button', { name: 'Formatting', exact: true })).toHaveAttribute('aria-expanded', 'true');
     await page.goto('about:blank');
   } finally { for (const socket of sockets) socket.terminate(); await server.destroy(); }
 });
