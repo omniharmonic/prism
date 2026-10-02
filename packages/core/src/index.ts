@@ -20,9 +20,8 @@ export { setMapProxyFetch, mapProxyActive, proxiedStyle, protocolUrlToPath, loca
 export { CollabEditor } from "./components/renderers/CollabEditor";
 export type { CollabUser, AwarenessProvider } from "./components/renderers/CollabEditor";
 export type { Editor } from "@tiptap/react";
-export { CollabCodeEditor, detectCodeLanguage } from "./components/renderers/CollabCodeEditor";
-export { CollabSpreadsheet } from "./components/renderers/CollabSpreadsheet";
-export { CollabCanvas } from "./components/renderers/CollabCanvas";
+export { CollabCodeEditor, CollabSpreadsheet, CollabCanvas } from "./components/renderers/LazyCollabEditors";
+export { detectCodeLanguage } from "./lib/code-language";
 
 // Content-type detection — shared so every shell + the collab layer agree.
 export { inferContentType, looksLikeExcalidrawScene } from "./lib/schemas/content-types";

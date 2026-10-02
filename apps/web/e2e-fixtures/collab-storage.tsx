@@ -5,6 +5,8 @@ import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "../
 import { CollabDoc } from "../src/collab/CollabDoc";
 import { ReconnectScreen } from "../src/auth/ReconnectScreen";
 import { fetchMe } from "../src/config";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { VaultClientProvider, PlatformProvider, type VaultClient } from "@prism/core";
 import type { WriteScope } from "../src/offline/writeScope";
 
 const scope: WriteScope = { api: `${location.origin}/api`, workspace: "workspace-a", vault: "vault-a", actor: "user:alice@example.test" };
@@ -26,5 +28,7 @@ Object.assign(window, { prismCollabFixture: {
   close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
   async checkAuth() { return fetchMe(); },
 }});
+const client = { listNotes: async () => [], getLinks: async () => [] } as unknown as VaultClient;
+const queries = new QueryClient();
 const query = new URLSearchParams(location.search);
-createRoot(document.getElementById("root")!).render(<React.StrictMode>{(query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><QueryClientProvider client={queries}><PlatformProvider value="web"><VaultClientProvider client={client}>{(query.has("denied") || query.has("live")) ? <CollabDoc noteId="denied-note" /> : query.has("reconnect") ? <ReconnectScreen /> : <p>Scoped collaborative storage fixture</p>}</VaultClientProvider></PlatformProvider></QueryClientProvider></React.StrictMode>);

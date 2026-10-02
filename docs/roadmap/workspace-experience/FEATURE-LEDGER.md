@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `b8e9272`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: specialized editor loading checkpoint; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -22,16 +22,16 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | --- | --- | --- |
 | Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production web snapshot receipt verified |
 | Collaborative rich text | Scoped CRDT storage, actual web/native concurrent edits, individual agent suggestion accept/reject | Two reviewers with conflicting decisions, durable review audit, legacy draft recovery, physical offline reconnect |
-| Message thread | Server live-source pages on web/thin client, stable event-ID deduplication, saved-window paging, identity/date labels and failure fixtures; production private self-room send→live read→reload verified exactly once | Private Telegram-via-Matrix inbound→canonical person; structured ingest/archives, edit/redaction reconciliation, media; final mobile composer clearance and installed batch acceptance |
+| Message thread | Server live-source pages on web/thin client, stable event-ID deduplication, saved-window paging, identity/date labels and failure fixtures; production private self-room send→live read→reload verified exactly once | Private Telegram-via-Matrix inbound→canonical person; structured ingest/archives, edit/redaction reconciliation, media; installed batch acceptance (mobile composer clearance and stable responsive live reader verified) |
 | Email | Rendering/composer fixtures and server source support | Private self-mail inbound→person link→Reply/Reply all/attachments, retained failed draft, no duplicate send |
 | People | Access-filtered directory/profiles, explicit canonical links, guarded email/Matrix decisions and mobile/draft/error fixtures | Private production account add/remove and linked-record navigation verified; remaining identity repair preview/resume and ambiguity review queue |
 | Inbox (`messages-dashboard`, `vault-messages`) | Triage, channel labels, limited-result disclosure, phone screenshots | Summary projection/paging; desktop split view; canonical People detail/review |
 | Event and Calendar dashboard | Matching ambiguity/time tests; actual private event→exact meeting/transcript navigation on web/native; overlap/multi-day layout | Private external-calendar update/recurrence/notification readback; manual transcript overrides and multiple-recording writer |
-| Code / collaborative code | Registered renderer and host/collab implementation retained | Two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
+| Code / collaborative code | Deferred engine and initial-Y.Text correction; real-Hocuspocus delay/save/reload fixture | Production two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
 | Presentation | Registered renderer retained | Slide navigation, editing, fullscreen and export in web/native; small screen controls |
 | Task / task board | Configurable per-note views, explicit ungrouped values, guarded property moves, list/menu/drag/read-only and pending-write fixtures pass | Private web/native moves, view persistence and live task-document opening verified. Remaining: manual rank ordering, advanced filter editing, paginated inventory and broader shared-vault journeys |
 | Project | Registered renderer retained | Related tasks/notes, property edits and linked-source navigation in both clients |
-| Spreadsheet / collaborative spreadsheet | Registered adapters retained | Concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
+| Spreadsheet / collaborative spreadsheet | Deferred adapter and failed-download recovery with real Hocuspocus cells | Production concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
 | Website | Registered renderer retained | Safe preview/source edit, hosted build/publish controls and private preview; no secret-bearing embeds |
 | Dashboard and widgets | Registered configurable dashboard retained | Widget inventory, filters/layout persistence, shared board source semantics, mobile scroll and read-only states |
 | Canvas (legacy/local path) | Durable authored assertions, fresh endpoint access, retry/stale-scene/manual-link fixtures; legacy bridge Rust check passes; derived overlays never become assertions | Alternate host runtime, reviewed orphan/canvas-deletion cleanup and large-scene performance |
@@ -58,7 +58,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | GitHub folder sync | Host seam and server implementation retained | Owner-private test repository; mapping/conflict/dry-run where supported; verify scope before any automatic push |
 | Notion database / per-note sync | Host seam and setup modal retained | Owner-private test database/page; mapping, push/pull, unmapped-field preservation and retry/readback |
 | Google Docs/Sheets/Slides sync | Delivered host services retained | Owner-private test resources; mapped content and conflict readback; no external sharing |
-| Matrix/Telegram / Proton | Worker health checked; identity ambiguity tests | Identify verified self/bot room and self-email destination before live sends; canonical identity and inbound/outbound reconciliation |
+| Matrix/Telegram / Proton | Worker health checked; identity ambiguity tests | Private owner-only Matrix room send→live read→worker ingestion verified; self-email/Telegram destinations and canonical identity still pending |
 | Fireflies / Fathom / calendar | Worker health and transcript matcher tests | Verify real source field parity read-only; synthetic calendar/transcript linking must never trigger provider deletion |
 | ClickUp | Worker health and delivered service retained | Private test task/list only; mapping and readback; do not notify real collaborators |
 | Skills / model routing | 19 HostServices seam checks; production active skills worker | Isolated harmless skill, cancel/lease/restart and local routing availability; maintain single server scheduling authority |

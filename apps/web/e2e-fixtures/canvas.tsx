@@ -1,7 +1,7 @@
 import React from "react";
 import {convertToExcalidrawElements} from "@excalidraw/excalidraw";
 import * as Y from "yjs";
-import { CollabCanvas } from "../../../packages/core/src/components/renderers/CollabCanvas";
+import { CollabCanvas } from "../../../packages/core/src/components/renderers/LazyCollabEditors";
 import { useUIStore } from "../../../packages/core/src/app/stores/ui";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
