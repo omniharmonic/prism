@@ -1,3 +1,4 @@
+import { listFollowups, addFollowup, changeFollowup, FollowupError } from "../agent-followups";
 import { MAX_CONTEXT_SNAPSHOTS, SNAPSHOT_MAX_CHARACTERS, validContextSnapshots } from "../../../../packages/core/src/lib/agent/contextSnapshots";
 /**
  * Server-side agent dispatch API (Phase 3; hardened in Arch v2 WP0.1). Lets an
@@ -197,6 +198,7 @@ agentApi.get("/limits", (c) => {
     defaultProfile: "vault-ro",
     permissionModes: prismProfilesEnabled() ? PERMISSION_MODES : [],
     idempotentRequests: true,
+    followups: { maxQueued: 10 },
     contextSnapshots: { maxSnapshots: MAX_CONTEXT_SNAPSHOTS, maxCharacters: SNAPSHOT_MAX_CHARACTERS },
     contextNotes: { maxNotes: MAX_CONTEXT_NOTES, maxCharactersPerNote: NOTE_CONTEXT_MAX },
   });
@@ -461,6 +463,23 @@ agentApi.patch("/sessions/:id/permissions", async (c) => {
     if (e instanceof ProfileUnavailableError) return c.json({ error: "profile_unavailable", detail: e.message }, 409);
     throw e;
   }
+});
+
+agentApi.get("/sessions/:id/followups", c => {
+  const session=ownedSession(c); if(!session)return c.json({error:"not_found"},404);
+  c.header("Cache-Control","private, no-store");
+  return c.json({followups:listFollowups(session.id)});
+});
+agentApi.post("/sessions/:id/followups", async c => {
+  const session=ownedSession(c); if(!session)return c.json({error:"not_found"},404);
+  const body=await c.req.json().catch(()=>null);
+  try {return c.json({followup:addFollowup(session.id,body?.requestId,body)});}
+  catch(e){if(e instanceof FollowupError)return c.json({error:e.code},e.code==='bad_request'?400:e.code==='not_found'?404:409);throw e;}
+});
+agentApi.patch("/sessions/:id/followups/:followupId", async c => {
+  const session=ownedSession(c); if(!session)return c.json({error:"not_found"},404);
+  try {return c.json({followup:changeFollowup(session.id,c.req.param('followupId'),await c.req.json().catch(()=>null))});}
+  catch(e){if(e instanceof FollowupError)return c.json({error:e.code},e.code==='bad_request'?400:e.code==='not_found'?404:409);throw e;}
 });
 
 type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown; contextNoteIds?: unknown; contextSnapshots?: unknown };

@@ -11,16 +11,17 @@ import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAg
 import AgentChat, { AgentPanelChat } from "../../../packages/core/src/components/agent/AgentChat";
 import { AgentMarkdown } from "../../../packages/core/src/components/agent/AgentMarkdown";
 
+const queueFixture = new URLSearchParams(location.search).has("queue");
 const retryFixture = new URLSearchParams(location.search).has("retry");
 const snapshotFixture = new URLSearchParams(location.search).has("snapshots");
 const attachmentsFixture = new URLSearchParams(location.search).has("attachments") || snapshotFixture;
-const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture || attachmentsFixture;
+const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture || attachmentsFixture || queueFixture;
 const contextFixture = new URLSearchParams(location.search).has("context");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
 const vault = { search: async (query: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return [fixtureNote("document-b")].filter((note) => note.path?.toLowerCase().includes(query.toLowerCase())); }, getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
-const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
+const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, queueAttempts:0, loseQueueResponse:false, rejectQueueChange:false, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
 const limitsReady = new Promise<void>((resolve) => { controls.releaseLimits = resolve; if (!new URLSearchParams(location.search).has("slow-limits")) resolve(); });
 const sessionReady = new Promise<void>((resolve) => { controls.releaseSession = resolve; if (!new URLSearchParams(location.search).has("slow-session")) resolve(); });
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismFixtureUI: useUIStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
@@ -43,7 +44,26 @@ function acceptRetryRequest(kind: "session" | "turn", requestId?: string) {
   localStorage.setItem(key, JSON.stringify(accepted));
   throw new Error(`Fixture lost ${kind} response after acceptance`);
 }
+let followups:any[]=JSON.parse(localStorage.getItem('fixture-followups')??'[]');
+let queueTurns:any[]=JSON.parse(localStorage.getItem('fixture-queue-turns')??'[]');
+const persistQueue=()=>{localStorage.setItem('fixture-followups',JSON.stringify(followups));localStorage.setItem('fixture-queue-turns',JSON.stringify(queueTurns));};
+Object.assign(controls,{finishCurrent:()=>{for(const turn of queueTurns)turn.status='done';persistQueue();},pauseQueue:()=>{for(const row of followups){row.status='blocked';row.version++;row.error='Session permissions changed.';}persistQueue();}});
 const client: AgentClient = {
+  listFollowups:async()=>({followups:followups.filter(r=>r.status!=='cancelled'&&r.status!=='accepted').map(r=>({...r}))}),
+  queueFollowup:async(id,payload)=>{
+    controls.queueAttempts++;
+    let row=followups.find(r=>r.requestId===payload.requestId);
+    if(!row){row={id:crypto.randomUUID(),sessionId:id,requestId:payload.requestId,status:'waiting',version:1,permissionMode:session.permission_mode,payload,error:null,turnId:null,createdAt:Date.now()};followups.push(row);persistQueue();}
+    if(controls.loseQueueResponse){controls.loseQueueResponse=false;throw Error('Fixture queue response lost');}
+    return {followup:{...row}};
+  },
+  changeFollowup:async(_sid,id,change)=>{
+    const row=followups.find(r=>r.id===id);if(controls.rejectQueueChange||!row||row.version!==change.version)throw Error('Queue changed');
+    if(change.payload)row.payload=change.payload;
+    row.status=change.action==='cancel'?'cancelled':change.action==='resume'?'waiting':row.status;
+    if(change.action==='resume'){row.permissionMode=session.permission_mode;row.error=null;}
+    row.version++;persistQueue();return {followup:{...row}};
+  },
   scope: () => scope,
   createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (retryFixture) acceptRetryRequest("session", params?.requestId); session.note_id = params?.noteId ?? null; if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
   listSessions: async () => historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: Date.now(), lastTurnStatus: "done" as const })) : [],
@@ -53,10 +73,10 @@ const client: AgentClient = {
       session.permission_mode = session.pending_mode; session.pending_mode = null;
       session.profile = policyProfile(session.permission_mode); session.policy_version!++; persistPolicy();
     }
-    return { session: { ...session }, turns: historyFixture || (attachmentsFixture && !!localStorage.getItem("fixture-attachment-context")) ? [{ context: JSON.parse(localStorage.getItem("fixture-attachment-context") ?? "[]"), id: "history-turn", session_id: session.id, prompt: "Help me make the launch brief clearer. Keep the original tone and suggest a stronger opening.", note_id: session.note_id, status: "done", pid: null, exit_code: 0, error: null, cost_usd: 0.06, started_at: Date.now() - 60_000, ended_at: Date.now() - 58_000, finalText: "The brief already has a clear purpose. I would bring that purpose into the first sentence:\n\n**A shared place to think, write, and build—with your context close at hand.**\n\nThis keeps the focus on collaboration and gives the reader a concrete sense of what Prism helps them do.\n\nWould you like me to suggest this change in the document?", tools: [], touched: [] }] : [] };
+    return { session: { ...session }, turns: queueFixture ? queueTurns : historyFixture || (attachmentsFixture && !!localStorage.getItem("fixture-attachment-context")) ? [{ context: JSON.parse(localStorage.getItem("fixture-attachment-context") ?? "[]"), id: "history-turn", session_id: session.id, prompt: "Help me make the launch brief clearer. Keep the original tone and suggest a stronger opening.", note_id: session.note_id, status: "done", pid: null, exit_code: 0, error: null, cost_usd: 0.06, started_at: Date.now() - 60_000, ended_at: Date.now() - 58_000, finalText: "The brief already has a clear purpose. I would bring that purpose into the first sentence:\n\n**A shared place to think, write, and build—with your context close at hand.**\n\nThis keeps the focus on collaboration and gives the reader a concrete sense of what Prism helps them do.\n\nWould you like me to suggest this change in the document?", tools: [], touched: [] }] : [] };
   },
   ...(permissionsFixture ? {
-    getLimits: async () => { await limitsReady; return { billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[], idempotentRequests: true, ...(attachmentsFixture ? { contextNotes: { maxNotes: 5, maxCharactersPerNote: 8000 }, ...(snapshotFixture ? {contextSnapshots:{maxSnapshots:3,maxCharacters:8000}} : {}) } : {}) }; },
+    getLimits: async () => { await limitsReady; return { billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[], idempotentRequests: true, ...(queueFixture ? {followups:{maxQueued:10}} : {}), ...(attachmentsFixture ? { contextNotes: { maxNotes: 5, maxCharactersPerNote: 8000 }, ...(snapshotFixture ? {contextSnapshots:{maxSnapshots:3,maxCharacters:8000}} : {}) } : {}) }; },
     updatePermissions: async (_id: string, mode: AgentPermissionMode, version: number) => {
       if (version !== session.policy_version) throw new Error("Policy changed elsewhere");
       if (controls.pendingMode) { session.pending_mode = mode; settleAfter = 2; }
@@ -65,7 +85,8 @@ const client: AgentClient = {
       return { session: { ...session } };
     },
   } : {}),
-  sendTurn: async (_id, _prompt, options) => { controls.turnAttempts++; controls.lastOptions=options; if(controls.rejectTurn)throw Error("Fixture turn rejected"); if (retryFixture) acceptRetryRequest("turn", options?.requestId); const context = (options?.contextNoteIds ?? []).map((noteId) => ({ noteId, characters: 8000, truncated: true, updatedAt: "2026-10-01T10:00:00Z" })); const allContext=[...context,...(options?.contextSnapshots??[]).map(snapshot=>({noteId:snapshot.noteId??"",characters:snapshot.text.length,truncated:snapshot.truncated,updatedAt:snapshot.baseUpdatedAt??null,snapshot}))]; if (attachmentsFixture) localStorage.setItem("fixture-attachment-context", JSON.stringify(allContext)); return { turnId: "fixture-turn", status: retryFixture || attachmentsFixture ? "done" : "running", context:allContext }; },
+  sendTurn: async (_id, _prompt, options) => { controls.turnAttempts++; controls.lastOptions=options; if(controls.rejectTurn)throw Error("Fixture turn rejected"); if (retryFixture) acceptRetryRequest("turn", options?.requestId); const context = (options?.contextNoteIds ?? []).map((noteId) => ({ noteId, characters: 8000, truncated: true, updatedAt: "2026-10-01T10:00:00Z" })); if(queueFixture){queueTurns.push({id:crypto.randomUUID(),session_id:session.id,prompt:_prompt,note_id:session.note_id,status:'running',pid:null,exit_code:null,error:null,cost_usd:null,started_at:Date.now(),ended_at:null,finalText:'',tools:[],touched:[]});persistQueue();}
+    const allContext=[...context,...(options?.contextSnapshots??[]).map(snapshot=>({noteId:snapshot.noteId??"",characters:snapshot.text.length,truncated:snapshot.truncated,updatedAt:snapshot.baseUpdatedAt??null,snapshot}))]; if (attachmentsFixture) localStorage.setItem("fixture-attachment-context", JSON.stringify(allContext)); return { turnId: queueFixture ? queueTurns.at(-1).id : "fixture-turn", status: retryFixture || attachmentsFixture ? "done" : "running", context:allContext }; },
   cancelTurn: async () => true,
   archiveSession: async (id) => { controls.archived.push(id); },
   streamSession: (_id, _after, handlers) => {

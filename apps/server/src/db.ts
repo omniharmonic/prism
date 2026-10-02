@@ -424,6 +424,24 @@ db.exec(`
     ended_at   INTEGER
   );
   CREATE INDEX IF NOT EXISTS agent_turns_session ON agent_turns(session_id, started_at);
+  CREATE TABLE IF NOT EXISTS agent_followups (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+    request_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    version INTEGER NOT NULL DEFAULT 1,
+    policy_version INTEGER NOT NULL,
+    permission_mode TEXT NOT NULL,
+    allow_after_failure INTEGER NOT NULL DEFAULT 0,
+    turn_id TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(session_id, request_id)
+  );
+  CREATE INDEX IF NOT EXISTS agent_followups_session ON agent_followups(session_id, status, created_at);
   -- Per-turn spend ledger (WP3.4 daily budget). Separate from agent_turns because
   -- archiving a session deletes its turn rows — the day's spend must survive that.
   CREATE TABLE IF NOT EXISTS agent_cost_log (

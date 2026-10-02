@@ -1,3 +1,4 @@
+import { drainFollowups, listFollowups, recoverFollowups } from "../src/agent-followups";
 /**
  * Durable agent sessions (Arch v2 WP3.1) — routes + runner, end to end through an
  * INJECTED fake spawner that replays REAL recorded stream-json fixtures. No real
@@ -1289,4 +1290,78 @@ test("snapshot admission validates bounds and current note access before any exe
   vaultNotes.set("missing-source",{id:"missing-source",path:"PRIVATE",content:"PRIVATE",tags:[],metadata:{prism_visibility:"private",prism_creator:"other@example.test"},createdAt:"",updatedAt:null});
   assert.equal((await postTurn(sid,{prompt:"Discuss",contextSnapshots:[snapshot]})).status,409);
   assert.equal(listTurns(sid).length,0);
+});
+
+const queueFollowup=(sid:string,body:Record<string,unknown>)=>agentApi.request(`/sessions/${sid}/followups`,{method:'POST',headers:{...J,...owner()},body:JSON.stringify({policyVersion:getSession(sid)?.policy_version,...body})});
+const patchFollowup=(sid:string,id:string,body:Record<string,unknown>)=>agentApi.request(`/sessions/${sid}/followups/${id}`,{method:'PATCH',headers:{...J,...owner()},body:JSON.stringify({policyVersion:getSession(sid)?.policy_version,...body})});
+test('durable follow-ups stay editable until admission and execute once after the current turn',async()=>{
+ const sid=await newSession();await postTurn(sid,{prompt:'First'});
+ const body={prompt:'Original follow-up',requestId:'followup-request-0001'};
+ const first=await queueFollowup(sid,body);assert.equal(first.status,200);const row=(await first.json() as any).followup;
+ assert.equal((await (await queueFollowup(sid,body)).json() as any).followup.id,row.id);
+ assert.equal((await queueFollowup(sid,{...body,prompt:'Different request'})).status,409);
+ const edited=await patchFollowup(sid,row.id,{version:row.version,action:'edit',payload:{prompt:'Edited follow-up'}});assert.equal(edited.status,200);
+ assert.equal((await patchFollowup(sid,row.id,{version:row.version,action:'cancel'})).status,409);
+ await drainFollowups(sid);assert.equal(calls.length,1);assert.equal(listFollowups(sid)[0]?.payload.prompt,'Edited follow-up');
+ children[0]!.out(turnFixture('agent-stream-turn1.jsonl',sid));children[0]!.exit(0);
+ await drainFollowups(sid);assert.equal(calls.length,2);assert.match(calls[1]!.args.at(-1)!,/Edited follow-up/);
+ await drainFollowups(sid);assert.equal(calls.length,2);assert.equal(listFollowups(sid).length,0);
+ assert.equal((await (await queueFollowup(sid,body)).json() as any).followup.status,'accepted');
+});
+test('cancelled turns pause follow-ups; deliberate review can resume with current permissions',async()=>{
+ const sid=await newSession();const first=await (await postTurn(sid,{prompt:'First'})).json() as any;
+ const queued=(await (await queueFollowup(sid,{prompt:'Next',requestId:'followup-request-0002'})).json() as any).followup;
+ cancelTurn(first.turnId);await drainFollowups(sid);
+ let row=listFollowups(sid)[0]!;assert.equal(row.status,'blocked');assert.equal(calls.length,1);
+ const resumed=await patchFollowup(sid,queued.id,{version:row.version,action:'resume',payload:row.payload});assert.equal(resumed.status,200);
+ await drainFollowups(sid);assert.equal(calls.length,2);assert.equal(listFollowups(sid).length,0);
+});
+test('permission changes and source revocations cannot silently execute queued context',async()=>{
+ const sid=await newSession();await postTurn(sid,{prompt:'First'});
+ await queueFollowup(sid,{prompt:'Next',requestId:'followup-request-0003',contextNoteIds:['missing-note']});
+ children[0]!.out(turnFixture('agent-stream-turn1.jsonl',sid));children[0]!.exit(0);
+ await drainFollowups(sid);assert.equal(calls.length,1);assert.equal(listFollowups(sid)[0]!.status,'blocked');
+ const row=listFollowups(sid)[0]!;
+ await patchFollowup(sid,row.id,{version:row.version,action:'resume',payload:{prompt:'No sources'}});
+ db.prepare('UPDATE agent_sessions SET policy_version=policy_version+1 WHERE id=?').run(sid);
+ await drainFollowups(sid);assert.equal(calls.length,1);assert.match(listFollowups(sid)[0]!.error!,/permissions changed/);
+});
+test('follow-up recovery blocks uncertain admissions, and archive removes queued payloads',async()=>{
+ const sid=await newSession();await postTurn(sid,{prompt:'First'});
+ await queueFollowup(sid,{prompt:'Waiting',requestId:'followup-request-0004'});
+ recoverFollowups();assert.equal(listFollowups(sid)[0]!.status,'blocked');
+ const row=listFollowups(sid)[0]!;
+ assert.equal((await patchFollowup(sid,row.id,{version:row.version,action:'cancel'})).status,200);
+ assert.equal(listFollowups(sid).length,0);
+ const queued=(await (await queueFollowup(sid,{prompt:'Another',requestId:'followup-request-0005'})).json() as any).followup;
+ const turn=await (await postTurn(sid,{prompt:'Impossible simultaneous'})).json() as any;assert.equal(turn.error,'conflict');
+ db.prepare("UPDATE agent_followups SET status='dispatching' WHERE id=?").run(queued.id);
+ recoverFollowups();assert.equal(listFollowups(sid)[0]!.status,'blocked');
+ await agentApi.request(`/sessions/${sid}`,{method:'DELETE',headers:owner()});
+ assert.equal((db.prepare('SELECT count(*) AS n FROM agent_followups WHERE session_id=?').get(sid) as any).n,0);
+});
+
+test('successful turn completion automatically drains the durable queue without an open client',async()=>{
+ const sid=await newSession();await postTurn(sid,{prompt:'First'});
+ await queueFollowup(sid,{prompt:'Automatic next',requestId:'followup-auto-0001'});
+ children[0]!.out(turnFixture('agent-stream-turn1.jsonl',sid));children[0]!.exit(0);
+ for(let i=0;i<50&&calls.length<2;i++)await sleep(10);
+ assert.equal(calls.length,2);assert.match(calls[1]!.args.at(-1)!,/Automatic next/);
+ const accepted=db.prepare('SELECT * FROM agent_followups WHERE session_id=?').get(sid) as any;
+ assert.equal(accepted.status,'accepted');assert.equal(accepted.payload,'{"prompt":""}');
+ db.prepare("UPDATE agent_followups SET status='dispatching' WHERE id=?").run(accepted.id);
+ recoverFollowups();await drainFollowups(sid);
+ assert.equal(listFollowups(sid).length,0);assert.equal(calls.length,2);
+});
+test('queue capacity, actor isolation and stale permission reviews fail before admission',async()=>{
+ const sid=await newSession();await postTurn(sid,{prompt:'First'});
+ assert.equal((await queueFollowup(sid,{prompt:'Wrong mode',requestId:'followup-mode-0001',policyVersion:0})).status,409);
+ assert.equal(listFollowups(sid).length,0);
+ for(let i=0;i<10;i++)assert.equal((await queueFollowup(sid,{prompt:`Queued ${i}`,requestId:`followup-capacity-${i}`})).status,200);
+ assert.equal((await queueFollowup(sid,{prompt:'Overflow',requestId:'followup-overflow-1'})).status,409);
+ assert.equal((await queueFollowup(sid,{prompt:'x'.repeat(50001),requestId:'followup-oversize-1'})).status,400);
+ const denied=await agentApi.request(`/sessions/${sid}/followups`);assert.equal(denied.status,403);
+ recoverFollowups();const row=listFollowups(sid)[0]!;
+ assert.equal((await patchFollowup(sid,row.id,{version:row.version,action:'resume',policyVersion:0,payload:row.payload})).status,409);
+ assert.equal(listFollowups(sid)[0]!.status,'blocked');assert.equal(calls.length,1);
 });

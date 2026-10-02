@@ -1,3 +1,4 @@
+import { AgentFollowupQueue, followupKey } from "./AgentFollowupQueue";
 import { AgentSnapshotAttachments, AgentSnapshotPreview } from "./AgentSnapshotAttachments";
 import { validContextSnapshots, type AgentContextSnapshot } from "../../lib/agent/contextSnapshots";
 /**
@@ -430,6 +431,13 @@ export function Conversation({
     try { const parsed: unknown = JSON.parse(snapshotDraft.text || "[]"); return validContextSnapshots(parsed) ? parsed : []; } catch { return []; }
   }, [snapshotDraft.text]);
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+  const pendingFollowup = useComposerDraft(client.scope?.() || null, `pending-followup:${sessionId ?? "new"}`);
+  const pendingQueuedRequest = useMemo(() => {
+    try {
+      const value = JSON.parse(pendingFollowup.text || "null");
+      return value && typeof value.prompt === "string" && typeof value.requestId === "string" ? value as Parameters<NonNullable<AgentClient["queueFollowup"]>>[1] : null;
+    } catch { return null; }
+  }, [pendingFollowup.text]);
   const [readingFile, setReadingFile] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
@@ -468,6 +476,7 @@ export function Conversation({
   const isDraft = !sessionId;
   const awaitingSession = !isDraft && (conv.loading || conv.session?.id !== sessionId);
   const running = !!conv.active;
+  const canQueue = !!sessionId && !!limits?.followups && !!client.queueFollowup && !!client.listFollowups && !!client.changeFollowup;
   // A turn just finished → today's spend changed: refresh the budget line.
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -499,7 +508,11 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || readingFile || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if ((!text && !pendingQueuedRequest) || readingFile || (running && !canQueue) || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if ((pendingQueuedRequest && !canQueue) || (pendingFollowup.text && !pendingQueuedRequest)) {
+        conv.setError("The pending queued message needs confirmation before another instruction can be sent. Reconnect to the queue-enabled server or inspect the queue in a new session.");
+        return;
+      }
       if (contextSnapshots.length && !limits?.contextSnapshots) {
         const message = "This server can't accept captured snapshots. Remove them or reconnect to the updated server.";
         if (isDraft) setDraftError(message); else conv.setError(message);
@@ -518,7 +531,7 @@ export function Conversation({
       const scope = client.scope?.();
       const conversation = sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`;
       let requestId: string | undefined;
-      if (idempotentRequests) {
+      if (idempotentRequests && !((running || pendingQueuedRequest) && canQueue)) {
         try {
           if (!scope) throw new Error("Wait for your workspace identity before sending.");
           const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}), ...(contextSnapshots.length ? { contextSnapshots } : {}) });
@@ -530,6 +543,29 @@ export function Conversation({
           setSending(false);
           return;
         }
+      }
+      if ((running || pendingQueuedRequest) && canQueue && sessionId) {
+        try {
+          if (!scope) throw Error("Wait for your workspace identity before queueing.");
+          const payload = pendingQueuedRequest ?? { policyVersion: conv.session!.policy_version!, prompt: text, ...(conv.session?.note_id ? {noteId:conv.session.note_id} : {}), ...(contextNoteIds.length ? {contextNoteIds} : {}), ...(contextSnapshots.length ? {contextSnapshots} : {}) };
+          const receipt = pendingQueuedRequest ? { id: pendingQueuedRequest.requestId } : await requestReceipt(scope, `followups:${sessionId}`, payload);
+          const queuedRequest = {...payload,requestId:receipt.id};
+          const serialized = JSON.stringify(queuedRequest);
+          if (!pendingFollowup.setText(serialized)) throw Error("Prism could not save the queue receipt. Copy your draft and free some browser storage before queueing.");
+          if (client.scope?.() !== scope) throw Error("Workspace changed");
+          await client.queueFollowup!(sessionId, queuedRequest);
+          if (client.scope?.() !== scope) return;
+          clearRequestReceipt(scope, `followups:${sessionId}`,receipt.id);
+          pendingFollowup.clearIfUnchanged(serialized);
+          clearIfUnchanged(pendingQueuedRequest ? pendingQueuedRequest.prompt : sentDraft);
+          contextDraft.clearIfUnchanged(payload.contextNoteIds?.length ? JSON.stringify(payload.contextNoteIds) : "");
+          snapshotDraft.clearIfUnchanged(payload.contextSnapshots?.length ? JSON.stringify(payload.contextSnapshots) : "");
+          conv.setError(null);
+          await queryClient.invalidateQueries({queryKey:followupKey(client,sessionId)});
+          await conv.reload();
+        } catch(e) {conv.setError(agentErrorText(e));}
+        finally {sendingRef.current=false;setSending(false);}
+        return;
       }
       if (isDraft) {
         setDraftError(null);
@@ -565,7 +601,7 @@ export function Conversation({
       sendingRef.current = false;
       setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes, contextSnapshots, snapshotDraft, limits?.contextSnapshots, readingFile],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes, contextSnapshots, snapshotDraft, limits?.contextSnapshots, readingFile, canQueue, pendingFollowup, pendingQueuedRequest],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
@@ -662,6 +698,7 @@ export function Conversation({
         background: fullScreen ? "var(--bg-surface)" : undefined,
       }}
     >
+      {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
       {isDraft && !permissionModes?.length && (
         <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <div className="flex flex-wrap rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
@@ -705,6 +742,8 @@ export function Conversation({
         </div>
       )}
       {isDraft && <AgentBudgetLine />}
+      {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
+      {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
       {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
       {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
       {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
@@ -725,7 +764,7 @@ export function Conversation({
           onKeyDown={onKeyDown}
           rows={1}
           enterKeyHint={mobileComposer ? "enter" : undefined}
-          placeholder={running ? "The agent is working…" : isDraft ? "Ask the agent…" : "Reply…"}
+          placeholder={running ? (canQueue ? "Add a follow-up…" : "The agent is working…") : isDraft ? "Ask the agent…" : "Reply…"}
           data-testid="agent-input"
           className="min-w-0 flex-1 resize-none rounded-2xl px-3.5 py-2 outline-none"
           style={{
@@ -738,6 +777,7 @@ export function Conversation({
             maxHeight: 160,
           }}
         />
+        {running && canQueue && <button onClick={()=>void submit()} disabled={(!input.trim() && !pendingQueuedRequest) || sending || readingFile || changingMode || !!permissionPending || awaitingSession || limitsUnavailable} className="focus-ring min-h-10 shrink-0 rounded-full border border-[var(--glass-border)] px-3 text-xs disabled:opacity-40" aria-label={pendingQueuedRequest ? "Check queued message" : "Queue follow-up"}>{pendingQueuedRequest ? "Check" : "Queue"}</button>}
         {running ? (
           <button
             onClick={() => void conv.cancel()}
@@ -752,8 +792,8 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || sending || readingFile || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
-            aria-label="Send"
+            disabled={(!input.trim() && !pendingQueuedRequest) || sending || readingFile || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
+            aria-label={pendingQueuedRequest ? "Check queued message" : "Send"}
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
             style={{ width: 40, height: 40, background: "var(--color-accent)", color: "#fff" }}

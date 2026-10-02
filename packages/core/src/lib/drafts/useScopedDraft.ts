@@ -21,15 +21,18 @@ export function useScopedDraft(namespace: string, scope: string | null, conversa
   const error = useSyncExternalStore(subscribe, () => errors.get(key) ?? "", () => "");
   const setText = useCallback((next: string) => {
     values.set(key, next);
+    let persisted = true;
     try {
       if (!scope) throw new Error("unresolved audience");
       if (next) localStorage.setItem(key, next);
       else localStorage.removeItem(key);
       errors.delete(key);
     } catch {
+      persisted = false;
       errors.set(key, "This draft is only held in this window. Keep it open or copy the text before leaving.");
     }
     listeners.forEach((listener) => listener());
+    return persisted;
   }, [key, scope]);
   const clearIfUnchanged = useCallback((sentText: string) => {
     // A second view may have edited the same draft while this send was pending.

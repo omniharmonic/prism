@@ -27,6 +27,7 @@ export interface AgentLimits {
   defaultProfile: AgentProfile;
   permissionModes?: AgentPermissionMode[];
   idempotentRequests?: boolean;
+  followups?: { maxQueued: number };
   contextSnapshots?: { maxSnapshots: number; maxCharacters: number };
   contextNotes?: { maxNotes: number; maxCharactersPerNote: number };
 }
@@ -140,7 +141,12 @@ export class AgentApiError extends Error {
   }
 }
 
+export interface AgentFollowupPayload { prompt: string; noteId?: string; contextNoteIds?: string[]; contextSnapshots?: AgentContextSnapshot[] }
+export interface AgentFollowup { id: string; sessionId: string; status: "waiting" | "dispatching" | "blocked" | "accepted" | "cancelled"; version: number; permissionMode: AgentPermissionMode; payload: AgentFollowupPayload; error: string | null; turnId: string | null; createdAt: number }
 export interface AgentClient {
+  listFollowups?(sessionId: string): Promise<{ followups: AgentFollowup[] }>;
+  queueFollowup?(sessionId: string, payload: AgentFollowupPayload & { requestId: string; policyVersion: number }): Promise<{ followup: AgentFollowup }>;
+  changeFollowup?(sessionId: string, id: string, change: { version: number; action: "edit" | "cancel" | "resume"; policyVersion?: number; payload?: AgentFollowupPayload }): Promise<{ followup: AgentFollowup }>;
   updatePermissions?(sessionId: string, mode: AgentPermissionMode, expectedVersion: number): Promise<{ session: AgentSession }>;
   createSession(params?: CreateSessionParams): Promise<{ sessionId: string; session: AgentSession }>;
   listSessions(opts?: { limit?: number; archived?: boolean }): Promise<AgentSessionSummary[]>;

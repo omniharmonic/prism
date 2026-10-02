@@ -1,3 +1,4 @@
+import { scheduleFollowups, recoverFollowups, discardFollowups, resetFollowupTimers } from "./agent-followups";
 import { validContextSnapshots, canonicalSnapshot, type AgentContextSnapshot } from "../../../packages/core/src/lib/agent/contextSnapshots";
 /**
  * Durable multi-turn agent SESSIONS (Arch v2 WP3.1) over the hardened runner.
@@ -617,6 +618,7 @@ function releaseUserSlot(email: string, turnId: string): void {
 
 /** Wipe a session's turn + event rows (archive; the session row stays). */
 function deleteSessionRows(sessionId: string): void {
+  discardFollowups(sessionId);
   q.deleteEvents.run(sessionId);
   q.deleteTurns.run(sessionId);
 }
@@ -801,6 +803,7 @@ export async function startTurn(
     if (turnCost != null && turnCost > 0) q.insertCost.run(turnId, email, turnCost, deps.now());
     if (cur && cur.status === "running") q.setSessionStatus.run("idle", deps.now(), sessionId);
     record(sessionId, turnId, error ? { t: "status", status, reason: error.slice(0, 300) } : statusEv(status));
+    scheduleFollowups(sessionId);
     notifyTurnEnd(sessionId, turnId, status); // WP3.3 push seam — fire-and-forget, ids only
     if (deps.transcriptMirror) {
       void mirrorTranscript(sessionId).catch((e) => console.error(`[agent] transcript mirror failed: ${(e as Error).message}`));
@@ -898,6 +901,7 @@ export function cancelTurn(turnId: string): boolean {
   q.turnEnd.run("cancelled", null, null, null, deps.now(), turnId);
   if (getSession(t.session_id)?.status === "running") q.setSessionStatus.run("idle", deps.now(), t.session_id);
   record(t.session_id, turnId, { t: "status", status: "cancelled" });
+  scheduleFollowups(t.session_id);
   return true;
 }
 
@@ -935,6 +939,7 @@ export function bootSweepAgentSessions(): { interrupted: number } {
     `UPDATE agent_sessions SET status = 'idle', updated_at = ? WHERE status = 'running'
      AND id NOT IN (SELECT session_id FROM agent_turns WHERE status IN ('queued','running'))`,
   ).run(deps.now());
+  recoverFollowups();
   return { interrupted: orphans.length };
 }
 
@@ -1099,6 +1104,7 @@ export async function mirrorTranscript(sessionId: string): Promise<string | null
 
 /** Test-only: drop live state + restore default deps. */
 export function _resetAgentSessions(): void {
+  resetFollowupTimers();
   listeners.clear();
   handles.clear();
   userSlot.clear();
