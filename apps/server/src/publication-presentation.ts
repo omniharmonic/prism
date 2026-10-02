@@ -1,3 +1,4 @@
+import { parsePublicationNavigation, eligiblePublicationNavigation } from "../../../packages/core/src/lib/publishing/navigation";
 /** Versioned presentation only. Never snapshots document bodies, access grants,
  * password hashes, or publication membership. Every transition is one SQLite
  * transaction; revisions detect stale editors and legacy settings changes. */
@@ -56,7 +57,11 @@ export function validatePresentation(value: unknown): Presentation {
       return fail("Theme must be an object under 4 KB.");
     clean = {};
     for (const [key, v] of Object.entries(theme)) {
-      if (key === "logoUrl" || key === "coverUrl") {
+      if (key === "navigation") {
+        const navigation = parsePublicationNavigation(v);
+        if (!navigation) return fail("Navigation needs version 1, at most 8 named sections and 64 unique page IDs.");
+        clean[key] = navigation;
+      } else if (key === "logoUrl" || key === "coverUrl") {
         if (typeof v !== "string" || v.length > 2048)
           return fail("Use a valid HTTPS image URL.");
         if (!v.trim()) continue;
@@ -267,3 +272,11 @@ export const restorePresentationDraft = db.transaction(
     );
   },
 );
+
+/** Public projection of theme preferences: never expose unavailable page IDs. */
+export function readerPresentationTheme(value: unknown, noteIds: string[]) {
+  if (!object(value)) return null;
+  const {navigation, ...rest} = value;
+  const eligible = eligiblePublicationNavigation(navigation, new Set(noteIds));
+  return eligible ? {...rest, navigation: eligible} : rest;
+}
