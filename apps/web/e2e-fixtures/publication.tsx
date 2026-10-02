@@ -4,7 +4,7 @@ import { PublicationView } from "../src/publish/PublicationView";
 const params = new URLSearchParams(location.search);
 const longTitle = "PRISM_SITE_STUDIO_UI_VERIFIED".repeat(4);
 const pageTitle = (id: string) =>
-  params.has("long-content")
+  params.has("typography") ? "Shared understanding" : params.has("long-content")
     ? longTitle
     : id === "first"
       ? "First page"
@@ -119,6 +119,7 @@ window.fetch = async (input, init) => {
         (params.has("font")
           ? "<h2>Reading together</h2><pre><code>const source = true;</code></pre>"
           : "") +
+        (params.has("typography") ? `<h1>A place for shared understanding</h1><h2>Working together</h2><p>Shared context makes our notes easier to read and revisit.</p><p>${"UNBROKEN_TOKEN_".repeat(12)}</p>` : "") +
         (params.has("long-content")
           ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`
           : ""),
