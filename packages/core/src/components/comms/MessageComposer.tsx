@@ -1,5 +1,6 @@
 import "./messages.css";
 import { useState, useRef, useEffect } from "react";
+import { useComposerAutosize } from "./useComposerAutosize";
 import { Send, Loader2 } from "lucide-react";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import {
@@ -49,6 +50,7 @@ function ScopedMessageComposer({
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  useComposerAutosize(inputRef, text);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -141,7 +143,7 @@ function ScopedMessageComposer({
           }}
           disabled={disabled || sending}
           placeholder={placeholder || "Write a message…"}
-          rows={2}
+          rows={1}
           className="flex-1 min-w-0 resize-none rounded-lg px-3 py-2 text-sm"
           style={{
             color: "var(--text-primary)",
