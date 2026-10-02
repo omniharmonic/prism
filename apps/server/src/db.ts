@@ -811,24 +811,55 @@ db.exec(`CREATE INDEX IF NOT EXISTS collab_docs_vault ON collab_docs(vault_id, n
 // reached storage. Unconfirmed rows are scoped by `doc_name`, not by note: a
 // federated note can be open under its space key and under its bare id at once,
 // and one instance's load/store must not drop or confirm the other's commands.
-db.exec(`
+const COLLAB_RECEIPTS_DDL = `
   CREATE TABLE IF NOT EXISTS collab_command_receipts (
-    vault_id     TEXT NOT NULL,
-    note_id      TEXT NOT NULL,
-    doc_name     TEXT NOT NULL,          -- the collab document it was applied to (note id, vault::id, or a space key)
-    actor        TEXT NOT NULL,          -- server-derived: user:<email> | capability:<id>
-    request_id   TEXT NOT NULL,          -- client uuid
-    command_hash TEXT NOT NULL,          -- sha256 of the canonical command body
-    kind         TEXT NOT NULL,
-    result       TEXT NOT NULL,          -- JSON HumanCollabResult (ids only, no content)
-    state        TEXT NOT NULL,          -- applied | durable
-    created_at   INTEGER NOT NULL,
-    durable_at   INTEGER,
+    vault_id      TEXT NOT NULL,
+    note_id       TEXT NOT NULL,
+    doc_name      TEXT NOT NULL,          -- the collab document it was applied to (note id, vault::id, or a space key)
+    actor         TEXT NOT NULL,          -- server-derived: user:<email> | capability:<id>
+    request_id    TEXT NOT NULL,          -- client uuid
+    command_hash  TEXT NOT NULL,          -- sha256 of the canonical command body
+    kind          TEXT NOT NULL,
+    result        TEXT NOT NULL,          -- JSON HumanCollabResult (ids only, no content)
+    state         TEXT NOT NULL,          -- applied | durable
+    created_at    INTEGER NOT NULL,
+    durable_at    INTEGER,
+    body_bytes    INTEGER NOT NULL DEFAULT 0, -- rendered-body growth this command caused (per-actor budget)
+    comment_bytes INTEGER NOT NULL DEFAULT 0, -- comment data it added (per-actor budget)
     PRIMARY KEY (vault_id, note_id, actor, request_id)
   );
   CREATE INDEX IF NOT EXISTS collab_command_receipts_doc ON collab_command_receipts(doc_name, state);
   CREATE INDEX IF NOT EXISTS collab_command_receipts_age ON collab_command_receipts(created_at);
-`);
+  CREATE INDEX IF NOT EXISTS collab_command_receipts_actor ON collab_command_receipts(vault_id, note_id, actor, created_at);
+`;
+/**
+ * Create / migrate the receipts table. Receipts live at most ~24 h and an
+ * upgrade restarts the server (every in-memory document is reloaded, which
+ * forgets unconfirmed receipts anyway), so an older shape — the first two
+ * pre-release commits had no `doc_name`, then no byte columns, and an index on
+ * (vault_id, note_id, state) — is DROPPED and recreated rather than altered.
+ * Losing a durable receipt cannot cause a second application: a command can
+ * only apply when the document revision equals the one it was prepared
+ * against, which its own effect changed. Exported for the migration test.
+ */
+export function migrateCollabReceipts(d: Database.Database): "created" | "current" | "recreated" {
+  const cols = new Set((d.prepare("PRAGMA table_info(collab_command_receipts)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (cols.size === 0) {
+    d.exec(COLLAB_RECEIPTS_DDL);
+    return "created";
+  }
+  const want = ["doc_name", "body_bytes", "comment_bytes"];
+  if (want.every((c) => cols.has(c))) {
+    d.exec(COLLAB_RECEIPTS_DDL); // indexes are IF NOT EXISTS
+    return "current";
+  }
+  d.transaction(() => {
+    d.exec("DROP TABLE collab_command_receipts"); // drops its indexes with it
+    d.exec(COLLAB_RECEIPTS_DDL);
+  })();
+  return "recreated";
+}
+migrateCollabReceipts(db);
 
 // ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
 const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -1797,6 +1828,8 @@ export interface CollabCommandReceipt {
   state: "applied" | "durable";
   created_at: number;
   durable_at: number | null;
+  body_bytes: number;
+  comment_bytes: number;
 }
 /** An unconfirmed receipt, as the load/store paths handle it. */
 export interface UnconfirmedCollabReceipt {
@@ -1808,8 +1841,8 @@ const selectCollabReceipt = db.prepare(
   "SELECT * FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?",
 );
 const insertCollabReceiptStmt = db.prepare(
-  `INSERT INTO collab_command_receipts (vault_id, note_id, doc_name, actor, request_id, command_hash, kind, result, state, created_at, durable_at)
-   VALUES (@vault_id, @note_id, @doc_name, @actor, @request_id, @command_hash, @kind, @result, 'applied', @created_at, NULL)`,
+  `INSERT INTO collab_command_receipts (vault_id, note_id, doc_name, actor, request_id, command_hash, kind, result, state, created_at, durable_at, body_bytes, comment_bytes)
+   VALUES (@vault_id, @note_id, @doc_name, @actor, @request_id, @command_hash, @kind, @result, 'applied', @created_at, NULL, @body_bytes, @comment_bytes)`,
 );
 const selectUnconfirmedCollabReceipts = db.prepare(
   "SELECT rowid, kind, result FROM collab_command_receipts WHERE doc_name = ? AND state = 'applied' ORDER BY rowid",
@@ -1825,8 +1858,26 @@ export function getCollabReceipt(vaultId: string, noteId: string, actor: string,
   return (selectCollabReceipt.get(vaultId, noteId, actor, requestId) as CollabCommandReceipt | undefined) ?? null;
 }
 /** Record a command as applied-in-memory. Throws on a duplicate key. */
-export function insertCollabReceipt(r: Omit<CollabCommandReceipt, "state" | "durable_at">): void {
-  insertCollabReceiptStmt.run(r);
+export function insertCollabReceipt(r: Omit<CollabCommandReceipt, "state" | "durable_at" | "body_bytes" | "comment_bytes"> & { body_bytes?: number; comment_bytes?: number }): void {
+  insertCollabReceiptStmt.run({ body_bytes: 0, comment_bytes: 0, ...r });
+}
+const deleteCollabReceiptStmt = db.prepare("DELETE FROM collab_command_receipts WHERE rowid = ? AND state = 'applied'");
+/** Forget unconfirmed receipts whose change is no longer in the document. */
+export function deleteUnconfirmedCollabReceipts(rowids: number[]): void {
+  for (const r of rowids) deleteCollabReceiptStmt.run(r);
+}
+const actorUsageStmt = db.prepare(
+  `SELECT
+     SUM(CASE WHEN kind IN ('resolve','delete-comment') THEN 0 ELSE 1 END) AS growing,
+     SUM(CASE WHEN kind IN ('resolve','delete-comment') THEN 1 ELSE 0 END) AS housekeeping,
+     COALESCE(SUM(body_bytes), 0) AS body,
+     COALESCE(SUM(comment_bytes), 0) AS comments
+   FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ?`,
+);
+/** One actor's recent use of one document (within retention). */
+export function collabActorUsage(vaultId: string, noteId: string, actor: string): { growing: number; housekeeping: number; body: number; comments: number } {
+  const r = actorUsageStmt.get(vaultId, noteId, actor) as { growing: number | null; housekeeping: number | null; body: number; comments: number };
+  return { growing: r.growing ?? 0, housekeeping: r.housekeeping ?? 0, body: r.body, comments: r.comments };
 }
 /** The commands applied to this in-memory document that no store has confirmed yet. */
 export function unconfirmedCollabReceipts(docName: string): UnconfirmedCollabReceipt[] {

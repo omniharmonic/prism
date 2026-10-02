@@ -46,6 +46,7 @@ import {
   grantsForCapability,
   grantsForUser,
   insertCollabReceipt,
+  migrateCollabReceipts,
   pruneCollabReceipts,
   saveDocState,
   removeGrant,
@@ -55,7 +56,13 @@ import {
 } from "../src/db";
 import { issueDeviceToken } from "../src/auth/device";
 import { verifyCapability } from "../src/auth/capability";
+import Database from "better-sqlite3";
 import {
+  ACTOR_BODY_BYTES,
+  ACTOR_COMMENT_BYTES,
+  MAX_AUTHOR_NAME,
+  MAX_COMMENTS_BYTES,
+  undoLostCommands,
   COMMENTS_PER_THREAD,
   documentActorId,
   executeHumanCommand,
@@ -89,13 +96,14 @@ let ip: string;
 const sockets = new Set<Socket>();
 const providers: HocuspocusProvider[] = [];
 const savedDebounce = { debounce: hocuspocus.configuration.debounce, maxDebounce: hocuspocus.configuration.maxDebounce };
-const flag = config as { collabSuggestEnforced: boolean };
+const flag = config as { collabSuggestEnforced: boolean; collabCommandsPerMinute: number };
 const schema = collabSchema();
 
 beforeEach(async () => {
   resetDb();
   resetReconcileState();
   flag.collabSuggestEnforced = true;
+  flag.collabCommandsPerMinute = 100_000; // the per-actor rate limit has its own test
   fv = installFakeVault();
   app = createApp();
   ip = `10.${randomBytes(1)[0]}.${randomBytes(1)[0]}.${randomBytes(1)[0]}`;
@@ -279,7 +287,7 @@ async function unloaded(name: string) {
 // ── revision canonicalisation ───────────────────────────────────────────────
 
 test("canonical JSON is key-order independent, whitespace-free and deterministic", () => {
-  assert.equal(canonicalCollabState({ b: 1, a: [{ d: undefined, c: "é \"" }], n: null }), '{"a":[{"c":"é \\"","d":null}],"b":1,"n":null}');
+  assert.equal(canonicalCollabState({ b: 1, a: [{ d: undefined, c: "é\u2028\"" }], n: null }), '{"a":[{"c":"é\u2028\\"","d":null}],"b":1,"n":null}');
   assert.equal(canonicalCollabState({ a: { y: 1, x: 2 } }), canonicalCollabState({ a: { x: 2, y: 1 } }));
   assert.equal(humanCollabRevisionInput({ type: "doc" }, {}), '{"comments":{},"doc":{"type":"doc"}}');
 });
@@ -1026,7 +1034,7 @@ test("H1: a range that cannot be marked completely is refused whole (code spans,
     const doc = pm(editor);
     const from = findTextRange(doc, a)!.from;
     const to = findTextRange(doc, b)!.to;
-    return { from, to, quote: doc.textBetween(from, to, "\n", "￼") };
+    return { from, to, quote: doc.textBetween(from, to, "\n", "\ufffc") };
   };
   for (const [label, sel, text] of [
     ["delete across a code span", () => range("aa", "cc"), ""],
@@ -1060,6 +1068,7 @@ test("H2: the endpoint addresses a note ONLY by its id — a path / title alias 
   const auth = userAuth(SUGGESTER);
   fv.put({ id: "p1", tags: ["garden"], path: "Garden/Alias Note", content: BODY, updatedAt: T0 });
   fv.put({ id: "p2", tags: ["garden"], path: "roadmap", content: BODY, updatedAt: T0 });
+  fv.put({ id: "p3", tags: ["garden"], metadata: { title: "Quarterly-Plan" }, content: BODY, updatedAt: T0 }); // reachable by unique TITLE
   const editor = await editorClient("p1");
   const p = editor.getXmlFragment("default").get(0) as Y.XmlElement;
   (p.get(0) as Y.XmlText).insert(0, "UNSAVED ");
@@ -1067,7 +1076,7 @@ test("H2: the endpoint addresses a note ONLY by its id — a path / title alias 
   const cmd = await command(offlineDoc("p2"), () => ({ kind: "suggest", ...select(offlineDoc("p2"), "alpha"), text: "x" }));
   const missing = await post("no-such-note", cmd, auth);
   assert.equal(missing.status, 404);
-  for (const alias of ["Garden/Alias Note", "garden/alias note", "GARDEN/ALIAS NOTE", "roadmap", "ROADMAP"]) {
+  for (const alias of ["Garden/Alias Note", "garden/alias note", "GARDEN/ALIAS NOTE", "roadmap", "ROADMAP", "Quarterly-Plan", "quarterly-plan"]) {
     const calls = fv.calls.length;
     const r = await post(alias, cmd, auth);
     assert.equal(r.status, 404, `${alias}: ${JSON.stringify(r.body)}`);
@@ -1317,4 +1326,270 @@ test("LOW-b: unconfirmed receipts belong to ONE in-memory document — loading t
   assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1")!.state, "applied");
   await loadDocumentState("space-key-1", new Y.Doc());
   assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1"), null, "its own document's load drops it");
+});
+
+// ── second review (store fold, text hygiene, budgets, cost, migration) ──────
+
+test("R1: a store that folds a newer vault copy does NOT confirm a command whose change the fold removed — 503, cleaned up, then stale", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  for (const kind of ["suggest", "comment"] as const) {
+    const id = `fold-${kind}`;
+    fv.put({ id, tags: ["garden"], content: BODY, updatedAt: T0 });
+    const editor = await editorClient(id); // keeps the document in memory
+    const cmd = await command(editor, () => (kind === "suggest" ? { kind, ...select(editor, "beta"), text: "gamma" } : { kind, ...select(editor, "beta"), text: "note" }));
+    // An external writer replaces the note AFTER the command is applied in
+    // memory and BEFORE its store reads the vault: the store folds that copy
+    // over the live document, which removes the command's marks.
+    const inner = globalThis.fetch;
+    let done = false;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!done && getCollabReceipt("primary", id, auth.identity, cmd.requestId)) {
+        done = true;
+        fv.put({ id, tags: ["garden"], content: "<p>alpha</p><p>rewritten elsewhere</p>", updatedAt: "2026-12-01T00:00:00.000Z" });
+      }
+      return inner(input, init);
+    }) as typeof fetch;
+    const r = await post(id, cmd, auth);
+    globalThis.fetch = inner;
+    assert.equal(done, true);
+    assert.equal(r.status, 503, `${kind}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.error, "not_confirmed");
+    assert.equal(getCollabReceipt("primary", id, auth.identity, cmd.requestId), null, "the receipt of the removed change is forgotten, not confirmed");
+    const html = yDocToHtml(live(id)!);
+    assert.equal(html, "<p>alpha</p><p>rewritten elsewhere</p>", "the external copy stands, with no leftover marks");
+    assert.equal(live(id)!.getMap("comments").size, 0, "no thread left without its anchor");
+    await caughtUp(editor);
+    const retry = await post(id, cmd, auth);
+    assert.equal(retry.status, 409);
+    assert.equal(retry.body.error, "stale_revision");
+    assert.equal(retry.replayed, false);
+    for (const p of providers.splice(0)) p.destroy();
+    connected.length = 0;
+    await unloaded(id);
+  }
+});
+
+test("R2: ill-formed or control text is refused before it can reach the document; whitespace the stored HTML cannot keep is refused too", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  const editor = await editorClient("d1");
+  const before = stateOf("d1");
+  const lone = "x\ud83dy";
+  const raw = (o: Record<string, unknown>) => JSON.stringify(o).replace(/"__LONE__"/g, '"x\\ud83dy"');
+  const base = await command(editor, () => ({ kind: "suggest", ...caretAfter(editor, "alpha"), text: "__LONE__" }));
+  assert.equal(JSON.parse(raw(base)).text, lone, "the fixture really sends a lone surrogate");
+  for (const body of [
+    raw(base),
+    raw({ ...base, kind: "comment", ...select(editor, "alpha"), text: "__LONE__" }),
+    raw({ ...base, quote: "__LONE__" }),
+    raw({ requestId: base.requestId, createdAt: base.createdAt, revision: base.revision, kind: "reply", threadId: "c-1", text: "__LONE__" }),
+  ]) {
+    const r = await post("d1", body, auth);
+    assert.equal(r.status, 400, body.slice(0, 120));
+    assert.equal(r.body.error, "invalid_command");
+  }
+  for (const text of ["a\u0000b", "a\u0007b", "a\tb", "a\u0085b", "   ", " ", "a  b", "  "]) {
+    const r = await post("d1", await command(editor, () => ({ kind: "suggest", ...select(editor, "beta"), text })), auth);
+    assert.equal(r.status, 400, JSON.stringify(text));
+    assert.equal(r.body.error, "invalid_command");
+  }
+  // A space where HTML would collapse it: paragraph edge, or next to another space.
+  fv.put({ id: "sp", tags: ["garden"], content: "<p>one two</p>", updatedAt: T0 });
+  const sp = await editorClient("sp");
+  for (const [sel, text] of [
+    [() => caretAfter(sp, "one two"), "end "],
+    [() => ({ from: 1, to: 1, quote: "" }), " start"],
+    [() => caretAfter(sp, "one"), "x "],
+    [() => caretAfter(sp, "one "), " x"],
+  ] as const) {
+    const r = await post("sp", await command(sp, () => ({ kind: "suggest", ...sel(), text })), auth);
+    assert.equal(r.status, 400, JSON.stringify(text));
+  }
+  assert.equal((await post("d1", await command(editor, () => ({ kind: "comment", ...select(editor, "alpha"), text: "bell\u0007" })), auth)).status, 400);
+  assert.equal(stateOf("d1"), before);
+  assert.equal(receiptCount(), 0);
+  // The engine refuses them too (not only the route's schema).
+  const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", docName: "d1", actor: auth.identity, level: "suggest", author: { name: "x", color: "#000", actorId: "h_x" } };
+  assert.throws(() => executeHumanCommand(live("d1")!, ctx, { ...base, text: lone } as never), (e: any) => e.code === "invalid_command");
+  // What survives a reseed is accepted: inner single spaces, comments with line breaks and tabs.
+  assert.equal((await post("sp", await command(sp, () => ({ kind: "suggest", ...caretAfter(sp, "one"), text: " and a half" })), auth)).status, 200);
+  const multi = await post("d1", await command(editor, () => ({ kind: "comment", ...select(editor, "alpha"), text: "line one\n\tline two 😀" })), auth);
+  assert.equal(multi.status, 200, JSON.stringify(multi.body));
+  // Both parties still agree on the revision afterwards (no divergence).
+  await caughtUp(editor);
+  assert.equal(await clientRevision(editor), humanRevision(live("d1")!));
+  // A hostile display name is bounded and cleaned before it is written.
+  setUserProfile(SUGGESTER2, { name: `${"N".repeat(500)}\u0000\u0007` });
+  const named = await post("d1", await command(editor, () => ({ kind: "suggest", ...select(editor, "beta"), text: "B" })), userAuth(SUGGESTER2));
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  assert.match(vaultHtml("d1"), new RegExp(`data-user="N{${MAX_AUTHOR_NAME}}"`));
+});
+
+test("R3: a deletion-only suggestion is under the size budget too — per-command growth, run count and the document budget", { timeout: 30000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  // A formatting-dense paragraph: every word is its own run.
+  const dense = (n: number) => Array.from({ length: n }, (_, i) => (i % 2 ? `<strong>w${i}</strong>` : `<em>w${i}</em>`)).join(" ");
+  fv.put({ id: "dense", tags: ["garden"], content: `<p>${dense(1200)}</p><p>tail</p>`, updatedAt: T0 });
+  const d = offlineDoc("dense");
+  const all = (() => {
+    const doc = pm(d);
+    const from = findTextRange(doc, "w0")!.from;
+    const to = findTextRange(doc, "w1199")!.to;
+    return { from, to, quote: doc.textBetween(from, to, "\n", "￼") };
+  })();
+  const sizeBefore = Buffer.byteLength(vaultHtml("dense"));
+  const r = await post("dense", await command(d, () => ({ kind: "suggest", ...all, text: "" })), auth);
+  assert.equal(r.status, 400, JSON.stringify(r.body).slice(0, 200));
+  assert.match(r.body.message, /too many differently formatted/);
+  const c = await post("dense", await command(d, () => ({ kind: "comment", ...all, text: "all of it" })), auth);
+  assert.equal(c.status, 400);
+  assert.equal(Buffer.byteLength(vaultHtml("dense")), sizeBefore, "the note did not grow");
+  assert.equal(writes(), 0);
+  // A deletion that would cross the document budget is refused even though it adds no text.
+  const filler = `<p>${"word ".repeat((MAX_DOCUMENT_BYTES - 3000) / 5)}</p>`;
+  fv.put({ id: "edge", tags: ["garden"], content: `${filler}<p>${dense(40)}</p>`, updatedAt: T0 });
+  const e = offlineDoc("edge");
+  const some = (() => {
+    const doc = pm(e);
+    const from = findTextRange(doc, "w0")!.from;
+    const to = findTextRange(doc, "w39")!.to;
+    return { from, to, quote: doc.textBetween(from, to, "\n", "￼") };
+  })();
+  const over = await post("edge", await command(e, () => ({ kind: "suggest", ...some, text: "" })), auth);
+  assert.equal(over.status, 413, JSON.stringify(over.body).slice(0, 200));
+  assert.equal(over.body.error, "document_too_large");
+  assert.equal(writes(), 0);
+});
+
+test("R4: limits are checked before the expensive work, and each actor has its own per-document rate limit", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  // At the per-actor cap the request is refused before the revision is even looked at.
+  db.transaction(() => {
+    for (let i = 0; i < RECEIPTS_PER_ACTOR; i++) insertCollabReceipt({ vault_id: "primary", note_id: "d1", doc_name: "d1", actor: auth.identity, request_id: `a-${i}`, command_hash: "h", kind: "reply", result: "{}", created_at: Date.now() });
+  })();
+  db.prepare("UPDATE collab_command_receipts SET state = 'durable'").run();
+  const capped = await post("d1", { requestId: randomUUID(), createdAt: Date.now(), revision: "0".repeat(64), kind: "suggest", from: 1, to: 1, quote: "", text: "x" }, auth);
+  assert.equal(capped.status, 429);
+  assert.equal(capped.body.error, "actor_request_limit", "the cap answers before stale_revision would");
+  // …but tidying up is budgeted separately, so the remedy stays available.
+  const doc = offlineDoc("d1");
+  const other = userAuth(SUGGESTER2);
+  const thread = await post("d1", await command(doc, () => ({ kind: "comment", ...select(doc, "alpha"), text: "hi" })), other);
+  assert.equal(thread.status, 200, JSON.stringify(thread.body));
+  await unloaded("d1");
+  const resolved = await post("d1", await command(offlineDoc("d1"), () => ({ kind: "resolve", threadId: thread.body.threadId, resolved: true })), auth);
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
+
+  // Rate limit: per actor AND per document.
+  flag.collabCommandsPerMinute = 3;
+  fv.put({ id: "rl", tags: ["garden"], content: BODY, updatedAt: T0 });
+  fv.put({ id: "rl2", tags: ["garden"], content: BODY, updatedAt: T0 });
+  const bogus = () => ({ requestId: randomUUID(), createdAt: Date.now(), revision: "0".repeat(64), kind: "suggest", from: 1, to: 1, quote: "", text: "x" });
+  for (let i = 0; i < 3; i++) assert.equal((await post("rl", bogus(), other)).status, 409);
+  const limited = await post("rl", bogus(), other);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.error, "rate_limited");
+  assert.equal((await post("rl2", bogus(), other)).status, 409, "another document has its own bucket");
+  assert.equal((await post("rl", bogus(), guestAuth())).status, 409, "another actor has its own bucket");
+  // Malformed requests do not use up the bucket of the actor they claim to be.
+  flag.collabCommandsPerMinute = 100_000;
+});
+
+test("R5: per-actor size budgets — one actor cannot fill a document's body or comments budget, and others are unaffected", { timeout: 30000 }, async () => {
+  const a = userAuth(SUGGESTER);
+  const b = userAuth(SUGGESTER2);
+  // Comments: max-size comments until the actor's budget is spent.
+  fv.put({ id: "cb", tags: ["garden"], content: `<p>${Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ")}</p>`, updatedAt: T0 });
+  const viewer = await editorClient("cb");
+  const big = "c".repeat(HUMAN_COLLAB_LIMITS.commentText);
+  let made = 0;
+  let last: Awaited<ReturnType<typeof post>> | null = null;
+  for (let i = 0; i < 40; i++) {
+    last = await post("cb", await command(viewer, () => ({ kind: "comment", ...select(viewer, `word${i}`), text: big })), a);
+    if (last.status !== 200) break;
+    made++;
+  }
+  assert.equal(last!.status, 429, JSON.stringify(last!.body));
+  assert.equal(last!.body.error, "actor_growth_limit");
+  assert.ok(made >= 10 && made * HUMAN_COLLAB_LIMITS.commentText <= ACTOR_COMMENT_BYTES, `stopped after ${made} max-size comments`);
+  assert.ok(Buffer.byteLength(JSON.stringify(live("cb")!.getMap("comments").toJSON())) < MAX_COMMENTS_BYTES / 4, "nowhere near the document's comment budget");
+  const reply = await post("cb", await command(viewer, () => ({ kind: "reply", threadId: [...viewer.getMap("comments").keys()][0]!, text: big })), a);
+  assert.equal(reply.body.error, "actor_growth_limit");
+  const theirs = await post("cb", await command(viewer, () => ({ kind: "comment", ...select(viewer, "word59"), text: "someone else still can" })), b);
+  assert.equal(theirs.status, 200, JSON.stringify(theirs.body));
+  // The spent actor can still resolve and delete (its own threads).
+  const mine = [...viewer.getMap<Y.Map<unknown>>("comments").values()].find((t) => (t.get("comments") as Y.Array<any>).get(0).text === big)!.get("id") as string;
+  assert.equal((await post("cb", await command(viewer, () => ({ kind: "delete-comment", threadId: mine })), a)).status, 200);
+
+  // Body: max-size insertions until the actor's body budget is spent.
+  fv.put({ id: "bb", tags: ["garden"], content: Array.from({ length: 30 }, (_, i) => `<p>para${i} end</p>`).join(""), updatedAt: T0 });
+  const v2 = await editorClient("bb");
+  const chunk = "y".repeat(HUMAN_COLLAB_LIMITS.text);
+  made = 0;
+  for (let i = 0; i < 30; i++) {
+    last = await post("bb", await command(v2, () => ({ kind: "suggest", ...caretAfter(v2, `para${i}`), text: chunk })), a);
+    if (last.status !== 200) break;
+    made++;
+  }
+  assert.equal(last!.status, 429, JSON.stringify(last!.body).slice(0, 200));
+  assert.equal(last!.body.error, "actor_growth_limit");
+  assert.ok(made >= 5 && made <= ACTOR_BODY_BYTES / HUMAN_COLLAB_LIMITS.text, `stopped after ${made} max-size insertions`);
+  assert.ok(Buffer.byteLength(vaultHtml("bb")) < MAX_DOCUMENT_BYTES / 4, "the document is nowhere near its budget");
+  const ok = await post("bb", await command(v2, () => ({ kind: "suggest", ...caretAfter(v2, "para29"), text: "fine" })), b);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  // A signed-in user who ALSO presents a link is still that one account: same budget.
+  const link = makeCapability("tag", "garden", "suggest");
+  const both: Auth = { ...a, query: `?t=${encodeURIComponent(link)}` };
+  const again = await post("bb", await command(v2, () => ({ kind: "suggest", ...caretAfter(v2, "para28"), text: chunk })), both);
+  assert.equal(again.body.error, "actor_growth_limit");
+});
+
+test("R7: a database created by the earlier branch commits is migrated at boot (old table shapes are replaced, with the new index)", () => {
+  const shapes = {
+    first: `CREATE TABLE collab_command_receipts (vault_id TEXT NOT NULL, note_id TEXT NOT NULL, actor TEXT NOT NULL, request_id TEXT NOT NULL, command_hash TEXT NOT NULL, kind TEXT NOT NULL, result TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, durable_at INTEGER, PRIMARY KEY (vault_id, note_id, actor, request_id));
+            CREATE INDEX collab_command_receipts_doc ON collab_command_receipts(vault_id, note_id, state);
+            CREATE INDEX collab_command_receipts_age ON collab_command_receipts(created_at);
+            INSERT INTO collab_command_receipts VALUES ('primary','d1','user:x','r1','h','suggest','{}','durable',1,1);`,
+    second: `CREATE TABLE collab_command_receipts (vault_id TEXT NOT NULL, note_id TEXT NOT NULL, doc_name TEXT NOT NULL, actor TEXT NOT NULL, request_id TEXT NOT NULL, command_hash TEXT NOT NULL, kind TEXT NOT NULL, result TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, durable_at INTEGER, PRIMARY KEY (vault_id, note_id, actor, request_id));
+            CREATE INDEX collab_command_receipts_doc ON collab_command_receipts(doc_name, state);`,
+  };
+  for (const [name, ddl] of Object.entries(shapes)) {
+    const old = new Database(":memory:");
+    old.exec(ddl);
+    assert.equal(migrateCollabReceipts(old), "recreated", name);
+    const cols = (old.prepare("PRAGMA table_info(collab_command_receipts)").all() as Array<{ name: string }>).map((c) => c.name);
+    for (const c of ["doc_name", "body_bytes", "comment_bytes", "command_hash", "durable_at"]) assert.ok(cols.includes(c), `${name}: ${c}`);
+    const idx = old.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'collab_command_receipts_doc'").get() as { sql: string };
+    assert.match(idx.sql, /\(doc_name, state\)/, `${name}: the index is on the document name`);
+    // The statements db.ts prepares at module load now work against it.
+    old.prepare("INSERT INTO collab_command_receipts (vault_id, note_id, doc_name, actor, request_id, command_hash, kind, result, state, created_at, durable_at, body_bytes, comment_bytes) VALUES ('v','n','d','a','r','h','k','{}','applied',1,NULL,0,0)").run();
+    assert.equal(migrateCollabReceipts(old), "current", "idempotent");
+    assert.equal((old.prepare("SELECT COUNT(*) AS n FROM collab_command_receipts").get() as { n: number }).n, 1, "a current table is left alone");
+    old.close();
+  }
+  const fresh = new Database(":memory:");
+  assert.equal(migrateCollabReceipts(fresh), "created");
+  fresh.close();
+});
+
+test("LOW: cleaning up a lost comment never deletes other people's replies", { timeout: 20000 }, async () => {
+  const mem = await loadDocumentState("d1", new Y.Doc());
+  const ctx = (actor: string): HumanCommandContext => ({ vaultId: "primary", noteId: "d1", docName: "d1", actor, level: "suggest", author: { name: actor, color: "#000", actorId: documentActorId(actor) } });
+  const c = { requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(mem), kind: "comment" as const, ...select(mem, "alpha"), text: "root" };
+  const made = executeHumanCommand(mem, ctx("user:a"), c);
+  const r = { requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(mem), kind: "reply" as const, threadId: made.result.threadId!, text: "someone else's reply" };
+  executeHumanCommand(mem, ctx("user:b"), r);
+  // Only the ROOT comment's command is lost; the reply was confirmed.
+  const lost = db.prepare("SELECT rowid, kind, result FROM collab_command_receipts WHERE request_id = ?").all(c.requestId) as never;
+  undoLostCommands(mem, lost);
+  const t = mem.getMap<Y.Map<unknown>>("comments").get(made.result.threadId!);
+  assert.ok(t, "the thread is kept because it holds someone else's reply");
+  assert.deepEqual((t!.get("comments") as Y.Array<any>).toArray().map((i) => i.text), ["someone else's reply"]);
+  assert.match(yDocToHtml(mem), new RegExp(`data-comment-id="${made.result.threadId}"`), "its anchor is kept while it is still in the body");
+  // With no other reply the thread and its anchor both go.
+  const solo = await loadDocumentState("d1", new Y.Doc());
+  const c2 = { ...c, requestId: randomUUID(), revision: humanRevision(solo) };
+  const m2 = executeHumanCommand(solo, ctx("user:a"), c2);
+  undoLostCommands(solo, db.prepare("SELECT rowid, kind, result FROM collab_command_receipts WHERE request_id = ?").all(c2.requestId) as never);
+  assert.equal(solo.getMap("comments").has(m2.result.threadId!), false);
+  assert.equal(yDocToHtml(solo), BODY);
 });

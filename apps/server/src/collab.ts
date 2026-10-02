@@ -206,6 +206,12 @@ export const PEER_ORIGIN = "peer-federation";
 // every other vault prefixes `${vaultId}::`. Federated docs are exempt (their
 // space_note_key is already globally unique and resolved before this split).
 
+/** The shape of a vault note id (the vault's own ids are timestamp/token
+ *  strings). Paths, titles with spaces or dots, and `::` wire names are not ids.
+ *  Shared by the collab socket and the human command endpoint. */
+const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+export const isNoteId = (s: string): boolean => NOTE_ID_RE.test(s);
+
 /** Compose the wire documentName for a (vault, note). Primary → bare id. */
 export function docNameFor(vaultId: string, noteId: string): string {
   return vaultId === "primary" ? noteId : `${vaultId}::${noteId}`;
@@ -316,6 +322,14 @@ export function yDocToScene(doc: Y.Doc): string {
   map.forEach((el) => elements.push(el));
   return JSON.stringify({ elements, appState: {} });
 }
+
+/** Byte size of the HTML the last store rendered for a live document. The human
+ *  command engine estimates a change's effect on the stored note as this plus
+ *  the change's own delta, instead of re-rendering the whole document; every
+ *  store replaces the estimate with the exact figure. */
+const renderedSize = new WeakMap<Y.Doc, number>();
+export const renderedSizeOf = (doc: Y.Doc): number | undefined => renderedSize.get(doc);
+export const setRenderedSize = (doc: Y.Doc, bytes: number): void => void renderedSize.set(doc, bytes);
 
 // Kind is stable per note; cache it at load so store doesn't need to re-fetch.
 const kindCache = new Map<string, CollabKind>();
@@ -548,6 +562,14 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
 
   // Non-federated: decode the vault + note from the wire name (primary → bare id).
   const { vaultId, noteId } = parseDocName(documentName);
+  // A document is named by a note ID only. The vault also resolves a path or a
+  // unique title for /notes/:x; a socket opened under such an alias would load
+  // a SECOND Y.Doc (and snapshot row) for the same note, whose stores the
+  // reconciler then folds over the real live document. Refuse non-id shapes
+  // up front, and below refuse any name the vault resolved to a different id.
+  // (Federated space keys never reach this line: they are mapped to their local
+  // note id above.)
+  if (!isNoteId(noteId)) return null;
 
   // Desktop owner path: the trusted Tauri app (on localhost) presents the dedicated
   // COLLAB_TOKEN to join live docs as the owner — kept separate from the vault token
@@ -555,6 +577,13 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   // the public tunnel is ignored, so a leaked token grants nothing from the internet.
   // The vault token is accepted too (its holder already has full vault access).
   if (isLocal && token && ((config.collabToken && token === config.collabToken) || (config.parachuteToken && token === config.parachuteToken))) {
+    // Same alias rule for the owner: a readable note must answer to this id.
+    // (An unreadable note keeps the old behaviour — the owner may still open it.)
+    try {
+      if ((await vaultClient(vaultId).getNote(noteId)).id !== noteId) return null;
+    } catch {
+      /* unreadable: unchanged */
+    }
     return "own";
   }
 
@@ -579,6 +608,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   let visibility: "private" | "workspace" = "workspace";
   try {
     const note = await vaultClient(vaultId).getNote(noteId);
+    if (note.id !== noteId) return null; // resolved through a path/title alias
     tags = note.tags ?? [];
     // Private-to-creator also gates LIVE editing: a private note is editable only
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
@@ -651,6 +681,13 @@ export async function authorizeConnection(
   if (!atLeast(level, "view")) throw new Error("Forbidden");
   connectionConfig.readOnly = !atLeast(level, rawWriteLevel());
   return level as Level;
+}
+
+/** Keep the unconfirmed receipts whose change is still present in `doc`; clean
+ *  up and forget the rest. Returns the rowids kept. Registered by human-collab.ts. */
+let commandEffects: ((doc: Y.Doc, pending: UnconfirmedCollabReceipt[]) => number[]) | null = null;
+export function setCommandEffectsCheck(fn: typeof commandEffects): void {
+  commandEffects = fn;
 }
 
 /** Undo what unconfirmed human commands left in a restored snapshot. Registered
@@ -739,6 +776,10 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   // client-ID copy and reconnecting clients accumulate duplicates (the "content
   // repeats again and again" bug). Recording it means the next load restores this
   // exact state instead of re-seeding.
+  // A note already stored as collab HTML renders back to (about) its own size;
+  // the next store replaces this with the exact figure. Markdown sources are
+  // left unknown — the command engine measures those once when it needs to.
+  if (note && kind === "document" && note.content.trimStart().startsWith("<")) setRenderedSize(doc, Buffer.byteLength(note.content));
   if (note) {
     saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
     lastReconciled.set(documentName, toMs(note.updatedAt));
@@ -789,8 +830,14 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
 
   let rendered: number[] = [];
   try {
-    // Same tick as the render below: exactly the commands this content contains.
-    rendered = unconfirmedCollabReceipts(documentName).map((r) => r.rowid);
+    // Same tick as the render below: exactly the commands this content contains
+    // — and only those whose change is STILL in the document. A fold of a newer
+    // vault copy (here above, or by the reconciler since the command ran) can
+    // have removed a command's effect; confirming it would report a lost change
+    // as applied. Those are cleaned up and forgotten instead (the caller gets
+    // 503, the retry 409 stale_revision).
+    const pending = kind === "document" ? unconfirmedCollabReceipts(documentName) : [];
+    rendered = pending.length && commandEffects ? commandEffects(doc, pending) : pending.map((r) => r.rowid);
     const content =
       kind === "code"
         ? yDocToCode(doc)
@@ -799,6 +846,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           : kind === "canvas"
             ? yDocToScene(doc)
             : yDocToHtml(doc);
+    if (kind === "document") setRenderedSize(doc, Buffer.byteLength(content));
     if (current && content === current.content) {
       // Nothing to persist (e.g. the store right after folding an external edit
       // or a version restore). Skipping matters on vault ≥0.7.9: every write

@@ -24,11 +24,12 @@ import { HUMAN_COLLAB_LIMITS, type HumanCollabCommand, type HumanCollabErrorBody
 import { accessRevision } from "../access-events";
 import { resolveActor, requestVia } from "../auth/actor";
 import { verifyCapability } from "../auth/capability";
-import { collabLevelFor, docNameFor, hocuspocus, noteKind } from "../collab";
+import { collabLevelFor, docNameFor, hocuspocus, isNoteId, noteKind } from "../collab";
 import { colorFor } from "../collab-ops";
 import { getCollabReceipt, getFederatedByLocal, getFederationEnabled, getUser, getVaultRegistry, grantsForCapability, type Grant } from "../db";
-import { documentActorId, executeHumanCommand, findReceipt, HumanCommandError, pruneReceiptsIfDue, type HumanCommandOutcome } from "../human-collab";
-import { rateLimit } from "../middleware/ratelimit";
+import { documentActorId, executeHumanCommand, findReceipt, HumanCommandError, pruneReceiptsIfDue, safeAuthorName, textProblem, type HumanCommandOutcome } from "../human-collab";
+import { consumeRateLimit, rateLimit } from "../middleware/ratelimit";
+import { config } from "../config";
 import { vaultClient, VaultError, type Note } from "../parachute";
 import { atLeast, type Level } from "../permissions";
 import type { Role } from "../roles";
@@ -39,14 +40,18 @@ const base = {
   createdAt: z.number().int().nonnegative(),
   revision: z.string().regex(/^[a-f0-9]{64}$/),
 };
+// Text hygiene (human-collab.ts `textProblem`): well-formed Unicode and no
+// control characters everywhere; suggested text additionally nothing the stored
+// HTML could not reproduce. A violation is a plain 400 like any schema error.
+const clean = (kind: "suggest" | "comment" | "quote") => (v: string) => textProblem(v, kind) === null;
 const range = {
   from: z.number().int().min(0).max(50_000_000),
   to: z.number().int().min(0).max(50_000_000),
-  quote: z.string().max(HUMAN_COLLAB_LIMITS.quote),
+  quote: z.string().max(HUMAN_COLLAB_LIMITS.quote).refine(clean("quote")),
 };
-const threadId = z.string().min(1).max(200);
-const text = z.string().max(HUMAN_COLLAB_LIMITS.text);
-const commentText = z.string().min(1).max(HUMAN_COLLAB_LIMITS.commentText);
+const threadId = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
+const text = z.string().max(HUMAN_COLLAB_LIMITS.text).refine(clean("suggest"));
+const commentText = z.string().min(1).max(HUMAN_COLLAB_LIMITS.commentText).refine(clean("comment"));
 /** STRICT: an unknown key (author, user, color, actorId, marks, …) is a 400. */
 const commandSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, ...range, kind: z.literal("suggest"), text }),
@@ -88,10 +93,6 @@ function resolveCaller(c: Context): Caller | null {
   }
   return { identity: `user:${actor.email}`, email: actor.email, role: actor.role, vaultId: actor.vaultId, grants };
 }
-
-/** Vault note ids: opaque tokens. Paths ("a/b"), titles with spaces, dotted
- *  names and the `vault::id` wire form are not ids. */
-const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 const noteRef = (note: Note) => ({
   id: note.id,
@@ -150,7 +151,12 @@ humanCollabApi.post("/:id/commands", async (c) => {
     /* handled below */
   }
   const parsed = commandSchema.safeParse(json);
-  if (!parsed.success) return fail(c, 400, "invalid_command", "That collaboration request is not valid.");
+  if (!parsed.success) {
+    // Say WHY when it is the text (the user can fix that); never echo the body.
+    const j = json as { kind?: unknown; text?: unknown } | null;
+    const why = j && typeof j.text === "string" && (j.kind === "suggest" || j.kind === "comment" || j.kind === "reply") ? textProblem(j.text, j.kind === "suggest" ? "suggest" : "comment") : null;
+    return fail(c, 400, "invalid_command", why ?? "That collaboration request is not valid.");
+  }
   const command = parsed.data as HumanCollabCommand;
 
   // A note is addressed ONLY by its id. The vault also resolves /notes/:x by
@@ -161,7 +167,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
   // answers exactly like a note that does not exist.
   const id = c.req.param("id");
   const missing = () => fail(c, 404, "not_found", "This document is not available.");
-  if (!id || !NOTE_ID.test(id)) return missing();
+  if (!id || !isNoteId(id)) return missing();
 
   // Workspace binding: a request that names a workspace must name the one this
   // caller is bound to (a link's own vault; a known vault for an account).
@@ -169,6 +175,16 @@ humanCollabApi.post("/:id/commands", async (c) => {
   const registered = getVaultRegistry().some((v) => v.id === who.vaultId);
   if (!registered || (named !== undefined && named !== who.vaultId)) {
     return fail(c, 403, "vault_mismatch", "This request does not belong to the document's workspace. Reopen the document.");
+  }
+
+  // Per actor, per document: far below the per-IP limiter above, because every
+  // accepted command makes the server re-hash and re-diff the document. Keyed on
+  // the server-derived identity; refusals that never reach this line (bad body,
+  // bad id, wrong workspace) do not count.
+  const wait = consumeRateLimit(`human-collab-actor:${who.vaultId}:${id}:${who.identity}`, config.collabCommandsPerMinute, 60_000);
+  if (wait !== null) {
+    c.header("Retry-After", String(wait));
+    return fail(c, 429, "rate_limited", "You are sending changes to this document too quickly. Wait a moment and try again.", { retry: true });
   }
 
   const receiptKey = { vaultId: who.vaultId, noteId: id, actor: who.identity };
@@ -213,7 +229,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
       if (freshKind !== "document") {
         return fail(c, 400, "unsupported_kind", "This note is no longer a prose document.", { noteKind: freshKind });
       }
-      const name = now.email ? getUser(now.email)?.name?.trim() || now.email : "Guest";
+      const name = safeAuthorName(now.email ? getUser(now.email)?.name?.trim() || now.email : "Guest");
       outcome = executeHumanCommand(conn.document as unknown as Y.Doc, {
         ...receiptKey,
         docName,

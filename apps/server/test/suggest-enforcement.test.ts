@@ -28,7 +28,9 @@ import WebSocket from "ws";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { attachCollab, hocuspocus, resetReconcileState, yDocToHtml } from "../src/collab";
 import { config } from "../src/config";
-import { ensureUser, getDocState, upsertGrant } from "../src/db";
+import { addGrant, addVaultEntry, ensureUser, getDocState, upsertGrant } from "../src/db";
+import { signCapability } from "../src/auth/capability";
+import { reconcileLoadedDocs, resolveLevel } from "../src/collab";
 import { issueDeviceToken } from "../src/auth/device";
 import { installFakeVault, resetDb, makeCapability, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
@@ -108,6 +110,10 @@ async function connect(name: string, token: string, doc = new Y.Doc(), opts: Con
     provider.on("synced", () => {
       clearTimeout(t);
       resolve();
+    });
+    provider.on("authenticationFailed", () => {
+      clearTimeout(t);
+      reject(new Error("authentication failed"));
     });
   });
   return { doc, provider };
@@ -405,7 +411,7 @@ test("the loopback COLLAB_TOKEN owner path is unchanged: read-write under enforc
   await settle();
   assert.equal(yDocToHtml(live("o1")), "<p>OWNER hello world</p><p>second paragraph</p>");
   // A wrong token on the same loopback connection gets nothing.
-  await assert.rejects(connect("o1", "not-the-token"), /sync timeout/);
+  await assert.rejects(connect("o1", "not-the-token"), /authentication failed|sync timeout/);
 });
 
 test("presence: a read-only suggest socket can publish awareness, and awareness cannot alter the document", { timeout: 20000 }, async () => {
@@ -443,4 +449,60 @@ test("presence: a read-only suggest socket can publish awareness, and awareness 
     globalThis.setInterval = realSetInterval;
     for (const h of intervals) clearInterval(h);
   }
+});
+
+// ── a document is named by a note id only (path / title aliases) ────────────
+
+test("socket: a path or title alias of a note is refused for every credential — no second Y.Doc, an editor's unsaved typing survives", { timeout: 30000 }, async () => {
+  fv.put({ id: "n-path", content: BODY, tags: ["team"], path: "Team/Shared Plan" });
+  fv.put({ id: "n-title", content: BODY, tags: ["team"], metadata: { title: "Roadmap" } });
+  const edit = () => makeCapability("tag", "team", "edit");
+  const victim = await connect("n-path", edit());
+  firstText(victim.doc).insert(0, "UNSAVED ");
+  await settle();
+  const before = fingerprint("n-path");
+
+  const aliases = ["Team/Shared Plan", "team/shared plan", "Roadmap", "roadmap"];
+  for (const alias of aliases) {
+    // The vault WOULD resolve it (so only the server's own check stands in the way).
+    const viaVault = (await (await fetch(`http://vault.test/vault/default/api/notes/${encodeURIComponent(alias)}`)).json()) as { id: string };
+    assert.ok(["n-path", "n-title"].includes(viaVault.id), `${alias} resolves in the vault`);
+    for (const token of [edit(), makeCapability("tag", "team", "view"), issueDeviceToken(SUGGESTER, "t", "prism-native").token, config.collabToken]) {
+      assert.equal(await resolveLevel(alias, token, null, true), null, `${alias}: no level`);
+    }
+    await assert.rejects(connect(alias, edit()), /authentication failed|sync timeout/, alias);
+    await assert.rejects(connect(alias, config.collabToken), /authentication failed|sync timeout/, `${alias} (owner token)`);
+    assert.equal(hocuspocus.documents.has(alias), false);
+    assert.equal(getDocState(alias), null, "no snapshot row under the alias");
+  }
+  assert.deepEqual([...hocuspocus.documents.keys()], ["n-path"]);
+  await reconcileLoadedDocs(hocuspocus as never);
+  assert.deepEqual(fingerprint("n-path"), before, "the real document was not touched");
+  assert.match(yDocToHtml(live("n-path")), /UNSAVED hello/);
+  assert.equal(fv.notes.get("n-path")!.content, BODY, "nothing was written to the vault through an alias");
+});
+
+test("socket: every legitimate document name still works — bare id, vault::id, the owner token; aliases in another vault are refused too", { timeout: 20000 }, async () => {
+  fv.put({ id: "2026-04-23-21-21-05-047018", content: BODY, tags: ["team"] }); // the vault's own id shape
+  fv.put({ id: "under_score-ID9", content: BODY, tags: ["team"] });
+  addVaultEntry({ id: "team-b", label: "B", url: "http://vault.test", vault: "team-b", token: "t" });
+  fv.putIn("team-b", { id: "b1", content: "<p>other vault</p>", tags: ["shared"], path: "Docs/B One" });
+  addGrant({ subject_type: "link", subject: "cap-b", resource_type: "tag", resource: "shared", level: "edit", created_by: "test", vault_id: "team-b" });
+  const capB = signCapability({ id: "cap-b", exp: Date.now() + 3_600_000 });
+
+  for (const name of ["2026-04-23-21-21-05-047018", "under_score-ID9"]) {
+    assert.equal(await resolveLevel(name, makeCapability("tag", "team", "edit"), null), "edit");
+    const c = await connect(name, makeCapability("tag", "team", "edit"));
+    assert.equal(c.provider.authorizedScope, "read-write");
+  }
+  assert.equal(await resolveLevel("team-b::b1", capB, null), "edit");
+  const b = await connect("team-b::b1", capB);
+  firstText(b.doc).insert(0, "B ");
+  await settle();
+  assert.equal(yDocToHtml(live("team-b::b1")), "<p>B other vault</p>");
+  assert.equal(await resolveLevel("team-b::Docs/B One", capB, null), null);
+  assert.equal(await resolveLevel("team-b::docs/b one", capB, null), null);
+  assert.equal(await resolveLevel("2026-04-23-21-21-05-047018", config.collabToken, null, true), "own");
+  assert.equal(await resolveLevel("no-such-note", config.collabToken, null, true), "own", "the owner path for an unreadable note is unchanged");
+  for (const bad of ["a b", "a/b", "a.b", "", "x".repeat(129)]) assert.equal(await resolveLevel(bad, makeCapability("tag", "team", "edit"), null), null, JSON.stringify(bad));
 });

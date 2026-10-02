@@ -121,6 +121,12 @@ export const config = {
   // read-write suggest socket (a "Can suggest" grant is then trust-based again).
   // The command endpoint works in both states. Restart required.
   collabSuggestEnforced: process.env.COLLAB_SUGGEST_ENFORCED !== "false",
+  // Human collaboration commands (POST /api/collab/:id/commands) per actor per
+  // document per minute. A person preparing suggestions and comments by hand
+  // does not sustain one every two seconds; this bounds what one actor can make
+  // the server spend on one document (each command re-hashes the document) well
+  // below the 120/min per-IP limiter that sits in front of it.
+  collabCommandsPerMinute: Number(process.env.COLLAB_COMMANDS_PER_MINUTE ?? 30),
 
   // ── Native sign-in / device tokens (WP2.1, auth/device.ts) ──
   // Exact-match allowlist of redirect URIs a native client may use with
