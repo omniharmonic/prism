@@ -126,7 +126,10 @@ test("reviewed identity changes retain failed drafts across layouts and preserve
     action: "add",
     ifUpdatedAt: "2026-10-01T12:00:00.000Z",
   });
-  await people.getByText("Manage accounts", { exact: true }).click();
+  // Fast refreshes may stay in one render, preserving the disclosure.
+  if (!(await people.getByLabel("Account identifier").isVisible())) {
+    await people.getByText("Manage accounts", { exact: true }).click();
+  }
   await expect(people.getByLabel("Account identifier")).toHaveValue("");
   await people
     .getByRole("button", {
