@@ -48,3 +48,44 @@ test("dark writing navigation retains every specialist destination", async ({ pa
   for (const name of ["New page", "Workspace settings", "Calendar", "People", "Automations", "Map"]) await expect(nav.getByRole("button", { name, exact: true })).toBeVisible();
   expect(await nav.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
 });
+
+
+test("sidebar preferences pin, hide and order tools without changing document data", async ({ page }, testInfo) => {
+  await page.goto("/e2e-fixtures/workspace.html?navigation");
+  await page.getByRole("button", { name: "Customize sidebar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Your sidebar" });
+  await dialog.getByLabel("Calendar placement").selectOption("pinned");
+  await dialog.getByLabel("People placement").selectOption("pinned");
+  await dialog.getByLabel("Map placement").selectOption("hidden");
+  await dialog.getByLabel("Navigation spacing").selectOption("compact");
+  await dialog.getByRole("button", { name: "Move People up", exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("sidebar-preferences.png") });
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const primary = page.getByRole("navigation", { name: "Workspace destinations" });
+  expect(await primary.getByRole("button").allTextContents()).toEqual(["Messages", "", "People", "Calendar"]);
+  expect(await page.evaluate(() => (window as any).prismFixtureWrites)).toEqual([]);
+  await page.reload();
+  await expect(primary.getByRole("button", { name: "People", exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-navigation")).toHaveAttribute("data-density", "compact");
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
+  await expect(page.locator(".workspace-navigation").getByRole("button", { name: "Map", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Customize sidebar", exact: true }).click();
+  await dialog.getByRole("button", { name: "Restore defaults" }).click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.locator(".workspace-navigation").getByRole("button", { name: "Map", exact: true })).toBeVisible();
+});
+
+test("phone sidebar customization is keyboard dismissible and fits narrow screens", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto("/e2e-fixtures/workspace.html?navigation");
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  const opener = page.getByRole("button", { name: "Customize sidebar", exact: true });
+  await opener.click();
+  const dialog = page.getByRole("dialog", { name: "Your sidebar" });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("sidebar-preferences-phone.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});

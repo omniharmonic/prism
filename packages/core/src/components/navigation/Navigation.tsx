@@ -1,3 +1,4 @@
+import { NavigationPreferences, useNavigationPreferences, TOOL_NAMES, type NavigationTool } from "./NavigationPreferences";
 import { useNoteShortcuts } from "./NoteShortcuts";
 import { useRef, useState } from "react";
 import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2 } from "lucide-react";
@@ -18,6 +19,8 @@ import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 
 export function Navigation() {
+  const preferences = useNavigationPreferences();
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery] = useDebounce(searchQuery, 200);
   const [showNewMenu, setShowNewMenu] = useState(false);
@@ -86,8 +89,18 @@ export function Navigation() {
     }
   };
 
+  const activeNoteId = openTabs.find(tab => tab.id === activeTabId)?.noteId;
+  const tools: Record<NavigationTool, { icon: React.ReactNode; onClick: () => void; active: boolean }> = {
+    calendar: { icon: <Calendar size={15} />, onClick: handleOpenCalendar, active: activeNoteId === "calendar-dashboard" },
+    people: { icon: <Users size={15} />, onClick: () => openTab("people", "People", "people" as ContentType), active: activeNoteId === "people" },
+    automations: { icon: <Bot size={15} />, onClick: handleOpenAgentActivity, active: activeNoteId === "agent-activity" },
+    map: { icon: <MapPin size={15} />, onClick: handleOpenMap, active: activeNoteId === "map" },
+  };
+  const toolRows = (placement: "pinned" | "tools") => preferences.value.order.filter(id => preferences.value.placement[id] === placement).map(id => <NavItem key={id} label={TOOL_NAMES[id]} {...tools[id]} />);
+
   return (
     <div
+      data-density={preferences.value.density}
       className="workspace-navigation h-full flex flex-col"
       style={{
         background: "var(--bg-sidebar)",
@@ -145,6 +158,7 @@ export function Navigation() {
               }
             />
             {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Agent conversations" onClick={() => openAgentChat()} />}
+            {toolRows("pinned")}
           </nav>
 
           {shortcuts.recoverable && <div className="mx-3 my-3 rounded-lg border border-[var(--border-subtle)] p-3 text-xs text-[var(--text-secondary)]">
@@ -190,11 +204,9 @@ export function Navigation() {
           <NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} defaultOpen action={<div className="flex items-center"><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
             <ProjectTree />
           </NavSection>
-          <NavSection label="Tools">
-            <NavItem active={openTabs.find((t) => t.id === activeTabId)?.noteId === "calendar-dashboard"} icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
-            <NavItem icon={<Users size={15} />} label="People" active={openTabs.find((t) => t.id === activeTabId)?.type === ("people" as ContentType)} onClick={() => openTab("people", "People", "people" as ContentType)} />
-            <NavItem icon={<Bot size={15} />} label="Automations" onClick={handleOpenAgentActivity} />
-            <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
+          <NavSection label="Tools" action={<NavActionButton title="Customize sidebar" icon={<Settings2 size={14} />} onClick={() => setPreferencesOpen(true)} />}>
+            {toolRows("tools")}
+            <button type="button" className="focus-ring min-h-9 w-full rounded-md px-3 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--glass-hover)]" onClick={() => setPreferencesOpen(true)}>Customize sidebar…</button>
           </NavSection>
         </div>
       )}
@@ -248,7 +260,7 @@ export function Navigation() {
         )}
 
         {newFolderOpen && folderError && <p role="alert" className="text-xs text-[var(--color-danger)]">{folderError}</p>}
-        <button type="button" className="workspace-new-page focus-ring" aria-label="New page" onClick={() => setShowNewMenu(true)}>
+        <button type="button" className="workspace-new-page focus-ring" aria-label="New page" onClick={event => { event.currentTarget.focus(); setShowNewMenu(true); }}>
           <Plus size={18} /><span>New page</span>
         </button>
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
@@ -256,6 +268,7 @@ export function Navigation() {
 
       </div>
 
+      {preferencesOpen && <NavigationPreferences preferences={preferences} onClose={() => setPreferencesOpen(false)} />}
       {/* Compose message modal */}
       {showCompose && <ComposeMessage onClose={() => setShowCompose(false)} />}
     </div>
@@ -289,7 +302,7 @@ function NavItem({ icon, label, onClick, trailing, active = false }: {
 function NavActionButton({ icon, title, onClick }: { icon: React.ReactNode; title: string; onClick: () => void }) {
   return (
     <button
-      onClick={onClick}
+      onClick={event => { event.currentTarget.focus(); onClick(); }}
       title={title}
       aria-label={title}
       className="focus-ring flex items-center justify-center transition-colors flex-shrink-0"

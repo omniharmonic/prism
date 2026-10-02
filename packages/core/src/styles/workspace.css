@@ -147,3 +147,14 @@ button:disabled { cursor: not-allowed; }
   .workspace-navigation .workspace-section-actions { opacity: 1; }
   .workspace-navigation button { min-height: 44px; }
 }
+
+.workspace-navigation[data-density="comfortable"] { --workspace-control-height: 38px; }
+.workspace-navigation[data-density="compact"] { --workspace-control-height: 30px; }
+.workspace-navigation-preferences {
+  width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto;
+  margin: auto; padding: 24px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 16px 64px rgb(0 0 0 / 15%);
+}
+.workspace-navigation-preferences::backdrop { background: rgb(20 22 28 / 30%); }
+@media (pointer: coarse) { .workspace-navigation[data-density] { --workspace-control-height: 44px; } }
+@media (max-width: 480px) { .workspace-navigation-preferences { padding: 18px; } }
