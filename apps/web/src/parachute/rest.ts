@@ -19,6 +19,9 @@ import type {
   VaultLink,
   VaultGraph,
   VaultNeighborhood,
+  PeoplePage,
+  PersonSummary,
+  PersonPage,
   SemanticHit,
   NoteVersion,
   NoteVersionPage,
@@ -394,4 +397,20 @@ export async function getPaths(): Promise<string[]> {
     }
   }
   return Array.from(dirs).sort();
+}
+
+export async function listPeople(query = "", after?: string): Promise<PeoplePage> {
+  return (await req(`/people${qs({ q: query, after })}`)).json();
+}
+export async function getPerson(id: string, after?: string): Promise<PersonPage> {
+  return (await req(`/people/${encodeURIComponent(id)}${qs({ after })}`)).json();
+}
+
+export async function changePersonIdentity(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }> {
+  // Deliberate identity decisions need a current review. Never queue or force
+  // them after an uncertain write; a refreshed person record resolves it.
+  const context = await captureWriteContext();
+  const response = await serverFetch(`${context.scope.api}/people/${encodeURIComponent(id)}/identities`, { method: "POST", headers: context.headers, body: JSON.stringify(change) });
+  if (!response.ok) throw new Error(response.status === 409 ? "This identity or person changed. Reload the profile before trying again." : "The account could not be changed. Reload the profile to check its current state.");
+  return response.json();
 }

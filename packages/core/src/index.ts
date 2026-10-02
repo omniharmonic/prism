@@ -32,6 +32,9 @@ export { sanitizeHtml } from "./lib/html/sanitize";
 export { VaultClientProvider, useVaultClient } from "./data/VaultClientContext";
 export type {
   VaultClient,
+  PersonSummary,
+  PeoplePage,
+  PersonPage,
   VaultLink,
   VaultGraph,
   VaultNeighborhood,

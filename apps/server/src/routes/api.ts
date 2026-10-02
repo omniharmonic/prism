@@ -22,6 +22,7 @@ import { roleAtLeast, roleFloor } from "../roles";
 import { compress } from "hono/compress";
 import { openEventStream } from "../events";
 import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, treeAfterOwnerWrite } from "../tree";
+import { peopleApi } from "./people";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 
@@ -171,6 +172,8 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
  * note they cannot view is never emitted. `ETag`/`If-None-Match` gives 304.
  */
 /** Bounded, permission-filtered graph response. No note bodies or hidden totals. */
+api.route("/people", peopleApi);
+
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind === "anon") return c.json({error:"unauthorized"},401);

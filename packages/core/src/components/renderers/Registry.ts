@@ -22,6 +22,7 @@ const AgentActivityRenderer = lazy(() => import("../agent/AgentActivity"));
 const NetworkRenderer = lazy(() => import("./NetworkRenderer"));
 const BioregionEntityRenderer = lazy(() => import("./BioregionEntityRenderer"));
 const MapRenderer = lazy(() => import("./MapRenderer"));
+const PeopleRenderer = lazy(() => import("../people/PeopleWorkspace"));
 const AgentChatRenderer = lazy(() => import("../agent/AgentChat"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
@@ -50,6 +51,7 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
 (RENDERER_MAP as any)["vault-messages"] = MessagesDashboardRenderer;
 (RENDERER_MAP as any)["agent-activity"] = AgentActivityRenderer;
 (RENDERER_MAP as any)["map"] = MapRenderer;
+(RENDERER_MAP as any)["people"] = PeopleRenderer;
 (RENDERER_MAP as any)["agent-chat"] = AgentChatRenderer;
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {

@@ -149,8 +149,8 @@ export function vaultClient(vaultId?: string) {
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },
 
-  async getNote(id: string): Promise<Note> {
-    return (await req(`/notes/${encodeURIComponent(id)}`)).json() as Promise<Note>;
+  async getNote(id: string, opts?: { includeLinks?: boolean }): Promise<Note> {
+    return (await req(`/notes/${encodeURIComponent(id)}${opts?.includeLinks ? "?include_links=true" : ""}`)).json() as Promise<Note>;
   },
 
   /**

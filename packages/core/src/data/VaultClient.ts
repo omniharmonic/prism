@@ -9,6 +9,17 @@ import type {
   VaultInfo,
 } from "../lib/types";
 
+export interface PersonSummary {
+  id: string; updatedAt?: string | null; canManageIdentities?: boolean; name: string; path: string | null; role: string | null;
+  identities: Array<{ kind: string; value: string }>;
+}
+export interface PeoplePage { people: PersonSummary[]; next: string | null }
+export interface PersonPage {
+  person: PersonSummary;
+  related: Array<{ id: string; title: string; path: string | null; category: "conversations" | "meetings" | "tasks" | "notes"; relationships: string[] }>;
+  next: string | null;
+}
+
 export interface VaultLink {
   sourceId: string;
   targetId: string;
@@ -144,6 +155,9 @@ export interface VaultClient {
   ): Promise<VaultLink>;
   deleteLink(sourceId: string, targetId: string, relationship: string): Promise<void>;
   getGraph(depth?: number, centerId?: string): Promise<VaultGraph>;
+  changePersonIdentity?(id: string, change: { kind: "email" | "matrix"; value: string; action: "add" | "remove"; ifUpdatedAt: string }): Promise<{ person: PersonSummary }>;
+  listPeople?(query?: string, after?: string): Promise<PeoplePage>;
+  getPerson?(id: string, after?: string): Promise<PersonPage>;
   getNeighborhood?(centerId: string, depth: number, limit?: number): Promise<VaultNeighborhood>;
   getVaultInfo(): Promise<VaultInfo>;
   updateVaultDescription(description: string): Promise<VaultInfo>;

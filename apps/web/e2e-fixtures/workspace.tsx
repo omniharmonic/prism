@@ -13,21 +13,50 @@ const notes: Note[] = [
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<Record<string, unknown>> = [];
-const controls = { rejectWrite: false };
+const controls = { rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
 Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram" }, createdAt: date, updatedAt: date });
+const fixturePeople = [
+      { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-a", name: "Alex Morgan", path: "People/Alex Morgan A", role: "Designer", identities: [{ kind: "email", value: "alex.design@example.test" }] },
+      { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-b", name: "Alex Morgan", path: "People/Alex Morgan B", role: "Engineer", identities: [{ kind: "email", value: "alex.engineering@example.test" }] },
+    ];
+
+let identityRevision=0;
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
   if (url.origin !== location.origin) return Response.json({ error: "external_network_disabled_in_fixture" }, { status: 503 });
   const path = url.pathname;
   const method = init?.method ?? "GET";
+  if (path === "/api/people" || path.startsWith("/api/people/")) {
+    if (controls.peopleHold) await new Promise<void>(resolve => { controls.peopleRelease = resolve; });
+    if (controls.peopleFail) return Response.json({ error: "unavailable" }, { status: 503 });
+    const people = fixturePeople;
+    if (path === "/api/people") {
+      const q=(url.searchParams.get("q")||"").toLowerCase();
+      return Response.json({people:people.filter(p=>JSON.stringify(p).toLowerCase().includes(q)),next:null});
+    }
+    if (path.endsWith("/identities") && method === "POST") {
+      const person=people.find(p=>p.id===path.split("/").at(-2));
+      if(!person)return Response.json({error:"not_found"},{status:404});
+      const change=JSON.parse(String(init?.body));
+      writes.push(change);
+      if(controls.rejectWrite || change.ifUpdatedAt!==person.updatedAt)return Response.json({error:"conflict"},{status:409});
+      person.identities = change.action === "remove" ? person.identities.filter(i=>i.value!==change.value) : [...person.identities,{kind:change.kind,value:change.value.toLowerCase()}];
+      person.updatedAt="identity-"+(++identityRevision);
+      return Response.json({person});
+    }
+    const person=people.find(p=>p.id===path.split("/").at(-1));
+    if(!person)return Response.json({error:"not_found"},{status:404});
+    return Response.json({ person, related: [{id:"field-notes",title:"Project conversation",path:"Projects/Prism/Field notes",category:"conversations",relationships:["email_from"]},{id:"weekly-review",title:"Weekly planning",path:"Journal/Weekly review",category:"meetings",relationships:["attendee"]}], next:null });
+  }
   if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
+    if(controls.peopleDenyOpen && noteId === "field-notes") return Response.json({error:"forbidden"},{status:403});
     const note = notes.find((n) => n.id === noteId);
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
     if (method === "PATCH") {
@@ -51,6 +80,6 @@ await fetchMe();
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
+    {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

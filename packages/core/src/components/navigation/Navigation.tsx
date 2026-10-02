@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp, Sparkles } from "lucide-react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
@@ -17,7 +17,7 @@ import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 
 /** Virtual tab ids that aren't real notes (so they're excluded from Recent). */
-const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network", "map", "agent-chat"]);
+const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network", "map", "agent-chat", "people"]);
 
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -150,6 +150,7 @@ export function Navigation() {
             />
             <NavItem active={openTabs.find((t) => t.id === activeTabId)?.noteId === "calendar-dashboard"} icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
             {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Conversations" onClick={() => openAgentChat()} />}
+            <NavItem icon={<Users size={15} />} label="People" active={openTabs.find((t) => t.id === activeTabId)?.type === ("people" as ContentType)} onClick={() => openTab("people", "People", "people" as ContentType)} />
             <NavItem icon={<Bot size={15} />} label="Automations" onClick={handleOpenAgentActivity} />
             <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
             <NavItem icon={<Radio size={15} />} label="Workspace settings" onClick={handleOpenNetwork} />

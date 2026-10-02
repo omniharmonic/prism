@@ -10,6 +10,9 @@ import { agentScope } from "../config";
 export const httpVaultClient: VaultClient = {
   scope: () => agentScope() ?? "",
   listNotes: rest.listNotes,
+  listPeople: rest.listPeople,
+  changePersonIdentity: rest.changePersonIdentity,
+  getPerson: rest.getPerson,
   resolveWikilink: rest.resolveWikilink,
   listTree: rest.listTree,
   getNote: rest.getNote,
