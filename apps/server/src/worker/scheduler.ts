@@ -28,6 +28,7 @@ import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
 import { protonMode, runProtonOnce } from "./proton";
+import { ForwardLinker } from "../people-forward";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -177,6 +178,19 @@ export function ingestFailureState(): Array<{ vaultId: string; source: string; c
 
 /** Run one Matrix ingest pass for a vault, if it has a stored credential.
  *  Returns the message count ingested (0 if not configured / nothing new). */
+/** The identity layer's forward linker for one ingest pass — undefined (= the
+ *  ingester behaves exactly as before) unless that source's link flag is on. */
+function forwardLinker(entry: VaultEntry, origin: string, enabled: boolean): ForwardLinker | undefined {
+  if (!enabled) return undefined;
+  return new ForwardLinker(vaultClient(entry.id), {
+    vaultId: entry.id,
+    origin,
+    owner: { emails: [config.ownerEmail, ...config.peopleOwnerEmails], person: config.peopleOwnerPerson, aliases: config.peopleOwnerAliases },
+    queue: config.peopleQueueOnIngest,
+    maxRecipients: config.peopleLinkMaxRecipients,
+  });
+}
+
 let matrixPass = 0;
 const matrixSelf = new Map<string, string>();
 const lastMatrixReconcileAt = new Map<string, number>();
@@ -194,7 +208,7 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
   const since = getWorkerCursor(entry.id, "matrix") ?? undefined;
   // MATRIX_LINK_PEOPLE: the sync user is never linked as a participant.
   let selfUserId: string | null = null;
-  if (config.matrixLinkPeople) {
+  if (config.matrixLinkPeople || config.matrixLinkExisting) {
     selfUserId = matrixSelf.get(entry.id) ?? null;
     if (!selfUserId) {
       selfUserId = await client.whoami().catch(() => null);
@@ -209,6 +223,8 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
     // while auto-join is draining it.
     probeInvites: config.matrixAutoJoin || matrixPass++ % 10 === 0,
     linkPeople: config.matrixLinkPeople,
+    linkExisting: config.matrixLinkExisting,
+    storeParticipantIds: config.matrixStoreParticipantIds,
     selfUserId,
   });
   if (res.peopleCreated > 0) console.log(`[worker] matrix ${entry.id}: ${res.peopleCreated} person note(s) created (MATRIX_LINK_PEOPLE)`);
@@ -280,7 +296,7 @@ export async function runFathomOnce(entry: VaultEntry, opts: { force?: boolean }
   }
   const { apiKey } = JSON.parse(raw) as { apiKey: string };
   const client = new FathomClient(apiKey);
-  const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault);
+  const res = await ingestFathom(client, vaultClient(entry.id) as unknown as IngestVault, { forward: forwardLinker(entry, "ingest:fathom", config.transcriptLinkPeople) });
   console.log(
     `[worker] fathom ${entry.id}: +${res.created} transcripts (${res.skipped} skipped)` +
       (opts.force ? " [forced]" : ""),
@@ -310,7 +326,7 @@ export async function runClickUpOnce(entry: VaultEntry, opts: { force?: boolean 
   const client = new ClickUpClient(credential.apiKey);
   const cursor = getWorkerCursor(entry.id, "clickup");
   const sinceMs = cursor ? Number(cursor) - 120_000 : null;
-  const res = await ingestClickUp(client, vaultClient(entry.id) as unknown as ClickUpVault, { credential, sinceMs });
+  const res = await ingestClickUp(client, vaultClient(entry.id) as unknown as ClickUpVault, { credential, sinceMs, forward: forwardLinker(entry, "ingest:clickup", config.clickupLinkEnabled) });
   const prev = cursor ? Number(cursor) : 0;
   const next = Math.max(res.maxDateUpdatedMs, prev); // clean-pass value only, never backward
   if (next > 0) setWorkerCursor(entry.id, "clickup", String(next));
@@ -453,6 +469,7 @@ export async function runFirefliesOnce(entry: VaultEntry, opts: { force?: boolea
   const budget = makeFirefliesBudget(entry.id, config.firefliesDailyBudget);
   const res = await ingestAndCleanupFireflies(client, vaultClient(entry.id) as unknown as FirefliesVault, {
     budget,
+    forward: forwardLinker(entry, "ingest:fireflies", config.transcriptLinkPeople),
     skipSet: skip,
     ownerEmail: owner,
     deleteEnabled: config.firefliesDeleteEnabled,
