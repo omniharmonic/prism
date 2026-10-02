@@ -36,7 +36,7 @@ export interface HumanCollabRange {
   /** ProseMirror position (same coordinates as `editor.state.selection`). */
   from: number;
   to: number;
-  /** `doc.textBetween(from, to, "\n", "￼")` — must still match exactly. */
+  /** `doc.textBetween(from, to, "\n", "\ufffc")` — must still match exactly. */
   quote: string;
 }
 
@@ -47,7 +47,10 @@ export interface HumanCollabRange {
  *  - `from < to`, non-empty `text`  → suggest REPLACING the range with `text`.
  * `text` is plain text WITHOUT line breaks ("\n" / "\r" are refused: a break
  * cannot carry the suggestion mark, so it could be neither reviewed nor
- * rejected). `from` and `to` must be inside the SAME paragraph, and the range
+ * rejected), tabs, control characters, runs of two spaces, or a leading /
+ * trailing space at a paragraph edge or next to another space (HTML would
+ * collapse them); it may not be whitespace only, and must be well-formed
+ * Unicode (no lone surrogates — check `text.isWellFormed()`). `from` and `to` must be inside the SAME paragraph, and the range
  * may contain only text that can be marked — a selection that includes inline
  * code, a line break or an embedded node is refused whole (400), never applied
  * in part. To suggest across paragraphs, send one command per paragraph.
@@ -125,6 +128,7 @@ export type HumanCollabErrorCode =
   | "rate_limited" // 429
   | "document_request_limit" // 429 — too many recent requests on this document (all actors)
   | "actor_request_limit" // 429 — too many recent requests by THIS actor on this document
+  | "actor_growth_limit" // 429 — this actor's daily size budget (body or comments) on this document
   | "too_many_pending_suggestions" // 429 — this actor's unreviewed suggestions on this document
   | "too_many_threads" // 429 — the document's comment-thread budget is used up
   | "thread_full" // 409 — the thread reached its comment limit
