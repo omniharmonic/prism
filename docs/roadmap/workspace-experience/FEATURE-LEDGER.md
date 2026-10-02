@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: specialized editor loading checkpoint; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `8d46ce3`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -27,11 +27,11 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | People | Access-filtered directory/profiles, explicit canonical links, guarded email/Matrix decisions and mobile/draft/error fixtures | Private production account add/remove and linked-record navigation verified; remaining identity repair preview/resume and ambiguity review queue |
 | Inbox (`messages-dashboard`, `vault-messages`) | Triage, channel labels, limited-result disclosure, phone screenshots | Summary projection/paging; desktop split view; canonical People detail/review |
 | Event and Calendar dashboard | Matching ambiguity/time tests; actual private event→exact meeting/transcript navigation on web/native; overlap/multi-day layout | Private external-calendar update/recurrence/notification readback; manual transcript overrides and multiple-recording writer |
-| Code / collaborative code | Deferred engine and initial-Y.Text correction; real-Hocuspocus delay/save/reload fixture | Production two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
+| Code / collaborative code | Deferred engine and initial-Y.Text correction; real-Hocuspocus delay/save/reload; private production edit/reload | Production two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
 | Presentation | Registered renderer retained | Slide navigation, editing, fullscreen and export in web/native; small screen controls |
 | Task / task board | Configurable per-note views, explicit ungrouped values, guarded property moves, list/menu/drag/read-only and pending-write fixtures pass | Private web/native moves, view persistence and live task-document opening verified. Remaining: manual rank ordering, advanced filter editing, paginated inventory and broader shared-vault journeys |
 | Project | Registered renderer retained | Related tasks/notes, property edits and linked-source navigation in both clients |
-| Spreadsheet / collaborative spreadsheet | Deferred adapter and failed-download recovery with real Hocuspocus cells | Production concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
+| Spreadsheet / collaborative spreadsheet | Deferred adapter and failed-download recovery with real Hocuspocus cells; private production phone edit/reload | Production concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
 | Website | Registered renderer retained | Safe preview/source edit, hosted build/publish controls and private preview; no secret-bearing embeds |
 | Dashboard and widgets | Registered configurable dashboard retained | Widget inventory, filters/layout persistence, shared board source semantics, mobile scroll and read-only states |
 | Canvas (legacy/local path) | Durable authored assertions, fresh endpoint access, retry/stale-scene/manual-link fixtures; legacy bridge Rust check passes; derived overlays never become assertions | Alternate host runtime, reviewed orphan/canvas-deletion cleanup and large-scene performance |

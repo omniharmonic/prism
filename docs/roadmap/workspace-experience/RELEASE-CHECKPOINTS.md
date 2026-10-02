@@ -188,3 +188,12 @@ All 163 browser journeys, application/e2e typechecks, web/native builds and six 
 Authenticated production PWA activated the new build. The private self-thread's live reader retained the exact DOM node and its one source event across 1280→390→1280; no phone overflow. A new owner-private synthetic document under `_test/prism-responsive-20261001/` retained its exact Tiptap node and typed text across both breakpoints. Independent vault readback confirms the edit occurs exactly once, with the original body marker, private visibility and unrelated metadata preserved. Anonymous access was denied. Native 130903c is prepared and packaged-tested, but Applications remains 0495e07 while the Mac is locked.
 
 Production exploration exposed a separate shortcut defect: Cmd+K opens an inert search behind focused canvas. A modal-aware shortcut correction is in progress; this interaction is not yet accepted.
+
+
+### Deferred editors and modal shortcuts — 12fbdb3, 8d46ce3
+
+All 168 browser journeys, application/e2e typechecks, web/macOS builds and six packaged Chromium/WebKit startup checks pass. Client-only release, with no server restart; backup `/private/tmp/prism-release-before-8d46ce3/web` retains the previous web. Authenticated PWA activated index-3AOafck7.js. Eight enabled server workers remain healthy.
+
+On production, restoring the private responsive prose fixture requests zero specialized collaborative engine modules. Opening a new private code fixture requests its code engine but not canvas; its existing source is visible before typing. Actual UI edits in the private code and spreadsheet notes under `_test/prism-editors-20261001/` save exactly once, preserve the original markers and unrelated private metadata, and remain visible after navigation/reload. Anonymous reads are denied. Spreadsheet fits 390px without horizontal page overflow; `/tmp/prism-lazy-sheet-production-mobile.png` reviewed. These checks establish basic edit/reload, not multi-user cells, formulas, export or advanced spreadsheet parity.
+
+Actual private canvas B opens through its deferred engine. Focus canvas→Cmd+K leaves the canvas focused with no hidden search; Back to document→Cmd+K opens usable search. Existing drawing and canonical claims were not intentionally changed. Prepared native bundle corresponds to 8d46ce3, with packaged checks passed. Installed Applications copy is still 0495e07/PID28731; the locked Mac prevents safe inspection/install, so actual installed batch acceptance remains open.
