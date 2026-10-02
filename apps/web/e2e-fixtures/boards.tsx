@@ -68,9 +68,9 @@ if (new URLSearchParams(location.search).has("manual-drag")) {
       order: ["hidden-rank", "blank", "custom", "design"],
     },
   };
-  notes[1].metadata.status = "todo";
-  notes[2].metadata.status = "todo";
-  notes[3].metadata.status = "done";
+  notes[1].metadata = { ...notes[1].metadata, status: "todo" };
+  notes[2].metadata = { ...notes[2].metadata, status: "todo" };
+  notes[3].metadata = { ...notes[3].metadata, status: "done" };
   if (new URLSearchParams(location.search).has("task-readonly"))
     notes[1]._caps = ["view"];
 }
