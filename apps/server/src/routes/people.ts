@@ -12,6 +12,7 @@ import {
 } from "../parachute";
 import { treeUpsertNote } from "../tree";
 import { PeopleIndex } from "../worker/people";
+import { IdentityIndex, isNonHumanPerson, isTombstone } from "../identity";
 import {
   isPerson,
   personCategory,
@@ -77,12 +78,18 @@ peopleApi.get("/", async (c) => {
         "type",
         "prism_creator",
         "prism_visibility",
+        // merged people are hidden from the directory (identity layer)
+        "status",
+        "merged_into",
+        "mergedInto",
+        "superseded_by",
       ],
     });
     if (inventory.length >= 10_000)
       return c.json({ error: "people_inventory_limit" }, 503);
     const matches = inventory
-      .filter((n) => isPerson(n) && capsFor(actor, ref(n)).has("view"))
+      // A merged stub or a non-human note tagged `person` is not somebody to list.
+      .filter((n) => isPerson(n) && !isTombstone(n) && !isNonHumanPerson(n) && capsFor(actor, ref(n)).has("view"))
       .map(personSummary)
       .filter(
         (p) =>
@@ -222,9 +229,20 @@ peopleApi.get("/:id", async (c) => {
   if (after.length > 2048) return c.json({ error: "bad_request" }, 400);
   try {
     const vc = vaultClient(actor.vaultId);
-    const person = await vc.getNote(c.req.param("id"), { includeLinks: true });
+    let person = await vc.getNote(c.req.param("id"), { includeLinks: true });
     if (!isPerson(person) || !capsFor(actor, ref(person)).has("view"))
       return c.json({ error: "not_found" }, 404);
+    // A merged person opens as the person they were merged into (additive
+    // `mergedFrom` hint); a stub whose target can't be found opens as itself.
+    let mergedFrom: { id: string; path: string | null } | null = null;
+    if (isTombstone(person)) {
+      const people = await vc.listNotes({ tags: ["person"], limit: 10_000, includeMetadata: ["name", "status", "merged_into", "mergedInto", "superseded_by", "type", "prism_creator", "prism_visibility"] });
+      const canonical = new IdentityIndex(people.filter(isPerson)).canonicalOf(person);
+      if (canonical && canonical.id !== person.id && capsFor(actor, ref(canonical)).has("view")) {
+        mergedFrom = { id: person.id, path: person.path };
+        person = await vc.getNote(canonical.id, { includeLinks: true });
+      }
+    }
     // Hydrated edges include both directions. Only explicit canonical links
     // associate records; a matching display name never merges people.
     const edges = new Map<string, Set<string>>();
@@ -290,6 +308,7 @@ peopleApi.get("/:id", async (c) => {
       },
       related: page,
       next: related.length > 50 ? page.at(-1)!.id : null,
+      ...(mergedFrom ? { mergedFrom } : {}),
     });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404)
