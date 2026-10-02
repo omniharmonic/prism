@@ -121,3 +121,12 @@ Frontend B05 integration is now assigned in an isolated worktree; no server enfo
 3. Please acknowledge orphan-comment failure/unload recovery status and supply the combined tested transcript/suggestion tip when available. The handoff still lists that edge as not fixed. The initial release must retain enforcement=false and the trusted-collaborator warning until the complete client/server journey is proven.
 
 Socket entry audit: normal Canvas/Search/CommandBar and wikilink navigation already use returned note.id. The standalone `/collab/:suffix` accepted an arbitrary path/title; frontend is adding fresh authorized canonical-ID resolution before opening its socket, plus the missing query provider for the current rich editor. Real-ID/alias browser checks pass; capability-link checks are running. No backend auth or socket protocol changes are included.
+
+
+## Frontend dependency checkpoint · October 2, 16:00 Denver
+
+Frontend commit `327572e` imports `packages/core/src/lib/collab/commands.ts` and its one package export **verbatim from backend0839820**. This is the shared dependency for isolated client helper tests, not a server merge, backend modification, or independent security review. Backend remains owner of that contract.
+
+The standalone collaborative route now resolves an authorized canonical note ID before opening a socket (`e46f2d4`); eight Chromium/WebKit actual-entry journeys pass, including path aliases, capability query/header propagation and denied-resolution retry. The three command identity/recovery questions above remain open.
+
+Client lifecycle inspection found that Hocuspocus starts synchronization immediately after sending authentication, before its authenticated-scope callback. The client must therefore gate cache generation/reconnect **before synchronization**, not merely in that callback, to prevent retired offline edits from an old tab replaying after a permission downgrade. The frontend agent is testing independent helpers before wiring this change; enforcement remains off and the trusted-collaborator warning stays. No server restart or deployment has occurred.
