@@ -15,11 +15,21 @@
  * left undone stays `pending` and is completed by an identical retry (manual) or
  * the worker sweep (automatic). A note is never deleted, and content, tags and
  * unrelated metadata are never written.
+ *
+ * Ids are CANONICAL ids only. The vault also resolves `/notes/:x` by path and by
+ * title; a note fetched under such an alias is treated as missing, so the lock,
+ * the journal and the metadata written into other notes are always keyed on the
+ * real id (the worker only ever sees real ids).
  */
 import { createHash } from "node:crypto";
 import { vaultClient, VaultConflictError, type Note, type NoteLinkInput } from "./parachute";
 import {
+  abandonDecision,
   acceptDecision,
+  allLinkStates,
+  allSuppressions,
+  cleanupsFor,
+  deleteCleanup,
   findDecision,
   getLinkState,
   isSuppressed,
@@ -27,6 +37,7 @@ import {
   linkScope,
   markDecisionApplied,
   pendingDecisions,
+  pruneDecisions,
   setDecisionStep,
   type DecisionRow,
   type LinkScope,
@@ -54,20 +65,109 @@ export interface LinkVault {
 /** Throws TranscriptLinkError when the CURRENT actor may not do `need` on `note`. */
 export type LinkAuthorize = (note: Note, need: "view" | "edit") => void;
 
+const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+const idList = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === "string" && !!x))] : []);
+const is404 = (e: unknown): boolean => (e as { status?: number })?.status === 404;
+const hasTag = (n: Note, tag: string): boolean => (n.tags ?? []).includes(tag);
+
+// ── ids ──────────────────────────────────────────────────────────────────────
+
+const NOTE_ID = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
+/** A plausible canonical note id: no slash, no control character, never "." / "..". */
+export const isNoteId = (v: unknown): v is string => typeof v === "string" && NOTE_ID.test(v);
+
+class NoteMissing extends Error {
+  readonly status = 404;
+}
+
+/**
+ * Fetch a note BY ITS CANONICAL ID. An id outside the allowlist never reaches
+ * the vault; a note the vault resolved through a path or title alias is missing.
+ */
+export async function fetchNoteById(vault: Pick<LinkVault, "getNote">, id: string, includeLinks = false): Promise<Note> {
+  if (!isNoteId(id)) throw new NoteMissing(`not a note id`);
+  const note = await vault.getNote(id, includeLinks ? { includeLinks: true } : undefined);
+  if (note.id !== id) throw new NoteMissing(`alias`);
+  return note;
+}
+
+// ── vault access: test seam + bounded calls ──────────────────────────────────
+
 let wrapVault: ((v: LinkVault, vaultId: string) => LinkVault) | null = null;
 /** Tests only: wrap the vault (fault injection, interleaving). */
 export function setTranscriptLinkVaultForTests(wrap: ((v: LinkVault, vaultId: string) => LinkVault) | null): void {
   wrapVault = wrap;
 }
+let timeoutOverride: number | null = null;
+/** Tests only: the bound on a vault call made under the per-transcript lock. */
+export function setTranscriptLinkTimeoutForTests(ms: number | null): void {
+  timeoutOverride = ms;
+}
+const callTimeoutMs = (): number => timeoutOverride ?? (Number(process.env.TRANSCRIPT_LINK_VAULT_TIMEOUT_MS) || 15_000);
+
+/**
+ * A hung vault call must not hold the per-transcript lock (the calendar ingest
+ * queues behind it). The call is abandoned after the bound and the decision
+ * stays pending; a write that lands late is still a CAS write of desired state.
+ */
+function bounded<T>(p: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("vault_timeout")), callTimeoutMs());
+  });
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+}
+const timed = (v: LinkVault): LinkVault => ({
+  getNote: (id, o) => bounded(v.getNote(id, o)),
+  updateNote: (id, p) => bounded(v.updateNote(id, p)),
+});
 const vaultFor = (vaultId: string): LinkVault => {
   const v = vaultClient(vaultId) as LinkVault;
-  return wrapVault ? wrapVault(v, vaultId) : v;
+  return timed(wrapVault ? wrapVault(v, vaultId) : v);
 };
 
-const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-const idList = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === "string" && !!x))] : []);
-const is404 = (e: unknown): boolean => (e as { status?: number })?.status === 404;
-const hasTag = (n: Note, tag: string): boolean => (n.tags ?? []).includes(tag);
+// ── the lean transcript list the review reads ────────────────────────────────
+
+/** The only metadata keys the review and the matcher read. */
+const LEAN_KEYS = ["title", "start", "date", "attendees", "attendeeEmails", "calendarEventId", "meetingNoteId", "prism_creator", "prism_visibility"];
+export const TRANSCRIPT_SCAN = 5000;
+const listTtlMs = (): number => {
+  const n = Number(process.env.TRANSCRIPT_LIST_TTL_MS);
+  return process.env.TRANSCRIPT_LIST_TTL_MS !== undefined && Number.isFinite(n) && n >= 0 ? n : 5_000;
+};
+const lists = new Map<string, { at: number; done: boolean; rows: Promise<Note[]> }>();
+
+/**
+ * One bounded, content-free, metadata-filtered listing of a vault's transcripts.
+ * Identical in-flight requests share it and it is reused for a few seconds, so N
+ * reviewers (or one retrying client) cost the single-threaded vault one list.
+ * Dropped whenever this module writes a note.
+ */
+export function leanTranscripts(scope: LinkScope): Promise<Note[]> {
+  const key = `${scope.vaultId}\n${scope.identity}`;
+  const hit = lists.get(key);
+  if (hit && (!hit.done || Date.now() - hit.at < listTtlMs())) return hit.rows;
+  const rows = vaultClient(scope.vaultId)
+    .listNotes({ tags: ["transcript"], limit: TRANSCRIPT_SCAN, orderBy: "created_at", includeMetadata: LEAN_KEYS })
+    .then((all) => all.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")).slice(0, TRANSCRIPT_SCAN));
+  const entry = { at: Date.now(), done: false, rows };
+  lists.set(key, entry);
+  rows.then(
+    () => {
+      entry.done = true;
+      entry.at = Date.now();
+    },
+    () => {
+      if (lists.get(key) === entry) lists.delete(key);
+    },
+  );
+  return rows;
+}
+export function invalidateTranscriptLists(): void {
+  lists.clear();
+}
+
+// ── reading link state ───────────────────────────────────────────────────────
 
 /** Typed `has-transcript` partners of a note, in either direction. */
 function typedPartners(n: Note): string[] {
@@ -144,7 +244,7 @@ async function ensure(ctx: Ctx, noteId: string, plan: (note: Note) => Promise<Pa
     assertScope(ctx.scope);
     let note: Note;
     try {
-      note = await ctx.vault.getNote(noteId, { includeLinks: true });
+      note = await fetchNoteById(ctx.vault, noteId, true);
     } catch (e) {
       if (missingOk && is404(e)) return;
       throw e;
@@ -162,6 +262,8 @@ async function ensure(ctx: Ctx, noteId: string, plan: (note: Note) => Promise<Pa
     } catch (e) {
       if (e instanceof VaultConflictError && attempt === 0) continue;
       throw e;
+    } finally {
+      invalidateTranscriptLists(); // even a lost acknowledgement may have landed
     }
   }
 }
@@ -173,7 +275,7 @@ async function singularReplaceable(ctx: Ctx, meetingId: string, singular: string
   const st = getLinkState(ctx.scope, singular);
   if (st && st.meeting_id !== meetingId) return true; // the journal says it is no longer this meeting's
   try {
-    await ctx.vault.getNote(singular);
+    await fetchNoteById(ctx.vault, singular);
     return false;
   } catch (e) {
     if (is404(e)) return true;
@@ -226,24 +328,55 @@ function detachPlan(transcriptId: string) {
   };
 }
 
-/** Transcript side: point at `meetingId` (or clear), dropping reverse typed links to `leaving`. */
-function pointPlan(meetingId: string | null, leaving: string | null) {
+/** Transcript side: point at `meetingId` (or clear), dropping reverse typed links to every meeting it leaves. */
+function pointPlan(meetingId: string | null, leaving: string[]) {
   return (t: Note): Patch | null => {
     const back = str(t.metadata?.meetingNoteId);
     const patch: Patch = {};
     if (meetingId) {
       if (back !== meetingId) patch.metadata = { meetingNoteId: meetingId };
-    } else if (back && back === leaving) patch.metadata = { meetingNoteId: null };
-    if (leaving && (t.links ?? []).some((l) => l.relationship === HAS_TRANSCRIPT && l.sourceId === t.id && l.targetId === leaving))
-      patch.links = { remove: [{ target: leaving, relationship: HAS_TRANSCRIPT }] };
+    } else if (back && leaving.includes(back)) patch.metadata = { meetingNoteId: null };
+    const reverse = (t.links ?? []).filter((l) => l.relationship === HAS_TRANSCRIPT && l.sourceId === t.id && leaving.includes(l.targetId));
+    if (reverse.length) patch.links = { remove: reverse.map((l) => ({ target: l.targetId, relationship: HAS_TRANSCRIPT })) };
     return patch.metadata || patch.links ? patch : null;
   };
+}
+
+/**
+ * Detaches owed by superseded/abandoned decisions for this transcript. The
+ * journal says the transcript is not that meeting's, and the removal was
+ * authorized when the superseded decision was accepted; it only ever REMOVES
+ * this transcript's claim from that meeting.
+ *
+ * A manual decision performs the ones its actor may edit and silently leaves the
+ * rest (no error, so nothing about a meeting the actor cannot see is disclosed);
+ * the worker sweep completes them under server authority.
+ */
+async function runCleanups(ctx: Ctx, transcriptId: string): Promise<number> {
+  let done = 0;
+  for (const { meeting_id } of cleanupsFor(ctx.scope, transcriptId)) {
+    if (getLinkState(ctx.scope, transcriptId)?.meeting_id === meeting_id) {
+      deleteCleanup(ctx.scope, transcriptId, meeting_id); // wanted again
+      continue;
+    }
+    try {
+      await ensure(ctx, meeting_id, detachPlan(transcriptId), true);
+      deleteCleanup(ctx.scope, transcriptId, meeting_id);
+      done++;
+    } catch (e) {
+      if (e instanceof TranscriptLinkError && e.code === "vault_changed") throw e;
+      // Not permitted for this actor, or a vault failure: stays owed for the sweep.
+    }
+  }
+  return done;
 }
 
 async function converge(ctx: Ctx, row: DecisionRow): Promise<void> {
   const T = row.transcript_id;
   const M = row.meeting_id;
   const step = (n: number) => setDecisionStep(row.id, n);
+  const desired = getLinkState(ctx.scope, T)?.meeting_id ?? null;
+  const owed = cleanupsFor(ctx.scope, T).map((c) => c.meeting_id).filter((id) => id !== desired);
   if (row.action === "link") {
     const stamp = {
       origin: row.actor === WORKER_ACTOR ? "calendar-match-v1" : "manual",
@@ -251,16 +384,17 @@ async function converge(ctx: Ctx, row: DecisionRow): Promise<void> {
     };
     await ensure(ctx, M, attachPlan(ctx, T, stamp));
     step(1);
-    await ensure(ctx, T, pointPlan(M, row.from_meeting_id));
+    await ensure(ctx, T, pointPlan(M, [...(row.from_meeting_id ? [row.from_meeting_id] : []), ...owed]));
     step(2);
     if (row.from_meeting_id) await ensure(ctx, row.from_meeting_id, detachPlan(T), true);
     step(3);
   } else {
-    await ensure(ctx, T, pointPlan(null, M));
+    await ensure(ctx, T, pointPlan(null, [M, ...owed]));
     step(1);
     await ensure(ctx, M, detachPlan(T));
     step(2);
   }
+  await runCleanups(ctx, T);
 }
 
 type Outcome = { status: "applied" | "pending"; revision: number };
@@ -305,7 +439,9 @@ const bodyHash = (d: ManualDecision): string =>
 export async function decideTranscriptLink(d: ManualDecision): Promise<Outcome> {
   const scope = linkScope(d.vaultId);
   if (!scope) throw new TranscriptLinkError("vault_changed");
-  const ctx: Ctx = { scope, vault: d.vault ?? vaultFor(d.vaultId), authorize: d.authorize };
+  // Before the lock key, the journal or any vault call sees them.
+  if (!isNoteId(d.meetingId) || !isNoteId(d.transcriptId)) throw new TranscriptLinkError("not_found");
+  const ctx: Ctx = { scope, vault: d.vault ? timed(d.vault) : vaultFor(d.vaultId), authorize: d.authorize };
   return locked(lockKey(scope, d.transcriptId), async () => {
     assertScope(scope);
     const hash = bodyHash(d);
@@ -322,10 +458,10 @@ export async function decideTranscriptLink(d: ManualDecision): Promise<Outcome> 
 
     let meeting: Note, transcript: Note;
     try {
-      meeting = await ctx.vault.getNote(d.meetingId, { includeLinks: true });
+      meeting = await fetchNoteById(ctx.vault, d.meetingId, true);
       d.authorize(meeting, "view");
       if (!hasTag(meeting, "meeting")) throw new TranscriptLinkError("not_found");
-      transcript = await ctx.vault.getNote(d.transcriptId, { includeLinks: true });
+      transcript = await fetchNoteById(ctx.vault, d.transcriptId, true);
       d.authorize(transcript, "view");
       if (!hasTag(transcript, "transcript")) throw new TranscriptLinkError("not_found");
     } catch (e) {
@@ -340,12 +476,12 @@ export async function decideTranscriptLink(d: ManualDecision): Promise<Outcome> 
     if (d.action === "link" && current && current !== d.meetingId) {
       // A move: the old meeting is written too, so it needs the same access.
       try {
-        const old = await ctx.vault.getNote(current);
+        const old = await fetchNoteById(ctx.vault, current);
         d.authorize(old, "view");
         d.authorize(old, "edit");
         from = current;
       } catch (e) {
-        if (!is404(e)) throw e; // a dangling backpointer is simply replaced
+        if (!is404(e)) throw e; // a dangling (or alias) backpointer is simply replaced
       }
     }
 
@@ -384,23 +520,54 @@ export async function decideTranscriptLink(d: ManualDecision): Promise<Outcome> 
 
 export type AutoLinkOutcome = "applied" | "pending" | "skipped";
 
-export interface TranscriptLinkGate {
-  /** The journal's view of a transcript (null = never decided). */
+/** Journal lookups against state loaded ONCE (a pass asks per event × transcript). */
+export interface LinkSnapshot {
   state(transcriptId: string): { meetingId: string | null; origin: "manual" | "auto" } | null;
-  /** A manual unlink forbids re-linking this pair (or the same calendar event). */
   suppressed(transcriptId: string, meetingId: string | null, eventId: string | null): boolean;
-  /** Transcripts the journal links to a meeting. */
   linkedTo(meetingId: string): string[];
+}
+
+export interface TranscriptLinkGate extends LinkSnapshot {
+  /** Load the journal once for a whole pass. `autoLink` still re-checks under the lock. */
+  snapshot(): LinkSnapshot;
   autoLink(p: { transcriptId: string; meetingId: string; eventId: string; evidence: string[] }): Promise<AutoLinkOutcome>;
-  /** Re-drive automatic decisions a previous pass left pending. */
-  sweep(): Promise<{ applied: number; pending: number }>;
+  /** Re-drive pending automatic decisions and owed detaches; prune old receipts. */
+  sweep(): Promise<{ applied: number; pending: number; abandoned: number; cleaned: number }>;
 }
 
 const workerAuthorize: LinkAuthorize = () => {};
 
+const RETENTION_MS = () => (Number(process.env.TRANSCRIPT_LINK_JOURNAL_RETENTION_DAYS) || 90) * 86_400_000;
+let lastPrune = 0;
+
+/**
+ * Drive a WORKER decision. Worker context never overrides the world: a missing
+ * note, or a transcript whose backpointer was set to another meeting outside the
+ * journal, abandons the decision instead of retrying or overwriting.
+ */
+async function driveWorker(ctx: Ctx, row: DecisionRow): Promise<"applied" | "pending" | "abandoned"> {
+  try {
+    const transcript = await fetchNoteById(ctx.vault, row.transcript_id);
+    const back = str(transcript.metadata?.meetingNoteId);
+    if (back && back !== row.meeting_id) {
+      abandonDecision(ctx.scope, row);
+      return "abandoned";
+    }
+    await converge(ctx, row);
+  } catch (e) {
+    if (is404(e)) {
+      abandonDecision(ctx.scope, row);
+      return "abandoned";
+    }
+    return "pending";
+  }
+  markDecisionApplied(row.id);
+  return "applied";
+}
+
 export function transcriptLinkGate(vaultId: string, vault?: LinkVault): TranscriptLinkGate {
   const scopeNow = () => linkScope(vaultId);
-  const v = () => vault ?? vaultFor(vaultId);
+  const v = () => (vault ? timed(vault) : vaultFor(vaultId));
   return {
     state(transcriptId) {
       const s = scopeNow();
@@ -415,19 +582,40 @@ export function transcriptLinkGate(vaultId: string, vault?: LinkVault): Transcri
       const s = scopeNow();
       return s ? journalTranscriptsFor(s, meetingId) : [];
     },
+    snapshot() {
+      const s = scopeNow();
+      const states = s ? allLinkStates(s) : new Map();
+      const byMeeting = new Map<string, string[]>();
+      for (const [id, st] of states) if (st.meeting_id) byMeeting.set(st.meeting_id, [...(byMeeting.get(st.meeting_id) ?? []), id]);
+      const suppressions = new Map<string, { meeting_id: string; event_id: string }[]>();
+      for (const r of s ? allSuppressions(s) : []) suppressions.set(r.transcript_id, [...(suppressions.get(r.transcript_id) ?? []), r]);
+      return {
+        state(transcriptId) {
+          const st = states.get(transcriptId);
+          return st ? { meetingId: st.meeting_id, origin: st.origin } : null;
+        },
+        suppressed(transcriptId, meetingId, eventId) {
+          if (!s) return true;
+          return (suppressions.get(transcriptId) ?? []).some((r) => (!!meetingId && r.meeting_id === meetingId) || (!!eventId && r.event_id === eventId));
+        },
+        linkedTo: (meetingId) => byMeeting.get(meetingId) ?? [],
+      };
+    },
     async autoLink(p) {
       const scope = scopeNow();
-      if (!scope) return "skipped";
+      if (!scope || !isNoteId(p.transcriptId) || !isNoteId(p.meetingId)) return "skipped";
       const ctx: Ctx = { scope, vault: v(), authorize: workerAuthorize };
       return locked(lockKey(scope, p.transcriptId), async () => {
         // Re-check every override INSIDE the critical section: a manual decision
-        // may have landed while this pass was matching.
+        // may have landed while this pass was matching. A link in the journal
+        // (manual or automatic) is never moved; a manual unlink bars only that
+        // pair / calendar event, not the transcript.
         const st = getLinkState(scope, p.transcriptId);
-        if (st?.origin === "manual" || st?.meeting_id) return "skipped";
+        if (st?.meeting_id) return "skipped";
         if (isSuppressed(scope, p.transcriptId, p.meetingId, p.eventId)) return "skipped";
         let transcript: Note;
         try {
-          transcript = await ctx.vault.getNote(p.transcriptId);
+          transcript = await fetchNoteById(ctx.vault, p.transcriptId);
         } catch {
           return "skipped";
         }
@@ -447,12 +635,13 @@ export function transcriptLinkGate(vaultId: string, vault?: LinkVault): Transcri
           origin: "auto",
           eventId: p.eventId,
         });
-        return (await drive(ctx, row)).status;
+        const outcome = await driveWorker(ctx, row);
+        return outcome === "abandoned" ? "skipped" : outcome;
       });
     },
     async sweep() {
       const scope = scopeNow();
-      const out = { applied: 0, pending: 0 };
+      const out = { applied: 0, pending: 0, abandoned: 0, cleaned: 0 };
       if (!scope) return out;
       const ctx: Ctx = { scope, vault: v(), authorize: workerAuthorize };
       for (const seen of pendingDecisions(scope, WORKER_ACTOR)) {
@@ -460,9 +649,15 @@ export function transcriptLinkGate(vaultId: string, vault?: LinkVault): Transcri
           // Re-read under the lock: a manual decision may have superseded it.
           const row = findDecision(scope, WORKER_ACTOR, seen.request_id);
           if (!row || row.state !== "pending") return;
-          const r = await drive(ctx, row).catch(() => ({ status: "pending" as const }));
-          out[r.status]++;
+          out[await driveWorker(ctx, row)]++;
         });
+      }
+      for (const transcriptId of new Set(cleanupsFor(scope).map((c) => c.transcript_id))) {
+        out.cleaned += await locked(lockKey(scope, transcriptId), () => runCleanups(ctx, transcriptId)).catch(() => 0);
+      }
+      if (Date.now() - lastPrune > 86_400_000) {
+        lastPrune = Date.now();
+        pruneDecisions(RETENTION_MS());
       }
       return out;
     },

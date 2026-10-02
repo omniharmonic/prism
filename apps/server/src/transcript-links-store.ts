@@ -55,12 +55,21 @@ CREATE TABLE IF NOT EXISTS transcript_link_decisions (
 );
 CREATE INDEX IF NOT EXISTS transcript_link_decisions_transcript
   ON transcript_link_decisions (vault_id, vault_identity, transcript_id, state);
+CREATE TABLE IF NOT EXISTS transcript_link_cleanups (
+  vault_id TEXT NOT NULL,
+  vault_identity TEXT NOT NULL,
+  transcript_id TEXT NOT NULL,
+  meeting_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (vault_id, vault_identity, transcript_id, meeting_id)
+);
 `);
 
 export const TRANSCRIPT_LINK_TABLES = [
   "transcript_link_state",
   "transcript_link_suppressions",
   "transcript_link_decisions",
+  "transcript_link_cleanups",
 ] as const;
 
 export interface LinkScope {
@@ -164,6 +173,16 @@ export function acceptDecision(
   const now = Date.now();
   db.transaction(() => {
     const revision = (getLinkState(s, p.transcriptId)?.revision ?? 0) + 1;
+    // A superseded decision may have written some of its notes. Every meeting it
+    // touched that is not the new desired meeting is owed a detach; that debt
+    // outlives the superseded row (see transcript-links.ts `cleanups`).
+    const stranded = db
+      .prepare("SELECT meeting_id, from_meeting_id FROM transcript_link_decisions WHERE vault_id=? AND vault_identity=? AND transcript_id=? AND state='pending'")
+      .all(s.vaultId, s.identity, p.transcriptId) as { meeting_id: string; from_meeting_id: string | null }[];
+    for (const row of stranded)
+      for (const meetingId of [row.meeting_id, row.from_meeting_id])
+        if (meetingId && meetingId !== p.desiredMeetingId) addCleanup(s, p.transcriptId, meetingId);
+    if (p.desiredMeetingId) deleteCleanup(s, p.transcriptId, p.desiredMeetingId);
     db.prepare(
       "UPDATE transcript_link_decisions SET state='superseded' WHERE vault_id=? AND vault_identity=? AND transcript_id=? AND state='pending'",
     ).run(s.vaultId, s.identity, p.transcriptId);
@@ -205,4 +224,58 @@ export function setDecisionStep(id: string, step: number): void {
 
 export function markDecisionApplied(id: string): void {
   db.prepare("UPDATE transcript_link_decisions SET state='applied', applied_at=? WHERE id=? AND state='pending'").run(Date.now(), id);
+}
+
+// ── cleanups: detaches owed by superseded or abandoned decisions ─────────────
+
+export function addCleanup(s: LinkScope, transcriptId: string, meetingId: string): void {
+  db.prepare("INSERT OR IGNORE INTO transcript_link_cleanups VALUES (?,?,?,?,?)").run(s.vaultId, s.identity, transcriptId, meetingId, Date.now());
+}
+export function deleteCleanup(s: LinkScope, transcriptId: string, meetingId: string): void {
+  db.prepare("DELETE FROM transcript_link_cleanups WHERE vault_id=? AND vault_identity=? AND transcript_id=? AND meeting_id=?").run(s.vaultId, s.identity, transcriptId, meetingId);
+}
+export function cleanupsFor(s: LinkScope, transcriptId?: string): { transcript_id: string; meeting_id: string }[] {
+  return db
+    .prepare(`SELECT transcript_id, meeting_id FROM transcript_link_cleanups WHERE vault_id=? AND vault_identity=?${transcriptId ? " AND transcript_id=?" : ""} ORDER BY created_at, meeting_id`)
+    .all(...(transcriptId ? [s.vaultId, s.identity, transcriptId] : [s.vaultId, s.identity])) as { transcript_id: string; meeting_id: string }[];
+}
+
+/**
+ * Give up on a pending WORKER decision (its note vanished, or the transcript was
+ * re-pointed outside the journal): supersede it, drop the automatic state it set
+ * so the transcript is not blocked forever, and owe its meeting a detach.
+ */
+export function abandonDecision(s: LinkScope, row: DecisionRow): void {
+  db.transaction(() => {
+    db.prepare("UPDATE transcript_link_decisions SET state='superseded' WHERE id=? AND state='pending'").run(row.id);
+    db.prepare(
+      "DELETE FROM transcript_link_state WHERE vault_id=? AND vault_identity=? AND transcript_id=? AND revision=? AND origin='auto'",
+    ).run(s.vaultId, s.identity, row.transcript_id, row.revision);
+    addCleanup(s, row.transcript_id, row.meeting_id);
+  })();
+}
+
+// ── per-pass snapshot (the worker must not query per event × transcript) ─────
+
+export function allLinkStates(s: LinkScope): Map<string, LinkState> {
+  const rows = db
+    .prepare("SELECT transcript_id, revision, meeting_id, origin FROM transcript_link_state WHERE vault_id=? AND vault_identity=?")
+    .all(s.vaultId, s.identity) as (LinkState & { transcript_id: string })[];
+  return new Map(rows.map((r) => [r.transcript_id, { revision: r.revision, meeting_id: r.meeting_id, origin: r.origin }]));
+}
+export function allSuppressions(s: LinkScope): { transcript_id: string; meeting_id: string; event_id: string }[] {
+  return db
+    .prepare("SELECT transcript_id, meeting_id, event_id FROM transcript_link_suppressions WHERE vault_id=? AND vault_identity=?")
+    .all(s.vaultId, s.identity) as { transcript_id: string; meeting_id: string; event_id: string }[];
+}
+
+/**
+ * Bounded retention for finished journal rows. Only `applied` / `superseded`
+ * decisions older than the cutoff go; state, suppressions and cleanups are never
+ * pruned (they are the current truth, not history).
+ */
+export function pruneDecisions(olderThanMs: number, now = Date.now()): number {
+  return db
+    .prepare("DELETE FROM transcript_link_decisions WHERE state IN ('applied','superseded') AND COALESCE(applied_at, created_at) < ?")
+    .run(now - olderThanMs).changes;
 }

@@ -57,7 +57,7 @@ import { getSecret } from "../secrets";
 import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault } from "./people";
 import { defaultGogRunner, type GogRunner } from "./gmail";
 import { matchTranscript, matchTranscripts, score as transcriptScore, MIN_FUZZY_SCORE } from "./transcript-match";
-import { meetingTranscriptIds, transcriptLinkGate, type TranscriptLinkGate } from "../transcript-links";
+import { meetingTranscriptIds, transcriptLinkGate, type LinkSnapshot, type TranscriptLinkGate } from "../transcript-links";
 
 export type { CalendarDeleteMode };
 
@@ -462,6 +462,9 @@ export async function syncCalendarWindow(
   /** Transcripts some meeting note already claims (singular, plural or typed link). */
   let claimedIds: Set<string> | null = null;
   const claimed = () => (claimedIds ??= new Set(meetings.flatMap(meetingTranscriptIds)));
+  /** The journal, loaded ONCE per pass (not per event × transcript). */
+  let journalSnap: LinkSnapshot | null = null;
+  const journal = (gate: TranscriptLinkGate) => (journalSnap ??= gate.snapshot());
 
   /**
    * Journal-gated linking. Every recording carrying the occurrence's exact event
@@ -473,8 +476,10 @@ export async function syncCalendarWindow(
     const list = await loadTranscripts();
     if (!list.length) return;
     const back = (t: Note) => asStr(t.metadata?.meetingNoteId) || null;
-    const own = new Set([...(note ? meetingTranscriptIds(note) : []), ...(noteId ? gate.linkedTo(noteId) : [])]);
-    const overridden = (t: Note) => !!gate.state(t.id) || gate.suppressed(t.id, noteId, m.eventId);
+    const snap = journal(gate);
+    const own = new Set([...(note ? meetingTranscriptIds(note) : []), ...(noteId ? snap.linkedTo(noteId) : [])]);
+    // A journaled link is never moved; a manual unlink bars only this pair/event.
+    const overridden = (t: Note) => !!snap.state(t.id)?.meetingId || snap.suppressed(t.id, noteId, m.eventId);
     const targets: Array<{ t: Note; score: number; evidence: string[]; repair?: boolean }> = [];
     // Complete a half-written pair only when the matcher independently agrees:
     // one note's editable metadata is never authority to write the other note.
@@ -691,7 +696,7 @@ export async function syncCalendarWindow(
     }
   }
 
-  await reconcile(vault, meetings, { events, recognized, nextPageToken }, opts, res, intent, log);
+  await reconcile(vault, meetings, { events, recognized, nextPageToken }, opts, res, intent, log, loadTranscripts);
   return res;
 }
 
@@ -712,6 +717,8 @@ async function reconcile(
   res: CalendarPassResult,
   intent: (i: Omit<CalendarIntent, "at" | "source" | "mode" | "deleteMode" | "window">) => void,
   log: (line: string) => void,
+  /** The pass's own (already loaded, at most once) transcript listing. */
+  loadTranscripts: () => Promise<Note[]>,
 ): Promise<void> {
   const { from, to, max } = opts;
   if (!fetched.recognized) res.reconcile.skipped = "unrecognised gog response shape";
@@ -730,7 +737,7 @@ async function reconcile(
     if (meetingTranscriptIds(note).length || opts.links?.linkedTo(note.id).length) return true;
     if (backpointers === undefined) {
       try {
-        backpointers = new Set((await vault.listNotes({ tags: ["transcript"] })).map((t) => asStr(t.metadata?.meetingNoteId) ?? ""));
+        backpointers = new Set((await loadTranscripts()).map((t) => asStr(t.metadata?.meetingNoteId) ?? ""));
       } catch {
         backpointers = null; // can't confirm there is none → never delete
       }

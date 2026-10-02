@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { db } from "../src/db";
 import { vaultClient } from "../src/parachute";
 import { resetDb, installFakeVault, type FakeVault } from "./helpers";
+import { pruneDecisions } from "../src/transcript-links-store";
 import {
   decideTranscriptLink,
+  setTranscriptLinkTimeoutForTests,
   setTranscriptLinkVaultForTests,
   transcriptLinkGate,
   TranscriptLinkError,
@@ -21,6 +23,7 @@ const meta = (id: string) => fv.notes.get(id)!.metadata ?? {};
 const typed = (id: string) => (fv.notes.get(id)!.links ?? []).filter((l) => l.relationship === "has-transcript").map((l) => l.targetId).sort();
 const stamp = (id: string) => fv.notes.get(id)!.updatedAt!;
 const journal = () => db.prepare("SELECT transcript_id, action, state, actor, revision, step FROM transcript_link_decisions ORDER BY created_at, rowid").all() as Array<{ transcript_id: string; action: string; state: string; actor: string; revision: number; step: number }>;
+const decisionCount = (table: string) => (db.prepare(`SELECT count(*) n FROM ${table}`).get() as { n: number }).n;
 const patches = (id: string) => fv.calls.filter((c) => c.method === "PATCH" && c.path.endsWith(`/notes/${id}`));
 const code = async (p: Promise<unknown>) => p.then(() => "ok", (e) => (e instanceof TranscriptLinkError ? e.code : `other:${String(e)}`));
 
@@ -52,8 +55,8 @@ const decide = (over: Partial<ManualDecision> = {}) => {
     transcriptId,
     action: "link",
     reason: "same call",
-    meetingUpdatedAt: stamp(meetingId),
-    transcriptUpdatedAt: stamp(transcriptId),
+    meetingUpdatedAt: over.meetingUpdatedAt ?? stamp(meetingId),
+    transcriptUpdatedAt: over.transcriptUpdatedAt ?? stamp(transcriptId),
     expectedRevision: 0,
     requestId: "r1",
     actor: OWNER,
@@ -98,6 +101,7 @@ beforeEach(() => {
   transcript("T2");
 });
 afterEach(() => {
+  setTranscriptLinkTimeoutForTests(null);
   setTranscriptLinkVaultForTests(null);
   fv.restore();
 });
@@ -292,6 +296,14 @@ test("the worker never moves a transcript and never overrides a manual decision"
   assert.equal(gate().suppressed("T2", "M", "ev-m"), false);
   assert.equal(meta("T1").meetingNoteId, undefined);
   assert.deepEqual(journal().filter((r) => r.actor === "worker"), []);
+  // The unlink bars only that pair/event: a different meeting may still take it…
+  meeting("M2", "ev-m2");
+  assert.equal(await auto("T1", "M2", "ev-m2"), "applied");
+  assert.equal(meta("T1").meetingNoteId, "M2");
+  // …and a MANUAL link is never moved by the worker.
+  assert.equal((await decide({ transcriptId: "T2", requestId: "keep" })).status, "applied");
+  assert.equal(await auto("T2", "M2", "ev-m2"), "skipped");
+  assert.equal(meta("T2").meetingNoteId, "M");
 });
 
 test("a half-written automatic link stays pending and the worker sweep completes it", async () => {
@@ -301,10 +313,181 @@ test("a half-written automatic link stays pending and the worker sweep completes
   assert.equal(meta("M").transcriptLinkOrigin, "calendar-match-v1");
   assert.equal(meta("T1").meetingNoteId, undefined);
   assert.equal(await auto(), "skipped", "not journaled twice");
-  assert.deepEqual(await gate().sweep(), { applied: 1, pending: 0 });
+  assert.deepEqual(await gate().sweep(), { applied: 1, pending: 0, abandoned: 0, cleaned: 0 });
   assert.equal(meta("T1").meetingNoteId, "M");
   assert.deepEqual(journal().map((r) => [r.actor, r.state]), [["worker", "applied"]]);
-  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0 });
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 0, cleaned: 0 });
+});
+
+test("ids are canonical: a path alias the vault would resolve, or a malformed id, is not_found and keys nothing", async () => {
+  fv.put({ id: "T9", path: "alias-t9", tags: ["transcript", "team"], metadata: { title: "Roadmap review", date: "2026-10-05" } });
+  fv.put({ id: "M9", path: "alias-m9", tags: ["meeting", "team"], metadata: { title: "Roadmap review", calendarEventId: "ev-9", date: "2026-10-05" } });
+  assert.equal((await vaultClient("primary").getNote("ALIAS-T9")).id, "T9", "the fake vault resolves by path like the real one");
+  const stamps = { meetingUpdatedAt: stamp("M"), transcriptUpdatedAt: stamp("T9") };
+  assert.equal(await code(decide({ transcriptId: "alias-t9", ...stamps })), "not_found");
+  assert.equal(await code(decide({ meetingId: "alias-m9", meetingUpdatedAt: stamp("M9"), transcriptUpdatedAt: stamp("T1") })), "not_found");
+  const before = fv.calls.length;
+  for (const bad of ["..", ".", "a/b", "vault/transcripts/T1", "x\u0000y", "", "a".repeat(200)]) {
+    assert.equal(await code(decide({ transcriptId: bad, ...stamps })), "not_found", JSON.stringify(bad));
+    assert.equal(await code(decide({ meetingId: bad, ...stamps })), "not_found", JSON.stringify(bad));
+    assert.equal(await gate().autoLink({ transcriptId: bad, meetingId: "M", eventId: "ev-m", evidence: [] }), "skipped");
+  }
+  assert.equal(fv.calls.length, before, "a malformed id never reaches the vault");
+  assert.deepEqual(journal(), []);
+  assert.equal((db.prepare("SELECT count(*) n FROM transcript_link_state").get() as { n: number }).n, 0);
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 0);
+  // An alias planted in editable metadata is treated as dangling, never followed.
+  fv.notes.get("T9")!.metadata = { ...meta("T9"), meetingNoteId: "alias-m9" };
+  assert.equal((await decide({ transcriptId: "T9", meetingUpdatedAt: stamp("M"), transcriptUpdatedAt: stamp("T9") })).status, "applied");
+  assert.equal(meta("T9").meetingNoteId, "M");
+  assert.equal(patches("M9").length, 0);
+});
+
+test("two transcripts linking to one meeting at the same time: CAS contention on the meeting loses nothing", async () => {
+  let waiting: (() => void) | null = null;
+  let arrived = 0;
+  setTranscriptLinkVaultForTests((v) => ({
+    getNote: (id, o) => v.getNote(id, o),
+    updateNote: async (id, p) => {
+      // Both decisions have read the SAME meeting revision before either writes.
+      if (id === "M" && ++arrived <= 2) {
+        if (arrived === 1) await new Promise<void>((r) => (waiting = r));
+        else waiting?.();
+      }
+      return v.updateNote(id, p);
+    },
+  }));
+  const [a, b] = await Promise.all([decide(), decide({ transcriptId: "T2", requestId: "r2" })]);
+  assert.deepEqual([a.status, b.status], ["applied", "applied"]);
+  assert.deepEqual([...(meta("M").transcriptNoteIds as string[])].sort(), ["T1", "T2"]);
+  assert.deepEqual(typed("M"), ["T1", "T2"]);
+  assert.equal(patches("M").length, 3, "one of the two meeting writes hit a 409 and was retried on a fresh read");
+  assert.equal(meta("T1").meetingNoteId, "M");
+  assert.equal(meta("T2").meetingNoteId, "M");
+});
+
+test("a superseded move's unfinished detach is carried into the superseding decision", async () => {
+  meeting("O", "ev-o");
+  await decide({ meetingId: "O", requestId: "first" });
+  const f = faults();
+  f.failBefore.add("O");
+  assert.deepEqual(await decide({ requestId: "move", expectedRevision: 1 }), { status: "pending", revision: 2 });
+  assert.equal(meta("T1").meetingNoteId, "M");
+  assert.deepEqual(meta("O").transcriptNoteIds, ["T1"], "the old meeting still claims the transcript");
+  // Another editor now unlinks it from M, superseding the stranded move.
+  assert.deepEqual(await decide({ action: "unlink", requestId: "un", expectedRevision: 2, actor: "user:other@test.local" }), { status: "applied", revision: 3 });
+  assert.equal(meta("O").transcriptNoteIds, undefined, "the stranded claim on the OLD meeting is repaired too");
+  assert.equal(meta("O").transcriptNoteId, undefined);
+  assert.deepEqual(typed("O"), []);
+  assert.equal(meta("M").transcriptNoteIds, undefined);
+  assert.equal(meta("T1").meetingNoteId, undefined);
+  assert.equal((db.prepare("SELECT count(*) n FROM transcript_link_cleanups").get() as { n: number }).n, 0);
+});
+
+test("…and when the superseding actor may not edit that meeting it is left, undisclosed, for the worker sweep", async () => {
+  meeting("O", "ev-o");
+  await decide({ meetingId: "O", requestId: "first" });
+  const f = faults();
+  f.failBefore.add("O");
+  assert.equal((await decide({ requestId: "move", expectedRevision: 1 })).status, "pending");
+  setTranscriptLinkVaultForTests(null);
+  const noAccessToO: LinkAuthorize = (note) => {
+    if (note.id === "O") throw new TranscriptLinkError("not_found");
+  };
+  assert.deepEqual(
+    await decide({ action: "unlink", requestId: "un", expectedRevision: 2, actor: "user:other@test.local", authorize: noAccessToO }),
+    { status: "applied", revision: 3 },
+    "no error: nothing about the unviewable meeting is disclosed",
+  );
+  assert.deepEqual(meta("O").transcriptNoteIds, ["T1"]);
+  assert.equal(patches("O").length, 1, "the actor never wrote a meeting they cannot edit");
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 0, cleaned: 1 });
+  assert.equal(meta("O").transcriptNoteIds, undefined);
+  assert.deepEqual(typed("O"), []);
+  assert.equal(meta("O").keep, "O");
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 0, cleaned: 0 });
+  // A cleanup is dropped, not executed, if a later decision wants that meeting again.
+  f.failBefore.clear();
+});
+
+test("sweep abandons a worker decision whose note is gone: no endless retry, and the transcript is not blocked", async () => {
+  const f = faults();
+  f.failBefore.add("T1");
+  assert.equal(await auto(), "pending");
+  fv.notes.delete("M");
+  const written = fv.calls.filter((c) => c.method === "PATCH").length;
+  // `cleaned` counts owed detaches RESOLVED; the meeting is gone, so there was nothing to write.
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 1, cleaned: 1 });
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, written);
+  assert.equal(gate().state("T1"), null, "the automatic state no longer blocks autoLink");
+  assert.deepEqual(journal().map((r) => r.state), ["superseded"]);
+  const calls = fv.calls.length;
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 0, cleaned: 0 });
+  assert.equal(fv.calls.length, calls, "nothing is retried");
+  meeting("M2", "ev-m2");
+  assert.equal(await auto("T1", "M2", "ev-m2"), "applied");
+});
+
+test("sweep never overwrites a backpointer edited outside the journal: it abandons and withdraws its own half", async () => {
+  const f = faults();
+  f.failBefore.add("T1");
+  assert.equal(await auto(), "pending");
+  assert.deepEqual(meta("M").transcriptNoteIds, ["T1"]);
+  meeting("X", "ev-x");
+  fv.notes.get("T1")!.metadata = { ...meta("T1"), meetingNoteId: "X" }; // e.g. the legacy desktop
+  assert.deepEqual(await gate().sweep(), { applied: 0, pending: 0, abandoned: 1, cleaned: 1 });
+  assert.equal(meta("T1").meetingNoteId, "X", "the outside edit wins");
+  assert.equal(patches("T1").length, 0);
+  assert.equal(meta("M").transcriptNoteIds, undefined, "the worker's half-written claim is withdrawn");
+  assert.equal(gate().state("T1"), null);
+});
+
+test("a hung vault call under the lock is bounded: the decision stays pending and the transcript's lock is released", async () => {
+  setTranscriptLinkTimeoutForTests(40);
+  setTranscriptLinkVaultForTests((v) => ({
+    getNote: (id, o) => v.getNote(id, o),
+    updateNote: (id, p) => (id === "M" ? new Promise<never>(() => {}) : v.updateNote(id, p)),
+  }));
+  const started = Date.now();
+  assert.deepEqual(await decide(), { status: "pending", revision: 1 });
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(journal()[0]!.state, "pending");
+  // The worker is not stuck behind it.
+  const worker = await Promise.race([auto(), new Promise<string>((r) => setTimeout(() => r("blocked"), 1000))]);
+  assert.equal(worker, "skipped");
+  setTranscriptLinkVaultForTests(null);
+  assert.deepEqual(await decide(), { status: "applied", revision: 1 });
+});
+
+test("the per-pass snapshot answers exactly like the per-call lookups", async () => {
+  await decide();
+  await decide({ transcriptId: "T2", requestId: "r2" });
+  await decide({ transcriptId: "T2", action: "unlink", requestId: "u2", expectedRevision: 1 });
+  const g = gate();
+  const snap = g.snapshot();
+  for (const t of ["T1", "T2", "unknown"]) {
+    assert.deepEqual(snap.state(t), g.state(t));
+    for (const [m, e] of [["M", null], ["other", "ev-m"], ["other", "ev-zzz"], [null, null]] as const) assert.equal(snap.suppressed(t, m, e), g.suppressed(t, m, e), `${t}/${m}/${e}`);
+  }
+  assert.deepEqual(snap.linkedTo("M"), g.linkedTo("M"));
+  assert.deepEqual(snap.linkedTo("M"), ["T1"]);
+  assert.deepEqual(snap.state("T2"), { meetingId: null, origin: "manual" });
+});
+
+test("journal pruning removes only old finished decisions; state, suppressions and pending rows stay", async () => {
+  await decide();
+  await decide({ action: "unlink", requestId: "u1", expectedRevision: 1 });
+  const f = faults();
+  f.failBefore.add("M");
+  assert.equal((await decide({ transcriptId: "T2", requestId: "p1" })).status, "pending");
+  const old = Date.now() - 100 * 86_400_000;
+  db.prepare("UPDATE transcript_link_decisions SET created_at=?, applied_at=CASE WHEN applied_at IS NULL THEN NULL ELSE ? END").run(old, old);
+  assert.equal(pruneDecisions(90 * 86_400_000), 2);
+  assert.deepEqual(journal().map((r) => [r.transcript_id, r.state]), [["T2", "pending"]]);
+  assert.equal(gate().state("T1")!.meetingId, null);
+  assert.equal(decisionCount("transcript_link_state"), 2);
+  assert.equal(gate().suppressed("T1", "M", null), true);
+  assert.equal(pruneDecisions(90 * 86_400_000), 0);
 });
 
 // ── calendar pass through the gate ───────────────────────────────────────────
@@ -431,7 +614,9 @@ test("retention: a template-only meeting with ANY transcript link form is never 
   db.prepare("INSERT INTO transcript_link_state VALUES ('primary', ?, 'j', 1, 'journal', 'manual', 0)").run(JSON.stringify(["http://vault.test", "default"]));
   synced("bare", gone("bare"));
 
+  const listsBefore = fv.calls.filter((c) => c.method === "GET" && c.search.includes("tag=transcript")).length;
   const r = await pass([], { deleteMode: "delete" });
+  assert.equal(fv.calls.filter((c) => c.method === "GET" && c.search.includes("tag=transcript")).length - listsBefore, 1, "reconcile reuses the pass's one transcript listing");
   assert.equal(r.reconcile.deleted, 1);
   assert.equal(r.reconcile.cancelled, 5);
   assert.equal(fv.notes.has("bare"), false, "control: a template-only meeting with no link at all is deleted");
