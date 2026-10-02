@@ -1,6 +1,8 @@
 # D06 navigation frontend checkpoint
 
-Source: `c17d357` on isolated `feat/publishing-navigation-ui`, based on `373d1fd`. This is frontend-ready, **not release-ready**. Do not integrate/deploy it against the currently inspected `a98c9af` backend: that snapshot rejects `theme.navigation` and lacks the required public/preview projection. Ship only atomically with an acknowledged compatible server and verify the installed native preview before accepting the release.
+Original isolated frontend source: `c17d357`, based on `373d1fd`; integrated as `825c2b5`. **Updated integration status, 2026-10-02:** compatible server validation and public/private-preview projection are now integrated in `7c7c2b4`, within combined candidate `9c84b6c`. Root reports **1,684/1,684 combined server tests passed**; the reserved publishing slice passed 47 checks plus server typecheck. See [server contract evidence](D06-PUBLICATION-CONTRACT-EVIDENCE.md).
+
+The original hold against incompatible backend `a98c9af` is resolved in this candidate, **not in production**. Production web/desktop remain `86461c9`, server `6445136` behavior. Deploy the compatible frontend/server together and verify authenticated production and installed native preview before accepting the release. The implementation and fixture evidence below remain the record of the original isolated frontend slice.
 
 ## Contract boundary
 
