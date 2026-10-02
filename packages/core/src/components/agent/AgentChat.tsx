@@ -308,14 +308,14 @@ function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNe
           const running = isRunning(session.lastTurnStatus);
           const status = session.lastTurnStatus === "queued" ? "Queued" : session.lastTurnStatus === "running" ? "Working…" : session.lastTurnStatus === "error" ? "Failed" : session.lastTurnStatus === "interrupted" ? "Interrupted" : session.lastTurnStatus === "cancelled" ? "Stopped" : session.lastTurnStatus === "done" ? "Completed" : "No messages yet";
           return <div key={session.id} className="prism-agent-session-row group" data-active={active || undefined}>
-            <button data-testid="agent-session-row" onClick={() => onOpen(session.id)} aria-current={active ? "true" : undefined} className="prism-agent-session-open focus-ring">
+            <button data-testid="agent-session-row" onClick={event => { event.currentTarget.focus({ preventScroll: true }); onOpen(session.id); }} aria-current={active ? "true" : undefined} className="prism-agent-session-open focus-ring">
               {session.note_id ? <FileText size={18} className="shrink-0" /> : <Bot size={18} className="shrink-0" />}
               <span className="min-w-0 flex-1"><span className="prism-agent-session-title">{session.title || "Untitled session"}</span>
                 <span className="prism-agent-session-meta"><span className={running ? "prism-agent-session-running" : undefined}>{status}</span><span aria-hidden="true">·</span><span>{relTime(session.lastTurnAt ?? session.updated_at)}</span></span>
                 {(isReadOnlyProfile(session.profile) || session.cost_usd > 0) && <span className="prism-agent-session-meta">{isReadOnlyProfile(session.profile) && <span className="inline-flex items-center gap-1"><Lock size={10} /> Read-only</span>}{session.cost_usd > 0 && <span title={formatAgentCost(session.cost_usd, billing)?.title} data-testid="agent-session-cost">{formatAgentCost(session.cost_usd, billing)?.text}</span>}</span>}
               </span>
             </button>
-            <button onClick={() => onArchive(session.id)} aria-label="Archive session" title="Archive" className={`prism-agent-session-archive focus-ring ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}><Archive size={14} /></button>
+            <button onClick={() => onArchive(session.id)} tabIndex={0} aria-label="Archive session" title="Archive" className={`prism-agent-session-archive focus-ring ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}><Archive size={14} /></button>
           </div>;
         })}
       </section>)}
@@ -652,7 +652,7 @@ export function Conversation({
       )}
       </div>
       {noteId && <div className="prism-agent-working-document" data-testid="agent-working-document"><span>Working on</span><NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} /></div>}
-      <div className="prism-agent-permissions">{permissionControls}</div>
+      <div className="prism-agent-permissions">{permissionControls}{!isDraft && conv.session && !(permissionModes?.length && client.updatePermissions) && <p className="text-xs text-[var(--text-secondary)]">{conv.session.permission_mode ? modeLabels[conv.session.permission_mode] : PROFILE_LABELS[conv.session.profile].label}</p>}</div>
       {conv.conn === "reconnecting" && <p role="status" className="prism-agent-connection">Reconnecting… Your conversation and draft are kept here.</p>}
     </div>
   );
@@ -679,6 +679,7 @@ export function Conversation({
     >
       {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
       {isDraft && <AgentBudgetLine />}
+      {conv.cancelling && <p role="status" className="prism-agent-stop-status">Stop requested · waiting for the task to finish stopping.</p>}
       {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
       {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
       <SelectionHandoffNotice handoff={selectionHandoff} />
@@ -719,13 +720,14 @@ export function Conversation({
         {running ? (
           <button
             onClick={() => void conv.cancel()}
-            aria-label="Stop"
-            title="Stop"
+            aria-label={conv.cancelling ? "Stop requested" : "Stop"}
+            title={conv.cancelling ? "Waiting for the task to stop" : "Stop"}
+            disabled={conv.cancelling}
             data-testid="agent-cancel"
             className="press flex flex-shrink-0 items-center justify-center rounded-full"
             style={{ width: 44, height: 44, borderRadius: 9, background: "var(--color-danger)", color: "#fff" }}
           >
-            <Square size={14} fill="#fff" />
+            {conv.cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={14} fill="#fff" />}
           </button>
         ) : (
           <button
@@ -838,7 +840,7 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
       {snapshotPreview && <AgentSnapshotPreview snapshot={snapshotPreview} onClose={()=>setSnapshotPreview(null)}/>}
       {!!turn.context?.length && <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="agent-supplied-context" style={{ color: "var(--text-muted)" }}>
         <span>{turn.context.some(s=>s.snapshot) ? "Context supplied:" : "Saved text supplied:"}</span>
-        {turn.context.map((source,index) => <span key={`${source.noteId}:${index}`} className="flex flex-wrap items-center gap-1">{source.snapshot ? <button className="focus-ring min-h-10 rounded-lg border border-[var(--glass-border)] px-2" onClick={()=>setSnapshotPreview(source.snapshot!)}>{source.snapshot.kind === "selection" ? "Selected passage" : source.snapshot.kind === "document" ? "Document snapshot" : "Text file"}</button> : <NoteChip noteId={source.noteId} op="context" />}<span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
+        {turn.context.map((source,index) => <span key={`${source.noteId}:${index}`} className="flex flex-wrap items-center gap-1">{source.snapshot ? <button className="focus-ring min-h-10 rounded-lg border border-[var(--glass-border)] px-2" onClick={event=>{ event.currentTarget.focus({ preventScroll: true }); setSnapshotPreview(source.snapshot!); }}>{source.snapshot.kind === "selection" ? "Selected passage" : source.snapshot.kind === "document" ? "Document snapshot" : "Text file"}</button> : <NoteChip noteId={source.noteId} op="context" />}<span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
       </div>}
       <div className="prism-agent-speaker prism-agent-speaker-assistant" style={{ color: "var(--text-secondary)" }}>
         <span className="prism-agent-avatar" aria-hidden="true"><PrismMark width={24} height={18} decorative /></span>
@@ -846,27 +848,13 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
         {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={new Date(turn.startedAt).toLocaleString()} style={{ color: "var(--text-muted)" }}>{new Date(turn.startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
       </div>
       {turn.tools.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {turn.tools.map((tool) => (
-            <span
-              key={tool.id}
-              title={tool.summary}
-              data-testid="agent-tool-chip"
-              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs"
-              style={{
-                background: "var(--glass)",
-                border: `1px solid ${tool.ok === false ? "color-mix(in srgb, var(--color-danger) 50%, transparent)" : "var(--glass-border)"}`,
-                color: tool.ok === false ? "var(--color-danger)" : "var(--text-secondary)",
-              }}
-            >
-              <Wrench size={10} />
-              {tool.name}
-              {tool.ok === true && <Check size={11} style={{ color: "var(--color-success)" }} />}
-              {tool.ok === false && <X size={11} />}
-              {tool.ok === undefined && running && <Loader2 size={10} className="animate-spin" />}
-            </span>
-          ))}
-        </div>
+        <details className="prism-agent-activity" open={running || turn.tools.some(tool => tool.ok === false)}>
+          <summary>Activity <span>{turn.tools.length} {turn.tools.length === 1 ? "action" : "actions"}{running ? turn.status === "queued" ? " · queued" : " · working" : ""}</span></summary>
+          <ol>{turn.tools.map(tool => <li key={tool.id} data-testid="agent-tool-chip">
+            <span className="prism-agent-activity-icon" aria-hidden="true">{tool.ok === true ? <Check size={14} /> : tool.ok === false ? <X size={14} /> : running ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}</span>
+            <div className="min-w-0 flex-1"><div className="prism-agent-activity-title"><span>{tool.name.replace(/[_-]+/g, " ")}</span><span>{tool.ok === true ? "Completed" : tool.ok === false ? "Failed" : running ? "In progress" : "Recorded"}</span></div>{tool.summary && <p className="prism-agent-activity-summary">{tool.summary}</p>}</div>
+          </li>)}</ol>
+        </details>
       )}
       {hasText && (
         <div className="prism-agent-assistant-text min-w-0 max-w-full [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
@@ -915,7 +903,7 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
     <>
     <button
       disabled={deleted}
-      onClick={() => setPreview(true)}
+      onClick={event => { event.currentTarget.focus({ preventScroll: true }); setPreview(true); }}
       data-testid="agent-note-chip"
       className="prism-agent-note-chip focus-ring flex max-w-full items-center gap-1 text-xs disabled:cursor-default"
       style={{

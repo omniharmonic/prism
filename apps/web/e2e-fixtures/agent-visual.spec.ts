@@ -37,3 +37,19 @@ test("session list errors offer recovery and a local filter cannot claim whole-h
   await page.getByRole("textbox", { name: "Filter recent conversations" }).fill("not-in-this-list");
   await expect(page.getByText("No recent conversations match this filter.", { exact: true })).toBeVisible();
 });
+
+test("changing desktop and phone layouts retains the same session and unsent draft", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.goto("/e2e-fixtures/agent.html?history&permissions&visual");
+  const input = page.getByRole("textbox", { name: "Message the agent" });
+  await input.fill("This thought belongs to the launch brief.");
+  for (const width of [390, 1440, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(input).toHaveCount(1);
+    await expect(input).toHaveValue("This thought belongs to the launch brief.");
+    await expect(page.getByTestId("agent-conversation-title")).toHaveText("Shape the launch brief");
+    await expect(page.getByTestId("agent-working-document")).toContainText("Draft brief");
+    expect(await page.evaluate(() => (window as any).prismAgentStore.getState().activeSessionId)).toBe("fixture-session");
+  }
+  expect(await page.evaluate(() => (window as any).prismAgentFixture.turnAttempts)).toBe(0);
+});

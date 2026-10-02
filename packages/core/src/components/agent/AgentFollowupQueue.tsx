@@ -91,7 +91,7 @@ export function AgentFollowupQueue({
   return (
     <section
       aria-label="Queued follow-ups"
-      className="mb-3 rounded-xl border border-[var(--glass-border)] p-3 text-xs"
+      className="prism-agent-followups mb-3 rounded-xl border border-[var(--glass-border)] p-3 text-xs"
     >
       <div className="flex items-center justify-between">
         <h3 className="font-medium">Next up · {rows.length}</h3>
@@ -142,7 +142,7 @@ export function AgentFollowupQueue({
                   <button
                     className={button}
                     disabled={busy}
-                    onClick={() => setEditing(row)}
+                    onClick={event => { event.currentTarget.focus({ preventScroll: true }); setEditing(row); }}
                   >
                     {row.status === "blocked" ? "Review & resume" : "Edit"}
                   </button>
@@ -303,7 +303,7 @@ function FollowupEditor({
                   key={id}
                   type="button"
                   className={button + " border border-[var(--glass-border)]"}
-                  onClick={() => setSource(id)}
+                  onClick={event => { event.currentTarget.focus({ preventScroll: true }); setSource(id); }}
                 >
                   {id === row.payload.noteId
                     ? "Preview working document"
@@ -315,7 +315,7 @@ function FollowupEditor({
                   key={index}
                   type="button"
                   className={button + " border border-[var(--glass-border)]"}
-                  onClick={() => setSnapshot(item)}
+                  onClick={event => { event.currentTarget.focus({ preventScroll: true }); setSnapshot(item); }}
                 >
                   Preview captured {item.kind} {index + 1}
                 </button>
