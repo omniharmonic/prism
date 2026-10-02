@@ -14,7 +14,7 @@ export type TranscriptCandidate = { noteId: string; score: number; evidence: str
 export type TranscriptMatch = { status: "matched" | "ambiguous" | "none"; candidates: TranscriptCandidate[] };
 
 /** Explicit occurrence identity wins; fuzzy evidence never overrides a conflicting ID. */
-function score(meeting: MeetingNote, transcript: Note): TranscriptCandidate | null {
+export function score(meeting: MeetingNote, transcript: Note): TranscriptCandidate | null {
   const md = transcript.metadata ?? {};
   if (meeting.metadata.event_status === "cancelled") return null;
   const eventId = text(md.calendarEventId);
@@ -46,10 +46,19 @@ function score(meeting: MeetingNote, transcript: Note): TranscriptCandidate | nu
   return { noteId: transcript.id, score: value, evidence };
 }
 
-/** Require a margin in BOTH directions: recording→event as well as event→recording. */
-export function matchTranscript(meeting: MeetingNote, transcripts: Note[], peers: MeetingNote[]): TranscriptMatch {
-  const available = transcripts.filter((t) => !text(t.metadata?.meetingNoteId));
-  const candidates = available.flatMap((t) => { const candidate = score(meeting, t); return candidate && candidate.score >= 6 ? [candidate] : []; })
+/** Fuzzy candidates must reach this before they are considered at all. */
+export const MIN_FUZZY_SCORE = 6;
+
+/**
+ * A transcript that may not be auto-linked. The default only knows the legacy
+ * singular backpointer; the worker passes one that also sees plural/typed-link
+ * claims, the decision journal and manual-unlink suppressions.
+ */
+export type Unavailable = (transcript: Note) => boolean;
+const backpointed: Unavailable = (t) => !!text(t.metadata?.meetingNoteId);
+
+function fuzzy(meeting: MeetingNote, available: Note[], peers: MeetingNote[]): TranscriptMatch {
+  const candidates = available.flatMap((t) => { const candidate = score(meeting, t); return candidate && candidate.score >= MIN_FUZZY_SCORE ? [candidate] : []; })
     .sort((a, b) => b.score - a.score || a.noteId.localeCompare(b.noteId));
   const best = candidates[0];
   if (!best) return { status: "none", candidates: [] };
@@ -59,4 +68,55 @@ export function matchTranscript(meeting: MeetingNote, transcripts: Note[], peers
     return { status: "ambiguous", candidates };
   }
   return { status: "matched", candidates };
+}
+
+/** Require a margin in BOTH directions: recording→event as well as event→recording. */
+export function matchTranscript(meeting: MeetingNote, transcripts: Note[], peers: MeetingNote[], isUnavailable: Unavailable = backpointed): TranscriptMatch {
+  return fuzzy(meeting, transcripts.filter((t) => !isUnavailable(t)), peers);
+}
+
+export type TranscriptMatches = {
+  /** Every available recording carrying this occurrence's exact event id — all of them link. */
+  exact: TranscriptCandidate[];
+  /** The single-winner fuzzy result; only attempted for a meeting with no recording at all. */
+  fuzzy: TranscriptMatch;
+};
+
+/**
+ * Multiple recordings per event. Exact occurrence identity is not a contest:
+ * two recordings of the same occurrence both belong to it. Fuzzy evidence stays
+ * single-winner with a margin in both directions, and is skipped as soon as the
+ * meeting has any recording (existing or exact), so a guess never piles on.
+ */
+export function matchTranscripts(
+  meeting: MeetingNote,
+  transcripts: Note[],
+  peers: MeetingNote[],
+  opts: { isUnavailable?: Unavailable; hasRecording?: boolean } = {},
+): TranscriptMatches {
+  const none: TranscriptMatch = { status: "none", candidates: [] };
+  if (meeting.metadata.event_status === "cancelled") return { exact: [], fuzzy: none };
+  const available = transcripts.filter((t) => !(opts.isUnavailable ?? backpointed)(t));
+  const exact = available
+    .filter((t) => !!meeting.eventId && text(t.metadata?.calendarEventId) === meeting.eventId)
+    .map((t) => ({ noteId: t.id, score: 100, evidence: ["calendar-event-id"] }))
+    .sort((a, b) => a.noteId.localeCompare(b.noteId));
+  if (exact.length || opts.hasRecording) return { exact, fuzzy: none };
+  return { exact, fuzzy: fuzzy(meeting, available.filter((t) => !text(t.metadata?.calendarEventId)), peers) };
+}
+
+/** The matcher's view of a stored meeting note (as the calendar pass derives its peers). */
+export function meetingFromNote(note: Note): MeetingNote {
+  const md = note.metadata ?? {};
+  const names = strings(md.attendees);
+  const emails = strings(md.attendeeEmails);
+  return {
+    eventId: text(md.calendarEventId),
+    title: text(md.title),
+    date: text(md.date) || text(md.start).slice(0, 10),
+    path: note.path ?? "",
+    content: "",
+    metadata: md,
+    attendees: [...names.map((name) => ({ name, email: name.includes("@") ? name : null })), ...emails.map((email) => ({ name: email, email }))],
+  };
 }
