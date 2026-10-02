@@ -1,6 +1,6 @@
 # Prism collaborative workspace redesign
 
-**Status: final plan prepared; awaiting user approval and the completed migration handoff. Application implementation has not started.**
+**Status: approved and in progress. Frontend execution is being reconciled screen by screen against the approved plan; see [FRONTEND-ACCEPTANCE.md](FRONTEND-ACCEPTANCE.md). [CURRENT-RELEASE.md](CURRENT-RELEASE.md) records deployed artifacts; [BACKEND-HANDOFF.md](BACKEND-HANDOFF.md) separates unfinished backend work for another agent.**
 
 The current plan follows the rebuilt server/client architecture and the expanded vision: a minimalist workspace for documents, human and agent collaboration, canonical people and conversations, meetings, semantic knowledge, tasks, canvas/graph, governance, publishing, and integrations. Web/mobile PWA and the new thin `apps/client` desktop app are the primary clients.
 
@@ -27,9 +27,9 @@ The migration documentation reports live actions enabled in production; the audi
 
 ## Execution boundary
 
-The user's final instruction requests review and approval of this plan before launching implementation, after the other agent finishes the full migration. This directory contains only planning documents and concept assets. No application code, production configuration, vault data, or upstream architecture documents were changed by this planning pass.
+The user approved implementation on 2026-10-01. The original audit and concept images were planning deliverables; implementation and controlled releases have since occurred. On 2026-10-02 the user requested frontend priority, backend handoff and systematic execution of the original scope. The acceptance matrix maps that scope to current code and remaining work.
 
-After approval and handoff, implementation proceeds in tested vertical slices with regular focused commits. Completion requires the feature ledger and real production web/PWA/desktop evidence in RELEASE-GATES.md; screenshots and passing unit tests alone are insufficient.
+Implementation proceeds in tested vertical slices with regular focused commits. Completion requires the feature ledger and real production web/PWA/desktop evidence in RELEASE-GATES.md; screenshots and passing unit tests alone are insufficient.
 
 ## Earlier design work retained for reference
 

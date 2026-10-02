@@ -1,5 +1,7 @@
 # Implementation progress
 
+**Reading note (2026-10-02):** The opening table and deployment paragraph below are historical snapshots, not current release status. Use [CURRENT-RELEASE.md](CURRENT-RELEASE.md) for deployed artifacts and [FRONTEND-ACCEPTANCE.md](FRONTEND-ACCEPTANCE.md) for the reconciled design/behavior checklist. Chronological evidence is retained below.
+
 Approved by the user on 2026-10-01. Implementation branch: `feat/workspace-experience`, isolated worktree `/private/tmp/prism-workspace-experience`. Base: `615f34b`, incorporating migration parity A/B/C and `55de600` verification fix. No newer migration commit was present when execution began.
 
 | Package | State | Evidence / remaining work |
