@@ -1,3 +1,4 @@
+import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
@@ -68,7 +69,7 @@ export function Shell() {
   };
 
   return (
-    <div className="flex flex-col overflow-hidden" style={rootStyle}>
+    <NoteShortcutsProvider><div className="flex flex-col overflow-hidden" style={rootStyle}>
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       <div key="workspace" className="relative flex flex-1 min-h-0">
@@ -113,7 +114,7 @@ export function Shell() {
       <SharingDialogHost key="sharing" />
       <NotionDbSyncHost key="notion-sync" />
       <GraphFullscreen key="graph" />
-    </div>
+    </div></NoteShortcutsProvider>
   );
 }
 

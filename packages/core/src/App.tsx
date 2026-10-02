@@ -1,18 +1,12 @@
-import { Component, useEffect, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { InvalidationSubscriber } from "./data/InvalidationContext";
 import { Shell } from "./components/layout/Shell";
 import { Onboarding } from "./components/layout/Onboarding";
+import { useAgentChatStore } from "./lib/agent/chatStore";
 import { useUIStore } from "./app/stores/ui";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5_000,
-      retry: 1,
-    },
-  },
-});
+
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -56,6 +50,11 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
   // `skipOnboarding` lets a shell force-skip the (Tauri-only) wizard — the web
   // shell passes it for capability-link viewers and invited non-owners, who must
   // never see the desktop owner setup flow. Desktop passes nothing → unchanged.
+  const audience = useAgentChatStore(state => state.scope);
+  // A newly confirmed account/vault must not inherit in-memory query results.
+  // The keyed provider recreates observers as well as their cache; persistent
+  // drafts remain in the separately scoped host stores.
+  const queryClient = useMemo(() => new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1 } } }), [audience]);
   const [onboarded, setOnboarded] = useState(() => {
     try {
       return localStorage.getItem("prism:onboarded") === "true";
@@ -83,7 +82,7 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
     };
     window.addEventListener("prism:vault-changed", onVaultChanged);
     return () => window.removeEventListener("prism:vault-changed", onVaultChanged);
-  }, []);
+  }, [queryClient]);
 
   // Deep-link support: a shell can boot straight into a surface (e.g. the Map
   // tab from a /bioregion or /map URL) instead of an empty canvas. One-shot.
@@ -94,7 +93,7 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
 
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
+      <QueryClientProvider key={audience ?? "unconfirmed"} client={queryClient}>
         <InvalidationSubscriber />
         {(onboarded || skipOnboarding) ? <Shell /> : <Onboarding onComplete={handleOnboardingComplete} />}
       </QueryClientProvider>

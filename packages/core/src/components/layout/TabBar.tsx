@@ -2,7 +2,7 @@ import { isVaultNoteId } from "../../lib/noteIdentity";
 import { useState } from "react";
 import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { ShareButton } from "./ShareButton";
 
@@ -57,11 +57,10 @@ export function TabBar() {
   const canForward = navHistory.slice(navIndex + 1).some((id) => tabIds.has(id));
 
   // Favorite (pin) the active note.
-  const favorites = useSettingsStore((s) => s.favorites);
-  const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
+  const { favoriteIds, toggleFavorite } = useNoteShortcuts();
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const isRealNote = isVaultNoteId(activeTab?.noteId);
-  const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
+  const isFav = isRealNote && favoriteIds.includes(activeTab!.noteId);
 
   const isMobile = useIsMobile();
 

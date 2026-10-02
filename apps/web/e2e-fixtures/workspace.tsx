@@ -1,11 +1,15 @@
 /** Real shared workspace, fictional data. Never connects to a live server. */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
+import { App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault, getActiveVault } from "../src/config";
 
+import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
+let eventHandlers: InvalidationHandlers | null = null;
+const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
+Object.assign(window, { prismFixtureInvalidate: (id: string) => eventHandlers?.onEvent({ type: "note", id, op: "upsert" }) });
 const params = new URLSearchParams(location.search);
 const readGates = new Map<string, () => void>();
 const reads: string[] = [];
@@ -16,11 +20,12 @@ const notes: Note[] = [
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<Record<string, unknown>> = [];
-const controls = { rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
+const controls = { actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
 Object.assign(window, {
   prismFixtureUI: useUIStore,
   prismFixtureReads: reads,
   prismFixtureReleaseRead: (id: string) => { readGates.get(id)?.(); readGates.delete(id); },
+  prismFixtureSwitchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
   prismFixtureSwitchVault: async (id: string) => { setActiveVault(id); window.dispatchEvent(new Event("prism:vault-changed")); await fetchMe(); },
   prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram", ...(params.has("live") ? { matrixRoomId: "!fixture:example.test" } : {}) }, createdAt: date, updatedAt: date });
@@ -59,7 +64,7 @@ window.fetch = async (input, init) => {
     if(!person)return Response.json({error:"not_found"},{status:404});
     return Response.json({ person, related: [{id:"field-notes",title:"Project conversation",path:"Projects/Prism/Field notes",category:"conversations",relationships:["email_from"]},{id:"weekly-review",title:"Weekly planning",path:"Journal/Weekly review",category:"meetings",relationships:["attendee"]}], next:null });
   }
-  if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/threads/thread/live") return Response.json({ messages: [{ event_id: "$fixture", sender: "@fixture:example.test", sender_name: "Fixture", body: "LIVE_RESPONSIVE_THREAD_FIXTURE", timestamp: Date.UTC(2026, 9, 1), is_outgoing: false, msg_type: "m.text", media_url: null, media_info: null }], start: null, end: null, has_more: false });
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
@@ -72,6 +77,7 @@ window.fetch = async (input, init) => {
       if (params.get("hold") === noteId) await new Promise<void>(resolve => readGates.set(noteId, resolve));
       if (params.get("deny") === noteId) return Response.json({error:"forbidden"},{status:403});
     }
+    if (params.has("account-isolation") && controls.actor === "second@example.test" && noteId === "field-notes") return Response.json({ error: "forbidden" }, { status: 403 });
     if(controls.peopleDenyOpen && noteId === "field-notes") return Response.json({error:"forbidden"},{status:403});
     const note = notes.find((n) => n.id === noteId);
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
@@ -95,7 +101,7 @@ setActiveVault("primary");
 await fetchMe();
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
+  <React.StrictMode><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
     {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={params.has("session") ? undefined : location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
-  </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
+  </CollabSharingProvider></VaultClientProvider></PlatformProvider></InvalidationSourceProvider></React.StrictMode>,
 );

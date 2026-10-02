@@ -17,7 +17,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
-import { useSettingsStore } from "../../app/stores/settings";
+import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { BottomSheet, type SheetItem } from "../ui/BottomSheet";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { Settings } from "./Settings";
@@ -45,8 +45,7 @@ export function MobileActionBar() {
     setGraphFullscreen,
   } = useUIStore();
 
-  const favorites = useSettingsStore((s) => s.favorites);
-  const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
+  const { favoriteIds, toggleFavorite } = useNoteShortcuts();
   const docFont = useUIStore((s) => s.docFont);
   const docFontSetter = useUIStore((s) => s.docFontSetter);
 
@@ -60,7 +59,7 @@ export function MobileActionBar() {
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const isRealNote = isVaultNoteId(activeTab?.noteId);
-  const isFav = isRealNote && favorites.some((f) => f.id === activeTab!.noteId);
+  const isFav = isRealNote && favoriteIds.includes(activeTab!.noteId);
 
   const openPanel = (tab: "metadata" | "agent" | "history") => {
     setContextPanelTab(tab);

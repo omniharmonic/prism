@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useNoteShortcuts } from "./NoteShortcuts";
+import { useState } from "react";
 import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PrismMark } from "../brand/PrismMark";
@@ -16,9 +17,6 @@ import type { ContentType } from "../../lib/types";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 
-/** Virtual tab ids that aren't real notes (so they're excluded from Recent). */
-const VIRTUAL_TABS = new Set(["messages-dashboard", "calendar-dashboard", "agent-activity", "vault-messages", "network", "map", "agent-chat", "people"]);
-
 export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery] = useDebounce(searchQuery, 200);
@@ -29,23 +27,13 @@ export function Navigation() {
   const createNote = useCreateNote();
   const collapseNav = useUIStore((s) => s.collapseNav);
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
-  const recents = useSettingsStore((s) => s.recents);
-  const pushRecent = useSettingsStore((s) => s.pushRecent);
-  const favorites = useSettingsStore((s) => s.favorites);
-  const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
+  const shortcuts = useNoteShortcuts();
+  const { favorites, recents, toggleFavorite } = shortcuts;
   const openTab = useUIStore((s) => s.openTab);
   const activeTabId = useUIStore((s) => s.activeTabId);
   const openTabs = useUIStore((s) => s.openTabs);
   // Server agent sessions (WP3.2): owner-only, and only on shells with an AgentClient.
   const agentChat = useAgentAvailable();
-
-  // Record the active note into Recent (skipping virtual dashboards/non-notes).
-  useEffect(() => {
-    if (!activeTabId) return;
-    const tab = openTabs.find((t) => t.id === activeTabId);
-    if (!tab || tab.noteId.includes(":") || VIRTUAL_TABS.has(tab.noteId)) return;
-    pushRecent({ id: tab.noteId, title: tab.title, type: tab.type });
-  }, [activeTabId, openTabs, pushRecent]);
 
   const handleOpenMessages = () => {
     openTab("vault-messages", "Messages", "vault-messages" as ContentType);
@@ -156,6 +144,14 @@ export function Navigation() {
             <NavItem icon={<Radio size={15} />} label="Workspace settings" onClick={handleOpenNetwork} />
           </div>
 
+          {shortcuts.recoverable && <div className="mx-3 my-3 rounded-lg border border-[var(--border-subtle)] p-3 text-xs text-[var(--text-secondary)]">
+            <p>Older shortcuts are available. Recover only notes you can open in this workspace.</p>
+            <button className="focus-ring mt-2 min-h-9 text-[var(--text-accent)]" disabled={shortcuts.recovering} onClick={shortcuts.recover}>{shortcuts.recovering ? "Checking access…" : "Recover older shortcuts"}</button>
+            <button className="focus-ring ml-3 min-h-9" onClick={shortcuts.dismissRecovery}>Dismiss</button>
+          </div>}
+          {shortcuts.recoveryMessage && <p role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">{shortcuts.recoveryMessage}</p>}
+          {shortcuts.unavailable && <div role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">Some shortcuts are unavailable. <button className="focus-ring min-h-9 text-[var(--text-accent)]" onClick={shortcuts.retry}>Retry shortcuts</button></div>}
+          {shortcuts.storageUnavailable && <p role="status" className="mx-3 my-2 text-xs text-[var(--text-secondary)]">Shortcuts work here, but couldn’t be saved on this device.</p>}
           {/* Favorites (pinned notes) */}
           {favorites.length > 0 && (
             <NavSection label="Favorites" defaultOpen>
@@ -359,11 +355,12 @@ function NavSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div style={{ marginTop: 6 }}>
+    <section aria-label={label} style={{ marginTop: 6 }}>
       {/* Header row: the toggle takes the full width; the action sits beside it
           (kept outside the toggle <button> so it's not a nested button). */}
       <div className="flex items-center group" style={{ paddingRight: 4 }}>
         <button
+          aria-expanded={open}
           onClick={() => setOpen(!open)}
           className="interactive flex-1 flex items-center gap-1"
           style={{
@@ -385,7 +382,7 @@ function NavSection({
         <span className="opacity-0 group-hover:opacity-100 transition-opacity">{action}</span>
       </div>
       {open && <div style={{ marginTop: 1 }}>{children}</div>}
-    </div>
+    </section>
   );
 }
 
