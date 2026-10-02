@@ -565,7 +565,10 @@ acl.get("/notes/:id", async (c) => {
       .filter((g) => g.subject_type === "user")
       .map((g) => ({ email: g.subject, level: g.level, caps: g.caps ?? expandLevel(g.level) }));
     const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
-    const links = capabilitiesForResource("note", id).filter((cap) => linkIds.has(cap.id)).map((cap) => ({
+    // A bearer URL IS a credential. Scoped sharers may manage people grants,
+    // but must not receive existing links that can confer powers they lack.
+    const canManageLinks = roleAtLeast(resolveActor(c).role, "admin");
+    const links = (canManageLinks ? capabilitiesForResource("note", id) : []).filter((cap) => linkIds.has(cap.id)).map((cap) => ({
       id: cap.id,
       level: cap.level,
       label: cap.label,
@@ -585,7 +588,7 @@ acl.get("/notes/:id", async (c) => {
     }
     const visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
     const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
-    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess });
+    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);

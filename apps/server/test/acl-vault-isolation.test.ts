@@ -120,7 +120,7 @@ test("sharing details stay in the selected vault for admins and scoped sharers",
     assert.deepEqual(access.people[0]!.caps, ["view", "share"]);
     assert.deepEqual(
       access.links.map((l) => l.id),
-      ["secondary-link"],
+      email === ADMIN ? ["secondary-link"] : [],
     );
   }
 });
