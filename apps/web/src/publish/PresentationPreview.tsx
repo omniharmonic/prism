@@ -173,10 +173,13 @@ export default function PresentationPreview({
       <div className="prism-publication-preview-canvas">
         <iframe
           ref={frame}
-          sandbox="allow-same-origin"
+          // WebKit needs scripts enabled for listeners installed by the trusted
+          // parent React tree. These flags are NOT a script security boundary:
+          // the fixed document CSP and existing note sanitization provide that.
+          sandbox="allow-same-origin allow-scripts"
           title="Publication preview viewport"
           onLoad={initFrame}
-          srcDoc="<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body></body></html>"
+          srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>`}
           style={{
             display: "block",
             width: phone ? 390 : "100%",
