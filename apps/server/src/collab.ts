@@ -4,16 +4,25 @@
  * token and the ACL store:
  *
  *  - onAuthenticate: resolve the connection's level (session cookie OR ?t=
- *    capability) against the note; reject below "view"; mark view/comment
- *    connections read-only (their edits are dropped by Hocuspocus).
+ *    capability) against the note; reject below "view"; mark every connection
+ *    below EDIT read-only (Hocuspocus refuses a read-only connection's Update
+ *    and SyncStep2 messages wholesale — nothing is applied, nothing pends).
+ *    RAW YJS WRITES NEED EDIT (suggest-only enforcement, R07/R12): a raw update
+ *    can carry anything — plain text, deletions, other Y roots — so a "suggest"
+ *    socket that could write was only a client-side promise. Suggest-level
+ *    people and capability guests keep live reading + presence and mutate the
+ *    document only through the bounded, server-authored commands in
+ *    human-collab.ts (`POST /api/collab/:id/commands`): suggested
+ *    insert/delete/replace and comment threads. `COLLAB_SUGGEST_ENFORCED=false`
+ *    restores the old writable suggest socket (rollback switch).
  *    COMMENTS NEED SUGGEST (WP0.2): a comment thread is a write to the shared
  *    Y.Doc — its anchor is a `comment` MARK in the body fragment and its data a
- *    `comments` Y.Map — so a "comment"-level socket stays read-only and cannot
- *    persist comments. A server-side "comments-map-only" update filter is NOT
- *    safe: the anchor lives in the body, and dropping one of a client's updates
- *    leaves a gap in its Yjs clock, so every later update from that client pends
- *    forever. The UI hides the comment affordances below suggest instead
- *    (@prism/core `collabAffordances`).
+ *    `comments` Y.Map — so a "comment"-level actor can neither write it over the
+ *    socket nor through the command endpoint. A server-side "comments-map-only"
+ *    update filter is NOT safe: the anchor lives in the body, and dropping one
+ *    of a client's updates leaves a gap in its Yjs clock, so every later update
+ *    from that client pends forever. That is also why enforcement is
+ *    all-or-nothing per connection rather than a per-update filter.
  *  - onLoadDocument: seed the Y.Doc server-side from Parachute (so the owner's
  *    browser need not be open), preferring persisted CRDT state unless Parachute
  *    was edited externally since (then re-seed — external edit wins).
@@ -606,11 +615,20 @@ export function collabLevelFor(
   return lvl ?? "view";
 }
 
+/** The lowest level whose socket may send raw Yjs updates: "edit" while
+ *  suggest-only enforcement is on (default), the legacy "suggest" when the
+ *  COLLAB_SUGGEST_ENFORCED=false rollback switch is set. Read per call. */
+export function rawWriteLevel(): Level {
+  return config.collabSuggestEnforced ? "edit" : "suggest";
+}
+
 /**
  * Authorize a collab connection against a note. Throws "Forbidden" below
- * "view"; marks the connection read-only below "suggest" (so view/comment
- * peers can watch but their edits — INCLUDING comment threads, see the header —
- * are dropped). Returns the effective level.
+ * "view"; marks the connection read-only below the raw-write level (EDIT, or
+ * "suggest" with the kill switch off — see `rawWriteLevel`), so view / comment /
+ * suggest connections can watch but every raw update they send is refused.
+ * Returns the effective level. The client learns the outcome from Hocuspocus's
+ * Authenticated message (provider `authorizedScope`: "readonly" | "read-write").
  * Extracted from the Hocuspocus hook so it is directly testable.
  */
 export async function authorizeConnection(
@@ -624,7 +642,7 @@ export async function authorizeConnection(
   const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
   if (revision !== accessRevision()) throw new Error("Access changed. Reconnect.");
   if (!atLeast(level, "view")) throw new Error("Forbidden");
-  connectionConfig.readOnly = !atLeast(level, "suggest");
+  connectionConfig.readOnly = !atLeast(level, rawWriteLevel());
   return level as Level;
 }
 
@@ -790,7 +808,7 @@ async function revalidateConnection(connection: Connection<LiveAccess>): Promise
     if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
       throw new Error("Access changed. Reconnect.");
     }
-    connection.readOnly = !atLeast(level, "suggest");
+    connection.readOnly = !atLeast(level, rawWriteLevel());
   } catch (error) {
     connection.readOnly = true;
     connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });

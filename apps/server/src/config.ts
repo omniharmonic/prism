@@ -113,6 +113,15 @@ export const config = {
   // the webview. Shared between this .env and the desktop's prism-config.json.
   collabToken: process.env.COLLAB_TOKEN ?? "",
 
+  // Suggest-only enforcement on the collab socket (R07/R12). ON (default): raw
+  // Yjs updates over /collab require EDIT; a suggest-level connection is
+  // read-only (it still reads + shows presence) and changes the document only
+  // through the bounded commands at POST /api/collab/:id/commands. Setting
+  // COLLAB_SUGGEST_ENFORCED=false is the rollback switch: it restores the old
+  // read-write suggest socket (a "Can suggest" grant is then trust-based again).
+  // The command endpoint works in both states. Restart required.
+  collabSuggestEnforced: process.env.COLLAB_SUGGEST_ENFORCED !== "false",
+
   // ── Native sign-in / device tokens (WP2.1, auth/device.ts) ──
   // Exact-match allowlist of redirect URIs a native client may use with
   // /auth/device/authorize (comma-separated). Loopback redirects

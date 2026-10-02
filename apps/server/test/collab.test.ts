@@ -2,7 +2,8 @@
  * Real-time collab logic, tested through the extracted hook functions (no live
  * WebSocket needed):
  *   - authorizeConnection: the connection-time ACL — reject below view, mark
- *     view/comment read-only, allow suggest+ to write.
+ *     view/comment/suggest read-only, allow edit+ to write raw updates
+ *     (suggest writes again only with the COLLAB_SUGGEST_ENFORCED=false switch).
  *   - the CRDT seed/serialize round-trip (HTML ⇄ Yjs is loss-free for text).
  *   - loadDocumentState: prefer persisted CRDT state, but let an external
  *     Parachute edit win (re-seed) when the vault is newer than our snapshot.
@@ -81,12 +82,33 @@ test("a comment-level connection is still read-only (below suggest)", async () =
   assert.equal(cc.readOnly, true);
 });
 
-test("a suggest-level connection may write (not read-only)", async () => {
+test("a suggest-level connection is read-only: raw Yjs writes need edit (suggest-only enforcement)", async () => {
   fv.put({ id: "n1", content: "x", tags: ["team"] });
   const cc = { readOnly: false };
   const level = await authorizeConnection("n1", makeCapability("tag", "team", "suggest"), null, cc);
-  assert.equal(level, "suggest");
-  assert.equal(cc.readOnly, false);
+  assert.equal(level, "suggest", "the level is still reported as suggest (the client uses it + the readonly scope)");
+  assert.equal(cc.readOnly, true);
+  const edit = { readOnly: true };
+  assert.equal(await authorizeConnection("n1", makeCapability("tag", "team", "edit"), null, edit), "edit");
+  assert.equal(edit.readOnly, false, "edit is the lowest level that may write raw updates");
+});
+
+test("kill switch: COLLAB_SUGGEST_ENFORCED=false restores the writable suggest connection, nothing below it", async () => {
+  const { config } = await import("../src/config");
+  const flag = config as { collabSuggestEnforced: boolean };
+  assert.equal(flag.collabSuggestEnforced, true, "enforcement is ON by default");
+  fv.put({ id: "n1", content: "x", tags: ["team"] });
+  flag.collabSuggestEnforced = false;
+  try {
+    const cc = { readOnly: true };
+    assert.equal(await authorizeConnection("n1", makeCapability("tag", "team", "suggest"), null, cc), "suggest");
+    assert.equal(cc.readOnly, false);
+    const comment = { readOnly: false };
+    await authorizeConnection("n1", makeCapability("tag", "team", "comment"), null, comment);
+    assert.equal(comment.readOnly, true);
+  } finally {
+    flag.collabSuggestEnforced = true;
+  }
 });
 
 test("the desktop app connects as owner by presenting the vault token (LOCAL only)", async () => {
