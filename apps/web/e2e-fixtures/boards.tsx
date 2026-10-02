@@ -98,9 +98,14 @@ const clone = <T,>(v: T): T => structuredClone(v);
 const client = {
   scope: () => scope,
   hasPendingWrites: async () => controls.pending,
-  listNotes: async () => {
+  listNotes: async (filters?: { path?: string }) => {
     const result = clone(
-      scope === "board-owner" ? notes.filter((n) => n.id !== "board") : [],
+      scope === "board-owner"
+        ? notes.filter(
+            (n) =>
+              n.id !== "board" && (!filters?.path || n.path === filters.path),
+          )
+        : [],
     );
     if (controls.hold)
       await new Promise<void>((r) => {

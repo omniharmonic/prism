@@ -300,3 +300,23 @@ test("queued changes are not called confirmed and cannot be duplicated", async (
     await page.evaluate(() => (window as any).prismBoardFixture.writes.length),
   ).toBe(1);
 });
+
+test("folder sources match a prefix without sending it as the vault's exact path filter", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html");
+  await page
+    .getByRole("button", { name: "View settings", exact: true })
+    .click();
+  await page.getByLabel("Source folder").fill("Projects/Prism/");
+  await page.getByRole("button", { name: "Save view", exact: true }).click();
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await page.reload();
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await page
+    .getByRole("button", { name: "View settings", exact: true })
+    .click();
+  await page.getByLabel("Source folder").fill("Projects/Other/");
+  await page.getByRole("button", { name: "Save view", exact: true }).click();
+  await expect(page.getByRole("article")).toHaveCount(0);
+});

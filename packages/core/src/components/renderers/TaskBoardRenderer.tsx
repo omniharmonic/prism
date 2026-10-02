@@ -90,7 +90,8 @@ function Board({
       if (!current()) throw new Error("Workspace changed");
       const result = await client.listNotes({
         tag: source?.tags?.[0],
-        path: source?.pathPrefix,
+        // Vault `path` is exact, not a directory prefix. Apply the shared
+        // dashboard prefix filter to this bounded inventory below.
         limit: 2000,
       });
       if (!current()) throw new Error("Workspace changed");
