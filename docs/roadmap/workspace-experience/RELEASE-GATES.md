@@ -27,7 +27,7 @@ Initial socket-using fixture tests failed with sandbox `listen EPERM`; they pass
 - [ ] Existing host/agent/event/media verifiers and application typecheck pass. Parse/typecheck verification scripts as well.
 - [ ] Every renderer, account role, integration, and native feature has a baseline entry. Report absent/blocked features honestly; no blanket “parity complete” based only on a command count.
 
-The current `apps/web/playwright.config.ts` defaults to `http://localhost:8787` and describes a live vault, while helpers can load server environment values. Do not run it as if it were an isolated suite. Its blocked service workers and Chromium-only project cannot establish PWA or Safari behavior.
+The original baseline used a live-vault Playwright configuration. The current `apps/web/playwright.config.ts` is fixture-only on port 5188, with its gateway deliberately unreachable and service workers blocked. Live-vault checks are separate in `playwright.live.config.ts` and the controlled owner browser. Fixture results do not establish actual PWA, mobile Safari or installed WKWebView acceptance; six packaged Chromium/WebKit startup checks are also distinct from installed-app journeys.
 
 ## G1 — Required automated checks
 

@@ -1,3 +1,4 @@
+import { isAccessUnavailable } from "../../data/VaultClient";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { systemApi, githubSyncApi } from "../../lib/parachute/client";
@@ -30,11 +31,16 @@ export function useVaultTree() {
 
 export function useNote(id: string | null) {
   const client = useVaultClient();
-  return useQuery({
+  const result = useQuery({
     queryKey: queryKeys.vault.note(id!),
     queryFn: () => client.getNote(id!),
     enabled: !!id,
+    retry: (count, error) => !isAccessUnavailable(error) && count < 1,
   });
+  // TanStack retains prior data when a background refetch fails. A confirmed
+  // authorization/deletion response must hide that body in every note consumer.
+  return { ...result, data: isAccessUnavailable(result.error) ? undefined : result.data };
+
 }
 
 /** Ranked retrieval with an explicit keyword fallback and audience-scoped results. */
@@ -167,7 +173,7 @@ export function useUpdateNote() {
   const client = useVaultClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...params }: { id: string } & UpdateNoteParams) => {
+    mutationFn: ({ id, expectedScope, ...params }: { id: string; expectedScope?: string } & UpdateNoteParams) => {
       // Optimistic concurrency (vault 0.4.0+): forward the `updatedAt` we last
       // read for this note (from the query cache) so a stale CONTENT write fails
       // with a 409 rather than clobbering a newer revision. Only guard content —
@@ -181,7 +187,7 @@ export function useUpdateNote() {
         const cached = queryClient.getQueryData<Note>(queryKeys.vault.note(id));
         if (cached?.updatedAt) params = { ...params, ifUpdatedAt: cached.updatedAt };
       }
-      return client.updateNote(id, params);
+      return client.updateNote(id, params, { expectedScope });
     },
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });

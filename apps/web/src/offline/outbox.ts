@@ -534,3 +534,28 @@ export function startOutboxSync(): void {
   window.setInterval(() => void flush(), 30_000);
   void flush();
 }
+
+/** Local-only recovery for an editor whose original audience/access changed.
+ * Never queued for automatic replay. Identical repeated cleanup attempts coalesce
+ * with the last retained draft for this note; distinct later edits stay ordered. */
+export async function retainDraft(noteId: string, content: string, scope: WriteScope): Promise<void> {
+  const path = `/notes/${encodeURIComponent(noteId)}`;
+  const body = JSON.stringify({ content });
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const add = () => store.add({ version: 2, operationId: crypto.randomUUID(), scope, method: "PATCH", path, body, queuedAt: Date.now(), state: "blocked", detail: "Your workspace or access changed. This draft is saved only on this device. Review it in the original workspace before applying it." } satisfies QueuedWrite);
+    const cursor = store.openCursor(null, "prev");
+    cursor.onsuccess = () => {
+      const row = cursor.result;
+      if (!row) { add(); return; }
+      const item = row.value as QueuedWrite;
+      if (!sameScope(item.scope, scope) || item.path !== path) { row.continue(); return; }
+      if (item.state !== "blocked" || item.method !== "PATCH" || item.body !== body) add();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(tx.error ?? Error("Draft could not be saved on this device."));
+  });
+  notify();
+}

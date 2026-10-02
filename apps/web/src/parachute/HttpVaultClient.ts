@@ -19,6 +19,7 @@ export const httpVaultClient: VaultClient = {
   getThreadMessages: rest.getThreadMessages,
   createNote: rest.createNote,
   updateNote: rest.updateNote,
+  preserveDraft: rest.preserveDraft,
   deleteNote: rest.deleteNote,
   search: rest.search,
   semanticSearch: rest.semanticSearch,

@@ -97,7 +97,7 @@ test("failed document saves remain retryable without losing the typed content", 
   await page.goto("/e2e-fixtures/workspace.html");
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
-  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = true; });
+  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean; rejectWriteStatus: number } }).prismFixtureControls.rejectWriteStatus = 409; (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = true; });
   await editor.click();
   await editor.pressSequentially("Keep this draft. ");
   await editor.press("ControlOrMeta+s");

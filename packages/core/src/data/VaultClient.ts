@@ -9,6 +9,14 @@ import type {
   VaultInfo,
 } from "../lib/types";
 
+/** Transport status for recoverable UI states, without parsing diagnostic text. */
+export class VaultRequestError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); this.name = "VaultRequestError"; }
+}
+export function isAccessUnavailable(error: unknown): boolean {
+  return error instanceof VaultRequestError && [401, 403, 404, 410].includes(error.status);
+}
+
 export interface PersonSummary {
   id: string; updatedAt?: string | null; canManageIdentities?: boolean; name: string; path: string | null; role: string | null;
   identities: Array<{ kind: string; value: string }>;
@@ -135,7 +143,9 @@ export interface VaultClient {
   /** fresh bypasses an offline read cache when current server access must be checked. */
   getNote(id: string, options?: { fresh?: boolean }): Promise<Note>;
   createNote(params: CreateNoteParams): Promise<Note>;
-  updateNote(id: string, params: UpdateNoteParams): Promise<Note>;
+  updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note>;
+  /** Preserve an unsent editor draft locally in its original audience; never send it. */
+  preserveDraft?(id: string, content: string, audience: string): Promise<void>;
   /** True while this audience has deferred or uncertain writes awaiting sync/review. */
   hasPendingWrites?(): Promise<boolean>;
   deleteNote(id: string): Promise<void>;

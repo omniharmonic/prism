@@ -20,7 +20,7 @@ const notes: Note[] = [
   { id: "weekly-review", path: "Journal/Weekly review", content: "<h1>Weekly review</h1><p>What moved forward this week?</p>", tags: ["note"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
 const writes: Array<Record<string, unknown>> = [];
-const controls = { actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
+const controls = { noteStatus: {} as Record<string, number>, rejectWriteStatus: 403, actor: "owner@example.test", rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
 Object.assign(window, {
   prismFixtureUI: useUIStore,
   prismFixtureReads: reads,
@@ -73,6 +73,7 @@ window.fetch = async (input, init) => {
   if (noteId) {
     if (method === "GET") {
       reads.push(noteId);
+      if (controls.noteStatus[noteId]) return Response.json({ error: "fixture_note_failure" }, { status: controls.noteStatus[noteId] });
       if (params.get("unavailable") === noteId) throw new TypeError("Fixture network unavailable");
       if (params.get("hold") === noteId) await new Promise<void>(resolve => readGates.set(noteId, resolve));
       if (params.get("deny") === noteId) return Response.json({error:"forbidden"},{status:403});
@@ -84,7 +85,7 @@ window.fetch = async (input, init) => {
     if (method === "PATCH") {
       const body = JSON.parse(String(init?.body));
       writes.push(body);
-      if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: 403 });
+      if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: controls.rejectWriteStatus });
       Object.assign(note, body, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: new Date().toISOString() });
     }
     return Response.json(note);

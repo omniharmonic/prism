@@ -1,3 +1,5 @@
+import { useVaultClient } from "../../data/VaultClientContext";
+import { isAccessUnavailable, VaultRequestError } from "../../data/VaultClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUpdateNote } from "./useParachute";
 
@@ -30,6 +32,8 @@ export function useAutoSave(
   onSaved?: (content: string) => void,
 ) {
   const { mutateAsync } = useUpdateNote();
+  const client = useVaultClient();
+  const sourceScope = useRef(client.scope?.()).current;
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedCallback = useRef(onSaved);
@@ -52,14 +56,23 @@ export function useAutoSave(
     setSaveError(null);
     const operation = (async () => {
       try {
-        await mutateAsync({ id: noteId, content });
+        if (sourceScope !== undefined && client.scope?.() !== sourceScope) throw new VaultRequestError(403, "Workspace changed before saving.");
+        await mutateAsync({ id: noteId, content, expectedScope: sourceScope });
         lastContentRef.current = content;
         setLastSaved(new Date());
         savedCallback.current?.(content);
       } catch (error) {
         // Failed writes must not become the baseline for later saves.
         pendingRef.current = true;
-        setSaveError("Changes could not be saved. Keep this page open and retry when ready.");
+        if (sourceScope && client.preserveDraft && isAccessUnavailable(error)) {
+          try {
+            await client.preserveDraft(noteId, content, sourceScope);
+            pendingRef.current = false;
+            setSaveError("Your draft is saved on this device for review in the original workspace. It has not been sent.");
+          } catch {
+            setSaveError("Your draft could not be saved on this device. Keep this page open and copy your changes before leaving.");
+          }
+        } else setSaveError("Changes could not be saved. Keep this page open and retry when ready.");
         throw error;
       } finally {
         setIsSaving(false);
@@ -68,7 +81,7 @@ export function useAutoSave(
     inFlight.current = operation;
     try { await operation; }
     finally { if (inFlight.current === operation) inFlight.current = null; }
-  }, [noteId, getContent, mutateAsync]);
+  }, [noteId, getContent, mutateAsync, client, sourceScope]);
 
   // Schedule a debounced save
   const scheduleSave = useCallback(() => {

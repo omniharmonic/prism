@@ -51,3 +51,12 @@ The account-switch test also exposed the module-global QueryClient retaining not
 All 177 browser journeys and core/web/server/legacy/e2e typechecks pass; web release build passes. Nine shortcut journeys cover scoped reload, phone recents, vault/account separation, late access responses, older-record recovery, denial/retry, targeted access invalidation, quota failure and in-memory body isolation. Native build and actual production shortcut acceptance are pending at this checkpoint.
 
 The preceding code-editor follow-up also keeps the same editor DOM, cursor and collaborative undo stack across 390/1280px, supplies explicit Yjs undo/redo shortcuts, and disables undo mutation handlers in view-only mode. Real-Hocuspocus resize/undo/redo/reload/live-downgrade checks pass.
+
+
+### R01/R03 — document recovery and original-audience autosave
+
+Document-open errors now offer an honest connection/access explanation, Retry and Close tab. Structured HTTP statuses replace UI parsing of error strings. Confirmed 401/403/404/410 reads hide retained query bodies from all useNote consumers and replace the open tab title; transient background failures retain the same editor and text.
+
+Autosave now pins its initial audience through both the shared hook and the HTTP write boundary. A cleanup during account/vault switching cannot submit old content under the new identity. Access-rejected or displaced drafts are retained locally in the original scoped outbox as blocked, never automatically replayed. Duplicate identical retention attempts coalesce atomically; recovery requires the existing current-note review/revision path. They are displayed as local pending edits only when the original audience can read the note, and are not presented as server-confirmed saves. Local-storage failure is reported honestly while an editable page remains open; this is not a guarantee against device storage loss or closing an unsaved page.
+
+All 184 browser journeys pass, including seven new recovery/draft cases, with application/e2e typechecks and the web release build. Tests cover unavailable reads/retry, confirmed revocation, transient failures with a mounted draft, account/vault-switch autosave, direct stale-audience transport rejection, retained denied writes/reload/deduplication, and local persistence failure. The existing retryable-save fixture now uses a revision conflict; permission rejection follows the new retained-draft recovery path. Native and actual production recovery checks are pending at this checkpoint.

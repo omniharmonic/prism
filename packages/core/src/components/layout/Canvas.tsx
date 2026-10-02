@@ -1,5 +1,7 @@
+import { isAccessUnavailable } from "../../data/VaultClient";
+import { noteLinkTitle } from "../../lib/wikilinks";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { Suspense, useCallback, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useMemo } from "react";
 import { Compass } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNote, useUpdateNote } from "../../app/hooks/useParachute";
@@ -25,7 +27,13 @@ export function Canvas() {
   const isVirtual = !!activeTab && !isVaultNoteId(activeTab.noteId);
   const parachuteNoteId = isVirtual ? null : (activeTab?.noteId ?? null);
 
-  const { data: note, isLoading } = useNote(parachuteNoteId);
+  const { data: note, isLoading, isError, error, isFetching, refetch } = useNote(parachuteNoteId);
+  const accessUnavailable = isAccessUnavailable(error);
+  useEffect(() => {
+    if (!parachuteNoteId) return;
+    if (accessUnavailable) useUIStore.getState().renameTab(parachuteNoteId, "Unavailable document");
+    else if (note) useUIStore.getState().renameTab(parachuteNoteId, noteLinkTitle(note));
+  }, [parachuteNoteId, accessUnavailable, note]);
   const { mutate: updateNote } = useUpdateNote();
 
   // For virtual notes, construct a synthetic Note object
@@ -101,6 +109,15 @@ export function Canvas() {
           <TagView tag={activeTab.noteId.replace("tag:", "")} />
         ) : !isVirtual && isLoading ? (
           <LoadingSkeleton />
+        ) : !isVirtual && isError && !note ? (
+          <div role="alert" className="mx-auto max-w-lg px-6 pt-16 text-center">
+            <h2 className="text-lg font-medium">{accessUnavailable ? "Document unavailable" : "Couldn’t open this document"}</h2>
+            <p className="mt-3 text-sm text-[var(--text-secondary)]">{accessUnavailable ? "Your access may have changed, or this document may have been moved or removed." : "Check your connection and try again. Your saved work has not been changed."}</p>
+            <div className="mt-5 flex flex-wrap justify-center gap-3">
+              <button type="button" disabled={isFetching} onClick={() => { void refetch(); }} className="focus-ring min-h-11 rounded-lg border border-[var(--border-subtle)] px-4 text-sm">{isFetching ? "Checking document…" : "Retry document"}</button>
+              <button type="button" onClick={() => activeTab && useUIStore.getState().closeTab(activeTab.id)} className="focus-ring min-h-11 rounded-lg px-4 text-sm text-[var(--text-secondary)]">Close tab</button>
+            </div>
+          </div>
         ) : effectiveNote && isLiveDoc ? (
           // Keyed by note id so a crash on one note clears when you switch tabs.
           <RendererBoundary key={effectiveNote.id}>

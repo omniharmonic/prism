@@ -136,7 +136,7 @@ test("account switching discards cached note bodies as well as shortcut labels",
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   });
   await open(page, "field-notes");
-  await expect(page.getByText("Note not found.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Document unavailable", exact: true })).toBeVisible();
   await expect(page.getByText("Useful observations from our last conversation.")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).prismLeakedBody)).toBe(false);
 });

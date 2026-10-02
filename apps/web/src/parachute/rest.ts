@@ -26,9 +26,9 @@ import type {
   NoteVersion,
   NoteVersionPage,
 } from "@prism/core";
-import { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
-import { apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
-import { enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
+import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "@prism/core";
+import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
+import { retainDraft, enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
 import { readThrough } from "../offline/readCache";
@@ -60,7 +60,7 @@ async function req(path: string, init?: RequestInit): Promise<Response> {
     ? await readThrough(`${scopeKey(context.scope)}|${path}`, doFetch) : await doFetch();
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    throw new Error(`${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
+    throw new VaultRequestError(resp.status, `${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
   }
   return resp;
 }
@@ -92,8 +92,11 @@ export async function hasPendingWrites(): Promise<boolean> {
  * an optimistic copy so the editor proceeds; it replays on reconnect. HTTP
  * errors (4xx/5xx) still throw.
  */
-async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string): Promise<T> {
+async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string, expectedScope?: string): Promise<T> {
+  const assertAudience = () => { if (expectedScope !== undefined && agentScope() !== expectedScope) throw new VaultRequestError(403, "Workspace changed before this draft could be sent."); };
+  assertAudience();
   const context = await captureWriteContext();
+  assertAudience();
   const bodyStr = JSON.stringify(body);
   if (isOffline() || path.includes("/offline-") || await hasPending(context)) {
     await enqueue(method, path, bodyStr, context, { temporaryId });
@@ -113,7 +116,7 @@ async function writeJson<T>(method: string, path: string, body: unknown, optimis
       await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
       return optimistic();
     }
-    throw new Error(`${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
+    throw new VaultRequestError(resp.status, `${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
   }
   try {
     const text = await resp.text();
@@ -202,7 +205,7 @@ export async function createNote(params: CreateNoteParams): Promise<Note> {
   }), temporaryId);
 }
 
-export async function updateNote(id: string, params: UpdateNoteParams): Promise<Note> {
+export async function updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note> {
   // Translate camelCase ifUpdatedAt → the API's snake_case contract, and inject
   // force:true when no precondition is supplied (vault 0.4.0+ requires one).
   const body: Record<string, unknown> = {};
@@ -219,7 +222,16 @@ export async function updateNote(id: string, params: UpdateNoteParams): Promise<
     tags: null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
-  }));
+  }), undefined, options?.expectedScope);
+}
+
+export async function preserveDraft(id: string, content: string, audience: string): Promise<void> {
+  const value: unknown = JSON.parse(audience);
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(part => typeof part === "string" && part.length > 0 && part.length < 4096)) throw Error("Draft audience unavailable");
+  const [api, workspace, vault, email] = value as string[];
+  const url = new URL(api);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw Error("Draft server unavailable");
+  await retainDraft(id, content, { api, workspace, vault, actor: `user:${email}` });
 }
 
 export async function deleteNote(id: string): Promise<void> {
@@ -269,7 +281,7 @@ async function historyReq(path: string, init?: RequestInit): Promise<Response> {
   if (resp.status === 404 && path.endsWith("/versions")) throw new HistoryUnavailableError();
   if (resp.status === 409 || resp.status === 428) throw new HistoryConflictError();
   const body = await resp.text().catch(() => "");
-  throw new Error(`${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
+  throw new VaultRequestError(resp.status, `${init?.method ?? "GET"} ${path} failed: ${resp.status} ${body}`);
 }
 
 export async function listNoteVersions(

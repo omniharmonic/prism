@@ -42,7 +42,7 @@ export type {
   NoteVersionSummary,
   NoteVersionPage,
 } from "./data/VaultClient";
-export { HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "./data/VaultClient";
+export { VaultRequestError, isAccessUnavailable, HistoryUnavailableError, HistoryConflictError, toNoteVersion } from "./data/VaultClient";
 export { GraphCanvas } from "./components/layout/GraphCanvasLazy";
 export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphCanvas3D";
 
