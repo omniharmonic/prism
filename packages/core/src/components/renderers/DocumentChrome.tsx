@@ -1,5 +1,6 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
-import { Smile } from "lucide-react";
+import "./DocumentChrome.css";
+import { ChevronRight, Folder, Smile } from "lucide-react";
 import type { EmojiClickData, EmojiStyle, Theme } from "emoji-picker-react";
 
 // Full emoji picker, lazy-loaded so it never weighs down the editor chunk —
@@ -8,9 +9,11 @@ const LazyEmojiPicker = React.lazy(() => import("emoji-picker-react"));
 
 const titleStyle: React.CSSProperties = {
   fontFamily: "var(--font-sans)",
-  fontSize: "clamp(28px, 3vw, 36px)",
+  fontSize: "var(--document-title-size, clamp(32px, 3.2vw, 42px))",
   fontWeight: 700,
-  letterSpacing: "-0.022em",
+  margin: 0,
+  overflowWrap: "anywhere",
+  letterSpacing: "-0.035em",
   lineHeight: 1.15,
   color: "var(--text-primary)",
 };
@@ -177,7 +180,7 @@ function IconTile({
         ref={ref}
         onClick={() => editable && setOpen((o) => !o)}
         title={editable ? "Change icon" : undefined}
-        className="interactive focus-ring"
+        className={`interactive focus-ring document-icon-control ${icon ? "has-icon" : ""}`}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -242,11 +245,14 @@ export function PageHeader({
   icon,
   typeIcon,
   onIconChange,
+  details,
 }: {
   path?: string | null;
   /** Used when the path has no usable filename (e.g. a content-derived title). */
   fallbackName?: string;
   right?: React.ReactNode;
+  /** Quiet metadata/properties row, supplied by hosts with those capabilities. */
+  details?: React.ReactNode;
   /** When provided, the title becomes click-to-edit and commits the new display
    *  name here (the host turns it into a path rename). */
   onRename?: (newName: string) => void;
@@ -264,39 +270,21 @@ export function PageHeader({
   const name = baseName || fallbackName || "Untitled";
   const crumbs = parts.slice(0, -1);
   return (
-    <header
-      style={{
-        marginBottom: "var(--space-6)",
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 16,
-      }}
-    >
-      <div style={{ minWidth: 0, flex: "1 1 320px" }}>
+    <header className="document-page-header">
+      {crumbs.length > 0 && (
+        <nav className="document-breadcrumb" aria-label="Document location">
+          <Folder size={14} aria-hidden="true" className="shrink-0" />
+          {crumbs.map((c, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <ChevronRight size={12} aria-hidden="true" className="shrink-0" />}
+              <span title={c} className="document-breadcrumb-part">{c}</span>
+            </React.Fragment>
+          ))}
+        </nav>
+      )}
+      <div className="document-page-heading">
         {(icon || onIconChange) && (
           <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />
-        )}
-        {crumbs.length > 0 && (
-          <nav
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: 4,
-              marginBottom: "var(--space-3)",
-              fontSize: "var(--text-xs)",
-              color: "var(--text-muted)",
-            }}
-          >
-            {crumbs.map((c, i) => (
-              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <span className="truncate" style={{ maxWidth: 160 }}>{c}</span>
-                {i < crumbs.length - 1 && <span style={{ opacity: 0.6 }}>/</span>}
-              </span>
-            ))}
-          </nav>
         )}
         {onRename ? (
           <EditableTitle name={name} onRename={onRename} />
@@ -304,7 +292,10 @@ export function PageHeader({
           <h1 style={titleStyle}>{name}</h1>
         )}
       </div>
-      {right && <div style={{ maxWidth: "100%" }}>{right}</div>}
+      {(details || right) && <div className="document-page-details">
+        {details && <div className="document-page-metadata">{details}</div>}
+        {right && <div className="document-page-status">{right}</div>}
+      </div>}
     </header>
   );
 }

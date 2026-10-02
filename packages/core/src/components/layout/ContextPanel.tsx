@@ -1,3 +1,5 @@
+import { X } from "lucide-react";
+import "../renderers/DocumentChrome.css";
 import { isVaultNoteId } from "../../lib/noteIdentity";
 import { lazy, Suspense } from "react";
 import { useUIStore } from "../../app/stores/ui";
@@ -31,21 +33,24 @@ export function ContextPanel() {
 
   return (
     <div
-      className="h-full min-h-0 flex flex-col"
+      className="document-companion h-full min-h-0 flex flex-col"
+      aria-label="Document companion"
       style={{
         background: "var(--bg-surface)",
         borderLeft: "1px solid var(--glass-border)",
       }}
     >
-      <div className="p-2" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+      <div className="document-companion-header">
         <Tabs
+          className="document-companion-tabs"
           tabs={PANEL_TABS}
           activeTab={section}
           onChange={(id) => setContextPanelTab(id === "details" ? "metadata" : id as typeof contextPanelTab)}
         />
+        <button type="button" aria-label="Close document panel" title="Close document panel" className="document-companion-close focus-ring" onClick={() => useUIStore.setState({contextPanelOpen:false})}><X size={17} /></button>
       </div>
 
-      {section === "details" && <div className="p-2 workspace-context-tabs">
+      {section === "details" && <div className="document-companion-detail-tabs workspace-context-tabs">
         <Tabs tabs={DETAIL_TABS} activeTab={contextPanelTab} onChange={(id) => setContextPanelTab(id as typeof contextPanelTab)} />
       </div>}
       <div hidden={section !== "agent"} className={section === "agent" ? "flex-1 min-h-0 overflow-hidden" : "hidden"}>

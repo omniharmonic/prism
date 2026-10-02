@@ -330,7 +330,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
+    <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
 
@@ -347,10 +347,16 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       )}
 
       {/* Editor */}
-      <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
-        <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
+      <div className="document-writing-scroll flex-1 overflow-auto relative">
+        <div className="document-writing-measure">
           <PageHeader
             path={note.path}
+            details={<>
+              {note.updatedAt && !Number.isNaN(new Date(note.updatedAt).getTime()) && <span>Updated {new Date(note.updatedAt).toLocaleDateString(undefined, {month:"short",day:"numeric"})}</span>}
+              <button type="button" className="document-properties-control focus-ring" onClick={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}>
+                Properties <span aria-hidden="true">›</span>
+              </button>
+            </>}
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
@@ -374,7 +380,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       {/* Footer: save status (the font switch now lives in the shell bottom bar /
           More sheet, registered via the store). */}
       <div
-        className="flex items-center justify-end px-4 py-1 text-xs gap-3"
+        className="document-save-footer flex items-center justify-end px-4 py-1 text-xs gap-3"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
         <div className="flex items-center gap-3">
