@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 
 test("custom and unset statuses remain explicit; menu movement guards the revision and preserves other metadata", async ({
   page,
@@ -764,4 +764,228 @@ test("phone list view shows matching tasks before empty groups and explains a ze
   await expect(
     page.getByRole("region", { name: "To do", exact: true }),
   ).toBeVisible();
+});
+
+async function dragTask(
+  page: Page,
+  title: string,
+  target: Locator,
+  fraction = 0.25,
+) {
+  const handle = page.getByRole("button", {
+    name: "Drag " + title,
+    exact: true,
+  });
+  const start = await handle.boundingBox();
+  const end = await target.boundingBox();
+  expect(start).not.toBeNull();
+  expect(end).not.toBeNull();
+  await page.mouse.move(
+    start!.x + start!.width / 2,
+    start!.y + start!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    start!.x + start!.width / 2 + 12,
+    start!.y + start!.height / 2,
+    { steps: 3 },
+  );
+  await page.mouse.move(
+    end!.x + end!.width / 2,
+    end!.y + end!.height * fraction,
+    { steps: 10 },
+  );
+  await page.mouse.up();
+}
+
+test("same-column drag orders only the view, retains hidden ranks, and cross-column moves keep that rank", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html?manual-drag");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  const before = await page.evaluate(() =>
+    structuredClone((window as any).prismBoardFixture.notes().slice(1)),
+  );
+  await dragTask(
+    page,
+    "Polish the editor",
+    page.getByRole("article", {
+      name: "Review with collaborators",
+      exact: true,
+    }),
+  );
+  await expect(page.getByRole("status").first()).toContainText(
+    "Task order saved.",
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).prismBoardFixture.notes()[0].metadata.prism_board.order,
+    ),
+  ).toEqual(["hidden-rank", "blank", "design", "custom"]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.notes().slice(1),
+    ),
+  ).toEqual(before);
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.writes.map((write: any) => write.id),
+    ),
+  ).toEqual(["board"]);
+  await dragTask(
+    page,
+    "Polish the editor",
+    page.getByRole("article", { name: "Write launch notes", exact: true }),
+  );
+  await expect(page.getByRole("status").first()).toContainText("Task moved.");
+  await expect(
+    page
+      .getByRole("region", { name: "Done", exact: true })
+      .getByRole("article"),
+  ).toHaveCount(2);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).prismBoardFixture.notes()[0].metadata.prism_board.order,
+    ),
+  ).toEqual(["hidden-rank", "blank", "design", "custom"]);
+  expect(
+    await page.evaluate(() => (window as any).prismBoardFixture.writes.at(-1)),
+  ).toEqual({
+    id: "design",
+    metadata: { status: "done" },
+    ifUpdatedAt: before[0].updatedAt,
+  });
+  await page.goto("/e2e-fixtures/boards.html");
+  await expect(
+    page
+      .getByRole("region", { name: "Done", exact: true })
+      .getByRole("article"),
+  ).toHaveCount(2);
+});
+
+test("drag can place a task after its neighbor and failures or concurrent settings leave its order unchanged", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html?manual-drag");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  const target = page.getByRole("article", {
+    name: "Polish the editor",
+    exact: true,
+  });
+  await page.evaluate(() => {
+    (window as any).prismBoardFixture.failNext = true;
+  });
+  await dragTask(page, "Review with collaborators", target, 0.85);
+  await expect(page.getByRole("alert")).toContainText("Connection interrupted");
+  expect(
+    await page
+      .getByRole("region", { name: "To do", exact: true })
+      .getByRole("article")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("aria-label")),
+      ),
+  ).toEqual(["Review with collaborators", "Polish the editor"]);
+  await dragTask(page, "Review with collaborators", target, 0.85);
+  await expect(page.getByRole("status").first()).toContainText(
+    "Task order saved.",
+  );
+  expect(
+    await page
+      .getByRole("region", { name: "To do", exact: true })
+      .getByRole("article")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("aria-label")),
+      ),
+  ).toEqual(["Polish the editor", "Review with collaborators"]);
+  await page.evaluate(() => {
+    const board = (window as any).prismBoardFixture.notes()[0];
+    board.metadata.prism_board = {
+      ...board.metadata.prism_board,
+      sort: { field: "title", direction: "asc" },
+    };
+  });
+  await dragTask(page, "Review with collaborators", target);
+  await expect(page.getByRole("alert")).toContainText(
+    "settings changed in another window",
+  );
+  expect(
+    await page.evaluate(() => (window as any).prismBoardFixture.writes.length),
+  ).toBe(2);
+});
+
+test("an editable board can rank read-only tasks without gaining task write access", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html?manual-drag&task-readonly");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await expect(
+    page.getByLabel("Move Polish the editor", { exact: true }),
+  ).toHaveCount(0);
+  await dragTask(
+    page,
+    "Polish the editor",
+    page.getByRole("article", {
+      name: "Review with collaborators",
+      exact: true,
+    }),
+  );
+  await expect(page.getByRole("status").first()).toContainText(
+    "Task order saved.",
+  );
+  await dragTask(
+    page,
+    "Polish the editor",
+    page.getByRole("article", { name: "Write launch notes", exact: true }),
+  );
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.writes.map((write: any) => write.id),
+    ),
+  ).toEqual(["board"]);
+  await expect(
+    page
+      .getByRole("region", { name: "To do", exact: true })
+      .getByRole("article"),
+  ).toHaveCount(2);
+  await page.goto("/e2e-fixtures/boards.html?manual-drag&readonly");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: /^Drag / })).toHaveCount(0);
+});
+
+test("phone manual ordering keeps its earlier/later controls and respects queued writes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/boards.html?manual-drag");
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Move Polish the editor earlier",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("status").first()).toContainText(
+    "Task order saved.",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => {
+    (window as any).prismBoardFixture.pending = true;
+  });
+  await page
+    .getByRole("button", { name: "Move Polish the editor later", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "earlier change is waiting",
+  );
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.writes.map((write: any) => write.id),
+    ),
+  ).toEqual(["board"]);
 });

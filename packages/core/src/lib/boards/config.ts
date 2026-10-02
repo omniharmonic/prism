@@ -124,3 +124,24 @@ export function boardStatus(note: Note, config: BoardConfig): string | null {
     ? value
     : null;
 }
+
+/** Move one view rank around a visible neighbor while retaining every hidden ID. */
+export function reorderBoardTasks(
+  config: BoardConfig,
+  inventory: Note[],
+  taskId: string,
+  neighborId: string,
+  direction: "earlier" | "later",
+): string[] | null {
+  if (!config.order || taskId === neighborId) return null;
+  const order = [
+    ...new Set([
+      ...config.order,
+      ...boardTasks(inventory, config, "").map((note) => note.id),
+    ]),
+  ].filter((id) => id !== taskId);
+  const target = order.indexOf(neighborId);
+  if (target < 0) return null;
+  order.splice(target + (direction === "later" ? 1 : 0), 0, taskId);
+  return order;
+}
