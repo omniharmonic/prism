@@ -73,6 +73,7 @@ for (const mode of ['', 'collab']) {
   await page.evaluate(()=>{(window as any).mountedCanvas=document.querySelector('.excalidraw');});
   await page.getByRole('button',{name:'Focus canvas',exact:true}).click();
   const focused=page.getByRole('dialog',{name:'Focused canvas'});
+  expect(await focused.evaluate(el=>getComputedStyle(el).transitionDuration)).toBe('0s');
   const rect=await focused.boundingBox();
   expect(rect?.width).toBe(390);expect(rect?.height).toBe(844);expect(rect?.x).toBe(0);expect(rect?.y).toBe(0);
   await focused.getByRole('button',{name:'Notes',exact:true}).click();

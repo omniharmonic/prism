@@ -4,8 +4,11 @@ import { createRoot } from "react-dom/client";
 import { App, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
-import { fetchMe, setActiveVault } from "../src/config";
+import { fetchMe, setActiveVault, getActiveVault } from "../src/config";
 
+const params = new URLSearchParams(location.search);
+const readGates = new Map<string, () => void>();
+const reads: string[] = [];
 const date = "2026-10-01T12:00:00.000Z";
 const notes: Note[] = [
   { id: "workspace", path: "Projects/Prism/A living workspace", content: "<h2>Purpose</h2><p>A shared place to think, write, and build with the same context.</p><h2>Principles</h2><p>Your notes remain yours. Ideas connect across conversations, documents, and the people behind them.</p><ul><li>Context stays connected.</li><li>Changes are reviewable.</li><li>Collaboration feels natural.</li></ul><h2>Next steps</h2><p>Bring the document and its conversation into one comfortable workspace.</p>", tags: ["project"], metadata: { type: "document" }, createdAt: date, updatedAt: date },
@@ -14,7 +17,12 @@ const notes: Note[] = [
 ];
 const writes: Array<Record<string, unknown>> = [];
 const controls = { rejectWrite: false, peopleFail: false, peopleDenyOpen: false, peopleHold: false, peopleRelease: null as (() => void) | null };
-Object.assign(window, { prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
+Object.assign(window, {
+  prismFixtureUI: useUIStore,
+  prismFixtureReads: reads,
+  prismFixtureReleaseRead: (id: string) => { readGates.get(id)?.(); readGates.delete(id); },
+  prismFixtureSwitchVault: async (id: string) => { setActiveVault(id); window.dispatchEvent(new Event("prism:vault-changed")); await fetchMe(); },
+  prismFixtureWrites: writes, prismFixtureControls: controls, prismFixtureOpenLink: () => navigateWikilink(httpVaultClient, "Duplicate", note => useUIStore.getState().openTab(note.id, note.path!, "document")) });
 notes.push({ id: "thread", path: "Messages/Project discussion", content: "# Project discussion\n\n[2026-10-01 10:15] @morgan:example.test: First line\nSecond line\n\n- A list\n[2026-10-01 10:20] Alex: Another thought.", tags: ["message-thread"], metadata: { type: "message-thread", platform: "telegram" }, createdAt: date, updatedAt: date });
 const fixturePeople = [
       { updatedAt: date, canManageIdentities: !location.search.includes("people-readonly"), id: "person-a", name: "Alex Morgan", path: "People/Alex Morgan A", role: "Designer", identities: [{ kind: "email", value: "alex.design@example.test" }] },
@@ -50,12 +58,18 @@ window.fetch = async (input, init) => {
     if(!person)return Response.json({error:"not_found"},{status:404});
     return Response.json({ person, related: [{id:"field-notes",title:"Project conversation",path:"Projects/Prism/Field notes",category:"conversations",relationships:["email_from"]},{id:"weekly-review",title:"Weekly planning",path:"Journal/Weekly review",category:"meetings",relationships:["attendee"]}], next:null });
   }
-  if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/auth/me") return Response.json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: getActiveVault() ?? "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
+    if (method === "GET") {
+      reads.push(noteId);
+      if (params.get("unavailable") === noteId) throw new TypeError("Fixture network unavailable");
+      if (params.get("hold") === noteId) await new Promise<void>(resolve => readGates.set(noteId, resolve));
+      if (params.get("deny") === noteId) return Response.json({error:"forbidden"},{status:403});
+    }
     if(controls.peopleDenyOpen && noteId === "field-notes") return Response.json({error:"forbidden"},{status:403});
     const note = notes.find((n) => n.id === noteId);
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
@@ -80,6 +94,6 @@ await fetchMe();
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
+    {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={params.has("session") ? undefined : location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

@@ -1,3 +1,4 @@
+import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { useUIStore } from "../../app/stores/ui";
@@ -27,6 +28,14 @@ export function Shell() {
   const isMobile = useIsMobile();
 
   useKeyboardShortcuts();
+  const restore = useWorkspaceSession();
+  const restoreNotice = restore.state !== "idle" ? (
+    <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-base)] px-4 py-2 text-xs text-[var(--text-secondary)]">
+      <span>{restore.state === "loading" ? "Reopening your workspace…" : "Some previous tabs could not be reopened. Check your connection or document access."}</span>
+      {restore.state === "partial" && <button className="focus-ring rounded px-2 py-1 text-[var(--text-accent)]" onClick={restore.retry}>Retry restore</button>}
+      <button className="focus-ring rounded px-2 py-1" onClick={restore.dismiss}>{restore.state === "loading" ? "Cancel restore" : "Dismiss"}</button>
+    </div>
+  ) : null;
 
   // When the viewport becomes mobile, collapse the panels so the canvas is
   // visible; they reopen as overlay drawers on demand.
@@ -61,6 +70,7 @@ export function Shell() {
   if (isMobile) {
     return (
       <div className="flex flex-col overflow-hidden" style={rootStyle}>
+        {restoreNotice}
         <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
         <div className="relative flex-1 min-h-0">
           {/* Canvas fills the screen; the pill floats over it and content scrolls
@@ -99,6 +109,7 @@ export function Shell() {
 
   return (
     <div className="flex flex-col overflow-hidden" style={rootStyle}>
+        {restoreNotice}
         <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
       {/* Main content area */}
       <div className="flex flex-1 min-h-0">

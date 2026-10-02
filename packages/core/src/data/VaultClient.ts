@@ -131,7 +131,8 @@ export interface VaultClient {
   resolveWikilink?(target: string): Promise<{kind:"match"|"ambiguous"|"none";candidates:Array<{id:string;path:string|null;title:string}>}>;
   listNotes(filters?: NoteFilters): Promise<Note[]>;
   listTree(): Promise<NoteTreeEntry[]>;
-  getNote(id: string): Promise<Note>;
+  /** fresh bypasses an offline read cache when current server access must be checked. */
+  getNote(id: string, options?: { fresh?: boolean }): Promise<Note>;
   createNote(params: CreateNoteParams): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams): Promise<Note>;
   /** True while this audience has deferred or uncertain writes awaiting sync/review. */

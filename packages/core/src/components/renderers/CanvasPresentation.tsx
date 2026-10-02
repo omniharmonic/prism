@@ -69,6 +69,7 @@ export function useCanvasPresentation() {
         width: "100vw",
         height: "100dvh",
         background: "var(--bg-base, #151518)",
+        transition: "none",
         padding:
           "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
         boxSizing: "border-box",

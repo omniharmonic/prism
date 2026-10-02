@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `0495e07`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `a3ea838`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -34,8 +34,8 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Spreadsheet / collaborative spreadsheet | Registered adapters retained | Concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
 | Website | Registered renderer retained | Safe preview/source edit, hosted build/publish controls and private preview; no secret-bearing embeds |
 | Dashboard and widgets | Registered configurable dashboard retained | Widget inventory, filters/layout persistence, shared board source semantics, mobile scroll and read-only states |
-| Canvas (legacy/local path) | Real Excalidraw fixture proves showing/hiding derived arrows does not mutate links; preview serialization isolated | Durable authored assertion ownership, retry/reload, alternate host runtime verification |
-| Collaborative canvas | Existing Y.Map element merge/cursors retained | Two-client cards/arrows, offline/retry, remove one contributor without deleting another/manual relation; permission checks on both endpoints |
+| Canvas (legacy/local path) | Durable authored assertions, fresh endpoint access, retry/stale-scene/manual-link fixtures; legacy bridge Rust check passes; derived overlays never become assertions | Alternate host runtime, reviewed orphan/canvas-deletion cleanup and large-scene performance |
+| Collaborative canvas | Production two-canvas shared-edge and manual-edge preservation verified; focused same-editor workspace, access-checked card navigation and decorative arrows; source bodies/metadata unchanged | Installed batch acceptance, real two-human/offline/retry journeys, canvas-deletion cleanup and large-scene performance |
 | Focused graph / fullscreen | Scoped server neighborhood tests; 2D/list navigation, filters, access revalidation, mobile/fullscreen and 3D failure fixtures | Private web/native navigation verified; indexed/paginated large neighborhoods, saved exploration, performance/reduced-motion acceptance |
 | 3D graph / publication graph | Existing renderer preserved behind lazy load; actual tooltip consumer treats markup as text | Actual WebGL interaction on installed client and public/private publication fixtures |
 | Bioregion entity | Registered renderer retained | Type-specific properties, map/entity links and access-limited view |

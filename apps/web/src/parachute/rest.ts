@@ -56,7 +56,7 @@ async function req(path: string, init?: RequestInit): Promise<Response> {
   const url = `${context?.scope.api ?? apiBase()}${path}`;
   const headers = { ...(context?.headers ?? jsonHeaders()), ...(init?.headers as Record<string, string>) };
   const doFetch = () => serverFetch(url, { ...init, headers });
-  const resp = context && cacheable(method, path)
+  const resp = context && init?.cache !== "no-store" && cacheable(method, path)
     ? await readThrough(`${scopeKey(context.scope)}|${path}`, doFetch) : await doFetch();
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
@@ -178,14 +178,14 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
   }
 }
 
-export async function getNote(id: string): Promise<Note> {
+export async function getNote(id: string, options?: { fresh?: boolean }): Promise<Note> {
   const resolved = await resolveLocalNoteId(id);
   if (resolved.startsWith("offline-")) {
     const draft = await localNote(resolved);
     if (!draft) throw new Error("This local draft is unavailable in the current workspace.");
     return draft;
   }
-  const note = await (await req(`/notes/${encodeURIComponent(resolved)}`)).json() as Note;
+  const note = await (await req(`/notes/${encodeURIComponent(resolved)}`, options?.fresh ? { cache: "no-store" } : undefined)).json() as Note;
   return await localNote(resolved, note).catch(() => note) ?? note;
 }
 
