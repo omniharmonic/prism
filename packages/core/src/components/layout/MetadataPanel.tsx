@@ -1,10 +1,12 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plus, X, RefreshCw, Cloud, Trash2, Check, AlertTriangle, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import type { Note, ContentType } from "../../lib/types";
-import { useUpdateNote, useTags, useNotes } from "../../app/hooks/useParachute";
+import { useUpdateNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
-import { vaultApi } from "../../lib/parachute/client";
+import { reviewMode } from "../../lib/governance/review";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import "./context-panels.css";
 import { CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { syncApi, type SyncStatus } from "../../lib/sync/client";
 import { useGitHubSyncApi } from "../../lib/host/folderSync";
@@ -15,7 +17,6 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { hostServiceErrorText } from "../../lib/host/services";
 import { addSyncConfig, removeSyncConfig, syncStatusFromNote, SERVER_NOTE_SYNC_ADAPTERS } from "../../lib/host/vaultOps";
-import { cn } from "../../lib/cn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 interface MetadataPanelProps {
@@ -96,8 +97,86 @@ function useDiscoveredFields(tag: string, allNotesForTag: Note[]): DiscoveredFie
 }
 
 export function MetadataPanel({ note }: MetadataPanelProps) {
+  const client = useVaultClient();
+  const audience = useAgentChatStore((state) => state.scope);
+  const scope = client.scope?.() ?? audience;
+  return reviewMode(note) === "none" ? (
+    <EditableMetadata key={JSON.stringify([scope, note.id])} note={note} scope={scope} />
+  ) : (
+    <ReadOnlyMetadata key={JSON.stringify([scope, note.id])} note={note} />
+  );
+}
+
+function ReadOnlyMetadata({ note }: MetadataPanelProps) {
+  const metadata = note.metadata ?? {};
+  const properties = Object.entries(metadata).filter(
+    ([key, value]) => !SYSTEM_FIELDS.has(key) && value != null && value !== "",
+  );
+  const destinations = Array.isArray(metadata.sync) ? (metadata.sync as Array<{ adapter?: string }>) : [];
+  return (
+    <section className="prism-context-metadata" aria-label="Page properties">
+      <header>
+        <h2>Properties</h2>
+        <p>View this page’s details. Editing requires edit access.</p>
+      </header>
+      <dl className="prism-context-properties">
+        <div>
+          <dt>Type</dt>
+          <dd>{CONTENT_TYPE_LABELS[metadata.type as ContentType] || "Document"}</dd>
+        </div>
+        <div>
+          <dt>Location</dt>
+          <dd>{note.path || "Untitled"}</dd>
+        </div>
+        {properties.map(([key, value]) => (
+          <div key={key}>
+            <dt>{key.replace(/[_-]/g, " ")}</dt>
+            <dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+          </div>
+        ))}
+      </dl>
+      <h3>Tags</h3>
+      <div className="prism-context-tags">
+        {note.tags?.length ? (
+          note.tags.map((tag) => (
+            <button
+              type="button"
+              key={tag}
+              onClick={() => useUIStore.getState().openTab(`tag:${tag}`, `Tag: ${tag}`, "document")}
+            >
+              {tag}
+            </button>
+          ))
+        ) : (
+          <p>No tags</p>
+        )}
+      </div>
+      <h3>Activity</h3>
+      <p className="prism-context-caption">
+        Created {formatDate(note.createdAt)}
+        {note.updatedAt && (
+          <>
+            <br />
+            Updated {formatDate(note.updatedAt)}
+          </>
+        )}
+      </p>
+      {!!destinations.length && (
+        <>
+          <h3>Sync destinations</h3>
+          <p className="prism-context-caption">
+            {destinations.map((config) => config.adapter || "Configured destination").join(", ")}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|null}) {
   const updateNote = useUpdateNote();
-  const { data: allTags } = useTags();
+  const client = useVaultClient();
+  const { data: allTags } = useQuery({queryKey:["vault","tags",scope],queryFn:()=>client.getTags()});
   const currentType = ((note.metadata as Record<string, unknown>)?.type as ContentType) || "document";
   const noteTags = note.tags || [];
   const meta = (note.metadata || {}) as Record<string, unknown>;
@@ -121,17 +200,17 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
 
   const handleTypeChange = useCallback((newType: string) => {
     updateNote.mutate({
-      id: note.id,
+      id: note.id, expectedScope:scope ?? undefined,
       metadata: { ...meta, type: newType },
     });
-  }, [note, meta, updateNote]);
+  }, [note, meta, updateNote, scope]);
 
-  const handleMetadataFieldChange = useCallback((fieldName: string, value: unknown) => {
-    updateNote.mutate({
-      id: note.id,
+  const handleMetadataFieldChange = useCallback(async (fieldName: string, value: unknown) => {
+    await updateNote.mutateAsync({
+      id: note.id, expectedScope:scope ?? undefined,
       metadata: { ...meta, [fieldName]: value },
     });
-  }, [note, meta, updateNote]);
+  }, [note, meta, updateNote, scope]);
 
   // Separate this note's own metadata fields into "properties" (non-system, non-empty)
   const noteProperties = useMemo(() => {
@@ -141,15 +220,19 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
   }, [meta]);
 
   return (
-    <div className="space-y-3">
+    <section className="prism-context-metadata space-y-3" aria-label="Page properties">
+      <header><h2>Properties</h2><p>Details that help organize this page</p></header>
+      {updateNote.isError && <p role="alert" className="prism-context-state">The property could not be saved. Check your access and try again.</p>}
       {/* ── Core Info ─────────────────────────── */}
       <div className="flex items-center gap-2">
         <select
+          aria-label="Page type"
+          disabled={updateNote.isPending}
           value={currentType}
           onChange={(e) => handleTypeChange(e.target.value)}
           className="flex-1 h-7 rounded-md px-2 text-sm outline-none cursor-pointer"
           style={{
-            background: "var(--glass)",
+            backgroundColor: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
           }}
@@ -167,7 +250,7 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
       </div>
 
       {/* Tags */}
-      <TagEditor noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />
+      <TagEditor key={JSON.stringify([scope,note.id])} scope={scope} noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />
 
       {/* ── Properties (this note's metadata) ── */}
       {noteProperties.length > 0 && (
@@ -213,7 +296,7 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
       </div>
 
       {/* Sync */}
-      <SyncSection noteId={note.id} metadata={note.metadata} notePath={note.path} />
+      <div className="prism-context-sync"><h3>Sync destinations</h3><SyncSection noteId={note.id} metadata={note.metadata} notePath={note.path} /></div>
 
       {/* Advanced JSON (collapsible) */}
       <button
@@ -232,7 +315,7 @@ export function MetadataPanel({ note }: MetadataPanelProps) {
           {JSON.stringify(note.metadata, null, 2)}
         </pre>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -253,9 +336,13 @@ function CollapsibleTagSection({
   isExpanded: boolean;
   onToggle: () => void;
   existingFields: string[];
-  onFieldChange: (field: string, value: unknown) => void;
+  onFieldChange: (field: string, value: unknown) => Promise<void>;
 }) {
-  const { data: notesWithTag } = useNotes({ tag });
+  const client = useVaultClient();
+  const audience = useAgentChatStore(state => state.scope);
+  const scope = client.scope?.() ?? audience;
+  const related = useQuery({ queryKey: ["vault", "metadata-fields", scope, tag], queryFn: () => client.listNotes({ tag }) });
+  const notesWithTag = !related.isFetching && !related.isError ? related.data : undefined;
   const discoveredFields = useDiscoveredFields(tag, notesWithTag || []);
 
   // Filter out fields already shown in Properties section
@@ -279,7 +366,7 @@ function CollapsibleTagSection({
         {newFields.length > 0 && (
           <span
             className="ml-auto px-1.5 py-0.5 rounded-full text-[10px]"
-            style={{ background: "var(--glass)", color: "var(--text-muted)" }}
+            style={{ backgroundColor: "var(--glass)", color: "var(--text-muted)" }}
           >
             {newFields.length} field{newFields.length !== 1 ? "s" : ""}
           </span>
@@ -315,9 +402,23 @@ function PropertyRow({
   fieldName: string;
   value: unknown;
   allNotesForTag: Note[] | null;
-  onChange: (value: unknown) => void;
+  onChange: (value: unknown) => Promise<void>;
 }) {
   const label = fieldName.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const [draft, setDraft] = useState(value != null ? String(value) : "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  const attempted = useRef<unknown>(value);
+  useEffect(()=>{ if(!pending.current) setDraft(value != null ? String(value) : ""); },[value]);
+  async function save(next:unknown) {
+    if(pending.current) return;
+    pending.current=true;attempted.current=next;setBusy(true);setError("");
+    try { await onChange(next); return true; } catch { setError("Not saved. Your value is kept; try again."); return false; }
+    finally { pending.current=false;setBusy(false); }
+  }
+  const failure = error ? <span role="alert" className="prism-context-field-error">{error}<button type="button" onClick={()=>void save(attempted.current)}>Retry</button></span> : null;
+
 
   // Discover unique values if we have sibling notes
   const uniqueValues = useMemo(() => {
@@ -337,14 +438,14 @@ function PropertyRow({
       <div className="flex items-center justify-between py-0.5">
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>{label}</span>
         <button
-          onClick={() => onChange(!value)}
-          className="w-7 h-3.5 rounded-full relative transition-colors"
-          style={{ background: value ? "var(--color-accent)" : "var(--glass-border)" }}
+          aria-label={label}
+          role="switch" aria-checked={value} disabled={busy}
+          onClick={() => void save(!value)}
+          className="prism-context-switch"
         >
-          <span
-            className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white transition-all"
-            style={{ left: value ? 14 : 2 }}
-          />
+          <span className="prism-context-switch-track" style={{ background: value ? "var(--color-accent)" : "var(--glass-border)" }}>
+            <span style={{ transform: value ? "translateX(12px)" : undefined }} />
+          </span>
         </button>
       </div>
     );
@@ -357,12 +458,12 @@ function PropertyRow({
       <div className="flex items-center gap-2 py-0.5">
         <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
         <input
-          type="date"
+          type="date" aria-label={label} disabled={busy}
           value={dateVal}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => void save(e.target.value)}
           className="flex-1 h-6 rounded px-1.5 text-xs outline-none min-w-0"
           style={{
-            background: "var(--glass)",
+            backgroundColor: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
           }}
@@ -377,10 +478,13 @@ function PropertyRow({
       <div className="py-0.5">
         <span className="text-xs block mb-1" style={{ color: "var(--text-muted)" }}>{label}</span>
         <ChipList
+          label={label}
+          disabled={busy}
           items={value as string[]}
           suggestions={Array.from(uniqueValues)}
-          onChange={onChange}
+          onChange={save}
         />
+        {failure}
       </div>
     );
   }
@@ -392,11 +496,12 @@ function PropertyRow({
       <div className="flex items-center gap-2 py-0.5">
         <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
         <select
+          aria-label={label} disabled={busy}
           value={strValue}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => void save(e.target.value)}
           className="flex-1 h-6 rounded px-1.5 text-xs outline-none cursor-pointer min-w-0"
           style={{
-            background: "var(--glass)",
+            backgroundColor: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
           }}
@@ -413,19 +518,22 @@ function PropertyRow({
   // Default: inline text input
   const strValue = value != null ? String(value) : "";
   return (
-    <div className="flex items-center gap-2 py-0.5">
+    <div className="prism-context-property-row flex items-center gap-2 py-0.5">
       <span className="text-xs shrink-0 w-20" style={{ color: "var(--text-muted)" }}>{label}</span>
       <input
-        value={strValue}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={(e) => onChange(e.target.value)}
+        aria-label={label} disabled={busy}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {if(draft!==strValue)void save(draft);}}
+        onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.blur();}}}
         className="flex-1 h-6 rounded px-1.5 text-xs outline-none min-w-0"
         style={{
-          background: "var(--glass)",
+          backgroundColor: "var(--glass)",
           border: "1px solid var(--glass-border)",
           color: "var(--text-primary)",
         }}
       />
+      {failure}
     </div>
   );
 }
@@ -438,10 +546,14 @@ function ChipList({
   items,
   suggestions,
   onChange,
+  label,
+  disabled,
 }: {
   items: string[];
   suggestions: string[];
-  onChange: (value: string[]) => void;
+  label: string;
+  disabled: boolean;
+  onChange: (value: string[]) => Promise<boolean | undefined>;
 }) {
   const [input, setInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -450,16 +562,15 @@ function ChipList({
     ? suggestions.filter((s) => s.toLowerCase().includes(input.toLowerCase()) && !items.includes(s)).slice(0, 5)
     : [];
 
-  const addItem = (item: string) => {
-    if (item && !items.includes(item)) {
-      onChange([...items, item]);
+  const addItem = async (item: string) => {
+    if (!disabled && item && !items.includes(item) && await onChange([...items, item])) {
+      setInput("");
+      setShowSuggestions(false);
     }
-    setInput("");
-    setShowSuggestions(false);
   };
 
   const removeItem = (item: string) => {
-    onChange(items.filter((i) => i !== item));
+    void onChange(items.filter((i) => i !== item));
   };
 
   return (
@@ -472,7 +583,7 @@ function ChipList({
             style={{ color: "var(--text-secondary)" }}
           >
             {item}
-            <button onClick={() => removeItem(item)} className="hover:text-[var(--color-danger)] transition-colors">
+            <button type="button" disabled={disabled} aria-label={`Remove ${item} from ${label}`} onClick={() => removeItem(item)} className="prism-context-chip-remove hover:text-[var(--color-danger)] transition-colors">
               <X size={9} />
             </button>
           </span>
@@ -480,15 +591,15 @@ function ChipList({
       </div>
       <div className="relative">
         <input
+          aria-label={`Add ${label}`} disabled={disabled}
           value={input}
           onChange={(e) => { setInput(e.target.value); setShowSuggestions(true); }}
-          onKeyDown={(e) => { if (e.key === "Enter" && input.trim()) { e.preventDefault(); addItem(input.trim()); } }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && input.trim()) { e.preventDefault(); void addItem(input.trim()); } }}
           onFocus={() => setShowSuggestions(true)}
-          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
           placeholder="Add..."
           className="w-full h-6 rounded-md px-2 text-xs outline-none"
           style={{
-            background: "var(--glass)",
+            backgroundColor: "var(--glass)",
             border: "1px solid var(--glass-border)",
             color: "var(--text-primary)",
           }}
@@ -498,7 +609,7 @@ function ChipList({
             {filtered.map((s) => (
               <button
                 key={s}
-                onMouseDown={() => addItem(s)}
+                type="button" disabled={disabled} onClick={() => void addItem(s)}
                 className="w-full text-left px-2 py-1 text-xs hover:bg-[var(--glass-hover)] transition-colors"
                 style={{ color: "var(--text-secondary)" }}
               >
@@ -518,102 +629,123 @@ function TagEditor({
   noteId,
   tags,
   allTags,
+  scope,
 }: {
   noteId: string;
   tags: string[];
   allTags: string[];
+  scope: string | null;
 }) {
+  const client = useVaultClient();
+  const queries = useQueryClient();
   const [input, setInput] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const openTab = useUIStore((s) => s.openTab);
-
-  const suggestions = input.length > 0
-    ? allTags.filter((t) => t.toLowerCase().includes(input.toLowerCase()) && !tags.includes(t)).slice(0, 5)
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const alive = useRef(false),
+    lock = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const current = () => alive.current && (client.scope?.() ?? useAgentChatStore.getState().scope) === scope;
+  const suggestions = input.trim()
+    ? allTags
+        .filter((tag) => tag.toLowerCase().includes(input.trim().toLowerCase()) && !tags.includes(tag))
+        .slice(0, 5)
     : [];
-
-  const addTag = async (tag: string) => {
-    await vaultApi.addTags(noteId, [tag]);
-    setInput("");
-    setShowSuggestions(false);
-  };
-
-  const removeTag = async (tag: string) => {
-    await vaultApi.removeTags(noteId, [tag]);
-  };
-
-  const handleTagClick = (tag: string) => {
-    openTab(`tag:${tag}`, `Tag: ${tag}`, "document");
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && input.trim()) {
-      e.preventDefault();
-      addTag(input.trim());
+  async function change(raw: string, remove = false) {
+    const tag = raw.trim();
+    if (!current() || lock.current) return;
+    if (!tag || /[\r\n\u0000-\u001f]/.test(tag)) {
+      setError("Enter a tag on one line.");
+      return;
     }
-  };
-
+    if (!remove && tags.includes(tag)) {
+      setError("This page already has that tag.");
+      return;
+    }
+    lock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      if (remove) await client.removeTags(noteId, [tag]);
+      else await client.addTags(noteId, [tag]);
+      if (!current()) return;
+      if (!remove) setInput("");
+      setShowSuggestions(false);
+      void queries.invalidateQueries({ queryKey: ["vault", "notes", noteId] });
+      void queries.invalidateQueries({ queryKey: ["vault", "tags"] });
+    } catch {
+      if (current()) setError("The tag could not be saved. Your input is kept; try again.");
+    } finally {
+      lock.current = false;
+      if (current()) setBusy(false);
+    }
+  }
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap gap-1">
+    <section className="prism-context-tag-editor" aria-label="Page tags">
+      <h3>Tags</h3>
+      <div className="prism-context-tags">
         {tags.map((tag) => (
-          <span
-            key={tag}
-            className="inline-flex items-center gap-1 glass px-2 py-0.5 rounded text-xs"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <span key={tag}>
             <button
-              onClick={() => handleTagClick(tag)}
-              className="hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+              type="button"
+              onClick={() => useUIStore.getState().openTab(`tag:${tag}`, `Tag: ${tag}`, "document")}
             >
               {tag}
             </button>
             <button
-              onClick={() => removeTag(tag)}
-              className="hover:text-[var(--color-danger)] transition-colors"
+              type="button"
+              disabled={busy}
+              aria-label={`Remove tag ${tag}`}
+              onClick={() => void change(tag, true)}
             >
-              <X size={10} />
+              <X size={13} />
             </button>
           </span>
         ))}
       </div>
-      <div className="relative">
+      <div className="prism-context-tag-input">
         <input
+          aria-label="Add tag"
           value={input}
+          disabled={busy}
           onChange={(e) => {
             setInput(e.target.value);
             setShowSuggestions(true);
           }}
-          onKeyDown={handleKeyDown}
           onFocus={() => setShowSuggestions(true)}
-          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-          placeholder="Add tag..."
-          className="w-full h-7 rounded-md px-2 text-xs outline-none"
-          style={{
-            background: "var(--glass)",
-            border: "1px solid var(--glass-border)",
-            color: "var(--text-primary)",
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setShowSuggestions(false);
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void change(input);
+            }
           }}
+          placeholder="Add tag…"
         />
-        {showSuggestions && suggestions.length > 0 && (
-          <div
-            className="absolute top-full left-0 right-0 mt-0.5 py-0.5 glass-elevated z-10 rounded-md overflow-hidden"
-          >
-            {suggestions.map((s) => (
-              <button
-                key={s}
-                onMouseDown={() => addTag(s)}
-                className={cn(
-                  "w-full text-left px-2 py-1 text-xs hover:bg-[var(--glass-hover)] transition-colors",
-                )}
-                style={{ color: "var(--text-secondary)" }}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
+        <button type="button" disabled={busy || !input.trim()} onClick={() => void change(input)}>
+          {busy ? "Saving…" : "Add"}
+        </button>
       </div>
-    </div>
+      {error && (
+        <p role="alert" className="prism-context-field-error">
+          {error}
+        </p>
+      )}
+      {showSuggestions && suggestions.length > 0 && (
+        <div className="prism-context-tag-suggestions" aria-label="Suggested tags">
+          {suggestions.map((tag) => (
+            <button type="button" key={tag} disabled={busy} onClick={() => void change(tag)}>
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
