@@ -25,6 +25,7 @@ import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, tr
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
+import { transcriptsApi } from "./transcripts";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 
@@ -183,6 +184,12 @@ api.use("/canvas/*", async (c, next) => {
   readCache.clear();
 });
 api.route("/canvas", canvasApi);
+api.use("/transcripts/*", async (c, next) => {
+  await next();
+  // Link decisions write notes outside the owner proxy: drop cached owner reads.
+  if (c.req.method !== "GET") readCache.clear();
+});
+api.route("/transcripts", transcriptsApi);
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
