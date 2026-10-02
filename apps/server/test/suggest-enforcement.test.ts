@@ -28,9 +28,9 @@ import WebSocket from "ws";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { attachCollab, hocuspocus, resetReconcileState, yDocToHtml } from "../src/collab";
 import { config } from "../src/config";
-import { ensureUser, getDocState } from "../src/db";
+import { ensureUser, getDocState, upsertGrant } from "../src/db";
 import { issueDeviceToken } from "../src/auth/device";
-import { installFakeVault, resetDb, makeCapability, grantUser, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeCapability, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 const SUGGESTER = "suggester@test.local";
 const BODY = "<p>hello world</p><p>second paragraph</p>";
@@ -78,15 +78,29 @@ const ACTORS: Array<{ label: string; token: () => string }> = [
   { label: "capability-link guest", token: () => makeCapability("tag", "team", "suggest") },
 ];
 
-async function connect(name: string, token: string, doc = new Y.Doc()): Promise<{ doc: Y.Doc; provider: HocuspocusProvider }> {
+interface ConnectOptions {
+  /** Send this Cookie header on the upgrade request (a browser session). */
+  cookie?: string;
+  /** Use a real Awareness (presence). Default off — see the awareness test. */
+  awareness?: boolean;
+}
+async function connect(name: string, token: string, doc = new Y.Doc(), opts: ConnectOptions = {}): Promise<{ doc: Y.Doc; provider: HocuspocusProvider }> {
+  const cookie = opts.cookie;
+  class Socket extends WebSocket {
+    constructor(url: string | URL) {
+      super(url, cookie ? { headers: { cookie } } : {});
+    }
+  }
   const provider = new HocuspocusProvider({
     url: wsUrl,
     name,
     token,
     document: doc,
-    awareness: null, // Hocuspocus 4.1 leaks a scratch Awareness interval per awareness message
+    // Hocuspocus 4.1 leaks a scratch Awareness interval per awareness message, so
+    // presence is off except in the one test that cleans those intervals up.
+    ...(opts.awareness ? {} : { awareness: null }),
     // @ts-expect-error WebSocketPolyfill is accepted at runtime (node has no global WebSocket)
-    WebSocketPolyfill: WebSocket,
+    WebSocketPolyfill: Socket,
   });
   providers.push(provider);
   await new Promise<void>((resolve, reject) => {
@@ -300,3 +314,133 @@ for (const actor of ACTORS) {
     assert.equal(viewer.provider.authorizedScope, "readonly");
   });
 }
+
+// ── other credentials, live access changes, presence ────────────────────────
+
+test("a suggest user authenticated by SESSION COOKIE (the browser path) gets a read-only socket", { timeout: 15000 }, async () => {
+  fv.put({ id: "k1", content: BODY, tags: ["team"] });
+  const cookie = sessionCookie(makeSession(SUGGESTER));
+  const { doc, provider } = await connect("k1", "session", new Y.Doc(), { cookie });
+  assert.equal(provider.authorizedScope, "readonly");
+  const before = fingerprint("k1");
+  firstText(doc).insert(0, "COOKIE ");
+  doc.getMap("comments").set("c-cookie", new Y.Map());
+  await settle();
+  assert.deepEqual(fingerprint("k1"), before);
+  // The same cookie with an edit grant is read-write (the cookie path is not blanket read-only).
+  ensureUser("ed@test.local");
+  grantUser("ed@test.local", "tag", "team", "edit");
+  const ed = await connect("k1", "session", new Y.Doc(), { cookie: sessionCookie(makeSession("ed@test.local")) });
+  assert.equal(ed.provider.authorizedScope, "read-write");
+  const p = await persisted("k1");
+  assert.equal(p.vault, BODY);
+});
+
+test("live downgrade edit → suggest and upgrade suggest → edit over an open socket: the socket is closed (\"Access changed\"), the reconnect gets the right scope, nothing written while suggest-only", { timeout: 30000 }, async () => {
+  const USER = "moving@test.local";
+  ensureUser(USER);
+  grantUser(USER, "tag", "team", "edit");
+  fv.put({ id: "m1", content: BODY, tags: ["team"] });
+  const setLevel = (level: "suggest" | "edit") => void upsertGrant({ subject_type: "user", subject: USER, resource_type: "tag", resource: "team", level, created_by: "test", vault_id: "primary" });
+  const { doc, provider } = await connect("m1", issueDeviceToken(USER, "test", "prism-native").token);
+  // The shipped client recognises this close by its reason ("Access changed. …").
+  const closes: string[] = [];
+  provider.on("close", ({ event }: { event: { code?: number; reason?: string } }) => closes.push(`${event?.code}:${event?.reason ?? ""}`));
+  const accessClose = () => closes.some((c) => c.includes("Access changed."));
+  // …and then reconnects itself, exactly as apps/web CollabDoc does: Hocuspocus
+  // closes the DOCUMENT channel, which the provider does not re-open on its own.
+  provider.on("close", ({ event }: { event: { reason?: string } }) => {
+    if (!event?.reason?.startsWith("Access changed.")) return;
+    const transport = provider.configuration.websocketProvider;
+    const done = () => {
+      transport.off("close", done);
+      void provider.connect();
+    };
+    transport.on("close", done);
+    provider.disconnect();
+  });
+  const scope = async (want: string) => {
+    for (let i = 0; i < 200 && !(provider.authorizedScope === want && provider.synced); i++) await settle(25);
+    assert.equal(provider.authorizedScope, want);
+  };
+  assert.equal(provider.authorizedScope, "read-write");
+  firstText(doc).insert(0, "ASEDITOR ");
+  await settle();
+  assert.match(yDocToHtml(live("m1")), /<p>ASEDITOR hello/, "an editor's write lands");
+
+  // Downgrade while connected.
+  provider.authorizedScope = undefined;
+  setLevel("suggest");
+  await settle(100);
+  assert.ok(accessClose(), `the server closed the socket for the access change (saw ${closes.join(" | ")})`);
+  await scope("readonly");
+  const asSuggest = fingerprint("m1");
+  firstText(doc, 1).insert(0, "ASSUGGESTER ");
+  await settle();
+  assert.deepEqual(fingerprint("m1"), asSuggest, "nothing is written while the grant is suggest");
+  assert.doesNotMatch(yDocToHtml(live("m1")), /ASSUGGESTER/);
+
+  // Upgrade while connected.
+  closes.length = 0;
+  provider.authorizedScope = undefined;
+  setLevel("edit");
+  await settle(100);
+  assert.ok(accessClose(), `closed again for the upgrade (saw ${closes.join(" | ")})`);
+  await scope("read-write");
+  assert.deepEqual(fingerprint("m1").pendingStructs, false);
+  firstText(doc).insert(0, "AGAIN ");
+  await settle();
+  assert.match(yDocToHtml(live("m1")), /<p>AGAIN ASEDITOR hello/, "an editor again");
+  // Observed, and expected of a CRDT client: text the user typed locally while
+  // suggest-only is still in THEIR Y.Doc, so it syncs once they hold edit.
+  assert.match(yDocToHtml(live("m1")), /ASSUGGESTER second/);
+});
+
+test("the loopback COLLAB_TOKEN owner path is unchanged: read-write under enforcement, with no grant at all", { timeout: 15000 }, async () => {
+  assert.ok(config.collabToken);
+  fv.put({ id: "o1", content: BODY, tags: ["private-to-owner"] });
+  const { doc, provider } = await connect("o1", config.collabToken);
+  assert.equal(provider.authorizedScope, "read-write");
+  firstText(doc).insert(0, "OWNER ");
+  await settle();
+  assert.equal(yDocToHtml(live("o1")), "<p>OWNER hello world</p><p>second paragraph</p>");
+  // A wrong token on the same loopback connection gets nothing.
+  await assert.rejects(connect("o1", "not-the-token"), /sync timeout/);
+});
+
+test("presence: a read-only suggest socket can publish awareness, and awareness cannot alter the document", { timeout: 20000 }, async () => {
+  // Hocuspocus 4.1 decodes every inbound awareness message into a scratch
+  // Awareness it never destroys (a live setInterval each). Collect every
+  // interval created during this test and clear them at the end.
+  const realSetInterval = globalThis.setInterval;
+  const intervals: Array<ReturnType<typeof setInterval>> = [];
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const h = realSetInterval(...args);
+    intervals.push(h);
+    return h;
+  }) as typeof setInterval;
+  try {
+    fv.put({ id: "a1", content: BODY, tags: ["team"] });
+    const editor = await connect("a1", makeCapability("tag", "team", "edit"), new Y.Doc(), { awareness: true });
+    const me = await connect("a1", makeCapability("tag", "team", "suggest"), new Y.Doc(), { awareness: true });
+    assert.equal(me.provider.authorizedScope, "readonly");
+    const before = fingerprint("a1");
+    me.provider.setAwarenessField("user", { name: "Sue Gester", color: "#f0f" });
+    // A hostile presence payload is still only presence.
+    me.provider.setAwarenessField("doc", { content: "<p>pwned</p>", update: "AAAA", cursor: { anchor: 1, head: 9 } });
+    await settle(400);
+    const serverStates = [...(live("a1") as unknown as { awareness: { getStates(): Map<number, any> } }).awareness.getStates().values()];
+    assert.ok(serverStates.some((s) => s?.user?.name === "Sue Gester"), "the server holds the suggest actor's presence");
+    const seenByEditor = [...editor.provider.awareness!.getStates().values()];
+    assert.ok(seenByEditor.some((s: any) => s?.user?.name === "Sue Gester"), "…and the editor sees it");
+    assert.deepEqual(fingerprint("a1"), before, "the document is untouched by awareness");
+    assert.equal(yDocToHtml(editor.doc), BODY);
+    const p = await persisted("a1");
+    assert.equal(p.vault, BODY);
+    assert.equal(p.snapshotHtml, BODY);
+  } finally {
+    for (const p of providers.splice(0)) p.destroy();
+    globalThis.setInterval = realSetInterval;
+    for (const h of intervals) clearInterval(h);
+  }
+});
