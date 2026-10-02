@@ -50,18 +50,37 @@ import {
   type HumanCollabResult,
 } from "@prism/core/collab-commands";
 import { config } from "./config";
-import { FIELD, collabSchema } from "./collab";
+import { FIELD, collabSchema, proseToHtml, setLostCommandCleanup } from "./collab";
 import { editFragment, getThread, setThreadResolved } from "./collab-ops";
-import { db, countCollabReceipts, getCollabReceipt, insertCollabReceipt, pruneCollabReceipts } from "./db";
+import { db, countCollabReceipts, getCollabReceipt, insertCollabReceipt, pruneCollabReceipts, type UnconfirmedCollabReceipt } from "./db";
 import { atLeast, type Level } from "./permissions";
 
-/** Receipts are kept this long. Must exceed the command max age + clock skew, so
- *  a request whose receipt was pruned is always refused as `expired`. */
-export const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** How far in the future a command's `createdAt` may be (client clock skew). */
 export const FUTURE_SKEW_MS = 5 * 60 * 1000;
-/** Retained receipts per document; above it new commands get 429 until old ones age out. */
-export const RECEIPTS_PER_DOCUMENT = 5000;
+/**
+ * Receipts are kept for the command max age plus twice the allowed skew — no
+ * longer. Why a pruned receipt can never be re-applied: a receipt's `created_at`
+ * is the SERVER time of application, and the command was accepted only with
+ * `createdAt <= created_at + FUTURE_SKEW_MS`. Once `created_at < now − RETENTION`
+ * (prunable), `createdAt < now − RETENTION + FUTURE_SKEW_MS <= now − maxAge`, so
+ * the same request is refused as `expired` before anything else is looked at.
+ */
+export const RECEIPT_RETENTION_MS = HUMAN_COLLAB_LIMITS.maxAgeMs + 2 * FUTURE_SKEW_MS;
+/** Retained receipts per (document, actor): one actor cannot use up a document. */
+export const RECEIPTS_PER_ACTOR = 500;
+/** Retained receipts per document across all actors (a backstop, not the working limit). */
+export const RECEIPTS_PER_DOCUMENT = 20_000;
+/** A command may not grow the rendered note past this (the vault refuses updates
+ *  over 2,000,000 bytes while history is on; stay well clear of it). */
+export const MAX_DOCUMENT_BYTES = 1_000_000;
+/** …nor the comments map (JSON) past this. */
+export const MAX_COMMENTS_BYTES = 1_000_000;
+/** Unreviewed suggestions one actor may have open on one document. */
+export const PENDING_SUGGESTIONS_PER_ACTOR = 100;
+/** Comments (root + replies) in one thread. */
+export const COMMENTS_PER_THREAD = 200;
+/** Comment threads on one document. */
+export const THREADS_PER_DOCUMENT = 1000;
 
 export class HumanCommandError extends Error {
   constructor(
@@ -81,6 +100,9 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface HumanCommandContext {
   vaultId: string;
   noteId: string;
+  /** The collab document name the command is applied to (receipts are confirmed
+   *  and dropped per in-memory document). */
+  docName: string;
   /** Receipt identity: `user:<email>` | `capability:<id>`. Server-side only. */
   actor: string;
   /** The actor's collab level on this note right now (≥ suggest). */
@@ -161,63 +183,121 @@ function checkRange(prose: PMNode, from: number, to: number, quote: string): voi
   }
 }
 
-function planSuggest(prose: PMNode, command: Extract<HumanCollabCommand, { kind: "suggest" }>, ctx: HumanCommandContext): Planned {
+/** Resolve ONE suggestion (by id) on a document: the reviewer's accept / reject. */
+function resolveOne(doc: PMNode, suggestionId: string, action: "accept" | "reject"): PMNode {
+  const drop = action === "accept" ? "deletion" : "insertion";
+  type J = { marks?: Array<{ type: string; attrs?: Record<string, unknown> }>; content?: J[] } & Record<string, unknown>;
+  const mine = (m: { type: string; attrs?: Record<string, unknown> }) => REVIEW_MARKS.has(m.type) && m.attrs?.suggestionId === suggestionId;
+  const visit = (n: J): J | null => {
+    const marks = n.marks ?? [];
+    if (marks.some((m) => mine(m) && m.type === drop)) return null;
+    const out: J = { ...n };
+    if (n.marks) {
+      const kept = marks.filter((m) => !mine(m));
+      if (kept.length) out.marks = kept;
+      else delete out.marks;
+    }
+    if (n.content) out.content = n.content.map(visit).filter((c): c is J => c !== null);
+    return out;
+  };
+  return collabSchema().nodeFromJSON(visit(doc.toJSON() as J));
+}
+
+/** What a body becomes once it has been written into Yjs and read back — marks
+ *  the shared types cannot carry (e.g. on a line break) are gone here. */
+function throughYjs(doc: Y.Doc, next: PMNode): PMNode {
+  const fork = new Y.Doc();
+  try {
+    Y.applyUpdate(fork, Y.encodeStateAsUpdate(doc));
+    editFragment(fork, () => next);
+    return proseOf(fork);
+  } finally {
+    fork.destroy();
+  }
+}
+
+/** This actor's open suggestions in a body. */
+function pendingSuggestionsOf(prose: PMNode, actorId: string): number {
+  const ids = new Set<string>();
+  prose.descendants((node) => {
+    for (const m of node.marks) if (REVIEW_MARKS.has(m.type.name) && m.attrs.actorId === actorId) ids.add(String(m.attrs.suggestionId ?? ""));
+  });
+  return ids.size;
+}
+
+const UNMARKABLE = "That selection includes content a suggestion cannot cover (inline code, a line break or an embedded item). Select plain text within one paragraph.";
+
+function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabCommand, { kind: "suggest" }>, ctx: HumanCommandContext): Planned {
   const schema = collabSchema();
-  const { from, to } = command;
-  const text = command.text.replace(/\r\n?/g, "\n");
+  const { from, to, text } = command;
+  // A line break is a node, not text: the shared Yjs types keep no mark on it,
+  // so it could be neither attributed nor rejected. Refuse rather than add
+  // content nobody can review.
+  if (/[\r\n\u2028\u2029]/.test(text)) throw invalid("A suggestion cannot contain a line break. Suggest each line separately.");
   checkRange(prose, from, to, command.quote);
   const $from = prose.resolve(from);
   const $to = prose.resolve(to);
   const insertion = schema.marks.insertion!;
   const deletion = schema.marks.deletion!;
   if (!$from.parent.isTextblock || !$to.parent.isTextblock) throw invalid("Select text, or place the cursor inside a paragraph.");
+  if (!$from.sameParent($to)) throw invalid("A suggestion has to stay within one paragraph. Suggest each paragraph separately.");
   if (from === to && !text) throw invalid("Enter text to insert, or select text to remove.");
-  if (text && !$to.parent.type.allowsMarkType(insertion)) throw invalid("Suggested edits are not available in this kind of block.");
+  if (!$to.parent.type.allowsMarkType(insertion) || !$to.parent.type.allowsMarkType(deletion)) throw invalid("Suggested edits are not available in this kind of block.");
 
   // One open suggestion per passage: a second one over (or touching) it would
   // make accept/reject ambiguous. The reviewer resolves the first one first.
   let overlap = from === to && (hasReviewMark($from.marks()) || hasReviewMark($from.nodeBefore?.marks) || hasReviewMark($from.nodeAfter?.marks));
-  let unmarkable = false;
-  let inline = 0;
-  prose.nodesBetween(from, to, (node, _pos, parent) => {
-    if (!node.isInline) return true;
-    inline++;
-    if (hasReviewMark(node.marks)) overlap = true;
-    if (parent && !parent.type.allowsMarkType(deletion)) unmarkable = true;
-    return false;
+  prose.nodesBetween(from, to, (node) => {
+    if (node.isInline && hasReviewMark(node.marks)) overlap = true;
+    return true;
   });
   if (overlap) {
     throw new HumanCommandError(409, "suggestion_overlap", "This passage already has a pending suggestion. It has to be reviewed before another change can be proposed here.");
   }
-  if (from !== to && unmarkable) throw invalid("Suggested edits are not available in this kind of block.");
-  if (from !== to && inline === 0) throw invalid("That selection contains no text to change.");
+  if (pendingSuggestionsOf(prose, ctx.author.actorId) >= PENDING_SUGGESTIONS_PER_ACTOR) {
+    throw new HumanCommandError(429, "too_many_pending_suggestions", "You have too many suggestions waiting for review on this document. Wait until an editor has reviewed some of them.");
+  }
 
   const suggestionId = randomUUID();
   const attrs = { user: ctx.author.name, color: ctx.author.color, suggestionId, actorId: ctx.author.actorId, turnId: null };
+  // Keep the surrounding formatting (bold, link…), never another review/comment mark.
+  const around = (from !== to ? $to.nodeBefore?.marks : $to.marks()) ?? [];
+  const keep = around.filter((m) => !REVIEW_MARKS.has(m.type.name) && m.type.name !== "comment");
   let next: PMNode;
+  let accepted: PMNode;
   try {
     const tr = new Transform(prose);
     if (from !== to) tr.addMark(from, to, deletion.create(attrs));
-    if (text) {
-      // Keep the surrounding formatting (bold, link…), never another review/comment mark.
-      const around = (from !== to ? $to.nodeBefore?.marks : $to.marks()) ?? [];
-      const keep = around.filter((m) => !REVIEW_MARKS.has(m.type.name) && m.type.name !== "comment");
-      const mark = insertion.create(attrs);
-      const hardBreak = schema.nodes.hardBreak;
-      const nodes: PMNode[] = [];
-      text.split("\n").forEach((part, i) => {
-        if (i > 0) nodes.push(hardBreak ? hardBreak.create(null, null, [mark]) : schema.text(" ", [...keep, mark]));
-        if (part) nodes.push(schema.text(part, [...keep, mark]));
-      });
-      tr.insert(to, nodes);
-    }
+    if (text) tr.insert(to, schema.text(text, [...keep, insertion.create(attrs)]));
     next = tr.doc;
     next.check();
+    // What accepting the suggestion must produce: the plain edit, nothing else.
+    const plain = new Transform(prose);
+    if (text) plain.replaceWith(from, to, schema.text(text, keep));
+    else plain.delete(from, to);
+    accepted = plain.doc;
   } catch {
     throw invalid("That change cannot be placed at this position.");
   }
-  // A suggestion only ever adds marks and inline content; it never restructures.
-  if (next.childCount !== prose.childCount || next.eq(prose)) throw invalid("That change cannot be placed at this position.");
+  // FAIL-CLOSED post-condition, checked on what Yjs will actually hold:
+  //  - rejecting this suggestion gives back EXACTLY the current body, and
+  //  - accepting it gives EXACTLY the plain edit.
+  // Together: every node the command adds carries the insertion mark, every
+  // node in the range carries the deletion mark, and nothing else changed. A
+  // range that can only be marked in part (inline code excludes other marks, a
+  // line break or image carries none) fails here and nothing is mutated.
+  let stored: PMNode;
+  try {
+    stored = throughYjs(doc, next);
+  } catch {
+    throw invalid("That change cannot be placed at this position.");
+  }
+  if (stored.eq(prose) || !resolveOne(stored, suggestionId, "reject").eq(prose) || !resolveOne(stored, suggestionId, "accept").eq(accepted)) {
+    throw invalid(UNMARKABLE);
+  }
+  if (Buffer.byteLength(proseToHtml(stored)) > MAX_DOCUMENT_BYTES && text) {
+    throw new HumanCommandError(413, "document_too_large", "This document is too large to take another suggested insertion. An editor needs to review pending suggestions or split the document first.");
+  }
   return { result: { requestId: command.requestId, kind: "suggest", suggestionId }, nextProse: next, commit: () => {} };
 }
 
@@ -225,6 +305,14 @@ interface StoredComment {
   id?: string;
   actorId?: string;
   author?: string;
+}
+
+/** Refuse a comment/reply that would push the comments map past its size budget. */
+function commentBudget(doc: Y.Doc, text: string): void {
+  const used = Buffer.byteLength(JSON.stringify(commentsOf(doc)));
+  if (used + Buffer.byteLength(text) + 400 > MAX_COMMENTS_BYTES) {
+    throw new HumanCommandError(413, "document_too_large", "This document's comments have reached their size limit. Resolve and delete old threads first.");
+  }
 }
 
 function planComment(prose: PMNode, command: Exclude<HumanCollabCommand, { kind: "suggest" }>, ctx: HumanCommandContext, doc: Y.Doc, now: number): Planned {
@@ -246,6 +334,13 @@ function planComment(prose: PMNode, command: Exclude<HumanCollabCommand, { kind:
       throw invalid("A comment cannot be anchored on that selection.");
     }
     if (next.eq(prose)) throw invalid("Select the text you want to comment on.");
+    if (doc.share.has("comments") && doc.getMap("comments").size >= THREADS_PER_DOCUMENT) {
+      throw new HumanCommandError(429, "too_many_threads", "This document has reached its limit of comment threads. Resolve and delete old threads first.");
+    }
+    commentBudget(doc, text);
+    if (Buffer.byteLength(proseToHtml(next)) > MAX_DOCUMENT_BYTES) {
+      throw new HumanCommandError(413, "document_too_large", "This document is too large to anchor another comment.");
+    }
     const quote = prose.textBetween(command.from, command.to, " ").slice(0, 200); // the editor's own thread quote
     return {
       result: { requestId: command.requestId, kind: "comment", threadId, commentId },
@@ -271,6 +366,10 @@ function planComment(prose: PMNode, command: Exclude<HumanCollabCommand, { kind:
     const text = command.text.trim();
     if (!text) throw invalid("Enter a reply.");
     if (!items) throw new HumanCommandError(409, "thread_missing", "This comment thread no longer exists.");
+    if (items.length >= COMMENTS_PER_THREAD) {
+      throw new HumanCommandError(409, "thread_full", "This thread has reached its limit of comments. Start a new thread.");
+    }
+    commentBudget(doc, text);
     const commentId = randomUUID();
     return {
       result: { requestId: command.requestId, kind: "reply", threadId: command.threadId, commentId },
@@ -338,9 +437,12 @@ export function executeHumanCommand(doc: Y.Doc, ctx: HumanCommandContext, comman
   }
 
   const prose = proseOf(doc);
-  const plan = command.kind === "suggest" ? planSuggest(prose, command, ctx) : planComment(prose, command, ctx, doc, now);
+  const plan = command.kind === "suggest" ? planSuggest(doc, prose, command, ctx) : planComment(prose, command, ctx, doc, now);
 
   pruneCollabReceipts(now - RECEIPT_RETENTION_MS, ctx.vaultId, ctx.noteId);
+  if (countCollabReceipts(ctx.vaultId, ctx.noteId, ctx.actor) >= RECEIPTS_PER_ACTOR) {
+    throw new HumanCommandError(429, "actor_request_limit", "You have made too many changes to this document in the last day. Try again later.");
+  }
   if (countCollabReceipts(ctx.vaultId, ctx.noteId) >= RECEIPTS_PER_DOCUMENT) {
     throw new HumanCommandError(429, "document_request_limit", "This document has reached its limit of recent collaboration requests. Try again later.");
   }
@@ -352,6 +454,7 @@ export function executeHumanCommand(doc: Y.Doc, ctx: HumanCommandContext, comman
     insertCollabReceipt({
       vault_id: ctx.vaultId,
       note_id: ctx.noteId,
+      doc_name: ctx.docName,
       actor: ctx.actor,
       request_id: command.requestId,
       command_hash: commandHash(command),
@@ -374,3 +477,57 @@ export function pruneReceiptsIfDue(now = Date.now()): void {
   lastGlobalPrune = now;
   pruneCollabReceipts(now - RECEIPT_RETENTION_MS);
 }
+
+/**
+ * Remove what forgotten (never confirmed) commands left in a snapshot that was
+ * just restored (collab.ts `loadDocumentState`). The body has usually been put
+ * back by the vault fold already; this covers what the fold does not touch (the
+ * `comments` map) and the no-fold cases, so the document is the PRE-command
+ * state again and the client's retry — same request, same revision — applies.
+ *   suggest         reject that suggestion id (if its marks are still there)
+ *   comment         delete the thread and its anchor
+ *   reply           remove that one comment item
+ *   delete-comment  the thread cannot be brought back: finish the body side
+ *                   (strip the orphan anchor) so map and body agree
+ *   resolve         re-stamp the anchor to the thread's flag so they agree
+ * Idempotent; newest first so replies go before their thread.
+ */
+export function undoLostCommands(doc: Y.Doc, lost: UnconfirmedCollabReceipt[]): void {
+  const origin = "human:lost-command-cleanup";
+  const stripAnchor = (threadId: string) =>
+    editFragment(doc, (d) => {
+      const tr = new Transform(d);
+      d.descendants((node, pos) => {
+        for (const mark of node.marks) if (mark.type.name === "comment" && mark.attrs.id === threadId) tr.removeMark(pos, pos + node.nodeSize, mark);
+      });
+      return tr.docChanged ? tr.doc : null;
+    });
+  doc.transact(() => {
+    for (const row of [...lost].reverse()) {
+      let r: HumanCollabResult;
+      try {
+        r = JSON.parse(row.result) as HumanCollabResult;
+      } catch {
+        continue;
+      }
+      const threads = doc.share.has("comments") ? doc.getMap<Y.Map<unknown>>("comments") : null;
+      if (row.kind === "suggest" && r.suggestionId) {
+        const id = r.suggestionId;
+        editFragment(doc, (d) => resolveOne(d, id, "reject"));
+      } else if (row.kind === "comment" && r.threadId) {
+        threads?.delete(r.threadId);
+        stripAnchor(r.threadId);
+      } else if (row.kind === "reply" && r.threadId && r.commentId) {
+        const items = threads?.get(r.threadId)?.get("comments") as Y.Array<StoredComment> | undefined;
+        const at = items ? items.toArray().findIndex((c) => c?.id === r.commentId) : -1;
+        if (items && at >= 0) items.delete(at, 1);
+      } else if (row.kind === "delete-comment" && r.threadId) {
+        if (!threads?.has(r.threadId)) stripAnchor(r.threadId);
+      } else if (row.kind === "resolve" && r.threadId) {
+        const t = threads?.get(r.threadId);
+        if (t) setThreadResolved(doc, r.threadId, !!t.get("resolved"), origin);
+      }
+    }
+  }, origin);
+}
+setLostCommandCleanup(undoLostCommands);

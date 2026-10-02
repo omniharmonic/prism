@@ -46,11 +46,12 @@ const range = {
 };
 const threadId = z.string().min(1).max(200);
 const text = z.string().max(HUMAN_COLLAB_LIMITS.text);
+const commentText = z.string().min(1).max(HUMAN_COLLAB_LIMITS.commentText);
 /** STRICT: an unknown key (author, user, color, actorId, marks, …) is a 400. */
 const commandSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, ...range, kind: z.literal("suggest"), text }),
-  z.strictObject({ ...base, ...range, kind: z.literal("comment"), text: text.min(1) }),
-  z.strictObject({ ...base, kind: z.literal("reply"), threadId, text: text.min(1) }),
+  z.strictObject({ ...base, ...range, kind: z.literal("comment"), text: commentText }),
+  z.strictObject({ ...base, kind: z.literal("reply"), threadId, text: commentText }),
   z.strictObject({ ...base, kind: z.literal("resolve"), threadId, resolved: z.boolean() }),
   z.strictObject({ ...base, kind: z.literal("delete-comment"), threadId }),
 ]);
@@ -87,6 +88,10 @@ function resolveCaller(c: Context): Caller | null {
   }
   return { identity: `user:${actor.email}`, email: actor.email, role: actor.role, vaultId: actor.vaultId, grants };
 }
+
+/** Vault note ids: opaque tokens. Paths ("a/b"), titles with spaces, dotted
+ *  names and the `vault::id` wire form are not ids. */
+const NOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 const noteRef = (note: Note) => ({
   id: note.id,
@@ -148,8 +153,15 @@ humanCollabApi.post("/:id/commands", async (c) => {
   if (!parsed.success) return fail(c, 400, "invalid_command", "That collaboration request is not valid.");
   const command = parsed.data as HumanCollabCommand;
 
+  // A note is addressed ONLY by its id. The vault also resolves /notes/:x by
+  // path and by unique title; letting such an alias through would open a SECOND
+  // collab document (and snapshot row) for the same note, whose store would
+  // then be folded over the real live document. So: a strict id shape before
+  // any vault call, and below the resolved note must BE that id — anything else
+  // answers exactly like a note that does not exist.
   const id = c.req.param("id");
-  if (!id || id.length > 200 || id.includes("::")) return fail(c, 400, "invalid_command", "That document id is not valid.");
+  const missing = () => fail(c, 404, "not_found", "This document is not available.");
+  if (!id || !NOTE_ID.test(id)) return missing();
 
   // Workspace binding: a request that names a workspace must name the one this
   // caller is bound to (a link's own vault; a known vault for an account).
@@ -162,6 +174,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
   const receiptKey = { vaultId: who.vaultId, noteId: id, actor: who.identity };
   try {
     const note = await vaultClient(who.vaultId).getNote(id);
+    if (note.id !== id) return missing(); // resolved through a path/title alias
     const level = levelOf(who, note);
     if (!atLeast(level, "suggest")) return fail(c, 403, "forbidden", "Suggest access is required for this document.");
     const kind = kindOf(note);
@@ -178,7 +191,8 @@ humanCollabApi.post("/:id/commands", async (c) => {
     }
 
     pruneReceiptsIfDue();
-    const conn = await hocuspocus.openDirectConnection(documentNameFor(who.vaultId, id), { human: who.identity });
+    const docName = documentNameFor(who.vaultId, id);
+    const conn = await hocuspocus.openDirectConnection(docName, { human: who.identity });
     let outcome: HumanCommandOutcome | null = null;
     try {
       if (!conn.document) return fail(c, 502, "upstream_error", "The live document could not be opened. Keep your draft and retry the same request.", { retry: true });
@@ -188,6 +202,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
       // revision are all re-read in the same tick as the mutation.
       const revision = accessRevision();
       const fresh = await vaultClient(who.vaultId).getNote(id);
+      if (fresh.id !== id) return missing();
       // ── synchronous from here to the end of executeHumanCommand ──
       const now = resolveCaller(c);
       const nowLevel = now ? levelOf(now, fresh) : null;
@@ -201,6 +216,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
       const name = now.email ? getUser(now.email)?.name?.trim() || now.email : "Guest";
       outcome = executeHumanCommand(conn.document as unknown as Y.Doc, {
         ...receiptKey,
+        docName,
         level: nowLevel as Level,
         author: { name, color: colorFor(now.identity), actorId: documentActorId(now.identity) },
       }, command);
@@ -220,7 +236,7 @@ humanCollabApi.post("/:id/commands", async (c) => {
     return c.json(outcome.result);
   } catch (error) {
     if (error instanceof HumanCommandError) return fail(c, error.status, error.code, error.message, error.retry ? { retry: true } : {});
-    if (error instanceof VaultError && error.status === 404) return fail(c, 404, "not_found", "This document is not available.");
+    if (error instanceof VaultError && error.status === 404) return missing();
     console.error("[human-collab] command failed:", error instanceof Error ? error.name : "unknown");
     return fail(c, 502, "upstream_error", "The change could not be confirmed. Keep your draft and retry the same request.", { retry: true });
   }

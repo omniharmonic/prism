@@ -56,7 +56,9 @@ import {
   getDocState,
   saveDocState,
   saveDocStateConfirming,
-  dropUnconfirmedCollabReceipts,
+  takeUnconfirmedCollabReceipts,
+  unconfirmedCollabReceipts,
+  type UnconfirmedCollabReceipt,
   getFederatedByKey,
   getPeer,
   grantsForPeer,
@@ -93,6 +95,11 @@ export function contentToYUpdate(content: string): Uint8Array {
 
 export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
+}
+
+/** Render a ProseMirror document of the shared schema to the HTML a store would write. */
+export function proseToHtml(node: { toJSON(): unknown }): string {
+  return generateHTML(node.toJSON() as never, exts);
 }
 
 // ---- server-side suggested edits (G2b) ----
@@ -646,6 +653,13 @@ export async function authorizeConnection(
   return level as Level;
 }
 
+/** Undo what unconfirmed human commands left in a restored snapshot. Registered
+ *  by human-collab.ts (which imports this module — a setter avoids the cycle). */
+let lostCommandCleanup: ((doc: Y.Doc, lost: UnconfirmedCollabReceipt[]) => void) | null = null;
+export function setLostCommandCleanup(fn: typeof lostCommandCleanup): void {
+  lostCommandCleanup = fn;
+}
+
 /**
  * Seed a Y.Doc for a note. Prefers persisted CRDT state for continuity, but if
  * Parachute was edited externally since we last stored (its updatedAt is newer
@@ -655,13 +669,13 @@ export async function authorizeConnection(
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   // A (re)load starts a NEW in-memory document. Any human command still marked
-  // 'applied' (never confirmed by a store) belonged to a previous instance that
-  // is gone — a crash, or an unload before its store succeeded — so its change
-  // is not in what we are about to restore. Forget those receipts NOW (before
-  // any await) so a retry re-applies the command rather than replaying a result
-  // for a change that was lost. Confirmed ('durable') receipts are kept: they
-  // are in the persisted snapshot and survive every reload and reseed.
-  dropUnconfirmedCollabReceipts(target.vaultId, target.noteId);
+  // 'applied' for THIS document name (never confirmed by a store) belonged to a
+  // previous instance that is gone — a crash, or an unload before its store
+  // succeeded. Forget those receipts NOW (before any await) so a retry
+  // re-applies the command rather than replaying a result for a change that was
+  // lost; what they may have left in a half-saved snapshot is removed below.
+  // Confirmed ('durable') receipts are kept: they survive every reload/reseed.
+  const lost = takeUnconfirmedCollabReceipts(documentName);
   let note: { content: string; updatedAt: string | null } | null = null;
   let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
@@ -707,6 +721,18 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
             ? sceneToYUpdate(note.content)
             : contentToYUpdate(note.content);
     Y.applyUpdate(doc, seed); // first-ever seed into a fresh, empty doc
+  }
+  // A snapshot written by a FAILED store (or one taken while a command's own
+  // vault write was still pending) can hold pieces of a command that was never
+  // confirmed: the fold above restores the body from the vault, but not the
+  // `comments` map. Remove exactly what those forgotten commands left behind, so
+  // the document is consistent and the retry starts from the pre-command state.
+  if (lost.length > 0 && kind === "document") {
+    try {
+      lostCommandCleanup?.(doc, lost);
+    } catch (e) {
+      console.error("[collab] lost-command cleanup failed:", e instanceof Error ? e.message : "unknown");
+    }
   }
   // Persist NOW, even without an edit. Otherwise a view-only note (which never
   // triggers a store) has no stored state, so every connection re-seeds a fresh
@@ -761,7 +787,10 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
     }
   }
 
+  let rendered: number[] = [];
   try {
+    // Same tick as the render below: exactly the commands this content contains.
+    rendered = unconfirmedCollabReceipts(documentName).map((r) => r.rowid);
     const content =
       kind === "code"
         ? yDocToCode(doc)
@@ -786,14 +815,15 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
-  // Snapshot + receipt confirmation are ONE synchronous transaction: the state
-  // encoded here contains every human command applied to this in-memory doc so
-  // far (each wrote its receipt in the same tick as its Yjs mutation), so those
-  // receipts become 'durable' exactly when a snapshot holding them is on disk.
-  // Not when the vault write failed: that snapshot has no source version, the
-  // next load folds the (older) vault copy back over it, and the change is lost
-  // — the receipt must stay unconfirmed so the caller is told to retry.
-  saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten);
+  // Snapshot + receipt confirmation are ONE transaction, and it confirms ONLY
+  // the commands that were already applied when `content` was rendered — the
+  // ones the vault write above really carried. A command applied during that
+  // await is in this snapshot but not in the vault; its own store (which its
+  // request is waiting on) confirms it, and if that store fails the receipt
+  // stays unconfirmed and the caller is told to retry — never a false success.
+  // After a failed vault write nothing is confirmed: that snapshot has no source
+  // version, the next load folds the (older) vault copy back over it.
+  saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten ? rendered : []);
 }
 
 interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }

@@ -806,12 +806,16 @@ db.exec(`CREATE INDEX IF NOT EXISTS collab_docs_vault ON collab_docs(vault_id, n
 //           'durable'  the document state containing it was persisted (snapshot
 //                      + vault); flipped in the same transaction as that store.
 // An 'applied' row never outlives the in-memory document it describes: loading
-// the document drops them (the change was lost with the old instance), so a
-// retry re-applies instead of claiming a change that never reached storage.
+// THAT document (same `doc_name`) drops them (the change was lost with the old
+// instance), so a retry re-applies instead of claiming a change that never
+// reached storage. Unconfirmed rows are scoped by `doc_name`, not by note: a
+// federated note can be open under its space key and under its bare id at once,
+// and one instance's load/store must not drop or confirm the other's commands.
 db.exec(`
   CREATE TABLE IF NOT EXISTS collab_command_receipts (
     vault_id     TEXT NOT NULL,
     note_id      TEXT NOT NULL,
+    doc_name     TEXT NOT NULL,          -- the collab document it was applied to (note id, vault::id, or a space key)
     actor        TEXT NOT NULL,          -- server-derived: user:<email> | capability:<id>
     request_id   TEXT NOT NULL,          -- client uuid
     command_hash TEXT NOT NULL,          -- sha256 of the canonical command body
@@ -822,7 +826,7 @@ db.exec(`
     durable_at   INTEGER,
     PRIMARY KEY (vault_id, note_id, actor, request_id)
   );
-  CREATE INDEX IF NOT EXISTS collab_command_receipts_doc ON collab_command_receipts(vault_id, note_id, state);
+  CREATE INDEX IF NOT EXISTS collab_command_receipts_doc ON collab_command_receipts(doc_name, state);
   CREATE INDEX IF NOT EXISTS collab_command_receipts_age ON collab_command_receipts(created_at);
 `);
 
@@ -1784,6 +1788,7 @@ export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: n
 export interface CollabCommandReceipt {
   vault_id: string;
   note_id: string;
+  doc_name: string;
   actor: string;
   request_id: string;
   command_hash: string;
@@ -1793,20 +1798,26 @@ export interface CollabCommandReceipt {
   created_at: number;
   durable_at: number | null;
 }
+/** An unconfirmed receipt, as the load/store paths handle it. */
+export interface UnconfirmedCollabReceipt {
+  rowid: number;
+  kind: string;
+  result: string;
+}
 const selectCollabReceipt = db.prepare(
   "SELECT * FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?",
 );
 const insertCollabReceiptStmt = db.prepare(
-  `INSERT INTO collab_command_receipts (vault_id, note_id, actor, request_id, command_hash, kind, result, state, created_at, durable_at)
-   VALUES (@vault_id, @note_id, @actor, @request_id, @command_hash, @kind, @result, 'applied', @created_at, NULL)`,
+  `INSERT INTO collab_command_receipts (vault_id, note_id, doc_name, actor, request_id, command_hash, kind, result, state, created_at, durable_at)
+   VALUES (@vault_id, @note_id, @doc_name, @actor, @request_id, @command_hash, @kind, @result, 'applied', @created_at, NULL)`,
 );
-const confirmCollabReceiptsStmt = db.prepare(
-  "UPDATE collab_command_receipts SET state = 'durable', durable_at = ? WHERE vault_id = ? AND note_id = ? AND state = 'applied'",
+const selectUnconfirmedCollabReceipts = db.prepare(
+  "SELECT rowid, kind, result FROM collab_command_receipts WHERE doc_name = ? AND state = 'applied' ORDER BY rowid",
 );
-const dropUnconfirmedCollabReceiptsStmt = db.prepare(
-  "DELETE FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND state = 'applied'",
-);
+const confirmCollabReceiptStmt = db.prepare("UPDATE collab_command_receipts SET state = 'durable', durable_at = ? WHERE rowid = ? AND state = 'applied'");
+const dropUnconfirmedCollabReceiptsStmt = db.prepare("DELETE FROM collab_command_receipts WHERE doc_name = ? AND state = 'applied'");
 const countCollabReceiptsStmt = db.prepare("SELECT COUNT(*) AS n FROM collab_command_receipts WHERE vault_id = ? AND note_id = ?");
+const countCollabReceiptsActorStmt = db.prepare("SELECT COUNT(*) AS n FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ?");
 const pruneCollabReceiptsStmt = db.prepare("DELETE FROM collab_command_receipts WHERE created_at < ?");
 const pruneCollabReceiptsDocStmt = db.prepare("DELETE FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND created_at < ?");
 
@@ -1817,12 +1828,23 @@ export function getCollabReceipt(vaultId: string, noteId: string, actor: string,
 export function insertCollabReceipt(r: Omit<CollabCommandReceipt, "state" | "durable_at">): void {
   insertCollabReceiptStmt.run(r);
 }
-/** The in-memory document was (re)loaded: its unconfirmed changes are gone. */
-export function dropUnconfirmedCollabReceipts(vaultId: string, noteId: string): number {
-  return dropUnconfirmedCollabReceiptsStmt.run(vaultId, noteId).changes;
+/** The commands applied to this in-memory document that no store has confirmed yet. */
+export function unconfirmedCollabReceipts(docName: string): UnconfirmedCollabReceipt[] {
+  return selectUnconfirmedCollabReceipts.all(docName) as UnconfirmedCollabReceipt[];
 }
-export function countCollabReceipts(vaultId: string, noteId: string): number {
-  return (countCollabReceiptsStmt.get(vaultId, noteId) as { n: number }).n;
+/**
+ * The in-memory document is being (re)loaded: its unconfirmed changes are gone.
+ * Returns the rows it forgot (so the loader can clean up what they left in a
+ * half-saved snapshot), read and deleted in one transaction.
+ */
+export const takeUnconfirmedCollabReceipts = db.transaction((docName: string): UnconfirmedCollabReceipt[] => {
+  const rows = unconfirmedCollabReceipts(docName);
+  if (rows.length) dropUnconfirmedCollabReceiptsStmt.run(docName);
+  return rows;
+});
+export function countCollabReceipts(vaultId: string, noteId: string, actor?: string): number {
+  const row = actor === undefined ? countCollabReceiptsStmt.get(vaultId, noteId) : countCollabReceiptsActorStmt.get(vaultId, noteId, actor);
+  return (row as { n: number }).n;
 }
 /** Retention: drop receipts created before `cutoff` (one document, or all). */
 export function pruneCollabReceipts(cutoff: number, vaultId?: string, noteId?: string): number {
@@ -1831,15 +1853,21 @@ export function pruneCollabReceipts(cutoff: number, vaultId?: string, noteId?: s
     : pruneCollabReceiptsStmt.run(cutoff).changes;
 }
 /**
- * Persist a document's Yjs state and — ONLY when the vault copy was written (or
- * already matched) — confirm every command applied to that in-memory document,
- * in ONE transaction: a receipt is 'durable' iff a stored snapshot contains it.
- * The caller must encode `state` in the same synchronous section as this call.
+ * Persist a document's Yjs state and confirm EXACTLY the receipts in `confirm`,
+ * in ONE transaction. `confirm` is the set the caller captured in the same
+ * synchronous section in which it rendered the content it then wrote to the
+ * vault — so a receipt turns 'durable' only if the vault copy really contains
+ * its change. A command applied while that vault write was in flight is in the
+ * snapshot but NOT in `confirm`; its own store confirms it. Pass [] when the
+ * vault write failed.
  */
 export const saveDocStateConfirming = db.transaction(
-  (name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId: string, vaultWritten: boolean): number => {
+  (name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId: string, confirm: number[]): number => {
     saveDocState(name, state, sourceUpdatedAt, vaultId);
-    return vaultWritten ? confirmCollabReceiptsStmt.run(now(), vaultId, name).changes : 0;
+    let n = 0;
+    const at = now();
+    for (const rowid of confirm) n += confirmCollabReceiptStmt.run(at, rowid).changes;
+    return n;
   },
 );
 

@@ -28,10 +28,12 @@ import * as Y from "yjs";
 import WebSocket from "ws";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
-import { canonicalCollabState, humanCollabRevision, humanCollabRevisionInput } from "@prism/core/collab-commands";
+import { generateHTML } from "@tiptap/core";
+import { collabExtensions } from "@prism/core/editor-schema";
+import { canonicalCollabState, humanCollabRevision, humanCollabRevisionInput, HUMAN_COLLAB_LIMITS } from "@prism/core/collab-commands";
 import { createApp } from "../src/app";
 import { config } from "../src/config";
-import { attachCollab, collabSchema, contentToYUpdate, hocuspocus, loadDocumentState, resetReconcileState, yDocToHtml } from "../src/collab";
+import { attachCollab, collabSchema, contentToYUpdate, hocuspocus, loadDocumentState, reconcileLoadedDocs, resetReconcileState, yDocToHtml } from "../src/collab";
 import { editFragment, findTextRange } from "../src/collab-ops";
 import {
   addGrant,
@@ -44,6 +46,8 @@ import {
   grantsForCapability,
   grantsForUser,
   insertCollabReceipt,
+  pruneCollabReceipts,
+  saveDocState,
   removeGrant,
   setUserProfile,
   suggestionsForNote,
@@ -51,7 +55,20 @@ import {
 } from "../src/db";
 import { issueDeviceToken } from "../src/auth/device";
 import { verifyCapability } from "../src/auth/capability";
-import { documentActorId, executeHumanCommand, humanRevision, RECEIPTS_PER_DOCUMENT, type HumanCommandContext } from "../src/human-collab";
+import {
+  COMMENTS_PER_THREAD,
+  documentActorId,
+  executeHumanCommand,
+  FUTURE_SKEW_MS,
+  humanRevision,
+  MAX_DOCUMENT_BYTES,
+  PENDING_SUGGESTIONS_PER_ACTOR,
+  RECEIPT_RETENTION_MS,
+  RECEIPTS_PER_ACTOR,
+  RECEIPTS_PER_DOCUMENT,
+  THREADS_PER_DOCUMENT,
+  type HumanCommandContext,
+} from "../src/human-collab";
 import { resolveSuggestions, type PmNode } from "../src/suggestions";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
 
@@ -763,7 +780,7 @@ for (const actor of ACTORS) {
     assert.equal(yDocToHtml(editor), stored, "the reloaded document has exactly the one suggestion");
     const liveReplay = await post("d1", cmd, auth);
     assert.deepEqual(liveReplay.body, first.body);
-    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", actor: auth.identity, level: "suggest", author: { name: "x", color: "#000", actorId: "x" } };
+    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", docName: "d1", actor: auth.identity, level: "suggest", author: { name: "x", color: "#000", actorId: "x" } };
     assert.deepEqual(executeHumanCommand(live("d1")!, ctx, cmd as never), { result: first.body, replayed: true, state: "durable" });
     assert.deepEqual(suggestionIds(yDocToHtml(live("d1")!)), [first.body.suggestionId]);
 
@@ -812,7 +829,7 @@ for (const actor of ACTORS) {
     assert.equal(replay.status, 200);
     assert.equal(replay.replayed, true);
     assert.deepEqual(replay.body, first.body);
-    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", actor: auth.identity, level: "suggest", author: { name: "x", color: "#000", actorId: "x" } };
+    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", docName: "d1", actor: auth.identity, level: "suggest", author: { name: "x", color: "#000", actorId: "x" } };
     assert.equal(executeHumanCommand(live("d1")!, ctx, cmd as never).replayed, true);
     await settle();
     assert.equal(yDocToHtml(live("d1")!), "<p>rewritten elsewhere</p><p>beta</p>", "the external edit stands; the old command is not applied again");
@@ -827,7 +844,7 @@ for (const actor of ACTORS) {
     // does — and dies before any store. SQLite survives; the Y.Doc does not.
     const mem = await loadDocumentState("d1", new Y.Doc());
     const cmd = { requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(mem), kind: "suggest" as const, ...select(mem, "alpha"), text: "omega" };
-    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", actor: auth.identity, level: "suggest", author: { name: actor.name, color: "#000", actorId: documentActorId(auth.identity) } };
+    const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", docName: "d1", actor: auth.identity, level: "suggest", author: { name: actor.name, color: "#000", actorId: documentActorId(auth.identity) } };
     const applied = executeHumanCommand(mem, ctx, cmd);
     assert.equal(applied.state, "applied");
     assert.equal(applied.replayed, false);
@@ -942,11 +959,11 @@ test("comment receipts: a replayed comment/reply never duplicates the thread or 
   assert.equal((yDocToHtml(editor).match(/data-comment-id=/g) ?? []).length, 1);
 });
 
-test("receipts are bounded per document (429 past the cap) and scoped to the note", { timeout: 20000 }, async () => {
+test("receipts are bounded per document across all actors (429 past the ceiling) and pruned by age", { timeout: 20000 }, async () => {
   const auth = userAuth(SUGGESTER);
   const fill = db.transaction(() => {
     for (let i = 0; i < RECEIPTS_PER_DOCUMENT; i++) {
-      insertCollabReceipt({ vault_id: "primary", note_id: "d1", actor: "user:filler", request_id: `r-${i}`, command_hash: "h", kind: "reply", result: "{}", created_at: Date.now() });
+      insertCollabReceipt({ vault_id: "primary", note_id: "d1", doc_name: "d1", actor: `user:filler-${i % 100}`, request_id: `r-${i}`, command_hash: "h", kind: "reply", result: "{}", created_at: Date.now() });
     }
   });
   fill();
@@ -959,7 +976,7 @@ test("receipts are bounded per document (429 past the cap) and scoped to the not
   assert.equal(vaultHtml("d1"), BODY);
   assert.equal(receipt(auth, cmd.requestId), null);
   // Receipts past the retention window are pruned, which frees the document.
-  db.prepare("UPDATE collab_command_receipts SET created_at = ? WHERE actor = 'user:filler'").run(Date.now() - 8 * 24 * 60 * 60 * 1000);
+  db.prepare("UPDATE collab_command_receipts SET created_at = ? WHERE actor LIKE 'user:filler-%'").run(Date.now() - 8 * 24 * 60 * 60 * 1000);
   const ok = await post("d1", cmd, auth);
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(receiptCount(), 1, "the expired receipts were pruned");
@@ -976,4 +993,328 @@ test("kill switch off: the command endpoint still works (and the suggest socket 
   (p.get(0) as Y.XmlText).insert(0, "LEGACY ");
   await settle();
   assert.match(yDocToHtml(live("d1")!), /<p>LEGACY beta<\/p>/, "legacy raw suggest write is accepted with the switch off");
+});
+
+// ── security review follow-ups (H1, H2, M1–M3, LOW-a/b) ─────────────────────
+
+const stateOf = (name: string) => Buffer.from(Y.encodeStateAsUpdate(live(name)!)).toString("base64");
+
+test("H1: a suggestion can never add unattributed content — line breaks are refused, and nothing is mutated", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  const editor = await editorClient("d1");
+  const before = stateOf("d1");
+  for (const text of ["\n", "\n\n\n", "a\nb", "a\r\nb", "tail\n"]) {
+    const r = await post("d1", await command(editor, () => ({ kind: "suggest", ...caretAfter(editor, "alpha"), text })), auth);
+    assert.equal(r.status, 400, JSON.stringify(text));
+    assert.equal(r.body.error, "invalid_command");
+    assert.match(r.body.message, /line break/i);
+  }
+  const rep = await post("d1", await command(editor, () => ({ kind: "suggest", ...select(editor, "beta"), text: "x\ny" })), auth);
+  assert.equal(rep.status, 400);
+  assert.equal(stateOf("d1"), before);
+  assert.equal(yDocToHtml(live("d1")!), BODY);
+  assert.equal(receiptCount(), 0);
+  assert.equal(writes(), 0);
+});
+
+test("H1: a range that cannot be marked completely is refused whole (code spans, line breaks, several paragraphs) — never a partial suggestion", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  fv.put({ id: "mix", tags: ["garden"], content: "<p>aa <code>bb</code> cc</p><p>one<br>two</p><p>last</p>", updatedAt: T0 });
+  const editor = await editorClient("mix");
+  const before = stateOf("mix");
+  const range = (a: string, b: string) => {
+    const doc = pm(editor);
+    const from = findTextRange(doc, a)!.from;
+    const to = findTextRange(doc, b)!.to;
+    return { from, to, quote: doc.textBetween(from, to, "\n", "￼") };
+  };
+  for (const [label, sel, text] of [
+    ["delete across a code span", () => range("aa", "cc"), ""],
+    ["replace across a code span", () => range("aa", "cc"), "new"],
+    ["delete inside a code span", () => select(editor, "bb"), ""],
+    ["delete across a line break", () => range("one", "two"), ""],
+    ["replace across paragraphs", () => range("two", "last"), "joined"],
+    ["delete across paragraphs", () => range("cc", "one"), ""],
+  ] as const) {
+    const r = await post("mix", await command(editor, () => ({ kind: "suggest", ...sel(), text })), auth);
+    assert.equal(r.status, 400, `${label}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.error, "invalid_command");
+  }
+  assert.equal(stateOf("mix"), before, "nothing was partially applied");
+  assert.equal(receiptCount(), 0);
+  // What IS accepted is exactly reversible: reject restores the original body,
+  // accept yields the plain replacement — for insert, delete and replace.
+  const html0 = yDocToHtml(live("mix")!);
+  const ok = await post("mix", await command(editor, () => ({ kind: "suggest", ...select(editor, "aa"), text: "AA" })), auth);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const ins = await post("mix", await command(editor, () => ({ kind: "suggest", ...caretAfter(editor, "last"), text: " word" })), auth);
+  assert.equal(ins.status, 200, JSON.stringify(ins.body));
+  const del = await post("mix", await command(editor, () => ({ kind: "suggest", ...select(editor, "two"), text: "" })), auth);
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  const marked = pm(editor).toJSON() as PmNode;
+  assert.equal(generateHTML(resolveSuggestions(marked, null, "reject") as never, collabExtensions()), html0);
+  assert.equal(generateHTML(resolveSuggestions(marked, null, "accept") as never, collabExtensions()), "<p>AA <code>bb</code> cc</p><p>one<br></p><p>last word</p>");
+});
+
+test("H2: the endpoint addresses a note ONLY by its id — a path / title alias is 'not found', opens no second document and cannot wipe unsaved typing", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  fv.put({ id: "p1", tags: ["garden"], path: "Garden/Alias Note", content: BODY, updatedAt: T0 });
+  fv.put({ id: "p2", tags: ["garden"], path: "roadmap", content: BODY, updatedAt: T0 });
+  const editor = await editorClient("p1");
+  const p = editor.getXmlFragment("default").get(0) as Y.XmlElement;
+  (p.get(0) as Y.XmlText).insert(0, "UNSAVED ");
+  await settle();
+  const cmd = await command(offlineDoc("p2"), () => ({ kind: "suggest", ...select(offlineDoc("p2"), "alpha"), text: "x" }));
+  const missing = await post("no-such-note", cmd, auth);
+  assert.equal(missing.status, 404);
+  for (const alias of ["Garden/Alias Note", "garden/alias note", "GARDEN/ALIAS NOTE", "roadmap", "ROADMAP"]) {
+    const calls = fv.calls.length;
+    const r = await post(alias, cmd, auth);
+    assert.equal(r.status, 404, `${alias}: ${JSON.stringify(r.body)}`);
+    assert.deepEqual(r.body, missing.body, "indistinguishable from a note that does not exist");
+    assert.equal(live(alias), undefined);
+    assert.equal(live(alias.toLowerCase()), undefined);
+    assert.equal(getDocState(alias), null, "no second snapshot row for the same note");
+    assert.ok(fv.calls.length - calls <= 1, "at most the one lookup");
+  }
+  // Ids outside the allowlist never reach the vault at all.
+  for (const bad of ["a b", "a.b", "x".repeat(129), "a::b", "ü"]) {
+    const calls = fv.calls.length;
+    const r = await post(bad, cmd, auth);
+    assert.equal(r.status, 404, bad);
+    assert.equal(fv.calls.length, calls, "no vault call");
+  }
+  assert.equal(writes(), 0);
+  assert.equal(receiptCount(), 0);
+  assert.deepEqual([...hocuspocus.documents.keys()], ["p1"]);
+  await reconcileLoadedDocs(hocuspocus as never);
+  assert.match(yDocToHtml(live("p1")!), /UNSAVED alpha/, "the editor's unsaved typing is intact");
+  assert.match(yDocToHtml(editor), /UNSAVED alpha/);
+});
+
+test("M1: a command applied WHILE another store's vault write is in flight is not confirmed by that store; if its own store fails it is 503, never a false 200", { timeout: 20000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  const editor = await editorClient("d1");
+  const p = editor.getXmlFragment("default").get(1) as Y.XmlElement;
+  (p.get(0) as Y.XmlText).insert(0, "TYPED "); // unsaved raw edit → a store is pending
+  await settle();
+  const cmd = await command(editor, () => ({ kind: "suggest", ...select(editor, "alpha"), text: "omega" }));
+  // Gate the vault: PATCH #1 (the editor's store) hangs until released; PATCH #2
+  // (the command's own store) fails.
+  const inner = globalThis.fetch;
+  let patches = 0;
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if ((init?.method ?? "GET").toUpperCase() === "PATCH" && url.pathname.endsWith("/notes/d1")) {
+      patches++;
+      if (patches === 1) await gate;
+      if (patches === 2) fv.conflictOnNextWrite = true;
+    }
+    return inner(input, init);
+  }) as typeof fetch;
+  hocuspocus.flushPendingStores(); // store #1 renders (no suggestion yet) and waits on the vault
+  await settle(150);
+  assert.equal(patches, 1);
+  const pending = post("d1", cmd, auth); // applied in memory while store #1 is in flight
+  await settle(250);
+  assert.equal(receipt(auth, cmd.requestId)!.state, "applied");
+  open();
+  const r = await pending;
+  assert.equal(patches, 2);
+  assert.doesNotMatch(vaultHtml("d1"), /data-suggestion/, "the vault never received the suggestion");
+  assert.equal(r.status, 503, JSON.stringify(r.body));
+  assert.equal(r.body.error, "not_confirmed");
+  assert.equal(receipt(auth, cmd.requestId)!.state, "applied", "store #1 did not confirm a command it never wrote");
+  // The change is lost with the document; the retry applies it once, for real.
+  globalThis.fetch = inner;
+  for (const pr of providers.splice(0)) pr.destroy();
+  connected.length = 0;
+  await unloaded("d1");
+  const retry = await post("d1", cmd, auth);
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
+  assert.equal(retry.replayed, false, "never a replayed success for the lost change");
+  await unloaded("d1");
+  assert.deepEqual(suggestionIds(vaultHtml("d1")), [retry.body.suggestionId], "exactly one suggestion");
+  assert.match(vaultHtml("d1"), /TYPED beta/, "the editor's stored typing is intact");
+});
+
+test("M2: the receipt cap is per actor — one suggester at its cap does not block anyone else; the document ceiling is separate", { timeout: 20000 }, async () => {
+  const a = userAuth(SUGGESTER);
+  const b = userAuth(SUGGESTER2);
+  const g = guestAuth();
+  db.transaction(() => {
+    for (let i = 0; i < RECEIPTS_PER_ACTOR; i++) {
+      insertCollabReceipt({ vault_id: "primary", note_id: "d1", doc_name: "d1", actor: a.identity, request_id: `a-${i}`, command_hash: "h", kind: "reply", result: "{}", created_at: Date.now() });
+    }
+  })();
+  db.prepare("UPDATE collab_command_receipts SET state = 'durable', durable_at = ?").run(Date.now());
+  const doc = offlineDoc("d1");
+  const mine = await post("d1", await command(doc, () => ({ kind: "suggest", ...select(doc, "alpha"), text: "omega" })), a);
+  assert.equal(mine.status, 429);
+  assert.equal(mine.body.error, "actor_request_limit");
+  assert.equal(vaultHtml("d1"), BODY);
+  const theirs = await post("d1", await command(doc, () => ({ kind: "suggest", ...select(doc, "alpha"), text: "omega" })), b);
+  assert.equal(theirs.status, 200, JSON.stringify(theirs.body));
+  await unloaded("d1");
+  const d = offlineDoc("d1");
+  const guests = await post("d1", await command(d, () => ({ kind: "comment", ...select(d, "beta"), text: "hi" })), g);
+  assert.equal(guests.status, 200, JSON.stringify(guests.body));
+  // A's cap frees itself as its receipts age out.
+  db.prepare("UPDATE collab_command_receipts SET created_at = ? WHERE request_id LIKE 'a-%'").run(Date.now() - RECEIPT_RETENTION_MS - 1000);
+  await unloaded("d1");
+  const d2 = offlineDoc("d1");
+  const again = await post("d1", await command(d2, () => ({ kind: "reply", threadId: guests.body.threadId, text: "ok" })), a);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(receiptCount(), 3);
+});
+
+test("M2: short retention can never permit a re-apply — once a receipt is old enough to prune, its request is already refused as expired", { timeout: 20000 }, async () => {
+  assert.ok(RECEIPT_RETENTION_MS >= HUMAN_COLLAB_LIMITS.maxAgeMs + FUTURE_SKEW_MS, "retention covers max age + the allowed clock skew");
+  assert.ok(RECEIPT_RETENTION_MS <= 2 * HUMAN_COLLAB_LIMITS.maxAgeMs, "…and is no longer days");
+  const t0 = Date.now();
+  const mem = await loadDocumentState("d1", new Y.Doc());
+  const ctx = (now: number): HumanCommandContext => ({ vaultId: "primary", noteId: "d1", docName: "d1", actor: "user:x", level: "suggest", author: { name: "x", color: "#000", actorId: "h_x" }, now });
+  // Worst case for the proof: the client's clock is as far AHEAD as allowed, so
+  // its createdAt stays "fresh" for the longest possible time.
+  const cmd = { requestId: randomUUID(), createdAt: t0 + FUTURE_SKEW_MS, revision: humanRevision(mem), kind: "suggest" as const, ...select(mem, "alpha"), text: "omega" };
+  assert.equal(executeHumanCommand(mem, ctx(t0), cmd).replayed, false);
+  // Just before the receipt may be pruned it still answers.
+  const edge = t0 + RECEIPT_RETENTION_MS;
+  pruneCollabReceipts(edge - RECEIPT_RETENTION_MS);
+  assert.equal(executeHumanCommand(mem, ctx(edge), cmd).replayed, true);
+  // One millisecond later it is prunable — and the same request, on a document
+  // where its effect is gone (so the revision matches again), is refused.
+  const later = edge + 1;
+  assert.equal(pruneCollabReceipts(later - RECEIPT_RETENTION_MS), 1);
+  const fresh = await loadDocumentState("d1", new Y.Doc());
+  assert.equal(humanRevision(fresh), cmd.revision);
+  assert.throws(() => executeHumanCommand(fresh, ctx(later), cmd), (e: any) => e.code === "expired");
+  assert.equal(yDocToHtml(fresh), BODY);
+});
+
+test("M3: growth budgets — document size, pending suggestions per actor, replies per thread, threads per document, comment length", { timeout: 30000 }, async () => {
+  const auth = userAuth(SUGGESTER);
+  // Document size: a suggestion that would push the rendered note past the budget.
+  const big = `<p>${"word ".repeat((MAX_DOCUMENT_BYTES - 6000) / 5)}</p><p>tail end</p>`;
+  fv.put({ id: "big", tags: ["garden"], content: big, updatedAt: T0 });
+  const bd = offlineDoc("big");
+  const tooBig = await post("big", await command(bd, () => ({ kind: "suggest", ...caretAfter(bd, "tail end"), text: "y".repeat(10_000) })), auth);
+  assert.equal(tooBig.status, 413, JSON.stringify(tooBig.body).slice(0, 200));
+  assert.equal(tooBig.body.error, "document_too_large");
+  assert.equal(vaultHtml("big"), big);
+  const small = await post("big", await command(bd, () => ({ kind: "suggest", ...caretAfter(bd, "tail end"), text: "!" })), auth);
+  assert.equal(small.status, 200, "a change that fits is still accepted");
+
+  // Pending suggestions per actor.
+  const me = documentActorId(auth.identity);
+  const span = (i: number, actor: string) => `<span data-suggestion="insert" data-user="S" data-color="#000" data-suggestion-id="s-${actor}-${i}" data-actor-id="${actor}">i${i}</span> `;
+  const many = (actor: string, n: number) => Array.from({ length: n }, (_, i) => span(i, actor)).join("");
+  fv.put({ id: "pend", tags: ["garden"], content: `<p>${many(me, PENDING_SUGGESTIONS_PER_ACTOR)}</p><p>${many("h_someone_else", 5)}</p><p>clean text</p>`, updatedAt: T0 });
+  const pd = offlineDoc("pend");
+  const full = await post("pend", await command(pd, () => ({ kind: "suggest", ...select(pd, "clean"), text: "tidy" })), auth);
+  assert.equal(full.status, 429, JSON.stringify(full.body));
+  assert.equal(full.body.error, "too_many_pending_suggestions");
+  const other = await post("pend", await command(pd, () => ({ kind: "suggest", ...select(pd, "clean"), text: "tidy" })), userAuth(SUGGESTER2));
+  assert.equal(other.status, 200, "someone else's budget is their own");
+  await unloaded("pend");
+  const pd2 = offlineDoc("pend");
+  const comment = await post("pend", await command(pd2, () => ({ kind: "comment", ...select(pd2, "text"), text: "comments are not suggestions" })), auth);
+  assert.equal(comment.status, 200, JSON.stringify(comment.body));
+
+  // Comment length.
+  const d = offlineDoc("d1");
+  const long = await post("d1", await command(d, () => ({ kind: "comment", ...select(d, "alpha"), text: "c".repeat(HUMAN_COLLAB_LIMITS.commentText + 1) })), auth);
+  assert.equal(long.status, 400);
+
+  // Replies per thread, and threads per document.
+  const editor = await editorClient("d1");
+  editor.transact(() => {
+    const mk = (id: string, n: number) => {
+      const t = new Y.Map<unknown>();
+      t.set("id", id);
+      t.set("quote", "x");
+      t.set("resolved", false);
+      const arr = new Y.Array<unknown>();
+      arr.push(Array.from({ length: n }, (_, i) => ({ author: "a", color: "#000", text: `r${i}`, createdAt: i })));
+      t.set("comments", arr);
+      editor.getMap("comments").set(id, t);
+    };
+    mk("c-full", COMMENTS_PER_THREAD);
+    for (let i = 0; i < THREADS_PER_DOCUMENT - 1; i++) mk(`c-${i}`, 1);
+  });
+  await caughtUp(editor);
+  const reply = await post("d1", await command(editor, () => ({ kind: "reply", threadId: "c-full", text: "one more" })), auth);
+  assert.equal(reply.status, 409, JSON.stringify(reply.body));
+  assert.equal(reply.body.error, "thread_full");
+  const roomy = await post("d1", await command(editor, () => ({ kind: "reply", threadId: "c-0", text: "fits" })), auth);
+  assert.equal(roomy.status, 200, JSON.stringify(roomy.body));
+  const thread = await post("d1", await command(editor, () => ({ kind: "comment", ...select(editor, "alpha"), text: "one too many" })), auth);
+  assert.equal(thread.status, 429, JSON.stringify(thread.body));
+  assert.equal(thread.body.error, "too_many_threads");
+  // Resolving and deleting stay possible when a document is at its limits.
+  assert.equal((await post("d1", await command(editor, () => ({ kind: "resolve", threadId: "c-full", resolved: true })), auth)).status, 200);
+});
+
+for (const kind of ["comment", "reply"] as const) {
+  test(`LOW-a: a ${kind} whose store failed leaves no residue after reload, and the retry applies it exactly once`, { timeout: 20000 }, async () => {
+    const auth = userAuth(SUGGESTER);
+    let threadId = "";
+    if (kind === "reply") {
+      const d0 = offlineDoc("d1");
+      const made = await post("d1", await command(d0, () => ({ kind: "comment", ...select(d0, "alpha"), text: "root" })), auth);
+      assert.equal(made.status, 200, JSON.stringify(made.body));
+      threadId = made.body.threadId;
+      await unloaded("d1");
+    }
+    const off = offlineDoc("d1");
+    const stored = vaultHtml("d1");
+    const cmd = await command(off, () => (kind === "comment" ? { kind, ...select(off, "beta"), text: "note" } : { kind, threadId, text: "note" }));
+    if (kind === "comment") {
+      // The command's own store fails: the half-saved snapshot keeps the thread
+      // in the comments map while the reload folds the body back from the vault.
+      fv.conflictOnNextWrite = true;
+      const lost = await post("d1", cmd, auth);
+      assert.equal(lost.status, 503);
+      await unloaded("d1");
+    } else {
+      // A reply changes no body, so its store needs no vault write. The way an
+      // unconfirmed reply ends up in a snapshot is M1's: ANOTHER store saves the
+      // snapshot while the reply's own store has not run — and then the process dies.
+      const mem = await loadDocumentState("d1", new Y.Doc());
+      const ctx: HumanCommandContext = { vaultId: "primary", noteId: "d1", docName: "d1", actor: auth.identity, level: "suggest", author: { name: "Sue Gester", color: "#000", actorId: documentActorId(auth.identity) } };
+      assert.equal(executeHumanCommand(mem, ctx, cmd as never).state, "applied");
+      saveDocState("d1", Y.encodeStateAsUpdate(mem), getDocState("d1")!.sourceUpdatedAt);
+      mem.destroy();
+      assert.equal(receipt(auth, cmd.requestId)!.state, "applied");
+    }
+    const retry = await post("d1", cmd, auth); // the SAME request
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    assert.equal(retry.replayed, false);
+    await unloaded("d1");
+    const snap = offlineDoc("d1");
+    const threads = snap.getMap<Y.Map<unknown>>("comments");
+    if (kind === "comment") {
+      assert.deepEqual([...threads.keys()], [retry.body.threadId], "exactly one thread — no orphan from the lost attempt");
+      assert.equal((vaultHtml("d1").match(/data-comment-id=/g) ?? []).length, 1);
+      assert.match(vaultHtml("d1"), new RegExp(`data-comment-id="${retry.body.threadId}"[^>]*>beta<`));
+    } else {
+      assert.deepEqual((threads.get(threadId)!.get("comments") as Y.Array<any>).toArray().map((i) => i.text), ["root", "note"], "exactly one reply");
+      assert.equal(vaultHtml("d1"), stored);
+    }
+    assert.equal(receipt(auth, cmd.requestId)!.state, "durable");
+  });
+}
+
+test("LOW-b: unconfirmed receipts belong to ONE in-memory document — loading the same note under another document name does not drop them", { timeout: 20000 }, async () => {
+  insertCollabReceipt({ vault_id: "primary", note_id: "d1", doc_name: "space-key-1", actor: "user:x", request_id: "r-1", command_hash: "h", kind: "resolve", result: JSON.stringify({ requestId: "r-1", kind: "resolve", threadId: "c-none", resolved: true }), created_at: Date.now() });
+  await loadDocumentState("d1", new Y.Doc());
+  assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1")!.state, "applied", "the bare-id document's load left the space document's receipt alone");
+  // …and storing the bare-id document does not confirm it either.
+  const conn = await hocuspocus.openDirectConnection("d1", {});
+  await conn.disconnect();
+  assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1")!.state, "applied");
+  await loadDocumentState("space-key-1", new Y.Doc());
+  assert.equal(getCollabReceipt("primary", "d1", "user:x", "r-1"), null, "its own document's load drops it");
 });

@@ -267,8 +267,10 @@ export function installFakeVault(): FakeVault {
     // /notes/:id item
     const m = sub.match(/^\/notes\/([^/]+)$/);
     if (m) {
-      const id = decodeURIComponent(m[1]!);
-      const existing = store.get(id);
+      const asked = decodeURIComponent(m[1]!);
+      // Like the real vault: by id, then by (case-insensitive) path.
+      const existing = store.get(asked) ?? [...store.values()].find((n) => !!n.path && n.path.toLowerCase() === asked.toLowerCase());
+      const id = existing?.id ?? asked;
       if (method === "GET") {
         return existing ? json(existing) : new Response("not found", { status: 404 });
       }
