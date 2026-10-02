@@ -16,7 +16,7 @@ export function useSelectionAsk(editor: Editor | null) {
   useDocumentSnapshots(state => editor ? Object.values(state.notes).find(capture => capture.editor === editor) : null);
   const capture = captureForEditor(editor);
   const supported = availability === "yes" && (limits.data?.contextSnapshots?.maxSnapshots ?? 0) > 0 && !!scope && client?.scope?.() === scope;
-  const reason = pending ? "Finish or dismiss the pending selected context first." : !limits.data?.contextSnapshots ? "This server does not currently offer captured context." : !capture ? "Open an available document to capture its text." : "";
+  const reason = !scope || client?.scope?.() !== scope ? "Checking the current agent audience…" : pending ? "Finish or dismiss the pending selected context first." : !limits.data?.contextSnapshots ? "This server does not currently offer captured context." : !capture ? "Open an available document to capture its text." : "";
   const canAsk = supported && !!capture && !pending;
   const ask = useCallback((kind: "selection" | "document" = "selection", slash?: { from: number; to: number }) => {
     if (!canAsk || !editor || client?.scope?.() !== scope) return false;
