@@ -101,7 +101,9 @@ async function call(cl: Client, name: string, args: Record<string, unknown> = {}
 }
 // WP6.4 tools are pinned in mcp-governance.test.ts; this file pins the WP6.2 catalog.
 const WP64 = new Set(["prism_governance_state", "prism_propose_change", "prism_vote", "prism_withdraw_proposal", "prism_note_access", "prism_share", "prism_dashboard_query"]);
-const names = async (cl: Client) => (await cl.listTools()).tools.map((t) => t.name).filter((n) => !WP64.has(n)).sort();
+// The graph-maintenance tools (prism_people_*) are pinned in mcp-people.test.ts.
+const elsewhere = (n: string) => WP64.has(n) || n.startsWith("prism_people_");
+const names = async (cl: Client) => (await cl.listTools()).tools.map((t) => t.name).filter((n) => !elsewhere(n)).sort();
 const ids = (o: Out) => (o.ok ? (o.data.notes as Array<{ id: string }>).map((n) => n.id).sort() : []);
 const must = (o: Out): any => {
   assert.ok(o.ok, `expected success, got ${JSON.stringify(o)}`);
@@ -134,7 +136,7 @@ const ALL_TOOLS = [
 // ── registry + tools/list matrix ────────────────────────────────────────────
 
 test("every registered tool has matching scope/readOnlyHint and the catalog is complete", () => {
-  assert.deepEqual(PRISM_TOOLS.map((t) => t.name).filter((n) => !WP64.has(n)).sort(), ALL_TOOLS);
+  assert.deepEqual(PRISM_TOOLS.map((t) => t.name).filter((n) => !elsewhere(n)).sort(), ALL_TOOLS);
   for (const t of PRISM_TOOLS) assert.equal(t.scope === "read", t.annotations.readOnlyHint, t.name);
   assert.equal(PRISM_TOOLS.find((t) => t.name === "prism_delete_note")!.annotations.destructiveHint, true);
 });

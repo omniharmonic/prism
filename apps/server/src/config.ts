@@ -418,6 +418,12 @@ export const config = {
   peopleVaultTimeoutMs: Number(process.env.PEOPLE_VAULT_TIMEOUT_MS ?? 30_000),
   // Emails with more direct recipients than this get no `email-to` links.
   peopleLinkMaxRecipients: Number(process.env.PEOPLE_LINK_MAX_RECIPIENTS ?? 10),
+  // Agents working the review queue through Prism MCP (mcp/tool-people.ts): how
+  // many rows one credential may resolve/dismiss, how many gaps it may file and
+  // how many merge RECOMMENDATIONS it may record per rolling 24 h. 0 = none.
+  peopleAgentDecisionsPerDay: Number(process.env.PEOPLE_AGENT_DECISIONS_PER_DAY ?? 200),
+  peopleAgentFilesPerDay: Number(process.env.PEOPLE_AGENT_FILES_PER_DAY ?? 50),
+  peopleAgentRecommendationsPerDay: Number(process.env.PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY ?? 50),
   // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-
   // separated (e.g. `!abc:localhost=sync-chats`), sent every interval. A
   // bridge only portals chats Telegram/etc. PUSHES updates for; with hundreds of

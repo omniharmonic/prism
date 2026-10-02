@@ -204,12 +204,13 @@ export interface CandidatePage {
 }
 
 /** Bounded, cursor-paged listing (oldest first; the cursor is `created_at:id`). */
-export function listCandidates(vaultId: string, o: { status?: CandidateStatus; reason?: string; relationship?: string; limit?: number; after?: string | null } = {}): CandidatePage {
+export function listCandidates(vaultId: string, o: { status?: CandidateStatus; reason?: string; relationship?: string; relationships?: string[]; limit?: number; after?: string | null } = {}): CandidatePage {
   const limit = Math.max(1, Math.min(200, Math.floor(o.limit ?? 50)));
   const where = ["vault_identity = ?", "status = ?"];
   const args: Array<string | number> = [vaultIdentity(vaultId), o.status ?? "open"];
   if (o.reason) (where.push("reason = ?"), args.push(o.reason));
   if (o.relationship) (where.push("relationship = ?"), args.push(o.relationship));
+  if (o.relationships?.length) (where.push(`relationship IN (${o.relationships.map(() => "?").join(",")})`), args.push(...o.relationships));
   const m = /^(\d{1,16}):([0-9a-f-]{1,64})$/.exec(o.after ?? "");
   if (m) (where.push("(created_at > ? OR (created_at = ? AND id > ?))"), args.push(Number(m[1]), Number(m[1]), m[2]!));
   const rows = db.prepare(`SELECT * FROM identity_candidates WHERE ${where.join(" AND ")} ORDER BY created_at, id LIMIT ?`).all(...args, limit + 1) as Row[];
@@ -258,4 +259,34 @@ export function closeCandidatesLinked(vaultId: string, sourceNoteId: string, rel
   let n = 0;
   for (const r of ids) n += stmt.run(personId, now, r.id).changes;
   return n;
+}
+
+/** How often this exact key was already RESOLVED, per person (context for a decision; ids + counts only). */
+export function resolvedCountsForKey(vaultId: string, kind: string, hash: string): Record<string, number> {
+  const rows = db
+    .prepare("SELECT resolved_person_id p, count(*) n FROM identity_candidates WHERE vault_identity = ? AND key_kind = ? AND key_hash = ? AND status = 'resolved' AND resolved_person_id IS NOT NULL GROUP BY resolved_person_id")
+    .all(vaultIdentity(vaultId), kind, hash) as Array<{ p: string; n: number }>;
+  return Object.fromEntries(rows.map((r) => [r.p, r.n]));
+}
+
+export interface QueueStats {
+  open: { total: number; byReason: Record<string, number>; byRelationship: Record<string, number>; oldestAt: string | null; olderThan7d: number; olderThan30d: number };
+  /** Rows closed in the last 24 h, by status. */
+  closedLastDay: { resolved: number; dismissed: number };
+}
+
+/** Measured numbers about the queue for one vault (the status tool; counts only). */
+export function queueStats(vaultId: string, now = Date.now()): QueueStats {
+  const identity = vaultIdentity(vaultId);
+  const day = 24 * 3600_000;
+  const byRelationship: Record<string, number> = {};
+  for (const r of db.prepare("SELECT relationship, count(*) n FROM identity_candidates WHERE vault_identity = ? AND status = 'open' GROUP BY relationship").all(identity) as Array<{ relationship: string; n: number }>)
+    byRelationship[r.relationship] = r.n;
+  const age = db
+    .prepare("SELECT min(created_at) oldest, sum(created_at < ?) w, sum(created_at < ?) m FROM identity_candidates WHERE vault_identity = ? AND status = 'open'")
+    .get(now - 7 * day, now - 30 * day, identity) as { oldest: number | null; w: number | null; m: number | null };
+  const closed = { resolved: 0, dismissed: 0 };
+  for (const r of db.prepare("SELECT status, count(*) n FROM identity_candidates WHERE vault_identity = ? AND status != 'open' AND updated_at > ? GROUP BY status").all(identity, now - day) as Array<{ status: "resolved" | "dismissed"; n: number }>)
+    closed[r.status] = r.n;
+  return { open: { ...openCandidateCounts(vaultId), byRelationship, oldestAt: age.oldest ? new Date(age.oldest).toISOString() : null, olderThan7d: age.w ?? 0, olderThan30d: age.m ?? 0 }, closedLastDay: closed };
 }

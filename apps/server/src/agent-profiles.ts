@@ -9,6 +9,8 @@
  *   prism-ro  the server's OWN /mcp, read-scope tools, per-turn PAT (scope read)
  *   prism-rw  /mcp, read tools + the non-destructive write tools, per-turn PAT
  *             (scope write). No delete, share or governance voting/proposals.
+ *             Includes the graph-maintenance write tools (decide a review row,
+ *             recommend a merge, file a gap); prism-suggest does NOT.
  *
  * Each allowlist is EXPLICIT (never a whole server) and the dontAsk permission
  * mode denies the rest. `buildClaudeArgs` additionally refuses any entry that
@@ -60,6 +62,11 @@ export const PRISM_READ_TOOLS = [
   "prism_note_access",
   "prism_governance_state",
   "prism_dashboard_query",
+  // Graph maintenance (mcp/tool-people.ts) — server owner only at the tool layer.
+  "prism_people_review_queue",
+  "prism_people_review_context",
+  "prism_people_duplicates",
+  "prism_people_link_status",
 ] as const;
 /** Write-scope additions for prism-rw. Deliberately absent: prism_delete_note,
  *  prism_share (grants), prism_propose_change / prism_vote / prism_withdraw_proposal
@@ -72,6 +79,11 @@ export const PRISM_WRITE_TOOLS = [
   "prism_resolve_comment",
   "prism_suggest_edit",
   "prism_sheet_update",
+  // Graph maintenance: decide ONE review row, record a merge RECOMMENDATION, file
+  // a gap. None of them can merge, delete or create a person (mcp/tool-people.ts).
+  "prism_people_review_decide",
+  "prism_people_recommend_merge",
+  "prism_people_file_review",
 ] as const;
 
 /** Which MCP server a profile talks to. */

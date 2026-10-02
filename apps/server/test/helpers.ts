@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "../src/config";
 import { TRANSCRIPT_LINK_TABLES } from "../src/transcript-links-store";
 import "../src/identity-store"; // creates identity_candidates (reset below)
+import "../src/people-agent-store"; // creates people_agent_decisions + people_merge_recommendations (reset below)
 
 // SAFETY GUARD (load-time): the test harness TRUNCATES tables (resetDb). It must
 // NEVER run against a real on-disk database. Tests are meant to run with
@@ -339,6 +340,7 @@ export function resetDb(): void {
       "DELETE FROM mcp_pats; DELETE FROM action_audit; DELETE FROM action_idempotency; DELETE FROM collab_command_receipts;" +
       "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;" +
       "DELETE FROM identity_candidates;" + // created by src/identity-store.ts (imported above)
+      "DELETE FROM people_agent_decisions; DELETE FROM people_merge_recommendations;" + // src/people-agent-store.ts
       TRANSCRIPT_LINK_TABLES.map((t) => `DELETE FROM ${t};`).join(" "),
   );
 }

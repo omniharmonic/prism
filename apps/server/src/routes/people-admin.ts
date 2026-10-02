@@ -14,6 +14,8 @@
  *   POST /people/link/cancel                                                              → {ok}
  *   GET  /people/duplicates?strength=&limit=&offset=                                      → {pairs, total, counts, next}
  *   POST /people/merge        {personIds: [a, b], canonicalId, expect, confirmUnrelated?, dryRun?=true} → {merge}
+ *   POST /people/recommendations/:id/dismiss                                              → {ok}   (an agent's merge recommendation)
+ *   GET  /people/agent/decisions?limit=&before=                                           → {decisions, next}
  *
  * The job, a merge and a resolve / dismiss are mutually exclusive (409 `busy`).
  *
@@ -22,21 +24,20 @@
 import type { Context, Hono } from "hono";
 import { config } from "../config";
 import { resolveActor, requestVia } from "../auth/actor";
-import { vaultClient, type Note } from "../parachute";
 import { recordAction } from "../actions/store";
 import { actionOrigin } from "./actions";
 import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } from "../identity-store";
-import { dismissCandidate, resolveCandidate, ReviewError, type ReviewVault } from "../identity-review";
+import { ReviewError } from "../identity-review";
+import { closeRecommendationMerged, dismissRecommendation, listAgentDecisions, listRecommendations } from "../people-agent-store";
+import { dismissReview, duplicatePairs, peopleListing, peopleLiveHooks, peopleVault, resolveReview } from "../people-review-service";
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
 import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
-import { detectDuplicates, mergePeople, mergedByThisModule, MergeError, type DuplicatePair, type MergeVault } from "../people-merge";
-import { PERSON_IDENTITY_KEYS } from "../people-metadata";
-import { cachedDerived, cachedPeople, invalidatePeople } from "../people-cache";
+import { detectDuplicates, mergePeople, mergedByThisModule, MergeError, type MergeVault } from "../people-merge";
+import { invalidatePeople } from "../people-cache";
 import { peopleLockHolder } from "../people-lock";
 import { ownerConfigFor, ownerSettings, saveOwnerSettings } from "../people-owner";
 import { IdentityIndex, isNonHumanPerson, isTombstone, looksLikeEmail, ownerProfile } from "../identity";
-import { docNameFor, isDocLive, markReconciled } from "../collab";
 
 type Via = ReturnType<typeof requestVia>;
 export const originOf = (via: Via): "human" | "agent" => (via === "session" || via === "device" ? "human" : "agent");
@@ -60,18 +61,9 @@ export async function jsonBody(c: Context): Promise<Record<string, unknown> | nu
 
 export const optBool = (v: unknown): boolean | undefined | null => (v === undefined ? undefined : typeof v === "boolean" ? v : null);
 
-/** A vault client whose every call is abandoned after PEOPLE_VAULT_TIMEOUT_MS. */
-const vaultFor = (vaultId: string) => vaultClient(vaultId, { timeoutMs: config.peopleVaultTimeoutMs });
-
-/** The lean person listing (identity keys + links, never content), shared + cached 60 s. */
-const loadPeople = (vaultId: string) => (): Promise<Note[]> => vaultFor(vaultId).listNotes({ tags: ["person"], includeLinks: true, includeMetadata: PERSON_IDENTITY_KEYS });
-const people = (vaultId: string, fresh = false): Promise<Note[]> => cachedPeople(vaultId, loadPeople(vaultId), { fresh });
-
-/** collab.ts, read-only: is a note open in the editor, and "its content did not change". */
-const liveHooks = (vaultId: string) => ({
-  isLive: (noteId: string) => isDocLive(vaultId, noteId),
-  markReconciled: (noteId: string, prevMs: number, nextMs: number) => void markReconciled(docNameFor(vaultId, noteId), prevMs, nextMs),
-});
+const vaultFor = peopleVault;
+const people = peopleListing;
+const liveHooks = peopleLiveHooks;
 
 /** Give up on a homeserver call after `ms` (the Matrix client has no read timeout of its own). */
 function bounded<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -110,25 +102,8 @@ export function mountPeopleCandidates(admin: Hono): void {
     if (peopleLockHolder()) return busy(c);
     const via = requestVia(c);
     try {
-      const outcome = await resolveCandidate(vaultFor(vaultId) as unknown as ReviewVault, vaultId, cand, body.personId, {
-        by: config.ownerEmail,
-        addIdentity: addIdentity === true, // off unless explicitly asked
-        applyToKey: applyToKey ?? false,
-        paceMs: 25,
-        people: () => people(vaultId),
-        live: liveHooks(vaultId),
-        onWrite: () => invalidatePeople(vaultId),
-      });
-      recordAction({
-        actorEmail: config.ownerEmail,
-        via,
-        origin: originOf(via),
-        action: "admin.people-candidate-resolve",
-        vaultId,
-        // ids + hashes + counts only — never the key value or a name.
-        target: { candidateId: cand.id, keyKind: cand.key.kind, keyHash: cand.key.hash.slice(0, 16), relationship: cand.relationship, ...outcome },
-        status: outcome.errors || outcome.conflicts || outcome.noStamp ? "failed" : "ok",
-      });
+      // The shared path (people-review-service.ts): same wiring + audit row as the MCP tools.
+      const outcome = await resolveReview(vaultId, cand, body.personId, { addIdentity: addIdentity === true, applyToKey: applyToKey ?? false, via, origin: originOf(via) });
       return c.json({ ok: true, ...outcome });
     } catch (e) {
       if (e instanceof ReviewError) return c.json({ error: e.code }, e.status as 404 | 409 | 503);
@@ -144,7 +119,7 @@ export function mountPeopleCandidates(admin: Hono): void {
     const cand = getCandidate(vaultId, c.req.param("id"));
     if (!cand) return c.json({ error: "not_found" }, 404);
     try {
-      const dismissed = dismissCandidate(vaultId, cand, { by: config.ownerEmail, applyToKey: applyToKey ?? false });
+      const dismissed = dismissReview(vaultId, cand, { applyToKey: applyToKey ?? false });
       return c.json({ ok: true, dismissed });
     } catch (e) {
       if (e instanceof ReviewError) return c.json({ error: e.code }, e.status as 409);
@@ -324,7 +299,7 @@ export function mountPeopleLinkJob(admin: Hono): void {
 }
 
 export function mountPeopleMerge(admin: Hono): void {
-  const duplicates = (vaultId: string): Promise<DuplicatePair[]> => cachedDerived(vaultId, loadPeople(vaultId), "duplicates", detectDuplicates);
+  const duplicates = duplicatePairs;
 
   admin.get("/people/duplicates", async (c) => {
     const vaultId = ownerVaultId(c);
@@ -341,10 +316,26 @@ export function mountPeopleMerge(admin: Hono): void {
       const filtered = strength ? all.filter((p) => p.strength === strength) : all;
       const pairs = filtered.slice(offset, offset + limit);
       c.header("Cache-Control", "private, no-store");
-      return c.json({ pairs, total: filtered.length, counts, next: offset + limit < filtered.length ? offset + limit : null });
+      // Additive: agents' open merge RECOMMENDATIONS (mcp/tool-people.ts). A recommendation
+      // never merged anything; `rationale` is agent-written free text — render it as text.
+      return c.json({ pairs, total: filtered.length, counts, next: offset + limit < filtered.length ? offset + limit : null, recommendations: listRecommendations(vaultId, { limit: 100 }) });
     } catch {
       return c.json({ error: "people_unavailable" }, 503);
     }
+  });
+
+  admin.post("/people/recommendations/:id/dismiss", (c) => {
+    const ok = dismissRecommendation(ownerVaultId(c), c.req.param("id"), config.ownerEmail);
+    return ok ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
+  });
+
+  /** What agents did in the review queue (the decision ledger, newest first; holds their rationale). */
+  admin.get("/people/agent/decisions", (c) => {
+    const limit = Number(c.req.query("limit") ?? 50);
+    const before = c.req.query("before") === undefined ? undefined : Number(c.req.query("before"));
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200 || (before !== undefined && (!Number.isInteger(before) || before < 1))) return c.json({ error: "bad_request" }, 400);
+    c.header("Cache-Control", "private, no-store");
+    return c.json(listAgentDecisions(ownerVaultId(c), { limit, before }));
   });
 
   admin.post("/people/merge", async (c) => {
@@ -422,6 +413,7 @@ export function mountPeopleMerge(admin: Hono): void {
           target: { ...merge, expect: undefined, pair: info.pair, confirmUnrelated: confirmUnrelated === true },
           status: merge.complete ? "ok" : "failed",
         });
+      if (!dryRun && merge.complete) closeRecommendationMerged(vaultId, canonicalId, secondary.id, config.ownerEmail);
       return c.json({ merge, ...info, ...(refusal === "owner_is_secondary" ? { blocked: refusal } : {}) });
     } catch (e) {
       if (e instanceof MergeError) return c.json({ error: e.code }, e.status as 400 | 404 | 409 | 503);
