@@ -238,3 +238,12 @@ Honest empty, access, offline, source, send-failure, and interrupted-task treatm
 This set covers the proposed redesigned surfaces and representative normal, loading, review, and recovery states. It does not propose new designs for every existing specialist renderer. Canvas, spreadsheet, code, presentations, maps, calendars, governance, publishing, and other preserved tools remain in scope for navigation and regression checks; they are not being independently redesigned by this plan. Native clients inherit the shared interface.
 
 The source prompts for all sixteen new boards are recorded verbatim in [mockup-prompts.json](mockup-prompts.json). No application code or architecture-v2 files were changed to create this set.
+
+
+## Expanded references · October 2
+
+### 19 · Canvas and graph (D03 / R10)
+
+[![Canvas and graph concept](assets/19-canvas-graph.png)](assets/19-canvas-graph.png)
+
+Fictional concept, not implementation evidence. Extends the neutral writing system to existing note cards, authored connections, graph inspection and a phone list alternative. Preserve the real canvas toolbar/Excalidraw controls. Only authored note relationships are written to metadata; reference links stay decorative. Generated relation names and snippets are illustrative: only display types/body data actually returned by the current access-filtered clients. The approved vector logo remains authoritative; this raster's logo, extra navigation labels and slogans do not add product requirements.
