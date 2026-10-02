@@ -1,0 +1,11 @@
+{
+  "created": "2026-10-02",
+  "tool": "built-in imagegen",
+  "boards": [
+    {
+      "id": 20,
+      "asset": "assets/20-task-boards.png",
+      "prompt": "Use case: ui-mockup. Asset type: Prism roadmap board 20, configurable task boards. Produce a high fidelity product design board with one large desktop application view and one narrow phone view, landscape, fictional project data. Refined minimalist Notion-like design: white main surface, warm gray narrow sidebar, crisp dark gray sans-serif, subtle dividers, restrained blue selection accent, tiny functional icons, generous breathing room. No marketing headline or poster slogans. Desktop app header 'Prism', Personal vault selector, sidebar Search / Messages / Favorites / Pages / Tools, New page. Main header 'Launch plan' with small breadcrumb Projects / Prism, readable quiet description. View tabs 'Board' and 'List'; toolbar 'Search tasks', 'Filter', 'View settings', 'New task'. Three clean board columns 'To do', 'In progress', 'Done' with small count badges and Add task controls, 2–3 cards per column. Fictional cards: 'Review workspace navigation', 'Polish conversation layout', 'Test keyboard flows', 'Write release notes'. Cards display actual title plus restrained priority and due-date metadata; no meaningless analytics or decorative avatars. A clear accessible card menu offers 'Open task', 'Move to…', 'Move earlier', 'Move later'. Show a subtle blue drop insertion line as an ordering affordance in one column. A small view-settings overlay illustrates existing configuration: 'Source tags' with project and task chips, 'Group by' Status, 'Sort' Manual order, 'Visible fields' Priority/Due date, 'Save view'. Explicit small helper 'Order belongs to this view'. Phone view uses a readable task LIST with the same title and filters, status groups and generous touch targets, rather than a tiny compressed kanban. Include unobtrusive footer 'Concept · fictional workspace'. Respect honest data/authority: no send/invite action, no invented AI task extraction or claims of completed verification. Prism logo should show colored beams entering a triangle from the left and one dark ray exiting right. Raster logo is illustrative; implementation will use existing vector master."
+    }
+  ]
+}

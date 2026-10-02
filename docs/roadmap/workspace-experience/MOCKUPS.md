@@ -247,3 +247,9 @@ The source prompts for all sixteen new boards are recorded verbatim in [mockup-p
 [![Canvas and graph concept](assets/19-canvas-graph.png)](assets/19-canvas-graph.png)
 
 Fictional concept, not implementation evidence. Extends the neutral writing system to existing note cards, authored connections, graph inspection and a phone list alternative. Preserve the real canvas toolbar/Excalidraw controls. Only authored note relationships are written to metadata; reference links stay decorative. Generated relation names and snippets are illustrative: only display types/body data actually returned by the current access-filtered clients. The approved vector logo remains authoritative; this raster's logo, extra navigation labels and slogans do not add product requirements.
+
+### 20 · Task boards (D04 / R11)
+
+[![Configurable task board concept](assets/20-task-boards.png)](assets/20-task-boards.png)
+
+Fictional concept for view configuration, readable cards, manual ordering with keyboard alternatives and phone list mode. The same underlying tasks retain their data across views; ordering belongs to the configured view. Current client/server capabilities govern edits and conflicts. The generated logo, device furniture, bottom navigation and sample dates are illustrative; preserve the shared Prism vector and actual shell. [Generation prompt](expanded-mockup-prompts.json).
