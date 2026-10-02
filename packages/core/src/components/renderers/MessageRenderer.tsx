@@ -1,3 +1,4 @@
+import { AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { messageInitials, messageColor } from "../comms/messageAppearance";
 import type { CSSProperties } from "react";
 import { useIsWeb } from "../../data/Platform";
@@ -285,6 +286,7 @@ function ScopedMessageRenderer({
           Replying is unavailable for this thread on this connection.
         </p>
       )}
+      <AgentReplyDraft scope={scope} noteId={note.id} title={title} draftKey={`matrix:${roomId || note.id}`} destination={JSON.stringify({ platform, roomId })} disabled={readOnly || !roomId || (isWeb && !live)} />
       <MessageComposer
         draftScope={scope}
         draftKey={`matrix:${roomId || note.id}`}
