@@ -68,6 +68,13 @@ function useIsMobile(viewportWidth?: number): boolean {
 const MOBILE_CSS = `
 .pubwiki-m article.prose-editor { font-size: 16px; line-height: 1.7; }
 .pubwiki-m article.prose-editor h1, .pubwiki-m article.prose-editor h2 { text-wrap: balance; }
+/* Use the reader's own viewport (including the private iframe), not the studio
+ * width. Preserve body size and long-token wrapping at these narrow widths. */
+@media (max-width: 390px) {
+  .pubwiki-m { --pubwiki-narrow-heading: clamp(22px, 7vw, 28px); }
+  .pubwiki-m article.prose-editor h1 { font-size: var(--pubwiki-narrow-heading); }
+  .pubwiki-m article.prose-editor h2 { font-size: clamp(20px, 6vw, 22px); }
+}
 .pubwiki-scrim {
   position: fixed; inset: 0; z-index: 40;
   background: rgba(0,0,0,0.5);
@@ -180,7 +187,7 @@ export default function WikiTemplate({
   const introduction = home && (landing || safeTheme.coverUrl || safeTheme.description) ? (
     <section data-testid="publication-introduction" style={{marginBottom:32}}>
       {safeTheme.coverUrl && <img src={safeTheme.coverUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",maxHeight:280,objectFit:"cover",borderRadius:16,marginBottom:24}}/>}
-      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"clamp(30px,5vw,52px)",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
+      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"var(--pubwiki-narrow-heading, clamp(30px,5vw,52px))",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
       {safeTheme.description && <p style={{fontSize:18,lineHeight:1.65,color:"var(--text-secondary)",maxWidth:680}}>{safeTheme.description}</p>}
       {landing && <nav aria-label="Collection pages">{[
         ...navigation.sections,
@@ -394,7 +401,7 @@ export default function WikiTemplate({
             <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
               {introduction}
               {note && (
-                <h1 style={{ margin: "0 0 12px", fontSize: "clamp(24px, 6.4vw, 30px)", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
+                <h1 style={{ margin: "0 0 12px", fontSize: "var(--pubwiki-narrow-heading, clamp(24px, 6.4vw, 30px))", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
                   {note.title}
                 </h1>
               )}
