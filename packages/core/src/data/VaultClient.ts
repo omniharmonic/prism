@@ -129,6 +129,7 @@ export interface VaultClient {
   scope?(): string;
   /** Fresh, permission-filtered exact/alias/title resolution. No document bodies. */
   resolveWikilink?(target: string): Promise<{kind:"match"|"ambiguous"|"none";candidates:Array<{id:string;path:string|null;title:string}>}>;
+  getThreadMessages?(noteId: string, before?: string): Promise<import("../lib/matrix/types").MessageBatch>;
   listNotes(filters?: NoteFilters): Promise<Note[]>;
   listTree(): Promise<NoteTreeEntry[]>;
   /** fresh bypasses an offline read cache when current server access must be checked. */

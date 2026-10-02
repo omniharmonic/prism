@@ -1,7 +1,7 @@
 import { useIsWeb } from "../../data/Platform";
 import { parseLegacyThread } from "../../lib/messages/legacyThread";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import type { RendererProps } from "./RendererProps";
 import { matrixApi } from "../../lib/matrix/client";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -12,13 +12,13 @@ import { PlatformBadge } from "../comms/PlatformBadge";
 
 import { TRIAGE_TAGS, THREAD_STATUS_LABELS, threadStatus } from "../../lib/messages/triage";
 
-export default function MessageRenderer({ note }: RendererProps) {
+export default function MessageRenderer({ note, readOnly }: RendererProps) {
   const actionClient = useLiveActionsClient();
   const scope = actionClient?.scope?.() || null;
-  return <ScopedMessageRenderer key={JSON.stringify([scope, note.id])} note={note} scope={scope} />;
+  return <ScopedMessageRenderer key={JSON.stringify([scope, note.id])} note={note} scope={scope} readOnly={readOnly} />;
 }
 
-function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { scope: string | null }) {
+function ScopedMessageRenderer({ note, scope, readOnly }: Pick<RendererProps, "note" | "readOnly"> & { scope: string | null }) {
   const vault = useVaultClient();
   const meta = note.metadata as Record<string, unknown> | null;
   const roomId = (meta?.matrixRoomId as string) || (meta?.matrix_room_id as string) || "";
@@ -32,6 +32,8 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
   const [triageError, setTriageError] = useState<string | null>(null);
   const [triagePending, setTriagePending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [savedCount, setSavedCount] = useState(100);
+  const canTriage = !readOnly && (!note._caps || note._caps.includes("edit"));
   const isWeb = useIsWeb();
 
   const currentTriage = threadStatus(note.tags);
@@ -39,7 +41,7 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
   useEffect(() => setTriageStatus(currentTriage), [currentTriage]);
 
   const handleTriageChange = useCallback(async (newTag: typeof TRIAGE_TAGS[number]) => {
-    if (triagePending) return;
+    if (triagePending || !canTriage) return;
     setTriagePending(true);
     setTriageError(null);
     try {
@@ -59,35 +61,45 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
       setTriagePending(false);
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
     }
-  }, [note.id, note.tags, queryClient, triagePending, vault]);
+  }, [note.id, note.tags, queryClient, triagePending, vault, canTriage]);
 
-  // Live Matrix fetch is best-effort. No retries (avoids the "load forever" symptom
-  // when Synapse is offline or slow), and we never gate render on it.
-  const { data: liveData } = useQuery({
-    queryKey: ["matrix", "messages", scope, roomId],
-    queryFn: () => matrixApi.getMessages(roomId, 50),
-    enabled: !!roomId,
+  const showLive = !readOnly && !!roomId && (view === "live" || vaultMessages.length === 0);
+  const liveQuery = useInfiniteQuery({
+    queryKey: ["matrix", "messages", scope ?? vault.scope?.(), note.id, roomId],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => vault.getThreadMessages
+      ? vault.getThreadMessages(note.id, pageParam)
+      : matrixApi.getMessages(roomId, 50, pageParam),
+    getNextPageParam: (last, pages) => pages.length < 20 && last.has_more ? last.end ?? undefined : undefined,
+    enabled: showLive && !readOnly && !!roomId,
     retry: false,
-    staleTime: 30_000,
+    refetchInterval: showLive ? 15_000 : false,
   });
+  const liveMessages = useMemo(() => {
+    const seen = new Set<string>();
+    return (liveQuery.data?.pages.flatMap(page => page.messages) ?? []).filter(message => {
+      if (seen.has(message.event_id)) return false;
+      seen.add(message.event_id); return true;
+    }).reverse();
+  }, [liveQuery.data]);
 
   // Web/native: send through the server (WP1.5 live actions) when it offers
   // Matrix actions; desktop (no provider) keeps its Tauri command.
   const live = useLiveActions("matrix");
   const handleSend = useCallback(async (body: string, requestId?: string) => {
-    if (!roomId || (isWeb && !live)) throw new Error("Messaging is unavailable for this thread");
+    if (readOnly || !roomId || (isWeb && !live)) throw new Error("Messaging is unavailable for this thread");
     if (live) {
       if (!scope || live.scope?.() !== scope) throw new Error("Workspace changed. Reopen this thread before sending.");
       await live.matrixSend(roomId, body, { idempotencyKey: requestId });
     }
     else await matrixApi.sendMessage(roomId, body);
-    queryClient.invalidateQueries({ queryKey: ["matrix", "messages", scope, roomId] });
-  }, [roomId, queryClient, live, isWeb, scope]);
+    queryClient.invalidateQueries({ queryKey: ["matrix", "messages", scope ?? vault.scope?.(), note.id, roomId] });
+  }, [roomId, queryClient, live, isWeb, scope, readOnly, vault, note.id]);
 
-  // Imported history has no reliable source IDs. Do not pretend a live tail
-  // replaces or can be deduplicated against the complete saved transcript.
-  const showLive = view === "live" || vaultMessages.length === 0;
-  const messages = showLive && liveData?.messages?.length ? [...liveData.messages].reverse() : vaultMessages;
+  // Saved legacy transcripts have no stable source event IDs: keep the two
+  // views explicit rather than guessing overlap or inventing delivery status.
+  const messages = showLive ? (liveQuery.isError ? [] : liveMessages) : vaultMessages.slice(-savedCount);
+  const more = showLive ? liveQuery.hasNextPage : savedCount < vaultMessages.length;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -103,7 +115,7 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
 
         <label className="flex shrink-0 items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <span className="sr-only">Thread status</span>
-          <select aria-label="Thread status" value={triageStatus} disabled={triagePending}
+          <select aria-label="Thread status" value={triageStatus} disabled={triagePending || !canTriage}
             onChange={(event) => void handleTriageChange(event.target.value as typeof TRIAGE_TAGS[number])}
             className="focus-ring rounded-lg border px-2 py-2 text-xs" style={{ background: "var(--bg-surface)", borderColor: "var(--glass-border)", color: "var(--text-secondary)", minHeight: 36 }}>
             <option value="unclassified" disabled>Needs triage</option>
@@ -113,15 +125,19 @@ function ScopedMessageRenderer({ note, scope }: Pick<RendererProps, "note"> & { 
       </div>
 
       {triageError && <p role="alert" className="px-4 py-2 text-xs">{triageError}</p>}
-      {vaultMessages.length > 0 && liveData?.messages?.length ? <div className="flex flex-wrap items-center gap-3 px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}>
-        <span>{showLive ? `Latest ${messages.length} live messages` : "Saved conversation history"}</span>
-        <button type="button" className="underline" onClick={() => setView(showLive ? "saved" : "live")}>{showLive ? "View saved history" : "View latest messages"}</button>
-      </div> : null}
-      {imported.preamble && <details className="px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}><summary>Imported thread details</summary><pre className="whitespace-pre-wrap break-words mt-2">{imported.preamble}</pre></details>}
-      <MessageThread messages={messages} />
+      {roomId && !readOnly && <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <span>{showLive ? "Live conversation" : "Saved conversation"}</span>
+        <button type="button" className="focus-ring rounded px-2 py-2 underline" onClick={() => setView(showLive ? "saved" : "live")}>{showLive ? "View saved history" : "View latest messages"}</button>
+      </div>}
+      {showLive && liveQuery.isPending && <p role="status" className="px-4 py-2 text-xs">Loading latest messages…</p>}
+      {showLive && liveQuery.isError && <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-2 text-xs"><span>Live messages could not be refreshed. Saved history is still available.</span><button className="focus-ring rounded px-2 py-2 underline" onClick={() => void liveQuery.refetch()}>Retry messages</button></div>}
+      {showLive && liveQuery.data?.pages.length === 20 && <p className="px-4 py-2 text-xs">Showing the latest 1,000 source events. Older records remain in saved history.</p>}
+      {!showLive && imported.preamble && <details className="px-4 py-2 text-xs" style={{ color: "var(--text-secondary)" }}><summary>Imported thread details</summary><pre className="whitespace-pre-wrap break-words mt-2">{imported.preamble}</pre></details>}
+      <MessageThread key={showLive ? "live" : "saved"} messages={messages} hasMore={more} isLoadingMore={showLive && liveQuery.isFetchingNextPage}
+        onLoadMore={() => { if (showLive) void liveQuery.fetchNextPage(); else setSavedCount(n => n + 100); }} />
       {sent && (triageStatus === "urgent" || triageStatus === "action-required") && <div className="px-4 py-2 text-xs">Reply sent. <button type="button" disabled={triagePending} className="underline" onClick={() => void handleTriageChange("handled")}>Mark handled</button></div>}
-      {(!roomId || (isWeb && !live)) && <p className="px-4 py-2 text-xs" role="status">Replying is unavailable for this thread on this connection.</p>}
-      <MessageComposer draftScope={scope} draftKey={`matrix:${roomId || note.id}`} retrySafe={!!live} disabled={!roomId || (isWeb && !live)} onSend={async (body, options) => {
+      {(readOnly || !roomId || (isWeb && !live)) && <p className="px-4 py-2 text-xs" role="status">Replying is unavailable for this thread on this connection.</p>}
+      <MessageComposer draftScope={scope} draftKey={`matrix:${roomId || note.id}`} retrySafe={!!live} disabled={readOnly || !roomId || (isWeb && !live)} onSend={async (body, options) => {
         await handleSend(body, options.requestId);
         setSent(true);
         setView("live");

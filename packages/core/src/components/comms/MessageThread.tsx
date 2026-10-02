@@ -1,4 +1,4 @@
-import { useRef, useLayoutEffect, useState } from "react";
+import { Fragment, useMemo, useRef, useLayoutEffect, useState } from "react";
 import type { MatrixMessage } from "../../lib/matrix/types";
 
 interface MessageThreadProps {
@@ -15,6 +15,16 @@ export function MessageThread({ messages, onLoadMore, hasMore, isLoadingMore }: 
   const [newMessages, setNewMessages] = useState(false);
   const first = messages[0]?.event_id;
   const last = messages.at(-1)?.event_id;
+  const groups = useMemo(() => groupMessages(messages), [messages]);
+  const ambiguousNames = useMemo(() => {
+    const names = new Map<string, Set<string>>();
+    for (const message of messages) {
+      const name = (message.sender_name || message.sender).trim().toLowerCase();
+      const senders = names.get(name) ?? new Set<string>();
+      senders.add(message.sender); names.set(name, senders);
+    }
+    return new Set([...names].filter(([, senders]) => senders.size > 1).map(([name]) => name));
+  }, [messages]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -55,7 +65,10 @@ export function MessageThread({ messages, onLoadMore, hasMore, isLoadingMore }: 
           {isLoadingMore ? "Loading earlier messages…" : "Load earlier messages"}
         </button>}
         {messages.length === 0 && <p className="text-center text-sm py-8" style={{ color: "var(--text-muted)" }}>No messages to display yet.</p>}
-        {groupMessages(messages).map((group) => <MessageGroup key={group[0].event_id} messages={group} />)}
+        {groups.map((group, index) => <Fragment key={group[0].event_id}>
+          {(index === 0 || dayLabel(groups[index - 1][0]) !== dayLabel(group[0])) && <div role="separator" aria-label={dayLabel(group[0])} className="flex items-center gap-3 py-2 text-[11px] text-[var(--text-muted)]"><span className="h-px flex-1 bg-[var(--glass-border)]" /><span>{dayLabel(group[0])}</span><span className="h-px flex-1 bg-[var(--glass-border)]" /></div>}
+          <MessageGroup messages={group} ambiguous={ambiguousNames.has((group[0].sender_name || group[0].sender).trim().toLowerCase())} />
+        </Fragment>)}
       </div>
       {newMessages && <button type="button" onClick={jump} className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-4 py-2 text-xs shadow-md"
         style={{ background: "var(--action-bg)", color: "var(--action-fg)" }}>New messages ↓</button>}
@@ -76,7 +89,7 @@ function groupMessages(messages: MatrixMessage[]): MatrixMessage[][] {
   return groups;
 }
 
-function MessageGroup({ messages }: { messages: MatrixMessage[] }) {
+function MessageGroup({ messages, ambiguous }: { messages: MatrixMessage[]; ambiguous: boolean }) {
   const first = messages[0];
   const name = first.sender_name?.trim() || first.sender || "Unknown sender";
   const outgoing = first.is_outgoing;
@@ -88,13 +101,15 @@ function MessageGroup({ messages }: { messages: MatrixMessage[] }) {
       <div className={`min-w-0 flex-1 flex flex-col ${outgoing ? "items-end" : "items-start"}`}>
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 mb-1 text-xs max-w-full">
           <span className="font-semibold break-all" title={first.sender}>{outgoing ? "You" : name}</span>
-          <span style={{ color: "var(--text-muted)" }}>{formatTimestamp(first)}</span>
+          {ambiguous && !outgoing && <span className="break-all" style={{ color: "var(--text-muted)" }}>{first.sender}</span>}
+          <time dateTime={validTime(first.timestamp) ? new Date(first.timestamp).toISOString() : undefined} title={validTime(first.timestamp) ? new Date(first.timestamp).toLocaleString() : first.timestamp_label} style={{ color: "var(--text-muted)" }}>{formatTimestamp(first)}</time>
           {first.source === "legacy" && <span title="Imported transcript: source event IDs and delivery direction are unavailable" style={{ color: "var(--text-muted)" }}>Imported</span>}
         </div>
         {messages.map((message) => <div key={message.event_id} data-message-id={message.event_id}
           className="workspace-message-body rounded-lg px-3 py-2 text-sm mb-1 max-w-full"
           style={{ background: outgoing ? "var(--surface-selected)" : "var(--glass-hover)", color: "var(--text-primary)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-          {message.body}
+          {message.redacted ? <span className="italic text-[var(--text-muted)]">Message removed</span> : <MessageText text={message.body} />}
+          {message.truncated && <span className="block text-xs mt-1">This source message is too long to display in full.</span>}
           {message.msg_type !== "m.text" && message.media_url && <span className="block text-xs mt-1" style={{ color: "var(--text-secondary)" }}>Attachment · {message.msg_type.replace("m.", "")}</span>}
         </div>)}
       </div>
@@ -102,7 +117,29 @@ function MessageGroup({ messages }: { messages: MatrixMessage[] }) {
   );
 }
 
+function validTime(value: number): boolean { return value > 0 && Number.isFinite(new Date(value).getTime()); }
+
 function formatTimestamp(message: MatrixMessage): string {
-  if (!Number.isFinite(message.timestamp) || message.timestamp <= 0) return message.timestamp_label || "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(message.timestamp);
+  if (!validTime(message.timestamp)) return message.timestamp_label || "Time unavailable";
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(message.timestamp);
+}
+
+
+function dayLabel(message: MatrixMessage): string {
+  if (!validTime(message.timestamp)) return "Date unavailable";
+  return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(message.timestamp);
+}
+
+/** Preserve plain source text exactly, including markup; only web URLs become links. */
+function MessageText({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s<>"'`]+)/gi);
+  return <>{parts.map((part, index) => {
+    if (!/^https?:\/\//i.test(part)) return <Fragment key={index}>{part}</Fragment>;
+    const href = part.replace(/[.,;!?)}\]]+$/, "");
+    try {
+      const url = new URL(href);
+      if (url.username || url.password) return <Fragment key={index}>{part}</Fragment>;
+      return <Fragment key={index}><a href={href} target="_blank" rel="noopener noreferrer" className="focus-ring text-[var(--text-accent)] underline underline-offset-2">{href}</a>{part.slice(href.length)}</Fragment>;
+    } catch { return <Fragment key={index}>{part}</Fragment>; }
+  })}</>;
 }

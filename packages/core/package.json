@@ -14,7 +14,8 @@
     "./dashboard-engine": "./src/lib/dashboard/filter-engine.ts",
     "./collab-access": "./src/lib/collab/access.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",
-    "./styles/*": "./src/styles/*"
+    "./styles/*": "./src/styles/*",
+    "./messages": "./src/lib/matrix/types.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

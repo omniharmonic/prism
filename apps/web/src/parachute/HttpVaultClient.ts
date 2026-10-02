@@ -16,6 +16,7 @@ export const httpVaultClient: VaultClient = {
   resolveWikilink: rest.resolveWikilink,
   listTree: rest.listTree,
   getNote: rest.getNote,
+  getThreadMessages: rest.getThreadMessages,
   createNote: rest.createNote,
   updateNote: rest.updateNote,
   deleteNote: rest.deleteNote,

@@ -225,3 +225,5 @@ export {
 } from "./lib/actions/client";
 
 export { useAgentDocumentSnapshot } from "./lib/agent/documentSnapshots";
+
+export type { MatrixMessage, MessageBatch } from "./lib/matrix/types";

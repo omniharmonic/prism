@@ -54,6 +54,7 @@ export class MatrixClient {
   constructor(
     private creds: MatrixCreds,
     private fetchImpl: FetchLike = fetch,
+    private readTimeoutMs?: number,
   ) {}
 
   private url(path: string): string {
@@ -62,6 +63,7 @@ export class MatrixClient {
   private async get(path: string): Promise<unknown> {
     const r = await this.fetchImpl(this.url(path), {
       headers: { Authorization: `Bearer ${this.creds.accessToken}` },
+      ...(this.readTimeoutMs ? { signal: AbortSignal.timeout(this.readTimeoutMs) } : {}),
     });
     if (!r.ok) throw new Error(`matrix ${path} → ${r.status}`);
     return r.json();
@@ -168,6 +170,14 @@ export class MatrixClient {
         return { messages: out.reverse(), capped: false };
       from = page.end;
     }
+  }
+
+  /** One backward page for the interactive thread, retaining source event IDs. */
+  async messagePage(roomId: string, from?: string, limit = 50): Promise<{ chunk: MatrixEvent[]; start: string | null; end: string | null }> {
+    const query = new URLSearchParams({ dir: "b", limit: String(Math.min(100, Math.max(1, limit))), filter: JSON.stringify({ types: ["m.room.message", "m.room.redaction"] }) });
+    if (from) query.set("from", from);
+    const page = await this.get(`/rooms/${encodeURIComponent(roomId)}/messages?${query}`) as { chunk?: MatrixEvent[]; start?: string; end?: string };
+    return { chunk: Array.isArray(page.chunk) ? page.chunk.slice(0, 100) : [], start: typeof page.start === "string" ? page.start : null, end: typeof page.end === "string" ? page.end : null };
   }
 
   /** Joined member id → displayname (a room we have no sync state for). */
@@ -277,13 +287,14 @@ export class MatrixClient {
 
 // ── pure parsing + mapping (unit-tested without a homeserver) ─────────────────
 
-interface MatrixEvent {
+export interface MatrixEvent {
   type?: string;
   sender?: string;
   event_id?: string;
   origin_server_ts?: number;
   content?: Record<string, unknown>;
   state_key?: string;
+  unsigned?: { redacted_because?: unknown };
 }
 interface MatrixSyncResponse {
   next_batch?: string;

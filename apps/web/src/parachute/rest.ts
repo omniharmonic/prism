@@ -422,3 +422,9 @@ export async function reconcileCanvasRelations(id: string, fingerprint: string):
   if(!response.ok)throw new Error(response.status===409 ? "canvas_scene_changed" : "canvas_relationships_unavailable");
   return response.json();
 }
+
+
+/** Explicit owner-only live source read; a shared transcript is not a room credential. */
+export async function getThreadMessages(noteId: string, before?: string): Promise<import("@prism/core").MessageBatch> {
+  return (await req(`/threads/${encodeURIComponent(noteId)}/live${qs({ before })}`, { cache: "no-store" })).json();
+}

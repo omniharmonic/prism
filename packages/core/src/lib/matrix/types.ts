@@ -22,6 +22,9 @@ export interface MatrixMessage {
   /** Legacy imports lack verified event identity/direction; never infer a person. */
   source?: "legacy" | "matrix";
   timestamp_label?: string;
+  /** Provider explicitly removed this event; no original body is shown. */
+  redacted?: boolean;
+  truncated?: boolean;
   event_id: string;
   sender: string;
   sender_name: string | null;
