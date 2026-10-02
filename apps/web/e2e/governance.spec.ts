@@ -118,6 +118,7 @@ test.describe("commons governance @live", () => {
     await page.getByTestId("gov-wizard-save").click();
     await expect(page.getByTestId("gov-wizard-step3")).toBeVisible();
 
+    await page.getByRole("tab", { name: "Roles & rules", exact: true }).click();
     // The constitution now shows up as prose in the panel itself.
     await expect(page.getByTestId("gov-role-sentence").first()).toContainText("Stewards can read");
     await expect(page.getByTestId("gov-policy-sentence").first()).toContainText(
@@ -125,6 +126,7 @@ test.describe("commons governance @live", () => {
     );
 
     // ── step 3: every readiness check green, then the one-way latch ──
+    await page.getByRole("tab", { name: "Overview", exact: true }).click();
     const checks = page.getByTestId("gov-ratify-check");
     await expect(checks).toHaveCount(4);
     await page.getByTestId("gov-ratify-understood").check();
@@ -136,6 +138,8 @@ test.describe("commons governance @live", () => {
     await expect(page.getByTestId("gov-wizard")).toHaveCount(0);
 
     // ── self-amend: add a gardener role via proposal → approve → apply ──
+    await page.getByRole("tab", { name: /Proposals/ }).click();
+    await page.getByText("Propose a rule or role change", { exact: true }).click();
     await expect(page.getByTestId("gov-amend-composer")).toBeVisible();
     await page.getByTestId("gov-amend-kind").selectOption("add_role");
     await page.getByTestId("gov-amend-role-name").fill("gardener");
@@ -153,11 +157,14 @@ test.describe("commons governance @live", () => {
     await page.getByTestId("gov-proposal-card").first().getByTestId("gov-apply").click();
 
     // The amendment is live: the gardener role now shows in the Roles section.
+    await page.getByRole("tab", { name: "Roles & rules", exact: true }).click();
     await expect(page.getByTestId("gov-role-name").filter({ hasText: "gardener" })).toBeVisible();
 
     // ── governed content change with APPROVAL ≠ PUBLISHING ──
     // No rule auto-publishes new entries here, so Apply STAGES the entry; it goes
     // live only at the explicit Publish step.
+    await page.getByRole("tab", { name: /Proposals/ }).click();
+    await page.getByText("Propose a content change", { exact: true }).click();
     await page.getByRole("radio", { name: "add a new entry" }).check();
     await page.getByTestId("gov-propose-path").fill("medicine/e2e-yarrow");
     await page.getByTestId("gov-propose-tags").fill("medicine");
@@ -201,10 +208,13 @@ test.describe("commons governance @live", () => {
 
     // ── your access: the ratified role compiled into real content grants ──
     await page.reload();
+    await page.getByRole("tab", { name: "Overview", exact: true }).click();
     await expect(page.getByTestId("gov-your-access")).toBeVisible();
     await expect(page.getByTestId("gov-access-rows")).toContainText("via the steward role");
 
     // ── the audit trail recorded the journey ──
+    await page.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(page.getByTestId("gov-audit-action").first()).toBeVisible();
     await expect(page.getByTestId("gov-audit")).toBeVisible();
     await expect(page.getByTestId("gov-audit-action").first()).toBeVisible();
     await expect(page.getByTestId("gov-audit").getByText(/changed by amendment|set directly/).first()).toBeVisible();
@@ -319,6 +329,7 @@ test.describe("commons governance @live", () => {
 
       // ── the steward's queue: grouped, counted, diffed ──
       await page.goto("/governance");
+      await page.getByRole("tab", { name: /Proposals/ }).click();
       await expect(page.getByTestId("gov-group-content")).toBeVisible();
       await expect(page.getByTestId("gov-group-content-count")).toContainText("1");
       await expect(page.getByTestId("review-chip")).toContainText("1 awaiting review");

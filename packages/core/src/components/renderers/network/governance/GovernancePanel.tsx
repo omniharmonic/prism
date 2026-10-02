@@ -12,7 +12,8 @@
  * cards, the proposal queue, your own access, and the history. Each piece lives in
  * its own file next to this one.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useId } from "react";
+import "./governance-workspace.css";
 import { Badge } from "../../../ui/Badge";
 import type { TagCount } from "../../../../lib/types";
 import {
@@ -36,6 +37,18 @@ import { HistoryCard } from "./HistoryCard";
 import { AuditCard } from "./AuditCard";
 
 export function GovernancePanel() {
+  const [section, setSection] = useState("overview");
+  const sectionId = useId();
+  const sections = [
+    ["overview", "Overview"],
+    ["rules", "Roles & rules"],
+    ["proposals", "Proposals"],
+    ["history", "History"],
+  ] as const;
+  const openSection = (id: string) => {
+    setSection(id);
+    document.getElementById(`${sectionId}-${id}`)?.focus();
+  };
   const [state, setState] = useState<GovState | null>(null);
   const [members, setMembers] = useState<Membership[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
@@ -54,12 +67,21 @@ export function GovernancePanel() {
   const load = useCallback(async () => {
     const st = await govApi.state();
     if (!st.ok) {
-      setError(st.status === 401 ? "Please sign in to view governance." : (st.error ?? "Couldn't load governance."));
+      setError(
+        st.status === 401
+          ? "Please sign in to view governance."
+          : (st.error ?? "Couldn't load governance."),
+      );
       setLoading(false);
       return;
     }
     setState(st.data);
-    const [ms, ps, au, my] = await Promise.all([govApi.memberships(), govApi.proposals(), govApi.audit(), govApi.me()]);
+    const [ms, ps, au, my] = await Promise.all([
+      govApi.memberships(),
+      govApi.proposals(),
+      govApi.audit(),
+      govApi.me(),
+    ]);
     setMembers(ms.data?.memberships ?? []);
     setProposals(ps.data?.proposals ?? []);
     setAudit(au.data?.audit ?? []);
@@ -80,7 +102,8 @@ export function GovernancePanel() {
       if (alive && r.ok && Array.isArray(r.data)) setTags(r.data);
     });
     void govApi.users().then((r) => {
-      if (alive && r.ok && Array.isArray(r.data)) setUsers(r.data.map((u) => u.email).filter(Boolean));
+      if (alive && r.ok && Array.isArray(r.data))
+        setUsers(r.data.map((u) => u.email).filter(Boolean));
     });
     return () => {
       alive = false;
@@ -99,11 +122,21 @@ export function GovernancePanel() {
   );
 
   const amend = useCallback(
-    async (change: Record<string, unknown>, label: string): Promise<ApiResult> => {
+    async (
+      change: Record<string, unknown>,
+      label: string,
+    ): Promise<ApiResult> => {
       const r = await run(() =>
-        govApi.openProposal({ action: "amend_governance", target: "governance-config", payload: JSON.stringify(change) }),
+        govApi.openProposal({
+          action: "amend_governance",
+          target: "governance-config",
+          payload: JSON.stringify(change),
+        }),
       );
-      if (r.ok) setNotice(`Proposed: ${label}. It takes effect once enough members approve and apply it.`);
+      if (r.ok)
+        setNotice(
+          `Proposed: ${label}. It takes effect once enough members approve and apply it.`,
+        );
       return r;
     },
     [run],
@@ -131,27 +164,43 @@ export function GovernancePanel() {
   // inline arrow would re-run its detail load on every render.
   const onChanged = useCallback(() => void load(), [load]);
 
-  const page: React.CSSProperties = { maxWidth: 900, margin: "0 auto", padding: "8px 4px 48px" };
+  const page: React.CSSProperties = {
+    maxWidth: 900,
+    margin: "0 auto",
+    padding: "8px 4px 48px",
+    minWidth: 0,
+  };
 
   if (loading) {
     return (
-      <div style={page}>
-        <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>Loading governance…</p>
+      <div className="prism-governance" style={page}>
+        <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>
+          Loading governance…
+        </p>
       </div>
     );
   }
 
   if (!state || !ctx) {
     return (
-      <div style={page}>
-        <h1 style={{ fontSize: 20, fontWeight: 600, margin: "0 0 8px", color: "var(--text-primary)" }}>Governance</h1>
+      <div className="prism-governance" style={page}>
+        <h1
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            margin: "0 0 8px",
+            color: "var(--text-primary)",
+          }}
+        >
+          Governance
+        </h1>
         <Badge variant="error">{error ?? "Governance is unavailable."}</Badge>
       </div>
     );
   }
 
   return (
-    <div style={page}>
+    <div className="prism-governance" style={page}>
       <StatusHeader state={state} reviewCount={reviewCount} />
 
       {error && (
@@ -165,20 +214,113 @@ export function GovernancePanel() {
         </div>
       )}
 
-      {!state.enabled && state.isBootstrapOwner && <BootstrapWizard ctx={ctx} />}
-
-      <RolesSection ctx={ctx} />
-      <PoliciesSection ctx={ctx} />
-      <ProposalsSection
-        ctx={ctx}
-        proposals={proposals}
-        onChanged={onChanged}
-        onReviewCount={setReviewCount}
-      />
-      <YourAccess me={me} state={state} />
-      <ContentProposeCard ctx={ctx} />
-      <HistoryCard ctx={ctx} />
-      <AuditCard audit={audit} />
+      <nav
+        className="prism-governance-tabs"
+        role="tablist"
+        aria-label="Governance sections"
+      >
+        {sections.map(([id, title], index) => (
+          <button
+            key={id}
+            id={`${sectionId}-${id}`}
+            role="tab"
+            className="focus-ring"
+            aria-selected={section === id}
+            aria-controls={`${sectionId}-${id}-panel`}
+            tabIndex={section === id ? 0 : -1}
+            onClick={() => setSection(id)}
+            onKeyDown={(event) => {
+              const next =
+                event.key === "ArrowRight"
+                  ? (index + 1) % sections.length
+                  : event.key === "ArrowLeft"
+                    ? (index + sections.length - 1) % sections.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? sections.length - 1
+                        : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              setSection(sections[next]![0]);
+              document
+                .getElementById(`${sectionId}-${sections[next]![0]}`)
+                ?.focus();
+            }}
+          >
+            {title}
+            {id === "proposals" && reviewCount > 0 && (
+              <span aria-label={`${reviewCount} awaiting your review`}>
+                {reviewCount}
+              </span>
+            )}
+          </button>
+        ))}
+      </nav>
+      <section
+        role="tabpanel"
+        id={`${sectionId}-overview-panel`}
+        aria-labelledby={`${sectionId}-overview`}
+        hidden={section !== "overview"}
+      >
+        <div className="prism-governance-intro">
+          <h2>How this workspace is governed</h2>
+          <p>
+            Roles define responsibilities. Rules determine which changes need
+            approval. Proposals keep those decisions visible.
+          </p>
+        </div>
+        {!state.enabled && state.isBootstrapOwner && (
+          <BootstrapWizard ctx={ctx} />
+        )}
+        <YourAccess me={me} state={state} />
+        <div className="prism-governance-overview-actions">
+          <button className="focus-ring" onClick={() => openSection("rules")}>
+            Explore roles and rules
+          </button>
+          <button
+            className="focus-ring"
+            onClick={() => openSection("proposals")}
+          >
+            Review proposals
+          </button>
+        </div>
+      </section>
+      <section
+        role="tabpanel"
+        id={`${sectionId}-rules-panel`}
+        aria-labelledby={`${sectionId}-rules`}
+        hidden={section !== "rules"}
+      >
+        <RolesSection ctx={ctx} />
+        <PoliciesSection ctx={ctx} />
+      </section>
+      <section
+        role="tabpanel"
+        id={`${sectionId}-proposals-panel`}
+        aria-labelledby={`${sectionId}-proposals`}
+        hidden={section !== "proposals"}
+      >
+        <ProposalsSection
+          ctx={ctx}
+          proposals={proposals}
+          onChanged={onChanged}
+          onReviewCount={setReviewCount}
+        />
+        <details className="prism-governance-compose">
+          <summary>Propose a content change</summary>
+          <ContentProposeCard ctx={ctx} />
+        </details>
+      </section>
+      <section
+        role="tabpanel"
+        id={`${sectionId}-history-panel`}
+        aria-labelledby={`${sectionId}-history`}
+        hidden={section !== "history"}
+      >
+        <HistoryCard ctx={ctx} />
+        <AuditCard audit={audit} />
+      </section>
     </div>
   );
 }
