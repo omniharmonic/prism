@@ -4,7 +4,7 @@ Implementation: `2bcfc2a` on `feat/search-context`, based on root `c074cf4`. Fro
 
 ## Requirement and presentation
 
-Original D01 search-to-context action appears in approved board 11 (`assets/11-search-command-palette.png`). Existing search already provided ranked/keyword labels, filters, readable passages and Open. This slice implements Add to context in SearchPanel and CommandBar using existing agent and vault clients.
+Original requirements are DESIGN.md:134 and WORKPLAN.md F09 step 1: distinct Open and Add to context actions. The D01 search-to-context action appears in approved board 11 (`assets/11-search-command-palette.png`). Existing search already provided ranked/keyword labels, filters, readable passages and Open. This slice implements Add to context in SearchPanel and CommandBar using existing agent and vault clients.
 
 The command palette keeps its keyboard listbox behavior and places the selected note's action in a separate toolbar. This intentionally differs from the generated board's action nested in a result: interactive controls remain outside the listbox options. SearchPanel uses independent sibling buttons. Actions are at least 44px high and remain usable on a phone.
 
