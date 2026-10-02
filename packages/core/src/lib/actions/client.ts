@@ -157,7 +157,7 @@ export function createHttpLiveActionsClient(opts: HttpLiveActionsOptions): LiveA
   }
 
   return {
-    status: () => call("GET", "/"),
+    status: () => call("GET", ""),
     emailSend: (p, o = {}) => call("POST", "/email/send", p, o.idempotencyKey ?? newKey()),
     emailReply: (p, o = {}) => call("POST", "/email/reply", p, o.idempotencyKey ?? newKey()),
     emailArchive: (t) => call("POST", "/email/archive", t, newKey()),

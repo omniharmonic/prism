@@ -2,6 +2,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 process.env.SECRETS_KEY = crypto.randomBytes(32).toString("base64");
+import { createHttpLiveActionsClient } from "../../../packages/core/src/lib/actions/client";
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { putSecret } from "../src/secrets";
@@ -79,4 +80,19 @@ test("Matrix page transport encodes room and opaque cursor without changing inge
   const url = new URL(requested);
   assert.equal(url.searchParams.get("from"), "x&y=?"); assert.equal(url.searchParams.get("dir"), "b");
   assert.equal(url.searchParams.get("limit"), "50");
+});
+
+
+test("the real actions client discovers status at the mounted server route", async () => {
+  const app = createApp();
+  const client = createHttpLiveActionsClient({
+    fetch: (path, init) => app.request(path, init),
+    headers: () => ({ cookie: sessionCookie(makeSession(config.ownerEmail)) }),
+  });
+  assert.equal((await client.status()).matrix.configured, true);
+  const guest = createHttpLiveActionsClient({
+    fetch: (path, init) => app.request(path, init),
+    headers: () => ({ cookie: sessionCookie(makeSession("reader@test.local")) }),
+  });
+  await assert.rejects(guest.status(), (error: any) => error.status === 403);
 });
