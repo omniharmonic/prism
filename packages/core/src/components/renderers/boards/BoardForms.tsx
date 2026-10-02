@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useId,
+  cloneElement,
+  isValidElement,
+  type ReactNode,
+} from "react";
 import { X } from "lucide-react";
+import { BoardFilters } from "./BoardFilters";
+import { propertyFilters, readFilterDraft } from "../../../lib/boards/filters";
 import { readBoardConfig, type BoardConfig } from "../../../lib/boards/config";
 const control =
   "min-h-11 w-full rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm";
@@ -60,11 +70,16 @@ function Dialog({
   );
 }
 function Field({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId();
   return (
-    <label className="block text-sm">
-      <span className="mb-1.5 block text-[var(--text-secondary)]">{label}</span>
-      {children}
-    </label>
+    <div className="block min-w-0 text-sm">
+      <label htmlFor={id} className="mb-1.5 block text-[var(--text-secondary)]">
+        {label}
+      </label>
+      {isValidElement<{ id?: string }>(children)
+        ? cloneElement(children, { id })
+        : children}
+    </div>
   );
 }
 
@@ -92,6 +107,8 @@ export function BoardSettings({
   const [direction, setDirection] = useState(config.sort.direction);
   const [view, setView] = useState(config.view);
   const [validation, setValidation] = useState("");
+  const [filters, setFilters] = useState(() => readFilterDraft(config.source));
+  const [dateEditing, setDateEditing] = useState(false);
   const csv = (s: string) => [
     ...new Set(
       s
@@ -102,9 +119,26 @@ export function BoardSettings({
   ];
   const submit = async () => {
     setValidation("");
+    let metadataFilters;
+    try {
+      metadataFilters = propertyFilters(filters);
+    } catch (e) {
+      setValidation((e as Error).message);
+      return;
+    }
+    if (dateEditing) {
+      setValidation("Add or cancel the date filter before saving.");
+      return;
+    }
     const next: BoardConfig = {
       ...config,
-      source: { ...config.source, tags: csv(tags), pathPrefix: prefix.trim() },
+      source: {
+        ...config.source,
+        tags: csv(tags),
+        pathPrefix: prefix.trim(),
+        metadataFilters,
+        dateRange: filters.date,
+      },
       groupBy: group.trim(),
       columns: columns
         .split("\n")
@@ -139,97 +173,102 @@ export function BoardSettings({
           void submit();
         }}
       >
-        <p className="text-sm text-[var(--text-secondary)]">
-          This view uses existing notes. Changing its columns does not change
-          their saved properties.
-        </p>
-        <Field label="Source tags">
-          <input
-            className={control}
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="task, project-name"
-          />
-        </Field>
-        <Field label="Source folder">
-          <input
-            className={control}
-            value={prefix}
-            onChange={(e) => setPrefix(e.target.value)}
-            placeholder="All folders"
-          />
-        </Field>
-        <Field label="Group by property">
-          <input
-            className={control}
-            value={group}
-            onChange={(e) => setGroup(e.target.value)}
-          />
-        </Field>
-        <Field label="Columns (value: label, one per line)">
-          <textarea
-            className={control + " py-2"}
-            rows={5}
-            value={columns}
-            onChange={(e) => setColumns(e.target.value)}
-          />
-        </Field>
-        <Field label="Card properties">
-          <input
-            className={control}
-            value={fields}
-            onChange={(e) => setFields(e.target.value)}
-            placeholder="priority, deadline, project"
-          />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Sort by property">
+        <fieldset disabled={busy} className="min-w-0 space-y-4">
+          <p className="text-sm text-[var(--text-secondary)]">
+            This view uses existing notes. Changing its columns does not change
+            their saved properties.
+          </p>
+          <Field label="Source tags">
             <input
               className={control}
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="task, project-name"
             />
           </Field>
-          <Field label="Sort direction">
+          <Field label="Source folder">
+            <input
+              className={control}
+              value={prefix}
+              onChange={(e) => setPrefix(e.target.value)}
+              placeholder="All folders"
+            />
+          </Field>
+          <BoardFilters
+            value={filters}
+            onChange={(next) => {
+              setFilters(next);
+              setValidation("");
+            }}
+            onDateEditing={setDateEditing}
+          />
+          <Field label="Group by property">
+            <input
+              className={control}
+              value={group}
+              onChange={(e) => setGroup(e.target.value)}
+            />
+          </Field>
+          <Field label="Columns (value: label, one per line)">
+            <textarea
+              className={control + " py-2"}
+              rows={5}
+              value={columns}
+              onChange={(e) => setColumns(e.target.value)}
+            />
+          </Field>
+          <Field label="Card properties">
+            <input
+              className={control}
+              value={fields}
+              onChange={(e) => setFields(e.target.value)}
+              placeholder="priority, deadline, project"
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Sort by property">
+              <input
+                className={control}
+                value={sort}
+                onChange={(e) => setSort(e.target.value)}
+              />
+            </Field>
+            <Field label="Sort direction">
+              <select
+                className={control}
+                value={direction}
+                onChange={(e) => setDirection(e.target.value as "asc" | "desc")}
+              >
+                <option value="asc">Ascending</option>
+                <option value="desc">Descending</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Default view">
             <select
               className={control}
-              value={direction}
-              onChange={(e) => setDirection(e.target.value as "asc" | "desc")}
+              value={view}
+              onChange={(e) => setView(e.target.value as "board" | "list")}
             >
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
+              <option value="board">Board</option>
+              <option value="list">List</option>
             </select>
           </Field>
-        </div>
-        <Field label="Default view">
-          <select
-            className={control}
-            value={view}
-            onChange={(e) => setView(e.target.value as "board" | "list")}
+          {validation && (
+            <p role="alert" className="text-sm text-[var(--color-error)]">
+              {validation}
+            </p>
+          )}
+          <button
+            disabled={busy}
+            className={
+              control +
+              " bg-[var(--color-accent)] font-medium text-white disabled:opacity-50"
+            }
           >
-            <option value="board">Board</option>
-            <option value="list">List</option>
-          </select>
-        </Field>
-        {!!(config.source.metadataFilters || config.source.dateRange) && (
-          <p className="text-xs text-[var(--text-secondary)]">
-            Additional saved property/date filters remain active.
-          </p>
-        )}
-        {validation && (
-          <p role="alert" className="text-sm text-[var(--color-error)]">
-            {validation}
-          </p>
-        )}
-        <button
-          disabled={busy}
-          className={
-            control +
-            " bg-[var(--color-accent)] font-medium text-white disabled:opacity-50"
-          }
-        >
-          {busy ? "Saving…" : "Save view"}
-        </button>
+            {busy ? "Saving…" : "Save view"}
+          </button>
+        </fieldset>
       </form>
     </Dialog>
   );

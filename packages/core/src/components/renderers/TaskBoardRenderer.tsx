@@ -30,6 +30,7 @@ import {
   boardTasks,
   boardTitle,
   readBoardConfig,
+  safeBoardField,
   type BoardConfig,
 } from "../../lib/boards/config";
 import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
@@ -177,10 +178,14 @@ function Board({
         throw new Error("Refresh this board before moving the task.");
       // Merge one property, guarded by the revision actually shown to the user.
       // Never copy stale unrelated metadata or force a conflicting move.
-      await client.updateNote(task.id, {
-        metadata: { [config.groupBy]: target },
-        ifUpdatedAt: task.updatedAt,
-      });
+      await client.updateNote(
+        task.id,
+        {
+          metadata: { [config.groupBy]: target },
+          ifUpdatedAt: task.updatedAt,
+        },
+        { expectedScope: scope ?? undefined },
+      );
       if (!current()) return;
       await receipt("Task moved.");
       await refresh();
@@ -189,7 +194,7 @@ function Board({
   const open = async (task: Note) => {
     setError("");
     try {
-      const fresh = await client.getNote(task.id);
+      const fresh = await client.getNote(task.id, { fresh: true });
       if (current())
         openTab(fresh.id, boardTitle(fresh), inferContentType(fresh));
     } catch {
@@ -202,7 +207,7 @@ function Board({
   const save = async (next: BoardConfig) =>
     run("settings", async () => {
       if (!canEdit(note)) return;
-      const fresh = await client.getNote(note.id);
+      const fresh = await client.getNote(note.id, { fresh: true });
       if (!current()) return;
       if (JSON.stringify(readBoardConfig(fresh)) !== JSON.stringify(config))
         throw new Error(
@@ -210,10 +215,14 @@ function Board({
         );
       if (!fresh.updatedAt)
         throw new Error("Refresh this board before saving settings.");
-      await client.updateNote(note.id, {
-        metadata: { prism_board: next },
-        ifUpdatedAt: fresh.updatedAt,
-      });
+      await client.updateNote(
+        note.id,
+        {
+          metadata: { prism_board: next },
+          ifUpdatedAt: fresh.updatedAt,
+        },
+        { expectedScope: scope ?? undefined },
+      );
       if (!current()) return;
       setSavedConfig(next);
       setView(null);
@@ -237,12 +246,28 @@ function Board({
       for (const [key, value] of Object.entries(
         config.source.metadataFilters ?? {},
       )) {
+        // Only a single exact text choice (or legacy scalar) gives a safe
+        // default. Explicit form choices always win; compound rules stay filters.
+        const choices =
+          value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          Object.keys(value).length === 1
+            ? (value as Record<string, unknown>).$in
+            : undefined;
+        const candidate =
+          Array.isArray(choices) &&
+          choices.length === 1 &&
+          typeof choices[0] === "string"
+            ? choices[0]
+            : value;
         if (
-          ["string", "number", "boolean"].includes(typeof value) &&
-          !key.startsWith("prism_") &&
-          key !== "type"
+          safeBoardField(key) &&
+          !["id", "path", "content", "createdAt", "updatedAt"].includes(key) &&
+          !Object.prototype.hasOwnProperty.call(metadata, key) &&
+          ["string", "number", "boolean"].includes(typeof candidate)
         )
-          metadata[key] = value;
+          metadata[key] = candidate;
       }
       // Prefix-scoped boards need a path for the new task to remain in the view.
       const path = config.source.pathPrefix
@@ -353,6 +378,37 @@ function Board({
         <span className="text-xs text-[var(--text-secondary)]">
           {notes.length} tasks · grouped by {config.groupBy}
         </span>
+      </div>
+      <div
+        aria-label="Active view filters"
+        className="flex flex-wrap gap-2 px-5 pb-3 text-xs text-[var(--text-secondary)]"
+      >
+        {(config.source.tags ?? []).map((tag) => (
+          <span
+            key={tag}
+            className="max-w-full break-words rounded-md bg-[var(--glass)] px-2 py-1"
+          >
+            #{tag}
+          </span>
+        ))}
+        {config.source.pathPrefix && (
+          <span className="max-w-full break-all rounded-md bg-[var(--glass)] px-2 py-1">
+            {config.source.pathPrefix}
+          </span>
+        )}
+        {Object.keys(config.source.metadataFilters ?? {}).map((field) => (
+          <span
+            key={field}
+            className="max-w-full break-words rounded-md bg-[var(--glass)] px-2 py-1"
+          >
+            {field} filter
+          </span>
+        ))}
+        {config.source.dateRange && (
+          <span className="max-w-full break-words rounded-md bg-[var(--glass)] px-2 py-1">
+            {config.source.dateRange.field} date filter
+          </span>
+        )}
       </div>
       {error && (
         <div

@@ -46,9 +46,11 @@ export function getMetadataValue(note: Note, field: string): unknown {
 function looseEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a === "string" && typeof b === "string") {
-    return a.toLowerCase() === b.toLowerCase()
-      || a.toLowerCase().includes(b.toLowerCase())
-      || b.toLowerCase().includes(a.toLowerCase());
+    return (
+      a.toLowerCase() === b.toLowerCase() ||
+      a.toLowerCase().includes(b.toLowerCase()) ||
+      b.toLowerCase().includes(a.toLowerCase())
+    );
   }
   return String(a) === String(b);
 }
@@ -136,24 +138,43 @@ function getFieldValue(note: Note, field: string): unknown {
 
 // ── Date range helpers ──────────────────────────────────────────────
 
-function getDateRangeBounds(
-  dateRange: NonNullable<DataSource["dateRange"]>,
-): { from: Date | null; to: Date | null } {
+/** Date-only properties represent calendar days, not midnight in UTC. */
+function parseDate(value: string, endOfDay = false): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(value);
+  const year = Number(value.slice(0, 4)),
+    month = Number(value.slice(5, 7)),
+    day = Number(value.slice(8, 10));
+  const date = new Date(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  );
+  return date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+    ? date
+    : new Date(NaN);
+}
+
+function getDateRangeBounds(dateRange: NonNullable<DataSource["dateRange"]>): {
+  from: Date | null;
+  to: Date | null;
+} {
   if (dateRange.from || dateRange.to) {
     return {
-      from: dateRange.from ? new Date(dateRange.from) : null,
-      to: dateRange.to ? new Date(dateRange.to) : null,
+      from: dateRange.from ? parseDate(dateRange.from) : null,
+      to: dateRange.to ? parseDate(dateRange.to, true) : null,
     };
   }
 
   if (!dateRange.preset) return { from: null, to: null };
 
   const now = new Date();
-  const startOfDay = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  );
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   switch (dateRange.preset) {
     case "today":
@@ -216,11 +237,17 @@ export function filterNotes(notes: Note[], source: DataSource): Note[] {
   if (source.dateRange) {
     const { from, to } = getDateRangeBounds(source.dateRange);
     const field = source.dateRange.field;
+    if (
+      (from && !Number.isFinite(from.getTime())) ||
+      (to && !Number.isFinite(to.getTime()))
+    )
+      return [];
     if (from || to) {
       result = result.filter((n) => {
         const raw = getFieldValue(n, field);
         if (!raw || typeof raw !== "string") return false;
-        const d = new Date(raw);
+        const d = parseDate(raw);
+        if (!Number.isFinite(d.getTime())) return false;
         if (from && d < from) return false;
         if (to && d > to) return false;
         return true;
