@@ -378,6 +378,80 @@ the history panel (content and metadata come back; then remove the `merged-stub`
 tag — restore does not touch tags). Links are not part of a version restore:
 re-point them by hand or restore the vault from the pre-run backup.
 
+### Agent tools (Prism MCP)
+
+Seven tools in `src/mcp/tool-people.ts` let an agent holding the **server
+owner's** Prism credential (a `pp_` PAT from Settings → Account → Connect your
+agent, a device token, or a hosted turn on the `prism-rw` / `prism-ro`
+profile) do the judgement work this layer leaves. Skill drafts that use them:
+`docs/skills/` (README there).
+
+| Tool | Scope | Profiles | Input | Output |
+|---|---|---|---|---|
+| `prism_people_review_queue` | read | ro, rw | `reason?`, `relationship?`, `source_kind?` (email/thread/meeting/task/person), `limit` 1–25 (10), `after?`, `include_titles` (true) | `{rows, next, open}`; a row = id, reason, relationship, sourceKind, key `{kind, value}`, display, `nameOnly`, origin, `agentDecidable`, source `{id, title, path}`, ≤10 candidate summaries (id, name, path, organizations ≤3, emailCount, keyKinds, aliases ≤5, linkCount, live, mergedInto) |
+| `prism_people_review_context` | read | ro, rw | `id` | the row; source `{id, path, title, kinds, updatedAt, metadata (≤15 keys, ≤300 chars each), linkCount, excerpt ≤1,500 chars centred on the first mention}`; per candidate: summary + `emails` (≤5), `priorResolutionsOfThisKey`, `sameRelationshipLinks`, `sharedNeighbours {count, ids ≤10}`, `alreadyLinked`; `decide {agentDecidable, ownerOnly?, addIdentityAllowed}` |
+| `prism_people_review_decide` | write | rw | `id`, `decision` resolve/dismiss, `person_id` (resolve), `add_identity` (false), `rationale` 12–600 chars | resolve: `{ok, personId, linked, alreadyLinked, stillOpen, conflicts, noStamp, missing, errors, identityAdded, identitySkipped, decisionId, remainingToday}`; dismiss: `{ok, dismissed, decisionId, remainingToday}` |
+| `prism_people_duplicates` | read | ro, rw | `strength?`, `limit` 1–50 (20), `offset` | `{pairs (+ recommendation \| null), total, counts, next, openRecommendations}` — evidence KINDS only |
+| `prism_people_recommend_merge` | write | rw | `person_ids` [a, b], `canonical_id`, `rationale`, `confidence` 0–1 | `{ok, result: created/refreshed/closed, merged: false, recommendation, pair, remainingToday}` |
+| `prism_people_file_review` | write | rw | `source_note_id`, `relationship` (messages-with, email-from, email-to, attended-by, assigned-to), `key {kind: name/email/matrix/telegram/phone, value}`, `display?`, `candidate_ids` ≤5, `rationale` | `{ok, result: created/refreshed/closed/full, remainingToday}` — inserts a queue row, reason `agent-flagged` (or `agent-unmatched` with no candidates), origin `agent:mcp` |
+| `prism_people_link_status` | read | ro, rw | — | queue `{open {total, byReason, byRelationship, oldestAt, olderThan7d, olderThan30d}, closedLastDay}`, `queueCapacity`, `agentActionsLastDay`, `allowance` per budget `{limit, used, remaining}`, `duplicates` counts (null if unknown), `openMergeRecommendations`, `lastJob`, `lastJobPlan` (per-phase planned counts while the server still holds the job), `running` |
+
+**Who.** Server owner by email, the admin router's rule. For everyone else
+(vault admins, vault-role owners, members, guests) the tools are absent from
+`tools/list` and a call answers like an unknown tool. A read-scope credential
+gets the four reads only (and is refused a write at call time).
+
+**How MCP reaches the logic.** The tools call the shared service
+(`src/people-review-service.ts`: `resolveReview`, `dismissReview`,
+`peopleListing`, `duplicatePairs`) that the owner routes now call too — not
+in-process dispatch to `/api/admin/people/*`. The admin CSRF/origin guard is
+unchanged, MCP has no path to `/merge`, `/link` or `/owner` by construction,
+and lock, CAS, directed-edge check and the audit row stay in one place.
+
+**What an agent cannot do** (each refused, each tested in `test/mcp-people.test.ts`):
+
+- decide more than one row per call — no `applyToKey`;
+- resolve to a person who is not one of the row's `candidateIds`;
+- `add_identity: true` on name-only evidence (key kind `name`, or reason
+  `name-only` / `single-token-name` / `ambiguous-name`) → `invalid_request`;
+- decide a `tombstone-unresolved` row (it writes `merged_into`) or a row an
+  agent filed (origin `agent:*`) → `forbidden`, owner only;
+- merge: `recommend_merge` writes one SQLite row and nothing to the vault;
+  the merge route still refuses an agent origin;
+- exceed the per-credential caps (rolling 24 h): `PEOPLE_AGENT_DECISIONS_PER_DAY`
+  (200, resolve + dismiss), `PEOPLE_AGENT_FILES_PER_DAY` (50),
+  `PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY` (50) → `rate_limited`,
+  `detail {reason: "daily_cap", budget, limit, used}`. Hosted agent turns mint
+  a new PAT per turn, so all of them share one bucket per account.
+
+**Errors.** `not_found` (row, person, source); `conflict` with
+`detail.reason`: `busy` (+ `retry: true`, `holder`) while the job, a merge or
+another decision holds the people lock — a busy attempt costs no allowance —
+or `not_open`; a stale source is not an error: `stillOpen: true`,
+`conflicts: 1`, nothing forced, the row stays open; `upstream_error` when the
+people listing is unavailable.
+
+**Records.** Every decision writes an `action_audit` row through the shared
+path (`admin.people-candidate-resolve` / `admin.people-candidate-dismiss`,
+`origin: "agent"`, `via: "mcp:<pat|device|…>"`, plus `credentialId`,
+`decisionId`, `rationaleHash`, `rationaleLength` — ids and hashes only).
+Recommendations audit as `agent.people-merge-recommend`, filed rows as
+`agent.people-review-file`. The rationale text lives only in the decision
+ledger `people_agent_decisions` (created by `src/people-agent-store.ts`), which
+also backs the caps. Recommendations live in `people_merge_recommendations`
+(one per pair; an owner-dismissed or merged pair stays closed).
+
+**Owner routes added** (on the admin router, same gate + CSRF):
+
+- `GET /duplicates` gains an additive `recommendations` array (open, ≤100:
+  `{id, personIds, canonicalId, rationale, confidence, detected, status,
+  credentialId, …}`). `rationale` is agent-written free text — render it as
+  text.
+- `POST /recommendations/:id/dismiss` → `{ok}` / 404.
+- `GET /agent/decisions?limit=1..200&before=<id>` → `{decisions, next}` (the
+  ledger, newest first).
+- A completed write merge closes the pair's recommendation (`merged`).
+
 ### People directory (owner decision 5)
 
 `GET /api/people` now lists live humans only: tombstones and non-human notes
@@ -720,3 +794,7 @@ dumps.
 - **`mergedFrom`** on the person detail: show "merged from …".
 - **Recipients in the messages dashboard**: add `email-to` to its filter.
 - **Health**: `people-link` in `/acl/workers` carries `detail.openCandidates`.
+- **Agent recommendations**: show `recommendations` from `GET /duplicates`
+  beside the matching pair ("Suggested by your agent: keep X — <rationale>");
+  "Dismiss" → `POST /recommendations/:id/dismiss`. An "Agent decisions" list
+  from `GET /agent/decisions` lets the owner audit what the agent resolved.
