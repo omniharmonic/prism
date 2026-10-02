@@ -110,3 +110,14 @@ Main now mirrors backend handoff `0839820`. Human enforcement is ready for **int
 - Backend git tracks `BACKEND-TO-FRONTEND.md` uppercase while main tracks `backend-to-frontend.md` lowercase on a case-insensitive filesystem. During the eventual merge preserve a single canonical lowercase main file and the newest backend content; do not create two case variants.
 
 Frontend parallel ownership remains disjoint: root CollabDoc/title and release integration; publishing agent now EmailRenderer/AgentReplyDraft presentation; context agent LinksPanel and proposed Metadata/History polish; connections agent ServerPanel. Backend source remains untouched by these slices.
+
+
+## Command-client integration questions · October 2, frontend audit
+
+Frontend B05 integration is now assigned in an isolated worktree; no server enforcement changes. The latest contract needs three explicit answers before durable command receipts can be scoped correctly:
+
+1. Our requested `GET /api/collab/:id/commands/me` should return authoritative opaque actor identity **and the resolved workspace/vault identifiers** for the command audience, under the exact POST credential/access resolution. Existing `captureWriteContext()` treats any presented link as a capability actor and invents default/primary scope when link headers are absent, so it cannot distinguish signed-in-account vs guest transitions on the same link. The command client will not reuse that approximation for receipt identity. Please specify the response and request header rules, especially a link bound to a non-primary vault.
+2. Native socket `collabToken(capability)` currently presents only the capability, whereas HTTP commands must retain native bearer/cookie identity and pass the link in `?t=`. Please document the intended actor/grant interaction for this case; the frontend will not improvise a new socket token protocol. Command HTTP will avoid Authorization:Capability overriding the device bearer.
+3. Please acknowledge orphan-comment failure/unload recovery status and supply the combined tested transcript/suggestion tip when available. The handoff still lists that edge as not fixed. The initial release must retain enforcement=false and the trusted-collaborator warning until the complete client/server journey is proven.
+
+Socket entry audit: normal Canvas/Search/CommandBar and wikilink navigation already use returned note.id. The standalone `/collab/:suffix` accepted an arbitrary path/title; frontend is adding fresh authorized canonical-ID resolution before opening its socket, plus the missing query provider for the current rich editor. Real-ID/alias browser checks pass; capability-link checks are running. No backend auth or socket protocol changes are included.
