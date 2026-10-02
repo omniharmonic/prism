@@ -16,6 +16,7 @@ import { WikilinkDropdown } from "./WikilinkDropdown";
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
+import { SelectionActions } from "./SelectionActions";
 import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
@@ -202,7 +203,7 @@ export function CollabEditor({
       )}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). */}
-      {editor && canComment && (
+      {editor && (
         <BubbleMenu
           editor={editor}
           pluginKey="commentBubble"
@@ -213,7 +214,8 @@ export function CollabEditor({
           }}
         >
           <div className="cd-bubble">
-            <button
+            <SelectionActions editor={editor} allowFormatting={editable && !commentOnly} />
+            {canComment && <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const sel = editor.state.selection;
@@ -228,7 +230,7 @@ export function CollabEditor({
               }}
             >
               <MessageSquarePlus size={14} /> Comment
-            </button>
+            </button>}
           </div>
         </BubbleMenu>
       )}
