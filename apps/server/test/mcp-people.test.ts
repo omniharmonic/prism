@@ -20,7 +20,9 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { db, ensureUser, setMembership } from "../src/db";
-import { issuePat } from "../src/auth/pat";
+import { issuePat, issueInternalPat } from "../src/auth/pat";
+import { createSession } from "../src/agent-sessions";
+import { pruneAgentRecords } from "../src/people-agent-store";
 import { adminApi } from "../src/routes/admin";
 import { enqueueCandidate, getCandidate, listCandidates } from "../src/identity-store";
 import { _resetPeopleCache } from "../src/people-cache";
@@ -43,7 +45,11 @@ let app: ReturnType<typeof createApp>;
 let ip: string;
 /** config is readonly-typed; the caps are flipped per test and restored afterwards. */
 const cfg = config as { -readonly [K in keyof typeof config]: (typeof config)[K] };
-const caps = { d: config.peopleAgentDecisionsPerDay, f: config.peopleAgentFilesPerDay, r: config.peopleAgentRecommendationsPerDay };
+const caps = {
+  d: config.peopleAgentDecisionsPerDay, f: config.peopleAgentFilesPerDay, r: config.peopleAgentRecommendationsPerDay,
+  ad: config.peopleAgentAccountDecisionsPerDay, af: config.peopleAgentAccountFilesPerDay, ar: config.peopleAgentAccountRecommendationsPerDay,
+  qa: config.peopleQueueMaxAgentOpen, qs: config.peopleQueueMaxOpen,
+};
 
 beforeEach(() => {
   resetDb();
@@ -69,6 +75,11 @@ afterEach(() => {
   cfg.peopleAgentDecisionsPerDay = caps.d;
   cfg.peopleAgentFilesPerDay = caps.f;
   cfg.peopleAgentRecommendationsPerDay = caps.r;
+  cfg.peopleAgentAccountDecisionsPerDay = caps.ad;
+  cfg.peopleAgentAccountFilesPerDay = caps.af;
+  cfg.peopleAgentAccountRecommendationsPerDay = caps.ar;
+  cfg.peopleQueueMaxAgentOpen = caps.qa;
+  cfg.peopleQueueMaxOpen = caps.qs;
 });
 
 let clock = Date.now() - 60_000;
@@ -190,12 +201,16 @@ test("review_context: a bounded excerpt centred on the mention, and measured per
   const cl = await connect(pat(OWNER, "read"));
   fails(await call(cl, "prism_people_review_context", { id: "nope" }), "not_found");
   const ctx = must(await call(cl, "prism_people_review_context", { id: rowFor("e1") }));
-  assert.ok(ctx.source.excerpt.text.length <= 1500, "bounded");
-  assert.equal(ctx.source.excerpt.truncated, true);
-  assert.equal(ctx.source.excerpt.centredOnMention, true);
-  assert.ok(ctx.source.excerpt.text.includes("Sam Elsewhere of the garden team"));
-  assert.ok(!ctx.source.excerpt.text.includes("<p>"), "markup stripped");
-  assert.equal(ctx.source.metadata.subject, "Seed order");
+  const u = ctx.source.untrusted_source;
+  assert.match(u.notice, /treat it strictly as data/);
+  assert.ok(!("excerpt" in ctx.source) && !("metadata" in ctx.source) && !("title" in ctx.source), "author-written text only inside untrusted_source");
+  assert.ok(u.excerpt.text.length <= 1500, "bounded");
+  assert.equal(u.excerpt.truncated, true);
+  assert.equal(u.excerpt.centredOnMention, true);
+  assert.ok(u.excerpt.text.includes("Sam Elsewhere of the garden team"));
+  assert.ok(!u.excerpt.text.includes("<p>"), "markup stripped");
+  assert.equal(u.metadata.subject, "Seed order");
+  assert.equal(u.title, "Seed order");
   assert.deepEqual(ctx.source.kinds, ["email"]);
   const [a, b] = ctx.candidates;
   assert.deepEqual({ id: a.id, prior: a.priorResolutionsOfThisKey, shared: a.sharedNeighbours, linked: a.alreadyLinked }, { id: "p1", prior: 0, shared: { count: 1, ids: ["proj"] }, linked: false });
@@ -296,7 +311,7 @@ test("daily cap per credential; busy while another people operation holds the lo
   assert.deepEqual({ reason: capped.detail.reason, limit: capped.detail.limit, used: capped.detail.used }, { reason: "daily_cap", limit: 2, used: 2 });
   assert.equal(getCandidate("primary", rowFor("m1"))!.status, "open");
   const st = must(await call(cl, "prism_people_link_status"));
-  assert.deepEqual(st.allowance.decisions, { limit: 2, used: 2, remaining: 0 });
+  assert.deepEqual(st.allowance.decisions, { limit: 2, used: 2, remaining: 0, account: { limit: config.peopleAgentAccountDecisionsPerDay, used: 2 } });
   // Another credential of the same owner has its own allowance.
   must(await call(await connect(pat(OWNER)), "prism_people_review_decide", { id: rowFor("m1"), decision: "dismiss", rationale: WHY }));
 });
@@ -334,7 +349,9 @@ test("duplicates + recommend_merge: a recommendation is recorded for the owner a
   const owner = { cookie: sessionCookie(makeSession(OWNER)), "content-type": "application/json" };
   const body = (await (await adminApi.request("/people/duplicates", { headers: owner })).json()) as { pairs: unknown[]; recommendations: Array<{ id: string; canonicalId: string; rationale: string; confidence: number; personIds: string[] }> };
   assert.equal(body.recommendations.length, 2);
-  assert.deepEqual({ canonicalId: body.recommendations[0]!.canonicalId, rationale: body.recommendations[0]!.rationale, confidence: body.recommendations[0]!.confidence, personIds: body.recommendations[0]!.personIds }, { canonicalId: "p4", rationale: WHY, confidence: 0.5, personIds: ["p1", "p4"] });
+  assert.equal((body as unknown as { recommendationsTotal: number }).recommendationsTotal, 2);
+  assert.deepEqual(body.recommendations.map((r) => r.personIds.join("+")), ["p2+p3", "p1+p4"], "newest first");
+  assert.deepEqual({ canonicalId: body.recommendations[1]!.canonicalId, rationale: body.recommendations[1]!.rationale, confidence: body.recommendations[1]!.confidence, personIds: body.recommendations[1]!.personIds }, { canonicalId: "p4", rationale: WHY, confidence: 0.5, personIds: ["p1", "p4"] });
   assert.equal(must(await call(cl, "prism_people_duplicates")).pairs[0].recommendation.canonicalId, "p4");
   const a = audits().filter((x) => x.action === "agent.people-merge-recommend");
   assert.equal(a.length, 3);
@@ -400,4 +417,132 @@ test("link_status: measured numbers before and after — queue depth, closed row
   assert.equal(after.allowance.decisions.used, 1);
   // A read-scope credential can read the status too.
   assert.equal(must(await call(await connect(pat(OWNER, "read")), "prism_people_link_status")).queue.open.total, 2);
+});
+
+test("H1: an agent cannot re-file a system row to point it at its own candidate and then decide it with add_identity", async () => {
+  queue("e1", { kind: "email", value: "sam@elsewhere.test" }, { reason: "name-only", display: "Sam Elsewhere" });
+  const id = rowFor("e1");
+  const cl = await connect(pat(OWNER));
+  const refile = must(await call(cl, "prism_people_file_review", { source_note_id: "e1", relationship: "email-from", key: { kind: "email", value: "sam@elsewhere.test" }, candidate_ids: ["p3"], rationale: WHY }));
+  assert.deepEqual({ ok: refile.ok, result: refile.result }, { ok: false, result: "exists" });
+  const row = getCandidate("primary", id)!;
+  assert.deepEqual([row.candidateIds, row.reason, row.origin], [["p1", "p2"], "name-only", "backfill:emails"], "the system row is untouched");
+  fails(await call(cl, "prism_people_review_decide", { id, decision: "resolve", person_id: "p3", add_identity: true, rationale: WHY }), "invalid_request");
+  assert.equal(writes().length, 0, "nothing linked, no key taught");
+  // Even if candidate_ids / reason were rewritten underneath (defence in depth), decide judges the SYSTEM evidence.
+  db.prepare("UPDATE identity_candidates SET candidate_ids = '[\"p3\"]', reason = 'agent-flagged' WHERE id = ?").run(id);
+  fails(await call(cl, "prism_people_review_decide", { id, decision: "resolve", person_id: "p3", rationale: WHY }), "invalid_request");
+  fails(await call(cl, "prism_people_review_decide", { id, decision: "resolve", person_id: "p1", add_identity: true, rationale: WHY }), "invalid_request");
+  assert.equal(writes().length, 0);
+});
+
+test("M1: parallel calls cannot overrun a cap — decide, file and recommend", async () => {
+  cfg.peopleAgentDecisionsPerDay = 2;
+  cfg.peopleAgentFilesPerDay = 2;
+  cfg.peopleAgentRecommendationsPerDay = 2;
+  for (const n of [1, 2, 3, 4]) {
+    fv.put({ id: `x${n}`, path: `vault/messages/email/x${n}`, tags: ["email"], metadata: { subject: `x${n}` }, links: [] as never });
+    queue(`x${n}`, { kind: "email", value: `x${n}@elsewhere.test` });
+  }
+  for (const n of [5, 6, 7, 8]) fv.put({ id: `q${n}`, path: `vault/people/Q${n} Person`, tags: ["person"], metadata: { name: `Q${n} Person` } });
+  const cl = await connect(pat(OWNER));
+  const ok = (rs: Out[]) => rs.filter((r) => r.ok).length;
+  const decided = await Promise.all([1, 2, 3, 4].map((n) => call(cl, "prism_people_review_decide", { id: rowFor(`x${n}`), decision: "dismiss", rationale: WHY })));
+  assert.equal(ok(decided), 2, JSON.stringify(decided.map((r) => (r.ok ? "ok" : r.error))));
+  const filed = await Promise.all([1, 2, 3, 4].map((n) => call(cl, "prism_people_file_review", { source_note_id: `x${n}`, relationship: "email-from", key: { kind: "name", value: `Q${n} Somebody` }, rationale: WHY })));
+  assert.equal(ok(filed), 2);
+  const recs = await Promise.all([["q5", "q6"], ["q5", "q7"], ["q6", "q8"], ["q7", "q8"]].map((ids) => call(cl, "prism_people_recommend_merge", { person_ids: ids, canonical_id: ids[0], rationale: WHY, confidence: 0.6 })));
+  assert.equal(ok(recs), 2, JSON.stringify(recs.map((r) => (r.ok ? "ok" : r.error))));
+  assert.equal((db.prepare("SELECT count(*) n FROM people_merge_recommendations").get() as { n: number }).n, 2);
+});
+
+test("L4: a per-ACCOUNT ceiling across all of the account's credentials", async () => {
+  cfg.peopleAgentAccountDecisionsPerDay = 2;
+  for (const s of ["e1", "e2", "m1"]) queue(s, { kind: "email", value: `${s}@elsewhere.test` }, s === "m1" ? { relationship: "attended-by" } : {});
+  must(await call(await connect(pat(OWNER)), "prism_people_review_decide", { id: rowFor("e1"), decision: "dismiss", rationale: WHY }));
+  must(await call(await connect(pat(OWNER)), "prism_people_review_decide", { id: rowFor("e2"), decision: "dismiss", rationale: WHY }));
+  const capped = fails(await call(await connect(pat(OWNER)), "prism_people_review_decide", { id: rowFor("m1"), decision: "dismiss", rationale: WHY }), "rate_limited");
+  assert.deepEqual({ scope: capped.detail.scope, limit: capped.detail.limit, used: capped.detail.used }, { scope: "account", limit: 2, used: 2 });
+});
+
+test("M2: agent-filed rows have their own cap and never count against (or crowd out) system rows", async () => {
+  cfg.peopleQueueMaxAgentOpen = 1;
+  cfg.peopleQueueMaxOpen = 1;
+  const cl = await connect(pat(OWNER));
+  assert.equal(must(await call(cl, "prism_people_file_review", { source_note_id: "m1", relationship: "attended-by", key: { kind: "name", value: "Casey" }, candidate_ids: ["p3"], rationale: WHY })).result, "created");
+  assert.equal(must(await call(cl, "prism_people_file_review", { source_note_id: "e2", relationship: "email-from", key: { kind: "name", value: "Sam" }, rationale: WHY })).result, "full");
+  assert.equal(queue("e1", { kind: "email", value: "sam@elsewhere.test" }), "created", "the agent's row does not take the system's room");
+  assert.equal(queue("e2", { kind: "email", value: "other@elsewhere.test" }), "full", "the system cap counts system rows");
+  assert.equal(listCandidates("primary").candidates.length, 2);
+});
+
+test("L2: a candidate merged away since the row was queued — conflict unless its canonical is itself a candidate", async () => {
+  queue("e1", { kind: "email", value: "sam@elsewhere.test" });
+  fv.put({ id: "p1", path: "vault/people/Alex Example", tags: ["person", "merged-stub"], metadata: { name: "Alex Example", merged_into: "p3" } });
+  _resetPeopleCache();
+  const cl = await connect(pat(OWNER));
+  const c = fails(await call(cl, "prism_people_review_decide", { id: rowFor("e1"), decision: "resolve", person_id: "p1", rationale: WHY }), "conflict");
+  assert.deepEqual({ reason: c.detail.reason, canonicalId: c.detail.canonicalId }, { reason: "candidate_changed", canonicalId: "p3" });
+  assert.equal(writes().length, 0);
+  // p1 merged into p2 (also a candidate) → allowed, links the canonical p2.
+  fv.put({ id: "p1", path: "vault/people/Alex Example", tags: ["person", "merged-stub"], metadata: { name: "Alex Example", merged_into: "p2" } });
+  _resetPeopleCache();
+  assert.equal(must(await call(cl, "prism_people_review_decide", { id: rowFor("e1"), decision: "resolve", person_id: "p1", rationale: WHY })).personId, "p2");
+});
+
+test("L3: expect_updated_at — nothing is written when the source is not the version the agent reviewed", async () => {
+  queue("e1", { kind: "email", value: "sam@elsewhere.test" });
+  const cl = await connect(pat(OWNER));
+  const reviewed = must(await call(cl, "prism_people_review_context", { id: rowFor("e1") })).source.updatedAt as string;
+  fails(await call(cl, "prism_people_review_decide", { id: rowFor("e1"), decision: "resolve", person_id: "p1", expect_updated_at: "2020-01-01T00:00:00.000Z", rationale: WHY }), "conflict");
+  assert.equal(writes().length, 0);
+  assert.equal(getCandidate("primary", rowFor("e1"))!.status, "open");
+  must(await call(cl, "prism_people_review_decide", { id: rowFor("e1"), decision: "resolve", person_id: "p1", expect_updated_at: reviewed, rationale: WHY }));
+  assert.equal((writes()[0]!.body as { if_updated_at: string }).if_updated_at, reviewed);
+});
+
+test("hosted turns: every per-turn PAT of an account shares ONE allowance; only prism-graph turns see the tools", async () => {
+  cfg.peopleAgentDecisionsPerDay = 2;
+  for (const s of ["e1", "e2", "m1"]) queue(s, { kind: "email", value: `${s}@elsewhere.test` }, s === "m1" ? { relationship: "attended-by" } : {});
+  const turnToken = (profile: string, mode: string, n: number) => {
+    const session = createSession({ vaultId: "primary", ownerEmail: OWNER, profile: profile as never });
+    const turnId = `graph-turn-${profile}-${n}`;
+    db.prepare("INSERT INTO agent_turns (id, session_id, prompt, status, profile, permission_mode, policy_version) VALUES (?, ?, ?, 'running', ?, ?, ?)").run(turnId, session.id, "weave", profile, mode, session.policy_version ?? 1);
+    return issueInternalPat({ email: OWNER, vaultId: "primary", scope: "write", turnId }).token;
+  };
+  for (const profile of ["prism-rw", "prism-ro", "prism-suggest"]) {
+    const cl = await connect(turnToken(profile, profile === "prism-ro" ? "read-only" : profile === "prism-suggest" ? "suggest" : "read-write", 0));
+    assert.deepEqual(await peopleNames(cl), [], `${profile} turn has no people tool`);
+    assert.equal((await call(cl, "prism_people_review_queue")).ok, false);
+  }
+  const t1 = await connect(turnToken("prism-graph", "read-write", 1));
+  assert.deepEqual(await peopleNames(t1), ALL);
+  must(await call(t1, "prism_people_review_decide", { id: rowFor("e1"), decision: "dismiss", rationale: WHY }));
+  const t2 = await connect(turnToken("prism-graph", "read-write", 2));
+  must(await call(t2, "prism_people_review_decide", { id: rowFor("e2"), decision: "dismiss", rationale: WHY }));
+  const t3 = await connect(turnToken("prism-graph", "read-write", 3));
+  const capped = fails(await call(t3, "prism_people_review_decide", { id: rowFor("m1"), decision: "dismiss", rationale: WHY }), "rate_limited");
+  assert.equal(capped.detail.scope, "credential", "a fresh per-turn PAT starts from the shared bucket, not a new allowance");
+});
+
+test("L5: an owner merge closes the pair's recommendation (merged) and every other one involving the merged-away note (obsolete); retention prunes", async () => {
+  fv.put({ id: "p4", path: "vault/people/alex-example", tags: ["person"], metadata: { name: "Alex Example", email: "alex@example.test" } });
+  const cl = await connect(pat(OWNER));
+  const pair = must(await call(cl, "prism_people_recommend_merge", { person_ids: ["p1", "p4"], canonical_id: "p1", rationale: WHY, confidence: 0.9 })).recommendation.id;
+  const other = must(await call(cl, "prism_people_recommend_merge", { person_ids: ["p4", "p2"], canonical_id: "p2", rationale: WHY, confidence: 0.4 })).recommendation.id;
+  const keep = must(await call(cl, "prism_people_recommend_merge", { person_ids: ["p2", "p3"], canonical_id: "p2", rationale: WHY, confidence: 0.4 })).recommendation.id;
+  const owner = { cookie: sessionCookie(makeSession(OWNER)), "content-type": "application/json" };
+  const dry = (await (await adminApi.request("/people/merge", { method: "POST", headers: owner, body: JSON.stringify({ personIds: ["p1", "p4"], canonicalId: "p1" }) })).json()) as { merge: { expect: unknown } };
+  const res = await adminApi.request("/people/merge", { method: "POST", headers: owner, body: JSON.stringify({ personIds: ["p1", "p4"], canonicalId: "p1", dryRun: false, expect: dry.merge.expect }) });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(((await res.json()) as { merge: { complete: boolean } }).merge.complete, true);
+  const status = (id: string) => (db.prepare("SELECT status FROM people_merge_recommendations WHERE id = ?").get(id) as { status: string }).status;
+  assert.deepEqual([status(pair), status(other), status(keep)], ["merged", "obsolete", "open"]);
+  // Retention: closed recommendations and ledger rows older than PEOPLE_AGENT_RETENTION_DAYS go; open ones stay.
+  const old = Date.now() - (config.peopleAgentRetentionDays + 1) * 24 * 3600_000;
+  db.prepare("UPDATE people_merge_recommendations SET updated_at = ?").run(old);
+  db.prepare("UPDATE people_agent_decisions SET ts = ?").run(old);
+  const pruned = pruneAgentRecords(Date.now(), true);
+  assert.deepEqual(pruned, { decisions: 3, recommendations: 2 });
+  assert.equal(status(keep), "open");
 });

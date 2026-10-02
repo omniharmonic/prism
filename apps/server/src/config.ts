@@ -409,6 +409,10 @@ export const config = {
   // The review queue never holds more than this many OPEN rows per vault; past
   // it nothing is inserted and the caller counts `queue-full`.
   peopleQueueMaxOpen: Number(process.env.PEOPLE_QUEUE_MAX_OPEN ?? 1000),
+  // Open rows FILED BY AGENTS (prism_people_file_review) are capped separately
+  // and never count toward PEOPLE_QUEUE_MAX_OPEN, so they cannot crowd out
+  // ingest rows. 0 = agents cannot file.
+  peopleQueueMaxAgentOpen: Number(process.env.PEOPLE_QUEUE_MAX_AGENT_OPEN ?? 100),
   // Consecutive failed Matrix membership lookups that end a run's lookup stage.
   peopleLinkMemberFailures: Number(process.env.PEOPLE_LINK_MEMBER_FAILURES ?? 3),
   // The job / merge abort after this many consecutive failed writes that are not
@@ -424,6 +428,12 @@ export const config = {
   peopleAgentDecisionsPerDay: Number(process.env.PEOPLE_AGENT_DECISIONS_PER_DAY ?? 200),
   peopleAgentFilesPerDay: Number(process.env.PEOPLE_AGENT_FILES_PER_DAY ?? 50),
   peopleAgentRecommendationsPerDay: Number(process.env.PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY ?? 50),
+  // …and per ACCOUNT across all of its credentials together (a second ceiling).
+  peopleAgentAccountDecisionsPerDay: Number(process.env.PEOPLE_AGENT_ACCOUNT_DECISIONS_PER_DAY ?? 400),
+  peopleAgentAccountFilesPerDay: Number(process.env.PEOPLE_AGENT_ACCOUNT_FILES_PER_DAY ?? 100),
+  peopleAgentAccountRecommendationsPerDay: Number(process.env.PEOPLE_AGENT_ACCOUNT_RECOMMENDATIONS_PER_DAY ?? 100),
+  // Agent decision ledger rows and CLOSED merge recommendations older than this are pruned.
+  peopleAgentRetentionDays: Number(process.env.PEOPLE_AGENT_RETENTION_DAYS ?? 180),
   // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-
   // separated (e.g. `!abc:localhost=sync-chats`), sent every interval. A
   // bridge only portals chats Telegram/etc. PUSHES updates for; with hundreds of

@@ -28,7 +28,7 @@ import { recordAction } from "../actions/store";
 import { actionOrigin } from "./actions";
 import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } from "../identity-store";
 import { ReviewError } from "../identity-review";
-import { closeRecommendationMerged, dismissRecommendation, listAgentDecisions, listRecommendations } from "../people-agent-store";
+import { closeRecommendationsAfterMerge, dismissRecommendation, listAgentDecisions, listRecommendations, openRecommendationCount } from "../people-agent-store";
 import { dismissReview, duplicatePairs, peopleListing, peopleLiveHooks, peopleVault, resolveReview } from "../people-review-service";
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
@@ -316,9 +316,9 @@ export function mountPeopleMerge(admin: Hono): void {
       const filtered = strength ? all.filter((p) => p.strength === strength) : all;
       const pairs = filtered.slice(offset, offset + limit);
       c.header("Cache-Control", "private, no-store");
-      // Additive: agents' open merge RECOMMENDATIONS (mcp/tool-people.ts). A recommendation
+      // Additive: agents' open merge RECOMMENDATIONS (mcp/tool-people.ts), newest 100 + the total. A recommendation
       // never merged anything; `rationale` is agent-written free text — render it as text.
-      return c.json({ pairs, total: filtered.length, counts, next: offset + limit < filtered.length ? offset + limit : null, recommendations: listRecommendations(vaultId, { limit: 100 }) });
+      return c.json({ pairs, total: filtered.length, counts, next: offset + limit < filtered.length ? offset + limit : null, recommendations: listRecommendations(vaultId, { limit: 100 }), recommendationsTotal: openRecommendationCount(vaultId) });
     } catch {
       return c.json({ error: "people_unavailable" }, 503);
     }
@@ -413,7 +413,7 @@ export function mountPeopleMerge(admin: Hono): void {
           target: { ...merge, expect: undefined, pair: info.pair, confirmUnrelated: confirmUnrelated === true },
           status: merge.complete ? "ok" : "failed",
         });
-      if (!dryRun && merge.complete) closeRecommendationMerged(vaultId, canonicalId, secondary.id, config.ownerEmail);
+      if (!dryRun && merge.complete) closeRecommendationsAfterMerge(vaultId, canonicalId, secondary.id, config.ownerEmail);
       return c.json({ merge, ...info, ...(refusal === "owner_is_secondary" ? { blocked: refusal } : {}) });
     } catch (e) {
       if (e instanceof MergeError) return c.json({ error: e.code }, e.status as 400 | 404 | 409 | 503);

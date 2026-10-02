@@ -51,12 +51,13 @@ export async function resolveReview(
   vaultId: string,
   cand: IdentityCandidate,
   personId: string,
-  o: { addIdentity?: boolean; applyToKey?: boolean } & ReviewCaller,
+  o: { addIdentity?: boolean; applyToKey?: boolean; expectSourceUpdatedAt?: string } & ReviewCaller,
 ): Promise<ResolveOutcome> {
   const outcome = await resolveCandidate(peopleVault(vaultId) as unknown as ReviewVault, vaultId, cand, personId, {
     by: config.ownerEmail,
     addIdentity: o.addIdentity === true, // off unless explicitly asked
     applyToKey: o.applyToKey === true,
+    expectSourceUpdatedAt: o.expectSourceUpdatedAt,
     paceMs: 25,
     people: () => peopleListing(vaultId),
     live: peopleLiveHooks(vaultId),

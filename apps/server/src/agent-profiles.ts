@@ -9,8 +9,10 @@
  *   prism-ro  the server's OWN /mcp, read-scope tools, per-turn PAT (scope read)
  *   prism-rw  /mcp, read tools + the non-destructive write tools, per-turn PAT
  *             (scope write). No delete, share or governance voting/proposals.
- *             Includes the graph-maintenance write tools (decide a review row,
- *             recommend a merge, file a gap); prism-suggest does NOT.
+ *   prism-graph  /mcp, note reads + the graph-maintenance tools (review queue,
+ *             duplicates, merge RECOMMENDATIONS, filing gaps) + create/update
+ *             note, per-turn PAT (scope write). Only this profile has them; it
+ *             is offered only with AGENT_PRISM_PROFILES AND AGENT_GRAPH_PROFILE.
  *
  * Each allowlist is EXPLICIT (never a whole server) and the dontAsk permission
  * mode denies the rest. `buildClaudeArgs` additionally refuses any entry that
@@ -19,11 +21,11 @@
  */
 import { PRISM_MCP_ALLOW, VAULT_MCP_ALLOW, type McpServerKind } from "./agent-exec";
 
-export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw" | "prism-suggest";
+export type AgentProfile = "vault-ro" | "vault-rw" | "skill" | "prism-ro" | "prism-rw" | "prism-suggest" | "prism-graph";
 /** Every profile the type knows. */
-export const ALL_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "skill", "prism-ro", "prism-rw", "prism-suggest"];
-/** Profiles a user may pick for a chat session (`skill` is server-internal). */
-export const SESSION_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest"];
+export const ALL_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "skill", "prism-ro", "prism-rw", "prism-suggest", "prism-graph"];
+/** Profiles a user may pick for a chat session (`skill` is server-internal; `prism-graph` needs its own flag too). */
+export const SESSION_PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw", "prism-ro", "prism-rw", "prism-suggest", "prism-graph"];
 /** The always-available vault profiles (kept for existing importers). */
 export const PROFILES: readonly AgentProfile[] = ["vault-ro", "vault-rw"];
 
@@ -62,11 +64,6 @@ export const PRISM_READ_TOOLS = [
   "prism_note_access",
   "prism_governance_state",
   "prism_dashboard_query",
-  // Graph maintenance (mcp/tool-people.ts) — server owner only at the tool layer.
-  "prism_people_review_queue",
-  "prism_people_review_context",
-  "prism_people_duplicates",
-  "prism_people_link_status",
 ] as const;
 /** Write-scope additions for prism-rw. Deliberately absent: prism_delete_note,
  *  prism_share (grants), prism_propose_change / prism_vote / prism_withdraw_proposal
@@ -79,22 +76,32 @@ export const PRISM_WRITE_TOOLS = [
   "prism_resolve_comment",
   "prism_suggest_edit",
   "prism_sheet_update",
-  // Graph maintenance: decide ONE review row, record a merge RECOMMENDATION, file
-  // a gap. None of them can merge, delete or create a person (mcp/tool-people.ts).
-  "prism_people_review_decide",
-  "prism_people_recommend_merge",
-  "prism_people_file_review",
 ] as const;
 
+/**
+ * Graph maintenance (mcp/tool-people.ts) — ONLY in the explicit `prism-graph`
+ * profile, never in a general chat profile (review M3): the reads expose raw
+ * identity keys (addresses, ids) and the writes change who a record belongs to.
+ * None of them can merge, delete or create a person.
+ */
+export const PRISM_GRAPH_READ_TOOLS = ["prism_people_review_queue", "prism_people_review_context", "prism_people_duplicates", "prism_people_link_status"] as const;
+export const PRISM_GRAPH_WRITE_TOOLS = ["prism_people_review_decide", "prism_people_recommend_merge", "prism_people_file_review"] as const;
+/** prism-graph = note reads + the graph tools + creating/updating its own state and report notes. No delete, share, restore, comments. */
+export const PRISM_GRAPH_TOOLS = [...PRISM_READ_TOOLS, ...PRISM_GRAPH_READ_TOOLS, ...PRISM_GRAPH_WRITE_TOOLS, "prism_create_note", "prism_update_note"] as const;
+
 /** Which MCP server a profile talks to. */
-export const profileServer = (p: AgentProfile): McpServerKind => (p === "prism-ro" || p === "prism-rw" || p === "prism-suggest" ? "prism" : "vault");
+export const profileServer = (p: AgentProfile): McpServerKind => (p === "prism-ro" || p === "prism-rw" || p === "prism-suggest" || p === "prism-graph" ? "prism" : "vault");
 export const isPrismProfile = (p: AgentProfile): boolean => profileServer(p) === "prism";
 /** The PAT scope a prism profile's per-turn credential carries. */
-export const prismProfileScope = (p: AgentProfile): "read" | "write" => (p === "prism-rw" || p === "prism-suggest" ? "write" : "read");
+export const prismProfileScope = (p: AgentProfile): "read" | "write" => (p === "prism-rw" || p === "prism-suggest" || p === "prism-graph" ? "write" : "read");
 export const isReadOnlyProfile = (p: AgentProfile): boolean => p === "vault-ro" || p === "prism-ro";
 
 /** Server config switch for the prism-* profiles (read live so tests can flip it). */
 export const prismProfilesEnabled = (): boolean => /^(1|true|on|yes)$/i.test(process.env.AGENT_PRISM_PROFILES?.trim() ?? "");
+/** The graph-maintenance profile is an explicit opt-in on top of the prism profiles (read live). */
+export const graphProfileEnabled = (): boolean => prismProfilesEnabled() && /^(1|true|on|yes)$/i.test(process.env.AGENT_GRAPH_PROFILE?.trim() ?? "");
+/** May a session use this profile on this server right now? */
+export const profileEnabled = (p: AgentProfile): boolean => (p === "prism-graph" ? graphProfileEnabled() : !isPrismProfile(p) || prismProfilesEnabled());
 
 /** The `--allowedTools` list per profile. */
 export function profileAllowedTools(profile: AgentProfile): string[] {
@@ -111,13 +118,14 @@ export function profileAllowedTools(profile: AgentProfile): string[] {
       return [...PRISM_READ_TOOLS, "prism_suggest_edit", "prism_add_comment"].map((t) => `${PRISM_MCP_ALLOW}__${t}`);
     case "prism-rw":
       return [...PRISM_READ_TOOLS, ...PRISM_WRITE_TOOLS].map((t) => `${PRISM_MCP_ALLOW}__${t}`);
+    case "prism-graph":
+      return PRISM_GRAPH_TOOLS.map((t) => `${PRISM_MCP_ALLOW}__${t}`);
   }
 }
 
 export const isProfile = (p: unknown): p is AgentProfile => typeof p === "string" && (ALL_PROFILES as readonly string[]).includes(p);
 /** A profile a client may request for a session (prism-* only when enabled). */
-export const isSessionProfile = (p: unknown): p is AgentProfile =>
-  isProfile(p) && (SESSION_PROFILES as readonly string[]).includes(p) && (!isPrismProfile(p) || prismProfilesEnabled());
+export const isSessionProfile = (p: unknown): p is AgentProfile => isProfile(p) && (SESSION_PROFILES as readonly string[]).includes(p) && profileEnabled(p);
 /** The profiles the server currently offers (the UI picker). */
 export const availableSessionProfiles = (): AgentProfile[] => SESSION_PROFILES.filter((p) => isSessionProfile(p));
 

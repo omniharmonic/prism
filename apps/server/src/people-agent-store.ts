@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db";
 import { vaultIdentity } from "./identity-store";
+import { config } from "./config";
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS people_agent_decisions (
@@ -26,6 +27,7 @@ db.exec(`
     vault_id TEXT NOT NULL,
     vault_identity TEXT NOT NULL,
     cap_key TEXT NOT NULL,
+    account TEXT NOT NULL DEFAULT '',
     credential_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     candidate_id TEXT,
@@ -57,6 +59,12 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS people_merge_recommendations_open ON people_merge_recommendations (vault_identity, status, created_at);
 `);
+{
+  // A table made by an earlier build of this branch lacks `account`.
+  const cols = new Set((db.prepare("PRAGMA table_info(people_agent_decisions)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has("account")) db.exec("ALTER TABLE people_agent_decisions ADD COLUMN account TEXT NOT NULL DEFAULT ''");
+  db.exec("CREATE INDEX IF NOT EXISTS people_agent_decisions_account ON people_agent_decisions (account, kind, ts)");
+}
 
 export const RATIONALE_MAX = 600;
 const DAY_MS = 24 * 3600_000;
@@ -65,8 +73,10 @@ const DAY_MS = 24 * 3600_000;
 export type AgentActionKind = "resolve" | "dismiss" | "file" | "recommend";
 const BUDGET_KINDS: Record<"decide" | "file" | "recommend", AgentActionKind[]> = { decide: ["resolve", "dismiss"], file: ["file"], recommend: ["recommend"] };
 
+export type AgentBudget = keyof typeof BUDGET_KINDS;
+
 /** Actions of one budget taken with this cap key in the last 24 h (rolling: no midnight to wait for). */
-export function agentActionsLastDay(capKey: string, budget: keyof typeof BUDGET_KINDS, now = Date.now()): number {
+export function agentActionsLastDay(capKey: string, budget: AgentBudget, now = Date.now()): number {
   const kinds = BUDGET_KINDS[budget];
   return (
     db
@@ -75,9 +85,21 @@ export function agentActionsLastDay(capKey: string, budget: keyof typeof BUDGET_
   ).n;
 }
 
+/** The same, across every credential of one account (the per-account ceiling). */
+export function accountActionsLastDay(account: string, budget: AgentBudget, now = Date.now()): number {
+  const kinds = BUDGET_KINDS[budget];
+  return (
+    db
+      .prepare(`SELECT count(*) n FROM people_agent_decisions WHERE account = ? AND kind IN (${kinds.map(() => "?").join(",")}) AND ts > ? AND outcome != 'released'`)
+      .get(account, ...kinds, now - DAY_MS) as { n: number }
+  ).n;
+}
+
 export interface AgentDecisionInput {
   vaultId: string;
   capKey: string;
+  /** The account (email) the credential belongs to. */
+  account: string;
   credentialId: string;
   kind: AgentActionKind;
   candidateId?: string | null;
@@ -91,9 +113,10 @@ export interface AgentDecisionInput {
  * attempted (the people lock was busy) — it does not count toward the cap.
  */
 export function beginAgentAction(a: AgentDecisionInput, now = Date.now()): { id: number; finish(outcome: "ok" | "open" | "failed" | "released", personId?: string | null): void } {
+  pruneAgentRecords(now);
   const r = db
-    .prepare("INSERT INTO people_agent_decisions (ts, vault_id, vault_identity, cap_key, credential_id, kind, candidate_id, person_id, rationale, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')")
-    .run(now, a.vaultId, vaultIdentity(a.vaultId), a.capKey, a.credentialId, a.kind, a.candidateId ?? null, a.personId ?? null, a.rationale.slice(0, RATIONALE_MAX));
+    .prepare("INSERT INTO people_agent_decisions (ts, vault_id, vault_identity, cap_key, account, credential_id, kind, candidate_id, person_id, rationale, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')")
+    .run(now, a.vaultId, vaultIdentity(a.vaultId), a.capKey, a.account, a.credentialId, a.kind, a.candidateId ?? null, a.personId ?? null, a.rationale.slice(0, RATIONALE_MAX));
   const id = Number(r.lastInsertRowid);
   return {
     id,
@@ -146,7 +169,8 @@ export function agentActionCounts(vaultId: string, now = Date.now()): Record<str
 
 // ── merge recommendations ────────────────────────────────────────────────────
 
-export type RecommendationStatus = "open" | "dismissed" | "merged";
+/** `obsolete` = another merge took one of the two notes away first. */
+export type RecommendationStatus = "open" | "dismissed" | "merged" | "obsolete";
 export interface MergeRecommendation {
   id: string;
   personIds: [string, string];
@@ -211,11 +235,24 @@ export function recommendMerge(
   return { result: "created", recommendation: recFromRow(db.prepare("SELECT * FROM people_merge_recommendations WHERE id = ?").get(id) as RecRow) };
 }
 
+/** Newest first, bounded. */
 export function listRecommendations(vaultId: string, o: { status?: RecommendationStatus; limit?: number } = {}): MergeRecommendation[] {
   const limit = Math.max(1, Math.min(200, Math.floor(o.limit ?? 100)));
   return (
-    db.prepare("SELECT * FROM people_merge_recommendations WHERE vault_identity = ? AND status = ? ORDER BY created_at, id LIMIT ?").all(vaultIdentity(vaultId), o.status ?? "open", limit) as RecRow[]
+    db.prepare("SELECT * FROM people_merge_recommendations WHERE vault_identity = ? AND status = ? ORDER BY updated_at DESC, id LIMIT ?").all(vaultIdentity(vaultId), o.status ?? "open", limit) as RecRow[]
   ).map(recFromRow);
+}
+
+/** The open recommendations for exactly these pairs (a page of duplicate pairs). */
+export function recommendationsForPairs(vaultId: string, pairs: Array<[string, string]>): Map<string, MergeRecommendation> {
+  const out = new Map<string, MergeRecommendation>();
+  if (!pairs.length) return out;
+  const keys = pairs.map(([a, b]) => pairKey(a, b));
+  const rows = db
+    .prepare(`SELECT * FROM people_merge_recommendations WHERE vault_identity = ? AND status = 'open' AND pair_key IN (${keys.map(() => "?").join(",")})`)
+    .all(vaultIdentity(vaultId), ...keys) as Array<RecRow & { pair_key: string }>;
+  for (const r of rows) out.set(r.pair_key, recFromRow(r));
+  return out;
 }
 
 export function openRecommendationCount(vaultId: string): number {
@@ -227,7 +264,30 @@ export function dismissRecommendation(vaultId: string, id: string, by: string, n
   return db.prepare("UPDATE people_merge_recommendations SET status = 'dismissed', decided_by = ?, updated_at = ? WHERE id = ? AND vault_identity = ? AND status = 'open'").run(by, now, id, vaultIdentity(vaultId)).changes > 0;
 }
 
-/** A merge of this pair completed (by the owner): close its recommendation. */
-export function closeRecommendationMerged(vaultId: string, a: string, b: string, by: string, now = Date.now()): void {
-  db.prepare("UPDATE people_merge_recommendations SET status = 'merged', decided_by = ?, updated_at = ? WHERE vault_identity = ? AND pair_key = ? AND status = 'open'").run(by, now, vaultIdentity(vaultId), pairKey(a, b));
+/**
+ * A merge of (canonical, secondary) completed (by the owner): that pair's
+ * recommendation becomes `merged`, and every OTHER open recommendation that
+ * involves the merged-away note becomes `obsolete` (that note is a tombstone now).
+ */
+export function closeRecommendationsAfterMerge(vaultId: string, canonicalId: string, secondaryId: string, by: string, now = Date.now()): void {
+  const identity = vaultIdentity(vaultId);
+  db.prepare("UPDATE people_merge_recommendations SET status = 'merged', decided_by = ?, updated_at = ? WHERE vault_identity = ? AND pair_key = ? AND status = 'open'").run(by, now, identity, pairKey(canonicalId, secondaryId));
+  db.prepare("UPDATE people_merge_recommendations SET status = 'obsolete', decided_by = ?, updated_at = ? WHERE vault_identity = ? AND status = 'open' AND (a_id = ? OR b_id = ?)").run(by, now, identity, secondaryId, secondaryId);
+}
+
+let lastPrune = 0;
+/**
+ * Retention (PEOPLE_AGENT_RETENTION_DAYS): ledger rows and CLOSED
+ * recommendations older than that are deleted. Runs at most hourly, from the
+ * agent write path (cheap indexed deletes).
+ */
+export function pruneAgentRecords(now = Date.now(), force = false): { decisions: number; recommendations: number } {
+  const days = config.peopleAgentRetentionDays;
+  if (!(days > 0) || (!force && now - lastPrune < 3600_000)) return { decisions: 0, recommendations: 0 };
+  lastPrune = now;
+  const cutoff = now - days * DAY_MS;
+  return {
+    decisions: db.prepare("DELETE FROM people_agent_decisions WHERE ts < ?").run(cutoff).changes,
+    recommendations: db.prepare("DELETE FROM people_merge_recommendations WHERE status != 'open' AND updated_at < ?").run(cutoff).changes,
+  };
 }
