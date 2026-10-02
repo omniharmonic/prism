@@ -57,6 +57,21 @@ test("prism profiles: tool names are real catalog tools with the right scope; no
   assert.ok(profileAllowedTools("prism-ro").every((t) => PRISM_TOOLS.find((p) => `mcp__prism__${p.name}` === t)!.scope === "read"));
 });
 
+test("graph-maintenance tools: every prism_people_* tool is assigned deliberately — reads to prism-ro + prism-rw, decisions to prism-rw only", () => {
+  const people = PRISM_TOOLS.map((t) => t.name).filter((n) => n.startsWith("prism_people_"));
+  const ro = profileAllowedTools("prism-ro"), rw = profileAllowedTools("prism-rw"), suggest = profileAllowedTools("prism-suggest");
+  const reads = ["prism_people_review_queue", "prism_people_review_context", "prism_people_duplicates", "prism_people_link_status"];
+  const decisions = ["prism_people_review_decide", "prism_people_recommend_merge", "prism_people_file_review"];
+  assert.deepEqual([...people].sort(), [...reads, ...decisions].sort(), "a new prism_people_* tool needs an explicit profile decision here");
+  for (const n of reads) assert.ok(ro.includes(`mcp__prism__${n}`) && rw.includes(`mcp__prism__${n}`), n);
+  for (const n of decisions) {
+    assert.ok(rw.includes(`mcp__prism__${n}`), `${n} in prism-rw`);
+    assert.ok(!ro.includes(`mcp__prism__${n}`), `${n} never in prism-ro`);
+    assert.ok(!suggest.includes(`mcp__prism__${n}`), `${n} never in prism-suggest`);
+  }
+  for (const p of ["vault-ro", "vault-rw", "skill"] as AgentProfile[]) assert.ok(!profileAllowedTools(p).some((t) => t.includes("prism_people_")), p);
+});
+
 test("buildClaudeArgs: a prism run may name ONLY prism tools; a vault run only vault tools", () => {
   const ok = buildClaudeArgs("hi", "/tmp/m.json", { server: "prism", allowedTools: profileAllowedTools("prism-ro") });
   assert.equal(ok[ok.indexOf("--allowedTools") + 1], profileAllowedTools("prism-ro").join(","));

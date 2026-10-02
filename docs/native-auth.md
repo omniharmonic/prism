@@ -81,7 +81,10 @@ validated redirect target is shown prominently beneath it, either the scheme
   passthrough.
 - **Collab WebSocket (`/collab`):** pass the device token as the Hocuspocus
   provider's `token` parameter. `resolveLevel` treats it like a session:
-  `effectiveLevel` over the user's grants, read-only below `suggest`.
+  `effectiveLevel` over the user's grants, read-only below `edit` (suggest-only
+  enforcement; `COLLAB_SUGGEST_ENFORCED=false` restores the old read-only-below-`suggest`
+  rule). A suggest-level user sends suggestions and comments to
+  `POST /api/collab/:id/commands` with the same bearer token.
 - **CORS:** requests from `tauri://localhost` and `http://tauri.localhost` (override
   with `NATIVE_ORIGINS`) get CORS **without credentials**. Use the bearer header,
   not cookies. The cookie CORS rule for `APP_ORIGIN` is unchanged.

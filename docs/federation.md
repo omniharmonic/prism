@@ -96,6 +96,14 @@ Federation honors the same permission levels as collab (`view < comment < sugges
 proposed change is recorded as a **durable suggestion** that survives a server restart, in
 the `pending_suggestions` table. The owner reviews it:
 
+> **Suggest-only enforcement (2026-10).** Raw collab updates now require **edit**, for peers
+> too: a peer hub whose space grant is `suggest` gets a **read-only** bridge socket, so its
+> users' changes no longer arrive here as tracked edits. People on *this* hub with suggest
+> access use `POST /api/collab/:id/commands`; there is no equivalent command path for a peer
+> hub yet. Until one exists, give a peer `edit` if it must contribute, or set
+> `COLLAB_SUGGEST_ENFORCED=false` (which restores the old behaviour for everyone, including
+> the trust-based "Can suggest"). Suggestions already in the inbox are unaffected.
+
 ```bash
 curl https://hub-a.example.com/acl/suggestions?status=pending --cookie '<owner-session>'
 curl -X POST .../acl/suggestions/:id/accept --cookie '<owner-session>'

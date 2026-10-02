@@ -15,6 +15,9 @@ import type { Level } from "../src/permissions";
 import { signCapability } from "../src/auth/capability";
 import { randomBytes } from "node:crypto";
 import { config } from "../src/config";
+import { TRANSCRIPT_LINK_TABLES } from "../src/transcript-links-store";
+import "../src/identity-store"; // creates identity_candidates (reset below)
+import "../src/people-agent-store"; // creates people_agent_decisions + people_merge_recommendations (reset below)
 
 // SAFETY GUARD (load-time): the test harness TRUNCATES tables (resetDb). It must
 // NEVER run against a real on-disk database. Tests are meant to run with
@@ -267,8 +270,11 @@ export function installFakeVault(): FakeVault {
     // /notes/:id item
     const m = sub.match(/^\/notes\/([^/]+)$/);
     if (m) {
-      const id = decodeURIComponent(m[1]!);
-      const existing = store.get(id);
+      const asked = decodeURIComponent(m[1]!);
+      // Like the real vault: by id, then by (case-insensitive) path, then by a UNIQUE title.
+      const titled = [...store.values()].filter((n) => typeof n.metadata?.title === "string" && (n.metadata.title as string).toLowerCase() === asked.toLowerCase());
+      const existing = store.get(asked) ?? [...store.values()].find((n) => !!n.path && n.path.toLowerCase() === asked.toLowerCase()) ?? (titled.length === 1 ? titled[0] : undefined);
+      const id = existing?.id ?? asked;
       if (method === "GET") {
         return existing ? json(existing) : new Response("not found", { status: 404 });
       }
@@ -331,8 +337,11 @@ export function resetDb(): void {
       "DELETE FROM publication_presentations; DELETE FROM publication_presentation_history; DELETE FROM publications; DELETE FROM peers; DELETE FROM peer_pairings; DELETE FROM spaces; DELETE FROM federated_notes; DELETE FROM federation_outbox; DELETE FROM pending_suggestions; DELETE FROM federation_mirror_requests; DELETE FROM settings; DELETE FROM prism_vaults; DELETE FROM workspaces; DELETE FROM vault_workspaces; DELETE FROM vault_mirrors; DELETE FROM mcp_tokens; DELETE FROM mcp_token_revocations; DELETE FROM governance_sig_ledger;" +
       "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +
       "DELETE FROM push_subscriptions; DELETE FROM agent_policy_audit; DELETE FROM agent_followups; DELETE FROM agent_events; DELETE FROM agent_turns; DELETE FROM agent_cost_log; DELETE FROM agent_sessions;" +
-      "DELETE FROM mcp_pats; DELETE FROM action_audit; DELETE FROM action_idempotency;" +
-      "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;",
+      "DELETE FROM mcp_pats; DELETE FROM action_audit; DELETE FROM action_idempotency; DELETE FROM collab_command_receipts;" +
+      "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;" +
+      "DELETE FROM identity_candidates;" + // created by src/identity-store.ts (imported above)
+      "DELETE FROM people_agent_decisions; DELETE FROM people_merge_recommendations;" + // src/people-agent-store.ts
+      TRANSCRIPT_LINK_TABLES.map((t) => `DELETE FROM ${t};`).join(" "),
   );
 }
 

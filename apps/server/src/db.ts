@@ -796,6 +796,71 @@ db.exec(`
 }
 db.exec(`CREATE INDEX IF NOT EXISTS collab_docs_vault ON collab_docs(vault_id, name);`);
 
+// Human collaboration command receipts (suggest-only enforcement, human-collab.ts).
+// One row per (vault, note, actor, request id): the idempotency ledger for
+// POST /api/collab/:id/commands. It lives HERE, not in the Y.Doc, because a
+// document's Yjs state is rebuilt from the note on an external-edit reseed and
+// would drop any receipt root — a retried request would then apply twice.
+//   state = 'applied'  the change is in the IN-MEMORY document only; written in
+//                      the same synchronous section as the Yjs mutation.
+//           'durable'  the document state containing it was persisted (snapshot
+//                      + vault); flipped in the same transaction as that store.
+// An 'applied' row never outlives the in-memory document it describes: loading
+// THAT document (same `doc_name`) drops them (the change was lost with the old
+// instance), so a retry re-applies instead of claiming a change that never
+// reached storage. Unconfirmed rows are scoped by `doc_name`, not by note: a
+// federated note can be open under its space key and under its bare id at once,
+// and one instance's load/store must not drop or confirm the other's commands.
+const COLLAB_RECEIPTS_DDL = `
+  CREATE TABLE IF NOT EXISTS collab_command_receipts (
+    vault_id      TEXT NOT NULL,
+    note_id       TEXT NOT NULL,
+    doc_name      TEXT NOT NULL,          -- the collab document it was applied to (note id, vault::id, or a space key)
+    actor         TEXT NOT NULL,          -- server-derived: user:<email> | capability:<id>
+    request_id    TEXT NOT NULL,          -- client uuid
+    command_hash  TEXT NOT NULL,          -- sha256 of the canonical command body
+    kind          TEXT NOT NULL,
+    result        TEXT NOT NULL,          -- JSON HumanCollabResult (ids only, no content)
+    state         TEXT NOT NULL,          -- applied | durable
+    created_at    INTEGER NOT NULL,
+    durable_at    INTEGER,
+    body_bytes    INTEGER NOT NULL DEFAULT 0, -- rendered-body growth this command caused (per-actor budget)
+    comment_bytes INTEGER NOT NULL DEFAULT 0, -- comment data it added (per-actor budget)
+    PRIMARY KEY (vault_id, note_id, actor, request_id)
+  );
+  CREATE INDEX IF NOT EXISTS collab_command_receipts_doc ON collab_command_receipts(doc_name, state);
+  CREATE INDEX IF NOT EXISTS collab_command_receipts_age ON collab_command_receipts(created_at);
+  CREATE INDEX IF NOT EXISTS collab_command_receipts_actor ON collab_command_receipts(vault_id, note_id, actor, created_at);
+`;
+/**
+ * Create / migrate the receipts table. Receipts live at most ~24 h and an
+ * upgrade restarts the server (every in-memory document is reloaded, which
+ * forgets unconfirmed receipts anyway), so an older shape — the first two
+ * pre-release commits had no `doc_name`, then no byte columns, and an index on
+ * (vault_id, note_id, state) — is DROPPED and recreated rather than altered.
+ * Losing a durable receipt cannot cause a second application: a command can
+ * only apply when the document revision equals the one it was prepared
+ * against, which its own effect changed. Exported for the migration test.
+ */
+export function migrateCollabReceipts(d: Database.Database): "created" | "current" | "recreated" {
+  const cols = new Set((d.prepare("PRAGMA table_info(collab_command_receipts)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (cols.size === 0) {
+    d.exec(COLLAB_RECEIPTS_DDL);
+    return "created";
+  }
+  const want = ["doc_name", "body_bytes", "comment_bytes"];
+  if (want.every((c) => cols.has(c))) {
+    d.exec(COLLAB_RECEIPTS_DDL); // indexes are IF NOT EXISTS
+    return "current";
+  }
+  d.transaction(() => {
+    d.exec("DROP TABLE collab_command_receipts"); // drops its indexes with it
+    d.exec(COLLAB_RECEIPTS_DDL);
+  })();
+  return "recreated";
+}
+migrateCollabReceipts(db);
+
 // ── Runtime settings (owner-mutable kv) ──────────────────────────────────────
 const selectSetting = db.prepare("SELECT value FROM settings WHERE key = ?");
 const upsertSetting = db.prepare(
@@ -1749,6 +1814,113 @@ export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: n
     updated_at: now(),
   });
 }
+
+// ---- human collaboration command receipts (see the table comment above) ----
+export interface CollabCommandReceipt {
+  vault_id: string;
+  note_id: string;
+  doc_name: string;
+  actor: string;
+  request_id: string;
+  command_hash: string;
+  kind: string;
+  result: string;
+  state: "applied" | "durable";
+  created_at: number;
+  durable_at: number | null;
+  body_bytes: number;
+  comment_bytes: number;
+}
+/** An unconfirmed receipt, as the load/store paths handle it. */
+export interface UnconfirmedCollabReceipt {
+  rowid: number;
+  kind: string;
+  result: string;
+}
+const selectCollabReceipt = db.prepare(
+  "SELECT * FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?",
+);
+const insertCollabReceiptStmt = db.prepare(
+  `INSERT INTO collab_command_receipts (vault_id, note_id, doc_name, actor, request_id, command_hash, kind, result, state, created_at, durable_at, body_bytes, comment_bytes)
+   VALUES (@vault_id, @note_id, @doc_name, @actor, @request_id, @command_hash, @kind, @result, 'applied', @created_at, NULL, @body_bytes, @comment_bytes)`,
+);
+const selectUnconfirmedCollabReceipts = db.prepare(
+  "SELECT rowid, kind, result FROM collab_command_receipts WHERE doc_name = ? AND state = 'applied' ORDER BY rowid",
+);
+const confirmCollabReceiptStmt = db.prepare("UPDATE collab_command_receipts SET state = 'durable', durable_at = ? WHERE rowid = ? AND state = 'applied'");
+const dropUnconfirmedCollabReceiptsStmt = db.prepare("DELETE FROM collab_command_receipts WHERE doc_name = ? AND state = 'applied'");
+const countCollabReceiptsStmt = db.prepare("SELECT COUNT(*) AS n FROM collab_command_receipts WHERE vault_id = ? AND note_id = ?");
+const countCollabReceiptsActorStmt = db.prepare("SELECT COUNT(*) AS n FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ?");
+const pruneCollabReceiptsStmt = db.prepare("DELETE FROM collab_command_receipts WHERE created_at < ?");
+const pruneCollabReceiptsDocStmt = db.prepare("DELETE FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND created_at < ?");
+
+export function getCollabReceipt(vaultId: string, noteId: string, actor: string, requestId: string): CollabCommandReceipt | null {
+  return (selectCollabReceipt.get(vaultId, noteId, actor, requestId) as CollabCommandReceipt | undefined) ?? null;
+}
+/** Record a command as applied-in-memory. Throws on a duplicate key. */
+export function insertCollabReceipt(r: Omit<CollabCommandReceipt, "state" | "durable_at" | "body_bytes" | "comment_bytes"> & { body_bytes?: number; comment_bytes?: number }): void {
+  insertCollabReceiptStmt.run({ body_bytes: 0, comment_bytes: 0, ...r });
+}
+const deleteCollabReceiptStmt = db.prepare("DELETE FROM collab_command_receipts WHERE rowid = ? AND state = 'applied'");
+/** Forget unconfirmed receipts whose change is no longer in the document. */
+export function deleteUnconfirmedCollabReceipts(rowids: number[]): void {
+  for (const r of rowids) deleteCollabReceiptStmt.run(r);
+}
+const actorUsageStmt = db.prepare(
+  `SELECT
+     SUM(CASE WHEN kind IN ('resolve','delete-comment') THEN 0 ELSE 1 END) AS growing,
+     SUM(CASE WHEN kind IN ('resolve','delete-comment') THEN 1 ELSE 0 END) AS housekeeping,
+     COALESCE(SUM(body_bytes), 0) AS body,
+     COALESCE(SUM(comment_bytes), 0) AS comments
+   FROM collab_command_receipts WHERE vault_id = ? AND note_id = ? AND actor = ?`,
+);
+/** One actor's recent use of one document (within retention). */
+export function collabActorUsage(vaultId: string, noteId: string, actor: string): { growing: number; housekeeping: number; body: number; comments: number } {
+  const r = actorUsageStmt.get(vaultId, noteId, actor) as { growing: number | null; housekeeping: number | null; body: number; comments: number };
+  return { growing: r.growing ?? 0, housekeeping: r.housekeeping ?? 0, body: r.body, comments: r.comments };
+}
+/** The commands applied to this in-memory document that no store has confirmed yet. */
+export function unconfirmedCollabReceipts(docName: string): UnconfirmedCollabReceipt[] {
+  return selectUnconfirmedCollabReceipts.all(docName) as UnconfirmedCollabReceipt[];
+}
+/**
+ * The in-memory document is being (re)loaded: its unconfirmed changes are gone.
+ * Returns the rows it forgot (so the loader can clean up what they left in a
+ * half-saved snapshot), read and deleted in one transaction.
+ */
+export const takeUnconfirmedCollabReceipts = db.transaction((docName: string): UnconfirmedCollabReceipt[] => {
+  const rows = unconfirmedCollabReceipts(docName);
+  if (rows.length) dropUnconfirmedCollabReceiptsStmt.run(docName);
+  return rows;
+});
+export function countCollabReceipts(vaultId: string, noteId: string, actor?: string): number {
+  const row = actor === undefined ? countCollabReceiptsStmt.get(vaultId, noteId) : countCollabReceiptsActorStmt.get(vaultId, noteId, actor);
+  return (row as { n: number }).n;
+}
+/** Retention: drop receipts created before `cutoff` (one document, or all). */
+export function pruneCollabReceipts(cutoff: number, vaultId?: string, noteId?: string): number {
+  return vaultId !== undefined && noteId !== undefined
+    ? pruneCollabReceiptsDocStmt.run(vaultId, noteId, cutoff).changes
+    : pruneCollabReceiptsStmt.run(cutoff).changes;
+}
+/**
+ * Persist a document's Yjs state and confirm EXACTLY the receipts in `confirm`,
+ * in ONE transaction. `confirm` is the set the caller captured in the same
+ * synchronous section in which it rendered the content it then wrote to the
+ * vault — so a receipt turns 'durable' only if the vault copy really contains
+ * its change. A command applied while that vault write was in flight is in the
+ * snapshot but NOT in `confirm`; its own store confirms it. Pass [] when the
+ * vault write failed.
+ */
+export const saveDocStateConfirming = db.transaction(
+  (name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId: string, confirm: number[]): number => {
+    saveDocState(name, state, sourceUpdatedAt, vaultId);
+    let n = 0;
+    const at = now();
+    for (const rowid of confirm) n += confirmCollabReceiptStmt.run(at, rowid).changes;
+    return n;
+  },
+);
 
 // ---- grants (peer subject) ----
 // Expired peer grants (TTL, 4.3) simply don't load → federation access lapses on

@@ -15,7 +15,8 @@
  * `fetch` + the vault client are injectable so the mapping and the ingest loop
  * are unit-tested without the live API (see test/clickup.test.ts).
  */
-import type { Note } from "../parachute";
+import type { Note, NoteLinkInput } from "../parachute";
+import type { ForwardLinker } from "../people-forward";
 
 const BASE = "https://api.clickup.com/api/v2";
 type FetchLike = typeof fetch;
@@ -209,8 +210,8 @@ export function clickupTaskNote(
 /** The minimal vault surface the ingester needs (so tests inject a fake). */
 export interface ClickUpVault {
   listNotes(opts: { tags?: string[]; includeContent?: boolean }): Promise<Note[]>;
-  createNote(p: { content: string; path?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<Note>;
-  updateNote(id: string, p: { content?: string; metadata?: Record<string, unknown> }): Promise<Note>;
+  createNote(p: { content: string; path?: string; metadata?: Record<string, unknown>; tags?: string[]; links?: NoteLinkInput[] }): Promise<Note>;
+  updateNote(id: string, p: { content?: string; metadata?: Record<string, unknown>; links?: { add?: NoteLinkInput[] } }): Promise<Note>;
 }
 
 export type ClickUpEvent =
@@ -228,6 +229,8 @@ export interface ClickUpIngestOptions {
   /** ~1s between page requests keeps well under 100 req/min. */
   throttleMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** CLICKUP_LINK_ENABLED: `assigned-to` / `belongs-to` links to EXISTING notes. */
+  forward?: ForwardLinker;
 }
 
 export interface ClickUpIngestResult {
@@ -342,20 +345,26 @@ export async function ingestClickUp(
           return out; // capped: incomplete pass — maxDateUpdatedMs stays 0, cursor stays put
         }
         const note = clickupTaskNote(task, { teamId: team.id, teamName: team.name });
+        // Identity layer (off unless opts.forward): links ride in the task's own write.
+        const plan = opts.forward
+          ? await opts.forward.task({ assignees: (task.assignees ?? []).map((a) => ({ name: a.username, email: a.email })), project: task.list?.name }).catch(() => null)
+          : null;
         try {
           if (known) {
-            await vault.updateNote(known.id, { content: note.content, metadata: note.metadata });
+            await vault.updateNote(known.id, { content: note.content, metadata: note.metadata, ...(plan?.links.length ? { links: { add: plan.links } } : {}) });
+            if (plan?.pending.length) opts.forward?.queue(known.id, plan.pending);
             out.updated++;
             emit({ kind: "updated", id: task.id, name: task.name ?? "" });
           } else {
             // Two tasks can slug to the same path; retry once with an id suffix.
             let created: Note;
             try {
-              created = await vault.createNote(note);
+              created = await vault.createNote(plan?.links.length ? { ...note, links: plan.links } : note);
             } catch (e) {
               if (!/path_conflict|409/.test(String((e as Error).message))) throw e;
-              created = await vault.createNote({ ...note, path: `${note.path}-${task.id.slice(-6).toLowerCase()}` });
+              created = await vault.createNote({ ...note, ...(plan?.links.length ? { links: plan.links } : {}), path: `${note.path}-${task.id.slice(-6).toLowerCase()}` });
             }
+            if (plan?.pending.length && created?.id) opts.forward?.queue(created.id, plan.pending);
             bySourceId.set(task.id, created);
             out.created++;
             emit({ kind: "created", id: task.id, name: task.name ?? "" });

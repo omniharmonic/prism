@@ -331,7 +331,7 @@ function findTextRanges(doc: PMNode, needle: string, limit = 2): Array<{ from: n
 }
 
 /** Run a ProseMirror transform over the doc's shared fragment and write the result back minimally. */
-function editFragment(ydoc: Y.Doc, fn: (doc: PMNode) => PMNode | null): void {
+export function editFragment(ydoc: Y.Doc, fn: (doc: PMNode) => PMNode | null): void {
   const frag = ydoc.getXmlFragment(FIELD);
   const { doc, meta } = initProseMirrorDoc(frag, collabSchema());
   const next = fn(doc);

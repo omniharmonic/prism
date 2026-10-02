@@ -54,9 +54,11 @@ import { vaultClient } from "../parachute";
 import { config, type CalendarDeleteMode, type VaultEntry } from "../config";
 import { getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret } from "../secrets";
-import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault } from "./people";
+import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault, type PersonReview } from "./people";
+import { IngestReviewSink } from "../people-forward";
 import { defaultGogRunner, type GogRunner } from "./gmail";
-import { matchTranscript } from "./transcript-match";
+import { matchTranscript, matchTranscripts, score as transcriptScore, MIN_FUZZY_SCORE } from "./transcript-match";
+import { meetingTranscriptIds, transcriptLinkGate, type LinkSnapshot, type TranscriptLinkGate } from "../transcript-links";
 
 export type { CalendarDeleteMode };
 
@@ -328,6 +330,14 @@ export interface CalendarPassOptions {
   maxOrphans?: number;
   now?: number;
   log?: (line: string) => void;
+  /**
+   * The transcript-link decision journal (../transcript-links.ts). Supplied by the
+   * real runners: several recordings per event, CAS writes, manual link/unlink
+   * decisions respected. Absent → the legacy single-recording path below.
+   */
+  links?: TranscriptLinkGate;
+  /** Identity layer (PEOPLE_QUEUE_ON_INGEST): attendees that were not linked, queued for review. */
+  reviewSink?: { collect(eventId: string): (r: PersonReview) => void; flush(eventId: string, noteId: string | null | undefined): void };
 }
 
 export interface CalendarPassResult {
@@ -428,7 +438,7 @@ export async function syncCalendarWindow(
         }
         continue;
       }
-      const hit = await people.findOrCreate(vault, a.name, { email: a.email }).catch((e) => {
+      const hit = await people.findOrCreate(vault, a.name, { email: a.email, ...(opts.reviewSink ? { review: opts.reviewSink.collect(m.eventId) } : {}) }).catch((e) => {
         log(`person for event ${m.eventId} failed: ${String(e)}`);
         return null;
       });
@@ -452,8 +462,81 @@ export async function syncCalendarWindow(
       attendees: [...names.map((name) => ({ name, email: name.includes("@") ? name : null })), ...emails.map((email) => ({ name: email, email }))] });
   }
 
+  /** Transcripts some meeting note already claims (singular, plural or typed link). */
+  let claimedIds: Set<string> | null = null;
+  const claimed = () => (claimedIds ??= new Set(meetings.flatMap(meetingTranscriptIds)));
+  /** The journal, loaded ONCE per pass (not per event × transcript). */
+  let journalSnap: LinkSnapshot | null = null;
+  const journal = (gate: TranscriptLinkGate) => (journalSnap ??= gate.snapshot());
+
+  /**
+   * Journal-gated linking. Every recording carrying the occurrence's exact event
+   * id links (multiple recordings); fuzzy stays single-winner and only for a
+   * meeting with no recording. The gate re-checks manual overrides inside the
+   * per-transcript critical section and never moves a transcript.
+   */
+  async function linkTranscriptsGated(gate: TranscriptLinkGate, note: Note | null, noteId: string | null, m: MeetingNote): Promise<void> {
+    const list = await loadTranscripts();
+    if (!list.length) return;
+    const back = (t: Note) => asStr(t.metadata?.meetingNoteId) || null;
+    const snap = journal(gate);
+    const own = new Set([...(note ? meetingTranscriptIds(note) : []), ...(noteId ? snap.linkedTo(noteId) : [])]);
+    // A journaled link is never moved; a manual unlink bars only this pair/event.
+    const overridden = (t: Note) => !!snap.state(t.id)?.meetingId || snap.suppressed(t.id, noteId, m.eventId);
+    const targets: Array<{ t: Note; score: number; evidence: string[]; repair?: boolean }> = [];
+    // Complete a half-written pair only when the matcher independently agrees:
+    // one note's editable metadata is never authority to write the other note.
+    if (noteId) {
+      for (const t of list) {
+        const half = own.has(t.id) ? !back(t) : back(t) === noteId;
+        if (!half || overridden(t)) continue;
+        const c = transcriptScore(m, t);
+        if (c && c.score >= MIN_FUZZY_SCORE) targets.push({ t, score: c.score, evidence: c.evidence, repair: true });
+      }
+    }
+    const hasRecording = own.size > 0 || (!!noteId && list.some((t) => back(t) === noteId));
+    const match = matchTranscripts(m, list, peerMeetings, { isUnavailable: (t) => !!back(t) || claimed().has(t.id) || overridden(t), hasRecording });
+    for (const c of match.exact) targets.push({ t: list.find((t) => t.id === c.noteId)!, score: c.score, evidence: c.evidence });
+    if (match.fuzzy.status === "ambiguous") {
+      intent({ action: "link-transcript", effect: "blocked", noteId: noteId ?? undefined, eventId: m.eventId, reason: "Ambiguous transcript/event candidates; manual review required", candidates: match.fuzzy.candidates.slice(0, 5) });
+    } else if (match.fuzzy.status === "matched") {
+      const best = match.fuzzy.candidates[0]!;
+      if (!recognized || nextPageToken || events.length >= opts.max) {
+        intent({ action: "link-transcript", effect: "blocked", noteId: noteId ?? undefined, eventId: m.eventId, reason: "Calendar response is incomplete; fuzzy transcript matching deferred" });
+      } else targets.push({ t: list.find((t) => t.id === best.noteId)!, score: best.score, evidence: best.evidence });
+    }
+    for (const x of targets) {
+      const base = { action: "link-transcript" as const, noteId: noteId ?? undefined, path: m.path, eventId: m.eventId };
+      const why = `transcript ${x.t.id} (${x.evidence.join(", ")}; score ${x.score})`;
+      const claim = () => {
+        x.t.metadata = { ...(x.t.metadata ?? {}), meetingNoteId: noteId ?? `(new:${m.eventId})` };
+        claimed().add(x.t.id);
+      };
+      if (opts.shadow || !noteId) {
+        intent({ ...base, effect: "shadow", reason: why });
+        claim();
+        continue;
+      }
+      try {
+        const outcome = await gate.autoLink({ transcriptId: x.t.id, meetingId: noteId, eventId: m.eventId, evidence: x.evidence });
+        if (outcome === "skipped") {
+          intent({ ...base, effect: "blocked", reason: `${why}: a manual decision or another link holds this transcript` });
+          continue;
+        }
+        claim();
+        if (outcome === "applied") {
+          res.transcriptLinks++;
+          intent({ ...base, effect: "applied", reason: x.repair ? `Repaired incomplete transcript link: ${why}` : why });
+        } else intent({ ...base, effect: "failed", reason: `${why}: incomplete write, repair pending` });
+      } catch (e) {
+        intent({ ...base, effect: "failed", reason: String(e) });
+      }
+    }
+  }
+
   /** Ranked occurrence matching. Existing manual/legacy links are never reassigned. */
   async function linkTranscript(note: Note | null, noteId: string | null, m: MeetingNote): Promise<void> {
+    if (opts.links) return linkTranscriptsGated(opts.links, note, noteId, m);
     const existing = asStr(note?.metadata?.transcriptNoteId);
     if (note && (hasRel(note, HAS_TRANSCRIPT) || existing)) {
       // Repair only links this matcher created, including a prior half-written pair.
@@ -566,6 +649,7 @@ export async function syncCalendarWindow(
           res.updated++;
         }
         byEvent.set(m.eventId, known);
+        opts.reviewSink?.flush(m.eventId, known.id);
         await linkTranscript(known, known.id, m);
         continue;
       }
@@ -609,6 +693,7 @@ export async function syncCalendarWindow(
       meetings.push(fresh);
       index(fresh);
       byEvent.set(m.eventId, fresh);
+      opts.reviewSink?.flush(m.eventId, fresh.id);
       await linkTranscript(fresh, fresh.id, m);
     } catch (e) {
       res.failed++;
@@ -616,7 +701,7 @@ export async function syncCalendarWindow(
     }
   }
 
-  await reconcile(vault, meetings, { events, recognized, nextPageToken }, opts, res, intent, log);
+  await reconcile(vault, meetings, { events, recognized, nextPageToken }, opts, res, intent, log, loadTranscripts);
   return res;
 }
 
@@ -637,6 +722,8 @@ async function reconcile(
   res: CalendarPassResult,
   intent: (i: Omit<CalendarIntent, "at" | "source" | "mode" | "deleteMode" | "window">) => void,
   log: (line: string) => void,
+  /** The pass's own (already loaded, at most once) transcript listing. */
+  loadTranscripts: () => Promise<Note[]>,
 ): Promise<void> {
   const { from, to, max } = opts;
   if (!fetched.recognized) res.reconcile.skipped = "unrecognised gog response shape";
@@ -648,6 +735,20 @@ async function reconcile(
   }
 
   const seen = new Set(fetched.events.map((e) => asStr(e.id)).filter((x): x is string => !!x));
+  // Deletion protection sees EVERY form of a transcript link: legacy singular,
+  // plural, typed link, the decision journal and a transcript's own backpointer.
+  let backpointers: Set<string> | null | undefined;
+  const hasAnyTranscript = async (note: Note): Promise<boolean> => {
+    if (meetingTranscriptIds(note).length || opts.links?.linkedTo(note.id).length) return true;
+    if (backpointers === undefined) {
+      try {
+        backpointers = new Set((await loadTranscripts()).map((t) => asStr(t.metadata?.meetingNoteId) ?? ""));
+      } catch {
+        backpointers = null; // can't confirm there is none → never delete
+      }
+    }
+    return backpointers === null || backpointers.has(note.id);
+  };
   const orphans: Array<{ note: Note; day: string; action: "delete" | "cancel"; why: string }> = [];
   for (const note of meetings) {
     const md = note.metadata;
@@ -660,7 +761,7 @@ async function reconcile(
     if (!day || day < from || day > to) continue;
     if (seen.has(eid)) continue;
 
-    const hasTranscript = !!asStr(md.transcriptNoteId);
+    const hasTranscript = await hasAnyTranscript(note);
     let templateOnly = false;
     if (!hasTranscript) {
       try {
@@ -781,6 +882,10 @@ async function withLock<T>(vaultId: string, fn: () => Promise<T>): Promise<T> {
     if (locks.get(vaultId) === next) locks.delete(vaultId);
   }
 }
+
+/** The journal gate for the real runners. TRANSCRIPT_LINK_JOURNAL=0 restores the legacy path. */
+const linkGate = (vaultId: string): TranscriptLinkGate | undefined =>
+  process.env.TRANSCRIPT_LINK_JOURNAL === "0" ? undefined : transcriptLinkGate(vaultId);
 
 function googleAccount(vaultId: string): string | null {
   const raw = getSecret(vaultId, config.ownerEmail, "google");
@@ -939,19 +1044,27 @@ export async function runCalendarOnce(
   }
   const { from, to } = syncWindow(now);
   const client = new CalendarClient(account, opts.run ?? testRunner ?? defaultGogRunner());
-  const res = await withLock(entry.id, () =>
-    syncCalendarWindow(client, vaultClient(entry.id) as unknown as CalendarVault, {
+  const links = linkGate(entry.id);
+  const res = await withLock(entry.id, async () => {
+    // Finish automatic links an earlier pass left half-written (never in shadow).
+    if (links && mode === "live") {
+      const swept = await links.sweep().catch(() => null);
+      if (swept && (swept.applied || swept.pending)) console.log(`[calendar] ${entry.id}: transcript links re-driven: ${swept.applied} applied, ${swept.pending} still pending`);
+    }
+    return syncCalendarWindow(client, vaultClient(entry.id) as unknown as CalendarVault, {
       from,
       to,
       max: 250,
       shadow: mode === "shadow",
       deleteMode: config.calendarDeleteMode,
       source: "worker",
+      ...(config.peopleQueueOnIngest ? { reviewSink: new IngestReviewSink({ vaultId: entry.id, origin: "ingest:calendar", relationship: ATTENDED_BY }) } : {}),
       maxOrphans: config.calendarMaxOrphansPerPass,
       now,
       log: (l) => console.log(`[calendar] ${entry.id}: ${l}`),
-    }),
-  );
+      links,
+    });
+  });
   persistPass(entry.id, res);
   console.log(summarize(entry.id, res));
   if (res.failed && res.failed === res.fetched) throw new Error(`calendar: all ${res.failed} event(s) failed`);
@@ -985,9 +1098,11 @@ export async function runCalendarRange(
       shadow: mode === "shadow",
       deleteMode: config.calendarDeleteMode,
       source: "range",
+      ...(config.peopleQueueOnIngest ? { reviewSink: new IngestReviewSink({ vaultId, origin: "ingest:calendar", relationship: ATTENDED_BY }) } : {}),
       maxOrphans: config.calendarMaxOrphansPerPass,
       now: opts.now,
       log: (l) => console.log(`[calendar] ${vaultId} range: ${l}`),
+      links: linkGate(vaultId),
     }),
   );
   persistPass(vaultId, res);
