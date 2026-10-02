@@ -1,5 +1,7 @@
 # Frontend-first delivery pass
 
+**Execution detail:** [FRONTEND-ACCEPTANCE.md](FRONTEND-ACCEPTANCE.md) now maps each screen to the original approved requirement, existing code, remaining gaps and acceptance. This short priority note is not a replacement roadmap.
+
 The owner's 2026-10-02 correction sets the immediate priority: implement the approved visual direction, not more backend scope. `MOCKUPS.md` and its images remain the visual references; current contracts remain the functional boundaries. Backend follow-up has its own `BACKEND-HANDOFF.md`.
 
 ## Visible work, in order
