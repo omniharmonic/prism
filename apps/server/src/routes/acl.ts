@@ -563,7 +563,7 @@ acl.get("/notes/:id", async (c) => {
     const grants = grantsForResource("note", id, vaultId);
     const people = grants
       .filter((g) => g.subject_type === "user")
-      .map((g) => ({ email: g.subject, level: g.level, caps: g.caps ?? expandLevel(g.level) }));
+      .map((g) => ({ email: g.subject, level: g.level, caps: [...(g.caps ?? expandLevel(g.level))], customPermissions: !!g.caps?.length }));
     const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
     // A bearer URL IS a credential. Scoped sharers may manage people grants,
     // but must not receive existing links that can confer powers they lack.
@@ -588,7 +588,9 @@ acl.get("/notes/:id", async (c) => {
     }
     const visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
     const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
-    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks });
+    const held = canManageLinks ? null : await sharerCaps(c, { kind: "note", resource: id });
+    const allowedLevels = LEVELS.filter(level => level !== "own" && (!held || [...expandLevel(level)].every(cap => held.has(cap))));
+    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks, allowedLevels });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);

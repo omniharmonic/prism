@@ -282,3 +282,29 @@ test("unknown vault and changed actor fail before any management mutation", asyn
   );
   assert.equal(capabilitiesForResource("note", "same").length, 0);
 });
+
+test("sharing serializes legacy level capabilities and narrows sharer grant choices", async () => {
+  addGrant({
+    vault_id: "team-b",
+    subject_type: "user",
+    subject: "legacy@test.local",
+    resource_type: "note",
+    resource: "same",
+    level: "view",
+    created_by: OWNER,
+  });
+  person(SHARER, "team-b");
+  const response = await req("/notes/same", { email: SHARER });
+  assert.equal(response.status, 200);
+  const access = (await response.json()) as {
+    people: { email: string; caps: string[] }[];
+    allowedLevels: string[];
+    canManageLinks: boolean;
+  };
+  assert.deepEqual(
+    access.people.find((p) => p.email === "legacy@test.local")!.caps,
+    ["view"],
+  );
+  assert.deepEqual(access.allowedLevels, ["view"]);
+  assert.equal(access.canManageLinks, false);
+});

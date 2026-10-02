@@ -25,7 +25,7 @@ import type {
   WorkspaceRole,
 } from "@prism/core";
 import { serverFetch, collabWsUrl } from "../transport";
-import { getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders } from "../config";
+import { getActiveVault, setActiveVault, getActiveWorkspace, setActiveWorkspace, contextHeaders, agentScope, getMe, apiBase } from "../config";
 import type { ViewerIdentity } from "@prism/core";
 
 /**
@@ -33,37 +33,31 @@ import type { ViewerIdentity } from "@prism/core";
  * browser never holds a vault token; these calls ride the owner's session
  * cookie. Powers the full share dialog (people + capability links + tag-grants).
  */
-async function acl(path: string, init?: RequestInit): Promise<Response> {
-  // Bind every management call to the active vault + workspace, so the owner/admin
-  // manages the workspace (and vault) they're currently viewing.
-  const r = await serverFetch(`/acl${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...contextHeaders(),
-      ...(init?.headers as Record<string, string>),
-    },
+async function managementRequest(prefix: "/acl" | "/api", path: string, init?: RequestInit): Promise<Response> {
+  const scope = agentScope();
+  const me = getMe();
+  if (!scope || !me?.email || !me.vaultId || !me.workspace?.id) {
+    throw new Error("Reconnect to this workspace before managing access.");
+  }
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
+  headers.set("X-Prism-Vault", me.vaultId);
+  headers.set("X-Prism-Workspace", me.workspace.id);
+  headers.set("X-Prism-Write-Actor", `user:${me.email}`);
+  const origin = apiBase().replace(/\/api$/, "");
+  const response = await serverFetch(`${origin}${prefix}${path}`, { ...init, credentials: "include", headers });
+  // Finish reading before checking scope: a delayed JSON body is also an old
+  // audience's result. Never display it after switching account/workspace/vault.
+  const payload = await response.arrayBuffer();
+  if (agentScope() !== scope) throw new Error("Workspace or account changed. Reopen these settings.");
+  const result = new Response([204, 205, 304].includes(response.status) ? null : payload, {
+    status: response.status, statusText: response.statusText, headers: response.headers,
   });
-  if (!r.ok) throw new Error(`ACL ${init?.method ?? "GET"} ${path} → ${r.status}`);
-  return r;
+  if (!result.ok) throw await serverError(result, `${prefix.slice(1).toUpperCase()} ${init?.method ?? "GET"} ${path}`);
+  return result;
 }
-
-/** Gateway /api/* calls (session cookie, active-vault/workspace scoped) — the
- *  same conventions as acl() for routes mounted under /api (integrations). */
-async function api(path: string, init?: RequestInit): Promise<Response> {
-  const r = await serverFetch(`/api${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...contextHeaders(),
-      ...(init?.headers as Record<string, string>),
-    },
-  });
-  if (!r.ok) throw await serverError(r, `API ${init?.method ?? "GET"} ${path}`);
-  return r;
-}
+const acl = (path: string, init?: RequestInit) => managementRequest("/acl", path, init);
+const api = (path: string, init?: RequestInit) => managementRequest("/api", path, init);
 
 /** An Error carrying the server's `{error, detail}` (e.g. 409 `disabled`) so the
  *  UI can say something useful. Server error bodies never carry secret values. */
@@ -113,9 +107,8 @@ export const webCollabSharing: CollabSharing = {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });
   },
   async setNoteVisibility(noteId: string, isPrivate: boolean): Promise<void> {
-    // One server path for both shells (/acl/notes/:id/visibility): it merges
-    // metadata (prism_creator preserved) and force-writes, so it never 428s on
-    // Parachute's optimistic-concurrency guard.
+    // Both shells use the same guarded metadata delta. Conflicts are surfaced
+    // for review; visibility is never retried as a forced write.
     await acl(`/notes/${enc(noteId)}/visibility`, { method: "PUT", body: JSON.stringify({ isPrivate }) });
   },
 

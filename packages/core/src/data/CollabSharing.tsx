@@ -163,6 +163,8 @@ export interface IntegrationStatus {
 export interface SharePerson {
   email: string;
   level: ShareLevel;
+  caps?: string[];
+  customPermissions?: boolean;
 }
 export interface TagAccess {
   tag: string;
@@ -175,6 +177,9 @@ export interface NoteAccess {
   people: SharePerson[];
   links: ShareLink[];
   tagAccess: TagAccess[];
+  /** Bearer credentials and visibility remain administrator-managed. */
+  canManageLinks?: boolean;
+  allowedLevels?: ShareLevel[];
 }
 /** Result of granting a person: when they had no account yet, an invite is
  *  issued and its accept URL is returned so the owner can hand it over directly
