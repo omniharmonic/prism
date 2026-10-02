@@ -38,3 +38,5 @@ The first combined run had two failures in the new concurrent-snapshot fixture b
 - [Phone unsent draft with attachment](assets/verification/d01-context-attached-mobile.png)
 
 These capture real components in the isolated fixture. Fixture controls and simplified background layout are not proposed product UI. Root still owns aggregate integration, production web and installed desktop acceptance.
+
+Fresh-read follow-up: the handoff explicitly requests `VaultClient.getNote(id, { fresh: true })`, the existing interface option that bypasses offline cached reads. The fixture asserts that option and the full 26-case handoff suite passed again in both engines. No client interface changed.
