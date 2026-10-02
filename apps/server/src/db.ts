@@ -498,6 +498,23 @@ db.exec(`
     failures   INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS push_subscriptions_email ON push_subscriptions(email);
+  -- APNs device tokens (WP5 iOS push, apns.ts). ONE row per native device: the
+  -- row is bound to the pd_ device credential that registered it and is deleted
+  -- when that device is revoked / signs out (auth/device.ts revokeDevice). The
+  -- token is a routing address, not a credential, but is still never logged
+  -- (only a sha256 prefix). Sends also join device_tokens, so a row whose device
+  -- is revoked/expired is never delivered to even if a delete was missed.
+  CREATE TABLE IF NOT EXISTS apns_tokens (
+    device_id    TEXT PRIMARY KEY REFERENCES device_tokens(id) ON DELETE CASCADE,
+    token        TEXT NOT NULL,              -- lowercase hex
+    environment  TEXT NOT NULL CHECK (environment IN ('sandbox', 'production')),
+    owner_email  TEXT NOT NULL,
+    vault_id     TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS apns_tokens_owner ON apns_tokens(owner_email);
+  CREATE INDEX IF NOT EXISTS apns_tokens_token ON apns_tokens(token);
   -- Live actions audit (Arch v2 WP1.5, actions/store.ts). One row per action
   -- attempt that passed the server-owner gate. NEVER a message body, subject or
   -- plain recipient address: targets are ids (note/room/event/calendar ids) and

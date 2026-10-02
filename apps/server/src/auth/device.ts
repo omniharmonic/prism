@@ -35,6 +35,7 @@ import {
 } from "../db";
 import { revokeVaultToken } from "../mcp-token";
 import { revokePatsForDevice } from "./pat";
+import { removeApnsTokenForDevice } from "../apns";
 
 export const DEVICE_TOKEN_PREFIX = "pd_";
 export const NATIVE_CLIENT_ID = "prism-native";
@@ -169,7 +170,7 @@ export function bearerFromHeader(h: string | null | undefined): string | undefin
 
 /**
  * Revoke a device AND every credential minted through it (WP2.1 L3): Prism MCP
- * PATs minted via the device (WP6.1), and MCP hub
+ * PATs minted via the device (WP6.1), its APNs push registration, and MCP hub
  * tokens recorded with this device_id are revoked via the mcp-token revoker
  * seam (the hub enforces within ~60s). The device row is revoked first and
  * unconditionally; a failed hub revoke is logged and left unmarked, so it stays
@@ -181,6 +182,9 @@ export async function revokeDevice(id: string): Promise<boolean> {
   // Prism MCP PATs minted through this device (WP6.1) die with it — a local row
   // update, immediate.
   revokePatsForDevice(id);
+  // Its APNs registration (iOS push) goes too: a signed-out / revoked device is
+  // never notified again.
+  removeApnsTokenForDevice(id);
   for (const t of liveMcpTokensForDevice(id)) {
     try {
       await revokeVaultToken(t.jti);
