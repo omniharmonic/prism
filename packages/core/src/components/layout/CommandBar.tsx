@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
-  CheckSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles } from "lucide-react";
+  CheckSquare, MessageSquare, Bot, ArrowRight, Settings, RefreshCw, Wand2, History, Sparkles } from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useVaultSearch, useCreateNote } from "../../app/hooks/useParachute";
@@ -16,7 +16,8 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { buildTransformPrompt, hostServiceErrorText, runWikilinkJobToEnd, wikilinkJobSummary } from "../../lib/host/services";
 import { addSyncConfig, resolveWikilinks } from "../../lib/host/vaultOps";
-import { searchModeLabel, searchPreview } from "../navigation/searchPresentation";
+import { searchModeLabel, searchPreview, searchResultGroup } from "../navigation/searchPresentation";
+import "../navigation/search-workspace.css";
 import { NewContentMenu } from "../navigation/NewContentMenu";
 import { useNotionDbSyncModal } from "./NotionDbSyncHost";
 
@@ -31,6 +32,7 @@ interface Command {
 export function CommandBar() {
   const { commandBarOpen, closeCommandBar, openTab } = useUIStore();
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "notes" | "messages" | "commands">("all");
   const [debouncedQuery] = useDebounce(query, 200);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creationType, setCreationType] = useState<ContentType | null>(null);
@@ -67,6 +69,7 @@ export function CommandBar() {
   useEffect(() => {
     if (commandBarOpen) {
       setQuery("");
+      setFilter("all");
       setSelectedId(null);
       const previous = document.activeElement as HTMLElement | null;
       returnFocus.current = previous;
@@ -111,7 +114,7 @@ export function CommandBar() {
     {
       id: "agent-panel", label: "Open Agent Panel", category: "navigate" as const,
       icon: <Bot size={15} />,
-      action: () => { setContextPanelTab("agent"); toggleContextPanel(); closeCommandBar(); },
+      action: () => { setContextPanelTab("agent"); if (!useUIStore.getState().contextPanelOpen) toggleContextPanel(); closeCommandBar(); },
     },
     // Server agent sessions (WP3.2) — owner + AgentClient shells only.
     ...(agentChat ? [
@@ -259,68 +262,47 @@ export function CommandBar() {
 
   // Filter commands by query
   const filteredCommands = useMemo(() => {
+    if (filter !== "all" && filter !== "commands") return [];
     if (!query.trim()) return commands;
     const q = query.toLowerCase();
     return commands.filter((c) => c.label.toLowerCase().includes(q));
-  }, [commands, query]);
+  }, [commands, query, filter]);
 
-  // Vault search results as items
+  // Local filters describe the returned accessible set; they do not claim to
+  // search a separate message index or paginate the complete vault.
   const vaultItems = useMemo(() => {
-    return (query.trim() === debouncedQuery.trim() ? searchResults || [] : []).slice(0, 8).map((note) => ({
+    const notes = query.trim() === debouncedQuery.trim() ? searchResults ?? [] : [];
+    return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => ({
       id: `note-${note.id}`,
-      label: note.path?.split("/").pop()?.replace(/\.[^.]+$/, "") || note.id,
-      sublabel: (note.path || "").replace(/^vault\//, ""),
-      icon: typeof note.metadata?.icon === "string" ? (note.metadata.icon as string) : null,
-      preview: searchPreview(note, 130),
-      action: () => {
-        const type = inferContentType(note);
-        const title = note.path?.split("/").pop() || note.id;
-        openTab(note.id, title, type);
-        closeCommandBar();
-      },
+      label: note.path?.split("/").pop() || note.id,
+      sublabel: note.path || "Saved note",
+      group: searchResultGroup(note),
+      icon: typeof note.metadata?.icon === "string" ? note.metadata.icon : null,
+      preview: searchPreview(note, 220),
+      action: () => { openTab(note.id, note.path?.split("/").pop() || note.id, inferContentType(note)); closeCommandBar(); },
     }));
-  }, [searchResults, query, debouncedQuery, openTab, closeCommandBar]);
-
-  // Keep explicit selection attached to an action, even as results arrive.
-  // An agent turn must never be the automatic fallback for an unfinished or
-  // empty search. Users can still choose it with the pointer or arrow keys.
-  const itemIds = [...filteredCommands.map(c => c.id), ...vaultItems.map(n => n.id),
-    ...(query.trim() && agentChat ? ["ask-agent"] : [])];
-  const defaultId = filteredCommands[0]?.id ?? vaultItems[0]?.id;
-  const selectedIndex = itemIds.indexOf(selectedId ?? defaultId ?? "");
-  const totalItems = itemIds.length;
-
+  }, [searchResults, query, debouncedQuery, filter, openTab, closeCommandBar]);
+  const noteItems = vaultItems.filter(item => item.group === "notes");
+  const messageItems = vaultItems.filter(item => item.group === "messages");
+  const orderedNotes = [...noteItems, ...messageItems];
+  const showAsk = !!query.trim() && agentChat && (filter === "all" || filter === "commands");
+  const items = [...orderedNotes, ...filteredCommands, ...(showAsk ? [{ id: "ask-agent", action: () => askClaude() }] : [])];
+  // Ask is never a default action: Enter while waiting or after zero matches
+  // cannot accidentally submit the user's search as an agent prompt.
+  const defaultId = orderedNotes[0]?.id ?? filteredCommands[0]?.id;
+  const selectedIndex = items.findIndex(item => item.id === (selectedId ?? defaultId));
+  const totalItems = items.length;
   useEffect(() => {
-    if (commandBarOpen) document.getElementById(`prism-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest" });
+    if (commandBarOpen) document.getElementById(`prism-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [commandBarOpen, selectedIndex, totalItems]);
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      closeCommandBar();
-      return;
-    }
-    if (e.key === "ArrowDown") {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCommandBar(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedId(itemIds[Math.max(0, Math.min(selectedIndex + 1, totalItems - 1))] ?? null);
+      const next = e.key === "ArrowDown" ? Math.max(0, Math.min(selectedIndex + 1, totalItems - 1)) : Math.max(selectedIndex - 1, 0);
+      setSelectedId(items[next]?.id ?? null);
     }
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setSelectedId(itemIds[Math.max(selectedIndex - 1, 0)] ?? null);
-    }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      executeSelected();
-    }
-  };
-
-  const executeSelected = () => {
-    if (selectedIndex < 0 || selectedIndex >= totalItems) return;
-    if (selectedIndex < filteredCommands.length) {
-      filteredCommands[selectedIndex].action();
-    } else if (selectedIndex < filteredCommands.length + vaultItems.length) {
-      vaultItems[selectedIndex - filteredCommands.length].action();
-    }
-    else askClaude();
+    if (e.key === "Enter") { e.preventDefault(); items[selectedIndex]?.action(); }
   };
 
   // "Ask Claude: …" → a new server agent session with that prompt (web owner).
@@ -334,117 +316,55 @@ export function CommandBar() {
   if (creationType) return <NewContentMenu initialType={creationType} returnFocus={returnFocus.current} onClose={() => setCreationType(null)} />;
   if (!commandBarOpen) return null;
 
-  const askIdx = filteredCommands.length + vaultItems.length;
-
-  const inputRow = (
-    <div
-      className="flex items-center gap-3 flex-shrink-0"
-      style={{
-        padding: "13px 16px",
-        borderBottom: isMobile ? undefined : "1px solid var(--glass-border)",
-        borderTop: isMobile ? "1px solid var(--glass-border)" : undefined,
-      }}
-    >
-      <Search size={18} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-      <input
-        ref={inputRef}
-        aria-label="Search notes and commands"
-        role="combobox"
-        aria-expanded={true}
-        aria-controls="prism-command-results"
-        aria-autocomplete="list"
-        aria-activedescendant={selectedIndex >= 0 && selectedIndex < totalItems ? `prism-command-${selectedIndex}` : undefined}
-        inputMode="search"
-        enterKeyHint="search"
-        value={query}
-        onChange={(e) => { setQuery(e.target.value); setSelectedId(null); }}
-        onKeyDown={handleKeyDown}
-        placeholder="Search notes, create, or ask your agent…"
-        className="flex-1 min-w-0 bg-transparent outline-none"
-        style={{ color: "var(--text-primary)", fontSize: "var(--text-lg)" }}
-      />
-      {!isMobile && <kbd>esc</kbd>}
-      <button aria-label="Close search" className="focus-ring shrink-0 rounded-lg p-2" onClick={closeCommandBar}><X size={18} /></button>
-    </div>
-  );
-
-  const body = (
-    <>
-      {query.trim() && <div role="status" className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>{searching || query.trim() !== debouncedQuery.trim() ? "Searching…" : searchFailed ? "Search unavailable" : searchModeLabel(searchMode)}</div>}
-      {searchFailed && <div role="alert" className="px-3 py-2 text-sm">Couldn't search this workspace. <button className="focus-ring underline" onClick={() => void retrySearch()}>Try again</button></div>}
-      {query.trim() && query.trim() === debouncedQuery.trim() && !searching && !searchFailed && !vaultItems.length && <p className="px-3 py-2 text-sm" style={{ color: "var(--text-muted)" }}>No matching notes.</p>}
-      {filteredCommands.length > 0 && (
-        <div style={{ marginBottom: 2 }}>
-          <div className="text-label" style={{ padding: "6px 10px 4px" }}>Actions</div>
-          {filteredCommands.map((cmd, i) => (
-            <CmdRow
-              key={cmd.id}
-              id={`prism-command-${i}`}
-              selected={selectedIndex === i}
-              onClick={cmd.action}
-              onHover={() => setSelectedId(cmd.id)}
-              icon={cmd.icon}
-              label={cmd.label}
-            />
-          ))}
-        </div>
-      )}
-
-      {vaultItems.length > 0 && (
-        <div style={{ marginBottom: 2 }}>
-          <div className="text-label" style={{ padding: "6px 10px 4px" }}>Notes</div>
-          {vaultItems.map((item, i) => {
-            const idx = filteredCommands.length + i;
-            return (
-              <CmdRow
-                key={item.id}
-                id={`prism-command-${idx}`}
-                selected={selectedIndex === idx}
-                onClick={item.action}
-                onHover={() => setSelectedId(item.id)}
-                icon={item.icon ? <span style={{ fontSize: 17 }}>{item.icon}</span> : <FileText size={15} />}
-                label={item.label}
-                sublabel={item.sublabel}
-                preview={item.preview}
-              />
-            );
-          })}
-        </div>
-      )}
-
-      {query.trim() && agentChat && (
-        <CmdRow
-          id={`prism-command-${askIdx}`}
-          selected={selectedIndex === askIdx}
-          onClick={askClaude}
-          onHover={() => setSelectedId("ask-agent")}
-          icon={<Bot size={15} />}
-          label={`Ask your agent: "${query}"`}
-          accent
-          trailing={<ArrowRight size={13} />}
-        />
-      )}
-
-      {filteredCommands.length === 0 && vaultItems.length === 0 && !query.trim() && (
-        <div style={{ padding: "28px 16px", textAlign: "center", fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>
-          Type to search or create
-        </div>
-      )}
-    </>
-  );
-
+  const searchingNow = searching || query.trim() !== debouncedQuery.trim();
+  const inputRow = <div className="prism-search-input-row">
+    <Search size={20} aria-hidden="true" />
+    <input ref={inputRef} aria-label="Search notes and commands" role="combobox" aria-expanded={true}
+      aria-controls="prism-command-results" aria-autocomplete="list"
+      aria-activedescendant={selectedIndex >= 0 ? `prism-command-${selectedIndex}` : undefined}
+      inputMode="search" enterKeyHint="search" value={query}
+      onChange={e => { setQuery(e.target.value); setSelectedId(null); }} onKeyDown={handleKeyDown}
+      placeholder="Search your workspace…" />
+    <button tabIndex={0} aria-label="Close search" className="focus-ring" onClick={closeCommandBar}><X size={18} /></button>
+  </div>;
+  const filters = <div className="prism-search-filters" aria-label="Filter search results">
+    {([['all', 'All'], ['notes', 'Notes'], ['messages', 'Messages'], ['commands', 'Commands']] as const).map(([id, label]) =>
+      <button key={id} tabIndex={0} type="button" aria-pressed={filter === id} className="focus-ring" onClick={() => { setFilter(id); setSelectedId(null); inputRef.current?.focus({ preventScroll: true }); }}>{label}</button>)}
+  </div>;
+  const status = <div className="prism-search-status" role="status">
+    <span>Current workspace</span><span>{!query.trim() ? "Search notes or choose an action" : searchingNow ? "Searching…" : searchFailed ? "Search unavailable" : `${vaultItems.length} results shown · ${searchModeLabel(searchMode)}`}</span>
+  </div>;
+  const renderNotes = (notes: typeof vaultItems, label: string) => notes.length > 0 && <div role="group" aria-label={label}>
+    <div className="prism-search-group">{label}</div>
+    {notes.map(item => { const index = items.findIndex(candidate => candidate.id === item.id); return <CmdRow key={item.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={item.action} onHover={() => setSelectedId(item.id)}
+      icon={item.icon ? <span>{item.icon}</span> : item.group === "messages" ? <MessageSquare size={18} /> : <FileText size={18} />}
+      label={item.label} sublabel={item.sublabel} preview={item.preview} trailing={<span className="prism-search-open">Open <ArrowRight size={13} /></span>} />; })}
+  </div>;
+  const body = <>
+    {renderNotes(noteItems, "Notes")}{renderNotes(messageItems, "Messages")}
+    {filteredCommands.length > 0 && <div role="group" aria-label="Commands"><div className="prism-search-group">Commands</div>{filteredCommands.map(cmd => {
+      const index = items.findIndex(item => item.id === cmd.id);
+      return <CmdRow key={cmd.id} id={`prism-command-${index}`} selected={selectedIndex === index} onClick={cmd.action} onHover={() => setSelectedId(cmd.id)} icon={cmd.icon} label={cmd.label} />;
+    })}</div>}
+    {showAsk && <CmdRow id={`prism-command-${items.length - 1}`} selected={selectedIndex === items.length - 1} onClick={askClaude} onHover={() => setSelectedId("ask-agent")} icon={<Bot size={18} />} label={`Ask your agent: "${query}"`} accent trailing={<ArrowRight size={13} />} />}
+  </>;
+  const feedback = <>
+    {query.trim() && searchFailed && <div role="alert" className="prism-search-feedback">Couldn't search this workspace. <button className="focus-ring" onClick={() => void retrySearch()}>Try again</button></div>}
+    {query.trim() && !searchingNow && !searchFailed && !vaultItems.length && filter !== "commands" && <p className="prism-search-feedback">{filter === "messages" ? "No matching messages in these results." : "No matching notes."} <span>Try a name, phrase, or related idea.</span></p>}
+    {filter === "commands" && !filteredCommands.length && <p className="prism-search-feedback">No matching commands.</p>}
+  </>;
   // Mobile: a floating sheet with the field docked at the bottom (just above the
   // keyboard, Obsidian-style) and results scrolling above it.
   if (isMobile) {
     return (
-      <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); closeCommandBar(); }}
+      <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); closeCommandBar(); }}
         className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-transparent p-0 text-[var(--text-primary)] flex flex-col justify-end"
         style={{ zIndex: "var(--z-modal)" as unknown as number }}
         onClick={closeCommandBar}
       >
         <div className="sheet-backdrop absolute inset-0" style={{ background: "rgba(0,0,0,0.45)" }} />
         <div
-          className="sheet-panel glass-elevated relative flex flex-col"
+          className="prism-search-sheet sheet-panel relative flex flex-col"
           style={{
             margin: "0 8px",
             marginBottom: "calc(env(safe-area-inset-bottom) + 8px)",
@@ -454,7 +374,7 @@ export function CommandBar() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
+          {filters}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
           {inputRow}
         </div>
       </dialog>
@@ -462,17 +382,17 @@ export function CommandBar() {
   }
 
   return (
-    <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); closeCommandBar(); }}
+    <dialog ref={dialogRef} aria-label="Search workspace" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); closeCommandBar(); }}
       className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 text-[var(--text-primary)] flex items-start justify-center"
       style={{ background: "rgba(0,0,0,0.45)", zIndex: "var(--z-modal)", paddingTop: "14vh", paddingLeft: 16, paddingRight: 16 }}
       onClick={closeCommandBar}
     >
       <div
-        className="glass-elevated modal-rise overflow-hidden"
-        style={{ width: "min(600px, 100%)", borderRadius: "var(--radius-lg)" }}
+        className="prism-search-sheet modal-rise overflow-hidden"
+        style={{ width: "min(780px, 100%)", borderRadius: "var(--radius-lg)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {inputRow}
+        {inputRow}{filters}{status}{feedback}
         <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
 
         {/* Footer keyboard hints */}
@@ -522,10 +442,10 @@ function CmdRow({
       tabIndex={-1}
       onClick={onClick}
       onMouseEnter={onHover}
-      className="interactive focus-ring flex w-full items-center gap-3"
+      className="prism-search-result interactive focus-ring flex w-full items-center gap-3"
       style={{
         padding: "8px 10px",
-        minHeight: 40,
+        minHeight: 48,
         color: accent ? "var(--color-accent)" : "var(--text-primary)",
         background: selected ? "var(--surface-active)" : undefined,
       }}
@@ -537,7 +457,7 @@ function CmdRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1 text-left">
-        <div className="truncate" style={{ fontSize: "var(--text-base)" }}>{label}</div>
+        <div className="prism-search-result-title">{label}</div>
         {preview && <div className="mt-1 line-clamp-2 break-words text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>{preview}</div>}
         {sublabel && (
           <div className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{sublabel}</div>

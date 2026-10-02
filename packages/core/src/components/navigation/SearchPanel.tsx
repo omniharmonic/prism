@@ -1,9 +1,10 @@
-import { FileText } from "lucide-react";
+import "./search-workspace.css";
+import { FileText, MessageSquare } from "lucide-react";
 import { useVaultSearch } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { Spinner } from "../ui/Spinner";
-import { searchModeLabel, searchPreview } from "./searchPresentation";
+import { searchModeLabel, searchPreview, searchResultGroup } from "./searchPresentation";
 
 interface SearchPanelProps { query: string; onClose: () => void }
 
@@ -15,14 +16,14 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
       {!query.trim() ? "Search your workspace" : isFetching ? "Searching…" : isError ? "Search unavailable" : `${results?.length ?? 0} results shown · ${searchModeLabel(mode)}`}
     </div>
     {isFetching && <div className="flex justify-center py-4"><Spinner size={16} /></div>}
-    {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring underline" onClick={() => void refetch()}>Try again</button></div>}
+    {isError && <div role="alert" className="px-3 py-4 text-sm">Couldn't search this workspace. <button className="focus-ring min-h-11 px-2 underline" onClick={() => void refetch()}>Try again</button></div>}
     {!isFetching && !isError && query.trim() && results?.length === 0 && <p className="px-3 py-5 text-sm" style={{ color: "var(--text-secondary)" }}>No matching notes. Try a name, phrase, or related idea.</p>}
     {results?.map(note => {
       const title = note.path?.split("/").pop() || note.id;
       const type = inferContentType(note);
       const updated = note.updatedAt ? new Date(note.updatedAt) : null;
-      return <button key={note.id} onClick={() => { openTab(note.id, title, type); onClose(); }} className="interactive focus-ring flex w-full min-w-0 items-start gap-3 border-b px-3 py-4 text-left" style={{ borderColor: "var(--glass-border)" }}>
-        <FileText size={17} className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }} />
+      return <button key={note.id} onClick={() => { openTab(note.id, title, type); onClose(); }} className="prism-search-result interactive focus-ring flex w-full min-w-0 items-start gap-3 border-b px-3 py-4 text-left" style={{ borderColor: "var(--glass-border)" }}>
+        {searchResultGroup(note) === "messages" ? <MessageSquare size={18} className="mt-0.5 shrink-0" /> : <FileText size={18} className="mt-0.5 shrink-0" />}
         <span className="min-w-0 flex-1">
           <span className="block break-words text-sm font-medium [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }}>{title}</span>
           {note.path && <span className="mt-1 block truncate text-xs" style={{ color: "var(--text-muted)" }}>{note.path}</span>}
