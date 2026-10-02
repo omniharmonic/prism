@@ -16,7 +16,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { useIsMobile } from "../../app/hooks/useIsMobile";
+import { FormattingBar } from "./FormattingBar";
 
 /**
  * Slim formatting toolbar for the collaborative editor. Two groups —
@@ -37,7 +37,6 @@ export function CollabToolbar({
   canReview?: boolean;
 }) {
   const c = () => editor.chain().focus();
-  const isMobile = useIsMobile();
 
   const Btn = ({
     on,
@@ -54,6 +53,7 @@ export function CollabToolbar({
       type="button"
       title={label}
       aria-label={label}
+      aria-pressed={active}
       onMouseDown={(e) => e.preventDefault()}
       onClick={on}
       style={{
@@ -83,68 +83,7 @@ export function CollabToolbar({
   const Sep = () => <span style={{ width: 1, height: 18, background: "var(--glass-border)", margin: "0 2px" }} />;
 
   return (
-    <div
-      className={isMobile ? "no-scrollbar" : undefined}
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 5,
-        display: "flex",
-        // Mobile: one non-wrapping row that scrolls horizontally — never the
-        // 3-line stack. Desktop: wrap as coherent groups when space is tight.
-        flexWrap: isMobile ? "nowrap" : "wrap",
-        overflowX: isMobile ? "auto" : undefined,
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 8,
-        padding: "6px 8px",
-        marginBottom: 16,
-        borderRadius: 12,
-        border: "1px solid var(--glass-border)",
-        background: "color-mix(in srgb, var(--bg-surface, #1a1a1f) 88%, transparent)",
-        backdropFilter: "blur(10px)",
-      }}
-    >
-      {/* Left: formatting */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: isMobile ? "nowrap" : "wrap",
-          alignItems: "center",
-          gap: 2,
-          flexShrink: 0,
-        }}
-      >
-        <Btn label="Bold" on={() => c().toggleBold().run()} active={editor.isActive("bold")}><Bold size={16} /></Btn>
-        <Btn label="Italic" on={() => c().toggleItalic().run()} active={editor.isActive("italic")}><Italic size={16} /></Btn>
-        <Btn label="Strikethrough" on={() => c().toggleStrike().run()} active={editor.isActive("strike")}><Strikethrough size={16} /></Btn>
-        <Btn label="Code" on={() => c().toggleCode().run()} active={editor.isActive("code")}><Code size={16} /></Btn>
-        <Sep />
-        <Btn label="Heading 1" on={() => c().toggleHeading({ level: 1 }).run()} active={editor.isActive("heading", { level: 1 })}><Heading1 size={16} /></Btn>
-        <Btn label="Heading 2" on={() => c().toggleHeading({ level: 2 }).run()} active={editor.isActive("heading", { level: 2 })}><Heading2 size={16} /></Btn>
-        <Btn label="Heading 3" on={() => c().toggleHeading({ level: 3 }).run()} active={editor.isActive("heading", { level: 3 })}><Heading3 size={16} /></Btn>
-        <Sep />
-        <Btn label="Bullet list" on={() => c().toggleBulletList().run()} active={editor.isActive("bulletList")}><List size={16} /></Btn>
-        <Btn label="Numbered list" on={() => c().toggleOrderedList().run()} active={editor.isActive("orderedList")}><ListOrdered size={16} /></Btn>
-        <Btn label="Task list" on={() => c().toggleTaskList().run()} active={editor.isActive("taskList")}><ListChecks size={16} /></Btn>
-        <Btn label="Quote" on={() => c().toggleBlockquote().run()} active={editor.isActive("blockquote")}><Quote size={16} /></Btn>
-        <Btn
-          label="Link"
-          active={editor.isActive("link")}
-          on={() => {
-            const prev = editor.getAttributes("link").href as string | undefined;
-            const url = window.prompt("Link URL", prev ?? "https://");
-            if (url === null) return;
-            if (url === "") c().unsetLink().run();
-            else c().setLink({ href: url }).run();
-          }}
-        >
-          <LinkIcon size={16} />
-        </Btn>
-      </div>
-
-      {/* Right: mode + bulk review */}
-      {(onSetSuggesting || canReview || suggesting) && (
+    <FormattingBar reviewControls={(onSetSuggesting || canReview || suggesting) && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
           {onSetSuggesting ? (
             <button
@@ -187,7 +126,33 @@ export function CollabToolbar({
             </>
           )}
         </div>
-      )}
-    </div>
+      )}>
+        <Btn label="Bold" on={() => c().toggleBold().run()} active={editor.isActive("bold")}><Bold size={16} /></Btn>
+        <Btn label="Italic" on={() => c().toggleItalic().run()} active={editor.isActive("italic")}><Italic size={16} /></Btn>
+        <Btn label="Strikethrough" on={() => c().toggleStrike().run()} active={editor.isActive("strike")}><Strikethrough size={16} /></Btn>
+        <Btn label="Code" on={() => c().toggleCode().run()} active={editor.isActive("code")}><Code size={16} /></Btn>
+        <Sep />
+        <Btn label="Heading 1" on={() => c().toggleHeading({ level: 1 }).run()} active={editor.isActive("heading", { level: 1 })}><Heading1 size={16} /></Btn>
+        <Btn label="Heading 2" on={() => c().toggleHeading({ level: 2 }).run()} active={editor.isActive("heading", { level: 2 })}><Heading2 size={16} /></Btn>
+        <Btn label="Heading 3" on={() => c().toggleHeading({ level: 3 }).run()} active={editor.isActive("heading", { level: 3 })}><Heading3 size={16} /></Btn>
+        <Sep />
+        <Btn label="Bullet list" on={() => c().toggleBulletList().run()} active={editor.isActive("bulletList")}><List size={16} /></Btn>
+        <Btn label="Numbered list" on={() => c().toggleOrderedList().run()} active={editor.isActive("orderedList")}><ListOrdered size={16} /></Btn>
+        <Btn label="Task list" on={() => c().toggleTaskList().run()} active={editor.isActive("taskList")}><ListChecks size={16} /></Btn>
+        <Btn label="Quote" on={() => c().toggleBlockquote().run()} active={editor.isActive("blockquote")}><Quote size={16} /></Btn>
+        <Btn
+          label="Link"
+          active={editor.isActive("link")}
+          on={() => {
+            const prev = editor.getAttributes("link").href as string | undefined;
+            const url = window.prompt("Link URL", prev ?? "https://");
+            if (url === null) return;
+            if (url === "") c().unsetLink().run();
+            else c().setLink({ href: url }).run();
+          }}
+        >
+          <LinkIcon size={16} />
+        </Btn>
+    </FormattingBar>
   );
 }

@@ -1,0 +1,16 @@
+.document-formatting-bar { flex-shrink: 0; min-width: 0; width: 100%; color: var(--text-secondary); background: var(--bg-document, var(--bg-base)); border-bottom: 1px solid var(--glass-border); }
+.document-formatting-entry { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; padding: 3px 8px; }
+.document-formatting-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 7px; border-radius: 5px; color: var(--text-muted); font-size: 12px; }
+.document-formatting-toggle:hover { background: var(--glass-hover); color: var(--text-primary); }
+.document-formatting-toggle[aria-expanded=true] > svg:last-child { transform: rotate(180deg); }
+.document-formatting-commands { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; padding: 4px 12px; }
+.document-formatting-preference { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 15px 5px; font-size: 11px; color: var(--text-muted); }
+.document-formatting-preference input { accent-color: var(--color-accent); }
+.document-review-controls { display: flex; min-width: 0; align-items: center; }
+.document-review-controls > div { flex-wrap: wrap; }
+@media (max-width:767px) {
+ .document-formatting-toggle, .document-formatting-preference { min-height: 44px; }
+ .document-formatting-commands { flex-wrap: nowrap; overflow-x: auto; }
+ .document-formatting-commands > button, .document-review-controls button { min-width: 44px; min-height: 44px; flex-shrink: 0; }
+ .document-formatting-commands > span, .document-formatting-commands > div { flex-shrink: 0; }
+}
