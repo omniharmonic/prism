@@ -1,3 +1,4 @@
+import "./publishing/publishing-studio.css";
 // Publishing management; server membership is shared with the public reader.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -349,8 +350,9 @@ function PublicationRow({
   return (
     <div
       data-pub-slug={pub.slug}
+      className="prism-publication-card"
       style={{
-        background: "var(--glass)",
+        background: "var(--bg-surface)",
         border: "1px solid var(--glass-border)",
         borderRadius: "var(--radius-lg, 14px)",
         overflow: "hidden",
@@ -393,7 +395,7 @@ function PublicationRow({
           >
             <span
               style={{
-                fontSize: 14.5,
+                fontSize: 19,
                 fontWeight: 600,
                 color: "var(--text-primary)",
               }}

@@ -8,6 +8,9 @@ export interface PublicationPreviewProps {
   slug: string;
   draftRevision: number;
   onClose: () => void;
+  /** Render the same authenticated saved-draft reader inside Site studio. */
+  inline?: boolean;
+  onExpand?: () => void;
 }
 const Context = createContext<ComponentType<PublicationPreviewProps> | null>(
   null,

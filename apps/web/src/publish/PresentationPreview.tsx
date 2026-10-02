@@ -1,3 +1,5 @@
+import { Monitor, Smartphone, Maximize2 } from "lucide-react";
+import "./presentation-preview.css";
 import { isNative, serverFetch, gatewayOrigin } from "../transport";
 import { installExternalImageProxy } from "../native/externalImages";
 import { Suspense, useEffect, useRef, useState } from "react";
@@ -24,6 +26,8 @@ export default function PresentationPreview({
   slug,
   draftRevision,
   onClose,
+  inline = false,
+  onExpand,
 }: PublicationPreviewProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [pageId, setPageId] = useState<string | null>(null);
@@ -33,6 +37,7 @@ export default function PresentationPreview({
   const [loading, setLoading] = useState(true);
   const [phone, setPhone] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const [viewportWidth, setViewportWidth] = useState(390);
   useEffect(() => {
     const el = frame.current;
@@ -40,7 +45,10 @@ export default function PresentationPreview({
     const observer = new ResizeObserver(() => setViewportWidth(el.clientWidth));
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [inline]);
+  useEffect(() => {
+    if (inline) heading.current?.focus({ preventScroll: true });
+  }, [inline]);
   const [frameBody, setFrameBody] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!frameBody || !isNative) return;
@@ -52,9 +60,9 @@ export default function PresentationPreview({
   }, [frameBody]);
   useEffect(() => {
     const el = dialog.current;
-    el?.showModal();
+    if (!inline) el?.showModal();
     return () => el?.close();
-  }, []);
+  }, [inline]);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -99,100 +107,130 @@ export default function PresentationPreview({
     setFrameBody(doc.body);
   };
   const Template = data ? getTemplate(data.manifest.template) : null;
-  return createPortal(
-    <dialog
-      ref={dialog}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-      aria-label="Private publication preview"
-      className="m-auto h-[calc(100dvh-24px)] w-[calc(100vw-24px)] max-w-none rounded-xl border border-[var(--glass-border)] bg-[var(--bg-base)] p-0 text-[var(--text-primary)] backdrop:bg-black/50"
-    >
-      <div className="flex h-full min-h-0 flex-col">
-        <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--glass-border)] p-3">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold">
-              Private preview · draft {draftRevision}
-            </h2>
-            <p className="text-xs text-[var(--text-secondary)]">
-              Saved appearance with current eligible content.{" "}
-              {data?.expired
-                ? "The live site is expired."
-                : "Nothing is published by previewing."}
-            </p>
-          </div>
-          <button
-            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm"
-            aria-pressed={phone}
-            onClick={() => setPhone((p) => !p)}
+  const content = (
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="prism-publication-preview-toolbar">
+        <div className="min-w-0 flex-1">
+          <h2
+            ref={heading}
+            tabIndex={-1}
+            className="text-sm font-semibold outline-none"
           >
-            {phone ? "Desktop preview" : "Phone preview"}
-          </button>
-          <button
-            autoFocus
-            className="min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm"
-            onClick={onClose}
-          >
-            Close preview
-          </button>
-        </header>
-        {error && (
-          <div role="alert" className="p-4 text-sm">
-            {error}
-            <button
-              className="ml-3 min-h-11 underline"
-              onClick={() => setRetry((n) => n + 1)}
-            >
-              Retry preview
-            </button>
-          </div>
-        )}
-        {loading && (
-          <p role="status" className="p-4 text-sm">
-            Loading private preview…
+            Private preview · draft {draftRevision}
+          </h2>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Saved appearance with current eligible content.{" "}
+            {data?.expired
+              ? "The live site is expired."
+              : "Nothing is published by previewing."}
           </p>
-        )}
-        <div className="min-h-0 flex-1 overflow-auto bg-[var(--glass)] p-2">
-          <iframe
-            ref={frame}
-            sandbox="allow-same-origin"
-            title="Publication preview viewport"
-            onLoad={initFrame}
-            srcDoc="<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body></body></html>"
-            style={{
-              display: "block",
-              width: phone ? 390 : "100%",
-              maxWidth: "100%",
-              height: "100%",
-              margin: "auto",
-              border: 0,
-              borderRadius: 8,
-            }}
-          />
-          {frameBody &&
-            data &&
-            Template &&
-            createPortal(
-              <Suspense fallback={<p>Loading site layout…</p>}>
-                <Template
-                  viewportWidth={viewportWidth}
-                  manifest={data.manifest}
-                  slug={slug}
-                  activeId={data.note?.id ?? null}
-                  note={data.note}
-                  noteLoading={false}
-                  onNavigate={setPageId}
-                  graph={data.graph}
-                  mapFeatures={data.mapFeatures}
-                  onRequestMap={() => {}}
-                />
-              </Suspense>,
-              frameBody,
-            )}
         </div>
+        <button
+          className="focus-ring prism-publication-preview-control"
+          aria-pressed={phone}
+          onClick={() => setPhone((p) => !p)}
+        >
+          {phone ? (
+            <Monitor size={15} aria-hidden="true" />
+          ) : (
+            <Smartphone size={15} aria-hidden="true" />
+          )}
+          {phone ? "Desktop preview" : "Phone preview"}
+        </button>
+        {inline && onExpand && (
+          <button
+            className="focus-ring prism-publication-preview-control"
+            onClick={onExpand}
+          >
+            <Maximize2 size={15} aria-hidden="true" />
+            Expand preview
+          </button>
+        )}
+        <button
+          autoFocus={!inline}
+          className="focus-ring prism-publication-preview-control"
+          onClick={onClose}
+        >
+          Close preview
+        </button>
+      </header>
+      {error && (
+        <div role="alert" className="p-4 text-sm">
+          {error}
+          <button
+            className="ml-3 min-h-11 underline"
+            onClick={() => setRetry((n) => n + 1)}
+          >
+            Retry preview
+          </button>
+        </div>
+      )}
+      {loading && (
+        <p role="status" className="p-4 text-sm">
+          Loading private preview…
+        </p>
+      )}
+      <div className="prism-publication-preview-canvas">
+        <iframe
+          ref={frame}
+          sandbox="allow-same-origin"
+          title="Publication preview viewport"
+          onLoad={initFrame}
+          srcDoc="<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body></body></html>"
+          style={{
+            display: "block",
+            width: phone ? 390 : "100%",
+            maxWidth: "100%",
+            height: "100%",
+            margin: "auto",
+            border: 0,
+            borderRadius: 8,
+          }}
+        />
+        {frameBody &&
+          data &&
+          Template &&
+          createPortal(
+            <Suspense fallback={<p>Loading site layout…</p>}>
+              <Template
+                viewportWidth={viewportWidth}
+                manifest={data.manifest}
+                slug={slug}
+                activeId={data.note?.id ?? null}
+                note={data.note}
+                noteLoading={false}
+                onNavigate={setPageId}
+                graph={data.graph}
+                mapFeatures={data.mapFeatures}
+                onRequestMap={() => {}}
+              />
+            </Suspense>,
+            frameBody,
+          )}
       </div>
-    </dialog>,
-    document.body,
+    </div>
+  );
+  return inline ? (
+    <section
+      aria-label="Private publication preview"
+      className="prism-publication-preview-inline"
+    >
+      {content}
+    </section>
+  ) : (
+    createPortal(
+      <dialog
+        ref={dialog}
+        onCancel={(event) => {
+          event.preventDefault();
+          onClose();
+        }}
+        aria-label="Private publication preview"
+        className="prism-publication-preview-dialog"
+      >
+        {content}
+      </dialog>,
+      document.body,
+    )
   );
 }

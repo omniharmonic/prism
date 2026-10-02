@@ -46,6 +46,10 @@ function articleFeature(note: PubNote): { id: string; kind: string; name: string
 /** Below this width the wiki renders its single-column phone layout. */
 const MOBILE_BP = 880;
 
+// Keep reader typography with its rendered tree, including the private iframe.
+// A missing font leaves legacy defaults intact; code retains its monospace rule.
+const PUBLICATION_FONT_CSS = `[data-publication-font="custom"] .prose-editor :is(h1, h2, h3, h4, h5, h6) { font-family: inherit; }`;
+
 function useIsMobile(viewportWidth?: number): boolean {
   const [mobile, setMobile] = useState(
     () => typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_BP}px)`).matches,
@@ -252,7 +256,7 @@ export default function WikiTemplate({
     display: "flex",
     flexDirection: "column",
     ...safeTheme.vars,
-    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily } : null),
+    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily, "--content-font": safeTheme.fontFamily } : null),
     background: "var(--bg, var(--bg-base, #191a1e))",
   };
 
@@ -314,8 +318,8 @@ export default function WikiTemplate({
   if (isMobile) {
     const f = safeTheme.showMap && !noteLoading && note ? articleFeature(note) : null;
     return (
-      <div style={rootStyle} className="pubwiki-m">
-        <style>{MOBILE_CSS}</style>
+      <div style={rootStyle} className="pubwiki-m" data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+        <style>{MOBILE_CSS}{PUBLICATION_FONT_CSS}</style>
         <header
           style={{
             position: "sticky", top: 0, zIndex: 30,
@@ -495,7 +499,8 @@ export default function WikiTemplate({
 
   // ── Desktop layout (unchanged) ─────────────────────────────────────────────
   return (
-    <div style={rootStyle}>
+    <div style={rootStyle} data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+      <style>{PUBLICATION_FONT_CSS}</style>
       {/* Header: optional logo + title */}
       <header
         style={{
