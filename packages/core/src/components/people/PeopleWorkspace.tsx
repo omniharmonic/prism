@@ -165,11 +165,11 @@ function PeopleView({
       className="mx-auto min-h-full max-w-5xl px-5 py-6 pb-28 text-[var(--text-primary)] sm:px-8"
     >
       <header className="mb-7 flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0 max-w-full">
           <p className="mb-2 text-xs text-[var(--text-secondary)]">
             Workspace / People
           </p>
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="break-words text-2xl font-semibold tracking-tight">
             {id ? (person?.name ?? "Person") : "People"}
           </h1>
           <p className="mt-2 max-w-xl text-sm text-[var(--text-secondary)]">

@@ -25,3 +25,42 @@ test('legacy preview arrows and their unmarked labels are excluded without dropp
  expect(kept.map((e:any)=>e.id)).toEqual(['card','authored','author-label']);
  expect(kept[0].boundElements).toEqual([{id:'authored',type:'arrow'}]);
 });
+
+for (const mode of ['', '?collab']) {
+ test(`canvas picker retains failed selections and never copies denied previews ${mode}`,async({page})=>{
+  await page.goto('/e2e-fixtures/canvas.html'+mode);
+  await expect(page.locator('.excalidraw')).toBeVisible();
+  await page.getByRole('checkbox',{name:'Copy preview'}).check();
+  await page.getByRole('button',{name:'Notes',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Select Card C',exact:true}).check();
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.deny=true;});
+  await page.getByRole('button',{name:'Add 1 selected',exact:true}).click();
+  await expect(page.getByText('The note could not be added.',{exact:false})).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:'Select Card C',exact:true})).toBeChecked();
+  const count=()=>page.evaluate(()=>{const c=(window as any).prismCanvasFixture;const scene=location.search.includes('collab')?[...c.doc.getMap('elements').values()]:c.writes.filter((w:any)=>w.content).map((w:any)=>JSON.parse(w.content).elements).at(-1)??[];return scene.filter((e:any)=>e.type==='rectangle'&&e.customData?.prismNoteId==='Card C').length;});
+  expect(await count()).toBe(0);
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.deny=false;});
+  await page.getByRole('button',{name:'Add 1 selected',exact:true}).click();
+  await expect.poll(count).toBe(1);
+  await expect(page.getByRole('checkbox',{name:'Select Card C',exact:true})).not.toBeChecked();
+ });
+ test(`canvas phone picker closes with Escape and ignores late reads after audience change ${mode}`,async({page})=>{
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/e2e-fixtures/canvas.html'+mode);
+  await page.getByRole('button',{name:'Notes',exact:true}).click();
+  await page.getByRole('textbox',{name:'Find canvas notes'}).fill('Card C');
+  await expect(page.getByRole('button',{name:'Card C Test/Card C',exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.hold=true;});
+  await page.getByRole('button',{name:'Card C Test/Card C',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>!!(window as any).prismCanvasFixture.release)).toBe(true);
+  await page.evaluate(()=>{const c=(window as any).prismCanvasFixture;c.scope='other-owner';c.release();});
+  await page.getByRole('textbox',{name:'Find canvas notes'}).press('Escape');
+  await expect(page.getByRole('complementary',{name:'Canvas notes'})).not.toBeVisible();
+  await expect(page.getByRole('button',{name:'Notes',exact:true})).toBeFocused();
+  const copied=await page.evaluate(()=>{const c=(window as any).prismCanvasFixture;return JSON.stringify(c.writes).includes('Card C')||JSON.stringify([...c.doc.getMap('elements').values()]).includes('Card C');});
+  expect(copied).toBe(false);
+  await page.getByRole('button',{name:'Notes',exact:true}).click();
+  await page.screenshot({path: `test-results/canvas-picker-mobile${mode ? '-collab' : ''}.png`});
+ });
+}

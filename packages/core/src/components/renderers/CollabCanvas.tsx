@@ -9,6 +9,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
 import type { Note } from "../../lib/types";
+import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
 
@@ -57,6 +58,9 @@ export function CollabCanvas({
   const theme = useSettingsStore((s) => s.theme);
   const isDark = theme === "dark";
   const client = useVaultClient();
+  const access = useCanvasNoteAccess();
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
   const openTab = useUIStore((s) => s.openTab);
 
   const [showDrawer, setShowDrawer] = useState(false);
@@ -158,19 +162,12 @@ export function CollabCanvas({
   // ─── Embed a vault note as a card ───────────────────────────
   const handleAddNoteCard = useCallback(
     async (noteToAdd: Note) => {
+      if (!editableRef.current) throw Error("Canvas is read-only");
+      const fullNote = await access.read(noteToAdd.id);
+      if (!editableRef.current) throw Error("Canvas is read-only");
       const map = elementsMap();
       const elements = Array.from(map.values());
-      if (findNoteElement(elements, noteToAdd.id)) return; // already on canvas
-
-      // Fetch full content only when the preview toggle is on.
-      let fullNote = noteToAdd;
-      if (includeBody) {
-        try {
-          fullNote = await client.getNote(noteToAdd.id);
-        } catch {
-          fullNote = noteToAdd;
-        }
-      }
+      if (findNoteElement(elements, noteToAdd.id)) return;
 
       const newElements = buildNoteCardElements({
         note: fullNote,
@@ -186,20 +183,17 @@ export function CollabCanvas({
       }, LOCAL);
       apiRef.current?.updateScene({ elements: Array.from(map.values()) });
     },
-    [elementsMap, ydoc, client, includeBody, isDark],
+    [elementsMap, ydoc, access.read, includeBody, isDark],
   );
 
   // ─── Open the selected card's note in a tab ─────────────────
   const handleOpenSelected = useCallback(() => {
     if (!selectedNoteId) return;
-    const el = findNoteElement(sceneElements(), selectedNoteId);
-    const path = el?.customData?.prismNotePath || "";
-    const title = path.split("/").pop() || "Untitled";
-    client
-      .getNote(selectedNoteId)
-      .then((n) => openTab(selectedNoteId, title, inferContentType(n)))
-      .catch(() => openTab(selectedNoteId, title, "document"));
-  }, [selectedNoteId, sceneElements, client, openTab]);
+    access.read(selectedNoteId).then((n) => {
+      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+      openTab(n.id, title, inferContentType(n));
+    }).catch(() => { /* visible error from access.read */ });
+  }, [selectedNoteId, access.read, openTab]);
 
   // ─── Show / hide arrows for existing Parachute links ────────
   const toggleLinks = useCallback(async () => {
@@ -370,12 +364,12 @@ export function CollabCanvas({
     <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none" }}>
       {editable && (
         <div
-          className="flex items-center gap-1.5 px-3 py-1 text-xs flex-shrink-0"
+          className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-xs flex-shrink-0"
           style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
         >
           <button
             onClick={() => setShowDrawer((v) => !v)}
-            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
           >
@@ -384,21 +378,21 @@ export function CollabCanvas({
           </button>
           <button
             onClick={toggleLinks}
-            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
             title={showLinks ? "Hide existing links" : "Show existing links"}
           >
             {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
             {showLinks ? "Hide links" : "Show links"}
           </button>
-          <label className="flex items-center gap-1 px-2 py-1 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+          <label className="flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
             <input type="checkbox" checked={includeBody} onChange={(e) => setIncludeBody(e.target.checked)} className="cursor-pointer" />
-            Preview
+            Copy preview
           </label>
           {selectedNoteId && (
             <button
               onClick={handleOpenSelected}
-              className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors"
+              className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg transition-colors"
               style={{ background: "var(--color-accent)", color: "white" }}
             >
               <ExternalLink size={11} />
@@ -408,9 +402,10 @@ export function CollabCanvas({
         </div>
       )}
 
-      <div className="flex-1 flex min-h-0">
+      {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
+      <div className="relative flex-1 flex min-h-0">
         {editable && showDrawer && (
-          <NoteDrawer onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(sceneElements())} />
+          <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(sceneElements())} />
         )}
         <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
           <Excalidraw

@@ -1,121 +1,87 @@
-import { useMemo, useState } from "react";
-import { Filter, X } from "lucide-react";
-import { useNotes, useTags } from "../../app/hooks/useParachute";
-import { useUIStore } from "../../app/stores/ui";
-import { inferContentType } from "../../lib/schemas/content-types";
-import type { Note } from "../../lib/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Search, X } from "lucide-react";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import type { Note, NoteTreeEntry } from "../../lib/types";
 
-/**
- * Searchable / tag-filtered sidebar for picking vault notes to embed as cards on
- * the canvas. Talks to the vault through the `useNotes`/`useTags` hooks (the
- * VaultClient seam), so it works unchanged in both the desktop and web shells.
- * Shared by `CanvasRenderer` (offline) and `CollabCanvas` (collaborative).
- */
-export function NoteDrawer({
-  onAddNote,
-  canvasNoteIds,
-}: {
-  onAddNote: (note: Note) => void;
-  canvasNoteIds: Set<string>;
-}) {
+const control = "focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm disabled:opacity-50";
+const title = (n: NoteTreeEntry) => (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+
+type Props = { onAddNote: (note: Note) => Promise<void>; canvasNoteIds: Set<string>; onClose: () => void };
+export function NoteDrawer(props: Props) {
+  const client = useVaultClient();
+  const audience = useAgentChatStore(s => s.scope);
+  const scope = client.scope?.() ?? audience;
+  return <Drawer key={scope} {...props} scope={scope} />;
+}
+function Drawer({ onAddNote, canvasNoteIds, onClose, scope }: Props & { scope: string | null }) {
+  const client = useVaultClient();
   const [query, setQuery] = useState("");
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const { data: allNotes } = useNotes();
-  const { data: allTags } = useTags();
-  const openTab = useUIStore((s) => s.openTab);
-
-  const filtered = useMemo(() => {
-    let notes = allNotes || [];
-    if (selectedTag) notes = notes.filter((n) => n.tags?.includes(selectedTag));
-    if (query) {
-      const q = query.toLowerCase();
-      notes = notes.filter((n) => (n.path?.split("/").pop()?.toLowerCase() || "").includes(q));
+  const [tag, setTag] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [limit, setLimit] = useState(50);
+  const lock = useRef(false);
+  const alive = useRef(false);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const current = () => alive.current && (client.scope?.() ?? useAgentChatStore.getState().scope) === scope;
+  const notes = useQuery({
+    queryKey: ["vault", "canvas-picker", scope],
+    queryFn: async () => {
+      const result = await client.listTree();
+      if (!current()) throw Error("Workspace changed");
+      return result;
+    },
+    retry: false, staleTime: 0, gcTime: 0,
+  });
+  const visible = !notes.isFetching && !notes.isError ? notes.data ?? [] : [];
+  const tags = useMemo(() => [...new Set(visible.flatMap(n => n.tags ?? []))].sort(), [visible]);
+  const filtered = visible.filter(n => (!tag || n.tags?.includes(tag)) && (!query || `${title(n)} ${n.path ?? ""}`.toLowerCase().includes(query.trim().toLowerCase())));
+  const close = () => { onClose(); document.querySelector<HTMLButtonElement>('button[title="Note drawer"]')?.focus(); };
+  async function add(ids: string[]) {
+    if (lock.current || !current()) return;
+    lock.current = true;
+    setBusy(true); setError("");
+    try {
+      for (const id of ids) {
+        if (!current()) return;
+        const entry = visible.find(n => n.id === id);
+        if (!entry || canvasNoteIds.has(id)) continue;
+        // The renderer performs a fresh authorized read before embedding anything.
+        await onAddNote({ ...entry, content: "", createdAt: "", updatedAt: null });
+        if (!current()) return;
+        setSelected(prev => { const next = new Set(prev); next.delete(id); return next; });
+      }
+    } catch {
+      if (current()) setError("The note could not be added. Your remaining selection is kept; try again after checking access.");
+    } finally {
+      lock.current = false;
+      if (current()) setBusy(false);
     }
-    return notes.slice(0, 50);
-  }, [allNotes, selectedTag, query]);
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const addSelected = () => {
-    for (const n of filtered) {
-      if (selectedIds.has(n.id)) onAddNote(n);
-    }
-    setSelectedIds(new Set());
-  };
-
-  return (
-    <div className="flex flex-col h-full" style={{ width: 260, borderRight: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}>
-      <div className="p-2 space-y-1.5">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search notes..."
-          className="w-full h-7 rounded-md px-2 text-xs outline-none"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-        />
-        <div className="flex items-center gap-1 flex-wrap">
-          <Filter size={11} style={{ color: "var(--text-muted)" }} />
-          {selectedTag ? (
-            <button onClick={() => setSelectedTag(null)} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px]" style={{ background: "var(--color-accent)", color: "white" }}>
-              {selectedTag} <X size={9} />
-            </button>
-          ) : (
-            <select value="" onChange={(e) => setSelectedTag(e.target.value || null)} className="h-5 rounded px-1 text-[10px] outline-none cursor-pointer" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-secondary)" }}>
-              <option value="">All tags</option>
-              {(allTags || []).map((t) => (
-                <option key={t.tag} value={t.tag}>{t.tag} ({t.count})</option>
-              ))}
-            </select>
-          )}
-        </div>
-      </div>
-
-      {selectedIds.size > 0 && (
-        <div className="px-2 pb-1">
-          <button onClick={addSelected} className="w-full py-1 rounded-md text-xs font-medium" style={{ background: "var(--color-accent)", color: "white" }}>
-            Add {selectedIds.size} to canvas
-          </button>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-auto px-1">
-        {filtered.map((n) => {
-          const onCanvas = canvasNoteIds.has(n.id);
-          const isSelected = selectedIds.has(n.id);
-          const tags = n.tags || [];
-          const title = n.path?.split("/").pop() || "Untitled";
-
-          return (
-            <div key={n.id} className="flex items-start gap-1.5 px-2 py-1.5 rounded-md transition-colors hover:bg-[var(--glass-hover)]" style={{ opacity: onCanvas ? 0.5 : 1 }}>
-              <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(n.id)} disabled={onCanvas} className="mt-0.5 cursor-pointer" />
-              <button
-                onClick={() => onAddNote(n)}
-                onDoubleClick={() => openTab(n.id, title, inferContentType(n))}
-                disabled={onCanvas}
-                className="flex-1 text-left min-w-0"
-              >
-                <div className="text-xs truncate" style={{ color: "var(--text-primary)" }}>{title}</div>
-                {tags.length > 0 && (
-                  <div className="flex gap-1 mt-0.5 flex-wrap">
-                    {tags.slice(0, 3).map((t) => (
-                      <span key={t} className="text-[9px] px-1 rounded" style={{ background: "var(--glass)", color: "var(--text-muted)" }}>{t}</span>
-                    ))}
-                  </div>
-                )}
-              </button>
-            </div>
-          );
-        })}
-        {filtered.length === 0 && <div className="text-xs py-4 text-center" style={{ color: "var(--text-muted)" }}>No notes found</div>}
-      </div>
+  }
+  return <aside aria-label="Canvas notes" onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); close(); } }} className="absolute inset-0 z-20 flex h-full min-w-0 flex-col border-r border-[var(--glass-border)] bg-[var(--bg-surface)] sm:static sm:w-80 sm:shrink-0">
+    <header className="flex items-center justify-between px-4 pt-3">
+      <h2 className="font-medium">Add notes</h2>
+      <button className={control} aria-label="Close canvas notes" onClick={close}><X size={16}/></button>
+    </header>
+    <div className="space-y-3 p-4">
+      <p className="text-xs text-[var(--text-secondary)]">Cards copy a title and properties into this canvas. Copy preview also includes saved text, visible to everyone with canvas access.</p>
+      <label className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--glass-border)] px-3"><Search size={16}/><span className="sr-only">Find canvas notes</span><input autoFocus value={query} onChange={e=>{setQuery(e.target.value);setLimit(50);}} placeholder="Find a note…" className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none"/></label>
+      <select aria-label="Filter canvas notes by tag" value={tag} onChange={e=>{setTag(e.target.value);setLimit(50);}} className={control+" w-full bg-[var(--bg-surface)]"}><option value="">All tags</option>{tags.map(t=><option key={t} value={t}>{t}</option>)}</select>
+      {selected.size > 0 && <button className={control+" w-full"} disabled={busy || notes.isFetching || notes.isError} onClick={()=>void add([...selected])}>{busy ? "Adding…" : `Add ${selected.size} selected`}</button>}
+      {error && <p role="alert" className="text-sm">{error}</p>}
     </div>
-  );
+    <div className="min-h-0 flex-1 overflow-auto px-3 pb-4">
+      {notes.isFetching && <p role="status" className="p-3 text-sm">Loading notes…</p>}
+      {notes.isError && <div role="alert" className="p-3 text-sm">Notes could not be loaded.<button className={control+" mt-3"} onClick={()=>void notes.refetch()}>Try again</button></div>}
+      {filtered.slice(0,limit).map(n=>{ const added=canvasNoteIds.has(n.id); return <div key={n.id} className="flex min-h-16 items-center gap-3 rounded-lg px-2 hover:bg-[var(--glass-hover)]">
+        <label className="flex min-h-11 min-w-11 items-center justify-center"><span className="sr-only">Select {title(n)}</span><input type="checkbox" disabled={busy || added} checked={selected.has(n.id)} onChange={()=>setSelected(prev=>{const next=new Set(prev);if(next.has(n.id))next.delete(n.id);else next.add(n.id);return next;})}/></label>
+        <button disabled={busy || added} onClick={()=>void add([n.id])} className="focus-ring min-h-11 min-w-0 flex-1 py-2 text-left disabled:opacity-50"><span className="block truncate text-sm font-medium">{title(n)}</span><span className="block truncate text-xs text-[var(--text-secondary)]">{added ? "On canvas" : n.path || "Add to canvas"}</span></button>
+      </div>;})}
+      {!notes.isFetching && !notes.isError && !filtered.length && <p className="p-6 text-center text-sm text-[var(--text-secondary)]">No matching notes</p>}
+      {filtered.length > limit && <button className={control+" mt-3 w-full"} onClick={()=>setLimit(n=>n+50)}>Show more notes</button>}
+    </div>
+  </aside>;
 }

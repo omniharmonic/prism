@@ -8,6 +8,7 @@ import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { authoredCanvasElements } from "./canvas-scene";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Note } from "../../lib/types";
@@ -37,6 +38,9 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
 
 export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const client = useVaultClient();
+  const access = useCanvasNoteAccess();
+  const editableRef = useRef(!readOnly);
+  editableRef.current = !readOnly;
   const theme = useSettingsStore((s) => s.theme);
   const isDark = theme === "dark";
   const contentRef = useRef(note.content || "");
@@ -154,19 +158,12 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     const api = apiRef.current;
     if (!api) return;
 
+    if (!editableRef.current) throw Error("Canvas is read-only");
+    const fullNote = await access.read(noteToAdd.id);
+    if (!editableRef.current) throw Error("Canvas is read-only");
+    // Re-read the scene after the request: concurrent card additions must survive.
     const elements = api.getSceneElements();
     if (findNoteElement(elements, noteToAdd.id)) return;
-
-    // Fetch full note content if preview mode is on
-    let fullNote = noteToAdd;
-    if (includeBody) {
-      try {
-        fullNote = await client.getNote(noteToAdd.id);
-      } catch (e) {
-        console.error("Preview fetch failed:", e);
-        fullNote = noteToAdd;
-      }
-    }
 
     const newElements = buildNoteCardElements({
       note: fullNote,
@@ -179,7 +176,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
       elements: [...elements, ...newElements],
       commitToHistory: true,
     } as any);
-  }, [isDark, includeBody, client]);
+  }, [isDark, includeBody, access.read]);
 
   // ─── Open selected note in tab ──────────────────────────
 
@@ -187,17 +184,11 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     if (!selectedNoteId) return;
     const api = apiRef.current;
     if (!api) return;
-    const el = findNoteElement(api.getSceneElements(), selectedNoteId);
-    const path = el?.customData?.prismNotePath || "";
-    const title = path.split("/").pop() || "Untitled";
-    // Fetch full note to infer type
-    client.getNote(selectedNoteId).then((n) => {
-      const type = inferContentType(n);
-      openTab(selectedNoteId, title, type);
-    }).catch(() => {
-      openTab(selectedNoteId, title, "document");
-    });
-  }, [selectedNoteId, openTab, client]);
+    access.read(selectedNoteId).then((n) => {
+      const title = (typeof n.metadata?.title === "string" && n.metadata.title) || n.path?.split("/").pop() || "Untitled";
+      openTab(n.id, title, inferContentType(n));
+    }).catch(() => { /* visible error from access.read */ });
+  }, [selectedNoteId, openTab, access.read]);
 
   // ─── Toggle existing links ─────────────────────────────
 
@@ -283,10 +274,10 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div
-        className="flex items-center justify-between px-3 py-1 text-xs flex-shrink-0"
+        className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs flex-shrink-0"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span style={{ color: "var(--text-secondary)" }}>
             {note.path?.split("/").pop() || "Canvas"}
           </span>
@@ -294,7 +285,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           <div style={{ width: 1, height: 16, background: "var(--glass-border)" }} />
           <button
             onClick={() => setShowDrawer(!showDrawer)}
-            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
           >
@@ -303,27 +294,27 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           </button>
           <button
             onClick={toggleLinks}
-            className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-[var(--glass-hover)] transition-colors"
+            className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
             title={showLinks ? "Hide existing links" : "Show existing links"}
           >
             {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
             {showLinks ? "Hide links" : "Show links"}
           </button>
-          <label className="flex items-center gap-1 px-2 py-1 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+          <label className="flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
             <input
               type="checkbox"
               checked={includeBody}
               onChange={(e) => setIncludeBody(e.target.checked)}
               className="cursor-pointer"
             />
-            Preview
+            Copy preview
           </label>
           {/* Open selected note */}
           {selectedNoteId && (
             <button
               onClick={handleOpenSelected}
-              className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors"
+              className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg transition-colors"
               style={{ background: "var(--color-accent)", color: "white" }}
             >
               <ExternalLink size={11} />
@@ -337,9 +328,10 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
         </span>
       </div>
 
-      <div className="flex-1 flex min-h-0">
+      {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
+      <div className="relative flex-1 flex min-h-0">
         {showDrawer && (
-          <NoteDrawer onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(apiRef.current?.getSceneElements() || [])} />
+          <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(apiRef.current?.getSceneElements() || [])} />
         )}
         <div className="flex-1 min-h-0 relative" style={{ width: "100%", height: "100%", overflow: "hidden" }}>
           <Excalidraw
