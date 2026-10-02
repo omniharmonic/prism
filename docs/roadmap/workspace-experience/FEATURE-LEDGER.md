@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `414da73`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `d5248bd`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -28,7 +28,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Event and Calendar dashboard | Matching ambiguity/time tests; actual private event→exact meeting/transcript navigation on web/native; overlap/multi-day layout | Private external-calendar update/recurrence/notification readback; manual transcript overrides and multiple-recording writer |
 | Code / collaborative code | Registered renderer and host/collab implementation retained | Two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
 | Presentation | Registered renderer retained | Slide navigation, editing, fullscreen and export in web/native; small screen controls |
-| Task / task board | Configurable per-note views, explicit ungrouped values, guarded property moves, list/menu/drag/read-only and pending-write fixtures pass | Production private board lifecycle; manual rank ordering, advanced filter editing and complete paginated inventory |
+| Task / task board | Configurable per-note views, explicit ungrouped values, guarded property moves, list/menu/drag/read-only and pending-write fixtures pass | Private web/native moves, view persistence and live task-document opening verified. Remaining: manual rank ordering, advanced filter editing, paginated inventory and broader shared-vault journeys |
 | Project | Registered renderer retained | Related tasks/notes, property edits and linked-source navigation in both clients |
 | Spreadsheet / collaborative spreadsheet | Registered adapters retained | Concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
 | Website | Registered renderer retained | Safe preview/source edit, hosted build/publish controls and private preview; no secret-bearing embeds |
