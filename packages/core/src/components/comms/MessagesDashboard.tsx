@@ -1,3 +1,4 @@
+import "./messages.css";
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, MessageSquare, Filter, ChevronDown, ChevronRight } from "lucide-react";
@@ -95,9 +96,9 @@ export default function MessagesDashboard(_props: RendererProps) {
   const totalUnread = rooms?.reduce((sum, r) => sum + r.unread_count, 0) || 0;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="prism-messages-workspace h-full min-h-0 min-w-0 flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-4 px-6 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+      <div className="prism-messages-heading">
         <div className="flex-1">
           <h1 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Messages</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
@@ -108,15 +109,16 @@ export default function MessagesDashboard(_props: RendererProps) {
 
         {/* Search */}
         <div
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg max-w-xs"
+          className="prism-message-search flex min-w-0 items-center gap-2 px-3 py-2"
           style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}
         >
           <Search size={13} style={{ color: "var(--text-muted)" }} />
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search..."
-            className="bg-transparent text-xs outline-none w-40"
+            aria-label="Search conversations"
+            placeholder="Search conversations…"
+            className="min-w-0 w-full bg-transparent text-base outline-none"
             style={{ color: "var(--text-primary)" }}
           />
         </div>
@@ -125,9 +127,10 @@ export default function MessagesDashboard(_props: RendererProps) {
         <div className="flex items-center gap-1.5">
           <Filter size={12} style={{ color: "var(--text-muted)" }} />
           <select
+            aria-label="Filter conversation platform"
             value={platformFilter}
             onChange={(e) => setPlatformFilter(e.target.value)}
-            className="h-7 rounded-md px-2 text-xs outline-none"
+            className="min-h-11 rounded-lg px-3 text-sm outline-none"
             style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
           >
             <option value="all" style={{ background: "var(--bg-elevated)" }}>All platforms</option>
@@ -188,7 +191,7 @@ function CollapsiblePlatformSection({
     <div>
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-5 py-2 sticky top-0 hover:bg-[var(--glass-hover)] transition-colors"
+        className="w-full flex items-center gap-2 px-5 py-3 hover:bg-[var(--glass-hover)] transition-colors"
         style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--glass-border)" }}
       >
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -217,7 +220,7 @@ function ConversationRow({ room, onClick }: { room: MatrixRoom; onClick: () => v
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-start gap-3 px-6 py-2.5 hover:bg-[var(--glass-hover)] transition-colors text-left"
+      className="prism-message-row flex items-start gap-3 text-left"
       style={{ borderBottom: "1px solid color-mix(in srgb, var(--glass-border) 50%, transparent)" }}
     >
       <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }}>
