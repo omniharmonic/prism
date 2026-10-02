@@ -560,6 +560,11 @@ function planIdentity(ctx: Ctx, rep: PhaseReport, plan: Plan, source: Note, rel:
   if (m.status === "review") {
     // The same person already linked from this record (their address AND their name are both listed).
     if (m.reason === "name-only" && m.candidates.length === 1 && seen.has(m.candidates[0]!.id)) return "linked";
+    // In a thread or a mail the owner is never linked, so "is this name the owner?" is not a question worth a row.
+    if (o.excludeOwner && ctx.owner.person && m.candidates.length === 1 && m.candidates[0]!.id === ctx.owner.person.id) {
+      bump(rep, "owner");
+      return "none";
+    }
     if (o.noReview) {
       bump(rep, o.noneReason ?? "no-exact-match");
       return "none";

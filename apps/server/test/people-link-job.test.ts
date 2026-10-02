@@ -510,6 +510,9 @@ test("owner phase: unresolved owner does nothing; its tombstones' links come hom
   v.put(person("s-owner", "owner-old", { merged_into: "p-owner", channels: { matrix: "@telegram_5558888:h.test" } }, ["merged-stub"]), [["k9", "s-owner", "assigned-to"]]);
   v.put({ id: "k9", path: "vault/tasks/k9", tags: ["task"] });
   v.put({ id: "th9", path: "vault/messages/telegram/o", tags: ["message-thread"], metadata: { participantIds: ["@telegram_5558888:h.test", "@telegram_5550001:h.test"] } });
+  // The owner under a nickname that is only an ALIAS on their note: not a link, and not a review row either.
+  v.notes.get("p-owner")!.metadata!.aliases = ["Oz The Great"];
+  v.put({ id: "th10", path: "vault/messages/telegram/nick", tags: ["message-thread"], metadata: { participants: ["Oz The Great", "Blake Example"] } });
   v.put({ id: "e9", path: "vault/messages/email/e9", tags: ["email"], metadata: { from: "Somebody <alias@owner.test>", to: "alex@example.test", labels: [] } });
   v.notes.get("p-owner")!.metadata!.emails = ["alias@owner.test"];
   const o = await runJob(v, { dryRun: false, owner: { ...OWNER, emails: ["owner@example.test", "second@owner.test"], person: "vault/people/Owner Person" } });
@@ -517,6 +520,8 @@ test("owner phase: unresolved owner does nothing; its tombstones' links come hom
   assert.equal(o.report.owner.extra.ownerTombstones, 1);
   assert.deepEqual(v.notes.get("p-owner")!.metadata!.channels, { matrix: "@telegram_5559999:h.test", email: ["second@owner.test"] }, "the complete channels object, appended to");
   assert.deepEqual(v.out("th9"), ["messages-with->p-blake"], "a puppet id inherited from the owner's stub never links the owner");
+  assert.deepEqual(o.report.threads.queuedByReason, { "name-only": 3 }, "th5, th6 and th10's counterparts — never a row asking whether a nickname is the owner");
+  assert.ok((o.report.threads.skipped.owner ?? 0) >= 1);
   assert.deepEqual(v.out("e9"), ["email-to->p-alex"]);
   assert.ok(!v.edges.some((e) => e.targetId === "p-owner" && ["th9", "e9"].includes(e.sourceId)));
 });
