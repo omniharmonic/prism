@@ -14,6 +14,8 @@ export interface BoardConfig {
   cardFields: string[];
   sort: SortConfig;
   view: "board" | "list";
+  /** Optional view-local rank; task notes are never rewritten to reorder. */
+  order?: string[];
 }
 export const DEFAULT_BOARD: BoardConfig = {
   version: 1,
@@ -70,6 +72,10 @@ export function readBoardConfig(note: Pick<Note, "metadata">): BoardConfig {
       typeof raw.source.pathPrefix !== "string") ||
     (raw.source.metadataFilters !== undefined &&
       !record(raw.source.metadataFilters)) ||
+    (raw.order !== undefined &&
+      (!strings(raw.order) ||
+        raw.order.length > 10000 ||
+        new Set(raw.order).size !== raw.order.length)) ||
     !record(raw.sort) ||
     typeof raw.sort.field !== "string" ||
     !safeBoardField(raw.sort.field) ||
@@ -96,13 +102,20 @@ export function boardTasks(
 ): Note[] {
   const selected = filterNotes(notes, config.source);
   const needle = query.trim().toLocaleLowerCase();
-  return sortNotes(
+  const sorted = sortNotes(
     needle
       ? selected.filter((n) =>
           boardTitle(n).toLocaleLowerCase().includes(needle),
         )
       : selected,
     config.sort,
+  );
+  if (!config.order) return sorted;
+  const rank = new Map(config.order.map((id, index) => [id, index]));
+  return sorted.sort(
+    (a, b) =>
+      (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
   );
 }
 export function boardStatus(note: Note, config: BoardConfig): string | null {

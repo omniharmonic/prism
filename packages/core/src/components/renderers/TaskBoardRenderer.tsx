@@ -17,6 +17,8 @@ import {
   LayoutGrid,
   List,
   ArrowUpRight,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import type { Note } from "../../lib/types";
@@ -204,8 +206,8 @@ function Board({
         );
     }
   };
-  const save = async (next: BoardConfig) =>
-    run("settings", async () => {
+  const save = async (next: BoardConfig, reordering = false) =>
+    run(reordering ? "order" : "settings", async () => {
       if (!canEdit(note)) return;
       const fresh = await client.getNote(note.id, { fresh: true });
       if (!current()) return;
@@ -225,11 +227,36 @@ function Board({
       );
       if (!current()) return;
       setSavedConfig(next);
-      setView(null);
-      setSettings(false);
-      await receipt("View saved.");
+      if (!reordering) {
+        setView(null);
+        setSettings(false);
+      }
+      await receipt(reordering ? "Task order saved." : "View saved.");
       await refresh();
     });
+  const reorder = async (
+    task: Note,
+    neighbor: Note,
+    direction: "earlier" | "later",
+  ) => {
+    if (!config?.order || !canEdit(note) || !current()) return;
+    const order = [
+      ...new Set([
+        ...config.order,
+        ...boardTasks(tasks.data ?? [], config, "").map((n) => n.id),
+      ]),
+    ].filter((id) => id !== task.id);
+    const target = order.indexOf(neighbor.id);
+    if (target < 0) return;
+    order.splice(target + (direction === "later" ? 1 : 0), 0, task.id);
+    if (order.length > 10000) {
+      setError(
+        "This view has reached its manual-order limit. Use property sorting or narrow the source.",
+      );
+      return;
+    }
+    await save({ ...config, order }, true);
+  };
   const create = async (title: string, priority: string, status: string) =>
     run("create", async () => {
       if (!config || !canCreate) return;
@@ -458,8 +485,18 @@ function Board({
                   : "min-h-0 flex-1 overflow-auto p-5"
               }
             >
+              {mode === "list" && !notes.length && (
+                <div className="rounded-xl border border-dashed border-[var(--glass-border)] px-5 py-10 text-center text-sm text-[var(--text-secondary)]">
+                  No tasks match this view. Adjust the search or view filters to
+                  include more tasks.
+                </div>
+              )}
               {groups
-                .filter((g) => g.id !== null || g.tasks.length > 0)
+                .filter((g) =>
+                  mode === "list"
+                    ? g.tasks.length > 0
+                    : g.id !== null || g.tasks.length > 0,
+                )
                 .map((group) => (
                   <Column
                     key={group.id ?? "ungrouped"}
@@ -467,13 +504,34 @@ function Board({
                     list={mode === "list"}
                     disabled={readOnly || !!busy}
                   >
-                    {group.tasks.map((task) => (
+                    {group.tasks.map((task, index) => (
                       <TaskCard
                         key={task.id}
                         task={task}
                         config={config}
                         readOnly={!canEdit(task)}
                         disabled={!!busy}
+                        ordering={!!config.order && canEdit(note)}
+                        onEarlier={
+                          index > 0
+                            ? () =>
+                                void reorder(
+                                  task,
+                                  group.tasks[index - 1]!,
+                                  "earlier",
+                                )
+                            : undefined
+                        }
+                        onLater={
+                          index < group.tasks.length - 1
+                            ? () =>
+                                void reorder(
+                                  task,
+                                  group.tasks[index + 1]!,
+                                  "later",
+                                )
+                            : undefined
+                        }
                         onOpen={() => void open(task)}
                         onMove={(target) => void move(task, target)}
                       />
@@ -565,11 +623,17 @@ function TaskCard({
   disabled,
   onOpen,
   onMove,
+  ordering,
+  onEarlier,
+  onLater,
 }: {
   task: Note;
   config: BoardConfig;
   readOnly: boolean;
   disabled: boolean;
+  ordering: boolean;
+  onEarlier?: () => void;
+  onLater?: () => void;
   onOpen: () => void;
   onMove: (value: string) => void;
 }) {
@@ -609,6 +673,36 @@ function TaskCard({
           </button>
         )}
       </div>
+      {ordering && (
+        <div
+          role="group"
+          aria-label={"Order " + boardTitle(task)}
+          className="mb-2 flex gap-1"
+        >
+          <button
+            aria-label={"Move " + boardTitle(task) + " earlier"}
+            disabled={disabled || !onEarlier}
+            className={
+              boardControl + " flex flex-1 items-center justify-center gap-1"
+            }
+            onClick={onEarlier}
+          >
+            <ArrowUp size={14} />
+            Earlier
+          </button>
+          <button
+            aria-label={"Move " + boardTitle(task) + " later"}
+            disabled={disabled || !onLater}
+            className={
+              boardControl + " flex flex-1 items-center justify-center gap-1"
+            }
+            onClick={onLater}
+          >
+            <ArrowDown size={14} />
+            Later
+          </button>
+        </div>
+      )}
       <dl className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
         {config.cardFields.map((field) => {
           const value =

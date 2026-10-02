@@ -106,6 +106,7 @@ export function BoardSettings({
   const [sort, setSort] = useState(config.sort.field);
   const [direction, setDirection] = useState(config.sort.direction);
   const [view, setView] = useState(config.view);
+  const [manualOrder, setManualOrder] = useState(config.order !== undefined);
   const [validation, setValidation] = useState("");
   const [filters, setFilters] = useState(() => readFilterDraft(config.source));
   const [dateEditing, setDateEditing] = useState(false);
@@ -153,6 +154,7 @@ export function BoardSettings({
       cardFields: csv(fields),
       sort: { field: sort.trim(), direction },
       view,
+      order: manualOrder ? (config.order ?? []) : undefined,
     };
     try {
       readBoardConfig({ metadata: { prism_board: next } });
@@ -225,6 +227,22 @@ export function BoardSettings({
               placeholder="priority, deadline, project"
             />
           </Field>
+          <label className="flex min-h-11 items-center gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={manualOrder}
+              onChange={(e) => setManualOrder(e.target.checked)}
+              className="h-4 w-4"
+            />
+            Keep a manual task order
+          </label>
+          {manualOrder && (
+            <p className="text-xs text-[var(--text-secondary)]">
+              Use the earlier/later controls on a card to order tasks within
+              their group. This order belongs to this view. New tasks follow the
+              sorting below until you place them.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Sort by property">
               <input

@@ -599,3 +599,169 @@ test("quick add inherits a single project filter while keeping explicit task cho
     prism_visibility: "private",
   });
 });
+
+test("manual rank belongs to the view, survives reload and leaves task records unchanged", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  const before = await page.evaluate(() => {
+    const notes = (window as any).prismBoardFixture.notes();
+    for (const note of notes.slice(1)) note.metadata.status = "todo";
+    return structuredClone(notes.slice(1));
+  });
+  await page
+    .getByRole("button", { name: "View settings", exact: true })
+    .click();
+  const settings = page.getByRole("dialog", { name: "View settings" });
+  await settings.getByLabel("Keep a manual task order").check();
+  await settings
+    .getByLabel("Default view", { exact: true })
+    .selectOption("list");
+  await settings.getByRole("button", { name: "Save view" }).click();
+  await expect(settings).not.toBeVisible();
+  const titles = () =>
+    page
+      .getByRole("article")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("aria-label")),
+      );
+  await page
+    .getByRole("button", {
+      name: "Move Review with collaborators earlier",
+      exact: true,
+    })
+    .click();
+  await expect
+    .poll(titles)
+    .toEqual([
+      "Review with collaborators",
+      "Polish the editor",
+      "Write launch notes",
+    ]);
+  await expect(
+    page.getByRole("button", {
+      name: "Move Review with collaborators earlier",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "List", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.notes().slice(1),
+    ),
+  ).toEqual(before);
+  expect(
+    await page.evaluate(() =>
+      (window as any).prismBoardFixture.writes.map((w: any) => w.id),
+    ),
+  ).toEqual(["board", "board"]);
+  await page.reload();
+  await expect
+    .poll(titles)
+    .toEqual([
+      "Review with collaborators",
+      "Polish the editor",
+      "Write launch notes",
+    ]);
+  const alternate = await context.newPage();
+  await alternate.goto("/e2e-fixtures/boards.html?alternate");
+  await expect(alternate.getByRole("article")).toHaveCount(3);
+  expect(
+    await alternate
+      .getByRole("article")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("aria-label")),
+      ),
+  ).toEqual([
+    "Polish the editor",
+    "Review with collaborators",
+    "Write launch notes",
+  ]);
+  await page
+    .getByRole("button", {
+      name: "Move Review with collaborators later",
+      exact: true,
+    })
+    .click();
+  await expect
+    .poll(titles)
+    .toEqual([
+      "Polish the editor",
+      "Review with collaborators",
+      "Write launch notes",
+    ]);
+});
+
+test("manual order rejects a concurrent view change and does not expose controls without board edit access", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/boards.html?alternate");
+  await page
+    .getByRole("button", { name: "View settings", exact: true })
+    .click();
+  await page.getByLabel("Keep a manual task order").check();
+  await page.getByRole("button", { name: "Save view" }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await page.evaluate(() => {
+    const notes = (window as any).prismBoardFixture.notes();
+    notes[0].metadata.prism_board = {
+      ...notes[0].metadata.prism_board,
+      sort: { field: "title", direction: "asc" },
+    };
+  });
+  await page
+    .getByRole("button", {
+      name: "Move Review with collaborators earlier",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "settings changed in another window",
+  );
+  expect(
+    await page.evaluate(() => (window as any).prismBoardFixture.writes.length),
+  ).toBe(1);
+  expect(
+    await page
+      .getByRole("article")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("aria-label")),
+      ),
+  ).toEqual([
+    "Polish the editor",
+    "Review with collaborators",
+    "Write launch notes",
+  ]);
+  await page.goto("/e2e-fixtures/boards.html?caps");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await expect(
+    page.getByRole("button", { name: / earlier$| later$/ }),
+  ).toHaveCount(0);
+});
+
+test("phone list view shows matching tasks before empty groups and explains a zero-result view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/boards.html");
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.getByLabel("Filter tasks").fill("Review");
+  await expect(page.getByRole("article")).toHaveCount(1);
+  await expect(
+    page.getByRole("region", { name: "To do", exact: true }),
+  ).toHaveCount(0);
+  const bounds = await page.getByRole("article").boundingBox();
+  expect(bounds!.y + bounds!.height).toBeLessThan(844);
+  await page.getByLabel("Filter tasks").fill("No synthetic task matches this");
+  await expect(
+    page.getByText("No tasks match this view.", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "To do", exact: true }),
+  ).toBeVisible();
+});
