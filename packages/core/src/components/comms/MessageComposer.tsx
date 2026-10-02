@@ -15,8 +15,11 @@ interface MessageComposerProps {
   draftScope?: string | null;
   draftKey: string;
   retrySafe?: boolean;
+  /** Recipient/account context participates in retry identity without changing the body draft. */
+  deliveryContext?: string;
   enterToSend?: boolean;
   disabled?: boolean;
+  sendDisabled?: boolean;
   placeholder?: string;
 }
 
@@ -32,10 +35,12 @@ export function MessageComposer(props: MessageComposerProps) {
 function ScopedMessageComposer({
   onSend,
   disabled,
+  sendDisabled,
   placeholder,
   draftScope,
   draftKey,
   retrySafe,
+  deliveryContext,
   enterToSend = true,
 }: MessageComposerProps) {
   const draft = useScopedDraft("message", draftScope || null, draftKey);
@@ -54,7 +59,7 @@ function ScopedMessageComposer({
 
   const handleSend = async () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled || inFlight.current) return;
+    if (!trimmed || disabled || sendDisabled || inFlight.current) return;
     inFlight.current = true;
     setSending(true);
     setError(null);
@@ -62,7 +67,7 @@ function ScopedMessageComposer({
       // Stay below the server's seven-day action-ledger retention window.
       const receipt =
         retrySafe && draftScope
-          ? await requestReceipt(draftScope, draftKey, trimmed, {
+          ? await requestReceipt(draftScope, draftKey, deliveryContext ? { body: trimmed, deliveryContext } : trimmed, {
               namespace: "message",
               maxAgeMs: 6 * 24 * 60 * 60 * 1000,
             })
@@ -150,7 +155,7 @@ function ScopedMessageComposer({
           aria-label={sending ? "Sending message" : "Send message"}
           aria-busy={sending}
           onClick={() => void handleSend()}
-          disabled={disabled || sending || !text.trim()}
+          disabled={disabled || sendDisabled || sending || !text.trim()}
           className="prism-send-message flex items-center justify-center shrink-0"
           style={{
             width: 44,

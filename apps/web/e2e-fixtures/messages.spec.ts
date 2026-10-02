@@ -394,3 +394,31 @@ test("legacy native email requires an explicit account and readonly drafts canno
     page.getByRole("button", { name: "Send", exact: true }),
   ).toBeDisabled();
 });
+
+
+test("explicit Cc survives close and changes send identity without losing the body draft", async ({ page }) => {
+  await page.goto("/e2e-fixtures/messages.html?email");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Reply recipients" })).toHaveValue("morgan@example.test");
+  await page.getByRole("textbox", { name: "Reply Cc" }).fill("not an address");
+  await page.getByRole("textbox", { name: "Message", exact: true }).fill("A reply with explicit recipients.");
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  await page.getByRole("textbox", { name: "Reply Cc" }).fill("reviewer@example.test");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Sending was not confirmed");
+  await page.getByRole("button", { name: "Close email reply" }).click();
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Reply Cc" })).toHaveValue("reviewer@example.test");
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("A reply with explicit recipients.");
+  await page.getByRole("textbox", { name: "Reply Cc" }).fill("other-reviewer@example.test");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Sending was not confirmed");
+  const calls = await page.evaluate(() => (window as any).prismMessagesFixture.replyCalls);
+  expect(calls[0].params.cc).toEqual(["reviewer@example.test"]);
+  expect(calls[1].params.cc).toEqual(["other-reviewer@example.test"]);
+  expect(calls[0].key).not.toBe(calls[1].key);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByText("Reply sent.", { exact: true })).toBeVisible();
+  const retried = await page.evaluate(() => (window as any).prismMessagesFixture.replyCalls);
+  expect(retried[2].key).toBe(retried[1].key);
+});
