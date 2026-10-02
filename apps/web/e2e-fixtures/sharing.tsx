@@ -176,7 +176,7 @@ function Fixture() {
         </CollabSharingProvider>
       )}
       <h1>Prism workspace</h1>
-      <button onClick={() => setOpen(true)}>Share fixture</button>
+      <button data-prism-share-trigger onClick={() => setOpen(true)}>Share fixture</button>
       <button>Outside action</button>
       {open && (
         <ShareDialog
