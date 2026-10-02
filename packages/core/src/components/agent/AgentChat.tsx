@@ -341,6 +341,7 @@ export function Conversation({
   onBack,
   onArchive,
   onExpand,
+  headerActions,
   fullScreen,
   compact,
 }: {
@@ -353,6 +354,7 @@ export function Conversation({
   onBack?: () => void;
   onArchive?: () => void;
   onExpand?: () => void;
+  headerActions?: ReactNode;
   fullScreen?: boolean;
   compact?: boolean;
 }) {
@@ -649,6 +651,7 @@ export function Conversation({
         </div>
         {!compact && !isDraft && <AgentBudgetLine sessionCostUsd={conv.session?.cost_usd} />}
       </div>
+      {headerActions}
       {onExpand && (
         <button onClick={onExpand} aria-label="Open in Agent tab" title="Open in Agent tab" className="interactive flex items-center justify-center rounded" style={{ width: 28, height: 28, color: "var(--text-muted)" }}>
           <Maximize2 size={13} />
@@ -953,11 +956,6 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
   const startNew = () => { setActiveSession(null); setDraft({ noteId, noteTitle }); };
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-shrink-0 items-center justify-end gap-1 px-2 py-1" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="interactive focus-ring flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
-          <Plus size={12} /> New
-        </button>
-      </div>
       <div className="min-h-0 flex-1">
         <Conversation
           key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${draft?.noteId ?? ""}`}`}
@@ -965,6 +963,11 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
           sessionId={activeSessionId}
           draft={draft}
           onCreated={(id) => setActiveSession(id)}
+          headerActions={
+            <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="prism-agent-panel-new focus-ring">
+              <Plus size={14} /> New
+            </button>
+          }
           onExpand={() => {
             // Expansion moves the conversation; do not leave a second composer
             // beside it (or an open mobile drawer covering the expanded view).
