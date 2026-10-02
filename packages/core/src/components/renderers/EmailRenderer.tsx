@@ -1,3 +1,4 @@
+import { AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import { useState, useCallback, useRef } from "react";
 import {
@@ -431,6 +432,7 @@ function EmailReplyBar({
         {ccDraft.error && <p role="status">{ccDraft.error}</p>}
         <details className="text-[var(--text-muted)]"><summary className="cursor-pointer py-1">Reply details</summary><p className="mt-1 break-words">Subject: {subject}</p>{live && account && <p className="mt-1 break-words">Stored email account: {account}. The connected server mailbox determines the sending account.</p>}</details>
       </div>
+      <AgentReplyDraft scope={scope} noteId={noteId} title={subject} draftKey={`email:${JSON.stringify([noteId, account, to])}`} destination={JSON.stringify({ to: [to], cc })} disabled={submitting || !ccValid || (isWeb && !live)} />
       <MessageComposer
         draftScope={scope}
         draftKey={`email:${JSON.stringify([noteId, account, to])}`}

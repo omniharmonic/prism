@@ -72,6 +72,9 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
   const [conn, setConn] = useState<ConnectionState>("idle");
   const unsubRef = useRef<(() => void) | null>(null);
   const loadSeq = useRef(0);
+  // A send can settle after navigation/unmount. Its old continuation must not
+  // attach a new stream or alter the replacement conversation.
+  const lifecycle = useRef(0);
   const refetchedTurns = useRef(new Set<string>());
 
   const stopStream = useCallback(() => {
@@ -146,12 +149,14 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
 
   // (Re)load on session change; tear the stream down on leave.
   useEffect(() => {
+    lifecycle.current++;
     dispatch({ type: "reset", state: emptyConversation });
     setSession(null);
     setError(null);
     refetchedTurns.current.clear();
     if (sessionId) void load();
     return () => {
+      lifecycle.current++;
       loadSeq.current++;
       stopStream();
     };
@@ -177,11 +182,14 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
   const send = useCallback(
     async (prompt: string, opts: { noteId?: string; requestId?: string; contextNoteIds?: string[]; contextSnapshots?: AgentContextSnapshot[] } = {}): Promise<boolean> => {
       if (!sessionId) return false;
+      const owner = lifecycle.current;
       setError(null);
       try {
         const r = await client.sendTurn(sessionId, prompt, opts);
+        if (owner !== lifecycle.current) return false;
         if (isTerminalTurn(r.status)) {
           await load();
+          if (owner !== lifecycle.current) return false;
           refreshLists();
           return true;
         }
@@ -190,9 +198,11 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
         refreshLists();
         return true;
       } catch (e) {
+        if (owner !== lifecycle.current) return false;
         if (e instanceof AgentApiError && e.code === "conflict" && e.turnId) {
           // A turn is already running (another tab/device): attach to it.
           await load();
+          if (owner !== lifecycle.current) return false;
           setError("A turn is already running in this session — showing it now. Send again when it finishes.");
           return false;
         }

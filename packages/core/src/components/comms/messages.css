@@ -349,3 +349,25 @@
     min-height: 44px;
   }
 }
+
+.prism-agent-draft-trigger { display: inline-flex; align-items: center; gap: 6px; margin: 4px 16px 0; padding: 7px 9px; border-radius: 7px; font-size: 12px; color: var(--text-secondary); }
+.prism-agent-draft-trigger:hover { background: var(--bg-hover); color: var(--text-primary); }
+.prism-agent-draft-dialog { margin: 0 0 0 auto; width: min(480px, 100%); max-width: 100%; height: 100dvh; max-height: 100dvh; border: 0; border-left: 1px solid var(--glass-border); padding: 22px; background: var(--bg-surface); color: var(--text-primary); overflow-y: auto; box-shadow: -12px 0 50px #0002; }
+.prism-agent-draft-dialog::backdrop { background: #0004; }
+.prism-agent-draft-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.prism-agent-draft-heading h2 { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.prism-agent-draft-heading p, .prism-agent-draft-caption { margin-top: 5px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.prism-agent-draft-heading button { min-width: 44px; min-height: 44px; display: grid; place-items: center; border-radius: 8px; }
+.prism-agent-draft-explainer { margin: 18px 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.prism-agent-draft-instructions { display: block; font-size: 13px; font-weight: 500; }
+.prism-agent-draft-instructions textarea { display: block; width: 100%; resize: vertical; margin-top: 8px; padding: 12px; min-height: 100px; max-height: 250px; font-size: 16px; font-weight: 400; line-height: 1.5; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--bg-base); }
+.prism-agent-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.prism-agent-draft-actions button, .prism-agent-draft-dialog [role=alert] button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; }
+.prism-agent-draft-actions button.prism-agent-draft-primary { background: var(--action-bg); color: var(--action-fg); border-color: transparent; }
+.prism-agent-draft-dialog button:disabled { opacity: .45; cursor: not-allowed; }
+.prism-agent-draft-dialog [role=alert], .prism-agent-draft-dialog [role=status] { margin-top: 12px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.prism-agent-draft-output { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--glass-border); }
+.prism-agent-draft-output h3 { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.prism-agent-draft-text { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 14px; }
+.prism-agent-draft-confirm { margin-top: 14px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 10px; font-size: 13px; }
+@media (max-width: 480px) { .prism-agent-draft-dialog { padding: 16px; } }

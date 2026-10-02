@@ -1,4 +1,7 @@
-import React, { useState } from "react";
+import { AgentLifecycleFixture } from "./agent-lifecycle";
+import { AgentClientProvider } from "../../../packages/core/src/data/AgentClientContext";
+import { replyAgent, agentControls } from "./reply-agent";
+import React, { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LiveActionsProvider, PlatformProvider, type Note } from "@prism/core";
@@ -44,6 +47,7 @@ if (location.search.includes("noaccount")) delete emailNote.metadata.account;
 if (location.search.includes("draft")) emailNote.metadata.status = "draft";
 Object.assign(window, {
   prismMessagesFixture: controls,
+  prismReplyAgent: agentControls,
   prismActionsFactory: createHttpLiveActionsClient,
 });
 function Fixture() {
@@ -58,6 +62,10 @@ function Fixture() {
     "vault",
     actor,
   ]);
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  Object.assign(controls, { switchActor: () => setActor("morgan") });
+  const agent = useMemo(() => replyAgent(() => currentScope.current), [scope]);
   const emailClient = {
     scope: () => scope,
     status: async () => ({
@@ -86,12 +94,14 @@ function Fixture() {
       return { messageId: "accepted", inReplyTo: "fixture@example.test" };
     },
   } as LiveActionsClient;
+  if (location.search.includes("lifecycle")) return <QueryClientProvider client={queryClient}><AgentLifecycleFixture /></QueryClientProvider>;
   if (location.search.includes("email"))
     return (
       <QueryClientProvider client={queryClient}>
         <PlatformProvider
           value={location.search.includes("native") ? "desktop" : "web"}
         >
+          <AgentClientProvider client={location.search.includes("agent") ? agent : null}>
           <LiveActionsProvider client={emailClient}>
             <div style={{ height: "100dvh" }}>
               <EmailRenderer
@@ -100,6 +110,7 @@ function Fixture() {
               />
             </div>
           </LiveActionsProvider>
+          </AgentClientProvider>
         </PlatformProvider>
       </QueryClientProvider>
     );
