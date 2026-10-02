@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
+import { humanCommandsFor } from "./humanCommands";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
@@ -175,6 +176,8 @@ function ScopedCollabDoc({
   };
 
   const isSuggestLevel = level === "suggest";
+  const commandSend = useMemo(() => isSuggestLevel ? humanCommandsFor(noteId) : undefined, [noteId, isSuggestLevel]);
+  const draftScope = useAgentChatStore(s => s.scope);
   // One table (@prism/core collabAffordances) mirrors what the server socket
   // allows: below "suggest" the connection is read-only, so a "comment"-level
   // viewer gets NO write affordances — comments need suggest (WP0.2); offering
@@ -401,7 +404,9 @@ function ScopedCollabDoc({
     ? online
       ? "Connecting…"
       : localSave === "saved" ? "Offline · saved on this device" : localSave === "saving" ? "Offline · saving…" : "Offline · local save unavailable"
-    : !editable
+    : isSuggestLevel && isDocument
+      ? "Suggesting"
+      : !editable
       ? "View only"
       : !isDocument
         ? "Editing"
@@ -411,7 +416,7 @@ function ScopedCollabDoc({
 
   // Comments + suggestions are prose-only; code/spreadsheets are pure collab data.
   const showComments = isDocument;
-  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} />;
+  const sidebar = <CommentsSidebar ydoc={ydoc} user={user} canComment={canComment} editor={editor} focusedThreadId={focusedThread} commandSend={commandSend} commandsEnabled={connected && synced} draftScope={draftScope} noteId={noteId} />;
 
   return (
     <div style={outer}>
@@ -460,6 +465,7 @@ function ScopedCollabDoc({
           }
         />
 
+        {isSuggestLevel && !isDocument && <p className="mb-4 text-sm" role="status">Suggested edits are available for prose documents. This {kind} is view-only with your current permission.</p>}
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
           <div
@@ -506,7 +512,8 @@ function ScopedCollabDoc({
                 suggesting={effectiveSuggesting}
                 onSetSuggesting={isSuggestLevel ? undefined : canReview ? setSuggesting : undefined}
                 canReview={canReview}
-                canComment={canComment}
+                canComment={canComment && !isSuggestLevel}
+                humanCommands={commandSend ? { send: commandSend, enabled: connected && synced, scope: draftScope, noteId } : undefined}
                 onEditor={setEditor}
                 onCommentActivate={(id) => {
                   setCommentsOpen(true);

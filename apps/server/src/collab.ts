@@ -608,7 +608,7 @@ export async function authorizeConnection(
   const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
   if (revision !== accessRevision()) throw new Error("Access changed. Reconnect.");
   if (!atLeast(level, "view")) throw new Error("Forbidden");
-  connectionConfig.readOnly = !atLeast(level, "suggest");
+  connectionConfig.readOnly = !atLeast(level, "edit");
   return level as Level;
 }
 
@@ -757,7 +757,7 @@ async function revalidateConnection(connection: Connection<LiveAccess>): Promise
     if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
       throw new Error("Access changed. Reconnect.");
     }
-    connection.readOnly = !atLeast(level, "suggest");
+    connection.readOnly = !atLeast(level, "edit");
   } catch (error) {
     connection.readOnly = true;
     connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });

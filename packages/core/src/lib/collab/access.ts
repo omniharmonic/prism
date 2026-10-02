@@ -33,7 +33,7 @@ export function collabAffordances(level: string | null): CollabAffordances {
     return { editable: true, suggestOnly: false, canComment: true, canReview: true };
   }
   if (level === "suggest") {
-    return { editable: true, suggestOnly: true, canComment: true, canReview: false };
+    return { editable: false, suggestOnly: true, canComment: true, canReview: false };
   }
   // "view", "comment", or anything unrecognized: read-only on the socket, so
   // offer nothing that writes to the shared doc.

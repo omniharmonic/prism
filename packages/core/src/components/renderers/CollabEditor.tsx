@@ -18,6 +18,7 @@ import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
+import { HumanSuggestionComposer, type HumanCommands } from "./HumanSuggestionComposer";
 
 export interface CollabUser {
   name: string;
@@ -57,7 +58,9 @@ export function CollabEditor({
   onCommentActivate,
   onWikilinkNavigate,
   wikilinkNotes,
+  humanCommands,
 }: {
+  humanCommands?: HumanCommands;
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
   user: CollabUser;
@@ -196,6 +199,7 @@ export function CollabEditor({
           canReview={canReview}
         />
       )}
+      {editor && humanCommands && <HumanSuggestionComposer editor={editor} ydoc={ydoc} commands={humanCommands} />}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). */}
       {editor && canComment && (
