@@ -22,3 +22,40 @@
 .prism-context-links button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .prism-context-links button:disabled { opacity: .55; }
 .prism-context-unavailable { display: flex; gap: 10px; padding: 16px 4px; font-size: 12px; color: var(--text-muted); }
+.prism-context-metadata { min-width: 0; color: var(--text-primary); }
+.prism-context-metadata > header { padding-bottom: 12px; border-bottom: 1px solid var(--glass-border); }
+.prism-context-metadata h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.prism-context-metadata header p, .prism-context-caption { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.prism-context-metadata h3 { margin: 18px 0 8px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.prism-context-properties { margin: 12px 0; }
+.prism-context-properties > div { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--glass-border); font-size: 12px; }
+.prism-context-properties dt { color: var(--text-muted); text-transform: capitalize; overflow-wrap: anywhere; }
+.prism-context-properties dd { margin: 0; overflow-wrap: anywhere; }
+.prism-context-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.prism-context-tags > span, .prism-context-tags > button { display: inline-flex; align-items: center; border-radius: 5px; background: var(--glass-hover); font-size: 12px; }
+.prism-context-tags button { min-height: 32px; padding: 5px 8px; }
+.prism-context-tag-input { display: flex; gap: 6px; margin-top: 10px; }
+.prism-context-tag-input input { flex: 1; min-width: 0; }
+.prism-context-metadata input:not([type=checkbox]), .prism-context-metadata select { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 6px; padding: 7px 9px; background: var(--bg-surface); color: var(--text-primary); }
+.prism-context-tag-input button, .prism-context-field-error button { min-height: 34px; padding: 6px 10px; border: 1px solid var(--glass-border); border-radius: 6px; font-size: 12px; }
+.prism-context-tag-suggestions { display: flex; flex-direction: column; padding: 5px; margin-top: 5px; border: 1px solid var(--glass-border); border-radius: 6px; }
+.prism-context-tag-suggestions button { padding: 9px; text-align: left; font-size: 12px; }
+.prism-context-tag-suggestions button:hover { background: var(--glass-hover); }
+.prism-context-field-error { display: block; color: var(--color-danger); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+.prism-context-property-row { flex-wrap: wrap; }
+.prism-context-property-row .prism-context-field-error { flex-basis: 100%; }
+.prism-context-field-error button { margin-left: 8px; color: var(--text-primary); }
+.prism-context-sync { padding: 2px 0 12px; border-top: 1px solid var(--glass-border); border-bottom: 1px solid var(--glass-border); }
+.prism-context-metadata :is(button,input,select):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-context-metadata button:disabled { opacity: .5; }
+@media (max-width: 640px) {
+  .prism-context-metadata input:not([type=checkbox]), .prism-context-metadata select, .prism-context-tag-input button, .prism-context-tags button, .prism-context-field-error button, .prism-context-tag-suggestions button { min-height: 44px; }
+  .prism-context-metadata input, .prism-context-metadata select { font-size: 16px; }
+}
+
+.prism-context-metadata select { appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888888'%3E%3Cpath d='m3 4 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+.prism-context-switch { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+.prism-context-switch-track { display: block; width: 28px; height: 16px; border-radius: 9px; padding: 2px; }
+.prism-context-switch-track > span { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; }
+.prism-context-chip-remove { min-width: 32px; min-height: 32px; display: inline-grid; place-items: center; }
+@media (max-width: 640px) { .prism-context-chip-remove { min-width: 44px; min-height: 44px; } }
