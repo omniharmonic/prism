@@ -59,7 +59,11 @@ export default function NetworkRenderer(_props: RendererProps) {
   // The Workspaces/Access + Server surfaces span the whole box → server-owner only.
   const canWorkspaces = !!sharing?.listWorkspaceEntities && isServerOwner;
   const canAccess = !!sharing?.getWorkspace && isServerOwner;
-  const canServer = !!sharing?.getServerInfo && isServerOwner;
+  // Integration credentials are vault-scoped admin work; operator controls
+  // remain server-owner-only inside ServerPanel after getServerInfo succeeds.
+  const canConnections = !!sharing?.getViewer && isAdmin && !!sharing.getIntegrationStatus;
+  const canServer = canConnections || (!!sharing?.getServerInfo && isServerOwner
+    && (!sharing.getIntegrationStatus || !!sharing.getViewer));
   // Governance is member-authed in its own handler (members vote on proposals),
   // so it is NOT admin-gated: show it wherever the Network surface has any web
   // capability; hidden on desktop / for capability viewers.
@@ -73,7 +77,7 @@ export default function NetworkRenderer(_props: RendererProps) {
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
     ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
     ...(canGovern ? [{ id: "governance", label: "Governance", icon: <Scale size={14} /> }] : []),
-    ...(canServer ? [{ id: "server", label: "Server", icon: <Server size={14} /> }] : []),
+    ...(canServer ? [{ id: "server", label: canConnections ? "Connections" : "Server", icon: <Server size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>("publish");
   // Resolve against permitted tabs during render, so a removed capability never

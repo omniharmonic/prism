@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, localAiApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
@@ -188,10 +189,13 @@ export function Settings({ open, onClose }: SettingsProps) {
                   Configure connections to core infrastructure. Changes take effect on restart.
                 </p>
                 {isWeb ? (
-                  <DesktopOnlyNotice
-                    feature="Service credentials"
-                    detail="This app holds no vault token. Integration credentials (Matrix, Google, Notion, ClickUp, Proton Bridge, transcripts) are stored on the Prism Server: the server owner sets them in Network → Server."
-                  />
+                  <div>
+                    <DesktopOnlyNotice
+                      feature="Service credentials"
+                      detail="Integration credentials are saved on the Prism Server. Workspace owners and admins manage available accounts in Workspace settings → Connections. Server operations remain with the server owner."
+                    />
+                    <button type="button" className="focus-ring mt-2 min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={() => { onClose(); useUIStore.getState().openTab("network", "Workspace settings", "network"); }}>Open workspace settings</button>
+                  </div>
                 ) : (
                 <>
                 <ServiceField
