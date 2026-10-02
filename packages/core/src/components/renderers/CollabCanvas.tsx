@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { Excalidraw, convertToExcalidrawElements, reconcileElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+import "./canvas-workspace.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
@@ -337,31 +338,36 @@ export function CollabCanvas({
   return (
     // touch-action:none lets Excalidraw own pinch-zoom/two-finger-pan on mobile
     // instead of the browser zooming/scrolling the page behind the canvas.
-    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none", ...presentation.style }}>
+    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} className="prism-canvas-workspace" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none", ...presentation.style }}>
       <div
-          className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-xs flex-shrink-0"
+          className="prism-canvas-toolbar"
           style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
         >
+          {presentation.expanded && <div className="prism-canvas-heading"><h2>Canvas</h2><p>Map your notes, ideas, and connections.</p></div>}
+          <div className="prism-canvas-actions">
           {editable && <>
           <button
             onClick={() => { setShowDrawer((v) => !v); closeCardList(); }}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
+            aria-expanded={showDrawer}
+            data-canvas-primary="true"
           >
             {showDrawer ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
-            Notes
+            Add notes
           </button>
           <button
             onClick={toggleLinks}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
             title={showLinks ? "Hide existing links" : "Show existing links"}
+            aria-pressed={showLinks}
           >
             {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
             {showLinks ? "Hide links" : "Show links"}
           </button>
-          <label className="flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+          <label className="prism-canvas-copy flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
             <input type="checkbox" checked={includeBody} onChange={(e) => setIncludeBody(e.target.checked)} className="cursor-pointer" />
             Copy preview
           </label>
@@ -379,12 +385,13 @@ export function CollabCanvas({
           {connectionMode.control}
           {browseCards}
           {presentation.control}
-          {!editable && <span className="px-3 text-[var(--text-muted)]">View only</span>}
+          {!editable && <span className="prism-canvas-view-only">View only</span>}
+          </div>
         </div>
 
       {relations.status}
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
-      <div className="relative flex-1 flex min-h-0">
+      <div className="prism-canvas-body relative flex-1 flex min-h-0">
         {cardList}
         {editable && showDrawer && (
           <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(sceneElements())} />
