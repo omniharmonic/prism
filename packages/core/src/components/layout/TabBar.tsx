@@ -1,6 +1,15 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useState } from "react";
-import { X, PanelLeft, PanelRight, Bot, ChevronLeft, ChevronRight, Star } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { OpenDocuments } from "./OpenDocuments";
+import {
+  X,
+  PanelLeft,
+  PanelRight,
+  Bot,
+  ChevronLeft,
+  ChevronRight,
+  Star,
+} from "lucide-react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -41,10 +50,20 @@ function IconButton({
 
 export function TabBar() {
   const {
-    openTabs, activeTabId, setActiveTab, closeTab, reorderTabs,
-    navHistory, navIndex, navBack, navForward,
-    sidebarOpen, toggleSidebar,
-    contextPanelOpen, toggleContextPanel, setContextPanelTab,
+    openTabs,
+    activeTabId,
+    setActiveTab,
+    closeTab,
+    reorderTabs,
+    navHistory,
+    navIndex,
+    navBack,
+    navForward,
+    sidebarOpen,
+    toggleSidebar,
+    contextPanelOpen,
+    toggleContextPanel,
+    setContextPanelTab,
   } = useUIStore();
 
   // Drag-to-reorder state: the tab being dragged + the tab it's hovering over.
@@ -53,8 +72,12 @@ export function TabBar() {
 
   // Back/forward enabled only when a still-open tab exists in that direction.
   const tabIds = new Set(openTabs.map((t) => t.id));
-  const canBack = navHistory.slice(0, Math.max(0, navIndex)).some((id) => tabIds.has(id));
-  const canForward = navHistory.slice(navIndex + 1).some((id) => tabIds.has(id));
+  const canBack = navHistory
+    .slice(0, Math.max(0, navIndex))
+    .some((id) => tabIds.has(id));
+  const canForward = navHistory
+    .slice(navIndex + 1)
+    .some((id) => tabIds.has(id));
 
   // Favorite (pin) the active note.
   const { favoriteIds, toggleFavorite } = useNoteShortcuts();
@@ -63,6 +86,20 @@ export function TabBar() {
   const isFav = isRealNote && favoriteIds.includes(activeTab!.noteId);
 
   const isMobile = useIsMobile();
+  const strip = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    if (isMobile) return;
+    // Change only the horizontal tab-strip scroll; never scroll the document or focus it.
+    const node = strip.current;
+    const active = node?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!node || !active) return;
+    const parent = node.getBoundingClientRect();
+    const child = active.parentElement!.getBoundingClientRect();
+    if (child.left < parent.left) node.scrollLeft -= parent.left - child.left;
+    else if (child.right > parent.right)
+      node.scrollLeft += child.right - parent.right;
+  }, [activeTabId, openTabs, isMobile]);
 
   // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,
   // creation, sidebar, and note actions all live in the floating command pill,
@@ -88,7 +125,12 @@ export function TabBar() {
         <div className="flex-1 min-w-0 flex items-center justify-center px-1">
           <span
             className="truncate text-center"
-            style={{ fontSize: "var(--text-sm)", fontWeight: 550, color: "var(--text-primary)", maxWidth: "100%" }}
+            style={{
+              fontSize: "var(--text-sm)",
+              fontWeight: 550,
+              color: "var(--text-primary)",
+              maxWidth: "100%",
+            }}
           >
             {activeTab?.title ?? "Prism"}
           </span>
@@ -96,11 +138,21 @@ export function TabBar() {
 
         {isRealNote && (
           <IconButton
-            onClick={() => toggleFavorite({ id: activeTab!.noteId, title: activeTab!.title, type: activeTab!.type })}
+            onClick={() =>
+              toggleFavorite({
+                id: activeTab!.noteId,
+                title: activeTab!.title,
+                type: activeTab!.type,
+              })
+            }
             title={isFav ? "Remove from Favorites" : "Add to Favorites"}
             active={isFav}
           >
-            <Star size={18} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
+            <Star
+              size={18}
+              fill={isFav ? "var(--color-accent)" : "none"}
+              color={isFav ? "var(--color-accent)" : undefined}
+            />
           </IconButton>
         )}
         <ShareButton key="share" />
@@ -119,7 +171,11 @@ export function TabBar() {
       }}
     >
       {/* Sidebar toggle */}
-      <IconButton onClick={toggleSidebar} title="Toggle sidebar (⌘B)" active={sidebarOpen}>
+      <IconButton
+        onClick={toggleSidebar}
+        title="Toggle sidebar (⌘B)"
+        active={sidebarOpen}
+      >
         <PanelLeft size={16} />
       </IconButton>
 
@@ -132,24 +188,23 @@ export function TabBar() {
       </IconButton>
 
       {/* Tabs */}
-      <div className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0" style={{ paddingLeft: 2 }}>
+      <div
+        ref={strip}
+        role="navigation"
+        aria-label="Open document tabs"
+        className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0"
+        style={{ paddingLeft: 2 }}
+      >
         {openTabs.map((tab) => {
           const active = activeTabId === tab.id;
-          const isOver = overId === tab.id && dragId !== null && dragId !== tab.id;
+          const isOver =
+            overId === tab.id && dragId !== null && dragId !== tab.id;
           const isDragging = dragId === tab.id;
           return (
             <div
               key={tab.id}
-              role="button"
-              tabIndex={0}
+              data-tab-id={tab.noteId}
               draggable
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setActiveTab(tab.id);
-                }
-              }}
               onDragStart={(e) => {
                 setDragId(tab.id);
                 e.dataTransfer.effectAllowed = "move";
@@ -181,18 +236,70 @@ export function TabBar() {
                 background: active ? "var(--surface-active)" : undefined,
                 opacity: isDragging ? 0.4 : 1,
                 // Accent insertion marker on the side the dragged tab will land.
-                boxShadow: isOver ? "inset 2px 0 0 0 var(--color-accent)" : undefined,
+                boxShadow: isOver
+                  ? "inset 2px 0 0 0 var(--color-accent)"
+                  : undefined,
                 cursor: "grab",
               }}
             >
               {tab.isDirty && (
-                <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--color-accent)", flexShrink: 0 }} />
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 999,
+                    background: "var(--color-accent)",
+                    flexShrink: 0,
+                  }}
+                />
               )}
-              <span className="truncate" style={{ maxWidth: 160 }}>{tab.title}</span>
               <button
-                onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                aria-label={`Open ${tab.title}`}
+                aria-current={active ? "page" : undefined}
+                className="focus-ring truncate text-left"
+                style={{ maxWidth: 160, height: 28 }}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(event) => {
+                  if (
+                    !event.altKey ||
+                    !event.shiftKey ||
+                    !["ArrowLeft", "ArrowRight"].includes(event.key)
+                  )
+                    return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const index = openTabs.findIndex(
+                    (item) => item.id === tab.id,
+                  );
+                  const target =
+                    openTabs[index + (event.key === "ArrowLeft" ? -1 : 1)];
+                  if (!target) return;
+                  reorderTabs(tab.id, target.id);
+                  setAnnouncement(
+                    `${tab.title} moved ${event.key === "ArrowLeft" ? "earlier" : "later"}.`,
+                  );
+                }}
+              >
+                {tab.title}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id);
+                  requestAnimationFrame(() => {
+                    const next =
+                      strip.current?.querySelector<HTMLButtonElement>(
+                        'button[aria-current="page"]',
+                      ) ??
+                      strip.current?.parentElement?.querySelector<HTMLButtonElement>(
+                        'button[title="Open documents"]',
+                      );
+                    next?.focus({ preventScroll: true });
+                  });
+                }}
                 title="Close tab"
-                className="interactive flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label={`Close ${tab.title}`}
+                className="interactive focus-ring flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
                 style={{ width: 18, height: 18, color: "var(--text-muted)" }}
               >
                 <X size={12} />
@@ -202,15 +309,30 @@ export function TabBar() {
         })}
       </div>
 
+      <OpenDocuments />
+      <span className="sr-only" role="status">
+        {announcement}
+      </span>
+
       {/* Right actions */}
       <div className="flex items-center gap-0.5 flex-shrink-0">
         {isRealNote && (
           <IconButton
-            onClick={() => toggleFavorite({ id: activeTab!.noteId, title: activeTab!.title, type: activeTab!.type })}
+            onClick={() =>
+              toggleFavorite({
+                id: activeTab!.noteId,
+                title: activeTab!.title,
+                type: activeTab!.type,
+              })
+            }
             title={isFav ? "Remove from Favorites" : "Add to Favorites"}
             active={isFav}
           >
-            <Star size={16} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
+            <Star
+              size={16}
+              fill={isFav ? "var(--color-accent)" : "none"}
+              color={isFav ? "var(--color-accent)" : undefined}
+            />
           </IconButton>
         )}
       </div>
