@@ -1,3 +1,4 @@
+import { useAgentDocumentSnapshot } from "../../lib/agent/documentSnapshots";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
@@ -214,6 +215,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   useEffect(() => {
     if (editor) editor.setEditable(!notEditable, false);
   }, [editor, notEditable]);
+
+  useAgentDocumentSnapshot(editor, note.id, note.path?.split("/").pop() || "Untitled", note.updatedAt);
 
   // Agent write-back: watch for pending edits from PanelChat via Zustand store
   const pendingEdit = useUIStore((s) => s.pendingEdit);

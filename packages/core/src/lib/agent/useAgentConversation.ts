@@ -1,3 +1,4 @@
+import type { AgentContextSnapshot } from "./contextSnapshots";
 /**
  * React glue between an AgentClient and the pure conversation reducer (WP3.2).
  *
@@ -174,7 +175,7 @@ export function useAgentConversation(client: AgentClient, sessionId: string | nu
 
   /** Send a prompt in this session. Returns false on failure (error is set). */
   const send = useCallback(
-    async (prompt: string, opts: { noteId?: string; requestId?: string; contextNoteIds?: string[] } = {}): Promise<boolean> => {
+    async (prompt: string, opts: { noteId?: string; requestId?: string; contextNoteIds?: string[]; contextSnapshots?: AgentContextSnapshot[] } = {}): Promise<boolean> => {
       if (!sessionId) return false;
       setError(null);
       try {

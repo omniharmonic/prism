@@ -20,7 +20,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 
 | Feature | Current evidence | Required next journey / completion gate |
 | --- | --- | --- |
-| Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, selected/unsaved agent context |
+| Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production check pending |
 | Collaborative rich text | Scoped CRDT storage, actual web/native concurrent edits, individual agent suggestion accept/reject | Two reviewers with conflicting decisions, durable review audit, legacy draft recovery, physical offline reconnect |
 | Message thread | Legacy multiline reader, sender grouping, scroll/draft and failure fixtures | Private Telegram-via-Matrix inbound→canonical person→reply reconciliation; paginated archives and stable source events |
 | Email | Rendering/composer fixtures and server source support | Private self-mail inbound→person link→Reply/Reply all/attachments, retained failed draft, no duplicate send |
@@ -40,7 +40,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | 3D graph / publication graph | Existing renderer preserved behind lazy load; actual tooltip consumer treats markup as text | Actual WebGL interaction on installed client and public/private publication fixtures |
 | Bioregion entity | Registered renderer retained | Type-specific properties, map/entity links and access-limited view |
 | Map | Registered virtual renderer and media/map proxy seams retained | Private markers, filtering/detail navigation, token-free proxy on native, unavailable-provider fallback |
-| Agent chat / document panel | Actual private read-only, suggest-only and read/write tool flows; persisted sessions/cost/context/drafts | Active-tool downgrade barrier in production, follow-up queue, selected/unsaved/file context, source preview continuity |
+| Agent chat / document panel | Actual private read-only, suggest-only and read/write tool flows; persisted sessions/cost/context/drafts | Active-tool downgrade barrier in production, follow-up queue and source preview continuity; selected/unsaved/text-file snapshots pass fixtures, production acceptance pending |
 | Agent activity / Automations | Registered activity dashboard and HostServices retained | Schedule/lease/history/cancel, local-vs-Claude routing and failure recovery using an isolated skill |
 | Network administration | Workspace/vault/member/server/federation/governance/publishing panels retained | Rows below; every control must honor effective capabilities |
 | Unknown content type | Placeholder remains the fallback | Unsupported type is visibly recoverable; raw content survives without being rewritten |

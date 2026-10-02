@@ -223,3 +223,5 @@ export {
   type CalendarCreateParams,
   type RsvpResponse,
 } from "./lib/actions/client";
+
+export { useAgentDocumentSnapshot } from "./lib/agent/documentSnapshots";

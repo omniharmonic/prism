@@ -1,3 +1,6 @@
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { useAgentDocumentSnapshot } from "../../../packages/core/src/lib/agent/documentSnapshots";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -9,14 +12,15 @@ import AgentChat, { AgentPanelChat } from "../../../packages/core/src/components
 import { AgentMarkdown } from "../../../packages/core/src/components/agent/AgentMarkdown";
 
 const retryFixture = new URLSearchParams(location.search).has("retry");
-const attachmentsFixture = new URLSearchParams(location.search).has("attachments");
+const snapshotFixture = new URLSearchParams(location.search).has("snapshots");
+const attachmentsFixture = new URLSearchParams(location.search).has("attachments") || snapshotFixture;
 const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture || attachmentsFixture;
 const contextFixture = new URLSearchParams(location.search).has("context");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
 const vault = { search: async (query: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return [fixtureNote("document-b")].filter((note) => note.path?.toLowerCase().includes(query.toLowerCase())); }, getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
-const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
+const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
 const limitsReady = new Promise<void>((resolve) => { controls.releaseLimits = resolve; if (!new URLSearchParams(location.search).has("slow-limits")) resolve(); });
 const sessionReady = new Promise<void>((resolve) => { controls.releaseSession = resolve; if (!new URLSearchParams(location.search).has("slow-session")) resolve(); });
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismFixtureUI: useUIStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
@@ -52,7 +56,7 @@ const client: AgentClient = {
     return { session: { ...session }, turns: historyFixture || (attachmentsFixture && !!localStorage.getItem("fixture-attachment-context")) ? [{ context: JSON.parse(localStorage.getItem("fixture-attachment-context") ?? "[]"), id: "history-turn", session_id: session.id, prompt: "Help me make the launch brief clearer. Keep the original tone and suggest a stronger opening.", note_id: session.note_id, status: "done", pid: null, exit_code: 0, error: null, cost_usd: 0.06, started_at: Date.now() - 60_000, ended_at: Date.now() - 58_000, finalText: "The brief already has a clear purpose. I would bring that purpose into the first sentence:\n\n**A shared place to think, write, and build—with your context close at hand.**\n\nThis keeps the focus on collaboration and gives the reader a concrete sense of what Prism helps them do.\n\nWould you like me to suggest this change in the document?", tools: [], touched: [] }] : [] };
   },
   ...(permissionsFixture ? {
-    getLimits: async () => { await limitsReady; return { billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[], idempotentRequests: true, ...(attachmentsFixture ? { contextNotes: { maxNotes: 5, maxCharactersPerNote: 8000 } } : {}) }; },
+    getLimits: async () => { await limitsReady; return { billing: "unknown" as const, session: { limitUsd: null }, daily: { limitUsd: null, spentUsd: 0, remainingUsd: null, resetsAt: Date.now() }, profiles: ["prism-ro", "prism-suggest", "prism-rw"] as const as any, defaultProfile: "prism-ro" as const, permissionModes: ["read-only", "suggest", "read-write"] as AgentPermissionMode[], idempotentRequests: true, ...(attachmentsFixture ? { contextNotes: { maxNotes: 5, maxCharactersPerNote: 8000 }, ...(snapshotFixture ? {contextSnapshots:{maxSnapshots:3,maxCharacters:8000}} : {}) } : {}) }; },
     updatePermissions: async (_id: string, mode: AgentPermissionMode, version: number) => {
       if (version !== session.policy_version) throw new Error("Policy changed elsewhere");
       if (controls.pendingMode) { session.pending_mode = mode; settleAfter = 2; }
@@ -61,7 +65,7 @@ const client: AgentClient = {
       return { session: { ...session } };
     },
   } : {}),
-  sendTurn: async (_id, _prompt, options) => { controls.turnAttempts++; if (retryFixture) acceptRetryRequest("turn", options?.requestId); const context = (options?.contextNoteIds ?? []).map((noteId) => ({ noteId, characters: 8000, truncated: true, updatedAt: "2026-10-01T10:00:00Z" })); if (attachmentsFixture) localStorage.setItem("fixture-attachment-context", JSON.stringify(context)); return { turnId: "fixture-turn", status: retryFixture || attachmentsFixture ? "done" : "running", context }; },
+  sendTurn: async (_id, _prompt, options) => { controls.turnAttempts++; controls.lastOptions=options; if(controls.rejectTurn)throw Error("Fixture turn rejected"); if (retryFixture) acceptRetryRequest("turn", options?.requestId); const context = (options?.contextNoteIds ?? []).map((noteId) => ({ noteId, characters: 8000, truncated: true, updatedAt: "2026-10-01T10:00:00Z" })); const allContext=[...context,...(options?.contextSnapshots??[]).map(snapshot=>({noteId:snapshot.noteId??"",characters:snapshot.text.length,truncated:snapshot.truncated,updatedAt:snapshot.baseUpdatedAt??null,snapshot}))]; if (attachmentsFixture) localStorage.setItem("fixture-attachment-context", JSON.stringify(allContext)); return { turnId: "fixture-turn", status: retryFixture || attachmentsFixture ? "done" : "running", context:allContext }; },
   cancelTurn: async () => true,
   archiveSession: async (id) => { controls.archived.push(id); },
   streamSession: (_id, _after, handlers) => {
@@ -77,6 +81,11 @@ function MarkdownProbe() {
   const [text, setText] = useState("");
   return <div className="min-w-0 p-4"><textarea aria-label="Fixture Markdown" value={text} onChange={(event) => setText(event.target.value)} /><section aria-label="Rendered reply"><AgentMarkdown text={text} /></section></div>;
 }
+function SnapshotEditor() {
+  const editor=useEditor({extensions:[StarterKit],content:"<p>Initial captured draft.</p>"});
+  useAgentDocumentSnapshot(editor,"document-a","Draft brief","2026-10-01T10:00:00Z");
+  return <section aria-label="Working document" className="max-h-32 shrink-0 overflow-auto border-b p-3"><EditorContent editor={editor}/></section>;
+}
 function Fixture() {
   const [visible, setVisible] = useState(true);
   const [, update] = useState(0);
@@ -85,6 +94,7 @@ function Fixture() {
   return <QueryClientProvider client={query}><VaultClientProvider client={vault}><AgentClientProvider client={client}>
     <div style={{ height: "100dvh", maxWidth: historyFixture ? 1040 : 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
+      {snapshotFixture && <SnapshotEditor/>}
       {contextFixture && <button onClick={() => useUIStore.getState().openTab("document-b", "Reference note", "document")}>Open reference</button>}
       {new URLSearchParams(location.search).has("markdown") ? <MarkdownProbe /> : new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && ((contextFixture && expanded) || historyFixture ? <AgentChat note={fixtureNote("agent-chat")} /> : <AgentPanelChat client={client} />)}
     </div>

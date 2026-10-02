@@ -1,3 +1,4 @@
+import { MAX_CONTEXT_SNAPSHOTS, SNAPSHOT_MAX_CHARACTERS, validContextSnapshots } from "../../../../packages/core/src/lib/agent/contextSnapshots";
 /**
  * Server-side agent dispatch API (Phase 3; hardened in Arch v2 WP0.1). Lets an
  * the server owner trigger a `claude -p` run against the ACTIVE vault from the
@@ -196,6 +197,7 @@ agentApi.get("/limits", (c) => {
     defaultProfile: "vault-ro",
     permissionModes: prismProfilesEnabled() ? PERMISSION_MODES : [],
     idempotentRequests: true,
+    contextSnapshots: { maxSnapshots: MAX_CONTEXT_SNAPSHOTS, maxCharacters: SNAPSHOT_MAX_CHARACTERS },
     contextNotes: { maxNotes: MAX_CONTEXT_NOTES, maxCharactersPerNote: NOTE_CONTEXT_MAX },
   });
 });
@@ -461,11 +463,12 @@ agentApi.patch("/sessions/:id/permissions", async (c) => {
   }
 });
 
-type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown; contextNoteIds?: unknown };
+type TurnBody = { prompt?: unknown; noteId?: unknown; requestId?: unknown; contextNoteIds?: unknown; contextSnapshots?: unknown };
 agentApi.post("/sessions/:id/turns", async (c) => {
   const s = ownedSession(c);
   if (!s) return c.json({ error: "not_found" }, 404);
   const body = await c.req.json<TurnBody>().catch(() => ({}) as TurnBody);
+  if (body.contextSnapshots !== undefined && !validContextSnapshots(body.contextSnapshots)) return c.json({ error: "bad_request", detail: "Invalid context snapshots." }, 400);
   if (body.contextNoteIds !== undefined && !validContextNoteIds(body.contextNoteIds)) return c.json({ error: "bad_request", detail: "Attach up to five distinct note identifiers." }, 400);
   if (body.requestId !== undefined && !isAgentRequestId(body.requestId)) return c.json({ error: "bad_request", detail: "invalid request identifier" }, 400);
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
@@ -480,7 +483,7 @@ agentApi.post("/sessions/:id/turns", async (c) => {
     const t = await startTurn(
       s.id,
       resolveVaultEntry(s.vault_id),
-      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null, requestId: typeof body.requestId === "string" ? body.requestId : undefined, contextNoteIds: validContextNoteIds(body.contextNoteIds) ? body.contextNoteIds : undefined },
+      { prompt: body.prompt, noteId: typeof body.noteId === "string" && body.noteId ? body.noteId : null, requestId: typeof body.requestId === "string" ? body.requestId : undefined, contextNoteIds: validContextNoteIds(body.contextNoteIds) ? body.contextNoteIds : undefined, contextSnapshots: validContextSnapshots(body.contextSnapshots) ? body.contextSnapshots : undefined },
       { grants: actor.grants, role: actor.role, subject: actor.email },
     );
     return c.json({ turnId: t.id, status: t.status, context: turnContext(t) });

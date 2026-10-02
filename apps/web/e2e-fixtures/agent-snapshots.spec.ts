@@ -1,0 +1,46 @@
+import {test,expect} from '@playwright/test';
+const open=async(page:any)=>{await page.goto('/e2e-fixtures/agent.html?context&snapshots');await page.getByText('Capture text',{exact:true}).click();await expect(page.getByRole('button',{name:'Attach document snapshot',exact:true})).toBeEnabled();};
+test('selected unsaved text is previewable, survives reload and remains separate from the user prompt',async({page})=>{
+ await open(page);
+ const editor=page.getByRole('region',{name:'Working document'}).locator('[contenteditable=true]');
+ await editor.fill('UNSAVED_SELECTED_PASSAGE');await editor.press('Meta+a');
+ await page.getByRole('button',{name:'Attach selection',exact:true}).click();
+ await page.getByRole('button',{name:'Selected passage',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'Captured context'}).getByText('UNSAVED_SELECTED_PASSAGE',{exact:true})).toBeVisible();
+ await page.getByRole('dialog').press('Escape');
+ await page.reload();
+ await expect(page.getByRole('button',{name:'Selected passage',exact:true})).toBeVisible();
+ await page.getByRole('textbox',{name:'Message'}).fill('Discuss the selected passage');
+ await page.getByRole('button',{name:'Send',exact:true}).click();
+ await expect(page.getByTestId('agent-supplied-context')).toContainText('Selected passage');
+ const snapshot=await page.evaluate(()=>(window as any).prismAgentFixture.lastOptions.contextSnapshots[0]);
+ expect(snapshot.text).toBe('UNSAVED_SELECTED_PASSAGE');expect(snapshot.kind).toBe('selection');expect(snapshot.noteId).toBe('document-a');
+ expect(snapshot.text).not.toBe('Initial captured draft.');
+});
+test('failed snapshot sends retain the payload and source access is checked before preview',async({page})=>{
+ await open(page);
+ await page.getByRole('button',{name:'Attach document snapshot',exact:true}).click();
+ await page.evaluate(()=>{const c=(window as any).prismAgentFixture;c.rejectTurn=true;c.denySource=true;});
+ await page.getByRole('button',{name:'Document snapshot',exact:true}).click();
+ await expect(page.getByRole('dialog')).toContainText('This source is unavailable');
+ await expect(page.getByRole('dialog')).not.toContainText('Initial captured draft.');
+ await page.getByRole('dialog').press('Escape');
+ await page.getByRole('textbox',{name:'Message'}).fill('Discuss draft');await page.getByRole('button',{name:'Send',exact:true}).click();
+ await expect(page.getByText('Fixture turn rejected',{exact:false})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Document snapshot',exact:true})).toBeVisible();
+ await expect(page.getByRole('textbox',{name:'Message'})).toHaveValue('Discuss draft');
+ await page.getByRole('button',{name:'Morgan',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Document snapshot',exact:true})).not.toBeVisible();
+});
+test('text file snapshots disclose truncation, stay inert and fit the mobile composer',async({page})=>{
+ await page.setViewportSize({width:390,height:844});await open(page);
+ await page.getByLabel('Choose context text file').setInputFiles({name:'reference.txt',mimeType:'text/plain',buffer:Buffer.from('<img src=x onerror=alert(1)>\n'+'x'.repeat(9000))});
+ await expect(page.getByRole('button',{name:'reference.txt · truncated',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'reference.txt · truncated',exact:true}).click();
+ const dialog=page.getByRole('dialog');await expect(dialog).toContainText('<img src=x onerror=alert(1)>');
+ expect(await dialog.locator('img').count()).toBe(0);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await dialog.press('Escape');
+ await page.getByLabel('Choose context text file').setInputFiles({name:'image.png',mimeType:'image/png',buffer:Buffer.from('binary')});
+ await expect(page.getByRole('alert')).toContainText('Choose a text or code file');
+ await page.screenshot({path:'test-results/agent-snapshots-mobile.png'});
+});

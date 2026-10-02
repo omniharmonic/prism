@@ -127,3 +127,7 @@ Native follow-up for `0495e07`: the user approved Keychain access. Installed PID
 ### People release — 5faa404
 
 Online SQLite backup integrity passed; zero queued/running agent turns before controlled Prism Server restart. Authenticated PWA updated to index-BWycHGb7.js. Two owner-private synthetic notes under `_test/prism-people-20261001/` verify directory search → person profile → exact canonical conversation. Added and removed a synthetic example.test identity through the UI; independent vault readback confirmed both recorded decisions and unchanged body/unrelated metadata. Anonymous reads denied; profile projection has no bodies. Phone profile retains identity/records after layout revalidation and fits 390px. Screenshot review found an unbroken long-title clipping issue; correction is in progress. Installed native is still 0495e07; future native installs are batched to reduce macOS credential prompts.
+
+### Canvas picker release — ea068a8
+
+Authenticated PWA updated to index-DHY2MUn1.js. In a new owner-private synthetic canvas, the real collaborative picker added the private board task. Independent vault readback found exactly one persisted rectangle carrying the canonical target ID, with unrelated canvas metadata preserved. Phone-width picker loaded the same card as On canvas, fit the viewport, and closed normally. Web build, native release build, client invariants and six packaged Chromium/WebKit startup checks passed. Native build is prepared but not installed; installed 0495e07 remains authenticated while native installations are batched.

@@ -1255,3 +1255,38 @@ test("permission API validates modes and versions and enforces session ownership
     assert.equal((await patch({ mode: "read-write", expectedVersion: 2 })).status, 409);
   } finally { delete process.env.AGENT_PRISM_PROFILES; }
 });
+
+test("captured document and file context remains exact across saved edits and request retries", async () => {
+  const source: Note = { id: "snapshot-source", path: "Source", content: "SAVED BODY", metadata: null, tags: [], createdAt: "", updatedAt: "2026-10-01T10:00:00Z" };
+  vaultNotes.set(source.id, source);
+  const sid = await newSession();
+  const contextSnapshots = [
+    {kind:"selection",noteId:source.id,label:"Selected source",text:"UNSAVED PASSAGE",capturedAt:"2026-10-01T10:05:00Z",baseUpdatedAt:source.updatedAt,truncated:false},
+    {kind:"file",label:"private-fixture.txt",text:"QUOTED FILE TEXT",capturedAt:"2026-10-01T10:05:00Z",truncated:false},
+  ];
+  const requestId = "snapshot-retry-0001";
+  const turnId = await runTurn(sid, "Discuss these", "agent-stream-turn1.jsonl", { contextSnapshots, requestId });
+  const detail = await (await agentApi.request(`/sessions/${sid}`, {headers: owner()})).json() as any;
+  assert.deepEqual(detail.turns[0].context.map((c:any)=>c.snapshot),contextSnapshots);
+  const prompt=calls[0]!.args.at(-1)!;
+  assert.match(prompt,/UNSAVED PASSAGE/); assert.match(prompt,/QUOTED FILE TEXT/); assert.match(prompt,/NOT the current saved vault content/);
+  assert.equal(detail.turns[0].prompt,"Discuss these");
+  source.content="LATER SAVED BODY";
+  const retry = await (await postTurn(sid,{prompt:"Discuss these",contextSnapshots,requestId})).json() as any;
+  assert.equal(retry.turnId,turnId); assert.equal(calls.length,1);
+  assert.equal((await postTurn(sid,{prompt:"Discuss these",contextSnapshots:[{...contextSnapshots[0],text:"Changed snapshot"}],requestId})).status,409);
+});
+
+test("snapshot admission validates bounds and current note access before any execution", async () => {
+  const sid = await newSession();
+  const snapshot={kind:"document",noteId:"missing-source",label:"Source",text:"CAPTURED PRIVATE TEXT",capturedAt:"2026-10-01T10:05:00Z",truncated:false};
+  for(const contextSnapshots of [null,{},[{...snapshot,text:"x".repeat(8001)}],[{...snapshot,capturedAt:"invalid"}],[{...snapshot,noteId:undefined}],Array(4).fill(snapshot),[{...snapshot,kind:"file"}]]){
+    assert.equal((await postTurn(sid,{prompt:"Discuss",contextSnapshots})).status,400);
+  }
+  const denied=await postTurn(sid,{prompt:"Discuss",contextSnapshots:[snapshot]});
+  assert.equal(denied.status,409); assert.doesNotMatch(await denied.text(),/CAPTURED PRIVATE TEXT/);
+  assert.equal(calls.length,0);assert.equal(listTurns(sid).length,0);
+  vaultNotes.set("missing-source",{id:"missing-source",path:"PRIVATE",content:"PRIVATE",tags:[],metadata:{prism_visibility:"private",prism_creator:"other@example.test"},createdAt:"",updatedAt:null});
+  assert.equal((await postTurn(sid,{prompt:"Discuss",contextSnapshots:[snapshot]})).status,409);
+  assert.equal(listTurns(sid).length,0);
+});

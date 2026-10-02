@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "./localDocument";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
-import { CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
+import { useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
 import { apiBase, getCapabilityToken, getActiveVault, getMe, fetchMe, contextHeaders } from "../config";
@@ -147,6 +147,7 @@ function ScopedCollabDoc({
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
   const [editor, setEditor] = useState<Editor | null>(null);
   const [focusedThread, setFocusedThread] = useState<string | null>(null);
+  useAgentDocumentSnapshot(editor, noteId, title, null, synced && !denied && !checkingAccess && !connectionError);
 
   // Expose the reading-font control to the shell (bottom bar on desktop, More
   // sheet on mobile) for documents only. Declared above the early returns below

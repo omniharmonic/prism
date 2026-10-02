@@ -1,3 +1,5 @@
+import { AgentSnapshotAttachments, AgentSnapshotPreview } from "./AgentSnapshotAttachments";
+import { validContextSnapshots, type AgentContextSnapshot } from "../../lib/agent/contextSnapshots";
 /**
  * Agent chat (Arch v2 WP3.2) — durable server-side agent sessions over the
  * AgentClient seam. Rendered as the "agent-chat" virtual tab (Registry + Canvas
@@ -423,7 +425,12 @@ export function Conversation({
   const contextNoteIds: string[] = useMemo(() => {
     try { const ids: unknown = JSON.parse(contextDraft.text || "[]"); return Array.isArray(ids) && ids.length <= 5 && ids.every((id) => typeof id === "string") ? ids : []; } catch { return []; }
   }, [contextDraft.text]);
+  const snapshotDraft = useComposerDraft(client.scope?.() || null, `snapshots:${sessionId ? `session:${sessionId}` : `note:${draft?.noteId ?? "new"}`}`);
+  const contextSnapshots = useMemo(() => {
+    try { const parsed: unknown = JSON.parse(snapshotDraft.text || "[]"); return validContextSnapshots(parsed) ? parsed : []; } catch { return []; }
+  }, [snapshotDraft.text]);
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
+  const [readingFile, setReadingFile] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const draftPermissions = useComposerDraft(client.scope?.() || null, `permissions:note:${draft?.noteId ?? "new"}`);
@@ -492,7 +499,12 @@ export function Conversation({
   const submit = useCallback(
     async (textArg?: string) => {
       const text = (textArg ?? input).trim();
-      if (!text || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if (!text || readingFile || running || creating || sendingRef.current || permissionPending || changingMode || awaitingSession || limitsUnavailable) return;
+      if (contextSnapshots.length && !limits?.contextSnapshots) {
+        const message = "This server can't accept captured snapshots. Remove them or reconnect to the updated server.";
+        if (isDraft) setDraftError(message); else conv.setError(message);
+        return;
+      }
       if (contextNoteIds.length && !limits?.contextNotes) {
         const message = "This server can't accept the attached notes. Remove them before sending, or reconnect to the updated server.";
         if (isDraft) setDraftError(message); else conv.setError(message);
@@ -509,7 +521,7 @@ export function Conversation({
       if (idempotentRequests) {
         try {
           if (!scope) throw new Error("Wait for your workspace identity before sending.");
-          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
+          const receipt = await requestReceipt(scope, conversation, { text, noteId: isDraft ? draft?.noteId : conv.session?.note_id, ...(isDraft ? { mode: permissionModes?.length ? draftMode : profile } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}), ...(contextSnapshots.length ? { contextSnapshots } : {}) });
           if (scope !== client.scope?.()) throw new Error("Workspace changed. Reopen the draft in its original workspace.");
           requestId = receipt.id;
         } catch (error) {
@@ -525,10 +537,11 @@ export function Conversation({
         try {
           const title = text.replace(/\s+/g, " ").slice(0, 80);
           const { sessionId: id } = await client.createSession({ title, ...(permissionModes?.length ? { permissionMode: draftMode } : { profile }), noteId: draft?.noteId, ...(requestId ? { requestId } : {}) });
-          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
+          await client.sendTurn(id, text, { ...(draft?.noteId ? { noteId: draft.noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}), ...(contextSnapshots.length ? { contextSnapshots } : {}) });
           void queryClient.invalidateQueries({ queryKey: agentKeys(client).all });
           clearIfUnchanged(sentDraft);
           contextDraft.clearIfUnchanged(contextDraft.text);
+          snapshotDraft.clearIfUnchanged(snapshotDraft.text);
           draftPermissions.clearIfUnchanged(draftPermissions.text);
           if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
           onCreated(id);
@@ -542,16 +555,17 @@ export function Conversation({
         return;
       }
       const noteId = conv.session?.note_id ?? undefined;
-      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}) });
+      const ok = await conv.send(text, { ...(noteId ? { noteId } : {}), ...(requestId ? { requestId } : {}), ...(contextNoteIds.length ? { contextNoteIds } : {}), ...(contextSnapshots.length ? { contextSnapshots } : {}) });
       if (ok) {
         clearIfUnchanged(sentDraft);
         contextDraft.clearIfUnchanged(contextDraft.text);
+          snapshotDraft.clearIfUnchanged(snapshotDraft.text);
         if (scope && requestId) clearRequestReceipt(scope, conversation, requestId);
       }
       sendingRef.current = false;
       setSending(false);
     },
-    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes],
+    [input, running, creating, isDraft, client, profile, draft, queryClient, onCreated, conv, setInput, clearIfUnchanged, permissionPending, changingMode, permissionModes, draftMode, idempotentRequests, sessionId, awaitingSession, limitsUnavailable, draftPermissions, contextDraft, contextNoteIds, limits?.contextNotes, contextSnapshots, snapshotDraft, limits?.contextSnapshots, readingFile],
   );
 
   // Command bar "Ask Claude: …" → send immediately in a fresh draft (once, even
@@ -691,6 +705,8 @@ export function Conversation({
         </div>
       )}
       {isDraft && <AgentBudgetLine />}
+      {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
+      {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
       {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
       {attachmentPreview && <AgentSourcePreview noteId={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
       {contextDraft.error && <p role="status" className="mb-2 text-xs">{contextDraft.error}</p>}
@@ -736,7 +752,7 @@ export function Conversation({
         ) : (
           <button
             onClick={() => void submit()}
-            disabled={!input.trim() || sending || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
+            disabled={!input.trim() || sending || readingFile || changingMode || !!permissionPending || awaitingSession || limitsUnavailable}
             aria-label="Send"
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
@@ -837,6 +853,7 @@ function Thinking({ label }: { label: string }) {
 }
 
 function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
+  const [snapshotPreview, setSnapshotPreview] = useState<AgentContextSnapshot | null>(null);
   const running = isRunning(turn.status);
   const problem = turnProblem(turn);
   const billing = useAgentLimits()?.billing;
@@ -846,9 +863,10 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   return (
     <div className="flex flex-col gap-2" data-testid="agent-turn" data-status={turn.status}>
       {turn.prompt && <UserBubble text={turn.prompt} />}
+      {snapshotPreview && <AgentSnapshotPreview snapshot={snapshotPreview} onClose={()=>setSnapshotPreview(null)}/>}
       {!!turn.context?.length && <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="agent-supplied-context" style={{ color: "var(--text-muted)" }}>
-        <span>Saved text supplied:</span>
-        {turn.context.map((source) => <span key={source.noteId} className="flex flex-wrap items-center gap-1"><NoteChip noteId={source.noteId} op="context" /><span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
+        <span>{turn.context.some(s=>s.snapshot) ? "Context supplied:" : "Saved text supplied:"}</span>
+        {turn.context.map((source,index) => <span key={`${source.noteId}:${index}`} className="flex flex-wrap items-center gap-1">{source.snapshot ? <button className="focus-ring min-h-10 rounded-lg border border-[var(--glass-border)] px-2" onClick={()=>setSnapshotPreview(source.snapshot!)}>{source.snapshot.kind === "selection" ? "Selected passage" : source.snapshot.kind === "document" ? "Document snapshot" : "Text file"}</button> : <NoteChip noteId={source.noteId} op="context" />}<span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
       </div>}
       <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
         <PrismMark width={25} height={18} decorative />
