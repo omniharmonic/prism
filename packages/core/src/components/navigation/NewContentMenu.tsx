@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   FileText,
   Presentation,
@@ -9,269 +10,572 @@ import {
   CheckSquare,
   LayoutDashboard,
   PenTool,
+  X,
+  ChevronDown,
+  Folder,
+  Search,
+  Check,
+  ArrowRight,
 } from "lucide-react";
-import { useCreateNote } from "../../app/hooks/useParachute";
+import { useVaultClient } from "../../data/VaultClientContext";
 import { useUIStore } from "../../app/stores/ui";
-import { useVaultPaths } from "../../app/hooks/useParachute";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
-import { CONTENT_DEFAULTS, type ContentType } from "../../lib/types";
+import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
 import { ComposeMessage } from "../comms/ComposeMessage";
-import { BottomSheet } from "../ui/BottomSheet";
+import {
+  folderLabel,
+  newContentFolder,
+  newContentFolders,
+  newContentParams,
+  validFolder,
+} from "./newContent";
 
-const CONTENT_TYPE_OPTIONS = [
-  { type: "document" as ContentType, label: "Document", icon: FileText },
-  { type: "presentation" as ContentType, label: "Presentation", icon: Presentation },
-  { type: "code" as ContentType, label: "Code File", icon: Code },
-  { type: "message" as ContentType, label: "Message", icon: MessageSquare },
-  { type: "spreadsheet" as ContentType, label: "Spreadsheet", icon: Table2 },
-  { type: "website" as ContentType, label: "Website", icon: Globe },
-  { type: "task" as ContentType, label: "Task", icon: CheckSquare },
-  { type: "dashboard" as ContentType, label: "Dashboard", icon: LayoutDashboard },
-  { type: "canvas" as ContentType, label: "Canvas", icon: PenTool },
-];
-
-interface NewContentMenuProps {
+const OPTIONS = [
+  {
+    type: "document",
+    label: "Page",
+    detail: "A blank page for your next idea.",
+    icon: FileText,
+  },
+  {
+    type: "canvas",
+    label: "Canvas",
+    detail: "Arrange notes and connect ideas visually.",
+    icon: PenTool,
+  },
+  {
+    type: "spreadsheet",
+    label: "Spreadsheet",
+    detail: "Organize information in a shared table.",
+    icon: Table2,
+  },
+  {
+    type: "presentation",
+    label: "Presentation",
+    detail: "Build a story, one slide at a time.",
+    icon: Presentation,
+  },
+  {
+    type: "code",
+    label: "Code file",
+    detail: "A place for scripts and snippets.",
+    icon: Code,
+  },
+  {
+    type: "dashboard",
+    label: "Dashboard",
+    detail: "Bring useful views into one place.",
+    icon: LayoutDashboard,
+  },
+  {
+    type: "website",
+    label: "Website",
+    detail: "Create an HTML page in your vault.",
+    icon: Globe,
+  },
+  {
+    type: "task",
+    label: "Task",
+    detail: "Capture something to do.",
+    icon: CheckSquare,
+  },
+  {
+    type: "message",
+    label: "Message",
+    detail: "Start a conversation.",
+    icon: MessageSquare,
+  },
+] as const;
+type CreationType = (typeof OPTIONS)[number]["type"];
+export interface NewContentMenuProps {
   onClose: () => void;
+  /** Optional raw vault-relative folder for a tree/context-menu entry point. */
+  initialFolder?: string;
+  initialType?: ContentType;
+  /** Opener for reliable focus restoration, including Safari pointer activation. */
+  returnFocus?: HTMLElement | null;
 }
-
-export function NewContentMenu({ onClose }: NewContentMenuProps) {
-  const createNote = useCreateNote();
+export function NewContentMenu(props: NewContentMenuProps) {
+  const client = useVaultClient();
+  const scope = useAgentChatStore((s) => s.scope);
+  const binding = JSON.stringify([scope, client.scope?.() ?? null]);
+  const initial = useRef(binding);
+  useEffect(() => {
+    if (binding !== initial.current) props.onClose();
+  }, [binding, props.onClose]);
+  return binding === initial.current ? (
+    <CreateContent key={binding} {...props} />
+  ) : null;
+}
+function CreateContent({
+  onClose,
+  initialFolder,
+  initialType = "document",
+  returnFocus,
+}: NewContentMenuProps) {
+  const client = useVaultClient();
+  const queryClient = useQueryClient();
+  const scope = useAgentChatStore((s) => s.scope);
+  const initialScope = useRef(
+    JSON.stringify([scope, client.scope?.() ?? null]),
+  );
+  const current = () =>
+    initialScope.current ===
+    JSON.stringify([
+      useAgentChatStore.getState().scope,
+      client.scope?.() ?? null,
+    ]);
+  const activeNoteId = useRef(
+    useUIStore
+      .getState()
+      .openTabs.find((tab) => tab.id === useUIStore.getState().activeTabId)
+      ?.noteId,
+  );
+  const tree = useQuery({
+    queryKey: ["vault", "creation-locations", initialScope.current],
+    queryFn: () => client.listTree(),
+    retry: false,
+  });
+  const [type, setType] = useState<CreationType>(
+    OPTIONS.some((option) => option.type === initialType)
+      ? (initialType as CreationType)
+      : "document",
+  );
+  const [title, setTitle] = useState("");
+  const [folder, setFolder] = useState<string | null>(
+    initialFolder !== undefined && validFolder(initialFolder)
+      ? initialFolder
+      : null,
+  );
+  const [showTypes, setShowTypes] = useState(false);
+  const [showFolders, setShowFolders] = useState(false);
+  const [search, setSearch] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const lock = useRef(false);
+  const alive = useRef(true);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleInput = useRef<HTMLInputElement>(null);
   const isMobile = useIsMobile();
-  const openTab = useUIStore((s) => s.openTab);
-  const { data: allPaths } = useVaultPaths();
-  const [showTaskDialog, setShowTaskDialog] = useState(false);
-  const [selectedType, setSelectedType] = useState<ContentType | null>(null);
-  const [pathInput, setPathInput] = useState("");
-  const [showPathSuggestions, setShowPathSuggestions] = useState(false);
-
-  // Unique directory paths for autocomplete
-  const dirPaths = useMemo(() => {
-    if (!allPaths) return [];
-    const dirs = new Set<string>();
-    for (const p of allPaths) {
-      const parts = p.split("/");
-      for (let i = 1; i <= parts.length; i++) {
-        dirs.add(parts.slice(0, i).join("/"));
-      }
-    }
-    return Array.from(dirs).sort();
-  }, [allPaths]);
-
-  const filteredPaths = pathInput.length > 0
-    ? dirPaths.filter((p) => p.toLowerCase().includes(pathInput.toLowerCase())).slice(0, 6)
-    : dirPaths.slice(0, 6);
-
-  const [showCompose, setShowCompose] = useState(false);
-
-  const handleTypeClick = (type: ContentType) => {
-    if (type === "task") {
-      setShowTaskDialog(true);
-      return;
-    }
-    if (type === ("message" as ContentType)) {
-      setShowCompose(true);
-      return;
-    }
-    setSelectedType(type);
-    setPathInput("");
+  const option = OPTIONS.find((item) => item.type === type)!;
+  const Icon = option.icon;
+  const selectedFolder =
+    folder ??
+    newContentFolder(
+      tree.isFetching || tree.isError ? [] : (tree.data ?? []),
+      activeNoteId.current,
+    );
+  const folders = useMemo(
+    () =>
+      newContentFolders(
+        tree.isFetching || tree.isError ? [] : (tree.data ?? []),
+      ),
+    [tree.data, tree.isFetching, tree.isError],
+  );
+  const visibleFolders = folders
+    .filter((value) =>
+      folderLabel(value).toLowerCase().includes(search.toLowerCase()),
+    )
+    .slice(0, 40);
+  const dedicated = type === "task" || type === "message";
+  useEffect(() => {
+    if (folder === null && tree.data && !tree.isFetching && !tree.isError)
+      setFolder(newContentFolder(tree.data, activeNoteId.current));
+  }, [folder, tree.data, tree.isFetching, tree.isError]);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (dedicated) return;
+    const node = dialog.current;
+    const trigger =
+      returnFocus ?? (document.activeElement as HTMLElement | null);
+    node?.showModal();
+    titleInput.current?.focus();
+    return () => {
+      node?.close();
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, [dedicated, returnFocus]);
+  const close = () => {
+    if (!lock.current) onClose();
   };
-
-  const handleCreate = async () => {
-    if (!selectedType) return;
+  const create = async () => {
+    if (
+      lock.current ||
+      !current() ||
+      tree.isPending ||
+      (tree.isFetching && folder === null) ||
+      dedicated
+    )
+      return;
+    let input;
     try {
-      const defaults = CONTENT_DEFAULTS[selectedType];
-      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-      const name = `Untitled ${selectedType} ${ts}`;
-      const path = pathInput ? `${pathInput}/${name}` : name;
-
-      const note = await createNote.mutateAsync({
-        content: defaults.content || " ",
-        metadata: defaults.metadata,
-        path,
-      });
-
-      openTab(note.id, name, selectedType);
+      input = newContentParams(
+        type as ContentType,
+        title,
+        selectedFolder,
+        tree.data ?? [],
+      );
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Check the title and location.",
+      );
+      return;
+    }
+    lock.current = true;
+    setPending(true);
+    setError("");
+    try {
+      // Refresh known names before a deliberate create, without reading bodies.
+      if (tree.data) {
+        const entries = await client.listTree();
+        if (!alive.current || !current()) return;
+        input = newContentParams(
+          type as ContentType,
+          title,
+          selectedFolder,
+          entries,
+        );
+      }
+      const note = await client.createNote(input.params);
+      if (!alive.current || !current()) return;
+      void queryClient.invalidateQueries({ queryKey: ["vault"] });
+      useUIStore.getState().openTab(note.id, input.title, type as ContentType);
       onClose();
     } catch (e) {
-      console.error("Failed to create note:", e);
-      alert(`Failed to create ${selectedType}: ${e}`);
+      if (alive.current && current())
+        setError(
+          e instanceof Error
+            ? e.message
+            : "Could not create this page. Your title and location are kept.",
+        );
+    } finally {
+      lock.current = false;
+      if (alive.current) setPending(false);
     }
   };
-
-  if (showTaskDialog) {
-    return <TaskCreateDialog onClose={onClose} />;
-  }
-
-  if (showCompose) {
-    return <ComposeMessage onClose={onClose} />;
-  }
-
-  // Step 2: path picker for the selected type
-  if (selectedType) {
-    if (isMobile) {
-      return (
-        <BottomSheet open onClose={onClose} title={`New ${selectedType} — choose a folder`}>
-          <div className="px-4 pb-3">
-            <div className="relative mb-3">
-              <input
-                value={pathInput}
-                onChange={(e) => { setPathInput(e.target.value); setShowPathSuggestions(true); }}
-                onFocus={() => setShowPathSuggestions(true)}
-                onBlur={() => setTimeout(() => setShowPathSuggestions(false), 150)}
-                placeholder="Vault root (or type a path)"
-                autoFocus
-                className="w-full rounded-lg px-3 outline-none"
-                style={{
-                  height: 44,
-                  fontSize: 16,
-                  background: "var(--glass)",
-                  border: "1px solid var(--glass-border)",
-                  color: "var(--text-primary)",
-                }}
-                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setSelectedType(null); }}
-              />
-              {showPathSuggestions && filteredPaths.length > 0 && (
-                <div
-                  className="absolute bottom-full left-0 right-0 mb-1 py-1 rounded-lg overflow-hidden max-h-48 overflow-y-auto"
-                  style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)", boxShadow: "var(--glass-shadow-elevated)" }}
-                >
-                  {filteredPaths.map((p) => (
-                    <button
-                      key={p}
-                      onMouseDown={() => { setPathInput(p); setShowPathSuggestions(false); }}
-                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-[var(--glass-hover)] transition-colors truncate"
-                      style={{ color: "var(--text-secondary)" }}
-                    >
-                      {p.startsWith("vault/") ? p.slice(6) : p}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="flex gap-2.5">
-              <button
-                onClick={() => setSelectedType(null)}
-                className="flex-1 rounded-lg text-sm font-medium"
-                style={{ height: 46, color: "var(--text-secondary)", background: "var(--glass)", border: "1px solid var(--glass-border)" }}
-              >
-                Back
-              </button>
-              <button
-                onClick={handleCreate}
-                className="flex-1 rounded-lg text-sm font-semibold"
-                style={{ height: 46, background: "var(--color-accent)", color: "white" }}
-              >
-                Create
-              </button>
-            </div>
+  if (type === "task") return <TaskCreateDialog onClose={onClose} />;
+  if (type === "message") return <ComposeMessage onClose={onClose} />;
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby="new-content-title"
+      onKeyDown={(event) => {
+        if (event.key !== "Tab") return;
+        const controls = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex='0']",
+          ),
+        ).filter((node) => node.getClientRects().length > 0);
+        event.preventDefault();
+        if (!controls.length) return;
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        const next = event.shiftKey
+          ? index <= 0
+            ? controls.length - 1
+            : index - 1
+          : (index + 1) % controls.length;
+        controls[next]?.focus();
+      }}
+      onCancel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+      className="p-0 backdrop:bg-black/30"
+      style={{
+        width: isMobile
+          ? "calc(100vw - 16px)"
+          : "min(520px, calc(100vw - 40px))",
+        maxHeight: "calc(100dvh - 32px)",
+        maxWidth: "calc(100vw - 16px)",
+        margin: isMobile
+          ? "auto 8px max(8px, env(safe-area-inset-bottom))"
+          : "auto",
+        border: "1px solid var(--glass-border)",
+        borderRadius: 18,
+        background: "var(--bg-base)",
+        color: "var(--text-primary)",
+        boxShadow: "0 24px 80px rgba(0,0,0,.16)",
+        overflow: "auto",
+      }}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void create();
+        }}
+      >
+        <div className="flex items-center justify-between px-6 pt-5">
+          <h2
+            id="new-content-title"
+            className="text-sm font-medium"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            New {type === "document" ? "page" : option.label.toLowerCase()}
+          </h2>
+          <button
+            type="button"
+            aria-label="Close new page"
+            disabled={pending}
+            onClick={close}
+            className="focus-ring flex h-11 w-11 items-center justify-center rounded-lg hover:bg-[var(--glass-hover)]"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="px-6 pb-6">
+          <div
+            className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl"
+            style={{
+              background: "var(--glass)",
+              color: "var(--text-secondary)",
+            }}
+          >
+            <Icon size={27} strokeWidth={1.5} />
           </div>
-        </BottomSheet>
-      );
-    }
-    return (
-      <div className="fixed inset-0 z-50" onClick={onClose}>
-        <div
-          className="absolute bottom-12 left-2 py-2 px-3 glass-elevated"
-          style={{ borderRadius: "var(--radius-md)", width: 240 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="text-xs font-medium mb-2" style={{ color: "var(--text-primary)" }}>
-            Create {selectedType} in...
-          </div>
-          <div className="relative mb-2">
-            <input
-              value={pathInput}
-              onChange={(e) => { setPathInput(e.target.value); setShowPathSuggestions(true); }}
-              onFocus={() => setShowPathSuggestions(true)}
-              onBlur={() => setTimeout(() => setShowPathSuggestions(false), 150)}
-              placeholder="vault root (or type path)"
-              autoFocus
-              className="w-full h-7 rounded-md px-2 text-xs outline-none"
-              style={{
-                background: "var(--glass)",
-                border: "1px solid var(--glass-border)",
-                color: "var(--text-primary)",
+          <label className="sr-only" htmlFor="new-content-name">
+            Page title
+          </label>
+          <input
+            id="new-content-name"
+            style={{
+              fontSize: isMobile ? 26 : 30,
+              fontWeight: 600,
+              lineHeight: 1.3,
+            }}
+            ref={titleInput}
+            value={title}
+            maxLength={200}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setError("");
+            }}
+            disabled={pending}
+            placeholder="Untitled"
+            autoComplete="off"
+            className="w-full bg-transparent py-2 text-[28px] font-semibold tracking-tight outline-none placeholder:opacity-40"
+          />
+          <p className="mb-6 text-sm" style={{ color: "var(--text-muted)" }}>
+            {option.detail}
+          </p>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span
+              className="w-14 text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Format
+            </span>
+            <button
+              type="button"
+              disabled={pending}
+              aria-expanded={showTypes}
+              aria-controls="creation-formats"
+              onClick={() => {
+                setShowTypes(!showTypes);
+                setShowFolders(false);
               }}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") setSelectedType(null); }}
-            />
-            {showPathSuggestions && filteredPaths.length > 0 && (
-              <div
-                className="absolute bottom-full left-0 right-0 mb-0.5 py-0.5 rounded-md overflow-hidden max-h-40 overflow-y-auto"
-                style={{ background: "var(--bg-elevated)", border: "1px solid var(--glass-border)", boxShadow: "var(--glass-shadow-elevated)" }}
+              className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-sm hover:bg-[var(--glass-hover)]"
+            >
+              <Icon size={16} />
+              {option.label}
+              <ChevronDown size={14} />
+            </button>
+          </div>
+          {showTypes && (
+            <div
+              id="creation-formats"
+              aria-label="Page formats"
+              className="mb-4 grid grid-cols-2 gap-1 rounded-xl border p-2"
+              style={{ borderColor: "var(--glass-border)" }}
+            >
+              {OPTIONS.map((item) => (
+                <button
+                  type="button"
+                  key={item.type}
+                  disabled={pending}
+                  onClick={() => {
+                    setType(item.type);
+                    setShowTypes(false);
+                  }}
+                  className="focus-ring flex min-h-11 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+                  aria-pressed={type === item.type}
+                >
+                  <item.icon size={16} />
+                  {item.label}
+                  {type === item.type && (
+                    <Check size={13} className="ml-auto" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <span
+              className="w-14 shrink-0 text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Location
+            </span>
+            <button
+              type="button"
+              disabled={pending}
+              aria-label={`Location: ${folderLabel(selectedFolder)}`}
+              aria-expanded={showFolders}
+              aria-controls="creation-folders"
+              onClick={() => {
+                setShowFolders(!showFolders);
+                setShowTypes(false);
+              }}
+              className="focus-ring flex min-h-11 min-w-0 items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-[var(--glass-hover)]"
+            >
+              <Folder size={16} className="shrink-0" />
+              <span className="truncate">
+                {(tree.isPending || tree.isFetching) && folder === null
+                  ? "Finding your location…"
+                  : folderLabel(selectedFolder)}
+              </span>
+              <ChevronDown size={14} className="shrink-0" />
+            </button>
+          </div>
+          {showFolders && (
+            <div
+              id="creation-folders"
+              className="mt-2 rounded-xl border p-2"
+              style={{ borderColor: "var(--glass-border)" }}
+            >
+              <label
+                className="flex items-center gap-2 border-b px-2 py-2"
+                style={{ borderColor: "var(--glass-border)" }}
               >
-                {filteredPaths.map((p) => (
+                <Search size={16} />
+                <span className="sr-only">Find a folder</span>
+                <input
+                  autoFocus
+                  aria-label="Find a folder"
+                  style={{ fontSize: 16 }}
+                  disabled={pending}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.preventDefault();
+                  }}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-base outline-none"
+                  placeholder="Find a folder…"
+                />
+              </label>
+              <div className="max-h-52 overflow-y-auto py-1">
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    setFolder("");
+                    setShowFolders(false);
+                  }}
+                  className="focus-ring flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
+                >
+                  <Folder size={15} />
+                  Vault home
+                  {!selectedFolder && <Check size={14} className="ml-auto" />}
+                </button>
+                {visibleFolders.map((value) => (
                   <button
-                    key={p}
-                    onMouseDown={() => { setPathInput(p); setShowPathSuggestions(false); }}
-                    className="w-full text-left px-2 py-1.5 text-xs hover:bg-[var(--glass-hover)] transition-colors truncate"
-                    style={{ color: "var(--text-secondary)" }}
+                    type="button"
+                    key={value}
+                    disabled={pending}
+                    onClick={() => {
+                      setFolder(value);
+                      setShowFolders(false);
+                    }}
+                    className="focus-ring flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-[var(--glass-hover)]"
                   >
-                    {p.startsWith("vault/") ? p.slice(6) : p}
+                    <Folder size={15} className="shrink-0" />
+                    <span className="truncate">{folderLabel(value)}</span>
+                    {selectedFolder === value && (
+                      <Check size={14} className="ml-auto shrink-0" />
+                    )}
                   </button>
                 ))}
+                {!visibleFolders.length && search && (
+                  <p
+                    className="px-2 py-3 text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    No matching folders. Try another name or use Vault home.
+                  </p>
+                )}
               </div>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setSelectedType(null)}
-              className="flex-1 px-2 py-1.5 rounded-md text-xs hover:bg-[var(--glass-hover)]"
+            </div>
+          )}
+          {tree.isError && (
+            <p
+              role="status"
+              className="mt-3 text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Folders couldn’t load.{" "}
+              {folder === null
+                ? "New pages will use Vault home."
+                : "Your chosen location is kept."}{" "}
+              <button
+                type="button"
+                className="underline"
+                disabled={pending}
+                onClick={() => void tree.refetch()}
+              >
+                Try again
+              </button>
+            </p>
+          )}
+          {error && (
+            <p
+              role="alert"
+              className="mt-4 text-sm"
               style={{ color: "var(--text-secondary)" }}
             >
-              Back
-            </button>
-            <button
-              onClick={handleCreate}
-              className="flex-1 px-2 py-1.5 rounded-md text-xs font-medium"
-              style={{ background: "var(--color-accent)", color: "white" }}
-            >
-              Create
-            </button>
-          </div>
+              {error}
+            </p>
+          )}
         </div>
-      </div>
-    );
-  }
-
-  // Step 1: type selector
-  if (isMobile) {
-    return (
-      <BottomSheet
-        open
-        onClose={onClose}
-        title="Create new"
-        items={CONTENT_TYPE_OPTIONS.map(({ type, label, icon: Icon }) => ({
-          icon: <Icon size={19} />,
-          label,
-          onClick: () => handleTypeClick(type),
-        }))}
-      />
-    );
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50"
-      onClick={onClose}
-    >
-      <div
-        className="absolute bottom-12 left-2 py-1 glass-elevated"
-        style={{ borderRadius: "var(--radius-md)", width: 200 }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {CONTENT_TYPE_OPTIONS.map(({ type, label, icon: Icon }) => (
+        <footer
+          className="flex items-center justify-between gap-3 border-t px-6 py-4"
+          style={{ borderColor: "var(--glass-border)" }}
+        >
+          {!isMobile && (
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+              Enter to create
+            </span>
+          )}
           <button
-            key={type}
-            onClick={() => handleTypeClick(type)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-[var(--glass-hover)] transition-colors"
-            style={{ color: "var(--text-primary)" }}
+            type="submit"
+            disabled={
+              pending || tree.isPending || (tree.isFetching && folder === null)
+            }
+            className="focus-ring flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-4 text-sm font-medium disabled:opacity-50"
+            style={{
+              background: "var(--action-bg)",
+              color: "var(--action-fg)",
+              ...(isMobile ? { width: "100%", justifyContent: "center" } : {}),
+            }}
           >
-            <Icon size={15} style={{ color: "var(--text-secondary)" }} />
-            {label}
+            {pending
+              ? "Creating…"
+              : type === "document"
+                ? "Create page"
+                : "Create"}
+            <ArrowRight size={16} />
           </button>
-        ))}
-      </div>
-    </div>
+        </footer>
+      </form>
+    </dialog>
   );
 }
