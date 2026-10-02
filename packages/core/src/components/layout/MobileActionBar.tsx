@@ -286,7 +286,12 @@ function PillButton({
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={(event) => {
+        // Safari pointer activation does not focus buttons. Give modal drawers
+        // a real launcher to restore, matching keyboard and Chromium behavior.
+        event.currentTarget.focus({ preventScroll: true });
+        onClick();
+      }}
       aria-label={label}
       title={label}
       className="press interactive focus-ring relative flex items-center justify-center flex-shrink-0"
