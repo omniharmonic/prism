@@ -1,0 +1,24 @@
+.prism-suggestion-review { margin-bottom: 20px; border: 1px solid var(--glass-border); border-radius: 12px; background: var(--bg-surface); color: var(--text-primary); font-size: 13px; }
+.prism-suggestion-review > summary { min-height: 44px; padding: 13px 16px; cursor: pointer; font-weight: 600; border-radius: 12px; }
+.prism-review-body { padding: 0 16px 16px; }
+.prism-review-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--glass-border); padding-top: 8px; margin-bottom: 12px; color: var(--text-secondary); }
+.prism-review-navigation > div { display: flex; gap: 4px; }
+.prism-suggestion-review button { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 7px; background: var(--bg-base); color: var(--text-primary); }
+.prism-suggestion-review button:hover:not(:disabled) { background: var(--glass-hover); }
+.prism-suggestion-review button:disabled { opacity: .4; cursor: default; }
+.prism-review-author { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 12px; overflow-wrap: anywhere; }
+.prism-review-author span, .prism-review-hint { color: var(--text-secondary); font-size: 12px; }
+.prism-review-hint { margin: 8px 0; line-height: 1.5; }
+.prism-review-diff { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
+.prism-review-diff > div { border-left: 3px solid; border-radius: 4px; padding: 9px 12px; }
+.prism-review-diff .prism-review-before { background: color-mix(in srgb, #dc2626 7%, var(--bg-base)); border-color: #b91c1c; }
+.prism-review-diff .prism-review-after { background: color-mix(in srgb, #059669 8%, var(--bg-base)); border-color: #047857; }
+.prism-review-diff span { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.prism-review-diff p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.prism-review-before p { text-decoration: line-through; }
+.prism-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.prism-review-actions [data-review-show] { margin-right: auto; }
+.prism-suggestion-review .prism-review-accept { background: var(--color-accent); color: var(--bg-base); border-color: transparent; }
+.prism-suggestion-review .prism-review-accept:hover { background: var(--color-accent); filter: brightness(.94); }
+.prism-review-complete { margin-bottom: 16px; font-size: 12px; color: var(--text-secondary); }
+@media (max-width: 420px) { .prism-review-body { padding: 0 12px 12px; } .prism-review-actions [data-review-show] { flex-basis: 100%; margin-right: 0; } }
