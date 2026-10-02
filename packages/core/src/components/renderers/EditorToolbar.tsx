@@ -19,6 +19,7 @@ import {
   Undo2,
   Redo2,
 } from "lucide-react";
+import { DocumentOutline } from "./DocumentOutline";
 import { FormattingBar } from "./FormattingBar";
 import { cn } from "../../lib/cn";
 
@@ -28,7 +29,7 @@ interface EditorToolbarProps {
 
 export function EditorToolbar({ editor }: EditorToolbarProps) {
   return (
-    <FormattingBar>
+    <FormattingBar navigation={<DocumentOutline editor={editor} />}>
       {/* Undo / Redo */}
       <ToolbarButton
         icon={<Undo2 size={15} />}

@@ -32,6 +32,7 @@ import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
+import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbar } from "./EditorToolbar";
 import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { useUpdateNote } from "../../app/hooks/useParachute";
@@ -333,6 +334,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
+      {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
 
       {/* Governed note (web, non-owner): the propose-for-review affordance, plus
           the per-note history. Never rendered when `_caps` is absent. */}

@@ -25,18 +25,18 @@ function setPreference(value: boolean) {
 }
 
 /** Formatting is optional chrome; document mode and review actions are not. */
-export function FormattingBar({ children, reviewControls }: { children: ReactNode; reviewControls?: ReactNode }) {
+export function FormattingBar({ children, reviewControls, navigation }: { children: ReactNode; reviewControls?: ReactNode; navigation?: ReactNode }) {
   const id = useId();
   const always = useSyncExternalStore(subscribe, snapshot, () => false);
   const [expanded, setExpanded] = useState<boolean | null>(null);
   const open = expanded ?? always;
   return <div className="document-formatting-bar">
     <div className="document-formatting-entry">
-      <button type="button" className="document-formatting-toggle focus-ring" aria-expanded={open} aria-controls={id}
+      <div className="document-formatting-navigation">{navigation}<button type="button" className="document-formatting-toggle focus-ring" aria-expanded={open} aria-controls={id}
         onMouseDown={event => event.preventDefault()}
         onClick={() => setExpanded(!open)}>
         <CaseSensitive size={17} aria-hidden="true" /> Formatting <ChevronDown size={13} aria-hidden="true" />
-      </button>
+      </button></div>
       {reviewControls && <div className="document-review-controls">{reviewControls}</div>}
     </div>
     <div id={id} hidden={!open}>
