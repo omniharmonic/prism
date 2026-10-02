@@ -12,6 +12,7 @@ import { PublishPanel } from "../../../packages/core/src/components/renderers/ne
 import PresentationPreview from "../src/publish/PresentationPreview";
 import { webCollabSharing } from "../src/collab/grant";
 import { fetchMe, agentScope } from "../src/config";
+const params = new URLSearchParams(location.search);
 const initial: PublicationPresentation = {
   title: "Field guide",
   template: "wiki",
@@ -52,10 +53,17 @@ const json = (v: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 const original = window.fetch.bind(window);
-const notes = [
-  { id: "welcome", title: "Welcome", path: "guide/welcome.md", tags: [] },
-  { id: "reference", title: "Reference", path: "guide/reference.md", tags: [] },
-];
+const notes = params.has("empty")
+  ? []
+  : [
+      { id: "welcome", title: "Welcome", path: "guide/welcome.md", tags: [] },
+      {
+        id: "reference",
+        title: "Reference",
+        path: "guide/reference.md",
+        tags: [],
+      },
+    ];
 window.fetch = async (input, init) => {
   const url = new URL(
     typeof input === "string"
@@ -94,19 +102,21 @@ window.fetch = async (input, init) => {
           manifest: {
             slug: "guide",
             ...clone(state.draft),
-            homeNoteId: "welcome",
+            homeNoteId: notes[0]?.id ?? null,
             passwordRequired: true,
             locked: false,
             notes,
             mapFeatureCount: 0,
           },
-          note: {
-            ...notes.find(
-              (n) => n.id === (url.searchParams.get("noteId") ?? "welcome"),
-            )!,
-            content: "# Preview\n\nPRISM_DRAFT_PREVIEW_BODY",
-            metadata: null,
-          },
+          note: !notes.length
+            ? null
+            : {
+                ...notes.find(
+                  (n) => n.id === (url.searchParams.get("noteId") ?? "welcome"),
+                )!,
+                content: "# Preview\n\nPRISM_DRAFT_PREVIEW_BODY",
+                metadata: null,
+              },
           graph: { nodes: notes, edges: [] },
           mapFeatures: [],
           expired: false,

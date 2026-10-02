@@ -171,10 +171,46 @@ test("phone publication chrome and canvas follow both actual workspace theme pal
   });
 });
 
-
-test("malformed legacy theme fields do not break the public reader",async({page})=>{
-  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
+test("malformed legacy theme fields do not break the public reader", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/e2e-fixtures/publication.html?malformed-theme");
-  await expect(page.getByText("PRISM_PUBLICATION_guide_first_BODY",{exact:true})).toBeVisible();
+  await expect(
+    page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+for (const layout of ["wiki", "docs", "landing"]) {
+  test(`${layout} reader wraps long titles, headings and links without widening the page`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/e2e-fixtures/publication.html?long-content&template=${layout}`,
+    );
+    await expect(
+      page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+    ).toBeVisible();
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        )
+        .toBe(true);
+      await expect
+        .poll(() =>
+          page
+            .locator("main")
+            .evaluate((el) => el.scrollWidth <= el.clientWidth),
+        )
+        .toBe(true);
+      // Long code lines remain locally scrollable rather than widening the article.
+      await expect(page.locator("article pre")).toBeVisible();
+    }
+  });
+}

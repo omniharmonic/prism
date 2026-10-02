@@ -184,3 +184,56 @@ test("preview errors retry privately and Escape returns to the unchanged phone d
     path: test.info().outputPath("site-studio-mobile.png"),
   });
 });
+
+for (const empty of [false, true]) {
+  test(`phone preview wraps unbroken landing titles with ${empty ? "no" : "visible"} pages`, async ({
+    page,
+  }) => {
+    await page.goto(`/e2e-fixtures/presentation.html${empty ? "?empty" : ""}`);
+    await studio(page);
+    const title = "PRISM_SITE_STUDIO_UI_VERIFIED";
+    await page.getByLabel("Draft site title").fill(title);
+    await page.getByLabel("Publication layout").selectOption("landing");
+    await page
+      .getByRole("button", { name: "Save private draft", exact: true })
+      .click();
+    await expect(
+      page.getByText("Private draft saved", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Preview saved draft", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Phone preview", exact: true })
+      .click();
+    const frame = page.frameLocator(
+      'iframe[title="Publication preview viewport"]',
+    );
+    await expect(
+      frame.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    await expect(frame.getByTestId("wiki-drawer-open")).toBeVisible();
+    if (empty)
+      await expect(
+        frame.getByRole("heading", { name: "No pages published yet" }),
+      ).toBeVisible();
+    await expect
+      .poll(() =>
+        page
+          .locator('iframe[title="Publication preview viewport"]')
+          .evaluate((el) => el.getBoundingClientRect().width),
+      )
+      .toBe(390);
+    // WebKit reserves scrollbar width inside the frame when the page is tall.
+    await expect
+      .poll(() =>
+        frame
+          .locator("html")
+          .evaluate((el) => el.scrollWidth <= el.clientWidth),
+      )
+      .toBe(true);
+    await page.screenshot({
+      path: test.info().outputPath("private-long-title-phone.png"),
+    });
+  });
+}

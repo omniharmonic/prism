@@ -2,6 +2,13 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PublicationView } from "../src/publish/PublicationView";
 const params = new URLSearchParams(location.search);
+const longTitle = "PRISM_SITE_STUDIO_UI_VERIFIED".repeat(4);
+const pageTitle = (id: string) =>
+  params.has("long-content")
+    ? longTitle
+    : id === "first"
+      ? "First page"
+      : "Second page";
 const controls = {
   manifestStatus: params.has("unavailable") ? 503 : 200,
   noteStatus: {} as Record<string, number>,
@@ -42,7 +49,7 @@ window.fetch = async (input, init) => {
     ? []
     : ["first", "second"].map((id) => ({
         id,
-        title: id === "first" ? "First page" : "Second page",
+        title: pageTitle(id!),
         path: id + ".md",
         tags: [],
       }));
@@ -50,9 +57,21 @@ window.fetch = async (input, init) => {
     return json(
       {
         slug,
-        title: slug === "other" ? "Other publication" : "Prism field guide",
-        template: "wiki",
-        theme: params.has("malformed-theme") ? { accent: {invalid:true},logoUrl:42,font:["serif"],coverUrl:{},description:3 } : null,
+        title: params.has("long-content")
+          ? longTitle
+          : slug === "other"
+            ? "Other publication"
+            : "Prism field guide",
+        template: params.get("template") ?? "wiki",
+        theme: params.has("malformed-theme")
+          ? {
+              accent: { invalid: true },
+              logoUrl: 42,
+              font: ["serif"],
+              coverUrl: {},
+              description: 3,
+            }
+          : null,
         homeNoteId: locked ? null : (notes[0]?.id ?? null),
         passwordRequired: controls.protected,
         locked,
@@ -72,11 +91,15 @@ window.fetch = async (input, init) => {
     if (controls.noteStatus[id!]) return json({}, controls.noteStatus[id!]);
     return json({
       id,
-      title: id === "first" ? "First page" : "Second page",
+      title: pageTitle(id!),
       path: id + ".md",
       tags: [],
       metadata: {},
-      content: `<p>PRISM_PUBLICATION_${slug}_${id}_BODY</p>`,
+      content:
+        `<p>PRISM_PUBLICATION_${slug}_${id}_BODY</p>` +
+        (params.has("long-content")
+          ? `<h2>${longTitle}</h2><p><a href="https://example.test/">${longTitle}</a></p><pre><code>${longTitle.repeat(4)}</code></pre>`
+          : ""),
     });
   }
   return json({}, 404);

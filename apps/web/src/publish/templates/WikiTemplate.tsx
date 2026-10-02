@@ -168,7 +168,7 @@ export default function WikiTemplate({
       {safeTheme.coverUrl && <img src={safeTheme.coverUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",maxHeight:280,objectFit:"cover",borderRadius:16,marginBottom:24}}/>}
       {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"clamp(30px,5vw,52px)",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
       {safeTheme.description && <p style={{fontSize:18,lineHeight:1.65,color:"var(--text-secondary)",maxWidth:680}}>{safeTheme.description}</p>}
-      {landing && <nav aria-label="Collection pages" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12,marginTop:24}}>{manifest.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</nav>}
+      {landing && <nav aria-label="Collection pages" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12,marginTop:24}}>{manifest.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minWidth:0,minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</nav>}
     </section>
   ) : null;
 
@@ -245,6 +245,10 @@ export default function WikiTemplate({
   // to the app defaults when no theme is set.
   const rootStyle: CSSProperties = {
     minHeight: "100dvh",
+    minWidth: 0,
+    // Page names, URLs and imported headings may contain no spaces. Allow them
+    // to wrap at the reader's width; keep code blocks independently scrollable.
+    overflowWrap: "anywhere",
     display: "flex",
     flexDirection: "column",
     ...safeTheme.vars,
@@ -361,7 +365,7 @@ export default function WikiTemplate({
             />
           </main>
         ) : (
-          <main style={{ flex: 1, padding: "0 16px" }}>
+          <main style={{ flex: 1, minWidth: 0, padding: "0 16px" }}>
             <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
               {introduction}
               {note && (
@@ -509,7 +513,7 @@ export default function WikiTemplate({
             style={{ height: 24, width: "auto", maxWidth: 160, objectFit: "contain", display: "block" }}
           />
         )}
-        <button onClick={()=>manifest.homeNoteId && onNavigate(manifest.homeNoteId)} style={{border:0,background:"transparent",textAlign:"left",minHeight:44,cursor:"pointer",fontWeight:600,fontSize:15,color:"var(--text-primary, #fff)"}}>
+        <button onClick={()=>manifest.homeNoteId && onNavigate(manifest.homeNoteId)} style={{minWidth:0,border:0,background:"transparent",textAlign:"left",minHeight:44,cursor:"pointer",fontWeight:600,fontSize:15,color:"var(--text-primary, #fff)"}}>
           {manifest.title}{documentation && <small style={{display:"block",fontSize:11,fontWeight:400,color:"var(--text-secondary)"}}>Documentation</small>}
         </button>
         {hasMap && (
