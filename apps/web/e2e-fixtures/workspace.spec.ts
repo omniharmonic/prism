@@ -4,7 +4,7 @@ test("shared workspace keeps writing and navigation available", async ({ page })
   await page.goto("/e2e-fixtures/workspace.html");
   await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
   await expect(page.getByText("A shared place to think, write, and build with the same context.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Inbox" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages" })).toBeVisible();
   await expect(page.getByText("Agent unavailable")).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-desktop.png", fullPage: true, animations: "disabled" });
 });
@@ -16,7 +16,7 @@ test("mobile workspace fits the viewport and opens navigation", async ({ page })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/workspace-mobile-document.png", fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Files", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Inbox" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages" })).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-mobile.png", fullPage: true, animations: "disabled" });
 });
 
@@ -132,7 +132,7 @@ test("command search opens usable phone settings and Escape closes the modal", a
 
 test("rich-text bold shortcut edits the document without closing navigation", async ({ page }) => {
   await page.goto("/e2e-fixtures/workspace.html");
-  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages", exact: true })).toBeVisible();
   const editor = page.locator(".tiptap[contenteditable=true]");
   await editor.click();
   await page.keyboard.press("ControlOrMeta+End");
@@ -141,7 +141,7 @@ test("rich-text bold shortcut edits the document without closing navigation", as
   await page.keyboard.press("ControlOrMeta+b");
   await page.keyboard.type("BOLD_SHORTCUT_FIXTURE");
   await expect(editor.locator("strong")).toContainText("BOLD_SHORTCUT_FIXTURE");
-  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages", exact: true })).toBeVisible();
 });
 
 

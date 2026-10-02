@@ -1,6 +1,6 @@
 import { useNoteShortcuts } from "./NoteShortcuts";
-import { useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, Radio, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users } from "lucide-react";
+import { useRef, useState } from "react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
@@ -25,6 +25,8 @@ export function Navigation() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const createNote = useCreateNote();
+  const folderPending = useRef(false);
+  const [folderError, setFolderError] = useState("");
   const collapseNav = useUIStore((s) => s.collapseNav);
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const shortcuts = useNoteShortcuts();
@@ -48,7 +50,7 @@ export function Navigation() {
   };
 
   const handleOpenNetwork = () => {
-    openTab("network", "Network", "network" as ContentType);
+    openTab("network", "Workspace settings", "network" as ContentType);
   };
 
   const handleOpenMap = () => {
@@ -60,9 +62,9 @@ export function Navigation() {
   // the folder by seeding a first note (`<folder>/Untitled`) inside it, then open
   // it. (useCreateNote already invalidates the vault query, refreshing the tree.)
   const handleCreateFolder = async () => {
+    if (folderPending.current) return;
     const raw = newFolderName.trim();
-    setNewFolderOpen(false);
-    setNewFolderName("");
+    setFolderError("");
     if (!raw) return;
     // Sanitize: no leading/trailing slashes, drop "." / ".." traversal segments.
     const folder = raw
@@ -71,12 +73,16 @@ export function Navigation() {
       .filter((s) => s && s !== "." && s !== "..")
       .join("/");
     if (!folder) return;
+    folderPending.current = true;
     try {
       const note = await createNote.mutateAsync({ path: `${folder}/Untitled`, content: "# Untitled" });
+      setNewFolderOpen(false);
+      setNewFolderName("");
       openTab(note.id, "Untitled", "document");
     } catch (e) {
-      console.error("Failed to create folder:", e);
-      alert(`Failed to create folder: ${e}`);
+      setFolderError(e instanceof Error ? e.message : "Could not create the folder. Try again.");
+    } finally {
+      folderPending.current = false;
     }
   };
 
@@ -106,6 +112,8 @@ export function Navigation() {
         </span>
       </div>
 
+      <div className="workspace-vault-heading"><VaultSwitcher onManage={handleOpenNetwork} placement="below" /></div>
+
       {/* Search */}
       <div style={{ padding: "0 10px 8px" }}>
         <Input
@@ -122,10 +130,10 @@ export function Navigation() {
       ) : (
         <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }}>
           {/* Quick-access items */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
+          <nav aria-label="Workspace destinations" style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
             <NavItem
               icon={<MessageSquare size={15} />}
-              label="Inbox"
+              label="Messages"
               active={openTabs.find((t) => t.id === activeTabId)?.noteId === "vault-messages"}
               onClick={handleOpenMessages}
               trailing={
@@ -136,13 +144,8 @@ export function Navigation() {
                 />
               }
             />
-            <NavItem active={openTabs.find((t) => t.id === activeTabId)?.noteId === "calendar-dashboard"} icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
-            {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Conversations" onClick={() => openAgentChat()} />}
-            <NavItem icon={<Users size={15} />} label="People" active={openTabs.find((t) => t.id === activeTabId)?.type === ("people" as ContentType)} onClick={() => openTab("people", "People", "people" as ContentType)} />
-            <NavItem icon={<Bot size={15} />} label="Automations" onClick={handleOpenAgentActivity} />
-            <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
-            <NavItem icon={<Radio size={15} />} label="Workspace settings" onClick={handleOpenNetwork} />
-          </div>
+            {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Agent conversations" onClick={() => openAgentChat()} />}
+          </nav>
 
           {shortcuts.recoverable && <div className="mx-3 my-3 rounded-lg border border-[var(--border-subtle)] p-3 text-xs text-[var(--text-secondary)]">
             <p>Older shortcuts are available. Recover only notes you can open in this workspace.</p>
@@ -170,7 +173,7 @@ export function Navigation() {
 
           {/* Recently opened notes */}
           {recents.length > 0 && (
-            <NavSection label="Recent" defaultOpen>
+            <NavSection label="Recent">
               {recents.map((r) => (
                 <NavItem
                   key={r.id}
@@ -184,15 +187,19 @@ export function Navigation() {
           )}
 
           {/* Projects / vault notes */}
-          <NavSection label={sidebarLabel} defaultOpen action={<RefreshNavButton />}>
+          <NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} defaultOpen action={<div className="flex items-center"><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
             <ProjectTree />
+          </NavSection>
+          <NavSection label="Tools">
+            <NavItem active={openTabs.find((t) => t.id === activeTabId)?.noteId === "calendar-dashboard"} icon={<Calendar size={15} />} label="Calendar" onClick={handleOpenCalendar} />
+            <NavItem icon={<Users size={15} />} label="People" active={openTabs.find((t) => t.id === activeTabId)?.type === ("people" as ContentType)} onClick={() => openTab("people", "People", "people" as ContentType)} />
+            <NavItem icon={<Bot size={15} />} label="Automations" onClick={handleOpenAgentActivity} />
+            <NavItem icon={<MapPin size={15} />} label="Map" onClick={handleOpenMap} />
           </NavSection>
         </div>
       )}
 
-      {/* Footer: Obsidian-style action-button row, then the vault switcher
-          full-width beneath it. (VaultSwitcher returns null on desktop where the
-          multi-vault seam is absent, so desktop shows just the button row.) */}
+      {/* Primary creation and workspace administration stay within reach. */}
       <div
         style={{
           padding: 8,
@@ -216,15 +223,17 @@ export function Navigation() {
             <FolderPlus size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
             <input
               autoFocus
+              disabled={createNote.isPending}
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}
-              onBlur={handleCreateFolder}
+
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   setNewFolderOpen(false);
                   setNewFolderName("");
                 }
               }}
+              aria-label="Folder name"
               placeholder="Folder name"
               className="flex-1 h-7 px-2 text-sm rounded outline-none"
               style={{
@@ -233,35 +242,18 @@ export function Navigation() {
                 color: "var(--text-primary)",
               }}
             />
+            <button type="submit" className="focus-ring text-xs px-2 py-2" disabled={createNote.isPending || !newFolderName.trim()}>Add</button>
+            <button disabled={createNote.isPending} type="button" aria-label="Cancel folder" className="focus-ring p-2" onClick={() => setNewFolderOpen(false)}><X size={14} /></button>
           </form>
         )}
 
-        {/* Action-button row */}
-        <div className="flex items-center" style={{ gap: 2 }}>
-          <NavActionButton
-            title="New note"
-            icon={<PenSquare size={16} />}
-            onClick={() => setShowNewMenu((v) => !v)}
-          />
-          <NavActionButton
-            title="New folder"
-            icon={<FolderPlus size={16} />}
-            onClick={() => {
-              setNewFolderName("");
-              setNewFolderOpen(true);
-            }}
-          />
-          <NavActionButton
-            title="Collapse all"
-            icon={<ChevronsDownUp size={16} />}
-            onClick={collapseNav}
-          />
-        </div>
-
+        {newFolderOpen && folderError && <p role="alert" className="text-xs text-[var(--color-danger)]">{folderError}</p>}
+        <button type="button" className="workspace-new-page focus-ring" aria-label="New page" onClick={() => setShowNewMenu(true)}>
+          <Plus size={18} /><span>New page</span>
+        </button>
+        <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 
-        {/* Vault switcher (full-width; renders null on desktop) */}
-        <VaultSwitcher onManage={handleOpenNetwork} />
       </div>
 
       {/* Compose message modal */}
@@ -292,7 +284,7 @@ function NavItem({ icon, label, onClick, trailing, active = false }: {
   );
 }
 
-/** A square icon button for the Obsidian-style footer action row: quiet at rest,
+/** A compact action beside the page-tree heading: quiet at rest,
  *  gentle tint + brighter icon on hover. */
 function NavActionButton({ icon, title, onClick }: { icon: React.ReactNode; title: string; onClick: () => void }) {
   return (
@@ -333,7 +325,7 @@ function RowAction({ icon, title, onClick }: { icon: React.ReactNode; title: str
       title={title}
       aria-label={title}
       className="workspace-row-action interactive flex items-center justify-center transition-opacity"
-      style={{ width: 22, height: 22, color: "var(--text-muted)" }}
+      style={{ width: 28, height: 32, color: "var(--text-muted)" }}
     >
       {icon}
     </button>
@@ -355,7 +347,7 @@ function NavSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <section aria-label={label} style={{ marginTop: 6 }}>
+    <section aria-label={label} style={{ marginTop: 18 }}>
       {/* Header row: the toggle takes the full width; the action sits beside it
           (kept outside the toggle <button> so it's not a nested button). */}
       <div className="flex items-center group" style={{ paddingRight: 4 }}>
@@ -364,7 +356,7 @@ function NavSection({
           onClick={() => setOpen(!open)}
           className="interactive flex-1 flex items-center gap-1"
           style={{
-            height: 26,
+            minHeight: 32,
             padding: "0 6px",
             fontSize: "var(--text-xs)",
             fontWeight: 600,
@@ -379,7 +371,7 @@ function NavSection({
           />
           {label}
         </button>
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity">{action}</span>
+        <span className="workspace-section-actions">{action}</span>
       </div>
       {open && <div style={{ marginTop: 1 }}>{children}</div>}
     </section>
@@ -412,7 +404,7 @@ function RefreshNavButton() {
       onClick={refresh}
       title="Refresh vault"
       className="interactive flex items-center justify-center"
-      style={{ width: 22, height: 22, color: "var(--text-muted)" }}
+      style={{ width: 28, height: 32, color: "var(--text-muted)" }}
     >
       <RefreshCw size={12} className={spinning ? "animate-spin" : ""} />
     </button>

@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronsUpDown, Check, Database, Settings2, Plus, Boxes } from "lucide-react";
 import { useCollabSharing, useVaultChangeSignal, type VaultSummary, type WorkspaceEntity } from "../../data/CollabSharing";
 
-export function VaultSwitcher({ onManage }: { onManage: () => void }) {
+export function VaultSwitcher({ onManage, placement = "above" }: { onManage: () => void; placement?: "above" | "below" }) {
   const sharing = useCollabSharing();
   const vaultSignal = useVaultChangeSignal();
   const [vaults, setVaults] = useState<VaultSummary[]>([]);
@@ -63,7 +63,7 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
   };
 
   const activeWorkspaceId = sharing.getActiveWorkspace?.() ?? null;
-  const showWorkspaces = workspaces.length > 1 && !!sharing.setActiveWorkspace;
+  const showWorkspaces = workspaces.length > 0 && !!sharing.setActiveWorkspace;
   const switchWorkspace = (w: WorkspaceEntity) => {
     setOpen(false);
     if (w.id === activeWorkspaceId) return;
@@ -87,7 +87,7 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
           display: "flex",
           alignItems: "center",
           gap: 8,
-          height: 34,
+          minHeight: 42,
           padding: "0 8px",
           borderRadius: "var(--radius-md)",
           background: open ? "var(--glass-hover)" : "transparent",
@@ -122,7 +122,7 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
           role="menu"
           style={{
             position: "absolute",
-            bottom: "calc(100% + 6px)",
+            ...(placement === "below" ? { top: "calc(100% + 6px)" } : { bottom: "calc(100% + 6px)" }),
             left: 0,
             right: 0,
             background: "var(--bg-surface)",
@@ -238,7 +238,7 @@ export function VaultSwitcher({ onManage }: { onManage: () => void }) {
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
             <Plus size={14} style={{ flexShrink: 0 }} />
-            <span style={{ flex: 1, fontSize: "var(--text-base)" }}>Create or link a vault…</span>
+            <span style={{ flex: 1, fontSize: "var(--text-base)" }}>Manage workspaces & vaults…</span>
             <Settings2 size={13} style={{ flexShrink: 0, color: "var(--text-muted)" }} />
           </button>
         </div>

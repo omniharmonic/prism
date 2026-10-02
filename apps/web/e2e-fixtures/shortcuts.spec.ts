@@ -21,6 +21,7 @@ test("favorites and mobile recents persist only IDs and reopen with current auth
   await page.reload();
   await page.getByRole("button", { name: "Files", exact: true }).click();
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Field notes");
+  await page.getByRole("button", { name: "Recent", exact: true }).click();
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toContainText("Field notes");
 });
 
@@ -71,6 +72,7 @@ test("late shortcut access reads cannot populate a different vault", async ({ pa
   await page.evaluate(() => (window as any).prismFixtureReleaseRead("field-notes"));
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
   await open(page, "weekly-review");
+  await page.getByRole("button", { name: "Recent", exact: true }).click();
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toContainText("Weekly review");
   await expect(page.getByRole("region", { name: "Recent", exact: true })).not.toContainText("Field notes");
 });
