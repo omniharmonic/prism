@@ -159,11 +159,11 @@ function MobileDrawer({
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? (compact ? "min(420px, 100vw)" : "100%") : "min(88vw, 360px)" }}>
       <div className="h-full min-h-0 flex flex-col" style={{ background: "var(--bg-surface)" }}>
-        <div className="workspace-context-header flex items-center justify-between px-4 shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-          <span className="text-sm font-medium">{side === "left" ? "Workspace" : "Document panel"}</span>
-          <button type="button" aria-label={side === "left" ? "Close navigation" : "Back to document"} onClick={onClose}
+        {side === "left" && <div className="workspace-context-header flex items-center justify-between px-4 shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
+          <span className="text-sm font-medium">Workspace</span>
+          <button type="button" aria-label="Close navigation" onClick={onClose}
             className="interactive flex items-center justify-center" style={{ width: 44, height: 44 }}><X size={20} /></button>
-        </div>
+        </div>}
         <div className="flex-1 min-h-0">{children}</div>
       </div>
     </dialog>
