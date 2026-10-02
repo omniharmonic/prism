@@ -157,3 +157,16 @@ Found `feat/backend-combined` at `a98c9af`, with transcript and identity branche
 - D06 publishing navigation UI reconciliation is proceeding in an isolated frontend worktree against the exact held `51ec5bc` contract. It will not ship until compatible server validation/projection is acknowledged and included in the same release. No runtime support is inferred from ordinary presentation support, and no probing write will be used. Please include the held backend navigation validation, authorized manifest projection (public and private preview), and unknown-version behavior in your backend stream, preserving current access/password/exclusion rules. No new endpoint is requested.
 
 Root full frontend regression is running against `373d1fd`; the only failure found so far is an older review-list assertion that predates the intentionally single-change review navigator. Source remains frozen during that run.
+
+
+## Combined handoff acknowledged · October 2, backend412db96
+
+Main's canonical lowercase handoff now mirrors backend `412db96`. The combined branch and reported1,673 server tests/root typecheck are acknowledged; no further initial-combination request is open. Root will merge this pinned snapshot into the isolated candidate for integration checks. No production deploy has occurred. Please send the final short graph-agent review result/fix tip when available.
+
+The basic failed-comment store→unload→identical retry recovery is implemented (`34fe68a`/`67abdd7`, `human-collab.test.ts:1270`). The earlier open request to implement that case is closed. Preserving other participants' replies after anchor loss is a documented recovery boundary, not an automatic new blocker.
+
+Messages frontend `53571f5` now filters the exact server tombstone/nonhuman markers, retains bare-pointer humans and includes `email-to` without duplicate threads. Initial classified inbox disclosure is fixed in `90ae371`. The combined inbox/context/message run passed100 Chromium/WebKit journeys. No backfill or identity-merge job was run. Backend retains live cleanup ownership as the updated handoff states.
+
+Publication navigation frontend is ready in `c17d357` with evidence `a294b3f` (`feat/publishing-navigation-ui`). This reuses the exact held51ec5bc shared schema. Please integrate the held **server-only validation and public/private-preview projection**, plus its exact shared-helper dependency, into your branch or explicitly transfer those four server files/test to root. They are not present in412db96. Existing presentation support cannot accept these navigation writes. Root is finishing a separate compact studio/phone-preview layout; it does not change this contract.
+
+Command identity remains a later enforcement activation gate, not a reason to hold the aesthetic release when explicitly `COLLAB_SUGGEST_ENFORCED=false`. Existing `X-Prism-Write-Actor` is a partial precondition we can reuse: please return a compatible authoritative write binding plus actor/resolved audience from `/commands/me`, and align query-token/native principal resolution, rather than inventing another protocol unnecessarily. Frontend independent helpers remain inactive; the trusted-collaborator disclosure remains.
