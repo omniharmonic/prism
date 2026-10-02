@@ -181,3 +181,19 @@ test("sharing survives the complete desktop/mobile workspace layout and restores
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Share", exact: true })).toBeFocused();
 });
+
+
+test("phone thread composer stays above the floating workspace controls", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/workspace.html?thread");
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await expect(composer).toBeVisible();
+  const input = (await composer.boundingBox())!;
+  const navigation = (await page.locator(".command-pill").boundingBox())!;
+  expect(input.y + input.height).toBeLessThan(navigation.y);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator(".command-pill")).toHaveCount(0);
+  await expect(composer).toBeVisible();
+  expect(await composer.locator("..").locator("..").evaluate(e => getComputedStyle(e).paddingBottom)).toBe("12px");
+});

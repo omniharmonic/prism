@@ -75,7 +75,7 @@ export function Shell() {
         <div className="relative flex-1 min-h-0">
           {/* Canvas fills the screen; the pill floats over it and content scrolls
               beneath (renderers add bottom clearance so the last line clears). */}
-          <div className="absolute inset-0">
+          <div className="absolute inset-0" style={{ "--workspace-bottom-inset": "76px" } as React.CSSProperties}>
             <Canvas />
           </div>
 

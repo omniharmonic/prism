@@ -50,7 +50,7 @@ function ScopedMessageComposer({ onSend, disabled, placeholder, draftScope, draf
   };
 
   return (
-    <div className="shrink-0 p-3" style={{ borderTop: "1px solid var(--glass-border)" }}>
+    <div className="shrink-0 p-3" style={{ borderTop: "1px solid var(--glass-border)", paddingBottom: "calc(12px + var(--workspace-bottom-inset, 0px))" }}>
       {error && <p role="alert" className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>{error}</p>}
       {draft.error && <p role="status" className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>{draft.error}</p>}
       <div className="flex items-end gap-2">

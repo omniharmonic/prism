@@ -1,6 +1,6 @@
 # Feature verification ledger
 
-This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `a3ea838`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
+This is the completion checklist for the approved R00–R16 plan, not a claim that every feature passes. Code inventory: `b8e9272`; deployment evidence belongs in [RELEASE-CHECKPOINTS.md](RELEASE-CHECKPOINTS.md). A passing server suite establishes isolated contracts, not successful live integration actions.
 
 Production checks use synthetic notes and destinations verified to be private to the owner/bot. Never start the retired full desktop app just to satisfy its obsolete process monitor: ingestion now belongs to Prism Server. The installed thin app is `/Applications/Prism Client.app`.
 
@@ -22,7 +22,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | --- | --- | --- |
 | Document, note, briefing | Workspace/autosave/formatting/rename browser checks; private live web/native editing | Large document, tables, media, code blocks, source round-trip, 200% zoom, large-scale editor performance; selected/unsaved context now covered by fixtures, production web snapshot receipt verified |
 | Collaborative rich text | Scoped CRDT storage, actual web/native concurrent edits, individual agent suggestion accept/reject | Two reviewers with conflicting decisions, durable review audit, legacy draft recovery, physical offline reconnect |
-| Message thread | Legacy multiline reader, sender grouping, scroll/draft and failure fixtures | Private Telegram-via-Matrix inbound→canonical person→reply reconciliation; paginated archives and stable source events |
+| Message thread | Server live-source pages on web/thin client, stable event-ID deduplication, saved-window paging, identity/date labels and failure fixtures; production private self-room send→live read→reload verified exactly once | Private Telegram-via-Matrix inbound→canonical person; structured ingest/archives, edit/redaction reconciliation, media; final mobile composer clearance and installed batch acceptance |
 | Email | Rendering/composer fixtures and server source support | Private self-mail inbound→person link→Reply/Reply all/attachments, retained failed draft, no duplicate send |
 | People | Access-filtered directory/profiles, explicit canonical links, guarded email/Matrix decisions and mobile/draft/error fixtures | Private production account add/remove and linked-record navigation verified; remaining identity repair preview/resume and ambiguity review queue |
 | Inbox (`messages-dashboard`, `vault-messages`) | Triage, channel labels, limited-result disclosure, phone screenshots | Summary projection/paging; desktop split view; canonical People detail/review |
