@@ -4,11 +4,14 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type CollisionDetection,
 } from "@dnd-kit/core";
 import {
   GripVertical,
@@ -32,6 +35,7 @@ import {
   boardTasks,
   boardTitle,
   readBoardConfig,
+  reorderBoardTasks,
   safeBoardField,
   type BoardConfig,
 } from "../../lib/boards/config";
@@ -39,6 +43,21 @@ import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
 
 export const boardControl =
   "min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+
+// Prefer the card under the pointer to its containing column. Exclude the
+// dragged card itself so overlapping its original slot cannot capture the drop.
+const boardCollision: CollisionDetection = (args) => {
+  const candidates = {
+    ...args,
+    droppableContainers: args.droppableContainers.filter(
+      (container) => container.id !== "task:" + args.active.id,
+    ),
+  };
+  const pointer = pointerWithin(candidates);
+  const hits = pointer.length ? pointer : rectIntersection(candidates);
+  const cards = hits.filter((hit) => String(hit.id).startsWith("task:"));
+  return cards.length ? cards : hits;
+};
 
 export default function TaskBoardRenderer(props: RendererProps) {
   const client = useVaultClient();
@@ -240,15 +259,19 @@ function Board({
     direction: "earlier" | "later",
   ) => {
     if (!config?.order || !canEdit(note) || !current()) return;
-    const order = [
-      ...new Set([
-        ...config.order,
-        ...boardTasks(tasks.data ?? [], config, "").map((n) => n.id),
-      ]),
-    ].filter((id) => id !== task.id);
-    const target = order.indexOf(neighbor.id);
-    if (target < 0) return;
-    order.splice(target + (direction === "later" ? 1 : 0), 0, task.id);
+    const order = reorderBoardTasks(
+      config,
+      tasks.data ?? [],
+      task.id,
+      neighbor.id,
+      direction,
+    );
+    if (
+      !order ||
+      (order.every((id, i) => id === config.order![i]) &&
+        order.length === config.order.length)
+    )
+      return;
     if (order.length > 10000) {
       setError(
         "This view has reached its manual-order limit. Use property sorting or narrow the source.",
@@ -326,8 +349,35 @@ function Board({
   const dragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const task = notes.find((n) => n.id === event.active.id);
-    const column = event.over?.data.current?.column;
-    if (task && typeof column === "string") void move(task, column);
+    if (!task || !config || !event.over) return;
+    const column = event.over.data.current?.column;
+    if (column !== null && typeof column !== "string") return;
+    if (column !== boardStatus(task, config)) {
+      // A group change is one task-property CAS, just like the Move menu.
+      // Preserve its view rank; two independent notes cannot be saved atomically.
+      if (typeof column === "string") void move(task, column);
+      return;
+    }
+    if (!config.order || !canEdit(note)) return;
+    const targetId = event.over.data.current?.taskId;
+    const target = notes.find((n) => n.id === targetId);
+    if (target && target.id !== task.id) {
+      const pointerY =
+        "clientY" in event.activatorEvent
+          ? Number(event.activatorEvent.clientY) + event.delta.y
+          : (event.active.rect.current.translated?.top ?? 0) +
+            (event.active.rect.current.translated?.height ?? 0) / 2;
+      const direction =
+        pointerY < event.over.rect.top + event.over.rect.height / 2
+          ? "earlier"
+          : "later";
+      void reorder(task, target, direction);
+    } else if (!targetId) {
+      const last = notes
+        .filter((n) => n.id !== task.id && boardStatus(n, config) === column)
+        .at(-1);
+      if (last) void reorder(task, last, "later");
+    }
   };
   if (!config)
     return (
@@ -474,6 +524,7 @@ function Board({
           )}
           <DndContext
             sensors={sensors}
+            collisionDetection={boardCollision}
             onDragStart={(e) => setActiveId(String(e.active.id))}
             onDragCancel={() => setActiveId(null)}
             onDragEnd={dragEnd}
@@ -637,18 +688,35 @@ function TaskCard({
   onOpen: () => void;
   onMove: (value: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDragRef,
+    isDragging,
+  } = useDraggable({
     id: task.id,
-    disabled: readOnly || disabled,
+    disabled: (!ordering && readOnly) || disabled,
   });
   const status = boardStatus(task, config);
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: "task:" + task.id,
+    data: { column: status, taskId: task.id },
+    disabled: !ordering || disabled,
+  });
   const raw = task.metadata?.[config.groupBy];
   return (
     <article
-      ref={setNodeRef}
+      ref={(node) => {
+        setDragRef(node);
+        setDropRef(node);
+      }}
       aria-label={boardTitle(task)}
       className="relative rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3 shadow-sm"
-      style={{ opacity: isDragging ? 0.4 : 1 }}
+      style={{
+        opacity: isDragging ? 0.4 : 1,
+        outline: isOver ? "2px solid var(--accent)" : undefined,
+        outlineOffset: isOver ? 2 : undefined,
+      }}
     >
       <div className="flex items-start gap-1">
         <button
@@ -661,7 +729,7 @@ function TaskCard({
             className="ml-1 inline text-[var(--text-secondary)]"
           />
         </button>
-        {!readOnly && (
+        {(!readOnly || ordering) && (
           <button
             {...attributes}
             {...listeners}
