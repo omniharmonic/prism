@@ -1,0 +1,306 @@
+[
+  {
+    "name": "document-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "companion-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "companion-active-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "thread-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "email-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-desktop-light",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "document-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "companion-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "companion-active-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "thread-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "email-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-desktop-dark",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "dialogs": []
+  },
+  {
+    "name": "document-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "companion-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "companion-active-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "inbox-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "thread-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "email-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-phone-light",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "document-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "companion-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "companion-active-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "inbox-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "thread-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "email-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-phone-dark",
+    "width": 390,
+    "scrollWidth": 390,
+    "dialogs": []
+  },
+  {
+    "name": "document-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "companion-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "companion-active-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "inbox-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "thread-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "email-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-reflow200-light",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "document-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "companion-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "companion-active-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": [
+      "Document panel"
+    ]
+  },
+  {
+    "name": "inbox-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "inbox-selected-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "thread-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "email-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  },
+  {
+    "name": "publishing-reflow200-dark",
+    "width": 720,
+    "scrollWidth": 720,
+    "dialogs": []
+  }
+]
