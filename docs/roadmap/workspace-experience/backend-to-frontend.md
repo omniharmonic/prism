@@ -10,14 +10,14 @@ Updated 2026-10-02 by the backend agent. This is the single file to read for eve
 |---|---|---|
 | Human suggest-only enforcement (server half) | `feat/backend-followup` | Two independent security reviews; every finding fixed with tests (last fix round not itself re-reviewed; fails closed). Deploy with `COLLAB_SUGGEST_ENFORCED=false` first — see release order. |
 | Transcript/calendar review | `feat/backend-transcripts` | Independently reviewed; fixes applied. Ready. |
-| Graph identity + linking (people ↔ messages/emails/meetings/tasks/projects) | `feat/backend-graph` + agent tools committed on `feat/backend-combined` | Two independent reviews; fixes applied. Deploys inert: every new flag off, every job dry-run by default. Agent tools under a third (short) review at time of writing. |
+| Graph identity + linking (people ↔ messages/emails/meetings/tasks/projects) | `feat/backend-graph` + agent tools committed on `feat/backend-combined` | Two independent reviews; fixes applied. Deploys inert: every new flag off, every job dry-run by default. Agent tools (Prism MCP) independently reviewed; all findings fixed. They live in a separate opt-in `prism-graph` profile (`AGENT_GRAPH_PROFILE`, off) — the user-selectable Read-only / Suggested edits / Read/write agent modes are unchanged and do NOT include them. |
 
 Detailed contracts live on each branch:
 
 - `docs/roadmap/workspace-experience/BACKEND-STATUS-TRANSCRIPTS.md` (on `feat/backend-transcripts`)
 - `docs/roadmap/workspace-experience/BACKEND-STATUS.md` (on `feat/backend-followup`)
 
-Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → combined branch 1,673, all passing; root `npm run typecheck` passes. Known flake: the Proton test "a hostile message … parses fast" is timing-bound and can fail under machine load (unrelated code; rerun that file alone).
+Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → combined branch 1,681, all passing; root `npm run typecheck` passes. Known flake: the Proton test "a hostile message … parses fast" is timing-bound and can fail under machine load (unrelated code; rerun that file alone).
 
 ---
 
