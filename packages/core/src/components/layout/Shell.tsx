@@ -1,7 +1,7 @@
 import { NoteShortcutsProvider } from "../navigation/NoteShortcuts";
 import { useWorkspaceSession } from "../../app/hooks/useWorkspaceSession";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useUIStore } from "../../app/stores/ui";
 import { useKeyboardShortcuts } from "../../app/hooks/useKeyboardShortcuts";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
@@ -27,6 +27,18 @@ export function Shell() {
   } = useUIStore();
   const activeTabId = useUIStore((s) => s.activeTabId);
   const isMobile = useIsMobile();
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [layoutWidth, setLayoutWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const node = layoutRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setLayoutWidth(entry.contentRect.width));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  // Keep a useful writing measure when the two sidebars no longer fit. Saved
+  // widths stay intact; the companion becomes a dismissible overlay instead.
+  const companionOverlay = isMobile || layoutWidth - (sidebarOpen ? sidebarWidth + 4 : 0) - contextPanelWidth - 4 < 480;
 
   useKeyboardShortcuts();
   const restore = useWorkspaceSession();
@@ -72,7 +84,7 @@ export function Shell() {
     <NoteShortcutsProvider><div className="flex flex-col overflow-hidden" style={rootStyle}>
       {restoreNotice}
       <a className="workspace-skip-link" href="#workspace-document">Skip to document</a>
-      <div key="workspace" className="relative flex flex-1 min-h-0">
+      <div ref={layoutRef} key="workspace" className="relative flex flex-1 min-h-0">
         {!isMobile && sidebarOpen && (
           <>
             <div style={{ width: sidebarWidth, minWidth: 200, maxWidth: 400 }} className="flex-shrink-0">
@@ -88,7 +100,7 @@ export function Shell() {
           <Canvas />
         </div>
 
-        {!isMobile && contextPanelOpen && (
+        {!companionOverlay && contextPanelOpen && (
           <>
             <ResizeHandle onResize={setContextPanelWidth} initialSize={contextPanelWidth} side="right" />
             <div style={{ width: contextPanelWidth, minWidth: 260, maxWidth: 480 }} className="flex-shrink-0">
@@ -101,8 +113,8 @@ export function Shell() {
             <Navigation />
           </MobileDrawer>
         )}
-        {isMobile && contextPanelOpen && (
-          <MobileDrawer key="mobile-panel" side="right" onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
+        {companionOverlay && contextPanelOpen && (
+          <MobileDrawer key="mobile-panel" side="right" compact={!isMobile} onClose={() => useUIStore.setState({ contextPanelOpen: false })}>
             <ContextPanel />
           </MobileDrawer>
         )}
@@ -124,7 +136,9 @@ function MobileDrawer({
   side,
   onClose,
   children,
+  compact = false,
 }: {
+  compact?: boolean;
   side: "left" | "right";
   onClose: () => void;
   children: React.ReactNode;
@@ -143,7 +157,7 @@ function MobileDrawer({
     <dialog ref={dialogRef} className="workspace-mobile-drawer" aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
-      style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? "100%" : "min(88vw, 360px)" }}>
+      style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? (compact ? "min(420px, 100vw)" : "100%") : "min(88vw, 360px)" }}>
       <div className="h-full min-h-0 flex flex-col" style={{ background: "var(--bg-surface)" }}>
         <div className="workspace-context-header flex items-center justify-between px-4 shrink-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
           <span className="text-sm font-medium">{side === "left" ? "Workspace" : "Document panel"}</span>

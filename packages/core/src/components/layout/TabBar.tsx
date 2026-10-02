@@ -31,7 +31,7 @@ function IconButton({
 }) {
   return (
     <button
-      onClick={disabled ? undefined : onClick}
+      onClick={disabled ? undefined : (event) => { event.currentTarget.focus({ preventScroll: true }); onClick(); }}
       title={title}
       disabled={disabled}
       className="interactive focus-ring flex items-center justify-center flex-shrink-0"
@@ -94,11 +94,19 @@ export function TabBar() {
     const node = strip.current;
     const active = node?.querySelector<HTMLElement>('[aria-current="page"]');
     if (!node || !active) return;
-    const parent = node.getBoundingClientRect();
-    const child = active.parentElement!.getBoundingClientRect();
-    if (child.left < parent.left) node.scrollLeft -= parent.left - child.left;
-    else if (child.right > parent.right)
-      node.scrollLeft += child.right - parent.right;
+    const tab = active.parentElement!;
+    const reveal = () => {
+      const parent = node.getBoundingClientRect();
+      const child = tab.getBoundingClientRect();
+      if (child.left < parent.left) node.scrollLeft -= parent.left - child.left;
+      else if (child.right > parent.right) node.scrollLeft += child.right - parent.right;
+    };
+    reveal();
+    // Fonts, companion widths and responsive chrome can settle after activation.
+    const observer = new ResizeObserver(reveal);
+    observer.observe(node);
+    observer.observe(tab);
+    return () => observer.disconnect();
   }, [activeTabId, openTabs, isMobile]);
 
   // Mobile: a quiet 3-zone header (nav · centered title · share). Tab switching,

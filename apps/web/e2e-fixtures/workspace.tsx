@@ -1,10 +1,12 @@
 /** Real shared workspace, fictional data. Never connects to a live server. */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
+import { AgentClientProvider, App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
-import { fetchMe, setActiveVault, getActiveVault } from "../src/config";
+import { fetchMe, setActiveVault, getActiveVault, agentScope } from "../src/config";
+
+import { replyAgent } from "./reply-agent";
 
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 let eventHandlers: InvalidationHandlers | null = null;
@@ -109,9 +111,10 @@ window.fetch = async (input, init) => {
 };
 setActiveVault("primary");
 await fetchMe();
+const agent = params.has("agent") ? replyAgent(() => agentScope() ?? "") : null;
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
+  <React.StrictMode><AgentClientProvider client={agent}><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
       listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "secondary", label: "Shared research", vault: "research", active: false }],
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { writes.push({ switchedVault: id }); },
@@ -119,5 +122,5 @@ createRoot(document.getElementById("root")!).render(
       setActiveWorkspace: (id: string) => { writes.push({ switchedWorkspace: id }); },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
     {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={params.has("session") ? undefined : location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
-  </CollabSharingProvider></VaultClientProvider></PlatformProvider></InvalidationSourceProvider></React.StrictMode>,
+  </CollabSharingProvider></VaultClientProvider></PlatformProvider></InvalidationSourceProvider></AgentClientProvider></React.StrictMode>,
 );

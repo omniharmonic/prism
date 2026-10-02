@@ -40,14 +40,11 @@ test("twenty crowded tabs retain all actions, searchable full titles, active and
   const lastTab = page
     .getByRole("navigation", { name: "Open document tabs" })
     .locator('[data-tab-id="doc-20"]');
-  const tabBounds = await lastTab.boundingBox();
-  const stripBounds = await page
-    .getByRole("navigation", { name: "Open document tabs" })
-    .boundingBox();
-  expect(tabBounds!.x).toBeGreaterThanOrEqual(stripBounds!.x - 1);
-  expect(tabBounds!.x + tabBounds!.width).toBeLessThanOrEqual(
-    stripBounds!.x + stripBounds!.width + 1,
-  );
+  await expect.poll(async () => {
+    const tabBounds = await lastTab.boundingBox();
+    const stripBounds = await page.getByRole("navigation", { name: "Open document tabs" }).boundingBox();
+    return !!tabBounds && !!stripBounds && tabBounds.x >= stripBounds.x - 1 && tabBounds.x + tabBounds.width <= stripBounds.x + stripBounds.width + 1;
+  }).toBe(true);
   await menu(page);
   await page.screenshot({ path: info.outputPath("open-documents-light.png") });
 });
