@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import path from 'node:path';
 
 for (const collab of [false, true]) {
   for (const appearance of ['desktop', 'phone', 'dark'] as const) {
@@ -28,7 +27,7 @@ for (const collab of [false, true]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await expect.poll(()=>page.evaluate(()=>(window as any).prismCanvasFixture.syncAttempts.length)).toBeGreaterThan(0);
       await expect(page.getByText('Updating relationships…', {exact:true})).not.toBeVisible();
-      if (info.project.name === 'webkit') await page.screenshot({ path: path.resolve('../../docs/roadmap/workspace-experience/evidence/d03-canvas', `${collab ? 'collab' : 'plain'}-${appearance}-drawer.png`) });
+      if (info.project.name === 'webkit') await page.screenshot({ path: info.outputPath(`${collab ? 'collab' : 'plain'}-${appearance}-drawer.png`) });
       await note.click();
       await expect(page.getByRole('button', { name: 'Conversation with Morgan On canvas', exact: true })).toBeDisabled();
       await page.getByRole('textbox', { name: 'Find canvas notes' }).press('Escape');
@@ -47,7 +46,7 @@ for (const collab of [false, true]) {
       await page.mouse.down();
       await expect(overlay).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
       await page.mouse.up();
-      if (info.project.name === 'webkit') await page.screenshot({ path: path.resolve('../../docs/roadmap/workspace-experience/evidence/d03-canvas', `${collab ? 'collab' : 'plain'}-${appearance}-scene.png`) });
+      if (info.project.name === 'webkit') await page.screenshot({ path: info.outputPath(`${collab ? 'collab' : 'plain'}-${appearance}-scene.png`) });
     });
   }
 }
