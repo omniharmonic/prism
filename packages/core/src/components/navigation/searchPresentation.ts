@@ -1,3 +1,4 @@
+import { inferContentType } from "../../lib/schemas/content-types";
 import type { Note } from "../../lib/types";
 
 /** Render saved HTML as inert text; never insert note markup into the result list. */
@@ -12,3 +13,9 @@ export function searchPreview(note: Note & { _snippet?: string }, max = 220): st
 
 export const searchModeLabel = (mode?: "ranked" | "keyword" | "fallback") =>
   mode === "fallback" ? "Keyword search · Ranked search is unavailable" : mode === "ranked" ? "Ranked search" : "Keyword search";
+
+/** Messages are existing email/thread notes, not a separate remote inbox search. */
+export function searchResultGroup(note: Note): "messages" | "notes" {
+  const type = inferContentType(note);
+  return type === "email" || type === "message-thread" ? "messages" : "notes";
+}
