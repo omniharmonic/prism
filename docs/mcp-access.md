@@ -176,7 +176,8 @@ always the gateway's. A hidden tool answers exactly like a nonexistent one. Erro
 | `prism_sheet_update` | write | `edit` | `{id, range, values[][], if_updated_at?}` — a single cell anchors `values`; a rectangle must match its shape. Cell-level; no commas/line breaks in cells |
 
 **Comments and suggestions need suggest, via MCP too.** A comment is a write to the shared document (its
-anchor is a mark in the body), and the collaboration socket is read-only below *suggest* — so in the editor a
+anchor is a mark in the body), and the collaboration socket is read-only below *edit* (suggest-level people
+write comments and suggestions through `POST /api/collab/:id/commands`, which needs *suggest*) — so in the editor a
 comment-level collaborator cannot comment (WP0.2). The MCP tools follow the same rule rather than letting an
 agent do what its own account cannot: a comment-level account gets `forbidden`. Anyone who may comment may
 resolve or reopen any thread (as in the editor). Comments and suggestions are attributed to your account's
