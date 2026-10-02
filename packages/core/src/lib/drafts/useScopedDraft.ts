@@ -34,9 +34,15 @@ export function useScopedDraft(namespace: string, scope: string | null, conversa
     listeners.forEach((listener) => listener());
     return persisted;
   }, [key, scope]);
+  // Read at commit time, so another mounted view cannot lose an attachment.
+  const updateText = useCallback((updater: (current: string) => string) => {
+    const current = read(key, !!scope);
+    const next = updater(current);
+    return next === current ? !errors.has(key) : setText(next);
+  }, [key, scope, setText]);
   const clearIfUnchanged = useCallback((sentText: string) => {
     // A second view may have edited the same draft while this send was pending.
     if (read(key, !!scope) === sentText) setText("");
   }, [key, scope, setText]);
-  return { text, setText, clearIfUnchanged, error };
+  return { text, setText, updateText, clearIfUnchanged, error };
 }

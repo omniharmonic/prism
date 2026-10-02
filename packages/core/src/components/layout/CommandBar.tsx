@@ -1,3 +1,4 @@
+import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   Search, X, FileText, MonitorPlay, Code, Mail, Table2, Globe,
@@ -274,6 +275,7 @@ export function CommandBar() {
     const notes = query.trim() === debouncedQuery.trim() ? searchResults ?? [] : [];
     return notes.filter(note => filter !== "commands" && (filter === "all" || searchResultGroup(note) === filter)).map(note => ({
       id: `note-${note.id}`,
+      noteId: note.id,
       label: note.path?.split("/").pop() || note.id,
       sublabel: note.path || "Saved note",
       group: searchResultGroup(note),
@@ -348,6 +350,11 @@ export function CommandBar() {
     })}</div>}
     {showAsk && <CmdRow id={`prism-command-${items.length - 1}`} selected={selectedIndex === items.length - 1} onClick={askClaude} onHover={() => setSelectedId("ask-agent")} icon={<Bot size={18} />} label={`Ask your agent: "${query}"`} accent trailing={<ArrowRight size={13} />} />}
   </>;
+  const selectedNote = orderedNotes.find(item => item.id === (selectedId ?? defaultId));
+  const contextActions = selectedNote && agentChat && <div aria-label="Selected note actions" className="flex min-w-0 items-center justify-between gap-2 border-t px-3" style={{ borderColor: "var(--glass-border)" }}>
+    <span className="min-w-0 truncate text-xs" style={{ color: "var(--text-secondary)" }}>{selectedNote.label}</span>
+    <AddSavedNoteContextButton noteId={selectedNote.noteId} label={selectedNote.label} onAdded={closeCommandBar} />
+  </div>;
   const feedback = <>
     {query.trim() && searchFailed && <div role="alert" className="prism-search-feedback">Couldn't search this workspace. <button className="focus-ring" onClick={() => void retrySearch()}>Try again</button></div>}
     {query.trim() && !searchingNow && !searchFailed && !vaultItems.length && filter !== "commands" && <p className="prism-search-feedback">{filter === "messages" ? "No matching messages in these results." : "No matching notes."} <span>Try a name, phrase, or related idea.</span></p>}
@@ -375,7 +382,7 @@ export function CommandBar() {
           onClick={(e) => e.stopPropagation()}
         >
           {filters}{status}{feedback}<div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>{body}</div>
-          {inputRow}
+          {contextActions}{inputRow}
         </div>
       </dialog>
     );
@@ -395,6 +402,7 @@ export function CommandBar() {
         {inputRow}{filters}{status}{feedback}
         <div id="prism-command-results" role="listbox" aria-label="Notes and commands" style={{ maxHeight: "min(440px, 56vh)", overflowY: "auto", padding: 6 }}>{body}</div>
 
+        {contextActions}
         {/* Footer keyboard hints */}
         <div
           className="flex items-center gap-4"

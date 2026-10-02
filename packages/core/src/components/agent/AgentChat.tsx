@@ -1,3 +1,4 @@
+import { useSavedNoteHandoff, SavedNoteHandoffNotice } from "./SavedNoteHandoff";
 import "./agent-chat.css";
 import { useSelectionHandoff, SelectionHandoffNotice } from "./SelectionHandoff";
 import { AgentFollowupQueue, followupKey } from "./AgentFollowupQueue";
@@ -130,6 +131,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const activeSessionId = useAgentChatStore((s) => s.activeSessionId);
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
   const pendingAsk = useAgentChatStore((s) => s.pendingAsk);
+  const pendingSavedNote = useAgentChatStore((s) => s.pendingSavedNote);
   const setPendingAsk = useAgentChatStore((s) => s.setPendingAsk);
   const draft = useAgentChatStore((s) => s.draft);
   const setDraft = useAgentChatStore((s) => s.setDraft);
@@ -228,7 +230,11 @@ function AgentChatView({ client }: { client: AgentClient }) {
     />
   ) : null;
 
-  const list = (
+  const list = (<>
+    {!showingConversation && pendingSavedNote && <section aria-label="Pending context destination" className="border-b border-[var(--glass-border)] p-3 text-xs">
+      <p>A context note is waiting. Choose a conversation or start a new one; nothing has been sent.</p>
+      <button className="focus-ring min-h-11 underline" onClick={() => useAgentChatStore.getState().dismissSavedNote(pendingSavedNote.id)}>Dismiss pending note</button>
+    </section>}
     <SessionList
       sessions={sessions ?? []}
       loading={isLoading}
@@ -240,7 +246,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
       onArchive={(id) => void archive(id)}
       mobile={isMobile}
     />
-  );
+  </>);
 
   if (isMobile) {
     return (
@@ -419,6 +425,9 @@ export function Conversation({
     snapshots: contextSnapshots, setSnapshots: snapshotDraft.setText, inputRef,
     busy: sending || !!creating || !!pendingQueuedRequest,
   });
+  const savedNoteHandoff = useSavedNoteHandoff({ scope: client.scope?.() || null, sessionId,
+    ready: !awaitingSession && !limitsQuery.isPending, busy: sending || !!creating || !!pendingFollowup.text,
+    sendingRef, maxNotes: limits?.contextNotes?.maxNotes, contextText: contextDraft.text, updateContext: contextDraft.updateText });
   const running = !!conv.active;
   const canQueue = !!sessionId && !!limits?.followups && !!client.queueFollowup && !!client.listFollowups && !!client.changeFollowup;
   // A turn just finished → today's spend changed: refresh the budget line.
@@ -683,6 +692,7 @@ export function Conversation({
       {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
       {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
       <SelectionHandoffNotice handoff={selectionHandoff} />
+      <SavedNoteHandoffNotice handoff={savedNoteHandoff} />
       {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
       {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
       {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}

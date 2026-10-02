@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "e2e-fixtures/agent.tsx",
+    "e2e-fixtures/search.tsx",
+    "e2e-fixtures/saved-note-handoff.spec.ts",
+    "playwright.saved-context.config.ts",
+    "src/vite-env.d.ts"
+  ]
+}
