@@ -25,6 +25,8 @@ interface Props {
   /** Stable identity of the displayed delivery target, including explicit Cc. */
   destination: string;
   disabled?: boolean;
+  /** Stable email-owned companion area; absent callers retain the modal. */
+  dockTarget?: HTMLElement | null;
 }
 
 /** A dedicated read-only session. It never takes over an existing agent chat. */
@@ -72,6 +74,7 @@ function ScopedAgentReplyDraft({
   draftKey,
   destination,
   disabled,
+  dockTarget,
 }: Props & { client: AgentClient; profile: AgentProfile; scope: string }) {
   const identity = JSON.stringify([noteId, draftKey, destination]);
   const savedSession = useScopedDraft("agent-reply-session", scope, identity);
@@ -87,6 +90,11 @@ function ScopedAgentReplyDraft({
       mounted.current = false;
     };
   }, []);
+
+  function closeDraft() {
+    setOpen(false);
+    requestAnimationFrame(() => trigger.current?.focus());
+  }
 
   async function openDraft() {
     if (disabled || inFlight.current || client.scope?.() !== scope) return;
@@ -133,18 +141,19 @@ function ScopedAgentReplyDraft({
         ref={trigger}
         type="button"
         disabled={disabled || creating}
-        onClick={() => void openDraft()}
+        onClick={(event) => {
+          event.currentTarget.focus({ preventScroll: true });
+          void openDraft();
+        }}
         className="prism-agent-draft-trigger focus-ring"
       >
         <Sparkles size={14} /> Draft with agent
       </button>
       {(open || !!savedSession.text) && (
         <ReplyDraftDialog
+          dockTarget={dockTarget}
           open={open}
-          onClose={() => {
-            setOpen(false);
-            requestAnimationFrame(() => trigger.current?.focus());
-          }}
+          onClose={closeDraft}
         >
           <header className="prism-agent-draft-heading">
             <div>
@@ -154,7 +163,7 @@ function ScopedAgentReplyDraft({
             <button
               type="button"
               aria-label="Close agent draft"
-              onClick={() => setOpen(false)}
+              onClick={closeDraft}
               className="focus-ring"
             >
               <X size={18} />
@@ -189,7 +198,7 @@ function ScopedAgentReplyDraft({
               draftKey={draftKey}
               destination={destination}
               disabled={disabled}
-              onInserted={() => setOpen(false)}
+              onInserted={closeDraft}
             />
           )}
         </ReplyDraftDialog>
@@ -202,16 +211,58 @@ function ReplyDraftDialog({
   children,
   open,
   onClose,
+  dockTarget,
 }: {
+  dockTarget?: HTMLElement | null;
   children: React.ReactNode;
   open: boolean;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (open && dockTarget) {
+      panel.current
+        ?.querySelector<HTMLButtonElement>('[aria-label="Close agent draft"]')
+        ?.focus({ preventScroll: true });
+      panel.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [open, dockTarget]);
+  useEffect(() => {
+    if (!open || !dockTarget) return;
+    const escape = (event: KeyboardEvent) => {
+      // A submit control can lose focus when disabled while generation starts.
+      if (event.key === "Escape" && document.activeElement === document.body) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [open, dockTarget, onClose]);
   useEffect(() => {
     if (open) dialog.current?.showModal();
     else dialog.current?.close();
   }, [open]);
+  if (dockTarget)
+    return createPortal(
+      <aside
+        ref={panel}
+        className="prism-agent-draft-panel"
+        aria-label="Agent reply draft"
+        hidden={!open}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      >
+        {children}
+      </aside>,
+      dockTarget,
+    );
   return createPortal(
     <dialog
       ref={dialog}

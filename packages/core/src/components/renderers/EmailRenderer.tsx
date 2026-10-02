@@ -1,3 +1,6 @@
+import "../comms/email-workspace.css";
+import { splitEmailQuote } from "../../lib/messages/emailQuote";
+import { messageInitials } from "../comms/messageAppearance";
 import { AgentReplyDraft } from "../comms/AgentReplyDraft";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
 import { useState, useCallback, useRef } from "react";
@@ -5,11 +8,10 @@ import {
   Send,
   Reply,
   Mail,
-  Clock,
-  User,
   X,
   Archive,
   MailOpen,
+  Paperclip,
 } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { gmailApi } from "../../lib/matrix/client";
@@ -82,6 +84,7 @@ function VaultEmailView({
     (meta?.thread_id as string) ||
     "";
   const [showReply, setShowReply] = useState(false);
+  const [agentDock, setAgentDock] = useState<HTMLDivElement | null>(null);
   // Web/native: Proton Bridge via the server (WP1.5 live actions) when it offers
   // email actions and this note is a stored message (it has a Message-ID).
   // Desktop has no provider → `live` is null → the existing Tauri path.
@@ -124,221 +127,228 @@ function VaultEmailView({
   const replySubject = subject.startsWith("Re: ") ? subject : `Re: ${subject}`;
 
   return (
-    <div className="flex flex-col h-full min-h-0 min-w-0">
-      {/* Header */}
-      <div
-        className="px-6 py-3 flex-shrink-0"
-        style={{
-          borderBottom: "1px solid var(--glass-border)",
-          background: "var(--bg-surface)",
-        }}
-      >
-        <div className="flex items-center gap-2">
-          {!read && (
-            <span
-              className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ background: "var(--color-accent)" }}
-            />
-          )}
-          <h2
-            className="text-lg font-semibold min-w-0 break-words"
-            style={{ color: "var(--text-primary)" }}
+    <div className="prism-email-workspace">
+      <div className="prism-email-layout">
+        <div className="prism-email-main">
+          {/* Header */}
+          <div
+            className="prism-email-header"
+            style={{
+              borderBottom: "1px solid var(--glass-border)",
+              background: "var(--bg-surface)",
+            }}
           >
-            {subject || "Email"}
-          </h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 mt-1.5 [overflow-wrap:anywhere]">
-          <span
-            className="flex items-center gap-1 text-xs"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <User size={11} /> {from}
-          </span>
-          {date && (
-            <span
-              className="flex items-center gap-1 text-xs"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Clock size={11} /> {date}
-            </span>
-          )}
-          {messageCount > 1 && (
-            <span
-              className="flex items-center gap-1 text-xs"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Mail size={11} /> {messageCount} messages
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2 mt-2">
-          {replyTo && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Reply size={14} />}
-              disabled={!canReply}
-              onClick={() => setShowReply(true)}
-            >
-              Reply
-            </Button>
-          )}
-          {live && (
-            <>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<Archive size={14} />}
-                onClick={() =>
-                  runAction(
-                    () => live.emailArchive({ noteId: note.id }),
-                    "Archived",
-                  )
-                }
-              >
-                Archive
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<MailOpen size={14} />}
-                onClick={() =>
-                  runAction(
-                    async () => {
-                      await live.emailMarkRead({ noteId: note.id }, !read);
-                      setRead(!read);
-                    },
-                    read ? "Marked unread" : "Marked read",
-                  )
-                }
-              >
-                {read ? "Mark unread" : "Mark read"}
-              </Button>
-            </>
-          )}
-          {actionMsg && (
-            <span
-              className="text-xs self-center"
-              style={{ color: "var(--text-muted)" }}
-            >
-              {actionMsg}
-            </span>
-          )}
-        </div>
-        {labels.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-2">
-            {labels
-              .filter((l) => !["INBOX", "UNREAD"].includes(l))
-              .map((label) => (
+            <div className="flex items-center gap-2">
+              {!read && (
                 <span
-                  key={label}
-                  className="text-[10px] px-1.5 py-0.5 rounded-full"
-                  style={{
-                    background: "var(--glass)",
-                    color: "var(--text-secondary)",
-                    border: "1px solid var(--glass-border)",
-                  }}
-                >
-                  {label.replace("CATEGORY_", "").toLowerCase()}
-                </span>
-              ))}
-          </div>
-        )}
-      </div>
-
-      {/* Message bodies */}
-      <div className="flex-1 min-h-0 overflow-auto px-4 sm:px-6 py-4 space-y-4">
-        {messages.length > 0 ? (
-          messages.map((msg, i) => (
-            <div
-              key={i}
-              className="border p-4 rounded-xl [overflow-wrap:anywhere]"
-              style={{ borderColor: "var(--glass-border)" }}
-            >
-              {msg.from && (
-                <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-                  <span
-                    className="text-sm font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {msg.from}
-                  </span>
-                  {msg.date && (
-                    <span
-                      className="text-xs"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      {msg.date}
-                    </span>
-                  )}
-                </div>
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ background: "var(--color-accent)" }}
+                />
               )}
-              {msg.details.length > 0 && (
-                <p
-                  className="mb-3 whitespace-pre-wrap text-xs"
+              <h2
+                className="text-lg font-semibold min-w-0 break-words"
+                style={{ color: "var(--text-primary)" }}
+              >
+                {subject || "Email"}
+              </h2>
+            </div>
+            <p className="prism-email-source">
+              <Mail size={13} aria-hidden="true" />
+              {meta?.source === "proton-bridge" ? "Proton Bridge" : "Email"}
+              {messageCount > 1 && <span> · {messageCount} messages</span>}
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {replyTo && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<Reply size={14} />}
+                  disabled={!canReply}
+                  onClick={() => setShowReply(true)}
+                >
+                  Reply
+                </Button>
+              )}
+              {live && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Archive size={14} />}
+                    onClick={() =>
+                      runAction(
+                        () => live.emailArchive({ noteId: note.id }),
+                        "Archived",
+                      )
+                    }
+                  >
+                    Archive
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<MailOpen size={14} />}
+                    onClick={() =>
+                      runAction(
+                        async () => {
+                          await live.emailMarkRead({ noteId: note.id }, !read);
+                          setRead(!read);
+                        },
+                        read ? "Marked unread" : "Marked read",
+                      )
+                    }
+                  >
+                    {read ? "Mark unread" : "Mark read"}
+                  </Button>
+                </>
+              )}
+              {actionMsg && (
+                <span
+                  className="text-xs self-center"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  {msg.details.join("\n")}
-                </p>
+                  {actionMsg}
+                </span>
               )}
-              {msg.body ? (
-                <pre
-                  className="text-sm whitespace-pre-wrap [overflow-wrap:anywhere]"
-                  style={{
-                    color: "var(--text-primary)",
-                    fontFamily: "var(--font-sans)",
-                  }}
-                >
-                  {msg.body}
-                </pre>
-              ) : (
+            </div>
+            {labels.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {labels
+                  .filter((l) => !["INBOX", "UNREAD"].includes(l))
+                  .map((label) => (
+                    <span
+                      key={label}
+                      className="text-[10px] px-1.5 py-0.5 rounded-full"
+                      style={{
+                        background: "var(--glass)",
+                        color: "var(--text-secondary)",
+                        border: "1px solid var(--glass-border)",
+                      }}
+                    >
+                      {label.replace("CATEGORY_", "").toLowerCase()}
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          {/* Message bodies */}
+          <div className="prism-email-messages">
+            {messages.length > 0 ? (
+              messages.map((msg, i) => {
+                const parts = splitEmailQuote(msg.body);
+                const attachments = msg.details.filter((detail) =>
+                  detail.startsWith("Attachments: "),
+                );
+                const recipients = msg.details.filter(
+                  (detail) => !detail.startsWith("Attachments: "),
+                );
+                return (
+                  <article
+                    key={i}
+                    className="prism-email-message"
+                    aria-label={`Email from ${msg.from || "unknown sender"}`}
+                  >
+                    <header className="prism-email-author">
+                      <span className="prism-email-avatar" aria-hidden="true">
+                        {messageInitials(
+                          msg.from.replace(/<[^>]*>$/, "").trim() || msg.from,
+                        )}
+                      </span>
+                      <div>
+                        <strong>{msg.from || "Sender unavailable"}</strong>
+                        {recipients.length > 0 && (
+                          <p>{recipients.join("\n")}</p>
+                        )}
+                      </div>
+                      {msg.date && <time>{msg.date}</time>}
+                    </header>
+                    {msg.body ? (
+                      <div className="prism-email-body">
+                        <pre>{parts.visible}</pre>
+                        {parts.folded && (
+                          <details className="prism-email-quoted">
+                            <summary className="focus-ring">
+                              Show {parts.kind}
+                            </summary>
+                            <pre>{parts.folded}</pre>
+                          </details>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="prism-email-empty">
+                        Email body not yet synced. Full content will appear
+                        after the next sync cycle.
+                      </p>
+                    )}
+                    {attachments.length > 0 && (
+                      <section
+                        className="prism-email-attachments"
+                        aria-label="Attachments listed in source"
+                      >
+                        {attachments.map((label, index) => (
+                          <div key={index}>
+                            <Paperclip size={19} aria-hidden="true" />
+                            <span>
+                              <strong>
+                                {label.slice("Attachments: ".length)}
+                              </strong>
+                              <small>
+                                Listed in the imported email. Download is
+                                unavailable on this connection.
+                              </small>
+                            </span>
+                          </div>
+                        ))}
+                      </section>
+                    )}
+                  </article>
+                );
+              })
+            ) : (
+              <div
+                className="border p-4 rounded-xl [overflow-wrap:anywhere]"
+                style={{ borderColor: "var(--glass-border)" }}
+              >
                 <p className="text-sm" style={{ color: "var(--text-muted)" }}>
                   Email body not yet synced. Full content will appear after the
                   next sync cycle.
                 </p>
-              )}
-            </div>
-          ))
-        ) : (
-          <div
-            className="border p-4 rounded-xl [overflow-wrap:anywhere]"
-            style={{ borderColor: "var(--glass-border)" }}
-          >
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              Email body not yet synced. Full content will appear after the next
-              sync cycle.
-            </p>
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {!canReply && (
-        <p
-          role="status"
-          className="px-4 py-2 text-xs"
-          style={{ color: "var(--text-muted)" }}
-        >
-          Replying is unavailable for this email on this connection.
-        </p>
-      )}
-      {/* Reply bar */}
-      {showReply && replyTo && canReply && (
-        <EmailReplyBar
-          scope={scope}
-          account={account}
-          source={typeof meta?.source === "string" ? meta.source : "Email"}
-          to={replyTo}
-          subject={replySubject}
-          threadId={threadId}
-          live={live}
-          noteId={note.id}
-          onSent={() => {
-            setActionMsg("Reply sent.");
-            setShowReply(false);
-          }}
-          onClose={() => setShowReply(false)}
-        />
-      )}
+          {!canReply && (
+            <p
+              role="status"
+              className="px-4 py-2 text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Replying is unavailable for this email on this connection.
+            </p>
+          )}
+          {/* Reply bar */}
+          {showReply && replyTo && canReply && (
+            <EmailReplyBar
+              scope={scope}
+              agentDock={agentDock}
+              account={account}
+              source={typeof meta?.source === "string" ? meta.source : "Email"}
+              to={replyTo}
+              subject={replySubject}
+              threadId={threadId}
+              live={live}
+              noteId={note.id}
+              onSent={() => {
+                setActionMsg("Reply sent.");
+                setShowReply(false);
+              }}
+              onClose={() => setShowReply(false)}
+            />
+          )}
+        </div>
+        <div ref={setAgentDock} className="prism-email-agent-dock" />
+      </div>
     </div>
   );
 }
@@ -379,6 +389,7 @@ function extractEmail(raw: string): string {
 
 /** A reply uses the same scoped acknowledgement/draft flow as messaging. */
 function EmailReplyBar({
+  agentDock,
   account,
   source,
   to,
@@ -390,6 +401,7 @@ function EmailReplyBar({
   onSent,
   onClose,
 }: {
+  agentDock: HTMLElement | null;
   account: string;
   source: string;
   to: string;
@@ -407,7 +419,7 @@ function EmailReplyBar({
   const ccValid = cc.every(address => address.length <= 254 && /^[^\s@<>,;]+@[^\s@<>,;]+$/.test(address));
   const [submitting, setSubmitting] = useState(false);
   return (
-    <div className="shrink-0" style={{ background: "var(--bg-surface)" }}>
+    <div className="prism-email-reply" style={{ background: "var(--bg-surface)" }}>
       <div className="flex items-center gap-2 px-4 pt-3 text-xs">
         <Reply size={14} className="shrink-0" />
         <span className="min-w-0 flex-1 break-all">
@@ -432,7 +444,7 @@ function EmailReplyBar({
         {ccDraft.error && <p role="status">{ccDraft.error}</p>}
         <details className="text-[var(--text-muted)]"><summary className="cursor-pointer py-1">Reply details</summary><p className="mt-1 break-words">Subject: {subject}</p>{live && account && <p className="mt-1 break-words">Stored email account: {account}. The connected server mailbox determines the sending account.</p>}</details>
       </div>
-      <AgentReplyDraft scope={scope} noteId={noteId} title={subject} draftKey={`email:${JSON.stringify([noteId, account, to])}`} destination={JSON.stringify({ to: [to], cc })} disabled={submitting || !ccValid || (isWeb && !live)} />
+      <AgentReplyDraft dockTarget={agentDock} scope={scope} noteId={noteId} title={subject} draftKey={`email:${JSON.stringify([noteId, account, to])}`} destination={JSON.stringify({ to: [to], cc })} disabled={submitting || !ccValid || (isWeb && !live)} />
       <MessageComposer
         draftScope={scope}
         draftKey={`email:${JSON.stringify([noteId, account, to])}`}

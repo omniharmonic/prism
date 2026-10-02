@@ -312,7 +312,7 @@ test("changing the authenticated audience removes the prior result and draft", a
   ).toBeVisible();
   await page.evaluate(() => (window as any).prismMessagesFixture.switchActor());
   await expect(
-    page.getByRole("dialog", { name: "Agent reply draft" }),
+    page.getByRole("complementary", { name: "Agent reply draft" }),
   ).toBeHidden();
   await page.getByRole("button", { name: "Reply", exact: true }).click();
   await expect(
