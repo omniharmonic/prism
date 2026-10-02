@@ -17,11 +17,13 @@ graph itself.
   `include_ambiguous_links`, `include_link_count`), `list-tags`, `vault-info`,
   `doctor`, and `create-note` / `update-note` for the report and state notes
   only.
-- **Prism MCP**, Benjamin's token (read is enough for measuring; the
-  `prism-ro` profile): `prism_people_link_status`, `prism_people_duplicates`,
-  `prism_people_review_queue`. With a Read & write token (`prism-rw`) it may
+- **Prism MCP**, Benjamin's token — **a Read only token is recommended** (it
+  is enough for every measurement): `prism_people_link_status`,
+  `prism_people_duplicates`, `prism_people_review_queue`. Only if it runs with
+  the weave's Read & write token (or the hosted `prism-graph` profile) may it
   also record merge recommendations with `prism_people_recommend_merge` (≤ 5
-  per run, same rules as `nightly-graph-weave` Step 3).
+  per run, same rules as `nightly-graph-weave` Step 3). The general
+  `prism-ro` / `prism-rw` chat profiles do not have these tools.
 
 ## Budget and stop conditions
 

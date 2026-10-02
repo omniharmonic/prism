@@ -56,6 +56,12 @@ export interface ResolveOptions {
   /** Also write the key onto the person (default FALSE — linking one note is not a claim about every note). */
   addIdentity?: boolean;
   applyToKey?: boolean;
+  /**
+   * The version of the source note the decider reviewed (single candidate only).
+   * When set, the link is written with THIS stamp as `if_updated_at`; a source
+   * that is no longer at that version counts as a conflict and stays open.
+   */
+  expectSourceUpdatedAt?: string;
   paceMs?: number;
   /** The lean person listing (the route passes the shared cache). */
   people?: () => Promise<Note[]>;
@@ -132,7 +138,9 @@ async function doResolve(vault: ReviewVault, vaultId: string, cand: IdentityCand
       } else if (hasEdge(src, person.id, c.relationship)) {
         out.alreadyLinked++;
         done.push(c.id);
-      } else if (await write(src.id, { links: { add: [{ target: person.id, relationship: c.relationship }] } }, src.updatedAt)) {
+      } else if (c.id === cand.id && opts.expectSourceUpdatedAt && src.updatedAt !== opts.expectSourceUpdatedAt) {
+        out.conflicts++; // changed since it was reviewed — never written
+      } else if (await write(src.id, { links: { add: [{ target: person.id, relationship: c.relationship }] } }, c.id === cand.id && opts.expectSourceUpdatedAt ? opts.expectSourceUpdatedAt : src.updatedAt)) {
         out.linked++;
         done.push(c.id);
       }

@@ -55,21 +55,31 @@ desktop Tauri commands and was left as is; `wikilinks` supersedes it.
 All are **server-owner only** (hidden from everyone else) and act on the
 token's vault. Full reference: `BACKEND-STATUS-GRAPH.md` § "Agent tools".
 
-| Tool | Scope | `prism-ro` | `prism-rw` |
-|---|---|---|---|
-| `prism_people_review_queue` | read | yes | yes |
-| `prism_people_review_context` | read | yes | yes |
-| `prism_people_duplicates` | read | yes | yes |
-| `prism_people_link_status` | read | yes | yes |
-| `prism_people_review_decide` | write | — | yes |
-| `prism_people_recommend_merge` | write | — | yes |
-| `prism_people_file_review` | write | — | yes |
+| Tool | Scope | Read-only owner token | Read & write owner token | Hosted `prism-graph` | Hosted `prism-ro` / `prism-rw` / `prism-suggest` |
+|---|---|---|---|---|---|
+| `prism_people_review_queue` | read | yes | yes | yes | no |
+| `prism_people_review_context` | read | yes | yes | yes | no |
+| `prism_people_duplicates` | read | yes | yes | yes | no |
+| `prism_people_link_status` | read | yes | yes | yes | no |
+| `prism_people_review_decide` | write | — | yes | yes | no |
+| `prism_people_recommend_merge` | write | — | yes | yes | no |
+| `prism_people_file_review` | write | — | yes | yes | no |
 
-Daily caps per credential (rolling 24 h): 200 decisions
-(`PEOPLE_AGENT_DECISIONS_PER_DAY`), 50 filed rows
-(`PEOPLE_AGENT_FILES_PER_DAY`), 50 recommendations
-(`PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY`). Every agent decision is in the
-ledger the owner can read at `GET /api/admin/people/agent/decisions`.
+**Credential advice.** Only the nightly weave's token needs Read & write —
+give that token to that routine alone. `graph-navigator` and `graph-gardener`
+should use a separate **Read only** token. Inside Prism's own agent chat the
+tools exist only in the `prism-graph` profile (`AGENT_PRISM_PROFILES=true` +
+`AGENT_GRAPH_PROFILE=true`); ordinary chat sessions never see them.
+
+Daily caps (rolling 24 h), per credential and per account: decisions 200 /
+400 (`PEOPLE_AGENT_DECISIONS_PER_DAY`, `PEOPLE_AGENT_ACCOUNT_DECISIONS_PER_DAY`),
+filed rows 50 / 100 (`…_FILES_PER_DAY`), recommendations 50 / 100
+(`…_RECOMMENDATIONS_PER_DAY`). All hosted agent turns of one account share one
+per-credential bucket. Agent-filed rows have their own room in the queue
+(`PEOPLE_QUEUE_MAX_AGENT_OPEN`, 100) and never take space from ingest rows.
+Every agent decision is in the ledger the owner can read at
+`GET /api/admin/people/agent/decisions` (kept `PEOPLE_AGENT_RETENTION_DAYS`,
+180).
 
 ## Install (owner)
 

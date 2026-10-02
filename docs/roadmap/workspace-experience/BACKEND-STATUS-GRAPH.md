@@ -382,19 +382,25 @@ re-point them by hand or restore the vault from the pre-run backup.
 
 Seven tools in `src/mcp/tool-people.ts` let an agent holding the **server
 owner's** Prism credential (a `pp_` PAT from Settings → Account → Connect your
-agent, a device token, or a hosted turn on the `prism-rw` / `prism-ro`
-profile) do the judgement work this layer leaves. Skill drafts that use them:
+agent, a device token, or a hosted turn on the explicit `prism-graph` profile)
+do the judgement work this layer leaves. The general hosted chat profiles
+(`prism-ro`, `prism-rw`, `prism-suggest`) do **not** include them (review M3):
+`prism-graph` = note reads + these seven tools + create/update note, offered
+only with `AGENT_PRISM_PROFILES=true` **and** `AGENT_GRAPH_PROFILE=true`.
+Recommended external credentials: a **Read only** owner token for
+`graph-navigator` / `graph-gardener`; a separate **Read & write** token used
+only by the nightly weave. Skill drafts that use them:
 `docs/skills/` (README there).
 
-| Tool | Scope | Profiles | Input | Output |
+| Tool | Scope | Hosted profile | Input | Output |
 |---|---|---|---|---|
-| `prism_people_review_queue` | read | ro, rw | `reason?`, `relationship?`, `source_kind?` (email/thread/meeting/task/person), `limit` 1–25 (10), `after?`, `include_titles` (true) | `{rows, next, open}`; a row = id, reason, relationship, sourceKind, key `{kind, value}`, display, `nameOnly`, origin, `agentDecidable`, source `{id, title, path}`, ≤10 candidate summaries (id, name, path, organizations ≤3, emailCount, keyKinds, aliases ≤5, linkCount, live, mergedInto) |
-| `prism_people_review_context` | read | ro, rw | `id` | the row; source `{id, path, title, kinds, updatedAt, metadata (≤15 keys, ≤300 chars each), linkCount, excerpt ≤1,500 chars centred on the first mention}`; per candidate: summary + `emails` (≤5), `priorResolutionsOfThisKey`, `sameRelationshipLinks`, `sharedNeighbours {count, ids ≤10}`, `alreadyLinked`; `decide {agentDecidable, ownerOnly?, addIdentityAllowed}` |
-| `prism_people_review_decide` | write | rw | `id`, `decision` resolve/dismiss, `person_id` (resolve), `add_identity` (false), `rationale` 12–600 chars | resolve: `{ok, personId, linked, alreadyLinked, stillOpen, conflicts, noStamp, missing, errors, identityAdded, identitySkipped, decisionId, remainingToday}`; dismiss: `{ok, dismissed, decisionId, remainingToday}` |
-| `prism_people_duplicates` | read | ro, rw | `strength?`, `limit` 1–50 (20), `offset` | `{pairs (+ recommendation \| null), total, counts, next, openRecommendations}` — evidence KINDS only |
-| `prism_people_recommend_merge` | write | rw | `person_ids` [a, b], `canonical_id`, `rationale`, `confidence` 0–1 | `{ok, result: created/refreshed/closed, merged: false, recommendation, pair, remainingToday}` |
-| `prism_people_file_review` | write | rw | `source_note_id`, `relationship` (messages-with, email-from, email-to, attended-by, assigned-to), `key {kind: name/email/matrix/telegram/phone, value}`, `display?`, `candidate_ids` ≤5, `rationale` | `{ok, result: created/refreshed/closed/full, remainingToday}` — inserts a queue row, reason `agent-flagged` (or `agent-unmatched` with no candidates), origin `agent:mcp` |
-| `prism_people_link_status` | read | ro, rw | — | queue `{open {total, byReason, byRelationship, oldestAt, olderThan7d, olderThan30d}, closedLastDay}`, `queueCapacity`, `agentActionsLastDay`, `allowance` per budget `{limit, used, remaining}`, `duplicates` counts (null if unknown), `openMergeRecommendations`, `lastJob`, `lastJobPlan` (per-phase planned counts while the server still holds the job), `running` |
+| `prism_people_review_queue` | read | graph | `reason?`, `relationship?`, `source_kind?` (email/thread/meeting/task/person), `limit` 1–25 (10), `after?`, `include_titles` (true) | `{rows, next, open}`; a row = id, reason, relationship, sourceKind, key `{kind, value}`, display, `nameOnly`, origin, `agentDecidable`, source `{id, title, path}`, ≤10 summaries of the SYSTEM's candidates (id, name, path, organizations ≤3, emailCount, keyKinds, aliases ≤5, linkCount, live, mergedInto) |
+| `prism_people_review_context` | read | graph | `id` | the row; source `{id, path, kinds, updatedAt, linkCount, untrusted_source: {notice, title, metadata (≤15 keys, ≤300 chars each), excerpt ≤1,500 chars centred on the first mention}}` — everything the source's authors wrote is inside `untrusted_source`; per candidate: summary + `emails` (≤5), `priorResolutionsOfThisKey`, `sameRelationshipLinks`, `sharedNeighbours {count, ids ≤10}`, `alreadyLinked`; `decide {agentDecidable, ownerOnly?, addIdentityAllowed}` |
+| `prism_people_review_decide` | write | graph | `id`, `decision` resolve/dismiss, `person_id` (resolve), `add_identity` (false), `rationale` 12–600 chars, `expect_updated_at?` (the source version reviewed) | resolve: `{ok, personId, linked, alreadyLinked, stillOpen, conflicts, noStamp, missing, errors, identityAdded, identitySkipped, decisionId, remainingToday}`; dismiss: `{ok, dismissed, decisionId, remainingToday}` |
+| `prism_people_duplicates` | read | graph | `strength?`, `limit` 1–50 (20), `offset` | `{pairs (+ recommendation \| null), total, counts, next, openRecommendations}` — evidence KINDS only |
+| `prism_people_recommend_merge` | write | graph | `person_ids` [a, b], `canonical_id`, `rationale`, `confidence` 0–1 | `{ok, result: created/refreshed/closed, merged: false, recommendation, pair, remainingToday}` |
+| `prism_people_file_review` | write | graph | `source_note_id`, `relationship` (messages-with, email-from, email-to, attended-by, assigned-to), `key {kind: name/email/matrix/telegram/phone, value}`, `display?`, `candidate_ids` ≤5, `rationale` | `{ok, result: created/refreshed/closed/exists/full, remainingToday}` — inserts a queue row, reason `agent-flagged` (or `agent-unmatched` with no candidates), origin `agent:mcp`; `exists` = the server already queued this exact question, left untouched |
+| `prism_people_link_status` | read | graph | — | queue `{open {total, byReason, byRelationship, oldestAt, olderThan7d, olderThan30d}, closedLastDay}`, `queueCapacity {system, agentFiled}`, `agentActionsLastDay`, `allowance` per budget `{limit, used, remaining, account {limit, used}}`, `duplicates` counts (null if unknown), `openMergeRecommendations`, `lastJob`, `lastJobPlan` (per-phase planned counts while the server still holds the job), `running` |
 
 **Who.** Server owner by email, the admin router's rule. For everyone else
 (vault admins, vault-role owners, members, guests) the tools are absent from
@@ -411,23 +417,41 @@ and lock, CAS, directed-edge check and the audit row stay in one place.
 **What an agent cannot do** (each refused, each tested in `test/mcp-people.test.ts`):
 
 - decide more than one row per call — no `applyToKey`;
-- resolve to a person who is not one of the row's `candidateIds`;
-- `add_identity: true` on name-only evidence (key kind `name`, or reason
-  `name-only` / `single-token-name` / `ambiguous-name`) → `invalid_request`;
+- change a row it did not file: filing a question a backfill/ingest row already
+  asks returns `exists` and changes nothing (review H1). Every row also keeps
+  the SYSTEM's view in `system_candidate_ids` / `system_reason` (written only
+  by non-agent origins; existing rows are backfilled on start), and agent
+  decisions are judged against those, never the mutable fields;
+- resolve to a person who is not one of the row's SYSTEM candidates;
+- resolve to a candidate that has since been merged away unless its canonical
+  is itself a system candidate → `conflict` `candidate_changed` (L2);
+- `add_identity: true` on name-only evidence (key kind `name`, or the system
+  reason `name-only` / `single-token-name` / `ambiguous-name`) → `invalid_request`;
 - decide a `tombstone-unresolved` row (it writes `merged_into`) or a row an
   agent filed (origin `agent:*`) → `forbidden`, owner only;
 - merge: `recommend_merge` writes one SQLite row and nothing to the vault;
   the merge route still refuses an agent origin;
-- exceed the per-credential caps (rolling 24 h): `PEOPLE_AGENT_DECISIONS_PER_DAY`
+- exceed the caps (rolling 24 h), per credential: `PEOPLE_AGENT_DECISIONS_PER_DAY`
   (200, resolve + dismiss), `PEOPLE_AGENT_FILES_PER_DAY` (50),
-  `PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY` (50) → `rate_limited`,
-  `detail {reason: "daily_cap", budget, limit, used}`. Hosted agent turns mint
-  a new PAT per turn, so all of them share one bucket per account.
+  `PEOPLE_AGENT_RECOMMENDATIONS_PER_DAY` (50); and per account across all its
+  credentials: `PEOPLE_AGENT_ACCOUNT_DECISIONS_PER_DAY` (400),
+  `…_ACCOUNT_FILES_PER_DAY` (100), `…_ACCOUNT_RECOMMENDATIONS_PER_DAY` (100)
+  → `rate_limited`, `detail {reason: "daily_cap", scope: credential|account,
+  budget, limit, used}`. Hosted agent turns mint a new PAT per turn, so all of
+  them share one bucket per account. The check and the ledger reservation
+  happen with no `await` between them, so parallel calls cannot overrun a cap
+  (review M1);
+- crowd out ingest: agent-filed open rows have their own cap
+  (`PEOPLE_QUEUE_MAX_AGENT_OPEN`, 100; 0 = agents cannot file) and are not
+  counted against `PEOPLE_QUEUE_MAX_OPEN`, which now counts system rows only
+  (review M2).
 
 **Errors.** `not_found` (row, person, source); `conflict` with
 `detail.reason`: `busy` (+ `retry: true`, `holder`) while the job, a merge or
-another decision holds the people lock — a busy attempt costs no allowance —
-or `not_open`; a stale source is not an error: `stillOpen: true`,
+another decision holds the people lock — a busy attempt costs no allowance —,
+`not_open`, `candidate_changed`, or `source_changed` (with
+`expect_updated_at`: the note is not the version reviewed; nothing written);
+without `expect_updated_at`, a stale source is not an error: `stillOpen: true`,
 `conflicts: 1`, nothing forced, the row stays open; `upstream_error` when the
 people listing is unavailable.
 
@@ -439,18 +463,26 @@ Recommendations audit as `agent.people-merge-recommend`, filed rows as
 `agent.people-review-file`. The rationale text lives only in the decision
 ledger `people_agent_decisions` (created by `src/people-agent-store.ts`), which
 also backs the caps. Recommendations live in `people_merge_recommendations`
-(one per pair; an owner-dismissed or merged pair stays closed).
+(one per pair; an owner-dismissed or merged pair stays closed). Retention
+(`PEOPLE_AGENT_RETENTION_DAYS`, 180): ledger rows and CLOSED recommendations
+older than that are pruned (at most hourly, from the agent write path).
+Untrusted content: `review_context` wraps author-written text in
+`untrusted_source`, and the context / decide / file tool descriptions say it
+may contain instructions and is data only (L1).
 
 **Owner routes added** (on the admin router, same gate + CSRF):
 
-- `GET /duplicates` gains an additive `recommendations` array (open, ≤100:
+- `GET /duplicates` gains additive `recommendations` (open, the NEWEST 100) and
+  `recommendationsTotal` (`recommendations` entries:
   `{id, personIds, canonicalId, rationale, confidence, detected, status,
   credentialId, …}`). `rationale` is agent-written free text — render it as
   text.
 - `POST /recommendations/:id/dismiss` → `{ok}` / 404.
 - `GET /agent/decisions?limit=1..200&before=<id>` → `{decisions, next}` (the
   ledger, newest first).
-- A completed write merge closes the pair's recommendation (`merged`).
+- A completed write merge closes the pair's recommendation (`merged`) and
+  every other open recommendation involving the merged-away note (`obsolete`).
+- `GET /candidates` rows gain `systemCandidateIds` / `systemReason` (additive).
 
 ### People directory (owner decision 5)
 

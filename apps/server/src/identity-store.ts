@@ -52,6 +52,25 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS identity_candidates_key ON identity_candidates (vault_identity, key_kind, key_hash, status);
 `);
 
+/*
+ * The SYSTEM's view of a row, immutable to agents: the candidate set and the
+ * reason the matcher / an ingester proposed. Only a non-agent origin writes
+ * these columns (on insert and on its own refreshes); an agent filing never
+ * does. Agent decisions are judged against them, never against the mutable
+ * `candidate_ids` / `reason` (review H1). Added by migration so a table created
+ * by an earlier build gains them; rows that predate them are system rows (the
+ * agent tools did not exist yet) and are backfilled from the current values.
+ */
+{
+  const cols = new Set((db.prepare("PRAGMA table_info(identity_candidates)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has("system_candidate_ids")) db.exec("ALTER TABLE identity_candidates ADD COLUMN system_candidate_ids TEXT");
+  if (!cols.has("system_reason")) db.exec("ALTER TABLE identity_candidates ADD COLUMN system_reason TEXT");
+  db.exec("UPDATE identity_candidates SET system_candidate_ids = candidate_ids, system_reason = reason WHERE system_candidate_ids IS NULL AND origin NOT LIKE 'agent:%'");
+}
+
+/** Rows an agent filed through Prism MCP (`agent:*`): owner-decided, separately capped. */
+export const isAgentOrigin = (origin: string): boolean => origin.startsWith("agent:");
+
 export type CandidateStatus = "open" | "resolved" | "dismissed";
 const STATUSES: CandidateStatus[] = ["open", "resolved", "dismissed"];
 export const isCandidateStatus = (s: unknown): s is CandidateStatus => typeof s === "string" && (STATUSES as string[]).includes(s);
@@ -66,7 +85,10 @@ export interface IdentityCandidate {
   display: string | null;
   candidateIds: string[];
   reason: string;
-  /** Who queued it: `backfill:<phase>` or `ingest:<source>`. */
+  /** What the SYSTEM proposed (null on an agent-filed row) — agents are judged against these, never the mutable fields. */
+  systemCandidateIds: string[] | null;
+  systemReason: string | null;
+  /** Who queued it: `backfill:<phase>`, `ingest:<source>` or `agent:mcp`. */
   origin: string;
   status: CandidateStatus;
   resolvedPersonId: string | null;
@@ -86,6 +108,8 @@ interface Row {
   display: string | null;
   candidate_ids: string;
   reason: string;
+  system_candidate_ids: string | null;
+  system_reason: string | null;
   origin: string;
   status: CandidateStatus;
   resolved_person_id: string | null;
@@ -104,14 +128,18 @@ export function vaultIdentity(vaultId: string): string {
 
 export const keyHash = (kind: string, value: string): string => sha(`${kind}\u0000${value}`);
 
-function fromRow(r: Row): IdentityCandidate {
-  let candidateIds: string[] = [];
+function idList(raw: string | null): string[] {
+  if (raw === null) return [];
   try {
-    const v = JSON.parse(r.candidate_ids) as unknown;
-    if (Array.isArray(v)) candidateIds = v.filter((x): x is string => typeof x === "string");
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
-    /* an unreadable list is an empty list */
+    return []; // an unreadable list is an empty list
   }
+}
+
+function fromRow(r: Row): IdentityCandidate {
+  const candidateIds = idList(r.candidate_ids);
   return {
     id: r.id,
     vaultId: r.vault_id,
@@ -121,6 +149,8 @@ function fromRow(r: Row): IdentityCandidate {
     display: r.display,
     candidateIds,
     reason: r.reason,
+    systemCandidateIds: r.system_candidate_ids === null ? null : idList(r.system_candidate_ids),
+    systemReason: r.system_reason,
     origin: r.origin,
     status: r.status,
     resolvedPersonId: r.resolved_person_id,
@@ -147,31 +177,46 @@ const MAX_CANDIDATES = 20;
 /**
  * Queue (or refresh) one candidate. Returns what happened: `created`, `refreshed`
  * (an OPEN row got the latest candidate list), `closed` (the owner already
- * resolved/dismissed this exact source + key — it stays closed, untouched) or
- * `full` (the vault already holds PEOPLE_QUEUE_MAX_OPEN open rows — not inserted).
+ * resolved/dismissed this exact source + key — it stays closed, untouched),
+ * `exists` (an AGENT tried to file a question a non-agent row already asks — it
+ * is left exactly as it is: an agent never modifies a row it did not file) or
+ * `full` (the open-row cap for this origin class is reached — not inserted).
+ *
+ * Caps: system rows (backfill / ingest) are capped by PEOPLE_QUEUE_MAX_OPEN,
+ * counting system rows only; agent-filed rows have their own, smaller
+ * PEOPLE_QUEUE_MAX_AGENT_OPEN, so agents can never crowd out real ingest rows.
  */
-export function enqueueCandidate(c: CandidateInput, now = Date.now(), maxOpen = config.peopleQueueMaxOpen): "created" | "refreshed" | "closed" | "full" {
+export function enqueueCandidate(c: CandidateInput, now = Date.now(), maxOpen = config.peopleQueueMaxOpen, maxAgentOpen = config.peopleQueueMaxAgentOpen): "created" | "refreshed" | "closed" | "exists" | "full" {
   const value = c.key.value.slice(0, MAX_VALUE);
   const identity = vaultIdentity(c.vaultId);
   const hash = keyHash(c.key.kind, value);
+  const agent = isAgentOrigin(c.origin);
   const existing = db
-    .prepare("SELECT id, status FROM identity_candidates WHERE vault_identity = ? AND source_note_id = ? AND relationship = ? AND key_kind = ? AND key_hash = ?")
-    .get(identity, c.sourceNoteId, c.relationship, c.key.kind, hash) as { id: string; status: CandidateStatus } | undefined;
+    .prepare("SELECT id, status, origin FROM identity_candidates WHERE vault_identity = ? AND source_note_id = ? AND relationship = ? AND key_kind = ? AND key_hash = ?")
+    .get(identity, c.sourceNoteId, c.relationship, c.key.kind, hash) as { id: string; status: CandidateStatus; origin: string } | undefined;
   const ids = JSON.stringify([...new Set(c.candidateIds)].sort().slice(0, MAX_CANDIDATES));
   if (existing) {
     if (existing.status !== "open") return "closed";
-    db.prepare("UPDATE identity_candidates SET candidate_ids = ?, reason = ?, display = COALESCE(?, display), updated_at = ? WHERE id = ?").run(ids, c.reason, c.display?.slice(0, MAX_VALUE) ?? null, now, existing.id);
+    if (agent && !isAgentOrigin(existing.origin)) return "exists"; // review H1
+    if (agent) db.prepare("UPDATE identity_candidates SET candidate_ids = ?, reason = ?, display = COALESCE(?, display), updated_at = ? WHERE id = ?").run(ids, c.reason, c.display?.slice(0, MAX_VALUE) ?? null, now, existing.id);
+    else
+      db.prepare("UPDATE identity_candidates SET candidate_ids = ?, reason = ?, system_candidate_ids = ?, system_reason = ?, display = COALESCE(?, display), updated_at = ? WHERE id = ?").run(
+        ids, c.reason, ids, c.reason, c.display?.slice(0, MAX_VALUE) ?? null, now, existing.id,
+      );
     return "refreshed";
   }
   // A bounded to-do list: past the cap nothing new is inserted (existing rows still refresh).
-  if (maxOpen > 0) {
-    const open = (db.prepare("SELECT count(*) n FROM identity_candidates WHERE vault_identity = ? AND status = 'open'").get(identity) as { n: number }).n;
-    if (open >= maxOpen) return "full";
+  const cap = agent ? maxAgentOpen : maxOpen;
+  if (agent || cap > 0) {
+    const open = (
+      db.prepare(`SELECT count(*) n FROM identity_candidates WHERE vault_identity = ? AND status = 'open' AND (origin LIKE 'agent:%') = ?`).get(identity, agent ? 1 : 0) as { n: number }
+    ).n;
+    if (open >= cap) return "full";
   }
   db.prepare(
-    `INSERT INTO identity_candidates (id, vault_id, vault_identity, source_note_id, relationship, key_kind, key_hash, key_value, display, candidate_ids, reason, origin, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
-  ).run(randomUUID(), c.vaultId, identity, c.sourceNoteId, c.relationship, c.key.kind, hash, value, c.display?.slice(0, MAX_VALUE) ?? null, ids, c.reason, c.origin.slice(0, 64), now, now);
+    `INSERT INTO identity_candidates (id, vault_id, vault_identity, source_note_id, relationship, key_kind, key_hash, key_value, display, candidate_ids, reason, system_candidate_ids, system_reason, origin, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+  ).run(randomUUID(), c.vaultId, identity, c.sourceNoteId, c.relationship, c.key.kind, hash, value, c.display?.slice(0, MAX_VALUE) ?? null, ids, c.reason, agent ? null : ids, agent ? null : c.reason, c.origin.slice(0, 64), now, now);
   return "created";
 }
 
