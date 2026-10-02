@@ -157,3 +157,11 @@ Four owner-private fixtures under `_test/prism-canvas-relations-20261001/` exerc
 Focused canvas fits 390×844. Inspection found a 300ms global background transition briefly exposing the underlying header; the opaque background is correct after settling, and the follow-up disables that transition for focus mode. The prepared a3ea838 native bundle passes packaged tests but is not installed. Installed 0495e07 remains intact. macOS reports Accessibility trusted but screenLocked=1, preventing actual native window inspection; this is recorded as pending, not a native acceptance pass.
 
 Conservative reconciliation retains edges after an unobserved source revision rather than deleting a possible manual contribution. Canvas-deletion claim cleanup, reviewed orphan cleanup, large-scene performance and real two-human/offline journeys remain open.
+
+### Workspace continuity — da5037b
+
+All 156 browser journeys and six packaged Chromium/WebKit checks pass. Core/web/server/legacy desktop/e2e typechecks and web/macOS release builds pass. This client-only release did not restart the server. The previous web is backed up at `/private/tmp/prism-release-before-da5037b/web`; old hashed assets are retained. Public health reports server/vault healthy. Authenticated PWA activated index-iZ8SbAFM.js.
+
+Actual production UI opened the existing private board task and relationship canvas B, selected the Agent panel, then reloaded. Both tabs, the active canvas and Agent selection reopened. The persisted navigation record contains only the five expected navigation fields, with no title/body. At 390×844 a second reload reopened the same canvas without a covering document panel and with no horizontal overflow. Focus canvas immediately has an opaque background, zero transition and exact viewport bounds; `/tmp/prism-session-canvas-production-mobile.png` reviewed. Independent canvas readback confirms no added claims/jobs and unchanged bodies/private metadata; the manual canonical edge is retained.
+
+The native da5037b bundle is built and packaged checks pass, but it is not installed. Applications remains 0495e07 while the Mac is locked. Actual desktop batch acceptance remains pending; work continues independently.
