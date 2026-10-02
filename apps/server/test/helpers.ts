@@ -15,6 +15,7 @@ import type { Level } from "../src/permissions";
 import { signCapability } from "../src/auth/capability";
 import { randomBytes } from "node:crypto";
 import { config } from "../src/config";
+import { TRANSCRIPT_LINK_TABLES } from "../src/transcript-links-store";
 
 // SAFETY GUARD (load-time): the test harness TRUNCATES tables (resetDb). It must
 // NEVER run against a real on-disk database. Tests are meant to run with
@@ -332,7 +333,8 @@ export function resetDb(): void {
       "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +
       "DELETE FROM push_subscriptions; DELETE FROM agent_policy_audit; DELETE FROM agent_followups; DELETE FROM agent_events; DELETE FROM agent_turns; DELETE FROM agent_cost_log; DELETE FROM agent_sessions;" +
       "DELETE FROM mcp_pats; DELETE FROM action_audit; DELETE FROM action_idempotency;" +
-      "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;",
+      "DELETE FROM github_sync_configs; DELETE FROM notion_db_sync_configs; DELETE FROM sync_audit;" +
+      TRANSCRIPT_LINK_TABLES.map((t) => `DELETE FROM ${t};`).join(" "),
   );
 }
 
