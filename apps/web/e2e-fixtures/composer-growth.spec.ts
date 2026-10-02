@@ -76,3 +76,15 @@ test("composition Enter never sends and Shift+Enter grows the current draft",asy
  await expect(input).toHaveValue("Draft under composition\n\n");
  expect(await page.evaluate(()=>(window as any).prismMessagesFixture.attempts)).toBe(0);
 });
+test("typing beyond the height cap follows the caret while middle edits retain their position",async({page})=>{
+ await page.setViewportSize({width:390,height:900});await page.goto("/e2e-fixtures/messages.html");
+ const input=page.getByRole("textbox",{name:"Message",exact:true});
+ await input.fill(long);await input.press("ControlOrMeta+End");
+ for(let i=0;i<5;i++){await input.press("Shift+Enter");await input.pressSequentially(`Added detail ${i}`);}
+ await expect.poll(()=>input.evaluate(el=>el.scrollHeight-el.clientHeight-el.scrollTop)).toBeLessThan(25);
+ const middle=await input.evaluate(el=>{const field=el as HTMLTextAreaElement;const at=field.value.indexOf("Draft line 9:");field.setSelectionRange(at,at);field.scrollTop=field.scrollHeight/2-field.clientHeight/2;return {at,top:field.scrollTop};});
+ await input.pressSequentially("Edited ");
+ expect(await input.evaluate(el=>(el as HTMLTextAreaElement).selectionStart)).toBe(middle.at+7);
+ expect(Math.abs(await input.evaluate(el=>el.scrollTop)-middle.top)).toBeLessThan(50);
+ await expect.poll(()=>height(input)).toBe(160);
+});

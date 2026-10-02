@@ -22,14 +22,20 @@ import {
   threadStatus,
 } from "../../lib/messages/triage";
 
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+
 export default function MessageRenderer({ note, readOnly }: RendererProps) {
   const actionClient = useLiveActionsClient();
+  const vaultClient = useVaultClient();
+  const actorScope = useAgentChatStore(state => state.scope);
+  const vaultScope = vaultClient.scope?.() || null;
   const scope = actionClient?.scope?.() || null;
   return (
     <ScopedMessageRenderer
-      key={JSON.stringify([scope, note.id])}
+      key={JSON.stringify([scope, actorScope, vaultScope, note.id])}
       note={note}
       scope={scope}
+      readingAudience={(scope || actorScope) && vaultScope ? JSON.stringify([actorScope, scope, vaultScope]) : undefined}
       readOnly={readOnly}
     />
   );
@@ -39,7 +45,8 @@ function ScopedMessageRenderer({
   note,
   scope,
   readOnly,
-}: Pick<RendererProps, "note" | "readOnly"> & { scope: string | null }) {
+  readingAudience,
+}: Pick<RendererProps, "note" | "readOnly"> & { scope: string | null; readingAudience?: string }) {
   const vault = useVaultClient();
   const meta = note.metadata as Record<string, unknown> | null;
   const roomId =
@@ -260,6 +267,7 @@ function ScopedMessageRenderer({
       <MessageThread
         key={showLive ? "live" : "saved"}
         messages={messages}
+        readingIdentity={readingAudience ? {audience:readingAudience,conversation:JSON.stringify([note.id,platform,roomId,showLive ? "live" : "saved"])} : undefined}
         hasMore={more}
         isLoadingMore={showLive && liveQuery.isFetchingNextPage}
         onLoadMore={() => {
