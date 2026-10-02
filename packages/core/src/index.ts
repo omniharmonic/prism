@@ -231,3 +231,5 @@ export { useAgentDocumentSnapshot } from "./lib/agent/documentSnapshots";
 export type { MatrixMessage, MessageBatch } from "./lib/matrix/types";
 
 export { PublicationPreviewProvider, type PublicationPreviewProps } from "./data/PublicationPreviewContext";
+
+export { TranscriptReviewClientProvider, useTranscriptReviewClient, type TranscriptReviewClient, type TranscriptReview, type TranscriptReviewItem, type TranscriptCandidate, type TranscriptDecision } from "./data/TranscriptReviewClientContext";
