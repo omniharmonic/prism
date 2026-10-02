@@ -1,10 +1,12 @@
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import DocumentRenderer from "../../../packages/core/src/components/renderers/DocumentRenderer";
+import { CollabDoc } from "../src/collab/CollabDoc";
 import { useAgentDocumentSnapshot } from "../../../packages/core/src/lib/agent/documentSnapshots";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AgentClientProvider, VaultClientProvider, createHttpAgentClient, useAgentChatStore, useUIStore, type VaultClient, type Note, type AgentClient, type AgentSession, type AgentPermissionMode } from "@prism/core";
+import { PlatformProvider, AgentClientProvider, VaultClientProvider, createHttpAgentClient, useAgentChatStore, useUIStore, type VaultClient, type Note, type AgentClient, type AgentSession, type AgentPermissionMode } from "@prism/core";
 import { fetchMe, agentScope, setActiveVault, setActiveWorkspace } from "../src/config";
 import { httpAgentClient } from "../src/agent/HttpAgentClient";
 import { useAgentConversation } from "../../../packages/core/src/lib/agent/useAgentConversation";
@@ -13,6 +15,7 @@ import { AgentMarkdown } from "../../../packages/core/src/components/agent/Agent
 
 const queueFixture = new URLSearchParams(location.search).has("queue");
 const retryFixture = new URLSearchParams(location.search).has("retry");
+const selectionFixture = new URLSearchParams(location.search).has("selection");
 const snapshotFixture = new URLSearchParams(location.search).has("snapshots");
 const attachmentsFixture = new URLSearchParams(location.search).has("attachments") || snapshotFixture;
 const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture || attachmentsFixture || queueFixture;
@@ -20,7 +23,7 @@ const contextFixture = new URLSearchParams(location.search).has("context");
 const visualFixture = new URLSearchParams(location.search).has("visual");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
-const vault = { search: async (query: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return [fixtureNote("document-b")].filter((note) => note.path?.toLowerCase().includes(query.toLowerCase())); }, getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
+const vault = { listNotes: async () => [fixtureNote("document-a"), fixtureNote("document-b")], getLinks: async () => [], updateNote: async (id: string, changes: Partial<Note>) => ({ ...fixtureNote(id), ...changes }), search: async (query: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return [fixtureNote("document-b")].filter((note) => note.path?.toLowerCase().includes(query.toLowerCase())); }, getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as unknown as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
 const controls = { listFails: new URLSearchParams(location.search).has("list-error"), attempts: 0, turnAttempts: 0, reject: !permissionsFixture, queueAttempts:0, loseQueueResponse:false, rejectQueueChange:false, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
 const limitsReady = new Promise<void>((resolve) => { controls.releaseLimits = resolve; if (!new URLSearchParams(location.search).has("slow-limits")) resolve(); });
@@ -65,7 +68,7 @@ const client: AgentClient = {
     if(change.action==='resume'){row.permissionMode=session.permission_mode;row.error=null;}
     row.version++;persistQueue();return {followup:{...row}};
   },
-  scope: () => scope,
+  scope: () => new URLSearchParams(location.search).has("collab") ? agentScope() ?? "" : scope,
   createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (retryFixture) acceptRetryRequest("session", params?.requestId); session.note_id = params?.noteId ?? null; if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
   listSessions: async (options) => {
     if (options?.limit === 50 && controls.listFails) throw Error("Fixture session list unavailable");
@@ -111,6 +114,12 @@ function SnapshotEditor() {
   useAgentDocumentSnapshot(editor,"document-a","Draft brief","2026-10-01T10:00:00Z");
   return <section aria-label="Working document" className="max-h-32 shrink-0 overflow-auto border-b p-3"><EditorContent editor={editor}/></section>;
 }
+function SelectionDocument() {
+  const [note] = useState(() => ({ ...fixtureNote("document-a"), content: "<h2>Working draft</h2><p>Initial captured draft.</p>" }));
+  return <section aria-label="Working document" style={{ height: "48vh", minHeight: 280, flexShrink: 0, overflow: "auto" }}>
+    <PlatformProvider value="web">{new URLSearchParams(location.search).has("collab") ? <CollabDoc noteId="document-a" /> : <DocumentRenderer note={note} readOnly={new URLSearchParams(location.search).has("view")} />}</PlatformProvider>
+  </section>;
+}
 function Fixture() {
   const [visible, setVisible] = useState(true);
   const [, update] = useState(0);
@@ -119,7 +128,7 @@ function Fixture() {
   return <QueryClientProvider client={query}><VaultClientProvider client={vault}><AgentClientProvider client={client}>
     <div style={{ height: "100dvh", maxWidth: visualFixture ? undefined : historyFixture ? 1040 : 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
-      {snapshotFixture && <SnapshotEditor/>}
+      {selectionFixture ? <SelectionDocument/> : snapshotFixture && <SnapshotEditor/>}
       {contextFixture && <button onClick={() => useUIStore.getState().openTab("document-b", "Reference note", "document")}>Open reference</button>}
       {new URLSearchParams(location.search).has("markdown") ? <MarkdownProbe /> : new URLSearchParams(location.search).has("budget") ? <BudgetProbe /> : visible && ((contextFixture && expanded) || historyFixture ? <AgentChat note={fixtureNote("agent-chat")} /> : <AgentPanelChat client={client} />)}
     </div>

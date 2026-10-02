@@ -5,3 +5,6 @@
 .document-selection-actions button[aria-pressed=true] { background: var(--glass-active); color: var(--text-primary); }
 .document-selection-actions button:disabled { opacity: .5; cursor: default; }
 @media (max-width:767px) { .document-selection-actions button, .cd-bubble button { min-height: 44px; min-width: 44px; } }
+
+.cd-bubble:has([aria-label="Ask agent about selection"]) { flex-wrap: wrap; max-width: calc(100vw - 24px); }
+.cd-bubble button[aria-pressed=true] { background: var(--glass-active); }
