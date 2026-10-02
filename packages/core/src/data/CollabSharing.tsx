@@ -1,3 +1,4 @@
+import type { PublicationNavigation } from "../lib/publishing/navigation";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 export type ShareLevel = "view" | "comment" | "suggest" | "edit";
@@ -193,6 +194,7 @@ export interface SetPersonResult {
  *  URL and colors are applied as CSS values (validated again at render — these
  *  are owner-set but shown on a PUBLIC page, so never injected as raw HTML). */
 export interface PublicationTheme {
+  navigation?: PublicationNavigation;
   /** http(s) URL of a logo shown in the public site header. */
   logoUrl?: string;
   /** Accent color (links, active states) — any valid CSS color. */

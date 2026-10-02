@@ -1,3 +1,5 @@
+import { PublicationNavigationEditor } from "./PublicationNavigationEditor";
+import { parsePublicationNavigation } from "../../../../lib/publishing/navigation";
 import { Eye, Globe, FileText } from "lucide-react";
 import "./publishing-studio.css";
 import { Suspense, useEffect, useRef, useState } from "react";
@@ -89,6 +91,14 @@ export function PresentationDraft({
     revision?: number,
   ) {
     if (!state || !draft || lock.current) return;
+    if (action === "save" && draft.theme?.navigation && !parsePublicationNavigation(draft.theme.navigation)) {
+      setError("Name every navigation section. Use up to 8 sections and 64 unique eligible pages.");
+      return;
+    }
+    if (action === "save" && draft.theme && new TextEncoder().encode(JSON.stringify(draft.theme)).length > 4096) {
+      setError("Site settings exceed the 4 KB limit. Shorten navigation labels or image URLs, or use fewer navigation pages. Your draft is still here.");
+      return;
+    }
     lock.current = true;
     setBusy(true);
     setError("");
@@ -364,6 +374,20 @@ export function PresentationDraft({
                     </label>
                   ))}
                 </div>
+                {sharing.previewPublication && (
+                  <PublicationNavigationEditor
+                    key={pub.slug}
+                    slug={pub.slug}
+                    sharing={sharing}
+                    value={draft.theme?.navigation}
+                    onChange={(navigation) => {
+                      const next = { ...draft.theme };
+                      if (navigation) next.navigation = navigation;
+                      else delete next.navigation;
+                      update({ theme: next });
+                    }}
+                  />
+                )}
               </fieldset>
               <div className="prism-site-revisions">
                 <div>

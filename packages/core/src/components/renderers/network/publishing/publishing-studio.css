@@ -183,3 +183,66 @@
 .prism-site-studio-settings .prism-site-revisions > div {
   flex-wrap: wrap;
 }
+
+.prism-site-navigation {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--glass-border);
+}
+.prism-site-navigation h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.prism-site-navigation > div > p { line-height: 1.65; }
+.prism-site-navigation-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.prism-site-navigation-section {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass);
+}
+.prism-site-navigation-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.prism-site-navigation-tools button {
+  font-size: 11px;
+  padding-left: 7px;
+  padding-right: 7px;
+}
+.prism-site-navigation-page {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  border-top: 1px solid var(--glass-border);
+  padding: 4px 0;
+  font-size: 12px;
+}
+.prism-site-navigation-page > span { flex-basis: 100%; padding: 6px 0; }
+.prism-site-navigation-page > button { min-width: 36px; min-height: 36px; padding: 6px; }
+.prism-site-navigation-picker { position: relative; min-width: 0; }
+.prism-site-navigation-picker > svg {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+}
+.prism-site-navigation select {
+  appearance: none;
+  min-height: 44px;
+  padding-right: 32px;
+  font-size: 12px;
+}
