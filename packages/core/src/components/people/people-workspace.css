@@ -1,0 +1,329 @@
+.prism-people-workspace {
+  container-type: inline-size;
+  min-height: 100%;
+  color: var(--text-primary);
+}
+.prism-people-layout {
+  display: grid;
+  min-height: 100%;
+}
+.prism-people-directory {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 28px 18px 24px;
+  background: var(--bg-surface);
+}
+.prism-people-directory header {
+  padding: 0 10px 20px;
+}
+.prism-people-directory h1 {
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+.prism-people-directory header p {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.prism-people-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  min-height: 44px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+.prism-people-search:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.prism-people-search input {
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  font-size: 16px;
+  padding: 10px 0;
+  outline: none;
+  color: var(--text-primary);
+}
+.prism-people-list {
+  min-height: 100px;
+  max-height: min(62dvh, 700px);
+  overflow-y: auto;
+  margin: 16px -6px 24px;
+}
+.prism-people-row {
+  display: block;
+  width: 100%;
+  padding: 14px 12px;
+  border-radius: 8px;
+  text-align: left;
+}
+.prism-people-row:hover {
+  background: var(--glass-hover);
+}
+.prism-people-row[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+.prism-person-identity {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+.prism-person-identity .font-medium {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.prism-person-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  height: 42px;
+  width: 42px;
+  border-radius: 50%;
+  background: var(--glass-hover);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+.prism-person-avatar.is-large {
+  height: 74px;
+  width: 74px;
+  font-size: 26px;
+}
+.prism-people-identity-note {
+  display: flex;
+  gap: 10px;
+  margin-top: auto;
+  padding: 16px 12px;
+  border-radius: 8px;
+  background: var(--glass-hover);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.prism-people-identity-note > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.prism-people-identity-note span span {
+  color: var(--text-secondary);
+}
+.prism-people-profile {
+  display: none;
+  min-width: 0;
+  padding: 22px 20px 100px;
+}
+.prism-people-layout.has-selection .prism-people-directory {
+  display: none;
+}
+.prism-people-layout.has-selection .prism-people-profile {
+  display: block;
+}
+.prism-people-back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-accent);
+  font-size: 13px;
+  margin-bottom: 20px;
+  border-radius: 6px;
+}
+.prism-person-heading {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin: 0 0 30px;
+}
+.prism-person-heading h2 {
+  font-size: clamp(23px, 3cqw, 32px);
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+.prism-person-heading p {
+  font-size: 15px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.prism-person-properties {
+  border-top: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--glass-border);
+  padding: 12px 0;
+  margin-bottom: 24px;
+}
+.prism-person-properties > summary {
+  min-height: 44px;
+  padding: 10px 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+.prism-person-property {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+.prism-person-property > span {
+  color: var(--text-secondary);
+}
+.prism-person-property dl {
+  min-width: 0;
+}
+.prism-person-property dl > div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.prism-person-property dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  overflow-wrap: anywhere;
+}
+.prism-person-property dt svg {
+  flex-shrink: 0;
+}
+.prism-person-property dd {
+  overflow-wrap: anywhere;
+}
+.prism-people-link {
+  display: inline-flex;
+  min-height: 36px;
+  width: fit-content;
+  gap: 8px;
+  align-items: center;
+  color: var(--color-accent);
+  border-radius: 4px;
+}
+.prism-person-categories {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--glass-border);
+  scrollbar-width: thin;
+}
+.prism-person-categories button {
+  flex-shrink: 0;
+  min-height: 46px;
+  padding: 10px 2px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.prism-person-categories button[aria-pressed="true"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.prism-person-record {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 17px;
+  align-items: start;
+  width: 100%;
+  gap: 14px;
+  padding: 22px 2px;
+  border-bottom: 1px solid var(--glass-border);
+  text-align: left;
+}
+.prism-person-record:hover {
+  background: var(--glass-hover);
+}
+.prism-person-record > svg {
+  color: var(--text-secondary);
+  margin-top: 9px;
+}
+.prism-person-record-icon {
+  display: flex;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  border-radius: 50%;
+  color: var(--color-accent);
+}
+.prism-person-record-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.prism-person-record-meta,
+.prism-person-record-path {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.prism-person-record-path {
+  color: var(--text-muted);
+}
+.prism-people-empty {
+  padding: 24px 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.prism-people-empty h2 {
+  margin: 12px 0 4px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.prism-people-empty button {
+  display: block;
+  margin-top: 14px;
+}
+.prism-people-welcome {
+  max-width: 360px;
+  margin: 100px auto;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.prism-people-welcome svg {
+  margin: 0 auto 20px;
+}
+.prism-people-welcome h2 {
+  font-size: 21px;
+  color: var(--text-primary);
+  font-weight: 550;
+}
+.prism-people-welcome p {
+  font-size: 14px;
+  margin-top: 10px;
+  line-height: 1.6;
+}
+@container (min-width: 720px) {
+  .prism-people-layout {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+  .prism-people-layout.has-selection .prism-people-directory {
+    display: flex;
+  }
+  .prism-people-directory {
+    border-right: 1px solid var(--glass-border);
+  }
+  .prism-people-profile {
+    display: block;
+    padding: 30px clamp(24px, 4cqw, 64px) 100px;
+  }
+  .prism-person-property {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+}

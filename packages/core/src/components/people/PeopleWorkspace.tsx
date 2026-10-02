@@ -4,16 +4,21 @@ import {
   ArrowLeft,
   ArrowUpRight,
   Search,
-  UserRound,
+  CalendarDays,
+  CheckSquare,
+  ChevronRight,
+  FileText,
+  Mail,
+  MessageSquare,
   Users,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
-import type { ContentType } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useScopedDraft } from "../../lib/drafts/useScopedDraft";
+import "./people-workspace.css";
 import type { PersonSummary } from "../../data/VaultClient";
 
 const control =
@@ -25,12 +30,27 @@ const labels = {
   notes: "Notes",
 };
 type Category = keyof typeof labels;
+function Initials({ name, large = false }: { name: string; large?: boolean }) {
+  const initials = name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => Array.from(word)[0])
+    .join("")
+    .toLocaleUpperCase();
+  return (
+    <span
+      aria-hidden="true"
+      className={`prism-person-avatar${large ? " is-large" : ""}`}
+    >
+      {initials || "?"}
+    </span>
+  );
+}
 function Identity({ person }: { person: PersonSummary }) {
   return (
-    <div className="flex min-w-0 items-center gap-3">
-      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--glass-hover)]">
-        <UserRound size={20} />
-      </span>
+    <div className="prism-person-identity">
+      <Initials name={person.name} />
       <span className="min-w-0">
         <span className="block truncate font-medium">{person.name}</span>
         <span className="block truncate text-xs text-[var(--text-secondary)]">
@@ -43,6 +63,12 @@ function Identity({ person }: { person: PersonSummary }) {
     </div>
   );
 }
+const recordIcons = {
+  conversations: MessageSquare,
+  meetings: CalendarDays,
+  tasks: CheckSquare,
+  notes: FileText,
+};
 export default function PeopleWorkspace(props: RendererProps) {
   const client = useVaultClient();
   const audience = useAgentChatStore((s) => s.scope);
@@ -56,7 +82,7 @@ export default function PeopleWorkspace(props: RendererProps) {
   );
 }
 function PeopleView({
-  id,
+  id: initialId,
   scope,
 }: {
   id: string | null;
@@ -64,6 +90,9 @@ function PeopleView({
 }) {
   const client = useVaultClient();
   const openTab = useUIStore((s) => s.openTab);
+  const [id, setId] = useState(initialId);
+  const returnTarget = useRef<HTMLButtonElement | null>(null);
+  const profileHeading = useRef<HTMLHeadingElement | null>(null);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<Category | "all">("all");
@@ -85,7 +114,7 @@ function PeopleView({
       return page;
     },
     getNextPageParam: (page) => page.next ?? undefined,
-    enabled: !id && !!client.listPeople,
+    enabled: !!client.listPeople,
     retry: false,
     staleTime: 0,
     gcTime: 0,
@@ -105,12 +134,14 @@ function PeopleView({
     staleTime: 0,
     gcTime: 0,
   });
-  const data = id ? profile : directory;
-  const refreshing = data.isFetching && !data.isFetchingNextPage;
-  const ready = !refreshing && !data.isError && current();
-  const person = ready ? profile.data?.pages[0]?.person : undefined;
+  const directoryReady = !directory.isFetching || directory.isFetchingNextPage;
+  const profileReady =
+    (!profile.isFetching || profile.isFetchingNextPage) &&
+    !profile.isError &&
+    current();
+  const person = profileReady ? profile.data?.pages[0]?.person : undefined;
   const people =
-    ready && query === search.trim()
+    directoryReady && !directory.isError && current() && query === search.trim()
       ? [
           ...new Map(
             directory.data?.pages
@@ -119,13 +150,30 @@ function PeopleView({
           ).values(),
         ]
       : [];
-  const records = ready
+  const records = profileReady
     ? [
         ...new Map(
           profile.data?.pages.flatMap((p) => p.related).map((p) => [p.id, p]),
         ).values(),
       ]
     : [];
+  function selectPerson(personId: string, target: HTMLButtonElement) {
+    target.focus({ preventScroll: true });
+    returnTarget.current = target;
+    setError("");
+    setCategory("all");
+    setId(personId);
+  }
+  function back() {
+    setId(null);
+    setError("");
+    requestAnimationFrame(() =>
+      returnTarget.current?.focus({ preventScroll: true }),
+    );
+  }
+  useEffect(() => {
+    if (person) profileHeading.current?.focus({ preventScroll: true });
+  }, [person?.id]);
   async function openNote(noteId: string) {
     if (opening) return;
     setOpening(true);
@@ -160,207 +208,265 @@ function PeopleView({
       </div>
     );
   return (
-    <section
-      aria-label="People workspace"
-      className="mx-auto min-h-full max-w-5xl px-5 py-6 pb-28 text-[var(--text-primary)] sm:px-8"
-    >
-      <header className="mb-7 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 max-w-full">
-          <p className="mb-2 text-xs text-[var(--text-secondary)]">
-            Workspace / People
+    <section aria-label="People workspace" className="prism-people-workspace">
+      <div className={`prism-people-layout${id ? " has-selection" : ""}`}>
+        <aside className="prism-people-directory" aria-label="People directory">
+          <header>
+            <h1>People</h1>
+            <p>Conversations and work, connected.</p>
+          </header>
+          <label className="prism-people-search">
+            <Search size={17} aria-hidden="true" />
+            <span className="sr-only">Find people</span>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Find a person…"
+            />
+          </label>
+          <div className="prism-people-list">
+            {(!directoryReady || query !== search.trim()) && (
+              <p role="status" className="prism-people-empty">
+                Loading people…
+              </p>
+            )}
+            {directory.isError && (
+              <div role="alert" className="prism-people-empty">
+                People could not be loaded.
+                <button
+                  className={control}
+                  onClick={() => void directory.refetch()}
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+            {people.map((p) => (
+              <button
+                key={p.id}
+                aria-pressed={id === p.id}
+                className="focus-ring prism-people-row"
+                onClick={(e) => selectPerson(p.id, e.currentTarget)}
+              >
+                <Identity person={p} />
+              </button>
+            ))}
+            {directoryReady &&
+              !directory.isError &&
+              query === search.trim() &&
+              !people.length && (
+                <div className="prism-people-empty">
+                  <Users size={24} aria-hidden="true" />
+                  <h2>
+                    {query ? "No matching people" : "Your people start here"}
+                  </h2>
+                  <p>
+                    {query
+                      ? "Try another name or account identifier."
+                      : "Notes tagged person appear here."}
+                  </p>
+                </div>
+              )}
+            {directoryReady && !directory.isError && directory.hasNextPage && (
+              <button
+                className={control + " mt-4"}
+                disabled={directory.isFetchingNextPage}
+                onClick={() => void directory.fetchNextPage()}
+              >
+                {directory.isFetchingNextPage ? "Loading…" : "Load more people"}
+              </button>
+            )}
+          </div>
+          <p className="prism-people-identity-note">
+            <Users size={16} aria-hidden="true" />
+            <span>
+              Accounts identify people.
+              <br />
+              <span>
+                Matching names alone never combine people. Unmatched
+                participants stay unlinked.
+              </span>
+            </span>
           </p>
-          <h1 className="break-words text-2xl font-semibold tracking-tight">
-            {id ? (person?.name ?? "Person") : "People"}
-          </h1>
-          <p className="mt-2 max-w-xl text-sm text-[var(--text-secondary)]">
-            {id
-              ? "Conversations and work connected to this person’s canonical note."
-              : "One place for the people behind your conversations, meetings, and ideas."}
-          </p>
-        </div>
-        {id && (
-          <button
-            className={control}
-            onClick={() => openTab("people", "People", "people" as ContentType)}
-          >
-            <ArrowLeft size={15} className="mr-2 inline" />
-            All people
-          </button>
-        )}
-      </header>
-      {!id && (
-        <label className="mb-5 flex min-h-12 items-center gap-3 rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] px-4">
-          <Search size={17} />
-          <span className="sr-only">Find people</span>
-          <input
-            className="min-w-0 flex-1 bg-transparent py-3 text-base outline-none"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Find a name, email, or account…"
-          />
-        </label>
-      )}
-      {(refreshing || (!id && query !== search.trim())) && (
-        <p role="status" className="py-6 text-sm text-[var(--text-secondary)]">
-          Loading people…
-        </p>
-      )}
-      {data.isError && (
-        <div
-          role="alert"
-          className="rounded-xl border border-[var(--glass-border)] p-5 text-sm"
-        >
-          {id
-            ? "This person is unavailable or could not be loaded."
-            : "People could not be loaded."}
-          <button
-            className={control + " ml-3"}
-            onClick={() => void data.refetch()}
-          >
-            Try again
-          </button>
-        </div>
-      )}
-      {error && (
-        <p role="alert" className="mb-4 text-sm text-[var(--color-error)]">
-          {error}
-        </p>
-      )}
-      {!id && ready && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {people.map((p) => (
-            <button
-              key={p.id}
-              className="focus-ring min-w-0 rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-4 text-left hover:bg-[var(--glass-hover)]"
-              onClick={() =>
-                openTab(`people:${p.id}`, p.name, "people" as ContentType)
-              }
-            >
-              <Identity person={p} />
-            </button>
-          ))}
-          {!people.length && (
-            <div className="col-span-full rounded-xl border border-dashed border-[var(--glass-border)] px-6 py-12 text-center">
-              <Users
-                className="mx-auto mb-3 text-[var(--text-muted)]"
-                size={26}
-              />
-              <h2 className="font-medium">
-                {query ? "No matching people" : "Your people start here"}
-              </h2>
-              <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                {query
-                  ? "Try another name or account identifier."
-                  : "Notes tagged person appear here. Linked conversations and meetings stay connected to those notes."}
+        </aside>
+        <div className="prism-people-profile">
+          {!id ? (
+            <div className="prism-people-welcome">
+              <Users size={32} aria-hidden="true" />
+              <h2>People, in context</h2>
+              <p>
+                Select a person to explore their linked conversations, meetings,
+                and work.
               </p>
             </div>
+          ) : (
+            <>
+              <button className="focus-ring prism-people-back" onClick={back}>
+                <ArrowLeft size={16} aria-hidden="true" />
+                Back to People
+              </button>
+              {profile.isFetching && !profile.isFetchingNextPage && (
+                <p role="status" className="prism-people-empty">
+                  Loading person…
+                </p>
+              )}
+              {profile.isError && (
+                <div role="alert" className="prism-people-empty">
+                  This person is unavailable or could not be loaded.
+                  <button
+                    className={control}
+                    onClick={() => void profile.refetch()}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+              {error && (
+                <p
+                  role="alert"
+                  className="mb-4 text-sm text-[var(--color-error)]"
+                >
+                  {error}
+                </p>
+              )}
+              {person && (
+                <>
+                  <header className="prism-person-heading">
+                    <Initials name={person.name} large />
+                    <div className="min-w-0">
+                      <h2 tabIndex={-1} ref={profileHeading}>
+                        {person.name}
+                      </h2>
+                      <p>{person.role || "Person note"}</p>
+                    </div>
+                  </header>
+                  <details open className="prism-person-properties">
+                    <summary className="focus-ring">Properties</summary>
+                    <div className="prism-person-property">
+                      <span>Linked identities</span>
+                      <dl>
+                        {person.identities.length ? (
+                          person.identities.map((identity) => (
+                            <div key={`${identity.kind}:${identity.value}`}>
+                              <dt>
+                                {identity.kind === "email" ? (
+                                  <Mail size={16} aria-hidden="true" />
+                                ) : (
+                                  <MessageSquare size={16} aria-hidden="true" />
+                                )}
+                                <span>{identity.kind}</span>
+                              </dt>
+                              <dd>{identity.value}</dd>
+                            </div>
+                          ))
+                        ) : (
+                          <p>No linked accounts on this person note.</p>
+                        )}
+                      </dl>
+                    </div>
+                    <div className="prism-person-property">
+                      <span>Person note</span>
+                      <button
+                        disabled={opening}
+                        className="focus-ring prism-people-link"
+                        onClick={() => void openNote(person.id)}
+                      >
+                        <FileText size={16} aria-hidden="true" />
+                        Open person note
+                        <ArrowUpRight size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                    {person.canManageIdentities &&
+                      person.updatedAt &&
+                      client.changePersonIdentity && (
+                        <IdentityControls
+                          key={person.id}
+                          person={person}
+                          scope={scope}
+                        />
+                      )}
+                  </details>
+                  <nav
+                    aria-label="Related records"
+                    className="prism-person-categories"
+                  >
+                    {(
+                      ["all", ...Object.keys(labels)] as Array<Category | "all">
+                    ).map((value) => (
+                      <button
+                        key={value}
+                        aria-pressed={category === value}
+                        className="focus-ring"
+                        onClick={() => setCategory(value)}
+                      >
+                        {value === "all" ? "All records" : labels[value]}
+                      </button>
+                    ))}
+                  </nav>
+                  <div className="prism-person-records">
+                    {records
+                      .filter(
+                        (r) => category === "all" || r.category === category,
+                      )
+                      .map((record) => {
+                        const Icon = recordIcons[record.category];
+                        return (
+                          <button
+                            disabled={opening}
+                            key={record.id}
+                            className="focus-ring prism-person-record"
+                            onClick={() => void openNote(record.id)}
+                          >
+                            <span className="prism-person-record-icon">
+                              <Icon size={20} aria-hidden="true" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="prism-person-record-title">
+                                {record.title}
+                              </span>
+                              <span className="prism-person-record-meta">
+                                {labels[record.category]}
+                                {record.relationships.length
+                                  ? ` · ${record.relationships.map((value) => value.replace(/[_-]+/g, " ")).join(", ")}`
+                                  : ""}
+                              </span>
+                              {record.path && (
+                                <span className="prism-person-record-path">
+                                  {record.path}
+                                </span>
+                              )}
+                            </span>
+                            <ChevronRight size={17} aria-hidden="true" />
+                          </button>
+                        );
+                      })}
+                    {!records.some(
+                      (r) => category === "all" || r.category === category,
+                    ) && (
+                      <p className="prism-people-empty">
+                        No linked {category === "all" ? "records" : category} in
+                        the loaded records. Link notes to this person to connect
+                        them here.
+                      </p>
+                    )}
+                  </div>
+                  {profile.hasNextPage && (
+                    <button
+                      className={control + " mt-5"}
+                      disabled={profile.isFetchingNextPage}
+                      onClick={() => void profile.fetchNextPage()}
+                    >
+                      {profile.isFetchingNextPage
+                        ? "Loading…"
+                        : "Load more records"}
+                    </button>
+                  )}
+                </>
+              )}
+            </>
           )}
         </div>
-      )}
-      {person && (
-        <>
-          <div className="mb-6 rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <Identity person={person} />
-              <button
-                disabled={opening}
-                className={control}
-                onClick={() => void openNote(person.id)}
-              >
-                Open person note{" "}
-                <ArrowUpRight size={15} className="ml-2 inline" />
-              </button>
-            </div>
-            {person.identities.length > 0 && (
-              <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-                {person.identities.map((identity) => (
-                  <div
-                    key={`${identity.kind}:${identity.value}`}
-                    className="min-w-0"
-                  >
-                    <dt className="text-xs capitalize text-[var(--text-secondary)]">
-                      {identity.kind}
-                    </dt>
-                    <dd className="mt-1 break-all">{identity.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-            <p className="mt-4 text-xs text-[var(--text-secondary)]">
-              Accounts are stored on this person note. Matching names alone
-              never combine people.
-            </p>
-            {person.canManageIdentities &&
-              person.updatedAt &&
-              client.changePersonIdentity && (
-                <IdentityControls person={person} scope={scope} />
-              )}
-          </div>
-          <nav
-            aria-label="Related records"
-            className="mb-4 flex flex-wrap gap-2"
-          >
-            {(["all", ...Object.keys(labels)] as Array<Category | "all">).map(
-              (value) => (
-                <button
-                  key={value}
-                  aria-pressed={category === value}
-                  className={control}
-                  style={{
-                    background:
-                      category === value ? "var(--glass-active)" : undefined,
-                  }}
-                  onClick={() => setCategory(value)}
-                >
-                  {value === "all" ? "All records" : labels[value]}
-                </button>
-              ),
-            )}
-          </nav>
-          <div className="divide-y divide-[var(--glass-border)] rounded-xl border border-[var(--glass-border)]">
-            {records
-              .filter((r) => category === "all" || r.category === category)
-              .map((record) => (
-                <button
-                  disabled={opening}
-                  key={record.id}
-                  className="focus-ring flex min-h-20 w-full min-w-0 items-center justify-between gap-4 px-4 py-3 text-left hover:bg-[var(--glass-hover)]"
-                  onClick={() => void openNote(record.id)}
-                >
-                  <span className="min-w-0">
-                    <span className="block break-words text-sm font-medium">
-                      {record.title}
-                    </span>
-                    <span className="mt-1 block break-words text-xs text-[var(--text-secondary)]">
-                      {labels[record.category]} ·{" "}
-                      {record.relationships
-                        .map((value) => value.replace(/[_-]+/g, " "))
-                        .join(", ")}
-                    </span>
-                  </span>
-                  <ArrowUpRight className="shrink-0" size={16} />
-                </button>
-              ))}
-            {!records.some(
-              (r) => category === "all" || r.category === category,
-            ) && (
-              <p className="p-7 text-center text-sm text-[var(--text-secondary)]">
-                No linked {category === "all" ? "records" : category} in the
-                loaded records. Link notes to this person to connect them here.
-              </p>
-            )}
-          </div>
-        </>
-      )}
-      {ready && data.hasNextPage && (
-        <button
-          className={control + " mt-5"}
-          disabled={data.isFetchingNextPage}
-          onClick={() => void data.fetchNextPage()}
-        >
-          {data.isFetchingNextPage ? "Loading…" : "Load more"}
-        </button>
-      )}
+      </div>
     </section>
   );
 }
