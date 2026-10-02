@@ -5,8 +5,9 @@ dry run unless told otherwise and every ingest flag defaults to off. What
 changes on deploy with all flags off is listed under
 [What changes on deploy](#what-changes-on-deploy).
 
-This revision (2026-10-02, second pass) folds in the independent review
-(C1, M7, H1–H4, M1–M6, the lows) and the owner's six decisions.
+This revision (2026-10-02, third pass) folds in the independent review
+(C1, M7, H1–H4, M1–M6, the lows), the owner's six decisions, and the re-review
+(H-1, H-2, M-1 … M-6, the lows).
 
 ## Why
 
@@ -57,11 +58,28 @@ explicit merge for duplicates.
 
 Details:
 
-- **Tombstones.** Tag `merged-stub` or `superseded`, `status:
-  merged_into_canonical`, or a non-empty `merged_into` / `mergedInto` /
-  `superseded_by`. `merged_into` may be a note id, a path, `[[path]]`, a path
-  leaf, or the exact name of one other live person. Chains are followed; cycles
-  and dead ends resolve to nothing.
+- **Tombstones — precisely.** A person note is a tombstone when it has the tag
+  `merged-stub` or `superseded`, or `status: merged_into_canonical`. Nothing
+  else. A live note that merely carries a `merged_into` / `mergedInto` /
+  `superseded_by` pointer is **still a person** (listed, linked, indexed); the
+  job reports such notes as `pointerWithoutMarker`. The People directory hides
+  exactly what `isTombstone` and `isNonHumanPerson` say — one rule, two callers.
+- **Following a tombstone.** On every ingest path the pointer is followed only
+  when it is a note id or a full path (`[[…]]` accepted). A bare leaf or a name
+  is **not** followed there: the stub is a dead end and its keys are claimed.
+  Only the reviewed backfill job (`refByName`) also resolves a bare leaf or the
+  exact name of one other live person. Chains are followed; cycles and dead ends
+  resolve to nothing. New pointers are written as the note **id**.
+- **Non-human.** Tag `bot`, `non-human` or `organization`, or `metadata.type`
+  `bot` / `organization`. A `type: document` person note is still a person.
+- **A display name is never a key.** An address-shaped display name
+  (`alex@example.org` as a chat nickname) is free text; only the explicit
+  `email` / `matrixId` / `telegram` / `phone` fields of a query are keys.
+- **The owner by name.** The owner note's own multi-word name
+  (`owner-full-name`), or a name **explicitly configured** as an alias
+  (`owner-alias`). Aliases written on the note, and names inherited from stubs
+  merged into it, do not mean the owner. A single-token alias counts only for
+  task assignees, and never when another live person answers to it.
 - **Bridge puppets.** Only the prefixes this deployment bridges
   (`telegram`, `whatsapp`, `signal`, `discord`, `instagram`, `messenger`,
   `facebook`, `twitter`) and only with an id-shaped remote part (digits, a
@@ -84,7 +102,7 @@ Details:
 Calendar ingest (and Gmail / Proton / Matrix linking when their flags are on)
 call `PeopleIndex.findOrCreate` on every pass. `test/people-parity.test.ts`
 runs the index as it was at `6069ccd` (a verbatim copy under `test/fixtures/`)
-and the current one over the same corpus (846 cases) and asserts:
+and the current one over the same corpus (1,148 cases, including the `existed: true` branch) and asserts:
 
 - where the old index **linked** note N, the new one links N — or N's canonical
   person when N is a resolvable tombstone — or nothing when N is a non-human
@@ -208,14 +226,21 @@ A dismissed identity is never linked for that note and never re-queued.
 ```json
 {"dryRun": true,
  "phases": ["owner","tombstones","repoint","emails","meetings","threads","tasks","normalize"],
- "maxWrites": 200, "enqueue": false, "allowNameLinks": false, "useMatrixMembers": true}
+ "maxWrites": 200, "enqueue": false, "allowNameLinks": false, "excludeBulkLinks": false,
+ "useMatrixMembers": true}
 ```
 
 - `dryRun` is true unless exactly `false`.
 - `phases` defaults to all eight, always run in the order above.
 - `maxWrites`: 1 … `PEOPLE_LINK_MAX_WRITES_CEILING`. A write run without it uses
   `PEOPLE_LINK_MAX_WRITES`; a dry run without it is uncapped.
-- `enqueue`: false for a dry run, true for a write run.
+- `enqueue`: **false for every run** unless explicitly `true`. With `true`, review
+  rows are written only for the part of a phase a capped run actually reached
+  (`extra.reviewsBeyondWindow` counts the rest), and never past
+  `PEOPLE_QUEUE_MAX_OPEN` open rows (`skipped["queue-full"]`). `queued` always
+  reports what would be queued. A link that lands closes the open rows that
+  asked about that person (status `resolved`, decided by `linked-by-job`).
+- `excludeBulkLinks`: false. With true, bulk-labelled mail is not linked at all.
 - `allowNameLinks`: false. With true, a unique full name or alias links in
   `meetings` and `tasks` only.
 - `useMatrixMembers`: **on whenever a Matrix credential is stored** and the
@@ -232,20 +257,24 @@ kind: `email`, `mxid`, `telegram`, `phone`, `handle`, `alias`, `full-name`,
 `path`, `owner-alias`, `project`), `queued`, `queuedByReason`, `skipped` (by
 reason), `extra` — all identical in a dry run and a write run with the same
 options — and `linked`, `unlinked`, `notesWritten`, `conflicts`, `errors`,
-`oversize`, `deferred` for what a write run did. `sample.link` / `sample.review`
-hold up to 20 note ids each. `normalize` adds `byName` and `untouched`. The job
+`oversize`, `deferred` for what a write run did. `sample.link`, `sample.review`,
+`sample.bulk` (bulk-labelled mail that would link) and `sample.role` (role
+mailboxes a person note claims) hold up to 20 note ids each. `notesToWrite` and
+`notesWritten` count a note once even when it is written in both waves; the
+job's `writes` counts PATCHes. Evidence kinds also include `owner-full-name`
+and `wikilink`. `normalize` adds `byName` and `untouched`. The job
 itself reports `writes`, `capped`, `queuedNew`, `memberLookups`,
 `ownerPersonKnown`, `liveNotes`, `allowNameLinks`, `status`, `error`.
 
 | Phase | Reads (lean, never content) | Does |
 |---|---|---|
-| `owner` | people; the whole-vault listing only if the owner has tombstones | Checks the configured owner note is a live person (`owner-unresolved` otherwise, and nothing is written). Appends `OWNER_EMAIL`, configured emails and aliases the note lacks (never one somebody else claims). Moves links held by the owner's tombstones onto it. Counts live notes that share a key with the owner (`ownerDuplicatesNeedingMerge`) — merging them is a `/merge` call, not the job's. |
-| `tombstones` | people | For each tombstone whose target cannot be found: the one live person sharing a strong key, else the one whose own full name (≥2 tokens) is slug-equal → writes `merged_into` (CAS). No unique match → review queue, reason `tombstone-unresolved`. |
-| `repoint` | people + the whole-vault listing | Links held by a resolvable tombstone move to its canonical person, same relationship, same direction. Inbound: rewritten on the linking note in one PATCH. Outbound: added to the canonical, then removed from the stub. `wikilink` stays; the canonical gains a `references` twin. |
-| `emails` | `email`: `from`, `to`, `labels` | `email-from` and `email-to` by **exact address only**. An exact match to one live person links even on `BULK` / `AUTOMATED` / `PROMOTIONS` mail and for role mailboxes; nothing else links or queues there, and a bulk mail's recipients are never linked. A name-only match on ordinary mail is a review item. More than `PEOPLE_LINK_MAX_RECIPIENTS` recipients → none. Never the owner. |
-| `meetings` | `meeting`, `transcript`: `attendees`, `attendeeEmails` | `attended-by`: address first; a name links only with `allowNameLinks`, otherwise review. The owner is linked by address or by a configured name of two or more tokens. Calendar resource addresses skipped. |
-| `threads` | `message-thread`: `participants`, `participantIds`, `matrixRoomId` | `messages-with` **by Matrix id**: stored `participantIds`, else the membership lookup (budget `PEOPLE_LINK_MEMBER_LOOKUPS`, paced). Looked-up ids are written back as `participantIds` in the same PATCH as the links (and alone when nobody links, so the room is not looked up again). A display name never links a thread; in rooms of up to `PEOPLE_LINK_GROUP_NAME_MAX` it is a review item. Rooms over `PEOPLE_LINK_GROUP_MAX_MEMBERS` are skipped; at most `PEOPLE_LINK_GROUP_LINK_CAP` links per group. Bots and the owner never linked. Smallest rooms first. |
-| `tasks` | `task`: `assigned`, `assignee`, `project`; `project` notes | `assigned-to`: the owner by configured alias or address; a `[[wikilink]]` exactly; any other name only with `allowNameLinks`. `belongs-to`: the one project whose path, slug, name, title or alias matches. |
+| `owner` | people; the whole-vault listing only if the owner has tombstones | Checks the configured owner note is a live person (`owner-unresolved` otherwise, and nothing is written). Appends `OWNER_EMAIL`, configured emails and aliases the note lacks (never one somebody else claims). Moves links held by the owner's tombstones onto it. Counts live notes that share a key with the owner (`ownerDuplicatesNeedingMerge`). |
+| `tombstones` | people + the whole-vault listing | Repairs **dangling** stubs only: the pointer is absent, or resolves to nothing in the whole vault. Exactly one live person sharing a **strong key** → `merged_into` = that note's id, the previous value kept in `prism_merged_into_prev`. A name match, several matches, or none → review queue (`tombstone-unresolved`), never a write. A stub whose target exists but is not a live person (an organization, a project, a bot note, another dead end) is left exactly as it is (`extra.leftTargetNotAPerson`). A stub repaired in this run is not repointed and not used for matching until the next run. |
+| `repoint` | people + the whole-vault listing | Links held by a resolvable tombstone move to its canonical person, same relationship, same direction. Inbound: rewritten on the linking note in one PATCH. Outbound: added to the canonical, then removed from the stub. `wikilink` stays; the canonical gains a `references` twin. Skips `repaired-this-run` and `no-canonical` stubs. |
+| `emails` | `email`: `from`, `to`, `labels` | `email-from` and `email-to` by **exact address only**. A **role mailbox** (no-reply, notifications, team@, info@, support@, …) never links, whoever's note holds the address: `skipped["role-address-claimed"]` + `sample.role` when a person note does, `role-sender` / `role-recipient` otherwise. On `BULK` / `AUTOMATED` / `PROMOTIONS` mail an exact sender address still links (owner decision), counted in `extra.bulkLinked` and sampled in `sample.bulk`; nothing else links or queues there; `excludeBulkLinks` turns it off. A name-only match on ordinary mail is a review item. Never the owner. |
+| `meetings` | `meeting`, `transcript`: `attendees`, `attendeeEmails` | `attended-by`: address first; a name links only with `allowNameLinks`, otherwise review. The owner is linked by address, by their note's own full name, or by a configured multi-word alias. Role mailboxes and calendar resources never link. |
+| `threads` | `message-thread`: `participants`, `participantIds`, `matrixRoomId` | `messages-with` **by Matrix id**: stored `participantIds`, else the membership lookup. Looked-up ids are written back as `participantIds` in the same PATCH as the links. **When the lookup cannot answer the thread waits** — `lookup-budget` (over `PEOPLE_LINK_MEMBER_LOOKUPS`), `lookup-failed`, or `lookup-unavailable` after `PEOPLE_LINK_MEMBER_FAILURES` failures in a row (`extra.lookupBreaker`) — and is picked up by a later run; it never falls back to display names. Display names are used only when the lookup is off or the note has no room id, and then only as review items in rooms of up to `PEOPLE_LINK_GROUP_NAME_MAX`. A room whose real membership exceeds `PEOPLE_LINK_GROUP_MAX_MEMBERS` gets neither links nor `participantIds`. At most `PEOPLE_LINK_GROUP_LINK_CAP` links per group. Bots and the owner never linked. Smallest rooms first. |
+| `tasks` | `task`: `assigned`, `assignee`, `project`; `project` notes | `assigned-to`: the owner by address, own full name, or configured alias; a `[[reference]]` to exactly one person note (evidence `wikilink`); any other name only with `allowNameLinks`. `belongs-to`: the one project whose path, slug, name, title or alias matches. |
 | `normalize` | the whole-vault listing | Unambiguous synonyms → canonical, add then remove. |
 
 Safety, every phase:
@@ -261,10 +290,12 @@ Safety, every phase:
 - `PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS` failed writes in a row (409s excluded)
   **abort the run**: status `error`, the `people-link` health source counts a
   failure, the audit row says `failed`.
-- A note over 2 MB is skipped (`byteSize` when the listing reports it, else the
-  vault's `413`).
-- A note open in the collab editor is written and `markReconciled` is called, so
-  the reconciler does not fold the stored body over unsaved typing.
+- A note over 2 MB is skipped. The pre-skip reads an untyped `byteSize` field
+  on lean rows; if the vault does not send it, the write is attempted and the
+  vault's `413` is counted as `oversize` (a 413 never trips the error breaker).
+- A note open in the collab editor is written and `markReconciled` is called —
+  liveness is checked before **and after** the write — so the reconciler does
+  not fold the stored body over unsaved typing.
 - A listing that reaches 50,000 notes aborts the run before any write.
 
 ### Duplicates and merge
@@ -285,8 +316,11 @@ number never pair people.
 ```
 
 A dry run needs only `personIds`; the server suggests the canonical. It returns
-`{merge, pair, requiresConfirmUnrelated}` where `merge.expect` holds the two
-versions it read. **A write run (`dryRun: false`) is refused unless:**
+`{merge, pair, requiresConfirmUnrelated, warnings?}` where `merge.expect` holds
+the two versions it read. `warnings` says in capitals when the pair is not a
+detected duplicate, and when that would merge a stranger into the owner's own
+person note (allowed only with `confirmUnrelated: true`; the absorbed name
+becomes an alias on the note and never a name that means the owner). **A write run (`dryRun: false`) is refused unless:**
 
 | Check | Otherwise |
 |---|---|
@@ -295,7 +329,8 @@ versions it read. **A write run (`dryRun: false`) is refused unless:**
 | `expect` is given | `400 expect_required` |
 | both notes are still at those versions | `409 stale` |
 | the secondary is not the owner's person note | `409 owner_is_secondary` (cannot be overridden) |
-| the pair is currently returned by `/duplicates` with strength strong or medium, or `confirmUnrelated: true` | `409 not_a_duplicate` / `weak_match` |
+| the pair is a strong or medium duplicate on a detection run **now** (not the 60 s cache), or `confirmUnrelated: true` | `409 not_a_duplicate` / `weak_match` |
+| or: it finishes a merge this module started (the canonical's `prism_merge_history` names the secondary) | — a stub that merely points at the canonical gets the full checks |
 | nothing else is running | `409 busy` |
 
 `merge`:
@@ -324,10 +359,16 @@ Order of a write run:
 2. **Every note linking to the secondary** — one links-only CAS write each.
    Their versions are read one by one, or from one lean listing above 40 notes.
    A conflict, an error or a missing version leaves that note's old link.
-3. **Secondary**, last — tag `merged-stub`, `merged_into`, `status`,
-   `merged_at`, `merged_by`; only the identity fields the canonical verifiably
-   holds are removed (kept under `prism_merged_identities`; the rest listed in
+3. **Secondary**, last — tag `merged-stub`, `merged_into` (the canonical's
+   note id), `status`, `merged_at`, `merged_by`; only the identity fields the
+   canonical verifiably holds are removed — judged on a **re-read** of the
+   canonical after step 1, never on the plan or the write's response; if that
+   read fails, nothing is stripped and the secondary is left live for the next
+   call (kept under `prism_merged_identities`; the rest listed in
    `leftOnSecondary`); its outgoing links removed.
+
+The merge marker (`prism_merge_history` on the canonical) is written in step 1
+of every merge, even when the canonical gains nothing.
 
 Nothing is deleted. `complete: false` → call the same merge again (after a new
 dry run for `expect`); it resumes. One `action_audit` row per write merge.
@@ -368,7 +409,7 @@ drop out of that view's "people with threads" list on their own.
 
 Read at server start; restart pm2 after a change.
 
-| Variable | Default | Recommended at deploy | Effect |
+| Variable | Default | Recommended (enable in stage 10) | Effect |
 |---|---|---|---|
 | `MATRIX_LINK_PEOPLE` | `false` | `false` | Existing. Links participants and **creates** people in rooms of ≤3. |
 | `MATRIX_LINK_EXISTING` | `false` | **`true`** | Links participants who already have a person note, by Matrix id. Creates nobody. Never the owner's note. |
@@ -383,7 +424,9 @@ Read at server start; restart pm2 after a change.
 | `PEOPLE_LINK_MAX_WRITES_CEILING` | `20000` | | Largest `maxWrites` a request may ask for. |
 | `PEOPLE_LINK_PACE_MS` | `50` | | Pause per writer between writes. |
 | `PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS` | `5` | | Failed writes in a row that abort a run or a merge. |
-| `PEOPLE_VAULT_TIMEOUT_MS` | `30000` | | Timeout of every vault call this layer makes. |
+| `PEOPLE_QUEUE_MAX_OPEN` | `1000` | | Most open review rows per vault; past it nothing is inserted. |
+| `PEOPLE_LINK_MEMBER_FAILURES` | `3` | | Failed membership lookups in a row that end a run's lookup stage. |
+| `PEOPLE_VAULT_TIMEOUT_MS` | `30000` | | Timeout of every vault call, and of every Matrix read (`whoami`, membership), this layer makes. |
 | `PEOPLE_LINK_GROUP_NAME_MAX` | `8` | | Largest room in which a display name becomes a review item. |
 | `PEOPLE_LINK_GROUP_MAX_MEMBERS` | `50` | | Rooms above this are skipped. |
 | `PEOPLE_LINK_GROUP_LINK_CAP` | `15` | | Most links per room of more than 3. |
@@ -397,14 +440,19 @@ On ingest a display name never links anything; only strong keys do.
 
 With every flag off:
 
-1. **Shared people index** (calendar ingest today). A tombstone claimant
-   redirects to its canonical person, so an address held by a stub and its
-   canonical is no longer "ambiguous" and the attendee links. A claimant that is
+1. **Shared people index** (calendar ingest today). A tombstone claimant whose
+   pointer is a note id or a full path redirects to its canonical person, so an
+   address held by a stub and its canonical is no longer "ambiguous" and the
+   attendee links — **expect a one-time batch of `attended-by` additions** on
+   meetings inside calendar ingest's window (today −3 d … +31 d), one PATCH per
+   affected meeting, on the first passes after deploy. A claimant that is
    a non-human note or an unresolvable tombstone no longer links (the old index
    linked the bot or stub note itself) and is never re-created. Addresses inside
    a multi-value string and `contact_emails` are found when nobody claims the
    address the old way, so calendar ingest links that person instead of creating
-   a duplicate. Nothing else: the parity test covers 846 cases.
+   a duplicate. A stub whose pointer is only a name or a bare leaf is NOT
+   followed on ingest (it is a dead end there). Nothing else: the parity test
+   covers 1,148 cases, including the `existed: true` branch.
 2. **People directory**: `GET /api/people` no longer lists tombstones and
    non-human notes; a tombstone id opens its canonical person.
 3. `identity_candidates` is created (`CREATE TABLE IF NOT EXISTS`).
@@ -413,126 +461,230 @@ With every flag off:
 
 ## Runbook — first cleanup in production
 
-Overseer only.
+Overseer only. Ten stages, in order. Do not start a stage until the gate of the
+one before it is met. "Undo" for any write stage is the vault +
+`prism-server.db` backup taken in stage 0 unless a cheaper undo is named.
 
-### Pre-flight (once, on the sandbox vault — never production)
+### Stage 0 — pre-flight (sandbox vault, never production) and backup
 
-The fake vault in the tests proves the code against the documented API; these
-four behaviours of the real vault must be confirmed before a write run:
+The tests prove the code against the documented API with a fake vault. Confirm
+these four behaviours of the real vault on the sandbox:
 
-1. **Nested metadata merge.** PATCH a throwaway note's metadata with
-   `{channels: {a: 1}}`, then `{channels: {b: 2}}`. Either result is handled
-   (this layer always sends the complete object), but note which it is: under a
-   shallow merge a stripped channel key is stored as a literal `null`.
-2. **`links.remove` semantics.** Remove a link that does not exist (expect a
-   no-op, not an error) and remove one of two links to the same target with
-   different relationships (expect only that one to go).
-3. **Link metadata.** `GET /notes/:id?include_links=true` on a note whose link
-   was written with extra fields: if links carry `metadata` or `created_at`, a
-   move re-creates the link without them. The job and the merge skip any link
-   with non-empty `metadata` (`link-metadata` / `linksWithMetadata`);
-   `created_at` is not preserved.
-4. **`updatedAt` on lean rows.** `GET /notes?tag=email&include_metadata=from`:
-   every row must carry `updatedAt`. If it does not, every write is skipped as
-   `no-stamp` and nothing happens — safe, but the job is useless until fixed.
+1. **Nested metadata merge.** PATCH `{channels: {a: 1}}`, then
+   `{channels: {b: 2}}`. Either outcome is handled (this layer always sends the
+   complete object); note which it is — under a shallow merge a stripped channel
+   key is stored as a literal `null`.
+2. **`links.remove`.** Removing a link that does not exist is a no-op, not an
+   error; removing one of two links to the same target removes only that one.
+3. **Link metadata.** If hydrated links carry `metadata`, the job and the merge
+   skip them (`link-metadata` / `linksWithMetadata`); `created_at` is not
+   preserved on a move.
+4. **`updatedAt` on lean rows** (`GET /notes?tag=email&include_metadata=from`).
+   Without it every write is skipped as `no-stamp`. Also note whether lean rows
+   carry `byteSize`; without it oversize notes are found by the vault's `413`.
 
-### Steps
+Then, on production: back up the vault and `prism-server.db` together
+(`scripts/backup-parachute.sh`) and write down the time. Run every write stage
+when the owner is not editing and no local-model run is active
+(`GET /api/agent/skills/running` is empty).
 
-1. **Back up** the vault and `prism-server.db` together
-   (`scripts/backup-parachute.sh`). This is the rollback point for links.
-2. **Pick a quiet time.** Run when the owner is not editing, and when no
-   local-model skill run is active (`GET /api/agent/skills/running` empty): each
-   written thread or email is a note update on the single-threaded vault.
-3. **Deploy** with `MATRIX_LINK_EXISTING=true`,
-   `MATRIX_STORE_PARTICIPANT_IDS=true`, `PEOPLE_QUEUE_ON_INGEST=true`; the other
-   link flags off for now. Restart pm2; confirm `GET /acl/workers` is green.
-4. **Set the owner**: `PUT /api/admin/people/owner {"person":
-   "<path of the owner's person note>", "aliases": ["<first name>"]}`. Confirm
-   `GET /owner` → `ownerPersonKnown: true`, `configuredNote.merged: false`.
-5. **Dry-run each phase, one at a time**, in order: `{"phases":["owner"]}`,
-   then `tombstones`, `repoint`, `emails`, `meetings`, `threads`, `tasks`,
-   `normalize`. For each read `byEvidence`, `queuedByReason`, `skipped`, and open
-   the notes in `sample.link` and `sample.review`. Stop if a sample is wrong.
-6. **First write run: small and strong-key only.**
-   `{"dryRun":false,"phases":["owner","tombstones"],"maxWrites":10}`, then
-   `{"dryRun":false,"phases":["repoint"],"maxWrites":25,"enqueue":false}`.
-   `allowNameLinks` stays false. Confirm `conflicts: 0`, `errors: 0`, look at the
-   written notes in the People workspace.
-7. **Full strong-key runs, phase by phase**: `repoint`, `emails`, `meetings`,
-   `threads`, `tasks`, each with `"maxWrites": 2000`, re-run until
-   `capped: false` and `notesToWrite: 0`. Decide `enqueue` first: a default write
-   run queues every name-only attendee and assignee (about 2,100 rows on the
-   audited vault). Either pass `"enqueue": false` for `meetings` and `tasks` and
-   do step 8, or accept the queue.
-8. **Names, if wanted.** Dry-run `{"phases":["meetings","tasks"],
-   "allowNameLinks":true}`, review the `full-name` / `alias` samples, then write.
-   Names never link mail or chat in any mode.
-9. **`normalize`** last.
-10. **Queue.** `GET /candidates`; resolve or dismiss. `applyToKey` handles a
-    sender that appears on many notes. `tombstone-unresolved` rows are the stubs
-    whose target the job could not find.
-11. **Duplicates.** `GET /duplicates?strength=strong`; per pair `POST /merge`
-    dry run → read the report → write with `canonicalId` + `expect`.
-12. **Remaining forward flags**, one at a time, a day apart:
-    `TRANSCRIPT_LINK_PEOPLE`, `CLICKUP_LINK_ENABLED`, `PROTON_LINK_PEOPLE` +
-    `PROTON_LINK_RECIPIENTS`. Leave `MATRIX_LINK_PEOPLE` off.
+**Gate:** all four confirmed; backup exists.
 
-**Rollback.** A flag: set it back and restart; nothing it wrote is removed. A
-dry run: nothing. A write run: there is no automatic inverse — restore the vault
-and `prism-server.db` from step 1. The queue: `DELETE FROM identity_candidates`
-is safe. Code: revert the branch; the table can stay.
+### Stage 1 — deploy with every flag off
 
-## Offline estimate (second pass)
+Merge, restart pm2. All link flags stay off.
+
+**Look at:** `GET /acl/workers` green. Over the next calendar passes the log
+shows a one-time batch of `~N updated` meetings — the `attended-by` additions
+described under *What changes on deploy*. It should stop after the window has
+been covered once.
+**Gate:** workers green; the calendar update count returns to its usual level.
+**Undo:** revert the deploy. The added `attended-by` links stay (they are
+correct links to canonical people).
+
+### Stage 2 — set and verify the owner
+
+`PUT /api/admin/people/owner {"person": "<path or id of the owner's person
+note>", "aliases": ["<first name used on tasks>"]}`, then `GET /owner`.
+
+**Look at:** `ownerPersonKnown: true`; `resolved.personId` is the right note;
+`configuredNote` is `{found: true, merged: false, nonHuman: false}`.
+**Gate:** all three. **Undo:** `DELETE /owner` (nothing was written to the vault).
+
+### Stage 3 — dry-run every phase
+
+`POST /link {"phases": ["<one phase>"]}` for each of the eight phases, polling
+`GET /link` until `done`.
+
+**Look at, per phase:** `byEvidence` (strong kinds only, apart from
+`owner-*`, `wikilink`, `project`, `path`); `skipped`; open the notes in
+`sample.link` and `sample.review`. For `emails` also open `sample.bulk` (every
+bulk-labelled mail that would link — decide whether to pass
+`excludeBulkLinks`) and `sample.role`. For `tombstones` read
+`extra.repaired`, `extra.leftTargetNotAPerson`, `extra.pointerWithoutMarker`.
+**Gate:** no sample is wrong; `ownerPersonKnown: true`.
+**Undo:** nothing was written.
+
+### Stage 4 — first writes: `emails`, then `meetings`, strong keys only
+
+`{"dryRun": false, "phases": ["emails"], "maxWrites": 50, "allowNameLinks":
+false, "enqueue": false}`; check; then the same for `meetings`.
+
+**Look at:** `conflicts: 0`, `errors: 0`; open several written notes in the
+People workspace; `byEvidence` shows only `email` (and `owner-full-name` for
+meetings).
+**Gate:** the 50 are right. Then widen: repeat with `"maxWrites": 500`, then
+`2000`, until `capped: false` and `notesToWrite: 0`.
+**Undo:** the backup. (There is no automatic inverse of a links write.)
+
+### Stage 5 — `tombstones`, alone; later, `repoint`, alone
+
+`{"dryRun": false, "phases": ["tombstones"], "maxWrites": 50}`. Strong-key
+repairs only; nothing else is written. **Review each repaired stub**
+(`sample.link`): its `merged_into` is now a note id and
+`prism_merged_into_prev` holds what was there.
+
+**Gate:** every repair is right. **Undo:** set `merged_into` back from
+`prism_merged_into_prev` (or restore the stub's previous version).
+
+Then — as a **separate, later run** — `{"dryRun": false, "phases":
+["repoint"], "maxWrites": 50, "enqueue": false}`, widen as in stage 4.
+
+**Look at:** canonical people now show the records their stubs held.
+**Gate:** `conflicts: 0`; spot-check five canonical people. **Undo:** the backup.
+
+### Stage 6 — `owner`, then `tasks`
+
+`{"dryRun": false, "phases": ["owner"]}`: appends the configured identities to
+the owner's note and brings home links from the owner's tombstones.
+**Look at:** the owner note's `channels.email` / `aliases`; nothing else changed.
+**Undo:** restore the owner note's previous version.
+
+`{"dryRun": false, "phases": ["tasks"], "maxWrites": 50, "enqueue": false}`,
+then widen. **Look at:** `byEvidence` = `owner-alias`, `owner-full-name`,
+`wikilink`, `project`. **Gate:** the owner's tasks appear under the owner; no
+task is linked to somebody else by name. **Undo:** the backup.
+
+### Stage 7 — `threads`, with the member lookup
+
+`{"dryRun": false, "phases": ["threads"], "maxWrites": 50, "enqueue": false}`.
+The lookup is on when a Matrix credential is stored.
+
+**Look at:** `byEvidence` (`telegram`, `mxid`, `phone`, `handle` only);
+`extra.idsBackfilled`; `skipped["lookup-budget"]` (expected: 300 lookups per
+run); `extra.lookupBreaker` must be absent.
+**Gate:** samples right; no breaker. Repeat (each run takes the next 300 rooms)
+until `lookup-budget` is gone. **Undo:** the backup; `participantIds` are
+harmless to leave.
+
+### Stage 8 — `normalize`
+
+`{"dryRun": false, "phases": ["normalize"], "maxWrites": 50}`, then widen.
+**Look at:** `byName`, `untouched`. **Undo:** the backup.
+
+### Stage 9 — merges, one pair at a time
+
+`GET /duplicates?strength=strong`. Per pair: `POST /merge {personIds}` (dry
+run) → read `identities`, `skippedFields`, `leftOnSecondary`, the link counts
+and any `warnings` → `POST /merge {personIds, canonicalId, expect, dryRun:
+false}`. Strong detected pairs first; medium after; weak pairs and anything
+needing `confirmUnrelated` only after a human look at both notes.
+
+**Gate per pair:** `complete: true`. If not, dry-run again and repeat the call.
+**Undo:** restore both notes' pre-merge versions and remove the `merged-stub`
+tag; links come from the backup.
+
+### Stage 10 — forward flags, one at a time
+
+A day apart, watching `GET /acl/workers` and the queue depth:
+`MATRIX_STORE_PARTICIPANT_IDS`, `MATRIX_LINK_EXISTING`,
+`PEOPLE_QUEUE_ON_INGEST`, `TRANSCRIPT_LINK_PEOPLE`, `CLICKUP_LINK_ENABLED`,
+`PROTON_LINK_PEOPLE` + `PROTON_LINK_RECIPIENTS`. Leave `MATRIX_LINK_PEOPLE` off.
+
+**Gate per flag:** a day with no unexpected queue growth. **Undo:** set the flag
+back and restart; nothing it wrote is removed.
+
+### Optional, any time after stage 4
+
+- **Names.** Dry-run `{"phases": ["meetings","tasks"], "allowNameLinks":
+  true}`, review the `full-name` / `alias` samples, then write. Names never
+  link mail or chat.
+- **The review queue.** Add `"enqueue": true` to a run to fill it (bounded by
+  `PEOPLE_QUEUE_MAX_OPEN`); resolve or dismiss from `GET /candidates`.
+  `DELETE FROM identity_candidates` is a safe reset.
+
+## Offline estimate (third pass)
 
 Dry run of the job over the audit dumps (1,036 people, 1,325 threads, 3,467
 emails, 1,816 meetings, 1,750 tasks, 151 projects and organizations), with the
 owner note configured and one first-name alias, **no Matrix lookup** (offline).
-Counts only.
+Counts only. "Would queue" is what `enqueue: true` would insert (before the
+1,000-row cap); by default nothing is queued.
 
 Default run (`allowNameLinks: false`):
 
-| Phase | Links added, by evidence | Removed | Notes written | Already linked | Queued, by reason |
-|---|---|---|---|---|---|
-| owner | 0 (1 identity appended; 1 owner tombstone) | 1 | 2 | 1 | 0 |
-| tombstones | 1 `merged_into` repaired (email) | 0 | 1 | — | 7 tombstone-unresolved |
-| repoint | 419 path | 411 | 318 | 126 | 0 |
-| emails | 380 email | 0 | 348 | 331 | 157: ambiguous-key 84, single-token-name 39, name-key-mismatch 25, name-only 9 |
-| meetings | 3,035: email 2,671, owner-alias 364 | 0 | 1,045 | 57 | 1,227: name-only 1,142, ambiguous-key 48, single-token-name 37 |
-| threads | 0 (no ids offline) | 0 | 0 | 0 | 374: name-only 281, single-token-name 93 |
-| tasks | 1,138: project 664, owner-alias 468, path 6 | 0 | 809 | 0 | 373: name-only 329, single-token-name 44 |
-| normalize | 59 | 125 | 104 | 65 | 0 (4 synonyms left untouched) |
-| **total** | **5,031** | **537** | **2,627** | | **2,138** |
+| Phase | Links added, by evidence | Removed | Notes written | Would queue, by reason |
+|---|---|---|---|---|
+| owner | 0 (1 identity appended; 1 owner tombstone) | 1 | 2 | 0 |
+| tombstones | 1 repair (email) | 0 | 1 | 3 tombstone-unresolved |
+| repoint | 416 path | 408 | 315 | 0 |
+| emails | 348 email (149 of them on bulk-labelled mail) | 0 | 316 | 157: ambiguous-key 89, single-token-name 39, name-key-mismatch 20, name-only 9 |
+| meetings | 2,974: email 2,610, owner-full-name 364 | 0 | 1,045 | 1,286: name-only 1,142, ambiguous-key 107, single-token-name 37 |
+| threads | 0 (no ids offline) | 0 | 0 | 374: name-only 281, single-token-name 93 |
+| tasks | 1,138: project 664, owner-alias 295, owner-full-name 173, wikilink 6 | 0 | 809 | 373: name-only 329, single-token-name 44 |
+| normalize | 59 | 125 | 104 | 0 (4 synonyms left untouched) |
+| **total** | **4,935** | **534** | **2,592** | **2,193** |
 
-With `allowNameLinks: true`, `meetings` becomes 3,818 links (adds full-name 731,
-alias 52; queued 85) and `tasks` 1,446 (adds full-name 277, alias 31; queued
-44): 6,121 links, 2,805 notes, 667 queued in total. Emails and threads are
-identical in both modes.
+With `allowNameLinks: true`, `meetings` becomes 3,757 links (adds full-name 731,
+alias 52; would queue 144) and `tasks` 1,446 (adds full-name 277, alias 31;
+would queue 44): 6,025 links, 2,770 notes, 722 would queue. Emails and threads
+are identical in both modes.
 
-Other counts:
+Breakdowns asked for:
 
-- 136 tombstones; 128 resolve, 8 did not. The `tombstones` phase repairs 1 and
-  queues 7.
-- **C1 exposure:** 8 person notes are dead ends (all unresolvable tombstones;
-  no note in the dump is tagged or typed non-human). 5 of them are the sole
-  claimant of an email address (5 addresses) — the cases where the first pass
-  would have let calendar ingest create a new person.
-- Emails: 1,553 bulk-labelled and 830 role-mailbox senders match nobody; 252
-  unknown senders; 31 senders are claimed by a dead-end note; 18 are the owner.
-- Threads: 158 rooms over 50 participants, 138 name-only rooms over 8. Every
-  thread link depends on the Matrix lookup or stored `participantIds`; the
-  number cannot be estimated offline.
-- Duplicates: 19 pairs (12 strong, 5 medium, 2 weak).
+- **Emails.** 348 links, all by exact address; **149 are on bulk-labelled mail**
+  (`extra.bulkLinked`; `excludeBulkLinks` would leave 199). **Role mailboxes:
+  1,744 senders skipped as `role-sender`, plus 35 where a person note holds the
+  role address (`role-address-claimed`, never linked).** 650 bulk-labelled mails
+  match nobody; 252 unknown senders; 20 senders are claimed by a dead-end note;
+  23 are the owner.
+- **Owner.** Meetings: 364 by `owner-full-name`, none by alias. Tasks: 173 by
+  `owner-full-name`, 295 by the configured single-token `owner-alias`. In
+  threads 549 participant entries are a nickname that is only an alias on the
+  owner's note: not linked and not queued.
+- **Tombstones.** 135 (the precise rule; one further note carries a bare
+  pointer and is reported as `pointerWithoutMarker`). 127 resolve. Of the 8
+  that do not: **1 repaired** (strong key), **3 queued**
+  (`tombstone-unresolved`), **4 left alone** (their target exists but is not a
+  live person). Offline, "dangling" is judged against the six dumped note kinds
+  only, so repaired + queued may be overstated.
+- **C1 exposure.** 8 dead-end person notes, all unresolvable tombstones; none is
+  tagged or typed non-human. 5 are the sole claimant of an email (5 addresses).
+- **The pointer-only note.** Because it is now a live person, the address it
+  shares with its successor is ambiguous: about 60 meeting attendee entries and
+  5 mails move from "linked" to "would queue" until that pair is merged (it is
+  one of the 13 strong duplicate pairs).
+- **Duplicates.** 20 pairs: 13 strong, 5 medium, 2 weak.
+- **Threads.** Every link depends on the Matrix lookup or stored
+  `participantIds`; it cannot be estimated offline. 158 rooms have over 50
+  participants, 138 name-only rooms have over 8.
 
-`repoint` and `normalize` are lower bounds: the dumps cover six note kinds (17
-linking notes were outside them).
+`repoint` and `normalize` are lower bounds: 17 linking notes were outside the
+dumps.
 
 ## Limitations
 
-- **Review queue size.** A default write run queues every name-only match
-  (about 2,100 rows on the audited vault). See runbook step 7.
+- **Review queue.** Nothing is queued unless a run passes `enqueue: true`; then
+  at most `PEOPLE_QUEUE_MAX_OPEN` (1,000) rows are open at once. On the audited
+  vault about 2,200 items would qualify.
+- **Tombstone repair and repoint take two runs** by design (stage 5).
+- **A stub whose pointer is a name** is a dead end on ingest; only the job
+  follows it.
+- **A live note with a bare merge pointer** is treated as a person; the address
+  it shares with its successor is ambiguous until the two are merged.
 - **Threads need ids.** Until `participantIds` are stored or the lookup has run,
   a thread cannot link. The lookup budget is 300 rooms per run, smallest first;
-  several runs are needed for 1,300 rooms.
+  several runs are needed for 1,300 rooms. A dry run performs the lookups too.
 - **Reversed existing links.** "Already linked" is directed. Where an agent
   wrote `person --attended-by--> meeting` (60 such links in the dump), the job
   adds `meeting --attended-by--> person` beside it.
