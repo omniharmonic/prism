@@ -55,6 +55,19 @@ type ViewMode = "triage" | "people" | "platforms";
 const THREAD_LIMIT = 500;
 const EMAIL_LIMIT = 200;
 
+/** Matches server identity.ts isTombstone/isNonHumanPerson (a98c9af).
+ * A merge pointer alone is not a tombstone; document-type people remain human.
+ * Filter this view, never the transparent notes API or the underlying graph. */
+function isLiveMessagePerson(note: Note): boolean {
+  const tags = note.tags ?? [];
+  const metadata = note.metadata ?? {};
+  return (
+    !tags.some(tag => ["merged-stub", "superseded", "non-human", "bot", "organization"].includes(tag))
+    && metadata.status !== "merged_into_canonical"
+    && metadata.type !== "bot" && metadata.type !== "organization"
+  );
+}
+
 /** Derive platform from metadata or fall back to tags (email notes lack metadata.platform). */
 function getPlatform(note: Note): string {
   const meta = (note.metadata || {}) as Record<string, unknown>;
@@ -155,7 +168,10 @@ function ScopedMessagesDashboard() {
 
   const threadNotes = threadsError ? undefined : loadedThreads;
   const emailNotes = emailsError ? undefined : loadedEmails;
-  const personNotes = peopleError ? undefined : loadedPeople;
+  const personNotes = useMemo(
+    () => peopleError ? undefined : loadedPeople?.filter(isLiveMessagePerson),
+    [peopleError, loadedPeople],
+  );
   const limited =
     (threadNotes?.length ?? 0) >= THREAD_LIMIT ||
     (emailNotes?.length ?? 0) >= EMAIL_LIMIT;
@@ -190,7 +206,8 @@ function ScopedMessagesDashboard() {
     for (const edge of graphData.edges) {
       if (
         edge.relationship !== "messages-with" &&
-        edge.relationship !== "email-from"
+        edge.relationship !== "email-from" &&
+        edge.relationship !== "email-to"
       )
         continue;
       const link: LinkData = {
