@@ -1,9 +1,11 @@
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import type { ContentType } from "../../lib/types";
+import "../ui/mobile-workspace.css";
 import {
   PanelLeft,
   Search,
-  Plus,
+  MessageSquare,
   Copy,
   MoreHorizontal,
   Info,
@@ -25,12 +27,7 @@ import { FontSwitch } from "../renderers/DocumentChrome";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat, isAskableNoteId } from "../../lib/agent/chatStore";
 
-/**
- * The floating glass command pill — the mobile signature. One frosted row of the
- * highest-frequency actions, docked in the thumb zone with content scrolling
- * beneath it. Depth (tabs, note actions, creation, settings) lives in bottom
- * sheets rather than a wrapped toolbar, so the bar itself is always one line.
- */
+/** Mobile destinations reuse the existing workspace routes and drawers. */
 export function MobileActionBar() {
   const {
     openTabs,
@@ -38,6 +35,9 @@ export function MobileActionBar() {
     setActiveTab,
     closeTab,
     toggleSidebar,
+    sidebarOpen,
+    contextPanelTab,
+    openTab,
     openCommandBar,
     contextPanelOpen,
     toggleContextPanel,
@@ -49,6 +49,8 @@ export function MobileActionBar() {
   const docFont = useUIStore((s) => s.docFont);
   const docFontSetter = useUIStore((s) => s.docFontSetter);
 
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const keyboardEditing = useKeyboardEditing();
   const [newOpen, setNewOpen] = useState(false);
   const [tabsOpen, setTabsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -69,8 +71,26 @@ export function MobileActionBar() {
 
   const moreItems: SheetItem[] = [
     {
+      icon: <FilePlus size={19} />,
+      label: "New page",
+      onClick: () => {
+        setMoreOpen(false);
+        setNewOpen(true);
+      },
+    },
+    {
+      icon: <Copy size={19} />,
+      label: "Open documents",
+      detail: String(openTabs.length),
+      onClick: () => {
+        setMoreOpen(false);
+        setTabsOpen(true);
+      },
+    },
+    {
       icon: <Info size={19} />,
       label: "Details & metadata",
+      startsGroup: true,
       onClick: () => openPanel("metadata"),
     },
     ...(agentChat
@@ -146,52 +166,50 @@ export function MobileActionBar() {
 
   return (
     <>
-      <div
-        className="absolute left-0 right-0 flex justify-center pointer-events-none"
-        style={{ bottom: 12, zIndex: "var(--z-sticky)" as unknown as number }}
-      >
-        <div className="command-pill pointer-events-auto flex items-center gap-0.5 px-1.5 py-1.5">
-          <PillButton label="Files" onClick={toggleSidebar}>
-            <PanelLeft size={20} />
-          </PillButton>
-          <PillButton label="Agent" onClick={() => openPanel("agent")}>
-            <Bot size={20} />
-          </PillButton>
-          <PillButton label="Search" onClick={openCommandBar}>
-            <Search size={20} />
-          </PillButton>
+      <nav aria-label="Mobile workspace" className="prism-mobile-navigation" hidden={keyboardEditing}>
+        <MobileButton label="Notes" active={sidebarOpen} onClick={toggleSidebar}>
+          <PanelLeft size={20} />
+        </MobileButton>
+        <MobileButton
+          label="Messages"
+          active={activeTab?.noteId === "vault-messages"}
+          onClick={() => {
+            useUIStore.setState({ sidebarOpen: false, contextPanelOpen: false });
+            openTab("vault-messages", "Messages", "vault-messages" as ContentType);
+          }}
+        >
+          <MessageSquare size={20} />
+        </MobileButton>
+        <MobileButton label="Search" onClick={openCommandBar}>
+          <Search size={20} />
+        </MobileButton>
+        <MobileButton
+          label="Agent"
+          active={contextPanelOpen && contextPanelTab === "agent"}
+          onClick={() => openPanel("agent")}
+        >
+          <Bot size={20} />
+        </MobileButton>
+        <MobileButton
+          buttonRef={moreButton}
+          label="More"
+          active={moreOpen || tabsOpen || newOpen || settingsOpen}
+          onClick={() => setMoreOpen(true)}
+        >
+          <MoreHorizontal size={20} />
+        </MobileButton>
+      </nav>
 
-          {/* Primary: new note */}
-          <button
-            onClick={() => setNewOpen(true)}
-            aria-label="Create new"
-            className="press focus-ring flex items-center justify-center flex-shrink-0 mx-0.5"
-            style={{
-              width: 46,
-              height: 38,
-              borderRadius: 999,
-              background: "var(--action-bg)",
-              color: "var(--action-fg)",
-              boxShadow: "0 2px 8px color-mix(in srgb, var(--color-accent) 45%, transparent)",
-            }}
-          >
-            <Plus size={22} />
-          </button>
-
-          <PillButton label="Tabs" onClick={() => setTabsOpen(true)} badge={openTabs.length || undefined}>
-            <Copy size={19} />
-          </PillButton>
-          <PillButton label="More" onClick={() => setMoreOpen(true)}>
-            <MoreHorizontal size={20} />
-          </PillButton>
-        </div>
-      </div>
-
-      {/* New content — reuses the full create flow (type → path, tasks, compose) */}
-      {newOpen && <NewContentMenu onClose={() => setNewOpen(false)} />}
+      {/* Existing title-first creation, all formats and email compose remain available. */}
+      {newOpen && <NewContentMenu returnFocus={moreButton.current} onClose={() => setNewOpen(false)} />}
 
       {/* Tab switcher */}
-      <BottomSheet open={tabsOpen} onClose={() => setTabsOpen(false)} title={`${openTabs.length} open ${openTabs.length === 1 ? "tab" : "tabs"}`}>
+      <BottomSheet
+        open={tabsOpen}
+        onClose={() => setTabsOpen(false)}
+        title={`Open documents · ${openTabs.length}`}
+        returnFocusRef={moreButton}
+      >
         <div className="pb-1">
           {openTabs.length === 0 && (
             <div className="px-5 py-6 text-sm text-center" style={{ color: "var(--text-muted)" }}>
@@ -201,35 +219,25 @@ export function MobileActionBar() {
           {openTabs.map((tab) => {
             const active = tab.id === activeTabId;
             return (
-              <div
-                key={tab.id}
-                className="interactive flex items-center gap-3 px-5"
-                style={{
-                  minHeight: 50,
-                  background: active ? "var(--surface-selected)" : undefined,
-                }}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setTabsOpen(false);
-                }}
-              >
-                {tab.isDirty && (
-                  <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--color-accent)", flexShrink: 0 }} />
-                )}
-                <span
-                  className="flex-1 min-w-0 truncate"
-                  style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: active ? 550 : 440 }}
-                >
-                  {tab.title}
-                </span>
+              <div key={tab.id} className="prism-mobile-document-row" data-active={active}>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(tab.id);
+                  type="button"
+                  className="prism-mobile-document-open"
+                  aria-label={`Open ${tab.title}${tab.isDirty ? ", unsaved changes" : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setTabsOpen(false);
                   }}
-                  aria-label="Close tab"
-                  className="interactive flex items-center justify-center flex-shrink-0"
-                  style={{ width: 30, height: 30, color: "var(--text-muted)" }}
+                >
+                  {tab.isDirty && <span className="prism-mobile-document-dirty" aria-hidden="true" />}
+                  <span className="prism-mobile-document-title">{tab.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="prism-mobile-document-close"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={() => closeTab(tab.id)}
                 >
                   <X size={16} />
                 </button>
@@ -241,13 +249,13 @@ export function MobileActionBar() {
               setTabsOpen(false);
               setNewOpen(true);
             }}
-            className="interactive w-full flex items-center gap-3.5 px-5"
-            style={{ minHeight: 50, color: "var(--color-accent)", borderTop: "1px solid var(--glass-border)", marginTop: 4, fontWeight: 500 }}
+            type="button"
+            className="prism-mobile-new-page"
           >
             <span className="flex items-center justify-center flex-shrink-0" style={{ width: 22 }}>
               <FilePlus size={19} />
             </span>
-            New note
+            New page
           </button>
         </div>
       </BottomSheet>
@@ -256,11 +264,14 @@ export function MobileActionBar() {
       <BottomSheet
         open={moreOpen}
         onClose={() => setMoreOpen(false)}
-        title={activeTab?.title}
+        title={activeTab?.title || "Page actions"}
+        returnFocusRef={moreButton}
         header={
           docFontSetter ? (
             <div className="flex items-center justify-between">
-              <span className="text-sm" style={{ color: "var(--text-secondary)" }}>Reading font</span>
+              <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                Reading font
+              </span>
               <FontSwitch value={docFont} onChange={docFontSetter} />
             </div>
           ) : undefined
@@ -273,50 +284,62 @@ export function MobileActionBar() {
   );
 }
 
-function PillButton({
+function MobileButton({
   label,
   onClick,
-  badge,
+  active = false,
   children,
+  buttonRef,
 }: {
   label: string;
   onClick: () => void;
-  badge?: number;
+  active?: boolean;
   children: React.ReactNode;
+  buttonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <button
+      ref={buttonRef}
+      type="button"
+      aria-label={label}
+      aria-pressed={active}
       onClick={(event) => {
-        // Safari pointer activation does not focus buttons. Give modal drawers
-        // a real launcher to restore, matching keyboard and Chromium behavior.
         event.currentTarget.focus({ preventScroll: true });
         onClick();
       }}
-      aria-label={label}
-      title={label}
-      className="press interactive focus-ring relative flex items-center justify-center flex-shrink-0"
-      style={{ width: 44, height: 38, borderRadius: 999, color: "var(--text-secondary)" }}
     >
       {children}
-      {badge !== undefined && (
-        <span
-          className="absolute flex items-center justify-center"
-          style={{
-            top: 2,
-            right: 2,
-            minWidth: 15,
-            height: 15,
-            padding: "0 4px",
-            borderRadius: 999,
-            fontSize: 9.5,
-            fontWeight: 700,
-            background: "var(--color-accent)",
-            color: "#fff",
-          }}
-        >
-          {badge}
-        </span>
-      )}
+      <span>{label}</span>
     </button>
   );
+}
+
+/** Let a software-keyboard composition own the bottom edge. Pinch zoom alone
+ * never hides navigation, and neither the editor nor its reserved inset changes. */
+function useKeyboardEditing() {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const element = document.activeElement as HTMLElement | null;
+      const input = !!element?.closest('textarea,input,[contenteditable="true"]');
+      setEditing(
+        input && Math.abs(vv.scale - 1) < 0.05 && window.innerHeight - vv.height - vv.offsetTop > 120,
+      );
+    };
+    const focus = () => queueMicrotask(update);
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    document.addEventListener("focusin", focus);
+    document.addEventListener("focusout", focus);
+    update();
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      document.removeEventListener("focusin", focus);
+      document.removeEventListener("focusout", focus);
+    };
+  }, []);
+  return editing;
 }
