@@ -156,10 +156,13 @@ export default function PresentationPreview({
         <div className="min-h-0 flex-1 overflow-auto bg-[var(--glass)] p-2">
           <iframe
             ref={frame}
-            sandbox="allow-same-origin"
+            // WebKit requires allow-scripts even for React listeners installed by
+            // this trusted parent. The document CSP still forbids all scripts
+            // and inline handlers originating inside the preview itself.
+            sandbox="allow-same-origin allow-scripts"
             title="Publication preview viewport"
             onLoad={initFrame}
-            srcDoc="<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body></body></html>"
+            srcDoc={`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>`}
             style={{
               display: "block",
               width: phone ? 390 : "100%",

@@ -1,3 +1,4 @@
+import { PublicationNavigationEditor } from "./PublicationNavigationEditor";
 import { Suspense, useEffect, useRef, useState } from "react";
 import type {
   CollabSharing,
@@ -275,6 +276,19 @@ export function PresentationDraft({
                 </label>
               ))}
             </div>
+            {sharing.previewPublication && (
+              <PublicationNavigationEditor
+                slug={pub.slug}
+                sharing={sharing}
+                value={draft.theme?.navigation}
+                onChange={(navigation) => {
+                  const next = { ...draft.theme };
+                  if (navigation) next.navigation = navigation;
+                  else delete next.navigation;
+                  update({ theme: next });
+                }}
+              />
+            )}
           </fieldset>
           <div className="flex flex-wrap items-center gap-2">
             <Button

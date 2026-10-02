@@ -63,15 +63,33 @@ window.fetch = async (input, init) => {
             ? "Other publication"
             : "Prism field guide",
         template: params.get("template") ?? "wiki",
-        theme: params.has("malformed-theme")
+        theme: params.has("custom-navigation")
           ? {
-              accent: { invalid: true },
-              logoUrl: 42,
-              font: ["serif"],
-              coverUrl: {},
-              description: 3,
+              navigation: {
+                version: 1,
+                sections: [
+                  {
+                    title: "Start here",
+                    noteIds: ["second", "secret-private"],
+                  },
+                  {
+                    title: "PRIVATE_ONLY_SECTION",
+                    noteIds: ["secret-private-other"],
+                  },
+                ],
+              },
             }
-          : null,
+          : params.has("malformed-navigation")
+            ? { navigation: { version: 99, sections: "invalid" } }
+            : params.has("malformed-theme")
+              ? {
+                  accent: { invalid: true },
+                  logoUrl: 42,
+                  font: ["serif"],
+                  coverUrl: {},
+                  description: 3,
+                }
+              : null,
         homeNoteId: locked ? null : (notes[0]?.id ?? null),
         passwordRequired: controls.protected,
         locked,

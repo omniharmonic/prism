@@ -214,3 +214,58 @@ for (const layout of ["wiki", "docs", "landing"]) {
     }
   });
 }
+
+for (const template of ["wiki", "docs", "landing"]) {
+  test(`${template} resolves navigation only from eligible pages and preserves unassigned content`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/e2e-fixtures/publication.html?custom-navigation&template=${template}`,
+    );
+    await expect(
+      page.getByText("PRISM_PUBLICATION_guide_first_BODY", { exact: true }),
+    ).toBeVisible();
+    if (template === "landing") {
+      await expect(
+        page
+          .getByRole("navigation", { name: "Collection pages" })
+          .getByRole("button"),
+      ).toHaveText([/Second page/, /First page/]);
+    } else {
+      await expect(
+        page
+          .getByRole("region", { name: "Start here", exact: true })
+          .getByRole("button", { name: "Second page", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "🏠 First page", exact: true }),
+      ).toBeVisible();
+    }
+    await expect(
+      page.getByText("PRIVATE_ONLY_SECTION", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByText("secret-private", { exact: true })).toHaveCount(
+      0,
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTestId("wiki-drawer-open").click();
+    await expect(
+      page.getByRole("region", { name: "Start here", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("region", { name: "Start here", exact: true })
+      .getByRole("button", { name: "Second page", exact: true })
+      .click();
+    await expect(
+      page.getByText("PRISM_PUBLICATION_guide_second_BODY", { exact: true }),
+    ).toBeVisible();
+  });
+}
+test("unknown navigation versions fall back to the path tree", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/publication.html?malformed-navigation");
+  await expect(
+    page.getByRole("button", { name: "second", exact: true }),
+  ).toBeVisible();
+});

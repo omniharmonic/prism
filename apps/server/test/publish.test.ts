@@ -697,3 +697,55 @@ test("private presentation preview uses actual reader membership and never chang
   const live=await readJson(await publish.request("/draft-preview"));
   assert.equal(live.title,"Live title");assert.equal(live.locked,true);assert.deepEqual(live.notes,[]);
 });
+
+test("versioned navigation retains draft order but public projections drop private, excluded and unavailable references", async () => {
+  seedWiki();
+  fv.put({id:"private-nav",path:"wiki/private.md",tags:["wiki"],content:"# NEVER_EXPOSE_NAV_TITLE",metadata:{prism_visibility:"private"}});
+  publishTag("nav-site", "wiki");
+  await ownerReq("/publications/nav-site/settings", {method:"PUT",body:JSON.stringify({excludeNoteIds:["n2"]})});
+  const path = "/publications/nav-site/presentation";
+  const navigation = {version:1, sections:[
+    {title:"First section",noteIds:["n2","n1","private-nav","unknown-nav"]},
+    {title:"HIDDEN_SECTION_LABEL",noteIds:["absent-nav"]},
+  ]};
+  const saved = await readJson(await ownerReq(path+"/draft",{method:"POST",body:JSON.stringify({presentation:{title:"Navigation site",template:"docs",theme:{navigation}},draftRevision:0,liveRevision:0})}));
+  assert.deepEqual(saved.draft.theme.navigation,navigation);
+  const preview = await readJson(await ownerReq(path+"/preview?draftRevision=1"));
+  assert.deepEqual(preview.manifest.theme.navigation,{version:1,sections:[{title:"First section",noteIds:["n1"]}]});
+  await ownerReq(path+"/publish",{method:"POST",body:JSON.stringify({draftRevision:1,liveRevision:0})});
+  const live = await readJson(await publish.request("/nav-site"));
+  assert.deepEqual(live.theme.navigation,preview.manifest.theme.navigation);
+  for (const value of [preview,live]) for (const secret of ["private-nav","unknown-nav","absent-nav","NEVER_EXPOSE_NAV_TITLE","HIDDEN_SECTION_LABEL"]) assert.ok(!JSON.stringify(value).includes(secret));
+  const history = await readJson(await ownerReq(path));
+  assert.deepEqual(history.history[0].presentation.theme.navigation,navigation);
+  const restored = await readJson(await ownerReq(path+"/restore",{method:"POST",body:JSON.stringify({revision:0,draftRevision:2,liveRevision:1})}));
+  assert.equal(restored.draft.theme,null);
+  assert.deepEqual((await readJson(await publish.request("/nav-site"))).theme.navigation,live.theme.navigation);
+  fv.put({id:"new-page",path:"wiki/new.md",tags:["wiki"],content:"# Newly eligible"});
+  const expanded = await readJson(await publish.request("/nav-site"));
+  assert.ok(expanded.notes.some((n:{id:string})=>n.id === "new-page"));
+  assert.deepEqual(expanded.theme.navigation,live.theme.navigation);
+  await ownerReq("/publications/nav-site/password", {method:"PUT",body:JSON.stringify({password:"fixture-password"})});
+  const locked = await readJson(await publish.request("/nav-site"));
+  assert.equal(locked.locked,true);
+  assert.deepEqual(locked.theme.navigation,{version:1,sections:[]});
+});
+
+test("navigation validation bounds sections and references and does not mutate revisions on invalid writes", async () => {
+  seedWiki(); publishTag("nav-validation","wiki");
+  const path = "/publications/nav-validation/presentation";
+  for (const navigation of [
+    {version:2,sections:[]},
+    {version:1,sections:[{title:"",noteIds:[]}]},
+    {version:1,sections:[{title:"x".repeat(81),noteIds:[]}]},
+    {version:1,sections:[{title:"One",noteIds:["n1","n1"]}]},
+    {version:1,sections:[{title:"One",noteIds:["n1"]},{title:"Two",noteIds:["n1"]}]},
+    {version:1,sections:[{title:"One",noteIds:["n1"],noteTitles:["Private title"]}]},
+    {version:1,sections:Array.from({length:9},(_,i)=>({title:String(i),noteIds:[]}))},
+    {version:1,sections:[{title:"One",noteIds:Array.from({length:65},(_,i)=>String(i))}]},
+  ]) {
+    assert.equal((await ownerReq(path+"/draft",{method:"POST",body:JSON.stringify({presentation:{title:"Valid title",template:"wiki",theme:{navigation}},draftRevision:0,liveRevision:0})})).status,400);
+  }
+  const state = await readJson(await ownerReq(path));
+  assert.equal(state.draftRevision,0); assert.equal(state.draft,null);
+});

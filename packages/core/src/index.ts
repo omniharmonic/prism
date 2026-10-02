@@ -231,3 +231,5 @@ export { useAgentDocumentSnapshot } from "./lib/agent/documentSnapshots";
 export type { MatrixMessage, MessageBatch } from "./lib/matrix/types";
 
 export { PublicationPreviewProvider, type PublicationPreviewProps } from "./data/PublicationPreviewContext";
+
+export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";

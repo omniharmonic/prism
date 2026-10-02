@@ -1,3 +1,4 @@
+import { readerPresentationTheme } from "../publication-presentation";
 import { publicationGraph, publicationMap } from "../publication-projections";
 import { getPresentation, savePresentationDraft, publishPresentationDraft, restorePresentationDraft, PresentationError } from "../publication-presentation";
 /**
@@ -1389,7 +1390,7 @@ acl.get("/publications/:slug/presentation/preview", async (c) => {
     const mapFeatures = publicationMap(notes);
     return c.json({
       manifest: {slug:pub.id,title:state.draft.title || nav.find(n=>n.id===home)?.title || pub.resource,
-        template:state.draft.template,theme:state.draft.theme,homeNoteId:home,passwordRequired:!!pub.password_hash,locked:false,
+        template:state.draft.template,theme:readerPresentationTheme(state.draft.theme, nav.map(n => n.id)),homeNoteId:home,passwordRequired:!!pub.password_hash,locked:false,
         notes:nav,mapFeatureCount:mapFeatures.length},
       note: selected ? {...selected,title:navTitle(selected)} : null,
       graph:publicationGraph(notes),mapFeatures,

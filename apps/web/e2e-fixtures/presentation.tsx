@@ -33,6 +33,7 @@ state =
 const controls = {
   fail: false,
   previewFail: false,
+  candidatesFail: false,
   hold: false,
   release: null as (() => void) | null,
   published: 0,
@@ -130,11 +131,21 @@ window.fetch = async (input, init) => {
       });
     return result ? json(result) : json({}, 409);
   }
+  if (path.endsWith("/preview") && controls.candidatesFail)
+    return json({ error: "Candidate list unavailable" }, 503);
   if (path.endsWith("/preview"))
     return json({
       slug: "guide",
       vaultId: "primary",
-      notes: notes.map((n) => ({ ...n, excluded: false })),
+      notes: [
+        ...notes.map((n) => ({ ...n, excluded: false })),
+        {
+          id: "excluded",
+          title: "EXCLUDED_PAGE_TITLE",
+          path: "guide/excluded.md",
+          excluded: true,
+        },
+      ],
       privateExcludedCount: 1,
       publishedCount: 2,
       expired: false,

@@ -1,3 +1,4 @@
+import { readerPresentationTheme } from "../publication-presentation";
 import { publicationGraph, publicationMap, geometryOf, geoOf } from "../publication-projections";
 /**
  * Public publication router (mounted at /p by the integrator).
@@ -179,7 +180,7 @@ publish.get("/:slug", async (c) => {
     slug: pub.id,
     title: pub.title || homeTitle || pub.resource,
     template: pub.template,
-    theme: pub.theme ? (JSON.parse(pub.theme) as unknown) : null,
+    theme: readerPresentationTheme(pub.theme ? JSON.parse(pub.theme) : null, nav.map(n => n.id)),
     homeNoteId,
     passwordRequired,
     locked,
