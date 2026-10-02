@@ -124,7 +124,8 @@ function seed(v: MemVault): void {
   v.put({ id: "proj-1", path: "vault/projects/proj-one", tags: ["project"], metadata: { name: "Project One" } });
   v.put({ id: "k1", path: "vault/tasks/k1", tags: ["task"], metadata: { assigned: "Ozzy", project: "proj-one" } });
   v.put({ id: "k2", path: "vault/tasks/k2", tags: ["task"], metadata: { assigned: "Alex Example, Casey Example", project: "Unknown" } });
-  v.put({ id: "k3", path: "vault/tasks/k3", tags: ["task"], metadata: { assigned: "Drew" } });
+  v.put({ id: "k3", path: "vault/tasks/k3", tags: ["task"], metadata: { assigned: "Drew", project: "Second Project" } });
+  v.put({ id: "proj-2", path: "vault/projects/p2/index", tags: ["project"], metadata: { title: "Second Project" } });
   v.put({ id: "k4", path: "vault/tasks/k4", tags: ["task"], metadata: { assigned: "[[vault/people/Blake Example]]", project: "[[vault/projects/proj-one]]" } });
 
   v.put({ id: "n1", path: "vault/meetings/n1", tags: ["meeting"] }, [
@@ -272,9 +273,9 @@ test("default run: only strong keys link; names go to review; what each phase do
   // tasks: the owner by configured alias; other names are review items; a wikilink is exact.
   assert.deepEqual(v.out("k1"), ["assigned-to->p-owner", "belongs-to->proj-1"]);
   assert.deepEqual(v.out("k2"), []);
-  assert.deepEqual(v.out("k3"), []);
+  assert.deepEqual(v.out("k3"), ["belongs-to->proj-2"], "a project is found by its `title` (its name), not only its path");
   assert.deepEqual(v.out("k4"), ["assigned-to->p-blake", "belongs-to->proj-1"]);
-  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, path: 1, project: 2 });
+  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, path: 1, project: 3 });
   assert.equal(j.report.tasks.skipped["project-unknown"], 1);
 
   // normalize: only unambiguous synonyms; the rest reported, untouched.
@@ -300,7 +301,7 @@ test("allowNameLinks: names link for meetings and tasks ONLY — never for mail 
   assert.deepEqual(v.out("t1"), ["attended-by->p-alex", "attended-by->p-owner"], "the generic attendee 'Guest' is ignored");
   assert.deepEqual(v.out("k2"), ["assigned-to->p-alex", "assigned-to->p-casey"]);
   assert.deepEqual(j.report.meetings.byEvidence, { email: 1, "owner-alias": 1, "full-name": 2 });
-  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, "full-name": 2, path: 1, project: 2 });
+  assert.deepEqual(j.report.tasks.byEvidence, { "owner-alias": 1, "full-name": 2, path: 1, project: 3 });
   // Sender-controlled display names still never link.
   assert.deepEqual(v.out("e4"), ["email-to->p-alex"]);
   assert.deepEqual(v.out("th5"), []);

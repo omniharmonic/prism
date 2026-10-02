@@ -908,7 +908,8 @@ function projectIndex(projects: Note[]) {
     const leaf = segs.at(-1) ?? "";
     put(slugKey(GENERIC_LEAF.has(leaf.toLowerCase()) ? (segs.at(-2) ?? "") : leaf), p);
     const md = p.metadata ?? {};
-    for (const v of [...strings(md.name), ...strings(md.slug), ...strings(md.aliases).flatMap((s) => s.split(","))]) put(slugKey(v), p);
+    // A PROJECT's `title` is its name (unlike a person's, which is a job title).
+    for (const v of [...strings(md.name), ...strings(md.title), ...strings(md.slug), ...strings(md.aliases).flatMap((s) => s.split(","))]) put(slugKey(v), p);
   }
   return (raw: string): Note | "ambiguous" | null => {
     const v = raw.trim().replace(/^\[\[|\]\]$/g, "").split("|")[0]!.trim();
@@ -933,7 +934,7 @@ function assigneeValues(md: Record<string, unknown>): string[] {
 
 async function planTasks(ctx: Ctx, rep: PhaseReport): Promise<Plan> {
   const tasks = await list(ctx, { tags: ["task"], includeLinks: true, includeMetadata: ["assigned", "assignee", "assigneeEmail", "assignee_email", "project"] });
-  const projects = await list(ctx, { tags: ["project"], includeMetadata: ["name", "slug", "aliases"] });
+  const projects = await list(ctx, { tags: ["project"], includeMetadata: ["name", "title", "slug", "aliases"] });
   const findProject = projectIndex(projects);
   const plan = new Plan();
   const o: PlanOpts = { origin: "backfill:tasks", allowName: ctx.job.allowNameLinks };

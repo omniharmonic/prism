@@ -185,9 +185,9 @@ export class ForwardLinker {
     if (project) {
       if (!this.projects) {
         this.projects = new Map();
-        for (const p of await this.vault.listNotes({ tags: ["project"], includeMetadata: ["name", "slug", "aliases"] })) {
+        for (const p of await this.vault.listNotes({ tags: ["project"], includeMetadata: ["name", "title", "slug", "aliases"] })) {
           const md = p.metadata ?? {};
-          const keys = new Set([slugKey(p.path?.split("/").pop() ?? ""), ...[...strings(md.name), ...strings(md.slug)].map(slugKey)]);
+          const keys = new Set([slugKey(p.path?.split("/").pop() ?? ""), ...[...strings(md.name), ...strings(md.title), ...strings(md.slug)].map(slugKey)]);
           for (const k of keys) if (k) this.projects.set(k, [...(this.projects.get(k) ?? []), p]);
         }
       }
