@@ -1,6 +1,6 @@
 # Current release and remaining work
 
-Snapshot: **2026-10-02, integrated candidate `9c84b6c`**. This status supersedes older current-state summaries; historical checkpoints remain evidence of their named versions. The [approved full plan](POST-MIGRATION-PLAN.md) remains in progress. This is not a claim of full Notion parity.
+Snapshot: **2026-10-02, deployed redesign `cb3178a`; acceptance continuing**. This status supersedes older current-state summaries; historical checkpoints remain evidence of their named versions. The [approved full plan](POST-MIGRATION-PLAN.md) remains in progress. This is not a claim of full Notion parity.
 
 ## Normal use and release state
 
@@ -8,12 +8,12 @@ Snapshot: **2026-10-02, integrated candidate `9c84b6c`**. This status supersedes
 
 | Artifact | Current state |
 | --- | --- |
-| Production web | **`86461c9`**, unchanged by this candidate. |
-| Production server | **`6445136` behavior**, unchanged; the equivalent escaped-NUL source cleanup did not require a restart. |
-| Installed desktop | **`86461c9`**, locally signed in Applications. Its recorded acceptance includes saved sign-in, private editing, browser/native collaboration, document-bound read-only agent, boards, canvas and private preview. |
-| Integrated candidate | **`9c84b6c`** on `feat/workspace-experience`, including the redesigned frontend, combined backend through `98287de`, and D06 navigation adapter `7c7c2b4`. **Not deployed or installed.** |
+| Production web | **`252657b` application source**, `index-BeF6y7Xx.js`, deployed through merge `cb3178a`. Authenticated PWA activated the new asset set. |
+| Production server | **`cb3178a`**, including reviewed backend `98287de` and D06 adapter. Explicit `COLLAB_SUGGEST_ENFORCED=false`; optional linking/graph flags remain off. Local/public health and eight enabled workers pass. |
+| Installed desktop | Final **`252657b`** build, locally signed and installed in Applications. Startup reached saved sign-in; changed-signature Keychain approval and actual updated workspace checks remain pending. Prior `86461c9` evidence is historical. |
+| Rollback | Integrity-checked online DB, previous web, server settings and installed app in ignored `apps/server/data/workspace-experience/releases/5224aab`. Zero active turns before the single server restart. Preserve subsequent user writes on rollback. |
 
-The deployed release passed 218 Chromium journeys, application/e2e typechecks, web/macOS builds, six packaged Chromium/WebKit startup checks and named production checks. These certify that release, not the later candidate. See [release checkpoints](RELEASE-CHECKPOINTS.md).
+The earlier `86461c9` release passed 218 Chromium journeys and its named native/production checks. Current verification is recorded below and in [release checkpoints](RELEASE-CHECKPOINTS.md); earlier native success does not certify the new installed app.
 
 ## Integrated redesign against the acceptance matrix
 
@@ -31,11 +31,11 @@ The deployed release passed 218 Chromium journeys, application/e2e typechecks, w
 - Root reports **1,684/1,684 combined server tests passed** in 48 seconds after the reviewed backend and publishing contract integration. The reserved D06 slice independently passed 47 publishing/multi-vault checks and server typecheck. These use test data; neither count establishes production acceptance.
 - The all-files frontend run at `373d1fd` yielded 1,046 passes, two native-mode-only skips and four failures. The real Safari Share-focus issue and obsolete/unsupported fixture assumptions were corrected; 36 affected sharing/review/wikilink checks then passed. Later source slices have targeted two-engine evidence, not a claimed second complete fixture pass.
 - Publishing compact/navigation suites passed 45 cases per engine; the final spacing/capture follow-up passed eight per engine. Companion/composer resize checks passed 28 across both engines. Actual fictional screenshots were inspected against the approved boards.
-- Latest recorded earlier bundle checkpoint `58b68ac` passed web/native builds, static verifiers and six packaged startup/recovery checks. **Final combined builds, authenticated production web journeys and installed WKWebView acceptance remain pending.** Root is building follow-up `252657b` (narrow publication heading scale); no result is claimed here.
+- Final application source `252657b` passed all application/e2e typechecks, web/Mac builds, native/client static verifiers, six packaged Chromium/WebKit startup checks and agent/host/event/media verifiers. The final combined publishing/companion/collaboration batch passed **124 Chromium/WebKit journeys**. Production web confirmed contextual creation UI, saved private document edits, responsive draft preservation, sender groups, unsent context attachment, publishing save/preview/publish/restore and privacy boundaries. Actual updated WKWebView acceptance remains pending.
 
 ## Open release and roadmap gates
 
-1. Deploy the reviewed transcript and publishing contracts before or together with their frontend consumers. The transcript provider must not run against the old server's absent review endpoint. Verify the actual installed native publication preview and transcript write/recovery support; fixture WebKit is not WKWebView evidence.
+1. The reviewed transcript and publishing contracts are deployed with their frontend consumers. Complete updated installed-app acceptance after Keychain approval. A real agent turn failed with “OAuth session expired and could not be refreshed”; the user has been asked to renew the Claude CLI login before retry. Its local auth-status alone is not proof of a working generation. Native publication preview and transcript write/recovery still require named live evidence.
 2. **Keep `COLLAB_SUGGEST_ENFORCED=false` for the initial combined rollout.** The new server defaults enforcement on, while the frontend human-command replacement remains inactive. Human “Can suggest” still requires the trusted-collaborator disclosure. Authoritative actor/audience identity, compatible expected-actor binding, native bearer/capability alignment and pre-sync retired-cache protection remain activation gates. Basic failed-comment-store → unload → identical retry recovery is already implemented; it is not a missing-backend request. Preserved replies may need honest unanchored recovery presentation.
 3. **C07 confirmed task extraction/creation remains a contract gap.** Draft replies and summaries do not satisfy it. Ordinary page/task quick-add and boards remain available.
 4. Real phone keyboard/IME/dictation/PWA, actual browser 200% zoom, remaining native extras, broader controlled provider journeys and concurrent multi-reviewer evidence remain unfinished. Reflow screenshots and fixture test counts cannot close these gates.
