@@ -16,6 +16,9 @@
  *   - Matrix user id (lowercased) from `matrix`, `matrixId`, `matrixRoomIds`, `channels.*`;
  *   - normalized name from `metadata.name`, the path leaf, and the title line;
  *   - the exact person path the desktop would create (`vault/people/<slug>`).
+ * (since the identity layer, src/identity.ts, the index also folds merged
+ * tombstones into their canonical person and reads `aliases`, `telegram`,
+ * `phone` and bridge-puppet ids).
  * Exact external identities are verified only when every claimant agrees.
  * Name/path matches are review candidates, never automatic aliases. A true
  * miss is created with `if_exists: "ignore"`; a returned existing note must
@@ -25,6 +28,7 @@
  * automated/role mailboxes) are the desktop's, byte-for-byte.
  */
 import type { IfExists, Note } from "../parachute";
+import { IdentityIndex } from "../identity";
 
 /** The vault surface person linking needs (tests inject a fake). */
 export interface PeopleVault {
@@ -97,39 +101,35 @@ export function creationRefusal(name: string, email?: string | null): string | n
 
 // ── the per-pass index ───────────────────────────────────────────────────────
 
-function strings(v: unknown): string[] {
-  if (typeof v === "string") return [v];
-  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
-  return [];
-}
-
-function titleOf(n: Note): string | null {
-  if (typeof n.displayTitle === "string" && n.displayTitle) return n.displayTitle;
-  const first = (n.content ?? "").split("\n")[0] ?? "";
-  return first.startsWith("# ") && first.length > 2 ? first.slice(2) : null;
-}
-
 export interface FindOrCreateResult {
   id: string;
   created: boolean;
 }
 
-export interface PersonLookup { name?: string | null; email?: string | null; matrixId?: string | null }
+export interface PersonLookup { name?: string | null; email?: string | null; matrixId?: string | null; telegram?: string | null; phone?: string | null }
 export type PersonResolution =
   | { status: "verified"; person: Note; evidence: Array<"email" | "matrix"> }
   | { status: "ambiguous" | "candidates"; candidates: Note[] }
   | { status: "missing" };
 
+/**
+ * The per-pass people lookup. Since the identity layer (src/identity.ts) it is a
+ * thin shell over `IdentityIndex`, which is what makes it TOMBSTONE-AWARE: a
+ * merged stub (`merged-stub` / `superseded` / `merged_into`) no longer claims an
+ * email or Matrix id — its keys resolve to the person it was merged into — and
+ * `aliases`, `telegram`, `phone` and bridge-puppet ids are indexed too. The
+ * contract is unchanged: only an exact external identity is `verified`; a name
+ * or path match yields review `candidates`, never a link.
+ */
 export class PeopleIndex {
-  private byEmail = new Map<string, Map<string, Note>>();
-  private byMatrix = new Map<string, Map<string, Note>>();
-  private byName = new Map<string, Map<string, Note>>();
-  private byPath = new Map<string, Map<string, Note>>();
+  readonly identity: IdentityIndex;
+  private ids = new Set<string>();
   /** Person notes this index created (tests + pass logging). */
   created = 0;
 
   constructor(notes: Note[] = []) {
-    for (const n of notes) this.add(n);
+    this.identity = new IdentityIndex(notes);
+    for (const n of notes) this.ids.add(n.id);
   }
 
   /** Build from every person-tagged note in the vault — one call, no cap. */
@@ -138,53 +138,37 @@ export class PeopleIndex {
   }
 
   get size(): number {
-    return this.byPath.size;
+    return this.ids.size;
   }
 
   /** Retain every claimant: insertion order never chooses a canonical person. */
   add(n: Note): void {
-    const set = (map: Map<string, Map<string, Note>>, key: string) => {
-      const bucket = map.get(key) ?? new Map<string, Note>();
-      bucket.set(n.id, n);
-      map.set(key, bucket);
-    };
-    const md = (n.metadata ?? {}) as Record<string, unknown>;
-    const ch = (md.channels && typeof md.channels === "object" ? md.channels : {}) as Record<string, unknown>;
-    for (const e of [...strings(md.email), ...strings(md.emails), ...strings(md.contact), ...strings(ch.email)]) {
-      if (e.includes("@")) set(this.byEmail, normalizeEmail(e));
-    }
-    const mids = [...strings(md.matrix), ...strings(md.matrixId), ...strings(md.matrixRoomIds)];
-    for (const [k, v] of Object.entries(ch)) if (k !== "email") mids.push(...strings(v));
-    for (const m of mids) if (m.startsWith("@") || m.startsWith("!")) set(this.byMatrix, m.trim().toLowerCase());
-    const names = [...strings(md.name)];
-    if (n.path) names.push(n.path.split("/").pop() ?? "");
-    const t = titleOf(n);
-    if (t) names.push(t);
-    for (const nm of names) {
-      const k = normalizeName(nm);
-      if (k) set(this.byName, k);
-    }
-    set(this.byPath, (n.path ?? `#${n.id}`).toLowerCase());
+    this.ids.add(n.id);
+    this.identity.add(n);
   }
 
   /** Exact external identity is evidence. A name/path supplies candidates only. */
   resolve(q: PersonLookup): PersonResolution {
     const exact = new Map<string, Note>();
     const evidence: Array<"email" | "matrix"> = [];
-    const add = (bucket: Map<string, Note> | undefined, kind: "email" | "matrix") => {
-      if (bucket?.size) evidence.push(kind);
-      for (const [id, person] of bucket ?? []) exact.set(id, person);
-    };
-    if (q.email) add(this.byEmail.get(normalizeEmail(q.email)), "email");
-    if (q.matrixId) add(this.byMatrix.get(q.matrixId.trim().toLowerCase()), "matrix");
+    const keys = IdentityIndex.queryKeys(q);
+    // The legacy linker also matched a room id stored on the person.
+    if (q.matrixId?.trim().startsWith("!")) keys.push({ kind: "matrix", value: q.matrixId.trim().toLowerCase() });
+    for (const k of keys) {
+      const bucket = this.identity.claimants(k);
+      const kind = k.kind === "email" ? "email" : "matrix";
+      if (bucket.length && !evidence.includes(kind)) evidence.push(kind);
+      for (const person of bucket) exact.set(person.id, person);
+    }
     const ordered = (notes: Iterable<Note>) => [...notes].sort((a, b) => a.id.localeCompare(b.id));
     if (exact.size > 1) return { status: "ambiguous", candidates: ordered(exact.values()) };
     if (exact.size === 1) return { status: "verified", person: [...exact.values()][0]!, evidence };
     if (q.name) {
       const clean = cleanDisplayName(q.name);
-      const candidates = new Map(this.byName.get(normalizeName(clean)) ?? []);
-      const atPath = this.byPath.get(`vault/people/${rustSanitizePath(clean)}`.toLowerCase());
-      for (const [id, person] of atPath ?? []) candidates.set(id, person);
+      const candidates = new Map(this.identity.named(clean).map((p) => [p.id, p]));
+      const atPath = this.identity.get(`vault/people/${rustSanitizePath(clean)}`);
+      const person = atPath ? this.identity.canonicalOf(atPath) : null;
+      if (person) candidates.set(person.id, person);
       if (candidates.size) return { status: "candidates", candidates: ordered(candidates.values()) };
     }
     return { status: "missing" };
