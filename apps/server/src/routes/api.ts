@@ -25,6 +25,7 @@ import { ensureTree, renderTree, etagMatches, treeUpsertNote, treeRemoveNote, tr
 import { canvasApi } from "./canvas";
 import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
+import { humanCollabApi } from "./human-collab";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 
@@ -174,6 +175,9 @@ async function coalescedGet(target: string, init: RequestInit): Promise<ProxiedR
  * note they cannot view is never emitted. `ETag`/`If-None-Match` gives 304.
  */
 /** Bounded, permission-filtered graph response. No note bodies or hidden totals. */
+// Human collaboration commands (suggest-only enforcement): registered before the
+// owner/admin passthrough below, which would otherwise proxy the path to the vault.
+api.route("/collab", humanCollabApi);
 api.route("/people", peopleApi);
 api.route("/threads", threadsApi);
 api.use("/canvas/*", async (c, next) => {

@@ -46,6 +46,8 @@ import {
   grantsForCapability,
   getDocState,
   saveDocState,
+  saveDocStateConfirming,
+  dropUnconfirmedCollabReceipts,
   getFederatedByKey,
   getPeer,
   grantsForPeer,
@@ -569,20 +571,34 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   } catch {
     if (role !== "owner") return null; // Never infer public visibility from a failed read.
   }
-  const noteRef = { id: noteId, tags, creator, visibility };
-  // Collab authorization goes through the CAPS, projected onto the ladder this
-  // socket understands (P1/P2). Two asymmetries the level column alone gets wrong:
-  //  - a caps grant that omits `view` (a create-only drop-box) projects to level
-  //    "view" for ladder consumers, but confers NO read — refuse the socket, or
-  //    it leaks a note the HTTP gateway refuses to serve;
-  //  - a caps grant like ["view","suggest","edit"] (a governance role's compiled
-  //    grant) projects to level "view" via levelForCaps' containment rule, but its
-  //    holder may PATCH over HTTP — the socket must grant the same write access.
-  // For level-only grants caps === the level's expansion, so this returns exactly
-  // effectiveLevel and every pre-caps grant behaves identically.
-  const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email ?? null);
+  return collabLevelFor(grants, { id: noteId, tags, creator, visibility }, role, email ?? null);
+}
+
+/**
+ * The collab level a set of grants confers on a note — the ONE projection the
+ * socket (`resolveLevel`) and the human command endpoint (routes/human-collab.ts)
+ * share, so the two can never disagree about who may suggest or edit.
+ *
+ * Collab authorization goes through the CAPS, projected onto the ladder this
+ * socket understands (P1/P2). Two asymmetries the level column alone gets wrong:
+ *  - a caps grant that omits `view` (a create-only drop-box) projects to level
+ *    "view" for ladder consumers, but confers NO read — refuse the socket, or
+ *    it leaks a note the HTTP gateway refuses to serve;
+ *  - a caps grant like ["view","suggest","edit"] (a governance role's compiled
+ *    grant) projects to level "view" via levelForCaps' containment rule, but its
+ *    holder may PATCH over HTTP — the socket must grant the same write access.
+ * For level-only grants caps === the level's expansion, so this returns exactly
+ * effectiveLevel and every pre-caps grant behaves identically.
+ */
+export function collabLevelFor(
+  grants: Grant[],
+  noteRef: { id: string; tags: string[]; creator: string | null; visibility: "private" | "workspace" },
+  role: Role,
+  email: string | null,
+): Level | null {
+  const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email);
   if (lvl === "own") return "own";
-  const caps = effectiveCaps(grants, noteRef, roleFloor(role), email ?? null);
+  const caps = effectiveCaps(grants, noteRef, roleFloor(role), email);
   if (!caps.has("view")) return null;
   if (caps.has("edit")) return maxLevel(lvl, "edit");
   if (caps.has("suggest")) return maxLevel(lvl, "suggest");
@@ -620,6 +636,14 @@ export async function authorizeConnection(
  */
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
+  // A (re)load starts a NEW in-memory document. Any human command still marked
+  // 'applied' (never confirmed by a store) belonged to a previous instance that
+  // is gone — a crash, or an unload before its store succeeded — so its change
+  // is not in what we are about to restore. Forget those receipts NOW (before
+  // any await) so a retry re-applies the command rather than replaying a result
+  // for a change that was lost. Confirmed ('durable') receipts are kept: they
+  // are in the persisted snapshot and survive every reload and reseed.
+  dropUnconfirmedCollabReceipts(target.vaultId, target.noteId);
   let note: { content: string; updatedAt: string | null } | null = null;
   let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
@@ -687,6 +711,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   let sourceUpdatedAt: number | null = null;
+  let vaultWritten = false; // the vault copy now reflects (or already matched) the rendered doc
   // Fetch the current note up front: it resolves the kind (a wrong default would
   // persist e.g. code as HTML and corrupt the note) AND lets us detect an
   // external edit we haven't folded in yet. Stores are debounced, so the read is
@@ -737,12 +762,20 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
       sourceUpdatedAt = toMs(updated.updatedAt);
     }
+    vaultWritten = true;
     // G2b: persisted suggestion marks land in the owner's durable review queue.
     if (kind === "document") captureSuggestions(target.noteId, content);
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
-  saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId);
+  // Snapshot + receipt confirmation are ONE synchronous transaction: the state
+  // encoded here contains every human command applied to this in-memory doc so
+  // far (each wrote its receipt in the same tick as its Yjs mutation), so those
+  // receipts become 'durable' exactly when a snapshot holding them is on disk.
+  // Not when the vault write failed: that snapshot has no source version, the
+  // next load folds the (older) vault copy back over it, and the change is lost
+  // — the receipt must stay unconfirmed so the caller is told to retry.
+  saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten);
 }
 
 interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }
