@@ -57,17 +57,12 @@ export function buildCardLabel(note: Note, includeBody: boolean): string {
   return lines.join("\n");
 }
 
-/** Tag-driven card colors, theme-aware. */
-export function getCardColor(note: Note, isDark: boolean): { bg: string; stroke: string; text: string } {
-  const tags = note.tags || [];
-  const base = isDark
-    ? { bg: "#2a2a3e", stroke: "#4a4a6a", text: "#e0e0e0" }
-    : { bg: "#f0f0ff", stroke: "#b0b0d0", text: "#1e1e1e" };
-  if (tags.includes("task")) return isDark ? { bg: "#2a3e2a", stroke: "#4a6a4a", text: "#c0e0c0" } : { bg: "#eef7ee", stroke: "#a0c0a0", text: "#1e1e1e" };
-  if (tags.includes("person")) return isDark ? { bg: "#3e2a3e", stroke: "#6a4a6a", text: "#e0c0e0" } : { bg: "#f7eef7", stroke: "#c0a0c0", text: "#1e1e1e" };
-  if (tags.includes("project")) return isDark ? { bg: "#2a3e3e", stroke: "#4a6a6a", text: "#c0e0e0" } : { bg: "#eef7f7", stroke: "#a0c0c0", text: "#1e1e1e" };
-  if (tags.includes("meeting") || tags.includes("event")) return isDark ? { bg: "#3e3e2a", stroke: "#6a6a4a", text: "#e0e0c0" } : { bg: "#f7f7ee", stroke: "#c0c0a0", text: "#1e1e1e" };
-  return base;
+/** Canonical scene colors. Excalidraw maps these to the active display theme. */
+export function getCardColor(note: Note, _isDark: boolean): { bg: string; stroke: string; text: string } {
+  const base = { bg: "#ffffff", stroke: "#d8dde5", text: "#252b36" };
+  const accents: Record<string, string> = { task: "#bad8c6", person: "#d2c6e7", project: "#b4d7d5", meeting: "#e2d3ad", event: "#e2d3ad" };
+  const tag = (note.tags || []).find(tag => accents[tag]);
+  return tag ? { ...base, stroke: accents[tag] } : base;
 }
 
 /** A short random element id (Excalidraw assigns its own internally too). */
@@ -111,7 +106,7 @@ export function buildNoteCardElements(opts: {
   const y = 100 + Math.floor(existingCount / 5) * 180;
 
   const rectId = eid();
-  const cardHeight = Math.max(70, lineCount * 18 + 30);
+  const cardHeight = Math.max(70, lineCount * 22 + 36);
 
   const newElements = convertToExcalidrawElements([
     {
@@ -130,7 +125,7 @@ export function buildNoteCardElements(opts: {
       customData: { prismNoteId: note.id, prismNotePath: note.path, prismTitle: label.split("\n")[0], prismTags: note.tags },
       label: {
         text: label,
-        fontSize: 12,
+        fontSize: 14,
         fontFamily: 2,
         textAlign: "left",
         verticalAlign: "top",

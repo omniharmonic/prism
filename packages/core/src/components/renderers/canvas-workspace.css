@@ -1,0 +1,44 @@
+.prism-canvas-workspace { min-width: 0; color: var(--text-primary); background: var(--bg-base); }
+.prism-canvas-workspace .excalidraw { --icon-fill-color: var(--text-primary); --color-primary: var(--color-accent); --color-primary-darker: var(--color-accent); --color-surface-primary-container: color-mix(in srgb, var(--color-accent) 13%, var(--bg-surface)); --color-on-primary-container: var(--color-accent); }
+/* The drawing overlay shares its class with Prism row affordances. It must stay transparent. */
+.prism-canvas-workspace .excalidraw canvas.interactive { background: transparent; border-radius: 0; transition: none; }
+.prism-canvas-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; padding: 16px 20px; flex-shrink: 0; }
+.prism-canvas-heading { min-width: 0; flex: 1 1 190px; }
+.prism-canvas-heading h2 { margin: 0; overflow-wrap: anywhere; font-size: 17px; font-weight: 600; letter-spacing: -.025em; line-height: 1.4; }
+.prism-canvas-heading p, .prism-canvas-subtitle { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.prism-canvas-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.prism-canvas-actions > button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--glass-border); border-radius: 7px; color: var(--text-secondary); background: var(--bg-surface); }
+.prism-canvas-actions > button:hover { background: var(--glass-hover); }
+.prism-canvas-actions > button[data-canvas-primary], .prism-canvas-actions > button[aria-pressed="true"], .prism-canvas-actions > button[aria-expanded="true"] { color: var(--color-accent); border-color: color-mix(in srgb, var(--color-accent) 36%, var(--glass-border)); background: color-mix(in srgb, var(--color-accent) 6%, var(--bg-surface)); }
+.prism-canvas-actions > .prism-canvas-copy { min-height: 36px; padding: 7px 8px; }
+.prism-canvas-copy input, .prism-canvas-connection input, .prism-canvas-picker-row input { accent-color: var(--color-accent); }
+.prism-canvas-connection { border: 1px solid var(--glass-border); border-radius: 7px; background: var(--glass-hover); }
+.prism-canvas-save { flex-basis: 100%; font-size: 11px; text-align: right; }
+.prism-canvas-save:empty { display: none; }
+.prism-canvas-view-only { padding: 6px 8px; color: var(--text-muted); }
+.prism-canvas-body { min-width: 0; }
+.prism-canvas-drawer { color: var(--text-primary); touch-action: pan-y; }
+.prism-canvas-drawer > header { padding: 16px 16px 4px; }
+.prism-canvas-drawer h2 { font-size: 14px; font-weight: 600; letter-spacing: -.015em; }
+.prism-canvas-drawer label:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-canvas-drawer label input:focus-visible { outline: none; }
+.prism-canvas-filter { position: relative; }
+.prism-canvas-filter select { appearance: none; min-height: 44px; padding-right: 36px; }
+.prism-canvas-filter > svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-muted); }
+.prism-canvas-drawer input:focus-visible, .prism-canvas-drawer select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-canvas-copy-notice { border-radius: 8px; background: var(--glass-hover); padding: 10px 12px; line-height: 1.6; }
+.prism-canvas-picker-row { gap: 8px; border-bottom: 1px solid var(--glass-border); border-radius: 0; }
+.prism-canvas-note-icon { flex-shrink: 0; box-sizing: content-box; padding: 8px; border-radius: 7px; color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+.prism-canvas-list-card { border: 1px solid var(--glass-border); border-radius: 9px; margin: 0 0 8px; padding: 10px 6px 6px; background: var(--bg-surface); }
+.prism-canvas-card-heading { display: flex; align-items: flex-start; gap: 10px; }
+.prism-canvas-card-heading > div { min-width: 0; }
+.prism-canvas-card-heading p:first-child { margin-bottom: 4px; }
+.prism-canvas-list-card > div:last-child { margin-top: 5px; }
+@media (max-width: 640px) {
+  .prism-canvas-toolbar { gap: 10px; padding: 12px; }
+  .prism-canvas-heading { flex-basis: 100%; }
+  .prism-canvas-heading h2 { font-size: 16px; }
+  .prism-canvas-actions { gap: 6px; }
+  .prism-canvas-actions > button, .prism-canvas-actions > .prism-canvas-copy { min-height: 44px; }
+  .prism-canvas-drawer > header { padding-top: 12px; }
+}

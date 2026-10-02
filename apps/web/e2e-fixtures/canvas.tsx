@@ -1,4 +1,5 @@
 import React from "react";
+import { useSettingsStore, applyTheme } from "../../../packages/core/src/app/stores/settings";
 import {convertToExcalidrawElements} from "@excalidraw/excalidraw";
 import * as Y from "yjs";
 import { CollabCanvas } from "../../../packages/core/src/components/renderers/LazyCollabEditors";
@@ -9,15 +10,24 @@ import { VaultClientProvider, PlatformProvider, type VaultClient, type Note } fr
 import CanvasRenderer from "../../../packages/core/src/components/renderers/CanvasRenderer";
 import { buildNoteCardElements } from "../../../packages/core/src/components/renderers/canvas-cards";
 import { authoredCanvasElements } from "../../../packages/core/src/components/renderers/canvas-scene";
+const visual = location.search.includes("visual");
+const dark = location.search.includes("dark");
+useSettingsStore.setState({theme: dark ? "dark" : "light"});
+applyTheme(dark ? "dark" : "light");
 const makeNote = (id:string):Note => ({ id,path:`Test/${id}`,content:'Synthetic canvas card',tags:[],metadata:{type:'document'},createdAt:'2026-10-01',updatedAt:'2026-10-01' });
 const a=makeNote('Card A'),b=makeNote('Card B'),c=makeNote('Card C'),d=makeNote('Card D');
-const elements=[...buildNoteCardElements({note:a,includeBody:false,isDark:false,existingCount:0}),...buildNoteCardElements({note:b,includeBody:false,isDark:false,existingCount:1})];
+if (visual) {
+ Object.assign(a,{path:"Research/Field notes",content:"Visited the west side community center. Practical tools and peer support came up in every conversation.",tags:["research","fieldwork"],metadata:{type:"document",title:"Field notes"}});
+ Object.assign(b,{path:"Research/Research questions",content:"What motivates people to adopt new tools? How might we reduce friction in the first 30 days?",tags:["project","discovery"],metadata:{type:"document",title:"Research questions"}});
+ Object.assign(c,{path:"People/Conversation with Morgan",content:"Morgan shared how their team stays aligned across spreadsheets and chat.",tags:["person","interview"],metadata:{type:"document",title:"Conversation with Morgan"}});
+}
+const elements=[...buildNoteCardElements({note:a,includeBody:visual,isDark:dark,existingCount:0}),...buildNoteCardElements({note:b,includeBody:visual,isDark:dark,existingCount:1})];
 if(location.search.includes("relations")){
  const arrow=convertToExcalidrawElements([{type:"arrow",x:340,y:135,width:20,height:0,points:[[0,0],[20,0]]}])[0] as any;
  Object.assign(arrow,{id:"authored-arrow",startBinding:{elementId:elements[0].id,focus:0,gap:1},endBinding:{elementId:elements[2].id,focus:0,gap:1}});
  elements.push(arrow);
 }
-const canvas={...makeNote('Canvas'),metadata:{type:'canvas'},content:JSON.stringify({elements})};
+const canvas={...makeNote('Canvas'),path:visual?"Research canvas":"Test/Canvas",metadata:{type:'canvas'},content:JSON.stringify({elements})};
 const controls={syncAttempts:[] as string[], rejectRelations:location.search.includes("relations"), retained:false, writes:[] as unknown[], linkWrites:[] as unknown[],reads:0, noteReads:[] as string[], deny:false, hold:false, release:null as null|(()=>void), scope:"fixture-owner", authoredCanvasElements, ui:useUIStore};
 Object.assign(window,{prismCanvasFixture:controls});
 const client={
