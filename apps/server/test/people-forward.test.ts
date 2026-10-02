@@ -8,19 +8,22 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import type { Note, NoteLinkInput } from "../src/parachute";
-import { ForwardLinker } from "../src/people-forward";
+import { ForwardLinker, IngestReviewSink } from "../src/people-forward";
+import { ownerProfile } from "../src/identity";
 import { listCandidates } from "../src/identity-store";
 import { fathomNote, ingestFathom, type FathomMeeting } from "../src/worker/fathom";
 import { ClickUpClient, ingestClickUp, type ClickUpVault } from "../src/worker/clickup";
 import { ingestMatrix, type IngestVault, type RoomBatch } from "../src/worker/matrix";
 import { syncProton, type ImapSource, type ProtonVault } from "../src/worker/proton";
+import { ingestAndCleanupFireflies, type FirefliesVault } from "../src/worker/fireflies";
+import { syncCalendarWindow, type CalendarVault } from "../src/worker/calendar";
 import { resetDb } from "./helpers";
 
 beforeEach(() => resetDb());
 
 const note = (id: string, path: string, tags: string[], metadata: Record<string, unknown> = {}): Note => ({ id, path, tags, metadata, content: "", createdAt: "", updatedAt: `u-${id}` });
 const PEOPLE = [
-  note("p-owner", "vault/people/Owner Person", ["person"], { name: "Owner Person", email: "owner@example.test", aliases: ["Ozzy"] }),
+  note("p-owner", "vault/people/Owner Person", ["person"], { name: "Owner Person", email: "owner@example.test", emails: ["owner-alt@example.test"], aliases: ["Ozzy"], channels: { matrix: "@telegram_5559999:h.test" } }),
   note("p-alex", "vault/people/Alex Example", ["person"], { name: "Alex Example", email: "alex@example.test" }),
   note("p-casey", "vault/people/Casey Example", ["person"], { name: "Casey Example" }),
   note("p-blake", "vault/people/Blake Example", ["person"], { name: "Blake Example", channels: { matrix: "@telegram_5550001:h.test" } }),
@@ -63,15 +66,23 @@ const linker = (vault: ReturnType<typeof fakeVault>["vault"], queue = true) =>
   new ForwardLinker(vault, { vaultId: "primary", origin: "ingest:test", owner: { emails: ["owner@example.test"] }, queue });
 const targets = (links: NoteLinkInput[]) => links.map((l) => `${l.relationship}->${l.target}`).sort();
 
-test("ForwardLinker.email: sender + direct recipients; never the owner, a role address or bulk mail; ONE lean people listing", async () => {
+test("ForwardLinker.email: EXACT addresses only — a display name never links mail; bulk links an exact sender; never the owner", async () => {
   const { vault, rec } = fakeVault();
   const f = linker(vault);
   const a = await f.email({ from: "Alex Example <alex@example.test>", to: "Owner <owner@example.test>, Casey Example <casey@example.test>, billing@vendor.test" }, { sender: true, recipients: true });
-  assert.deepEqual(targets(a.links), ["email-from->p-alex", "email-to->p-casey"]);
+  assert.deepEqual(targets(a.links), ["email-from->p-alex"], "Casey has no address on file: her name does not link");
+  assert.deepEqual(a.pending.map((p) => `${p.relationship}:${p.reason}`), ["email-to:name-only"], "…it is a review item");
   assert.deepEqual((await f.email({ from: "Alex Example <alex@example.test>" }, { sender: false, recipients: true })).links, [], "sender not requested");
-  assert.deepEqual((await f.email({ from: "noreply@service.test", to: "owner@example.test" }, { sender: true, recipients: true })).links, []);
-  assert.deepEqual((await f.email({ from: "Alex Example <alex@example.test>", labels: ["INBOX", "BULK"] }, { sender: true, recipients: true })).links, []);
+  const role = await f.email({ from: "Casey Example <noreply@service.test>", to: "owner@example.test" }, { sender: true, recipients: true });
+  assert.deepEqual([role.links, role.pending], [[], []], "a role mailbox nobody claims: nothing, not even a review");
+  // Owner decision: an exact address match links even on bulk mail — and nothing else does.
+  const bulk = await f.email({ from: "Alex Example <alex@example.test>", to: "alex@example.test, casey@example.test", labels: ["INBOX", "BULK"] }, { sender: true, recipients: true });
+  assert.deepEqual(targets(bulk.links), ["email-from->p-alex"]);
+  const bulkName = await f.email({ from: "Casey Example <casey@lists.test>", labels: ["PROMOTIONS"] }, { sender: true, recipients: true });
+  assert.deepEqual([bulkName.links, bulkName.pending], [[], []]);
   assert.deepEqual((await f.email({ from: "Owner <owner@example.test>", to: "alex@example.test" }, { sender: true, recipients: true })).links, [{ target: "p-alex", relationship: "email-to" }]);
+  // H4: an address that resolves to the owner's own note (not in the config) never links.
+  assert.deepEqual((await f.email({ from: "Me Elsewhere <owner-alt@example.test>", to: "owner-alt@example.test" }, { sender: true, recipients: true })).links, []);
   const many = Array.from({ length: 11 }, (_, i) => `r${i}@example.test`).join(", ") + ", alex@example.test";
   assert.deepEqual((await f.email({ from: "owner@example.test", to: many }, { sender: true, recipients: true })).links, [], "a mass mailing links no recipients");
   const d = await f.email({ from: "Drew Twin <drew@example.test>" }, { sender: true, recipients: false });
@@ -84,12 +95,15 @@ test("ForwardLinker.email: sender + direct recipients; never the owner, a role a
   assert.equal(rec.creates.length + rec.updates.length, 0, "a forward linker never writes to the vault");
 });
 
-test("ForwardLinker.attendees / task: owner by configuration, name rule, exact unique project", async () => {
+test("ForwardLinker.attendees / task: strong keys link, names are review items, the owner by address or configured name, exact unique project", async () => {
   const { vault } = fakeVault();
   const f = linker(vault);
-  assert.deepEqual(targets((await f.attendees(["Ozzy", "Blake Example", "Somebody Else", "12345"], ["alex@example.test", "room@resource.calendar.google.com"])).links), ["attended-by->p-alex", "attended-by->p-blake", "attended-by->p-owner"]);
-  const t = await f.task({ assignees: [{ name: "Owner Person", email: "owner@example.test" }, { name: "Casey Example" }, { name: "Drew" }], project: "Project One" });
-  assert.deepEqual(targets(t.links), ["assigned-to->p-casey", "assigned-to->p-owner", "belongs-to->proj-1"]);
+  const att = await f.attendees(["Owner Person", "Ozzy", "Blake Example", "Somebody Else", "12345", "Guest"], ["alex@example.test", "room@resource.calendar.google.com"]);
+  assert.deepEqual(targets(att.links), ["attended-by->p-alex", "attended-by->p-owner"]);
+  assert.deepEqual(att.pending.map((p) => p.reason).sort(), ["name-only", "single-token-name"], "Blake by name, and the single-token 'Ozzy' — never linked");
+  const t = await f.task({ assignees: [{ name: "Owner Person", email: "owner@example.test" }, { name: "Casey Example" }, { name: "Drew" }, { name: "Whoever", email: "alex@example.test" }], project: "Project One" });
+  assert.deepEqual(targets(t.links), ["assigned-to->p-alex", "assigned-to->p-owner", "belongs-to->proj-1"]);
+  assert.deepEqual(t.pending.map((p) => p.reason), ["name-only"]);
   assert.deepEqual((await f.task({ project: "Nothing Like It" })).links, []);
 });
 
@@ -143,21 +157,21 @@ function clickupFetch(tasks: unknown[]): typeof fetch {
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 }
-const TASK = { id: "abc123", name: "Ship it", status: { status: "open" }, date_updated: "1755000000000", url: "https://app.clickup.test/t/abc123", assignees: [{ id: 7, username: "Casey Example", email: "casey@example.test" }], list: { name: "Project One" } };
+const TASK = { id: "abc123", name: "Ship it", status: { status: "open" }, date_updated: "1755000000000", url: "https://app.clickup.test/t/abc123", assignees: [{ id: 7, username: "Alex E.", email: "alex@example.test" }], list: { name: "Project One" } };
 
 test("ClickUp: on = assigned-to / belongs-to ride in the task's create and in a later update", async () => {
   const v = fakeVault();
   const client = new ClickUpClient("pk_test_x", clickupFetch([TASK]));
   await ingestClickUp(client, v.vault as unknown as ClickUpVault, { credential: { apiKey: "pk_test_x" }, sinceMs: null, sleep: async () => {}, forward: linker(v.vault) });
   assert.equal(v.rec.creates.length, 1);
-  assert.deepEqual(targets(v.rec.creates[0]!.links ?? []), ["assigned-to->p-casey", "belongs-to->proj-1"]);
+  assert.deepEqual(targets(v.rec.creates[0]!.links ?? []), ["assigned-to->p-alex", "belongs-to->proj-1"]);
   assert.equal(v.rec.updates.length, 0);
 
   // The same task, changed upstream → ONE update carrying links.add.
   const client2 = new ClickUpClient("pk_test_x", clickupFetch([{ ...TASK, date_updated: "1755000009999" }]));
   await ingestClickUp(client2, v.vault as unknown as ClickUpVault, { credential: { apiKey: "pk_test_x" }, sinceMs: 1, sleep: async () => {}, forward: linker(v.vault) });
   assert.equal(v.rec.updates.length, 1);
-  assert.deepEqual(targets(v.rec.updates[0]!.links?.add ?? []), ["assigned-to->p-casey", "belongs-to->proj-1"]);
+  assert.deepEqual(targets(v.rec.updates[0]!.links?.add ?? []), ["assigned-to->p-alex", "belongs-to->proj-1"]);
 
   const off = fakeVault();
   await ingestClickUp(new ClickUpClient("pk_test_x", clickupFetch([TASK])), off.vault as unknown as ClickUpVault, { credential: { apiKey: "pk_test_x" }, sinceMs: null, sleep: async () => {} });
@@ -202,6 +216,37 @@ test("Matrix: MATRIX_LINK_EXISTING links known people and creates nobody; partic
   assert.ok(!("participantIds" in off.rec.creates[0]!.metadata!), "off: the note shape is unchanged");
 });
 
+test("Matrix (H4 + decision 4): the owner's own note is never linked by a resolved match; an unresolved DM counterpart is queued once", async () => {
+  const v = fakeVault();
+  // A DM: the owner under a bridge id that is on their person note, and Casey under an unknown puppet.
+  const dm = { "@telegram_5559999:h.test": "Owner Person", "@telegram_5550002:h.test": "Casey Example", "@telegrambot:h.test": "bot" };
+  const sink = new IngestReviewSink({ vaultId: "primary", origin: "ingest:matrix", relationship: "messages-with" });
+  const run = () =>
+    ingestMatrix(matrixClient(dm) as never, v.vault as unknown as IngestVault, {
+      linkExisting: true,
+      ownerPersonId: (people) => ownerProfile(people.identity, { emails: ["owner@example.test"] }).person?.id ?? null,
+      reviewSink: sink,
+    });
+  await run();
+  const thread = v.rec.creates.find((c) => c.tags?.includes("message-thread"))!;
+  assert.equal(thread.links, undefined, "the owner is not a participant link; Casey is not guessed from her display name");
+  assert.equal(listCandidates("primary").candidates.length, 0, "a thread created this pass has no id yet");
+  await run();
+  await run();
+  const q = listCandidates("primary").candidates;
+  assert.equal(q.length, 1, "queued once the thread exists — and deduped across passes");
+  assert.deepEqual({ rel: q[0]!.relationship, reason: q[0]!.reason, origin: q[0]!.origin, cands: q[0]!.candidateIds }, { rel: "messages-with", reason: "name-only", origin: "ingest:matrix", cands: ["p-casey"] });
+  assert.equal(v.rec.creates.filter((c) => c.tags?.includes("person")).length, 0);
+
+  // A GROUP room's roster never reaches the queue.
+  const g = fakeVault();
+  const group = { ...dm, "@telegram_5550010:h.test": "Drew Twin", "@telegram_5550011:h.test": "Someone Else" };
+  const gs = new IngestReviewSink({ vaultId: "primary", origin: "ingest:matrix", relationship: "messages-with" });
+  resetDb();
+  for (let i = 0; i < 2; i++) await ingestMatrix(matrixClient(group) as never, g.vault as unknown as IngestVault, { linkExisting: true, reviewSink: gs });
+  assert.equal(listCandidates("primary").candidates.length, 0);
+});
+
 // ── Proton ───────────────────────────────────────────────────────────────────
 
 const RAW = Buffer.from(
@@ -241,4 +286,70 @@ test("Proton: PROTON_LINK_RECIPIENTS adds email-to in the same create; without t
   await syncProton(imap(), s.vault as unknown as ProtonVault, pass({ linkPeople: true, forward: linker(s.vault) }));
   assert.equal(s.rec.creates[0]!.links, undefined);
   assert.equal(listCandidates("primary").candidates.length, 0);
+});
+
+test("M5 Proton: turning on recipients / the queue never makes the SENDER link by display name", async () => {
+  const raw = Buffer.from(["From: Casey Example <unknown-sender@example.test>", "To: Owner <owner@example.test>", "Subject: Hi", "Message-ID: <m2@example.test>", "Date: Mon, 28 Sep 2026 10:00:00 +0000", "Content-Type: text/plain; charset=utf-8", "", "Hello."].join("\r\n"));
+  const source: ImapSource = { async connect() { return { openMailbox: async () => ({ uidValidity: "1" }), searchSince: async () => [2], fetchRefs: async () => [{ uid: 2, flags: [], messageId: "<m2@example.test>" }], fetchSource: async () => ({ source: raw, flags: [] }), close: async () => {} }; } };
+  const v = fakeVault();
+  await syncProton(source, v.vault as unknown as ProtonVault, pass({ linkPeople: true, linkRecipients: true, forward: linker(v.vault, true) }));
+  assert.equal(v.rec.creates[0]!.links, undefined, "a display name equal to a person's name is NOT a sender link");
+  const q = listCandidates("primary").candidates;
+  assert.equal(q.length, 1, "it is a review item");
+  assert.deepEqual({ rel: q[0]!.relationship, reason: q[0]!.reason, cands: q[0]!.candidateIds }, { rel: "email-from", reason: "name-only", cands: ["p-casey"] });
+});
+
+// ── Fireflies ────────────────────────────────────────────────────────────────
+
+test("Fireflies: on = attended-by rides in the transcript's create; off = no links, no people listing", async () => {
+  const t = { id: "ff-1", title: "Planning", date: Date.parse("2026-06-01T10:00:00Z"), meeting_attendees: [{ displayName: "Alex Example", email: "alex@example.test" }, { displayName: "Drew Twin", email: null }] };
+  const client = {
+    listTranscripts: async () => [t],
+    getTranscript: async () => ({ summary: { overview: "sum" }, sentences: [{ speaker_name: "A", text: "x".repeat(400) }] }),
+    deleteTranscript: async () => true,
+  };
+  const budget = () => {
+    let left = 999;
+    return { remaining: () => left, spend: (n: number) => void (left -= n) };
+  };
+  const off = fakeVault();
+  const r0 = await ingestAndCleanupFireflies(client as never, off.vault as unknown as FirefliesVault, { budget: budget() as never, sleep: async () => {} });
+  assert.equal(r0.created, 1);
+  assert.equal(off.rec.creates[0]!.links, undefined);
+  assert.equal(off.rec.lists.filter((l) => (l.tags as string[]).includes("person")).length, 0);
+
+  const on = fakeVault();
+  const r1 = await ingestAndCleanupFireflies(client as never, on.vault as unknown as FirefliesVault, { budget: budget() as never, sleep: async () => {}, forward: linker(on.vault) });
+  assert.equal(r1.created, 1);
+  assert.equal(on.rec.creates.length, 1, "one write");
+  assert.equal(on.rec.updates.length, 0);
+  assert.deepEqual(on.rec.creates[0]!.links, [{ target: "p-alex", relationship: "attended-by" }]);
+  assert.deepEqual({ ...on.rec.creates[0]!.metadata, synced_at: 0 }, { ...off.rec.creates[0]!.metadata, synced_at: 0 }, "the note itself is unchanged");
+  const q = listCandidates("primary").candidates;
+  assert.deepEqual(q.map((c) => `${c.sourceNoteId}:${c.relationship}:${c.reason}`), ["new-1:attended-by:ambiguous-name"]);
+});
+
+// ── Calendar ─────────────────────────────────────────────────────────────────
+
+test("Calendar (M7): attendees that are not linked reach the review queue when a sink is given; without one nothing changes", async () => {
+  const event = { id: "ev1", summary: "Sync", start: { dateTime: "2026-10-05T10:00:00Z" }, end: { dateTime: "2026-10-05T11:00:00Z" }, attendees: [{ displayName: "Alex Example", email: "alex@example.test" }, { displayName: "Drew Twin", email: "drew@example.test" }] };
+  const client = { listEventsRange: async () => ({ events: [event] }) };
+  const base = { from: "2026-10-01", to: "2026-10-31", max: 250, shadow: false, deleteMode: "log" as const, source: "worker" as const, now: Date.parse("2026-10-02T00:00:00Z") };
+  const calVault = (v: ReturnType<typeof fakeVault>) => ({ ...v.vault, deleteNote: async () => {} }) as unknown as CalendarVault;
+
+  const plain = fakeVault();
+  await syncCalendarWindow(client as never, calVault(plain), base);
+  const meeting = plain.rec.creates.find((c) => c.tags?.includes("meeting"))!;
+  assert.deepEqual(meeting.links, [{ target: "p-alex", relationship: "attended-by" }]);
+  assert.equal(plain.rec.creates.filter((c) => c.tags?.includes("person")).length, 0, "an ambiguous name was skipped before too");
+  assert.equal(listCandidates("primary").candidates.length, 0, "…silently");
+
+  const queued = fakeVault();
+  const sink = new IngestReviewSink({ vaultId: "primary", origin: "ingest:calendar", relationship: "attended-by" });
+  await syncCalendarWindow(client as never, calVault(queued), { ...base, reviewSink: sink });
+  const m2 = queued.rec.creates.find((c) => c.tags?.includes("meeting"))!;
+  assert.deepEqual(m2.links, meeting.links, "linking is identical");
+  const q = listCandidates("primary").candidates;
+  assert.equal(q.length, 1);
+  assert.deepEqual({ rel: q[0]!.relationship, reason: q[0]!.reason, origin: q[0]!.origin, cands: q[0]!.candidateIds }, { rel: "attended-by", reason: "ambiguous-name", origin: "ingest:calendar", cands: ["p-drew1", "p-drew2"] });
 });

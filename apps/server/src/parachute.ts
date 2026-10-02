@@ -98,7 +98,7 @@ export type VaultHelper = ReturnType<typeof vaultClient>;
  * existing call site (`vault.*`) is unchanged. Pass a vault id (Phase 1, owner
  * passthrough only) to bind a request to a different vault.
  */
-export function vaultClient(vaultId?: string) {
+export function vaultClient(vaultId?: string, opts: { /** Abort any single vault call after this long (no timeout when unset). */ timeoutMs?: number } = {}) {
   const entry: VaultEntry = resolveVaultEntry(vaultId);
   const apiBase = () => `${entry.url}/vault/${entry.vault}/api`;
   const authHeaders = () => ({
@@ -110,6 +110,7 @@ export function vaultClient(vaultId?: string) {
     const t0 = Date.now();
     const resp = await fetch(`${apiBase()}${path}`, {
       ...init,
+      ...(opts.timeoutMs && !init?.signal ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
       headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
     });
     if (process.env.PRISM_VAULT_TRACE === "1") {

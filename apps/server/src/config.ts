@@ -391,6 +391,11 @@ export const config = {
   // Matrix membership lookups the backfill may make per run (0 = never ask Matrix).
   peopleLinkMemberLookups: Number(process.env.PEOPLE_LINK_MEMBER_LOOKUPS ?? 300),
   peopleLinkMemberPaceMs: Number(process.env.PEOPLE_LINK_MEMBER_PACE_MS ?? 150),
+  // The job / merge abort after this many consecutive failed writes that are not
+  // a 409 (a broken vault must end the run as an ERROR, not as "done").
+  peopleLinkMaxConsecutiveErrors: Number(process.env.PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS ?? 5),
+  // Every vault call the job / merge / resolve makes is abandoned after this long.
+  peopleVaultTimeoutMs: Number(process.env.PEOPLE_VAULT_TIMEOUT_MS ?? 30_000),
   // Emails with more direct recipients than this get no `email-to` links.
   peopleLinkMaxRecipients: Number(process.env.PEOPLE_LINK_MAX_RECIPIENTS ?? 10),
   // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-

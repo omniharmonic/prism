@@ -117,21 +117,39 @@ export interface Normalized {
 }
 
 /**
- * The canonical form of one link, or null when it must be left alone: already
- * canonical, vault-managed, not a known synonym, or the endpoint kinds fit
- * neither direction (an `owner` link between two projects is not `assigned-to`).
+ * Synonyms that may be read backwards: `person --attended--> meeting` is the
+ * same fact as `meeting --attended-by--> person`. Everything else (`from`, `to`,
+ * `owner`, `project`, …) is rewritten ONLY in its stated direction — a
+ * `person --to--> email` link is not evidence of who received the mail.
  */
-export function normalizeRelationship(relationship: string, source: NoteKind[], target: NoteKind[]): Normalized | null {
+const REVERSIBLE = new Set(["attended", "attendee", "attendees", "has-member", "member"]);
+
+export type NormalizeOutcome = Normalized | { untouched: "ambiguous-kinds" | "kinds-do-not-fit" } | null;
+
+/**
+ * The canonical form of one link. `null` = nothing to say (already canonical,
+ * vault-managed, or not a known synonym). `{untouched}` = a known synonym that
+ * is left exactly as it is, and reported: either note has more than one kind
+ * (a note tagged both `task` and `project` makes `owner` a guess), or the kinds
+ * do not fit the canonical relationship in an allowed direction.
+ */
+export function classifyRelationship(relationship: string, source: NoteKind[], target: NoteKind[]): NormalizeOutcome {
   const key = relationship.trim().toLowerCase().replace(/[\s_]+/g, "-");
   if (VAULT_MANAGED.has(key)) return null;
   const canonical = isCanonicalRelationship(key) ? key : SYNONYMS[key];
   if (!canonical) return null;
   const shape = CANONICAL[canonical];
+  const typed = shape.from !== "any";
+  if (typed && (source.length !== 1 || target.length !== 1)) return canonical === relationship ? null : { untouched: "ambiguous-kinds" };
   const same = fits(shape.from, source) && fits(shape.to, target);
-  const flipped = fits(shape.from, target) && fits(shape.to, source);
   if (same) return canonical === relationship ? null : { canonical, reversed: false };
-  // A canonical name pointing the other way is left alone (both directions are
-  // read by every consumer); only a SYNONYM is rewritten onto the other note.
-  if (flipped && shape.from !== "any" && !isCanonicalRelationship(key)) return { canonical, reversed: true };
-  return null;
+  if (isCanonicalRelationship(key)) return null; // a canonical name pointing the other way is left alone
+  if (typed && REVERSIBLE.has(key) && fits(shape.from, target) && fits(shape.to, source)) return { canonical, reversed: true };
+  return { untouched: "kinds-do-not-fit" };
+}
+
+/** `classifyRelationship`, reduced to "rewrite it like this" or null. */
+export function normalizeRelationship(relationship: string, source: NoteKind[], target: NoteKind[]): Normalized | null {
+  const r = classifyRelationship(relationship, source, target);
+  return r && "canonical" in r ? r : null;
 }

@@ -6,36 +6,37 @@
  * CSRF guard on every mutation. All of them act on the owner's ACTIVE vault.
  *
  *   GET  /people/candidates?status=&reason=&relationship=&limit=&after=
- *   POST /people/candidates/:id/resolve  {personId, addIdentity?=true, applyToKey?=false}
+ *   POST /people/candidates/:id/resolve  {personId, addIdentity?=false, applyToKey?=false}
  *   POST /people/candidates/:id/dismiss  {applyToKey?=false}
- *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?, useMatrixMembers?=false} → 202 {job}
+ *   GET|PUT|DELETE /people/owner         {person, emails?, aliases?}
+ *   POST /people/link         {dryRun?=true, phases?, maxWrites?, enqueue?, allowNameLinks?=false, useMatrixMembers?} → 202 {job}
  *   GET  /people/link                                                                     → {job | null}
  *   POST /people/link/cancel                                                              → {ok}
  *   GET  /people/duplicates?strength=&limit=&offset=                                      → {pairs, total, counts, next}
- *   POST /people/merge        {personIds: [a, b], canonicalId?, dryRun?=true}             → {merge}
+ *   POST /people/merge        {personIds: [a, b], canonicalId, expect, confirmUnrelated?, dryRun?=true} → {merge}
+ *
+ * The job, a merge and a resolve / dismiss are mutually exclusive (409 `busy`).
  *
  * Full reference: docs/roadmap/workspace-experience/BACKEND-STATUS-GRAPH.md.
  */
 import type { Context, Hono } from "hono";
 import { config } from "../config";
 import { resolveActor, requestVia } from "../auth/actor";
-import { vaultClient } from "../parachute";
+import { vaultClient, type Note } from "../parachute";
 import { recordAction } from "../actions/store";
+import { actionOrigin } from "./actions";
 import { getCandidate, isCandidateStatus, listCandidates, openCandidateCounts } from "../identity-store";
 import { dismissCandidate, resolveCandidate, ReviewError, type ReviewVault } from "../identity-review";
 import { getSecret } from "../secrets";
 import { MatrixClient, type MatrixCreds } from "../worker/matrix";
-import { PHASES, cancelLinkJob, isPhase, linkJobRunning, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
-import { chooseCanonical, detectDuplicates, mergePeople, mergeRunning, MergeError, type MergeVault } from "../people-merge";
+import { PHASES, cancelLinkJob, isPhase, linkJobStatus, LinkJobBusyError, startLinkJob, type LinkJob, type LinkJobVault } from "../people-link-job";
+import { detectDuplicates, mergePeople, MergeError, type DuplicatePair, type MergeVault } from "../people-merge";
 import { PERSON_IDENTITY_KEYS } from "../people-metadata";
-
-/** OWNER_EMAIL + PEOPLE_OWNER_EMAILS / _PERSON / _ALIASES — who "me" is. */
-export const ownerConfig = (matrixId?: string | null) => ({
-  emails: [config.ownerEmail, ...config.peopleOwnerEmails].filter(Boolean),
-  person: config.peopleOwnerPerson,
-  aliases: config.peopleOwnerAliases,
-  matrixId: matrixId ?? null,
-});
+import { cachedDerived, cachedPeople, invalidatePeople } from "../people-cache";
+import { peopleLockHolder } from "../people-lock";
+import { ownerConfigFor, ownerSettings, saveOwnerSettings } from "../people-owner";
+import { IdentityIndex, isNonHumanPerson, isTombstone, looksLikeEmail, ownerProfile } from "../identity";
+import { docNameFor, isDocLive, markReconciled } from "../collab";
 
 type Via = ReturnType<typeof requestVia>;
 export const originOf = (via: Via): "human" | "agent" => (via === "session" || via === "device" ? "human" : "agent");
@@ -59,6 +60,21 @@ export async function jsonBody(c: Context): Promise<Record<string, unknown> | nu
 
 export const optBool = (v: unknown): boolean | undefined | null => (v === undefined ? undefined : typeof v === "boolean" ? v : null);
 
+/** A vault client whose every call is abandoned after PEOPLE_VAULT_TIMEOUT_MS. */
+const vaultFor = (vaultId: string) => vaultClient(vaultId, { timeoutMs: config.peopleVaultTimeoutMs });
+
+/** The lean person listing (identity keys + links, never content), shared + cached 60 s. */
+const loadPeople = (vaultId: string) => (): Promise<Note[]> => vaultFor(vaultId).listNotes({ tags: ["person"], includeLinks: true, includeMetadata: PERSON_IDENTITY_KEYS });
+const people = (vaultId: string, fresh = false): Promise<Note[]> => cachedPeople(vaultId, loadPeople(vaultId), { fresh });
+
+/** collab.ts, read-only: is a note open in the editor, and "its content did not change". */
+const liveHooks = (vaultId: string) => ({
+  isLive: (noteId: string) => isDocLive(vaultId, noteId),
+  markReconciled: (noteId: string, prevMs: number, nextMs: number) => void markReconciled(docNameFor(vaultId, noteId), prevMs, nextMs),
+});
+
+const busy = (c: Context) => c.json({ error: "busy", detail: `another people operation is in progress (${peopleLockHolder() ?? "unknown"})` }, 409);
+
 export function mountPeopleCandidates(admin: Hono): void {
   admin.get("/people/candidates", (c) => {
     const vaultId = ownerVaultId(c);
@@ -81,13 +97,17 @@ export function mountPeopleCandidates(admin: Hono): void {
     if (!body || typeof body.personId !== "string" || !body.personId || body.personId.length > 2048 || addIdentity === null || applyToKey === null) return c.json({ error: "bad_request" }, 400);
     const cand = getCandidate(vaultId, c.req.param("id"));
     if (!cand) return c.json({ error: "not_found" }, 404);
+    if (peopleLockHolder()) return busy(c);
     const via = requestVia(c);
     try {
-      const outcome = await resolveCandidate(vaultClient(vaultId) as unknown as ReviewVault, vaultId, cand, body.personId, {
+      const outcome = await resolveCandidate(vaultFor(vaultId) as unknown as ReviewVault, vaultId, cand, body.personId, {
         by: config.ownerEmail,
-        addIdentity: addIdentity ?? true,
+        addIdentity: addIdentity === true, // off unless explicitly asked
         applyToKey: applyToKey ?? false,
         paceMs: 25,
+        people: () => people(vaultId),
+        live: liveHooks(vaultId),
+        onWrite: () => invalidatePeople(vaultId),
       });
       recordAction({
         actorEmail: config.ownerEmail,
@@ -97,7 +117,7 @@ export function mountPeopleCandidates(admin: Hono): void {
         vaultId,
         // ids + hashes + counts only — never the key value or a name.
         target: { candidateId: cand.id, keyKind: cand.key.kind, keyHash: cand.key.hash.slice(0, 16), relationship: cand.relationship, ...outcome },
-        status: outcome.errors || outcome.conflicts ? "failed" : "ok",
+        status: outcome.errors || outcome.conflicts || outcome.noStamp ? "failed" : "ok",
       });
       return c.json({ ok: true, ...outcome });
     } catch (e) {
@@ -123,6 +143,67 @@ export function mountPeopleCandidates(admin: Hono): void {
   });
 }
 
+/** The owner's identity for the matcher: stored settings, else PEOPLE_OWNER_*. */
+export const ownerConfig = (vaultId: string, matrixId?: string | null) => ownerConfigFor(vaultId, { matrixId });
+
+const strList = (v: unknown, max: number): string[] | null =>
+  v === undefined ? [] : Array.isArray(v) && v.length <= max && v.every((x) => typeof x === "string" && x.trim().length > 0 && x.length <= 320) ? (v as string[]).map((x) => x.trim()) : null;
+
+export function mountPeopleOwner(admin: Hono): void {
+  const describe = async (vaultId: string) => {
+    const s = ownerSettings(vaultId);
+    const idx = new IdentityIndex(await people(vaultId));
+    const configured = s.person ? idx.get(s.person) : null;
+    const profile = ownerProfile(idx, ownerConfigFor(vaultId));
+    return {
+      configured: { person: s.person || null, emails: s.emails, aliases: s.aliases, source: s.source },
+      ownerPersonKnown: !!profile.person,
+      // The note the matcher will treat as "me" (ids only + whether the configured note is itself usable).
+      resolved: profile.person ? { personId: profile.person.id, path: profile.person.path } : null,
+      configuredNote: s.person ? (configured ? { found: true, merged: isTombstone(configured), nonHuman: isNonHumanPerson(configured) } : { found: false, merged: false, nonHuman: false }) : null,
+    };
+  };
+
+  admin.get("/people/owner", async (c) => {
+    try {
+      c.header("Cache-Control", "private, no-store");
+      return c.json(await describe(ownerVaultId(c)));
+    } catch {
+      return c.json({ error: "people_unavailable" }, 503);
+    }
+  });
+
+  admin.put("/people/owner", async (c) => {
+    const vaultId = ownerVaultId(c);
+    const body = await jsonBody(c);
+    const emails = strList(body?.emails, 20);
+    const aliases = strList(body?.aliases, 20);
+    if (!body || typeof body.person !== "string" || !body.person.trim() || body.person.length > 2048 || !emails || !aliases || !emails.every(looksLikeEmail) || aliases.some(looksLikeEmail))
+      return c.json({ error: "bad_request", detail: "person (note id or path) is required; emails must be addresses, aliases names" }, 400);
+    try {
+      const idx = new IdentityIndex(await people(vaultId, true));
+      const note = idx.get(body.person.trim());
+      if (!note) return c.json({ error: "person_not_found" }, 404);
+      if (isTombstone(note) || isNonHumanPerson(note)) return c.json({ error: "not_a_live_person", detail: "the owner must be a live person note, not a merged or non-human one" }, 409);
+      // Stored by id: a rename of the note does not lose the owner.
+      saveOwnerSettings(vaultId, { person: note.id, emails: emails.map((e) => e.toLowerCase()), aliases });
+      return c.json(await describe(vaultId));
+    } catch {
+      return c.json({ error: "people_unavailable" }, 503);
+    }
+  });
+
+  admin.delete("/people/owner", async (c) => {
+    const vaultId = ownerVaultId(c);
+    saveOwnerSettings(vaultId, null);
+    try {
+      return c.json(await describe(vaultId));
+    } catch {
+      return c.json({ error: "people_unavailable" }, 503);
+    }
+  });
+}
+
 export function mountPeopleLinkJob(admin: Hono): void {
   admin.get("/people/link", (c) => {
     c.header("Cache-Control", "no-store");
@@ -135,7 +216,9 @@ export function mountPeopleLinkJob(admin: Hono): void {
     const dryRunIn = optBool(body?.dryRun);
     const enqueue = optBool(body?.enqueue);
     const useMembers = optBool(body?.useMatrixMembers);
-    if (!body || dryRunIn === null || enqueue === null || useMembers === null) return c.json({ error: "bad_request", detail: "dryRun, enqueue and useMatrixMembers must be true or false" }, 400);
+    const allowNames = optBool(body?.allowNameLinks);
+    if (!body || dryRunIn === null || enqueue === null || useMembers === null || allowNames === null)
+      return c.json({ error: "bad_request", detail: "dryRun, enqueue, useMatrixMembers and allowNameLinks must be true or false" }, 400);
     const phases = body.phases;
     if (phases !== undefined && (!Array.isArray(phases) || !phases.length || !phases.every(isPhase))) return c.json({ error: "bad_request", detail: `phases must be a non-empty list of: ${PHASES.join(", ")}` }, 400);
     const dryRun = dryRunIn !== false; // a dry run unless explicitly false
@@ -147,52 +230,63 @@ export function mountPeopleLinkJob(admin: Hono): void {
       maxWrites = m;
     }
     if (!dryRun && !maxWrites) maxWrites = ceiling; // a write run is never uncapped
+    if (peopleLockHolder()) return c.json({ error: "busy", detail: `another people operation is in progress (${peopleLockHolder()})`, job: linkJobStatus() }, 409);
 
-    // The Matrix membership lookup is opt-in per run (it talks to the homeserver).
+    // Matrix membership lookup: ON whenever a Matrix credential is stored (it is how
+    // threads link by id), unless the request says `useMatrixMembers: false`.
     let members: ((roomId: string) => Promise<Record<string, string> | null>) | undefined;
     let self: string | null = null;
-    if (useMembers) {
+    const wantsThreads = !Array.isArray(phases) || phases.includes("threads");
+    if (useMembers !== false && wantsThreads) {
       const raw = getSecret(vaultId, config.ownerEmail, "matrix");
-      if (!raw) return c.json({ error: "matrix_not_configured" }, 409);
-      const client = new MatrixClient(JSON.parse(raw) as MatrixCreds);
-      self = await client.whoami().catch(() => null);
-      members = (roomId) => client.joinedMembers(roomId).catch(() => null);
+      if (!raw && useMembers === true) return c.json({ error: "matrix_not_configured" }, 409);
+      if (raw) {
+        const client = new MatrixClient(JSON.parse(raw) as MatrixCreds);
+        self = await client.whoami().catch(() => null);
+        members = (roomId) => client.joinedMembers(roomId).catch(() => null);
+      }
     }
     const via = requestVia(c);
-    const onEnd = dryRun
-      ? undefined
-      : (j: LinkJob) =>
-          recordAction({
-            actorEmail: config.ownerEmail,
-            via,
-            origin: originOf(via),
-            action: "admin.people-link",
-            vaultId,
-            // Counts only — no note ids, paths, names or addresses.
-            target: {
-              jobId: j.id,
-              status: j.status,
-              phases: j.phases,
-              writes: j.writes,
-              capped: j.capped,
-              queuedNew: j.queuedNew,
-              ...Object.fromEntries(
-                j.phases.map((p) => [p, { linked: j.report[p].linked, unlinked: j.report[p].unlinked, conflicts: j.report[p].conflicts, errors: j.report[p].errors, oversize: j.report[p].oversize, deferred: j.report[p].deferred }]),
-              ),
-            },
-            status: j.status === "done" ? "ok" : "failed",
-            error: j.error,
-          });
-    if (mergeRunning()) return c.json({ error: "busy", detail: "a people merge is in progress" }, 409);
+    const onEnd = (j: LinkJob) => {
+      invalidatePeople(vaultId);
+      if (dryRun) return;
+      recordAction({
+        actorEmail: config.ownerEmail,
+        via,
+        origin: originOf(via),
+        action: "admin.people-link",
+        vaultId,
+        // Counts only — no note ids, paths, names or addresses.
+        target: {
+          jobId: j.id,
+          status: j.status,
+          phases: j.phases,
+          writes: j.writes,
+          capped: j.capped,
+          queuedNew: j.queuedNew,
+          allowNameLinks: j.allowNameLinks,
+          ...Object.fromEntries(
+            j.phases.map((p) => [p, { linked: j.report[p].linked, unlinked: j.report[p].unlinked, conflicts: j.report[p].conflicts, errors: j.report[p].errors, oversize: j.report[p].oversize, deferred: j.report[p].deferred }]),
+          ),
+        },
+        status: j.status === "done" ? "ok" : "failed",
+        error: j.error,
+      });
+    };
     try {
-      const { job } = startLinkJob(vaultClient(vaultId) as unknown as LinkJobVault, vaultId, {
+      const { job } = startLinkJob(vaultFor(vaultId) as unknown as LinkJobVault, vaultId, {
         dryRun,
         phases: phases as LinkJob["phases"] | undefined,
         maxWrites,
         enqueue: enqueue ?? !dryRun,
+        allowNameLinks: allowNames === true,
         paceMs: config.peopleLinkPaceMs,
-        owner: ownerConfig(self),
+        owner: ownerConfig(vaultId, self),
         members,
+        people: () => people(vaultId, true),
+        live: liveHooks(vaultId),
+        maxConsecutiveErrors: config.peopleLinkMaxConsecutiveErrors,
+        callTimeoutMs: config.peopleVaultTimeoutMs,
         limits: {
           groupNameMax: config.peopleLinkGroupNameMax,
           groupMaxMembers: config.peopleLinkGroupMaxMembers,
@@ -215,6 +309,8 @@ export function mountPeopleLinkJob(admin: Hono): void {
 }
 
 export function mountPeopleMerge(admin: Hono): void {
+  const duplicates = (vaultId: string): Promise<DuplicatePair[]> => cachedDerived(vaultId, loadPeople(vaultId), "duplicates", detectDuplicates);
+
   admin.get("/people/duplicates", async (c) => {
     const vaultId = ownerVaultId(c);
     const strength = c.req.query("strength");
@@ -223,10 +319,8 @@ export function mountPeopleMerge(admin: Hono): void {
     if ((strength !== undefined && !["strong", "medium", "weak"].includes(strength)) || !Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0)
       return c.json({ error: "bad_request" }, 400);
     try {
-      // Lean: identity keys + links only — never a note body.
-      const people = await vaultClient(vaultId).listNotes({ tags: ["person"], includeLinks: true, includeMetadata: PERSON_IDENTITY_KEYS });
-      if (people.length >= 50_000) return c.json({ error: "people_inventory_limit" }, 503);
-      const all = detectDuplicates(people);
+      // One lean people listing + one detection per cache lifetime; every page reads the cached result.
+      const all = await duplicates(vaultId);
       const counts = { strong: 0, medium: 0, weak: 0 };
       for (const p of all) counts[p.strength]++;
       const filtered = strength ? all.filter((p) => p.strength === strength) : all;
@@ -242,34 +336,68 @@ export function mountPeopleMerge(admin: Hono): void {
     const vaultId = ownerVaultId(c);
     const body = await jsonBody(c);
     const dryRunIn = optBool(body?.dryRun);
+    const confirmUnrelated = optBool(body?.confirmUnrelated);
     const ids = body?.personIds;
-    if (!body || dryRunIn === null || !Array.isArray(ids) || ids.length !== 2 || !ids.every((x) => typeof x === "string" && x.length > 0 && x.length <= 2048) || ids[0] === ids[1])
+    if (!body || dryRunIn === null || confirmUnrelated === null || !Array.isArray(ids) || ids.length !== 2 || !ids.every((x) => typeof x === "string" && x.length > 0 && x.length <= 2048) || ids[0] === ids[1])
       return c.json({ error: "bad_request", detail: "personIds must be two different person note ids" }, 400);
     const [a, b] = ids as [string, string];
     if (body.canonicalId !== undefined && body.canonicalId !== a && body.canonicalId !== b) return c.json({ error: "bad_request", detail: "canonicalId must be one of personIds" }, 400);
-    if (linkJobRunning()) return c.json({ error: "busy", detail: "a people-link job is running" }, 409);
     const dryRun = dryRunIn !== false; // a dry run unless explicitly false
-    const vault = vaultClient(vaultId) as unknown as MergeVault;
-    const via = requestVia(c);
+    const expectIn = body.expect as { canonicalUpdatedAt?: unknown; secondaryUpdatedAt?: unknown } | undefined;
+    const expect =
+      expectIn && typeof expectIn === "object" && typeof expectIn.canonicalUpdatedAt === "string" && typeof expectIn.secondaryUpdatedAt === "string"
+        ? { canonicalUpdatedAt: expectIn.canonicalUpdatedAt, secondaryUpdatedAt: expectIn.secondaryUpdatedAt }
+        : undefined;
+    const { via, origin } = actionOrigin(c);
+    if (!dryRun) {
+      // A write merge is irreversible in practice: it must name the survivor, quote
+      // the versions the owner reviewed, and come from a person (session / device).
+      if (origin !== "human") return c.json({ error: "agent_origin_refused", detail: "a merge must be confirmed from a signed-in session or device" }, 403);
+      if (typeof body.canonicalId !== "string") return c.json({ error: "canonical_required", detail: "a write merge must name canonicalId" }, 400);
+      if (!expect) return c.json({ error: "expect_required", detail: "a write merge must send expect {canonicalUpdatedAt, secondaryUpdatedAt} from its dry run" }, 400);
+    }
+    if (peopleLockHolder()) return busy(c);
+    const vault = vaultFor(vaultId) as unknown as MergeVault;
     try {
-      let canonicalId = body.canonicalId as string | undefined;
-      if (!canonicalId) {
-        const [na, nb] = await Promise.all([vault.getNote(a, { includeLinks: true }), vault.getNote(b, { includeLinks: true })]);
-        canonicalId = chooseCanonical(na, nb).id;
+      // Which pair is this, by the detector's own judgement?
+      const list = await people(vaultId, !dryRun);
+      const idx = new IdentityIndex(list);
+      const na = idx.get(a), nb = idx.get(b);
+      if (!na || !nb) return c.json({ error: "not_found" }, 404);
+      const pair = (await duplicates(vaultId)).find((p) => (p.a.id === na.id && p.b.id === nb.id) || (p.a.id === nb.id && p.b.id === na.id)) ?? null;
+      const canonicalId = (body.canonicalId as string | undefined) === a ? na.id : (body.canonicalId as string | undefined) === b ? nb.id : (pair?.suggestedCanonicalId ?? na.id);
+      const secondary = canonicalId === na.id ? nb : na;
+      const resuming = isTombstone(secondary) && idx.canonicalOf(secondary)?.id === canonicalId;
+      const owner = ownerProfile(idx, ownerConfigFor(vaultId)).person;
+      const refusal = owner && secondary.id === owner.id ? "owner_is_secondary" : resuming ? null : !pair ? "not_a_duplicate" : pair.strength === "weak" ? "weak_match" : null;
+      const info = { pair: pair ? { strength: pair.strength, evidence: pair.evidence } : null, requiresConfirmUnrelated: refusal === "not_a_duplicate" || refusal === "weak_match" };
+      if (!dryRun) {
+        if (refusal === "owner_is_secondary") return c.json({ error: refusal, detail: "the owner's own person note can only be the surviving note" }, 409);
+        if (refusal && confirmUnrelated !== true) return c.json({ error: refusal, detail: "these two notes are not a detected duplicate pair; pass confirmUnrelated: true to merge them anyway", ...info }, 409);
       }
-      const secondaryId = canonicalId === a ? b : a;
-      const merge = await mergePeople(vault, { canonicalId, secondaryId, dryRun, by: config.ownerEmail });
+      const merge = await mergePeople(vault, {
+        canonicalId,
+        secondaryId: secondary.id,
+        dryRun,
+        by: config.ownerEmail,
+        expect: dryRun ? undefined : expect,
+        live: liveHooks(vaultId),
+        maxConsecutiveErrors: config.peopleLinkMaxConsecutiveErrors,
+        callTimeoutMs: config.peopleVaultTimeoutMs,
+        onWrite: () => invalidatePeople(vaultId),
+      });
       if (!dryRun)
         recordAction({
           actorEmail: config.ownerEmail,
           via,
-          origin: originOf(via),
+          origin,
           action: "admin.people-merge",
           vaultId,
-          target: { ...merge }, // note ids + counts + evidence kinds — no names, addresses or bodies
+          // note ids + counts + evidence kinds — no names, addresses, versions or bodies
+          target: { ...merge, expect: undefined, pair: info.pair, confirmUnrelated: confirmUnrelated === true },
           status: merge.complete ? "ok" : "failed",
         });
-      return c.json({ merge });
+      return c.json({ merge, ...info, ...(refusal === "owner_is_secondary" ? { blocked: refusal } : {}) });
     } catch (e) {
       if (e instanceof MergeError) return c.json({ error: e.code }, e.status as 400 | 404 | 409 | 503);
       if ((e as { status?: number })?.status === 404) return c.json({ error: "not_found" }, 404);

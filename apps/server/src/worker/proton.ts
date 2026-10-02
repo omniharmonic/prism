@@ -96,6 +96,7 @@ import { getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret } from "../secrets";
 import { PeopleIndex, type PeopleVault } from "./people";
 import { ForwardLinker } from "../people-forward";
+import { ownerConfigFor } from "../people-owner";
 import { EMAIL_FROM, extractDisplayName, extractEmailAddress } from "./gmail";
 import { isUnreadFlags, messageIdOf, noteContent, noteMetadata, notePath, parseMessage, parseMime, relabelUnread, SOURCE, NOTE_DIR } from "./proton-parse";
 
@@ -831,8 +832,9 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
       const hit = name ? await people.findOrCreate(vault, name, { email: addr.includes("@") ? addr : null, allowCreate: false }) : null;
       if (hit) links = [{ target: hit.id, relationship: EMAIL_FROM }];
     }
-    // Identity layer (off unless opts.forward): recipients, and a sender the exact
-    // match above missed (name rule / review queue). Rides in the same create.
+    // Identity layer (off unless opts.forward): recipients by exact address, and —
+    // for a sender the exact match above missed — a review-queue entry. A display
+    // name never links mail. Rides in the same create.
     const plan = opts.forward
       ? await opts.forward
           .email({ from: m.from, to: m.to, labels: metadata.labels }, { sender: !!opts.linkPeople && !links, recipients: !!opts.linkRecipients })
@@ -1002,7 +1004,7 @@ export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; 
               forward: new ForwardLinker(vaultClient(entry.id), {
                 vaultId: entry.id,
                 origin: "ingest:proton",
-                owner: { emails: [config.ownerEmail, c.username, ...config.peopleOwnerEmails], person: config.peopleOwnerPerson, aliases: config.peopleOwnerAliases },
+                owner: ownerConfigFor(entry.id, { emails: [c.username] }),
                 queue: config.peopleQueueOnIngest,
                 maxRecipients: config.peopleLinkMaxRecipients,
               }),

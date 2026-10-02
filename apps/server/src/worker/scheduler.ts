@@ -28,7 +28,10 @@ import { ClickUpClient, ingestClickUp, type ClickUpCredential, type ClickUpVault
 import { GmailClient, ingestGmail, type GmailVault, type GogRunner } from "./gmail";
 import { calendarMode, calendarSourceName, runCalendarOnce } from "./calendar";
 import { protonMode, runProtonOnce } from "./proton";
-import { ForwardLinker } from "../people-forward";
+import { ForwardLinker, IngestReviewSink } from "../people-forward";
+import { ownerConfigFor } from "../people-owner";
+import { ownerProfile } from "../identity";
+import type { PeopleIndex } from "./people";
 import { runVaultMirrorsOnce } from "./vault-mirror";
 import { loadGovernance } from "../governance-service";
 import { reconcileGovernanceGrants, type ReconcileResult } from "../governance-grants";
@@ -185,7 +188,7 @@ function forwardLinker(entry: VaultEntry, origin: string, enabled: boolean): For
   return new ForwardLinker(vaultClient(entry.id), {
     vaultId: entry.id,
     origin,
-    owner: { emails: [config.ownerEmail, ...config.peopleOwnerEmails], person: config.peopleOwnerPerson, aliases: config.peopleOwnerAliases },
+    owner: ownerConfigFor(entry.id),
     queue: config.peopleQueueOnIngest,
     maxRecipients: config.peopleLinkMaxRecipients,
   });
@@ -226,6 +229,14 @@ export async function runMatrixOnce(entry: VaultEntry): Promise<number> {
     linkExisting: config.matrixLinkExisting,
     storeParticipantIds: config.matrixStoreParticipantIds,
     selfUserId,
+    // Identity layer (only with MATRIX_LINK_EXISTING): never link the owner's own
+    // note; queue DM counterparts that have a candidate but no exact match.
+    ...(config.matrixLinkExisting
+      ? {
+          ownerPersonId: (people: PeopleIndex) => ownerProfile(people.identity, ownerConfigFor(entry.id, { matrixId: selfUserId })).person?.id ?? null,
+          ...(config.peopleQueueOnIngest ? { reviewSink: new IngestReviewSink({ vaultId: entry.id, origin: "ingest:matrix", relationship: "messages-with" }) } : {}),
+        }
+      : {}),
   });
   if (res.peopleCreated > 0) console.log(`[worker] matrix ${entry.id}: ${res.peopleCreated} person note(s) created (MATRIX_LINK_PEOPLE)`);
   if (res.nextBatch) setWorkerCursor(entry.id, "matrix", res.nextBatch);

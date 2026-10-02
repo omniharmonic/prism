@@ -16,15 +16,21 @@
  * MERGE (`mergePeople`), in this order so a failure can only leave MORE links,
  * never fewer, and re-running the same call finishes the job:
  *   1. CANONICAL: one CAS write — identities / aliases / organizations /
- *      projects the secondary has and the canonical lacks (nothing existing is
- *      overwritten), the secondary's body under a marked section if it has any
- *      beyond a heading, and the secondary's OUTGOING links.
+ *      projects the secondary has and the canonical lacks (append-only; a field
+ *      of an unexpected type is skipped and reported), the secondary's body
+ *      under a "Merged from" section if it has any beyond a heading (skipped
+ *      while either note is open in the collab editor; "already appended" is
+ *      recorded in metadata `prism_merged_from`), and the secondary's OUTGOING
+ *      links.
  *   2. Every note that links TO the secondary: one links-only CAS write each
  *      (add → canonical, remove → secondary). A conflict is counted and left.
  *   3. SECONDARY, last: tombstoned in the owner's existing convention (tag
  *      `merged-stub`, `merged_into`, `status: merged_into_canonical`,
- *      `merged_at`), its identity keys stripped (kept under
- *      `prism_merged_identities` for undo) and its outgoing links removed.
+ *      `merged_at`), the identity keys the canonical VERIFIABLY now holds
+ *      removed from it (kept under `prism_merged_identities` for undo) and its
+ *      outgoing links removed.
+ * Every write is compare-and-swap; a note with no version is skipped, never
+ * forced. Repeated failed writes stop the merge (`aborted`).
  * Vault-managed `wikilink` links can't move (the vault derives them from note
  * content): the canonical gets a `references` link beside them.
  * Undo = version history: restore the canonical, the secondary and (for links)
@@ -34,6 +40,7 @@ import type { Note, NoteLinkInput } from "./parachute";
 import { IdentityIndex, cleanName, fineKind, isNonHumanPerson, isTombstone, looksLikeEmail, mergedIntoRef, nameTokens, personKeys, slugKey } from "./identity";
 import { REL, VAULT_MANAGED } from "./relationships";
 import { stripIdentityPatch, unionIdentities } from "./people-metadata";
+import { acquirePeopleLock } from "./people-lock";
 
 // ── detection ────────────────────────────────────────────────────────────────
 
@@ -129,7 +136,7 @@ export function detectDuplicates(people: Note[]): DuplicatePair[] {
         bucket(byEmailSlug, slugKey(k.value), p);
       }
     }
-    for (const n of keys.names) bucket(byName, n, p);
+    for (const n of [...keys.names, ...keys.aliases]) bucket(byName, n, p);
   }
   group(byKey, "strong", (k) => k.split("\u0000")[0]!);
   group(byName, "medium", () => "name");
@@ -180,7 +187,7 @@ export interface MergeVault {
 
 export class MergeError extends Error {
   constructor(
-    readonly code: "not_found" | "not_a_person" | "same_person" | "canonical_is_merged" | "secondary_merged_elsewhere" | "non_human" | "conflict" | "inventory_limit",
+    readonly code: "not_found" | "not_a_person" | "same_person" | "canonical_is_merged" | "secondary_merged_elsewhere" | "non_human" | "conflict" | "inventory_limit" | "stale",
     readonly status: number,
   ) {
     super(code);
@@ -191,11 +198,21 @@ export interface MergeReport {
   dryRun: boolean;
   canonicalId: string;
   secondaryId: string;
+  /** The versions this report was computed from — a write run must send them back as `expect`. */
+  expect: { canonicalUpdatedAt: string | null; secondaryUpdatedAt: string | null };
   /** The secondary was already tombstoned into this canonical: finishing an earlier merge. */
   resumed: boolean;
   /** What the canonical gains, by kind (counts only). */
   identities: Record<string, number>;
+  /** Canonical fields left alone because their current value has an unexpected type. */
+  skippedFields: string[];
+  /** Identity fields left on the secondary (the canonical does not verifiably hold them). */
+  leftOnSecondary: string[];
   bodyAppended: boolean;
+  /** The body was NOT appended because a note is open in the collab editor — re-run later. */
+  bodySkippedLive: boolean;
+  /** Links that carry their own metadata: left where they are (a copy would lose it). */
+  linksWithMetadata: number;
   /** Planned. */
   outbound: number;
   inbound: number;
@@ -205,43 +222,94 @@ export interface MergeReport {
   notesWritten: number;
   conflicts: number;
   errors: number;
+  /** Notes skipped because the vault gave no version to compare against (never force-written). */
+  noStamp: number;
+  /** The run stopped early after repeated failed writes. */
+  aborted: boolean;
   tombstoned: boolean;
   /** Everything planned was applied (always false for a dry run that had work). */
   complete: boolean;
 }
 
-let merging = false;
-export const mergeRunning = (): boolean => merging;
+export interface MergeOptions {
+  canonicalId: string;
+  secondaryId: string;
+  dryRun: boolean;
+  by: string;
+  now?: number;
+  /** Refuse (409 `stale`) unless both notes are still at these versions. */
+  expect?: { canonicalUpdatedAt: string; secondaryUpdatedAt: string };
+  /** Collab hooks; absent = no live documents. */
+  live?: { isLive(noteId: string): boolean; markReconciled(noteId: string, prevMs: number, nextMs: number): void };
+  /** Stop after this many consecutive failed writes that are not conflicts (default 5). */
+  maxConsecutiveErrors?: number;
+  /** Give up on one vault call after this long (default 30 s; 0 = no limit). */
+  callTimeoutMs?: number;
+  onWrite?: () => void;
+}
+
+/** Above this many linking notes, their versions come from ONE lean listing instead of one read each. */
+const INBOUND_LIST_THRESHOLD = 40;
 
 const statusOf = (e: unknown): number | undefined => (e as { status?: number })?.status;
 const hasOut = (n: Note, target: string, rel: string): boolean => (n.links ?? []).some((l) => l.sourceId === n.id && l.targetId === target && l.relationship === rel);
-const mergeMarker = (id: string): string => `<!-- prism-merge:${id} -->`;
+const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!);
 
-/** A note body minus its title line and the auto-create boilerplate. */
+function mergePatch(target: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = target && typeof target === "object" && !Array.isArray(target) ? { ...(target as Record<string, unknown>) } : {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete out[k];
+    else out[k] = v && typeof v === "object" && !Array.isArray(v) ? mergePatch(out[k], v as Record<string, unknown>) : v;
+  }
+  return out;
+}
+
+/** A note body minus its front matter, title line and the auto-create boilerplate. */
 export function bodyBeyondHeading(content: string): string {
   const lines = (content ?? "").replace(/^---\n[\s\S]*?\n---\n?/, "").split("\n");
   if (lines[0]?.startsWith("# ")) lines.shift();
   return lines
     .join("\n")
     .replace(/^\s*Auto-created by Prism sync\.\s*$/gm, "")
+    .replace(/^\s*<h1>[^<]*<\/h1>\s*/i, "")
+    .replace(/<p>\s*Auto-created by Prism sync\.\s*<\/p>/gi, "")
     .trim();
 }
 
-export async function mergePeople(vault: MergeVault, o: { canonicalId: string; secondaryId: string; dryRun: boolean; by: string; now?: number }): Promise<MergeReport> {
+/** The canonical body with the secondary's appended — as HTML when the body is collab HTML. */
+function appendedBody(canonical: string, secondaryBody: string, from: string, date: string): string {
+  const base = (canonical ?? "").trimEnd();
+  if (base.trimStart().startsWith("<")) {
+    const paras = secondaryBody.trimStart().startsWith("<") ? secondaryBody : secondaryBody.split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
+    return `${base}<h2>Merged from ${esc(from)} (${date})</h2>${paras}`;
+  }
+  return `${base}\n\n## Merged from ${from} (${date})\n\n${secondaryBody}\n`;
+}
+
+export async function mergePeople(vault: MergeVault, o: MergeOptions): Promise<MergeReport> {
   if (o.canonicalId === o.secondaryId) throw new MergeError("same_person", 400);
-  if (merging) throw new MergeError("conflict", 409);
-  merging = true;
+  const release = acquirePeopleLock("people-merge");
+  if (!release) throw new MergeError("conflict", 409);
   try {
     return await doMerge(vault, o);
   } finally {
-    merging = false;
+    release();
   }
 }
 
-async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId: string; dryRun: boolean; by: string; now?: number }): Promise<MergeReport> {
+async function doMerge(vault: MergeVault, o: MergeOptions): Promise<MergeReport> {
+  const timeoutMs = Math.max(0, o.callTimeoutMs ?? 30_000);
+  const timed = <T>(p: Promise<T>): Promise<T> => {
+    if (!timeoutMs) return p;
+    let timer: NodeJS.Timeout;
+    const t = new Promise<never>((_, rej) => {
+      timer = setTimeout(() => rej(new Error("vault call timed out")), timeoutMs);
+    });
+    return Promise.race([p, t]).finally(() => clearTimeout(timer)) as Promise<T>;
+  };
   const load = async (id: string): Promise<Note> => {
     try {
-      return await vault.getNote(id, { includeLinks: true });
+      return await timed(vault.getNote(id, { includeLinks: true }));
     } catch (e) {
       if (statusOf(e) === 404) throw new MergeError("not_found", 404);
       throw e;
@@ -261,14 +329,20 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
     if (!ref || (ref !== c.id && ref.toLowerCase() !== (c.path ?? "").toLowerCase())) throw new MergeError("secondary_merged_elsewhere", 409);
     resumed = true;
   }
+  if (o.expect && (o.expect.canonicalUpdatedAt !== c.updatedAt || o.expect.secondaryUpdatedAt !== s.updatedAt)) throw new MergeError("stale", 409);
 
   const rep: MergeReport = {
     dryRun: o.dryRun,
     canonicalId: c.id,
     secondaryId: s.id,
+    expect: { canonicalUpdatedAt: c.updatedAt ?? null, secondaryUpdatedAt: s.updatedAt ?? null },
     resumed,
     identities: {},
+    skippedFields: [],
+    leftOnSecondary: [],
     bodyAppended: false,
+    bodySkippedLive: false,
+    linksWithMetadata: 0,
     outbound: 0,
     inbound: 0,
     alreadyPresent: 0,
@@ -276,6 +350,8 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
     notesWritten: 0,
     conflicts: 0,
     errors: 0,
+    noStamp: 0,
+    aborted: false,
     tombstoned: false,
     complete: false,
   };
@@ -283,10 +359,15 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
   // ── plan ──
   const union = unionIdentities(c, s);
   rep.identities = union.moved;
+  rep.skippedFields = union.skipped;
   const body = bodyBeyondHeading(s.content ?? "");
-  const marker = mergeMarker(s.id);
-  const appendBody = body.length > 0 && !(c.content ?? "").includes(marker);
+  // "Body already appended" lives in METADATA (never an HTML comment in a body that may be collab HTML).
+  const mergedFrom = Array.isArray(c.metadata?.prism_merged_from) ? (c.metadata!.prism_merged_from as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  const wantsBody = body.length > 0 && !mergedFrom.includes(s.id);
+  const live = wantsBody && !!o.live && (o.live.isLive(c.id) || o.live.isLive(s.id));
+  const appendBody = wantsBody && !live;
   rep.bodyAppended = appendBody;
+  rep.bodySkippedLive = wantsBody && live;
 
   const cAdd: NoteLinkInput[] = [];
   const cRemove: NoteLinkInput[] = [];
@@ -297,6 +378,11 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
     const k = `${l.sourceId}\u0000${l.targetId}\u0000${l.relationship}`;
     if (seen.has(k)) continue;
     seen.add(k);
+    const lm = (l as { metadata?: unknown }).metadata;
+    if (lm && typeof lm === "object" && Object.keys(lm as object).length > 0) {
+      rep.linksWithMetadata++;
+      continue;
+    }
     const managed = VAULT_MANAGED.has(l.relationship);
     const rel = managed ? REL.REFERENCES : l.relationship;
     if (l.sourceId === s.id) {
@@ -315,6 +401,7 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
       }
       rep.inbound++;
       const op = inbound.get(l.sourceId) ?? { add: [], remove: [] };
+      // Directed: only an X → canonical link of the same name counts as present.
       const exists = (c.links ?? []).some((x) => x.sourceId === l.sourceId && x.targetId === c.id && x.relationship === rel);
       if (exists) rep.alreadyPresent++;
       else if (!op.add.some((x) => x.relationship === rel)) op.add.push({ target: c.id, relationship: rel });
@@ -324,64 +411,109 @@ async function doMerge(vault: MergeVault, o: { canonicalId: string; secondaryId:
   }
 
   const at = new Date(o.now ?? Date.now()).toISOString();
-  const cPatch: Parameters<MergeVault["updateNote"]>[1] = {};
+  const cMeta: Record<string, unknown> = { ...(union.patch ?? {}) };
+  if (appendBody) cMeta.prism_merged_from = [...mergedFrom, s.id];
   if (union.patch || appendBody) {
     const history = Array.isArray(c.metadata?.prism_merge_history) ? (c.metadata!.prism_merge_history as unknown[]) : [];
-    const already = history.some((h) => (h as { secondaryId?: string })?.secondaryId === s.id);
-    cPatch.metadata = { ...(union.patch ?? {}), ...(already ? {} : { prism_merge_history: [...history.slice(-49), { secondaryId: s.id, at, by: o.by }] }) };
+    if (!history.some((h) => (h as { secondaryId?: string })?.secondaryId === s.id)) cMeta.prism_merge_history = [...history.slice(-49), { secondaryId: s.id, at, by: o.by }];
   }
-  if (appendBody) cPatch.content = `${(c.content ?? "").trimEnd()}\n\n## Merged from ${s.path ?? s.id} (${at.slice(0, 10)})\n\n${marker}\n\n${body}\n`;
+  const cPatch: Parameters<MergeVault["updateNote"]>[1] = {};
+  if (Object.keys(cMeta).length) cPatch.metadata = cMeta;
+  if (appendBody) cPatch.content = appendedBody(c.content ?? "", body, s.path ?? s.id, at.slice(0, 10));
   if (cAdd.length || cRemove.length) cPatch.links = { ...(cAdd.length ? { add: cAdd } : {}), ...(cRemove.length ? { remove: cRemove } : {}) };
   const canonicalWrite = Object.keys(cPatch).length > 0;
 
-  const strip = stripIdentityPatch(s);
-  const sMeta: Record<string, unknown> = { ...strip.patch };
-  if (!resumed) Object.assign(sMeta, { merged_into: c.path ?? c.id, status: "merged_into_canonical", merged_at: at, merged_by: o.by });
-  if (Object.keys(strip.kept).length) sMeta.prism_merged_identities = strip.kept;
+  // What the canonical will hold once step 1 lands — the secondary is stripped against THAT.
+  const planned: Note = { ...c, metadata: mergePatch(c.metadata, cMeta) };
+  const secondaryPatch = (holder: Note) => {
+    const strip = stripIdentityPatch(s, holder);
+    const meta: Record<string, unknown> = { ...strip.patch };
+    if (!resumed) Object.assign(meta, { merged_into: c.path ?? c.id, status: "merged_into_canonical", merged_at: at, merged_by: o.by });
+    if (Object.keys(strip.kept).length) meta.prism_merged_identities = mergePatch(s.metadata?.prism_merged_identities, strip.kept);
+    return { meta, left: strip.left };
+  };
+  const plannedSecondary = secondaryPatch(planned);
+  rep.leftOnSecondary = plannedSecondary.left;
   const needsTag = !(s.tags ?? []).includes("merged-stub");
-  const secondaryWrite = Object.keys(sMeta).length > 0 || sRemove.length > 0 || needsTag;
+  const secondaryWrite = Object.keys(plannedSecondary.meta).length > 0 || sRemove.length > 0 || needsTag;
 
   rep.notesToWrite = (canonicalWrite ? 1 : 0) + inbound.size + (secondaryWrite ? 1 : 0);
   if (o.dryRun) {
-    rep.complete = rep.notesToWrite === 0;
+    rep.complete = rep.notesToWrite === 0 && !rep.bodySkippedLive;
     return rep;
   }
 
   // ── apply: canonical → inbound sources → secondary ──
-  const write = async (id: string, p: Parameters<MergeVault["updateNote"]>[1], updatedAt: string | null): Promise<boolean> => {
+  const maxErrors = o.maxConsecutiveErrors ?? 5;
+  let streak = 0;
+  const write = async (id: string, p: Parameters<MergeVault["updateNote"]>[1], updatedAt: string | null | undefined): Promise<Note | null> => {
+    if (!updatedAt) {
+      rep.noStamp++; // never a blind (force) write
+      return null;
+    }
     try {
-      await vault.updateNote(id, { ...p, ...(updatedAt ? { ifUpdatedAt: updatedAt } : {}) });
+      const wasLive = !p.content && !!o.live?.isLive(id);
+      const updated = await timed(vault.updateNote(id, { ...p, ifUpdatedAt: updatedAt }));
+      if (wasLive) {
+        const prev = Date.parse(updatedAt), next = Date.parse(updated?.updatedAt ?? "");
+        if (Number.isFinite(prev) && Number.isFinite(next)) o.live!.markReconciled(id, prev, next);
+      }
+      streak = 0;
       rep.notesWritten++;
-      return true;
+      o.onWrite?.();
+      return updated ?? ({ id } as Note);
     } catch (e) {
       const st = statusOf(e);
       if (st === 409 || st === 428) rep.conflicts++;
-      else rep.errors++;
-      return false;
+      else {
+        rep.errors++;
+        if (maxErrors && ++streak >= maxErrors) rep.aborted = true;
+      }
+      return null;
     }
   };
-  if (canonicalWrite && !(await write(c.id, cPatch, c.updatedAt))) return rep; // nothing else moved: retry is clean
+
+  let holder: Note = c;
+  if (canonicalWrite) {
+    const updated = await write(c.id, cPatch, c.updatedAt);
+    if (!updated) return rep; // nothing else moved: a retry starts clean
+    // Verify what the canonical holds NOW (the response, else a re-read) before stripping anything.
+    holder = updated.metadata && typeof updated.metadata === "object" ? updated : await load(c.id).catch(() => planned);
+  }
 
   if (inbound.size) {
-    // One lean listing for the linking notes' versions (never their content).
-    const all = await vault.listNotes({ includeMetadata: ["type"], limit: 50_000 });
-    if (all.length >= 50_000) throw new MergeError("inventory_limit", 503);
-    const stamp = new Map(all.map((n) => [n.id, n.updatedAt]));
+    // Versions of the linking notes ONLY: one read each, or — for a large fan-in —
+    // one lean listing (never their content).
+    const stamp = new Map<string, string | null>();
+    if (inbound.size > INBOUND_LIST_THRESHOLD) {
+      const all = await timed(vault.listNotes({ includeMetadata: ["type"], limit: 50_000 }));
+      if (all.length >= 50_000) throw new MergeError("inventory_limit", 503);
+      for (const n of all) if (inbound.has(n.id)) stamp.set(n.id, n.updatedAt);
+    }
     for (const [id, op] of inbound) {
-      if (!stamp.has(id)) {
-        rep.errors++;
-        continue;
+      if (rep.aborted) break;
+      let at0 = stamp.get(id);
+      if (inbound.size <= INBOUND_LIST_THRESHOLD) {
+        try {
+          at0 = (await timed(vault.getNote(id))).updatedAt;
+        } catch (e) {
+          if (statusOf(e) !== 404) rep.errors++;
+          continue; // a note that is gone has no link to move
+        }
       }
-      await write(id, { links: { ...(op.add.length ? { add: op.add } : {}), ...(op.remove.length ? { remove: op.remove } : {}) } }, stamp.get(id) ?? null);
+      await write(id, { links: { ...(op.add.length ? { add: op.add } : {}), ...(op.remove.length ? { remove: op.remove } : {}) } }, at0);
     }
   }
+  if (rep.aborted) return rep;
   if (secondaryWrite) {
-    rep.tombstoned = await write(
+    const final = secondaryPatch(holder);
+    rep.leftOnSecondary = final.left;
+    rep.tombstoned = !!(await write(
       s.id,
-      { ...(Object.keys(sMeta).length ? { metadata: sMeta } : {}), ...(sRemove.length ? { links: { remove: sRemove } } : {}), ...(needsTag ? { tags: { add: ["merged-stub"] } } : {}) },
+      { ...(Object.keys(final.meta).length ? { metadata: final.meta } : {}), ...(sRemove.length ? { links: { remove: sRemove } } : {}), ...(needsTag ? { tags: { add: ["merged-stub"] } } : {}) },
       s.updatedAt,
-    );
+    ));
   } else rep.tombstoned = true;
-  rep.complete = rep.conflicts === 0 && rep.errors === 0;
+  rep.complete = rep.conflicts === 0 && rep.errors === 0 && rep.noStamp === 0 && !rep.bodySkippedLive;
   return rep;
 }

@@ -54,7 +54,8 @@ import { vaultClient } from "../parachute";
 import { config, type CalendarDeleteMode, type VaultEntry } from "../config";
 import { getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret } from "../secrets";
-import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault } from "./people";
+import { PeopleIndex, creationRefusal, rustSanitizePath, type PeopleVault, type PersonReview } from "./people";
+import { IngestReviewSink } from "../people-forward";
 import { defaultGogRunner, type GogRunner } from "./gmail";
 import { matchTranscript } from "./transcript-match";
 
@@ -328,6 +329,8 @@ export interface CalendarPassOptions {
   maxOrphans?: number;
   now?: number;
   log?: (line: string) => void;
+  /** Identity layer (PEOPLE_QUEUE_ON_INGEST): attendees that were not linked, queued for review. */
+  reviewSink?: { collect(eventId: string): (r: PersonReview) => void; flush(eventId: string, noteId: string | null | undefined): void };
 }
 
 export interface CalendarPassResult {
@@ -428,7 +431,7 @@ export async function syncCalendarWindow(
         }
         continue;
       }
-      const hit = await people.findOrCreate(vault, a.name, { email: a.email }).catch((e) => {
+      const hit = await people.findOrCreate(vault, a.name, { email: a.email, ...(opts.reviewSink ? { review: opts.reviewSink.collect(m.eventId) } : {}) }).catch((e) => {
         log(`person for event ${m.eventId} failed: ${String(e)}`);
         return null;
       });
@@ -566,6 +569,7 @@ export async function syncCalendarWindow(
           res.updated++;
         }
         byEvent.set(m.eventId, known);
+        opts.reviewSink?.flush(m.eventId, known.id);
         await linkTranscript(known, known.id, m);
         continue;
       }
@@ -609,6 +613,7 @@ export async function syncCalendarWindow(
       meetings.push(fresh);
       index(fresh);
       byEvent.set(m.eventId, fresh);
+      opts.reviewSink?.flush(m.eventId, fresh.id);
       await linkTranscript(fresh, fresh.id, m);
     } catch (e) {
       res.failed++;
@@ -947,6 +952,7 @@ export async function runCalendarOnce(
       shadow: mode === "shadow",
       deleteMode: config.calendarDeleteMode,
       source: "worker",
+      ...(config.peopleQueueOnIngest ? { reviewSink: new IngestReviewSink({ vaultId: entry.id, origin: "ingest:calendar", relationship: ATTENDED_BY }) } : {}),
       maxOrphans: config.calendarMaxOrphansPerPass,
       now,
       log: (l) => console.log(`[calendar] ${entry.id}: ${l}`),
@@ -985,6 +991,7 @@ export async function runCalendarRange(
       shadow: mode === "shadow",
       deleteMode: config.calendarDeleteMode,
       source: "range",
+      ...(config.peopleQueueOnIngest ? { reviewSink: new IngestReviewSink({ vaultId, origin: "ingest:calendar", relationship: ATTENDED_BY }) } : {}),
       maxOrphans: config.calendarMaxOrphansPerPass,
       now: opts.now,
       log: (l) => console.log(`[calendar] ${vaultId} range: ${l}`),

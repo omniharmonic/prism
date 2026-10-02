@@ -9,12 +9,16 @@ import { db, setMembership } from "../src/db";
 import { adminApi } from "../src/routes/admin";
 import { candidateStatus, enqueueCandidate, getCandidate, keyHash, listCandidates, openCandidateCounts, vaultIdentity } from "../src/identity-store";
 import { addKeyPatch } from "../src/people-metadata";
+import { _resetPeopleCache } from "../src/people-cache";
+import { _resetPeopleLock, acquirePeopleLock } from "../src/people-lock";
 import { resetDb, makeSession, sessionCookie, makeCapability, installFakeVault, type FakeVault } from "./helpers";
 
 const J = { "content-type": "application/json" };
 let fv: FakeVault;
 beforeEach(() => {
   resetDb();
+  _resetPeopleCache();
+  _resetPeopleLock();
   fv = installFakeVault();
 });
 afterEach(() => fv.restore());
@@ -108,7 +112,7 @@ test("resolve: links the source to the chosen person (CAS, links only) and teach
   assert.equal((await post(`/people/candidates/${id}/resolve`, owner(), { personId: "e1" })).status, 404, "the target must be a person");
 
   const before = fv.notes.get("e1")!.updatedAt;
-  const r = await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2" });
+  const r = await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2", addIdentity: true });
   assert.equal(r.status, 200);
   const out = (await r.json()) as Record<string, unknown>;
   assert.deepEqual({ linked: out.linked, resolved: out.resolved, identityAdded: out.identityAdded }, { linked: 1, resolved: 1, identityAdded: true });
@@ -116,6 +120,8 @@ test("resolve: links the source to the chosen person (CAS, links only) and teach
   assert.equal(patches.length, 2);
   assert.deepEqual(patches[0]!.body, { links: { add: [{ target: "p2", relationship: "email-from" }] }, if_updated_at: before });
   assert.deepEqual((patches[1]!.body as { metadata: unknown }).metadata, { channels: { email: ["new@example.test"] } });
+  assert.ok((patches[1]!.body as { if_updated_at?: string }).if_updated_at, "the identity write is CAS too");
+  assert.ok(fv.calls.every((c) => !(c.body as { force?: boolean } | undefined)?.force), "nothing is ever force-written");
   assert.deepEqual(fv.notes.get("e1")!.links, [{ sourceId: "e1", targetId: "p2", relationship: "email-from" }]);
   assert.equal(getCandidate("primary", id)!.status, "resolved");
   assert.equal(getCandidate("primary", id)!.resolvedPersonId, "p2");
@@ -132,7 +138,7 @@ test("resolve: applyToKey covers every open source of that key; a key another pe
   queue("e2", { kind: "email", value: "alex@example.test" });
   const id = listCandidates("primary").candidates[0]!.id;
   // p1 already claims this address → linking to p2 must not also give p2 the key.
-  const r = await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2", applyToKey: true });
+  const r = await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2", applyToKey: true, addIdentity: true });
   const out = (await r.json()) as Record<string, unknown>;
   assert.deepEqual({ linked: out.linked, resolved: out.resolved, identityAdded: out.identityAdded, identitySkipped: out.identitySkipped }, { linked: 2, resolved: 2, identityAdded: false, identitySkipped: "claimed_by_another_person" });
   assert.equal(fv.notes.get("p2")!.metadata!.channels, undefined);
@@ -142,15 +148,15 @@ test("resolve: applyToKey covers every open source of that key; a key another pe
   queue("e1", { kind: "name", value: "b-example" }, { relationship: "email-to", display: "B. Example", reason: "single-token-name" });
   const again = listCandidates("primary").candidates[0]!.id;
   fv.conflictOnNextWrite = true;
-  const c = (await (await post(`/people/candidates/${again}/resolve`, owner(), { personId: "p2", addIdentity: false })).json()) as Record<string, unknown>;
+  const c = (await (await post(`/people/candidates/${again}/resolve`, owner(), { personId: "p2" })).json()) as Record<string, unknown>;
   assert.deepEqual({ linked: c.linked, conflicts: c.conflicts, resolved: c.resolved, identitySkipped: c.identitySkipped }, { linked: 0, conflicts: 1, resolved: 0, identitySkipped: "not_requested" });
   assert.equal(getCandidate("primary", again)!.status, "open");
   // Retry: now it links; an existing edge is not re-written.
-  await post(`/people/candidates/${again}/resolve`, owner(), { personId: "p2", addIdentity: false });
+  await post(`/people/candidates/${again}/resolve`, owner(), { personId: "p2" });
   queue("e1", { kind: "name", value: "blake" }, { relationship: "email-to", display: "Blake", reason: "single-token-name" });
   const third = listCandidates("primary").candidates[0]!.id;
   const n = fv.calls.filter((x) => x.method === "PATCH").length;
-  const t = (await (await post(`/people/candidates/${third}/resolve`, owner(), { personId: "p2", addIdentity: false })).json()) as Record<string, unknown>;
+  const t = (await (await post(`/people/candidates/${third}/resolve`, owner(), { personId: "p2" })).json()) as Record<string, unknown>;
   assert.equal(t.alreadyLinked, 1);
   assert.equal(fv.calls.filter((x) => x.method === "PATCH").length, n, "no write for an edge that exists");
 });
@@ -168,17 +174,57 @@ test("dismiss closes without touching the vault; applyToKey closes the whole key
   assert.equal((await post(`/people/candidates/${id}/dismiss`, owner())).status, 409);
 });
 
-test("addKeyPatch: a delta that never overwrites, in the shapes the vault already uses", () => {
+test("addKeyPatch: append-only, complete nested objects, unexpected types skipped", () => {
   const note = (metadata: Record<string, unknown>) => ({ id: "p", content: "", path: "vault/people/Pat Lane", tags: ["person"], metadata, createdAt: "", updatedAt: "" });
-  assert.deepEqual(addKeyPatch(note({ email: "a@example.test" }), { kind: "email", value: "b@example.test" }), { channels: { email: ["b@example.test"] } });
-  assert.equal(addKeyPatch(note({ email: "A@example.test" }), { kind: "email", value: "a@example.test" }), null, "already claimed");
-  assert.deepEqual(addKeyPatch(note({ channels: { matrix: "@a:h.test" } }), { kind: "matrix", value: "@b:h.test" }), { channels: { matrix: ["@a:h.test", "@b:h.test"] } });
-  assert.deepEqual(addKeyPatch(note({}), { kind: "matrix", value: "@b:h.test" }), { channels: { matrix: "@b:h.test" } });
-  assert.deepEqual(addKeyPatch(note({}), { kind: "telegram", value: "424242" }), { channels: { telegram: "telegram_424242" } });
-  assert.deepEqual(addKeyPatch(note({ phone: "" }), { kind: "phone", value: "15550100" }), { phone: "+15550100" });
-  assert.deepEqual(addKeyPatch(note({ phone: "+1 555 0199" }), { kind: "phone", value: "15550100" }), { channels: { phone: "+15550100" } });
-  assert.deepEqual(addKeyPatch(note({ aliases: "Patty Lane" }), { kind: "name", value: "p-lane" }, "P. Lane"), { aliases: "Patty Lane, P. Lane" }, "a CSV alias field stays a string");
-  assert.deepEqual(addKeyPatch(note({ aliases: ["Patty Lane"] }), { kind: "name", value: "p-lane" }, "P. Lane"), { aliases: ["Patty Lane", "P. Lane"] });
-  assert.equal(addKeyPatch(note({}), { kind: "name", value: "pat-lane" }, "Pat Lane"), null, "the path already names them");
-  assert.equal(addKeyPatch(note({}), { kind: "handle", value: "twitter:5" }), null);
+  const patch = (md: Record<string, unknown>, key: Parameters<typeof addKeyPatch>[1], display?: string) => addKeyPatch(note(md), key, display).patch;
+  assert.deepEqual(patch({ email: "a@example.test" }, { kind: "email", value: "b@example.test" }), { channels: { email: ["b@example.test"] } });
+  assert.equal(patch({ email: "A@example.test" }, { kind: "email", value: "a@example.test" }), null, "already claimed");
+  // The COMPLETE channels object is sent (right under deep AND shallow merge); other keys ride along untouched.
+  assert.deepEqual(patch({ channels: { matrix: "@a:h.test", twitter: "@twitter_5500012:h.test" } }, { kind: "matrix", value: "@b:h.test" }), { channels: { matrix: ["@a:h.test", "@b:h.test"], twitter: "@twitter_5500012:h.test" } });
+  assert.deepEqual(patch({}, { kind: "matrix", value: "@b:h.test" }), { channels: { matrix: "@b:h.test" } });
+  assert.deepEqual(patch({}, { kind: "telegram", value: "424242" }), { channels: { telegram: "telegram_424242" } });
+  assert.deepEqual(patch({ phone: "" }, { kind: "phone", value: "15550100" }), { phone: "+15550100" });
+  assert.deepEqual(patch({ phone: "+1 555 0199" }, { kind: "phone", value: "15550100" }), { channels: { phone: "+15550100" } });
+  // Aliases: the existing string is kept character for character.
+  assert.deepEqual(patch({ aliases: "Dr. Pat (she/her);  Patty Lane" }, { kind: "name", value: "p-lane" }, "P. Lane"), { aliases: "Dr. Pat (she/her);  Patty Lane, P. Lane" });
+  assert.deepEqual(patch({ aliases: ["Lane, Pat", "Patty Lane"] }, { kind: "name", value: "p-lane" }, "P. Lane"), { aliases: ["Lane, Pat", "Patty Lane", "P. Lane"] });
+  assert.equal(patch({}, { kind: "name", value: "pat-lane" }, "Pat Lane"), null, "the path already names them");
+  assert.equal(patch({}, { kind: "handle", value: "twitter:5" }), null);
+  // A NUMBER where a string/list is expected is never overwritten — skipped and reported.
+  const numeric = addKeyPatch(note({ channels: { telegram: 123456789 } }), { kind: "telegram", value: "@pat_l" });
+  assert.deepEqual(numeric, { patch: null, skipped: "channels.telegram" });
+  assert.deepEqual(addKeyPatch(note({ aliases: 7 }), { kind: "name", value: "p-lane" }, "P. Lane"), { patch: null, skipped: "aliases" });
+  assert.deepEqual(addKeyPatch(note({ channels: { email: [1, "a@example.test"] } }), { kind: "email", value: "b@example.test" }), { patch: null, skipped: "channels.email" });
+});
+
+test("resolve: addIdentity is OFF by default; a stamp-less source is never force-written; busy while another people operation runs", async () => {
+  seedPeople();
+  queue("e1", { kind: "email", value: "new@example.test" }, { reason: "name-key-mismatch" });
+  const id = onlyId();
+  const release = acquirePeopleLock("people-link-job")!;
+  assert.equal((await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2" })).status, 409, "the job is running");
+  assert.equal((await post(`/people/candidates/${id}/dismiss`, owner())).status, 409);
+  release();
+
+  fv.notes.get("e1")!.updatedAt = null;
+  const stampless = (await (await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2" })).json()) as Record<string, unknown>;
+  assert.deepEqual({ linked: stampless.linked, noStamp: stampless.noStamp, resolved: stampless.resolved }, { linked: 0, noStamp: 1, resolved: 0 });
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 0, "no version → no write (never force)");
+  assert.equal(getCandidate("primary", id)!.status, "open");
+
+  fv.notes.get("e1")!.updatedAt = "2026-01-02T00:00:00.000Z";
+  const ok = (await (await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2" })).json()) as Record<string, unknown>;
+  assert.deepEqual({ linked: ok.linked, identityAdded: ok.identityAdded, identitySkipped: ok.identitySkipped }, { linked: 1, identityAdded: false, identitySkipped: "not_requested" });
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 1, "one links-only write; the person note is untouched");
+});
+
+test("resolve: a tombstone-unresolved candidate writes merged_into on the stub, not a link", async () => {
+  seedPeople();
+  fv.put({ id: "dead", path: "vault/people/old-stub", tags: ["person", "merged-stub"], metadata: { name: "old-stub" } });
+  queue("dead", { kind: "name", value: "old-stub" }, { relationship: "merged-into", reason: "tombstone-unresolved", candidateIds: [] });
+  const id = onlyId();
+  const out = (await (await post(`/people/candidates/${id}/resolve`, owner(), { personId: "p2", addIdentity: true })).json()) as Record<string, unknown>;
+  assert.deepEqual({ linked: out.linked, resolved: out.resolved, identityAdded: out.identityAdded }, { linked: 1, resolved: 1, identityAdded: false });
+  assert.equal(fv.notes.get("dead")!.metadata!.merged_into, "vault/people/Blake Example");
+  assert.equal(fv.notes.get("dead")!.links, undefined);
 });

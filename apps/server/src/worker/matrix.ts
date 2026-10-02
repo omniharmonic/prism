@@ -12,7 +12,7 @@
  */
 import type { Note } from "../parachute";
 import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "./matrix-rollover";
-import { PeopleIndex } from "./people";
+import { PeopleIndex, type PersonReview } from "./people";
 import type { IfExists, NoteLinkInput } from "../parachute";
 
 export interface MatrixCreds {
@@ -582,7 +582,16 @@ export async function participantLinks(
   members: Record<string, string>,
   people: PeopleIndex,
   vault: Pick<IngestVault, "createNote">,
-  opts: { platform: string; selfUserId?: string | null; /** false = MATRIX_LINK_EXISTING: never create a person. */ allowCreate?: boolean },
+  opts: {
+    platform: string;
+    selfUserId?: string | null;
+    /** false = MATRIX_LINK_EXISTING: never create a person. */
+    allowCreate?: boolean;
+    /** Never link this person (the owner's own note — it would become a hub of every thread). */
+    skipPersonId?: string | null;
+    /** DMs only: told about a counterpart that has a candidate but no exact match. */
+    review?: (r: PersonReview) => void;
+  },
 ): Promise<NoteLinkInput[]> {
   const ids = Object.keys(members);
   const allowCreate = opts.allowCreate !== false && ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION;
@@ -592,9 +601,9 @@ export async function participantLinks(
     if (isBridgeBot(mid) || mid === opts.selfUserId) continue;
     const name = members[mid] || mid;
     const r = await people
-      .findOrCreate(vault, name, { matrixId: mid, platform: opts.platform, allowCreate })
+      .findOrCreate(vault, name, { matrixId: mid, platform: opts.platform, allowCreate, ...(opts.review && ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION ? { review: opts.review } : {}) })
       .catch(() => null);
-    if (r && !seen.has(r.id)) {
+    if (r && r.id !== opts.skipPersonId && !seen.has(r.id)) {
       seen.add(r.id);
       out.push({ target: r.id, relationship: "messages-with" });
     }
@@ -630,6 +639,10 @@ export async function ingestMatrix(
     storeParticipantIds?: boolean;
     /** The sync user's mxid (never linked as a participant). */
     selfUserId?: string | null;
+    /** The owner's own person note, resolved from the pass's people index (never linked). */
+    ownerPersonId?: (people: PeopleIndex) => string | null;
+    /** PEOPLE_QUEUE_ON_INGEST: collects unresolved DM counterparts; flushed with the thread's note id. */
+    reviewSink?: { collect(roomId: string): (r: PersonReview) => void; flush(roomId: string, noteId: string | null | undefined): void };
   } = {},
 ): Promise<IngestResult> {
   const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
@@ -761,6 +774,8 @@ export async function ingestMatrix(
           platform: detectPlatform(Object.keys(members)),
           selfUserId: opts.selfUserId,
           allowCreate: !!opts.linkPeople,
+          skipPersonId: opts.ownerPersonId?.(people) ?? null,
+          ...(opts.reviewSink ? { review: opts.reviewSink.collect(rb.roomId) } : {}),
         });
       } catch (e) {
         console.warn(`[worker] matrix: people for ${rb.roomId} skipped: ${String(e)}`);
@@ -769,6 +784,8 @@ export async function ingestMatrix(
     try {
       await ingestRoom(rb, vault, byRoom, { dedupe, links, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
       peopleLinked += links.length;
+      // A thread created this pass has no id here yet; its counterpart queues on the next append.
+      opts.reviewSink?.flush(rb.roomId, byRoom.get(rb.roomId)?.id);
     } catch (e) {
       failed++;
       console.warn(

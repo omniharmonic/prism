@@ -1,7 +1,7 @@
 /** The canonical relationship vocabulary + synonym normalization (pure). */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CANONICAL_RELATIONSHIPS, REL, SYNONYMS, VAULT_MANAGED, isCanonicalRelationship, normalizeRelationship, noteKinds } from "../src/relationships";
+import { CANONICAL_RELATIONSHIPS, REL, SYNONYMS, VAULT_MANAGED, classifyRelationship, isCanonicalRelationship, normalizeRelationship, noteKinds } from "../src/relationships";
 
 test("the canonical set is exactly what the UI and ingesters read", () => {
   assert.deepEqual([...CANONICAL_RELATIONSHIPS].sort(), ["assigned-to", "attended-by", "belongs-to", "email-from", "email-to", "has-transcript", "member-of", "messages-with", "references", "related-to", "works-at"]);
@@ -38,4 +38,24 @@ test("canonical, vault-managed and unknown names are left alone", () => {
   assert.ok(VAULT_MANAGED.has("wikilink"));
   assert.equal(normalizeRelationship("wikilink", ["other"], ["person"]), null);
   for (const unknown of ["mentions", "promised-to", "transcript-of", "same-as", "collaborates-with"]) assert.equal(normalizeRelationship(unknown, ["other"], ["person"]), null);
+});
+
+test("direction and kinds must be unambiguous: to/from/owner are never flipped, a dual-tagged note is never guessed", () => {
+  // person --to/from--> email says nothing reliable about who received / sent it.
+  for (const rel of ["to", "from", "recipient", "sender", "owner", "assignee", "project", "participant"]) {
+    assert.equal(normalizeRelationship(rel, ["person"], ["email"]), null, rel);
+    assert.equal(normalizeRelationship(rel, ["person"], ["task"]), null, rel);
+  }
+  assert.deepEqual(classifyRelationship("to", ["person"], ["email"]), { untouched: "kinds-do-not-fit" });
+  assert.deepEqual(classifyRelationship("owner", ["person"], ["task"]), { untouched: "kinds-do-not-fit" }, "`owner` pointing AT a task is not assigned-to reversed");
+  // A note that is two things at once: which shape applies is a guess.
+  assert.deepEqual(classifyRelationship("owner", ["task", "project"], ["person"]), { untouched: "ambiguous-kinds" });
+  assert.deepEqual(classifyRelationship("attendee", ["meeting"], ["person", "organization"]), { untouched: "ambiguous-kinds" });
+  assert.equal(normalizeRelationship("owner", ["task", "project"], ["person"]), null);
+  // Only the listed synonyms may be read backwards.
+  assert.deepEqual(normalizeRelationship("attendee", ["person"], ["meeting"]), { canonical: "attended-by", reversed: true });
+  assert.deepEqual(normalizeRelationship("member", ["organization"], ["person"]), { canonical: "member-of", reversed: true });
+  // Untyped relationships (related-to, references) have no direction to get wrong.
+  assert.deepEqual(normalizeRelationship("related", ["task", "project"], ["person"]), { canonical: "related-to", reversed: false });
+  assert.equal(classifyRelationship("mentions", ["other"], ["person"]), null, "an unknown name is not reported at all");
 });
