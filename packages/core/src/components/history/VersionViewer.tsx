@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, History, RotateCcw, X } from "lucide-react";
 import type { NoteVersionSummary } from "../../data/VaultClient";
 import { HistoryConflictError } from "../../data/VaultClient";
-import { useNote } from "../../app/hooks/useParachute";
-import { useNoteVersion, useRestoreVersion } from "../../app/hooks/useNoteHistory";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { reviewMode } from "../../lib/governance/review";
+import { useNoteVersion, useRestoreVersion, useHistorySource } from "../../app/hooks/useNoteHistory";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { contentAsText, diffMetadata, diffText, type DiffRow } from "../../lib/history/diff";
 import { sanitizeHtml } from "../../lib/html/sanitize";
@@ -40,13 +42,24 @@ export function VersionViewer({
   onRestored: (when: string | null) => void;
 }) {
   const isMobile = useIsMobile();
+  const client = useVaultClient();
+  const audience = useAgentChatStore(state => state.scope);
+  const scope = client.scope?.() ?? audience;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialog?.showModal();
+    return () => { dialog?.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
   const summary = versions[index]!;
   const older = versions[index + 1];
   const [compare, setCompare] = useState<Compare>("current");
   const [view, setView] = useState<View>("changes");
   const [confirming, setConfirming] = useState(false);
 
-  const { data: current } = useNote(noteId);
+  const currentSource = useHistorySource(noteId);
+  const current = currentSource.data;
   const selected = useNoteVersion(noteId, summary.versionIx);
   const previous = useNoteVersion(noteId, compare === "previous" && older ? older.versionIx : null);
   const restore = useRestoreVersion();
@@ -60,7 +73,7 @@ export function VersionViewer({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if ((e.target as HTMLElement).closest("input,textarea,select,[contenteditable=true]")) return;
       if (e.key === "ArrowLeft" && index + 1 < versions.length) onIndexChange(index + 1);
       if (e.key === "ArrowRight" && index > 0) onIndexChange(index - 1);
     };
@@ -86,13 +99,15 @@ export function VersionViewer({
   const unrecoverable = selected.data?.content === null;
   const isIdentical = compare === "current" && diff && diff.added === 0 && diff.removed === 0 && metaChanges.length === 0;
 
+  const allowedRestore = canRestore && !!current && reviewMode(current) === "none";
   const doRestore = () => {
+    if (!allowedRestore || !selected.data || selected.isFetching || restore.isPending) return;
     if (!confirming) {
       setConfirming(true);
       return;
     }
     restore.mutate(
-      { noteId, versionIx: summary.versionIx },
+      { noteId, versionIx: summary.versionIx, expectedScope: scope },
       { onSuccess: () => onRestored(when) },
     );
   };
@@ -100,52 +115,41 @@ export function VersionViewer({
   const restoreError = restore.error
     ? restore.error instanceof HistoryConflictError
       ? restore.error.message
-      : `Couldn't restore: ${restore.error instanceof Error ? restore.error.message : String(restore.error)}`
+      : "This version could not be restored. Check your connection and edit access, then try again."
     : null;
 
   // Portaled to <body>: the context panel is a transformed drawer on mobile, and a
   // `position: fixed` child of a transformed ancestor is fixed to THAT box, not
   // the viewport — the viewer would be trapped inside the sidebar.
   return createPortal(
-    <div
-      onMouseDown={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: isMobile ? "stretch" : "center",
-        justifyContent: "center",
-        padding: isMobile ? 0 : 24,
+    <dialog
+      ref={dialogRef}
+      aria-label="Version history"
+      className="prism-version-dialog"
+      tabIndex={-1}
+      onKeyDown={event => {
+        if (event.key !== "Tab") return;
+        const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')).filter(control => control.getClientRects().length > 0);
+        event.preventDefault();
+        if (!controls.length) { event.currentTarget.focus(); return; }
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        const next = event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length;
+        controls[next]?.focus();
       }}
+      onCancel={event => { event.preventDefault(); onClose(); }}
+      onClick={event => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Version history"
-        onMouseDown={(e) => e.stopPropagation()}
-        className={isMobile ? "flex flex-col" : "glass-elevated modal-rise rounded-2xl flex flex-col"}
-        style={{
-          width: "100%",
-          maxWidth: isMobile ? undefined : 960,
-          height: isMobile ? "100dvh" : "min(86dvh, 900px)",
-          background: isMobile ? "var(--bg-surface)" : undefined,
-          border: isMobile ? undefined : "1px solid var(--glass-border)",
-          paddingTop: isMobile ? "env(safe-area-inset-top)" : undefined,
-          overflow: "hidden",
-        }}
-      >
+      <div className="prism-version-layout flex flex-col">
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--glass-border)" }}>
           <History size={16} style={{ color: "var(--color-accent)", flexShrink: 0 }} />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>
-              {when ? formatWhen(when) : "Oldest saved version"}
+              {current && selected.data ? (when ? formatWhen(when) : "Oldest saved version") : "Saved version"}
             </div>
-            <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-              {when ? `${ago(when)} · ` : ""}then {opLabel(summary.op)} {ago(summary.supersededAt)}
-              {summary.via ? ` · via ${summary.via}` : ""}
+            <div className="text-xs leading-relaxed break-words" style={{ color: "var(--text-muted)" }}>
+              {current && selected.data ? <>{when ? `${ago(when)} · ` : ""}then {opLabel(summary.op)} {ago(summary.supersededAt)}
+              {summary.actor ? ` · ${summary.actor}` : ""}{summary.via ? ` · via ${summary.via}` : ""}</> : "Checking page access"}
             </div>
           </div>
           <Button
@@ -208,12 +212,14 @@ export function VersionViewer({
 
         {/* Body */}
         <div className="flex-1 overflow-auto px-4 py-3">
-          {selected.isLoading || (view === "changes" && !base) ? (
-            <div className="flex justify-center pt-16">
-              <Spinner size={20} />
+          {selected.error || currentSource.error || (compare === "previous" && previous.error) || selected.unavailable ? (
+            <div role="alert" className="prism-context-state"><p>This version could not be loaded. Check your connection and page access.</p>
+              <button type="button" onClick={() => { void selected.refetch(); void currentSource.refetch(); if (compare === "previous" && older) void previous.refetch(); }}>Try again</button>
             </div>
-          ) : selected.error ? (
-            <Notice>Couldn't load this version. {String((selected.error as Error).message ?? selected.error)}</Notice>
+          ) : !selected.data || selected.isFetching || currentSource.isFetching || (view === "changes" && !base) ? (
+            <div role="status" className="flex justify-center gap-2 pt-16">
+              <Spinner size={20} /> Loading version…
+            </div>
           ) : unrecoverable ? (
             <Notice>
               This version was over 2 MB when it was replaced, so Parachute recorded that it existed but not its text. It
@@ -260,11 +266,11 @@ export function VersionViewer({
         >
           <div className="flex-1 min-w-[200px] text-xs" style={{ color: restoreError ? "var(--color-danger)" : "var(--text-muted)" }}>
             {restoreError ??
-              (canRestore
+              (allowedRestore
                 ? "Restoring replaces the note's text and properties; tags and location stay as they are. The current version is saved to history first, so you can undo."
                 : "You can view this version, but restoring needs edit access.")}
           </div>
-          {canRestore && (
+          {allowedRestore && (
             <>
               {confirming && (
                 <Button variant="ghost" size="md" onClick={() => setConfirming(false)} disabled={restore.isPending}>
@@ -276,7 +282,7 @@ export function VersionViewer({
                 size="md"
                 icon={<RotateCcw size={14} />}
                 loading={restore.isPending}
-                disabled={unrecoverable || !selected.data || !!isIdentical}
+                disabled={unrecoverable || !selected.data || selected.isFetching || !!isIdentical}
                 onClick={doRestore}
               >
                 {confirming ? "Confirm restore" : "Restore this version"}
@@ -285,7 +291,7 @@ export function VersionViewer({
           )}
         </div>
       </div>
-    </div>,
+    </dialog>,
     document.body,
   );
 }
@@ -306,6 +312,7 @@ function Segmented<T extends string>({
           key={o.id}
           type="button"
           disabled={o.disabled}
+          aria-pressed={value === o.id}
           onClick={() => onChange(o.id)}
           className="px-2 py-1 rounded text-xs transition-colors disabled:opacity-40"
           style={{
