@@ -198,9 +198,9 @@ test("vault switch clears private credential draft and suppresses an old refresh
     await page.evaluate(() => (window as any).prismConnections.writes),
   ).toEqual([]);
 });
-test("inner non-owner admin has vault integrations but no owner host controls; outer member gate stays intact", async ({
+test("outer non-owner admin reaches Connections while host controls and member gates remain intact", async ({
   page,
-}) => {
+}, info) => {
   await page.goto(fixture + "?admin");
   await expect(
     page.getByRole("button", { name: "Manage Matrix", exact: true }),
@@ -209,6 +209,7 @@ test("inner non-owner admin has vault integrations but no owner host controls; o
     page.getByRole("tab", { name: "Server operations" }),
   ).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.screenshot({path: info.outputPath("connections-admin-entry.png")});
   await page.goto(fixture + "?member");
   await expect(
     page.getByRole("heading", { name: "Connections", exact: true }),
@@ -460,4 +461,29 @@ test("phone server operations preserve readable fields without overflowing the v
   expect(
     await page.evaluate(() => (window as any).prismConnections.writes),
   ).toEqual([]);
+});
+
+test("outer unknown role and missing integration seam never expose admin connections",async({page})=>{
+ for(const suffix of ["?unknown", "?admin&no-integrations", "?no-viewer"]){
+  await page.goto(fixture+suffix);
+  await expect(page.getByRole("region",{name:"Workspace settings"})).toBeVisible();
+  await expect(page.getByRole("tab",{name:"Connections",exact:true})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Manage Matrix"})).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).prismConnections.reads)).toEqual([]);
+ }
+});
+
+test("removing admin authority hides the selected connection panel and restores an allowed tab",async({page})=>{
+ await page.goto(fixture+"?admin&fallback");
+ const connections=page.getByRole("tab",{name:"Connections",exact:true});
+ await connections.click();
+ await expect(page.getByRole("button",{name:"Manage Matrix"})).toBeVisible();
+ await page.evaluate(()=>{const c=(window as any).prismConnections;c.hold="viewer";c.role="member";c.switchScope();});
+ await expect(page.getByRole("button",{name:"Manage Matrix"})).toHaveCount(0);
+ await expect.poll(()=>page.evaluate(()=>!!(window as any).prismConnections.viewerRelease)).toBe(true);
+ await page.evaluate(()=>(window as any).prismConnections.viewerRelease());
+ await expect(connections).toHaveCount(0);
+ await expect(page.getByRole("tab",{name:"Vaults",exact:true})).toHaveAttribute("aria-selected","true");
+ await expect(page.getByRole("tab",{name:"Server operations"})).toHaveCount(0);
+ expect(await page.evaluate(()=>(window as any).prismConnections.writes)).toEqual([]);
 });

@@ -7,11 +7,13 @@ import {
 } from "@prism/core";
 import { useAgentChatStore } from "../../../packages/core/src/lib/agent/chatStore";
 import NetworkRenderer from "../../../packages/core/src/components/renderers/NetworkRenderer";
-import { ServerPanel } from "../../../packages/core/src/components/renderers/network/ServerPanel";
+
 const params = new URLSearchParams(location.search);
 if (params.has("dark")) document.documentElement.classList.remove("light");
 const controls = {
   vault: "personal",
+  role: params.has("member") ? "member" : params.has("admin") ? "admin" : "owner",
+  viewerRelease: null as null | (() => void),
   writes: [] as Record<string, unknown>[],
   reads: [] as string[],
   fail: "",
@@ -35,19 +37,16 @@ async function write(op: string, body: Record<string, unknown> = {}) {
 }
 const sharing = {
   createShareLink: async () => "",
-  getViewer: async () => ({
-    email: "owner@example.test",
-    role: params.has("member")
-      ? "member"
-      : params.has("admin")
-        ? "admin"
-        : "owner",
-    isServerOwner: !params.has("admin") && !params.has("member"),
-  }),
+  ...(params.has("no-viewer") ? {} : {getViewer: async () => {
+    if (params.has("unknown")) throw Error("Viewer unavailable");
+    if (controls.hold === "viewer") await new Promise<void>(resolve => {controls.viewerRelease=resolve;});
+    return {email:"owner@example.test",role:controls.role,isServerOwner:controls.role === "owner"};
+  }}),
+  ...(params.has("fallback") ? {listVaults: async()=>[]} : {}),
   getActiveVault: () => controls.vault,
   getServerInfo: async () => {
     controls.reads.push("server");
-    if (params.has("admin")) throw Error("403 forbidden");
+    if (controls.role !== "owner" || params.has("no-viewer")) throw Error("403 forbidden");
     return {
       appOrigin: "https://prism.example.test",
       port: 3000,
@@ -80,7 +79,7 @@ const sharing = {
       ],
     };
   },
-  getIntegrationStatus: async (kind: string) => {
+  getIntegrationStatus: params.has("no-integrations") ? undefined : async (kind: string) => {
     const vault = controls.vault;
     controls.reads.push(`${vault}:${kind}`);
     if (controls.hold === "read:" + kind && vault === "personal")
@@ -236,11 +235,6 @@ createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <PlatformProvider value="web">
       <CollabSharingProvider value={params.has("absent") ? null : sharing}>
-        {params.has("admin") ? (
-          <main style={{ maxWidth: 880, margin: "0 auto", padding: 20 }}>
-            <ServerPanel />
-          </main>
-        ) : (
           <div style={{ height: "100dvh" }}>
             <NetworkRenderer
               note={{
@@ -254,7 +248,6 @@ createRoot(document.getElementById("root")!).render(
               }}
             />
           </div>
-        )}
       </CollabSharingProvider>
     </PlatformProvider>
   </React.StrictMode>,
