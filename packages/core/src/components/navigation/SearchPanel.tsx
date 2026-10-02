@@ -1,3 +1,4 @@
+import { AddSavedNoteContextButton } from "../agent/SavedNoteHandoff";
 import "./search-workspace.css";
 import { FileText, MessageSquare } from "lucide-react";
 import { useVaultSearch } from "../../app/hooks/useParachute";
@@ -22,7 +23,7 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
       const title = note.path?.split("/").pop() || note.id;
       const type = inferContentType(note);
       const updated = note.updatedAt ? new Date(note.updatedAt) : null;
-      return <button key={note.id} onClick={() => { openTab(note.id, title, type); onClose(); }} className="prism-search-result interactive focus-ring flex w-full min-w-0 items-start gap-3 border-b px-3 py-4 text-left" style={{ borderColor: "var(--glass-border)" }}>
+      return <div key={note.id} className="border-b" style={{ borderColor: "var(--glass-border)" }}><button onClick={() => { openTab(note.id, title, type); onClose(); }} className="prism-search-result interactive focus-ring flex w-full min-w-0 items-start gap-3 border-b px-3 py-4 text-left" style={{ borderColor: "var(--glass-border)" }}>
         {searchResultGroup(note) === "messages" ? <MessageSquare size={18} className="mt-0.5 shrink-0" /> : <FileText size={18} className="mt-0.5 shrink-0" />}
         <span className="min-w-0 flex-1">
           <span className="block break-words text-sm font-medium [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }}>{title}</span>
@@ -30,7 +31,7 @@ export function SearchPanel({ query, onClose }: SearchPanelProps) {
           <span className="mt-2 block line-clamp-3 break-words text-xs leading-relaxed [overflow-wrap:anywhere]" style={{ color: "var(--text-secondary)" }}>{searchPreview(note)}</span>
           <span className="mt-2 block text-[11px] capitalize" style={{ color: "var(--text-muted)" }}>{type.replace(/-/g, " ")}{updated && Number.isFinite(updated.getTime()) ? ` · Updated ${updated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}</span>
         </span>
-      </button>;
+      </button><div className="flex justify-end px-3"><AddSavedNoteContextButton noteId={note.id} label={title} onAdded={onClose} /></div></div>;
     })}
   </section>;
 }
