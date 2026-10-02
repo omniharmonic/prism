@@ -9,6 +9,8 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { AwarenessProvider, CollabUser } from "./CollabEditor";
 import type { Note } from "../../lib/types";
+import { useCanvasPresentation } from "./CanvasPresentation";
+import { useCanvasCardNavigation } from "./CanvasCardList";
 import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { NoteDrawer } from "./NoteDrawer";
 import { getCanvasNoteIds, findNoteElement, buildNoteCardElements, eid } from "./canvas-cards";
@@ -59,11 +61,13 @@ export function CollabCanvas({
   const isDark = theme === "dark";
   const client = useVaultClient();
   const access = useCanvasNoteAccess();
+  const presentation = useCanvasPresentation();
   const editableRef = useRef(editable);
   editableRef.current = editable;
   const openTab = useUIStore((s) => s.openTab);
 
   const [showDrawer, setShowDrawer] = useState(false);
+  const {updateCards, cardList, browseCards, close: closeCardList} = useCanvasCardNavigation(apiRef, access.read, () => setShowDrawer(false));
   const [showLinks, setShowLinks] = useState(false);
   const [includeBody, setIncludeBody] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -279,6 +283,7 @@ export function CollabCanvas({
   // ─── Scene change → persist, track selection, sync arrows ───
   const onChange = useCallback(
     (elements: readonly any[], appState?: any) => {
+      updateCards(elements);
       if (!editable) return;
       const map = elementsMap();
 
@@ -347,7 +352,7 @@ export function CollabCanvas({
         }
       }
     },
-    [editable, elementsMap, ydoc, client],
+    [editable, elementsMap, ydoc, client, updateCards],
   );
 
   const onPointerUpdate = (payload: any) => {
@@ -361,14 +366,14 @@ export function CollabCanvas({
   return (
     // touch-action:none lets Excalidraw own pinch-zoom/two-finger-pan on mobile
     // instead of the browser zooming/scrolling the page behind the canvas.
-    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none" }}>
-      {editable && (
-        <div
+    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", touchAction: "none", ...presentation.style }}>
+      <div
           className="flex flex-wrap items-center gap-1.5 px-3 py-2 text-xs flex-shrink-0"
           style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
         >
+          {editable && <>
           <button
-            onClick={() => setShowDrawer((v) => !v)}
+            onClick={() => { setShowDrawer((v) => !v); closeCardList(); }}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
@@ -399,11 +404,15 @@ export function CollabCanvas({
               Open note
             </button>
           )}
+          </>}
+          {browseCards}
+          {presentation.control}
+          {!editable && <span className="px-3 text-[var(--text-muted)]">View only</span>}
         </div>
-      )}
 
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
       <div className="relative flex-1 flex min-h-0">
+        {cardList}
         {editable && showDrawer && (
           <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(sceneElements())} />
         )}

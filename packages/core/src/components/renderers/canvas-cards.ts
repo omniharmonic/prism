@@ -14,7 +14,7 @@ import type { Note } from "../../lib/types";
 /** Build a rich multi-line label for a note card (title + tag-aware metadata). */
 export function buildCardLabel(note: Note, includeBody: boolean): string {
   const meta = (note.metadata || {}) as Record<string, any>;
-  const title = note.path?.split("/").pop() || "Untitled";
+  const title = (typeof meta.title === "string" && meta.title.trim()) || note.path?.split("/").pop() || "Untitled";
   const tags = note.tags || [];
   const lines = [title];
 
@@ -126,7 +126,7 @@ export function buildNoteCardElements(opts: {
       fillStyle: "solid",
       strokeWidth: 1,
       roundness: { type: 3, value: 8 },
-      customData: { prismNoteId: note.id, prismNotePath: note.path, prismTags: note.tags },
+      customData: { prismNoteId: note.id, prismNotePath: note.path, prismTitle: label.split("\n")[0], prismTags: note.tags },
       label: {
         text: label,
         fontSize: 12,

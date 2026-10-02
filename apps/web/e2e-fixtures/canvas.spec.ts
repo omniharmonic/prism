@@ -64,3 +64,52 @@ for (const mode of ['', '?collab']) {
   await page.screenshot({path: `test-results/canvas-picker-mobile${mode ? '-collab' : ''}.png`});
  });
 }
+
+for (const mode of ['', 'collab']) {
+ test(`focused canvas preserves the mounted scene and authored cards on a phone ${mode}`,async({page})=>{
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/e2e-fixtures/canvas.html?'+mode);
+  await expect(page.locator('.excalidraw')).toBeVisible();
+  await page.evaluate(()=>{(window as any).mountedCanvas=document.querySelector('.excalidraw');});
+  await page.getByRole('button',{name:'Focus canvas',exact:true}).click();
+  const focused=page.getByRole('dialog',{name:'Focused canvas'});
+  const rect=await focused.boundingBox();
+  expect(rect?.width).toBe(390);expect(rect?.height).toBe(844);expect(rect?.x).toBe(0);expect(rect?.y).toBe(0);
+  await focused.getByRole('button',{name:'Notes',exact:true}).click();
+  await page.getByRole('button',{name:'Card C Test/Card C',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Card C On canvas',exact:true})).toBeVisible();
+  await page.getByRole('textbox',{name:'Find canvas notes'}).press('Escape');
+  await expect(focused).toBeVisible();
+  await focused.getByRole('button',{name:'Browse cards'}).click();
+  const cards=page.getByRole('complementary',{name:'Notes on canvas'});
+  await cards.getByRole('textbox',{name:'Find a card'}).fill('Card C');
+  await expect(cards.getByRole('button',{name:'Open Card C',exact:true})).toBeVisible();
+  await cards.getByRole('button',{name:'Find Card C on canvas'}).click();
+  await expect(cards).not.toBeVisible();
+  await focused.getByRole('button',{name:'Back to document',exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).mountedCanvas===document.querySelector('.excalidraw'))).toBe(true);
+  await expect(page.getByRole('button',{name:'Focus canvas',exact:true})).toBeFocused();
+  await page.getByRole('button',{name:'Browse cards'}).click();
+  await expect(page.getByRole('button',{name:'Open Card C',exact:true})).toBeVisible();
+  await page.getByRole('textbox',{name:'Find a card'}).press('Escape');
+  await page.getByRole('button',{name:'Focus canvas',exact:true}).click();
+  await focused.getByRole('button',{name:'Back to document',exact:true}).press('Escape');
+  await expect(focused).not.toBeVisible();
+ });
+ test(`read-only canvas navigation verifies source access without changing its scene ${mode}`,async({page})=>{
+  await page.goto('/e2e-fixtures/canvas.html?readonly&'+mode);
+  await expect(page.locator('.excalidraw')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Notes',exact:true})).not.toBeVisible();
+  await page.getByRole('button',{name:'Browse cards'}).click();
+  await expect(page.getByRole('button',{name:'Open Card A',exact:true})).toBeVisible();
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.deny=true;});
+  await page.getByRole('button',{name:'Open Card A',exact:true}).click();
+  await expect(page.getByRole('complementary',{name:'Notes on canvas'})).toContainText('This note is unavailable');
+  expect(await page.evaluate(()=>(window as any).prismCanvasFixture.ui.getState().openTabs.length)).toBe(0);
+  await page.evaluate(()=>{(window as any).prismCanvasFixture.deny=false;});
+  await page.getByRole('button',{name:'Open Card A',exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).prismCanvasFixture.ui.getState().openTabs.some((t:any)=>t.noteId==='Card A'))).toBe(true);
+  const result=await page.evaluate(()=>{const c=(window as any).prismCanvasFixture;return {writes:c.writes,links:c.linkWrites,elements:[...c.doc.getMap('elements').keys()].length};});
+  expect(result.writes).toEqual([]);expect(result.links).toEqual([]);expect(result.elements).toBe(4);
+ });
+}

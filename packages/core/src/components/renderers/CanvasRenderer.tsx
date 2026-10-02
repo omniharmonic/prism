@@ -8,6 +8,8 @@ import { useSettingsStore } from "../../app/stores/settings";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useCanvasPresentation } from "./CanvasPresentation";
+import { useCanvasCardNavigation } from "./CanvasCardList";
 import { useCanvasNoteAccess } from "./useCanvasNoteAccess";
 import { authoredCanvasElements } from "./canvas-scene";
 import { useQueryClient } from "@tanstack/react-query";
@@ -39,6 +41,7 @@ function parseCanvasData(content: string): { elements: readonly any[]; appState?
 export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const client = useVaultClient();
   const access = useCanvasNoteAccess();
+  const presentation = useCanvasPresentation();
   const editableRef = useRef(!readOnly);
   editableRef.current = !readOnly;
   const theme = useSettingsStore((s) => s.theme);
@@ -46,6 +49,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const contentRef = useRef(note.content || "");
   const apiRef = useRef<ExcalidrawAPI | null>(null);
   const [showDrawer, setShowDrawer] = useState(false);
+  const {updateCards, cardList, browseCards, close: closeCardList} = useCanvasCardNavigation(apiRef, access.read, () => setShowDrawer(false));
   const [showLinks, setShowLinks] = useState(false);
   const [includeBody, setIncludeBody] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -68,6 +72,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   const handleChange = useCallback((elements: readonly any[], appState: any, files: any) => {
     // Read-only surfaces (published Wiki / anonymous): never serialize, save, or
     // sync links. Excalidraw still fires onChange for pan/zoom in view mode.
+    updateCards(elements);
     if (readOnly) return;
     // Serialize canvas state
     const serialized = JSON.stringify({
@@ -150,7 +155,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
         syncedArrows.current.delete(arrowId);
       }
     }
-  }, [readOnly, client, queryClient]);
+  }, [readOnly, client, queryClient, updateCards]);
 
   // ─── Add note card ──────────────────────────────────────
 
@@ -271,7 +276,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   }, [showLinks, isDark, client]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} className="flex flex-col h-full" style={presentation.style}>
       {/* Toolbar */}
       <div
         className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs flex-shrink-0"
@@ -284,7 +289,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           {!readOnly && <>
           <div style={{ width: 1, height: 16, background: "var(--glass-border)" }} />
           <button
-            onClick={() => setShowDrawer(!showDrawer)}
+            onClick={() => { setShowDrawer(!showDrawer);closeCardList(); }}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
@@ -322,6 +327,8 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
             </button>
           )}
           </>}
+          {browseCards}
+          {presentation.control}
         </div>
         <span style={{ color: "var(--text-muted)" }}>
           {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
@@ -330,6 +337,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
 
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
       <div className="relative flex-1 flex min-h-0">
+        {cardList}
         {showDrawer && (
           <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(apiRef.current?.getSceneElements() || [])} />
         )}
