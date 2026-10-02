@@ -1,0 +1,34 @@
+.prism-graph { container-type: inline-size; }
+.prism-graph__header { padding: 20px; border-bottom: 1px solid var(--glass-border); }
+.prism-graph__eyebrow { margin-bottom: 4px; color: var(--text-muted); font-size: 11px; }
+.prism-graph__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 22px; font-weight: 600; letter-spacing: -.035em; }
+.prism-graph__toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:20px; margin-top:16px; }
+.prism-graph__views { display:flex; gap:16px; }
+.prism-graph__views button { min-height:40px; padding: 7px 3px; color:var(--text-secondary); font-size:13px; border-bottom:2px solid transparent; }
+.prism-graph__views button[aria-pressed=true] { color:var(--text-primary); border-bottom-color:var(--text-primary); }
+.prism-graph__filters { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:12px; }
+.prism-graph__search { display:flex; align-items:center; gap:8px; flex:1 1 180px; min-width:0; border:1px solid var(--glass-border); border-radius:6px; padding:0 10px; color:var(--text-muted); }
+.prism-graph__search:focus-within { outline:2px solid var(--color-accent); outline-offset:2px; }
+.prism-graph__search input { width:100%; min-width:0; min-height:36px; background:transparent; outline:none; color:var(--text-primary); font-size:13px; }
+.prism-graph__search-hint { margin-top:8px; font-size:11px; color:var(--text-muted); }
+.prism-graph__map { background-image:radial-gradient(var(--glass-border) .6px, transparent .6px); background-size:22px 22px; }
+.prism-graph__map-controls { padding:3px; background:var(--bg-surface); border:1px solid var(--glass-border); border-radius:8px; box-shadow:0 2px 10px #00000005; }
+.prism-graph__map-controls button { border:0; border-radius:4px; }
+.prism-graph__map-controls button:hover:not(:disabled) { background:var(--glass-hover); }
+.prism-graph__row { display:flex; align-items:flex-start; gap:12px; width:100%; padding:16px 12px; border-bottom:1px solid var(--glass-border); border-radius:4px; text-align:left; }
+.prism-graph__row:hover { background:var(--glass-hover); }
+.prism-graph__row[aria-current=true] { background:var(--glass-active); }
+.prism-graph__row-icon { flex-shrink:0; margin-top:3px; color:var(--color-accent); }
+.prism-graph__row-content { min-width:0; }
+.prism-graph__tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; color:var(--text-secondary); font-size:11px; }
+.prism-graph__tags span { padding:2px 6px; border-radius:4px; background:var(--bg-elevated); overflow-wrap:anywhere; }
+.prism-graph__node:hover circle:last-of-type { stroke:var(--color-accent); }
+@container (max-width:480px) {
+ .prism-graph__header { padding:14px; }
+ .prism-graph__title { font-size:19px; }
+ .prism-graph__filters { align-items:stretch; flex-direction:column; }
+ .prism-graph__search { flex-basis:auto; }
+ .prism-graph__search input { min-height:44px; font-size:16px; }
+ .prism-graph button, .prism-graph select { min-height:44px; }
+ .prism-graph__toolbar { margin-top:8px; }
+}

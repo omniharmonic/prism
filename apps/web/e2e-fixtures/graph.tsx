@@ -49,6 +49,15 @@ const graph: VaultNeighborhood = {
   ],
   truncated: true,
 };
+const params = new URLSearchParams(location.search);
+if (params.has("dense")) {
+  for (let index = 0; index < 28; index++) {
+    const id = `extra-${index}`;
+    nodes.push({ id, title: `Research document ${index + 1}`, path: `Research/Document ${index + 1}`, tags: ["research"] });
+    graph.edges.push({ source: "home", target: id, relationship: "references" });
+  }
+}
+if (params.has("dark")) document.documentElement.className = "dark";
 const controls = {
   showTooltip: (text: string) => {
     const target = document.createElement("div");
