@@ -1,4 +1,11 @@
 /**
+ * REFERENCE IMPLEMENTATION — a verbatim copy of `src/worker/people.ts` as it
+ * was at 6069ccd (before the identity layer), kept ONLY so
+ * `test/people-parity.test.ts` can prove the new index never creates a person
+ * where this one linked or skipped. Do not import it from src/.
+ */
+/* eslint-disable */
+/**
  * Person linking for server ingesters — the port of the desktop's
  * `services/person_linker.rs`, shared by the Gmail ingester (worker/gmail.ts)
  * and, behind MATRIX_LINK_PEOPLE, the Matrix ingester (worker/matrix.ts).
@@ -16,9 +23,6 @@
  *   - Matrix user id (lowercased) from `matrix`, `matrixId`, `matrixRoomIds`, `channels.*`;
  *   - normalized name from `metadata.name`, the path leaf, and the title line;
  *   - the exact person path the desktop would create (`vault/people/<slug>`).
- * (since the identity layer, src/identity.ts, a merged tombstone redirects to
- * its canonical person and a non-human claimant blocks without linking — see
- * the PeopleIndex doc comment and test/people-parity.test.ts).
  * Exact external identities are verified only when every claimant agrees.
  * Name/path matches are review candidates, never automatic aliases. A true
  * miss is created with `if_exists: "ignore"`; a returned existing note must
@@ -27,8 +31,7 @@
  * The skip rules (too-short names, phone-number-ish ids, bare addresses,
  * automated/role mailboxes) are the desktop's, byte-for-byte.
  */
-import type { IfExists, Note } from "../parachute";
-import { IdentityIndex, nameTokens, slugKey, type IdentityKey, type NameKey } from "../identity";
+import type { IfExists, Note } from "../../src/parachute";
 
 /** The vault surface person linking needs (tests inject a fake). */
 export interface PeopleVault {
@@ -118,45 +121,13 @@ export interface FindOrCreateResult {
   created: boolean;
 }
 
-export interface PersonLookup { name?: string | null; email?: string | null; matrixId?: string | null; telegram?: string | null; phone?: string | null }
+export interface PersonLookup { name?: string | null; email?: string | null; matrixId?: string | null }
 export type PersonResolution =
   | { status: "verified"; person: Note; evidence: Array<"email" | "matrix"> }
-  /** `claimed`: the key is held only by a non-human note / an unresolvable tombstone — nobody to link, nobody to create. */
-  | { status: "ambiguous" | "candidates"; candidates: Note[]; claimed?: boolean }
+  | { status: "ambiguous" | "candidates"; candidates: Note[] }
   | { status: "missing" };
 
-/** What a caller with a review queue is told about an identity that was not linked. */
-export interface PersonReview {
-  reason: "ambiguous-key" | "ambiguous-name" | "single-token-name" | "name-only";
-  key: IdentityKey | NameKey;
-  display: string | null;
-  /** Live people it might be (never empty). */
-  candidates: Note[];
-}
-
-/**
- * The per-pass people lookup every ingester shares, so its default behaviour is
- * pinned against the pre-identity-layer index (test/people-parity.test.ts): it
- * never creates a person where that index linked or skipped.
- *
- * Keys are claimed exactly as before (whole-string addresses, Matrix ids, the
- * note's name / path leaf / heading). What changed:
- *   - a TOMBSTONE claimant (`merged-stub` / `superseded` / `merged_into`) is
- *     redirected to the person it was merged into — so a stub and its canonical
- *     no longer make an address "ambiguous";
- *   - a claimant that is a NON-HUMAN note (bot / organization / non-human) or a
- *     tombstone that points nowhere still OWNS the key, but is nobody to link
- *     to: the result is `ambiguous` + `claimed` — not linked, and never
- *     re-created as a new person;
- *   - only when nobody claims the key the old way, the identity layer's extra
- *     keys are tried (addresses inside a multi-value string, `contact_emails`,
- *     bridge-puppet ids) — an existing person is linked instead of duplicated.
- * Name matches stay review `candidates`, never a link. With a `review` sink
- * (PEOPLE_QUEUE_ON_INGEST) alias and slug-variant matches count as candidates
- * too — reported instead of silently creating a duplicate.
- */
 export class PeopleIndex {
-  readonly identity: IdentityIndex;
   private byEmail = new Map<string, Map<string, Note>>();
   private byMatrix = new Map<string, Map<string, Note>>();
   private byName = new Map<string, Map<string, Note>>();
@@ -165,8 +136,7 @@ export class PeopleIndex {
   created = 0;
 
   constructor(notes: Note[] = []) {
-    this.identity = new IdentityIndex(notes);
-    for (const n of notes) this.claim(n);
+    for (const n of notes) this.add(n);
   }
 
   /** Build from every person-tagged note in the vault — one call, no cap. */
@@ -180,11 +150,6 @@ export class PeopleIndex {
 
   /** Retain every claimant: insertion order never chooses a canonical person. */
   add(n: Note): void {
-    this.identity.add(n);
-    this.claim(n);
-  }
-
-  private claim(n: Note): void {
     const set = (map: Map<string, Map<string, Note>>, key: string) => {
       const bucket = map.get(key) ?? new Map<string, Note>();
       bucket.set(n.id, n);
@@ -209,50 +174,25 @@ export class PeopleIndex {
     set(this.byPath, (n.path ?? `#${n.id}`).toLowerCase());
   }
 
-  /** Raw claimants → the live people they stand for, + whether a dead end claims too. */
-  private settle(raw: Iterable<Note>): { live: Map<string, Note>; claimed: boolean } {
-    const live = new Map<string, Note>();
-    let claimed = false;
-    for (const n of raw) {
-      const person = this.identity.canonicalOf(n);
-      if (person) live.set(person.id, person);
-      else claimed = true;
-    }
-    return { live, claimed };
-  }
-
   /** Exact external identity is evidence. A name/path supplies candidates only. */
-  resolve(q: PersonLookup, opts: { extendedNames?: boolean } = {}): PersonResolution {
-    const ordered = (notes: Iterable<Note>) => [...notes].sort((a, b) => a.id.localeCompare(b.id));
-    const raw = new Map<string, Note>();
+  resolve(q: PersonLookup): PersonResolution {
+    const exact = new Map<string, Note>();
     const evidence: Array<"email" | "matrix"> = [];
-    const take = (bucket: Iterable<Note> | undefined, kind: "email" | "matrix") => {
-      const list = [...(bucket ?? [])];
-      if (list.length && !evidence.includes(kind)) evidence.push(kind);
-      for (const n of list) raw.set(n.id, n);
+    const add = (bucket: Map<string, Note> | undefined, kind: "email" | "matrix") => {
+      if (bucket?.size) evidence.push(kind);
+      for (const [id, person] of bucket ?? []) exact.set(id, person);
     };
-    if (q.email) take(this.byEmail.get(normalizeEmail(q.email))?.values(), "email");
-    if (q.matrixId) take(this.byMatrix.get(q.matrixId.trim().toLowerCase())?.values(), "matrix");
-    let claimed = false;
-    if (!raw.size) {
-      // Nobody claims it the old way: the identity layer's extra keys (never a regression path).
-      for (const k of IdentityIndex.queryKeys(q)) {
-        take(this.identity.claimants(k), k.kind === "email" ? "email" : "matrix");
-        if (this.identity.claimedBy(k).length) claimed = true;
-      }
-    }
-    if (raw.size || claimed) {
-      const s = this.settle(raw.values());
-      claimed ||= s.claimed;
-      if (s.live.size === 1 && !claimed) return { status: "verified", person: [...s.live.values()][0]!, evidence };
-      return { status: "ambiguous", candidates: ordered(s.live.values()), ...(s.live.size === 0 ? { claimed: true } : {}) };
-    }
+    if (q.email) add(this.byEmail.get(normalizeEmail(q.email)), "email");
+    if (q.matrixId) add(this.byMatrix.get(q.matrixId.trim().toLowerCase()), "matrix");
+    const ordered = (notes: Iterable<Note>) => [...notes].sort((a, b) => a.id.localeCompare(b.id));
+    if (exact.size > 1) return { status: "ambiguous", candidates: ordered(exact.values()) };
+    if (exact.size === 1) return { status: "verified", person: [...exact.values()][0]!, evidence };
     if (q.name) {
       const clean = cleanDisplayName(q.name);
-      const found = new Map<string, Note>(this.byName.get(normalizeName(clean)) ?? []);
-      for (const [id, person] of this.byPath.get(`vault/people/${rustSanitizePath(clean)}`.toLowerCase()) ?? []) found.set(id, person);
-      if (opts.extendedNames) for (const person of this.identity.named(clean)) found.set(person.id, person);
-      if (found.size) return { status: "candidates", candidates: ordered(this.settle(found.values()).live.values()) };
+      const candidates = new Map(this.byName.get(normalizeName(clean)) ?? []);
+      const atPath = this.byPath.get(`vault/people/${rustSanitizePath(clean)}`.toLowerCase());
+      for (const [id, person] of atPath ?? []) candidates.set(id, person);
+      if (candidates.size) return { status: "candidates", candidates: ordered(candidates.values()) };
     }
     return { status: "missing" };
   }
@@ -270,33 +210,14 @@ export class PeopleIndex {
   async findOrCreate(
     vault: Pick<PeopleVault, "createNote">,
     name: string,
-    opts: {
-      email?: string | null;
-      matrixId?: string | null;
-      platform?: string | null;
-      allowCreate?: boolean;
-      /** A review sink (PEOPLE_QUEUE_ON_INGEST): told about every miss that has a live candidate. */
-      review?: (r: PersonReview) => void;
-    } = {},
+    opts: { email?: string | null; matrixId?: string | null; platform?: string | null; allowCreate?: boolean } = {},
   ): Promise<FindOrCreateResult | null> {
     const clean = cleanDisplayName(name);
-    const resolution = this.resolve({ name: clean, email: opts.email, matrixId: opts.matrixId }, { extendedNames: !!opts.review });
+    const resolution = this.resolve({ name: clean, email: opts.email, matrixId: opts.matrixId });
     if (resolution.status === "verified") return { id: resolution.person.id, created: false };
     // Do not silently merge aliases or create duplicates to work around a
     // collision. Callers can inspect resolve() to build an authorized review projection.
-    if (resolution.status !== "missing") {
-      if (opts.review && resolution.candidates.length) {
-        const key = IdentityIndex.queryKeys({ email: opts.email, matrixId: opts.matrixId })[0] ?? ({ kind: "name", value: slugKey(clean) } as NameKey);
-        const reason =
-          resolution.status === "ambiguous" ? "ambiguous-key" : nameTokens(clean).length < 2 ? "single-token-name" : resolution.candidates.length > 1 ? "ambiguous-name" : "name-only";
-        try {
-          opts.review({ reason, key, display: clean || null, candidates: resolution.candidates });
-        } catch {
-          /* a review sink never breaks ingest */
-        }
-      }
-      return null;
-    }
+    if (resolution.status !== "missing") return null;
     if (creationRefusal(name, opts.email) || opts.allowCreate === false) return null;
     const path = `vault/people/${rustSanitizePath(clean)}`;
 

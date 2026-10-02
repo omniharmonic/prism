@@ -370,6 +370,54 @@ export const config = {
   // people in group rooms; that is the rule that once minted ~3.3k junk stubs
   // when it had no member cap, so it is opt-in until reviewed against live data.
   matrixLinkPeople: process.env.MATRIX_LINK_PEOPLE === "true",
+  // ── Identity + linking layer (docs/roadmap/workspace-experience/BACKEND-STATUS-GRAPH.md) ──
+  // Everything below is OFF / inert by default: nothing links on ingest and the
+  // backfill job only runs when the owner starts it (dry run unless told otherwise).
+  // MATRIX_LINK_EXISTING links a thread to people who ALREADY exist (never creates
+  // one — that stays MATRIX_LINK_PEOPLE). MATRIX_STORE_PARTICIPANT_IDS adds the
+  // stable sender ids (`participantIds`) to thread notes so matching is by id.
+  matrixLinkExisting: process.env.MATRIX_LINK_EXISTING === "true",
+  matrixStoreParticipantIds: process.env.MATRIX_STORE_PARTICIPANT_IDS === "true",
+  // PROTON_LINK_RECIPIENTS adds `email-to` for direct recipients who exist as people.
+  protonLinkRecipients: process.env.PROTON_LINK_RECIPIENTS === "true",
+  // New Fathom / Fireflies transcripts get `attended-by` links to existing people.
+  transcriptLinkPeople: process.env.TRANSCRIPT_LINK_PEOPLE === "true",
+  // ClickUp tasks get `assigned-to` (existing person) / `belongs-to` (existing project).
+  clickupLinkEnabled: process.env.CLICKUP_LINK_ENABLED === "true",
+  // Forward linkers put identities they could not resolve into the review queue.
+  peopleQueueOnIngest: process.env.PEOPLE_QUEUE_ON_INGEST === "true",
+  // The owner's own person note (path or id) and extra names/addresses that mean
+  // "the owner" (a first name on a task). Without PEOPLE_OWNER_PERSON the note is
+  // the one live person claiming OWNER_EMAIL / PEOPLE_OWNER_EMAILS, if exactly one.
+  peopleOwnerPerson: (process.env.PEOPLE_OWNER_PERSON ?? "").trim(),
+  peopleOwnerEmails: (process.env.PEOPLE_OWNER_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+  peopleOwnerAliases: (process.env.PEOPLE_OWNER_ALIASES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+  // Backfill job limits. MAX_WRITES is the hard per-run cap on note PATCHes of a
+  // WRITE run (a request may lower it, never raise it past PEOPLE_LINK_MAX_WRITES_CEILING).
+  peopleLinkMaxWrites: Number(process.env.PEOPLE_LINK_MAX_WRITES ?? 200),
+  peopleLinkMaxWritesCeiling: Number(process.env.PEOPLE_LINK_MAX_WRITES_CEILING ?? 20_000),
+  peopleLinkPaceMs: Number(process.env.PEOPLE_LINK_PACE_MS ?? 50),
+  // Threads: names may link in rooms of at most GROUP_NAME_MAX participants;
+  // larger rooms link strong-key matches only (at most GROUP_LINK_CAP of them);
+  // rooms above GROUP_MAX_MEMBERS are skipped.
+  peopleLinkGroupNameMax: Number(process.env.PEOPLE_LINK_GROUP_NAME_MAX ?? 8),
+  peopleLinkGroupMaxMembers: Number(process.env.PEOPLE_LINK_GROUP_MAX_MEMBERS ?? 50),
+  peopleLinkGroupLinkCap: Number(process.env.PEOPLE_LINK_GROUP_LINK_CAP ?? 15),
+  // Matrix membership lookups the backfill may make per run (0 = never ask Matrix).
+  peopleLinkMemberLookups: Number(process.env.PEOPLE_LINK_MEMBER_LOOKUPS ?? 300),
+  peopleLinkMemberPaceMs: Number(process.env.PEOPLE_LINK_MEMBER_PACE_MS ?? 150),
+  // The review queue never holds more than this many OPEN rows per vault; past
+  // it nothing is inserted and the caller counts `queue-full`.
+  peopleQueueMaxOpen: Number(process.env.PEOPLE_QUEUE_MAX_OPEN ?? 1000),
+  // Consecutive failed Matrix membership lookups that end a run's lookup stage.
+  peopleLinkMemberFailures: Number(process.env.PEOPLE_LINK_MEMBER_FAILURES ?? 3),
+  // The job / merge abort after this many consecutive failed writes that are not
+  // a 409 (a broken vault must end the run as an ERROR, not as "done").
+  peopleLinkMaxConsecutiveErrors: Number(process.env.PEOPLE_LINK_MAX_CONSECUTIVE_ERRORS ?? 5),
+  // Every vault call the job / merge / resolve makes is abandoned after this long.
+  peopleVaultTimeoutMs: Number(process.env.PEOPLE_VAULT_TIMEOUT_MS ?? 30_000),
+  // Emails with more direct recipients than this get no `email-to` links.
+  peopleLinkMaxRecipients: Number(process.env.PEOPLE_LINK_MAX_RECIPIENTS ?? 10),
   // Bridge chat-list resync: `<management room id>=<command>` pairs, comma-
   // separated (e.g. `!abc:localhost=sync-chats`), sent every interval. A
   // bridge only portals chats Telegram/etc. PUSHES updates for; with hundreds of
