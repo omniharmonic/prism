@@ -17,11 +17,12 @@ const snapshotFixture = new URLSearchParams(location.search).has("snapshots");
 const attachmentsFixture = new URLSearchParams(location.search).has("attachments") || snapshotFixture;
 const permissionsFixture = new URLSearchParams(location.search).has("permissions") || retryFixture || attachmentsFixture || queueFixture;
 const contextFixture = new URLSearchParams(location.search).has("context");
+const visualFixture = new URLSearchParams(location.search).has("visual");
 const historyFixture = new URLSearchParams(location.search).has("history");
 const fixtureNote = (id: string): Note => ({ id, path: id === "document-a" ? "Draft brief" : "Reference note", content: "<p>Fixture</p>", metadata: {}, tags: [], createdAt: "2026-10-01", updatedAt: "2026-10-01" });
 const vault = { search: async (query: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return [fixtureNote("document-b")].filter((note) => note.path?.toLowerCase().includes(query.toLowerCase())); }, getNote: async (id: string) => { if (controls.denySource) throw new Error("Fixture access denied"); return fixtureNote(id); } } as VaultClient;
 if (contextFixture) useUIStore.getState().openTab("document-a", "Draft brief", "document");
-const controls = { attempts: 0, turnAttempts: 0, reject: !permissionsFixture, queueAttempts:0, loseQueueResponse:false, rejectQueueChange:false, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
+const controls = { listFails: new URLSearchParams(location.search).has("list-error"), attempts: 0, turnAttempts: 0, reject: !permissionsFixture, queueAttempts:0, loseQueueResponse:false, rejectQueueChange:false, rejectTurn:false, lastOptions:null as unknown, pendingMode: false, denySource: false, archived: [] as string[], completeTurn: () => {}, releaseLimits: () => {}, releaseSession: () => {} };
 const limitsReady = new Promise<void>((resolve) => { controls.releaseLimits = resolve; if (!new URLSearchParams(location.search).has("slow-limits")) resolve(); });
 const sessionReady = new Promise<void>((resolve) => { controls.releaseSession = resolve; if (!new URLSearchParams(location.search).has("slow-session")) resolve(); });
 Object.assign(window, { prismAgentFixture: controls, prismAgentStore: useAgentChatStore, prismFixtureUI: useUIStore, prismAgentHost: { fetchMe, agentScope, setActiveVault, setActiveWorkspace, httpAgentClient, createHttpAgentClient } });
@@ -66,7 +67,10 @@ const client: AgentClient = {
   },
   scope: () => scope,
   createSession: async (params) => { controls.attempts++; await new Promise((resolve) => setTimeout(resolve, 150)); if (controls.reject) throw new Error("Fixture create rejected"); if (retryFixture) acceptRetryRequest("session", params?.requestId); session.note_id = params?.noteId ?? null; if (params?.permissionMode) { session.permission_mode = params.permissionMode; session.profile = policyProfile(params.permissionMode); persistPolicy(); } return { sessionId: session.id, session }; },
-  listSessions: async () => historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: Date.now(), lastTurnStatus: "done" as const })) : [],
+  listSessions: async (options) => {
+    if (options?.limit === 50 && controls.listFails) throw Error("Fixture session list unavailable");
+    return historyFixture ? [session, { ...session, id: "second-session", title: "Explore the source material" }, ...(visualFixture ? [{ ...session, id: "older-session", title: "Review the weekly plan" }] : [])].filter((s) => !controls.archived.includes(s.id)).map((s) => ({ ...s, turnCount: 1, lastTurnAt: s.id === "older-session" ? Date.now() - 3 * 86400000 : Date.now(), lastTurnStatus: "done" as const })) : [];
+  },
   getSession: async () => {
     await sessionReady;
     if (session.pending_mode && --settleAfter <= 0) {
@@ -113,7 +117,7 @@ function Fixture() {
   const expanded = useUIStore((s) => s.activeTabId === "agent-chat");
   const switchTo = (owner: string) => { scope = audience(owner); useAgentChatStore.getState().bindScope(scope); update((n) => n + 1); };
   return <QueryClientProvider client={query}><VaultClientProvider client={vault}><AgentClientProvider client={client}>
-    <div style={{ height: "100dvh", maxWidth: historyFixture ? 1040 : 600 }} className="flex flex-col">
+    <div style={{ height: "100dvh", maxWidth: visualFixture ? undefined : historyFixture ? 1040 : 600 }} className="flex flex-col">
       <div className="flex gap-4 p-3"><button onClick={() => setVisible((v) => !v)}>Toggle panel</button><button onClick={() => switchTo("alex@example.test")}>Alex</button><button onClick={() => switchTo("morgan@example.test")}>Morgan</button></div>
       {snapshotFixture && <SnapshotEditor/>}
       {contextFixture && <button onClick={() => useUIStore.getState().openTab("document-b", "Reference note", "document")}>Open reference</button>}
