@@ -11,6 +11,7 @@ Operator reference for the server agent runner (`/api/agent/*`, owner-only).
 | `skill` | parachute-vault | `vault-rw` minus `delete-note` | background skills (`SKILLS_ENABLED`); server-internal, not a session choice |
 | `prism-ro` | Prism `/mcp` | the read-scope `prism_*` tools | needs `AGENT_PRISM_PROFILES=true` |
 | `prism-rw` | Prism `/mcp` | read tools + create/update note, restore version, comments, suggested edits, sheet update | needs `AGENT_PRISM_PROFILES=true`; no delete, share or governance actions |
+| `prism-graph` | Prism `/mcp` | read tools + the `prism_people_*` graph-maintenance tools (review queue, duplicates, merge recommendations, filing gaps) + create/update note | needs `AGENT_PRISM_PROFILES=true` AND `AGENT_GRAPH_PROFILE=true`; the ONLY profile with the people tools (they expose raw identity keys and change who records belong to); no delete, share, restore or governance actions. Switching such a session's permission mode turns it into an ordinary prism profile without them. |
 
 Every allowlist is explicit and enforced twice: `--allowedTools` plus
 `--permission-mode dontAsk` (the CLI still *lists* write tools under a read-only profile; calling one returns a
@@ -48,6 +49,7 @@ back to Claude. **Agent chat sessions (any profile above) always run on Claude.*
 | `AGENT_SESSION_BUDGET_USD` | 10 | cumulative per session; new turns get 409 `budget_exceeded` |
 | `AGENT_DAILY_BUDGET_USD` | 25 | per user since local midnight; new turns get 409 `daily_budget_exceeded` (0 = off) |
 | `AGENT_PRISM_PROFILES` | off | enables `prism-ro` / `prism-rw` |
+| `AGENT_GRAPH_PROFILE` | off | with `AGENT_PRISM_PROFILES`, also offers `prism-graph` |
 
 The daily total comes from the `agent_cost_log` ledger, so archiving sessions does not reset it. A turn already
 running is not interrupted by the daily cap.
