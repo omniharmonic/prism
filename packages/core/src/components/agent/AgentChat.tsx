@@ -1,3 +1,4 @@
+import { useComposerAutosize } from "../comms/useComposerAutosize";
 import { useSavedNoteHandoff, SavedNoteHandoffNotice } from "./SavedNoteHandoff";
 import "./agent-chat.css";
 import { useSelectionHandoff, SelectionHandoffNotice } from "./SelectionHandoff";
@@ -452,13 +453,8 @@ export function Conversation({
     if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  // Autosize the composer.
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [input]);
+  // Remeasure wrapping when the companion or viewport width changes, too.
+  useComposerAutosize(inputRef, input, 40);
 
   const submit = useCallback(
     async (textArg?: string) => {

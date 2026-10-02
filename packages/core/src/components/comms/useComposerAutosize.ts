@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, type RefObject } from "react";
 
 /** Resize the existing field without replacing its DOM node, selection or draft. */
-export function useComposerAutosize(ref: RefObject<HTMLTextAreaElement | null>, text: string) {
+export function useComposerAutosize(ref: RefObject<HTMLTextAreaElement | null>, text: string, minHeight = 44) {
   const resize = useCallback(() => {
     const input = ref.current;
     if (!input || !input.isConnected || input.clientWidth === 0) return;
@@ -10,11 +10,11 @@ export function useComposerAutosize(ref: RefObject<HTMLTextAreaElement | null>, 
     const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     input.style.height = "0px";
     const needed = input.scrollHeight + (Number.isFinite(border) ? border : 0);
-    input.style.height = `${Math.max(44, Math.min(160, needed))}px`;
+    input.style.height = `${Math.max(minHeight, Math.min(160, needed))}px`;
     input.style.overflowY = needed > 160 ? "auto" : "hidden";
     // Keep an internally scrolled long draft stable while measuring it.
     if (needed > 160) input.scrollTop = scrollTop;
-  }, [ref]);
+  }, [ref, minHeight]);
 
   useLayoutEffect(resize, [resize, text]);
   useLayoutEffect(() => {
