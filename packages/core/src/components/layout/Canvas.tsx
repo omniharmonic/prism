@@ -74,7 +74,7 @@ export function Canvas() {
   // CodeMirror, spreadsheet → grid, canvas → Excalidraw). The hook is called
   // unconditionally; shells that provide collab return true for these kinds, the
   // default (offline shells) returns false → plain autosave editor.
-  const COLLAB_TYPES = new Set(["document", "code", "spreadsheet", "canvas"]);
+  const COLLAB_TYPES = new Set(["document", "task", "code", "spreadsheet", "canvas"]);
   const collab = useCollabDocumentSeam();
   const collabDocId =
     !isVirtual && effectiveNote && contentType && COLLAB_TYPES.has(contentType) ? effectiveNote.id : "";

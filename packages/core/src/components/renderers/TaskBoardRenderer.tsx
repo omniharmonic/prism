@@ -1,305 +1,576 @@
-import { useState, useCallback, useMemo } from "react";
-import { Plus } from "lucide-react";
+import { useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   DragOverlay,
-  closestCorners,
   PointerSensor,
+  useDraggable,
+  useDroppable,
   useSensor,
   useSensors,
-  type DragStartEvent,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { useDroppable } from "@dnd-kit/core";
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import {
+  GripVertical,
+  Plus,
+  Settings2,
+  LayoutGrid,
+  List,
+  ArrowUpRight,
+} from "lucide-react";
 import type { RendererProps } from "./RendererProps";
-import { useNotes, useUpdateNote, useCreateNote } from "../../app/hooks/useParachute";
-import { Badge } from "../ui/Badge";
-import { Button } from "../ui/Button";
 import type { Note } from "../../lib/types";
+import { useVaultClient } from "../../data/VaultClientContext";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { useUIStore } from "../../app/stores/ui";
+import { noteCaps } from "../../lib/governance/review";
+import { inferContentType } from "../../lib/schemas/content-types";
+import {
+  boardStatus,
+  boardTasks,
+  boardTitle,
+  readBoardConfig,
+  type BoardConfig,
+} from "../../lib/boards/config";
+import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
 
-const COLUMNS = [
-  { id: "todo", label: "To Do", color: "var(--text-secondary)" },
-  { id: "in-progress", label: "In Progress", color: "var(--color-accent)" },
-  { id: "blocked", label: "Blocked", color: "var(--color-warning)" },
-  { id: "done", label: "Done", color: "var(--color-success)" },
-];
+export const boardControl =
+  "min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
 
-function getTaskStatus(note: Note): string {
-  const meta = note.metadata as Record<string, unknown> | null;
-  return (meta?.status as string) || "todo";
+export default function TaskBoardRenderer(props: RendererProps) {
+  const client = useVaultClient();
+  const audience = useAgentChatStore((s) => s.scope);
+  const scope = client.scope?.() ?? audience;
+  return (
+    <Board
+      key={JSON.stringify([scope, props.note.id])}
+      {...props}
+      scope={scope}
+    />
+  );
 }
 
-function getTaskPriority(note: Note): string {
-  const meta = note.metadata as Record<string, unknown> | null;
-  return (meta?.priority as string) || "medium";
-}
-
-function getTaskDeadline(note: Note): string | null {
-  const meta = note.metadata as Record<string, unknown> | null;
-  return (meta?.deadline as string) || (meta?.due as string) || null;
-}
-
-function getTaskProject(note: Note): string | null {
-  const meta = note.metadata as Record<string, unknown> | null;
-  return (meta?.project as string) || null;
-}
-
-export default function TaskBoardRenderer({ note: _contextNote }: RendererProps) {
-  const { data: allNotes } = useNotes({ tag: "task" });
-  const updateNote = useUpdateNote();
-  const createNote = useCreateNote();
+function Board({
+  note,
+  readOnly = false,
+  scope,
+}: RendererProps & { scope: string | null }) {
+  const client = useVaultClient();
+  const queries = useQueryClient();
+  const openTab = useUIStore((s) => s.openTab);
+  const canEdit = (n: Note) => !readOnly && (noteCaps(n)?.has("edit") ?? true);
+  const canCreate = !readOnly && (noteCaps(note)?.has("create") ?? true);
+  const current = () =>
+    (client.scope?.() ?? useAgentChatStore.getState().scope) === scope;
+  const [savedConfig, setSavedConfig] = useState<BoardConfig | null>(null);
+  let config: BoardConfig | undefined,
+    configError = "";
+  try {
+    config = savedConfig ?? readBoardConfig(note);
+  } catch (e) {
+    configError = (e as Error).message;
+  }
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<"board" | "list" | null>(null);
+  const [settings, setSettings] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const writeLock = useRef(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-
-  // Group tasks by status column
-  const tasksByColumn = useMemo(() => {
-    const tasks = allNotes || [];
-    const grouped: Record<string, Note[]> = {};
-    for (const col of COLUMNS) grouped[col.id] = [];
-
-    for (const task of tasks) {
-      const status = getTaskStatus(task);
-      if (grouped[status]) {
-        grouped[status].push(task);
-      } else {
-        grouped["todo"].push(task); // Unknown statuses go to To Do
-      }
-    }
-    return grouped;
-  }, [allNotes]);
-
-  const handleDragStart = (event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
-  };
-
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    setActiveId(null);
-    const { active, over } = event;
-    if (!over) return;
-
-    const taskId = active.id as string;
-    const targetColumn = (over.data.current as { column?: string })?.column || (over.id as string);
-
-    if (COLUMNS.some((c) => c.id === targetColumn)) {
-      // Update the task's status
-      const task = (allNotes || []).find((n) => n.id === taskId);
-      if (task) {
-        const meta = { ...(task.metadata as Record<string, unknown> || {}), status: targetColumn };
-        updateNote.mutate({ id: taskId, metadata: meta });
-      }
-    }
-  }, [allNotes, updateNote]);
-
-  const handleCreateTask = useCallback(async (description: string, priority: string) => {
-    await createNote.mutateAsync({
-      content: description,
-      tags: ["task"],
-      metadata: { type: "task", status: "todo", priority, prism_type: "task" },
-    });
-    setShowCreate(false);
-  }, [createNote]);
-
-  const activeTask = activeId ? (allNotes || []).find((n) => n.id === activeId) : null;
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-2 flex-shrink-0"
-        style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
-      >
-        <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-          Task Board
-        </span>
-        <Button size="sm" variant="ghost" icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-          New Task
-        </Button>
-      </div>
-
-      {/* Kanban board */}
-      <div className="flex-1 flex gap-3 p-4 overflow-x-auto min-h-0">
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          {COLUMNS.map((col) => (
-            <KanbanColumn
-              key={col.id}
-              id={col.id}
-              label={col.label}
-              color={col.color}
-              tasks={tasksByColumn[col.id] || []}
-            />
-          ))}
-
-          <DragOverlay>
-            {activeTask && <TaskCard task={activeTask} isDragging />}
-          </DragOverlay>
-        </DndContext>
-      </div>
-
-      {/* Create task dialog */}
-      {showCreate && (
-        <CreateTaskDialog onClose={() => setShowCreate(false)} onCreate={handleCreateTask} />
-      )}
-    </div>
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
-}
-
-function KanbanColumn({ id, label, color, tasks }: {
-  id: string; label: string; color: string; tasks: Note[];
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id, data: { column: id } });
-
-  return (
-    <div
-      ref={setNodeRef}
-      className="flex flex-col min-w-[240px] w-[280px] flex-shrink-0 rounded-lg"
-      style={{
-        background: isOver ? "var(--glass-hover)" : "var(--glass)",
-        border: "1px solid var(--glass-border)",
-      }}
-    >
-      {/* Column header */}
-      <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-        <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
-          {label}
-        </span>
-        <span className="text-xs ml-auto" style={{ color: "var(--text-muted)" }}>
-          {tasks.length}
-        </span>
-      </div>
-
-      {/* Cards */}
-      <div className="flex-1 overflow-auto p-2 space-y-2">
-        <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-          {tasks.map((task) => (
-            <SortableTaskCard key={task.id} task={task} column={id} />
-          ))}
-        </SortableContext>
-      </div>
-    </div>
-  );
-}
-
-function SortableTaskCard({ task, column }: { task: Note; column: string }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: task.id,
-    data: { column },
+  const source = config?.source;
+  const tasks = useQuery({
+    queryKey: ["vault", "board", scope, note.id, source],
+    enabled: !!config,
+    queryFn: async () => {
+      if (!current()) throw new Error("Workspace changed");
+      const result = await client.listNotes({
+        tag: source?.tags?.[0],
+        path: source?.pathPrefix,
+        limit: 2000,
+      });
+      if (!current()) throw new Error("Workspace changed");
+      return result;
+    },
+    retry: false,
   });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
+  // Fresh authorization is required before cached rows are displayed again.
+  const notes =
+    !tasks.isFetching && !tasks.isError && config
+      ? boardTasks(tasks.data ?? [], config, query)
+      : [];
+  const mode = view ?? config?.view ?? "board";
+  const refresh = () => queries.invalidateQueries({ queryKey: ["vault"] });
+  const receipt = async (confirmed: string) => {
+    const pending = await client.hasPendingWrites?.();
+    if (current())
+      setNotice(
+        pending
+          ? "Saved on this device; waiting for sync. Use the saved-changes indicator below to review it."
+          : confirmed,
+      );
+    return !!pending;
   };
-
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <TaskCard task={task} />
-    </div>
-  );
-}
-
-function TaskCard({ task, isDragging }: { task: Note; isDragging?: boolean }) {
-  const priority = getTaskPriority(task);
-  const deadline = getTaskDeadline(task);
-  const project = getTaskProject(task);
-  const title = task.path?.split("/").pop() || task.content.split("\n")[0].slice(0, 60) || "Untitled task";
-
-  const priorityVariant = {
-    critical: "error" as const,
-    high: "warning" as const,
-    medium: "info" as const,
-    low: "default" as const,
+  const run = async (id: string, fn: () => Promise<void>) => {
+    if (readOnly || !current() || writeLock.current) return;
+    writeLock.current = true;
+    setBusy(id);
+    setError("");
+    setNotice("");
+    try {
+      if (await client.hasPendingWrites?.())
+        throw new Error(
+          "An earlier change is waiting for sync or review. Resolve it using the saved-changes indicator below before trying again.",
+        );
+      if (!current()) return;
+      await fn();
+    } catch (e) {
+      if (current())
+        setError(
+          (e as Error).message ||
+            "The change could not be saved. Refresh and try again.",
+        );
+    } finally {
+      writeLock.current = false;
+      if (current()) setBusy(null);
+    }
   };
-
-  return (
-    <div
-      className="rounded-lg p-2.5 cursor-grab active:cursor-grabbing"
-      style={{
-        background: isDragging ? "var(--glass-active)" : "var(--bg-elevated)",
-        border: "1px solid var(--glass-border)",
-      }}
-    >
-      <div className="text-sm mb-1.5 line-clamp-2" style={{ color: "var(--text-primary)" }}>
-        {title}
+  const move = async (task: Note, target: string) => {
+    if (
+      !canEdit(task) ||
+      !config ||
+      !config.columns.some((c) => c.id === target) ||
+      task.metadata?.[config.groupBy] === target
+    )
+      return;
+    await run(task.id, async () => {
+      if (!task.updatedAt)
+        throw new Error("Refresh this board before moving the task.");
+      // Merge one property, guarded by the revision actually shown to the user.
+      // Never copy stale unrelated metadata or force a conflicting move.
+      await client.updateNote(task.id, {
+        metadata: { [config.groupBy]: target },
+        ifUpdatedAt: task.updatedAt,
+      });
+      if (!current()) return;
+      await receipt("Task moved.");
+      await refresh();
+    });
+  };
+  const open = async (task: Note) => {
+    setError("");
+    try {
+      const fresh = await client.getNote(task.id);
+      if (current())
+        openTab(fresh.id, boardTitle(fresh), inferContentType(fresh));
+    } catch {
+      if (current())
+        setError(
+          "This task is no longer available. Refresh to check your access.",
+        );
+    }
+  };
+  const save = async (next: BoardConfig) =>
+    run("settings", async () => {
+      if (!canEdit(note)) return;
+      const fresh = await client.getNote(note.id);
+      if (!current()) return;
+      if (JSON.stringify(readBoardConfig(fresh)) !== JSON.stringify(config))
+        throw new Error(
+          "Board settings changed in another window. Reopen the board before saving.",
+        );
+      if (!fresh.updatedAt)
+        throw new Error("Refresh this board before saving settings.");
+      await client.updateNote(note.id, {
+        metadata: { prism_board: next },
+        ifUpdatedAt: fresh.updatedAt,
+      });
+      if (!current()) return;
+      setSavedConfig(next);
+      setView(null);
+      setSettings(false);
+      await receipt("View saved.");
+      await refresh();
+    });
+  const create = async (title: string, priority: string, status: string) =>
+    run("create", async () => {
+      if (!config || !canCreate) return;
+      // New tasks inherit the board's explicit visibility and ordinary source tags.
+      const metadata: Record<string, unknown> = {
+        type: "task",
+        prism_type: "task",
+        title,
+        priority,
+        [config.groupBy]: status,
+      };
+      if (note.metadata?.prism_visibility === "private")
+        metadata.prism_visibility = "private";
+      for (const [key, value] of Object.entries(
+        config.source.metadataFilters ?? {},
+      )) {
+        if (
+          ["string", "number", "boolean"].includes(typeof value) &&
+          !key.startsWith("prism_") &&
+          key !== "type"
+        )
+          metadata[key] = value;
+      }
+      // Prefix-scoped boards need a path for the new task to remain in the view.
+      const path = config.source.pathPrefix
+        ? config.source.pathPrefix.replace(/\/$/, "") +
+          "/" +
+          title.replace(/[\/\\]/g, "-") +
+          " " +
+          crypto.randomUUID().slice(0, 8)
+        : undefined;
+      const created = await client.createNote({
+        content:
+          "<p>" +
+          title
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;") +
+          "</p>",
+        path,
+        tags: [...new Set(["task", ...(config.source.tags ?? [])])],
+        metadata,
+      });
+      if (!current()) return;
+      setCreating(false);
+      const pending = await receipt("Task created.");
+      await refresh();
+      if (current() && !pending && !boardTasks([created], config, "").length)
+        setNotice("Task created. Your view's filters exclude it.");
+    });
+  const dragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
+    const task = notes.find((n) => n.id === event.active.id);
+    const column = event.over?.data.current?.column;
+    if (task && typeof column === "string") void move(task, column);
+  };
+  if (!config)
+    return (
+      <div role="alert" className="p-6 text-sm">
+        {configError}
       </div>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <Badge variant={priorityVariant[priority as keyof typeof priorityVariant] || "default"}>
-          {priority}
-        </Badge>
-        {deadline && (
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {deadline}
-          </span>
-        )}
-        {project && (
-          <span className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-            {project}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CreateTaskDialog({ onClose, onCreate }: {
-  onClose: () => void;
-  onCreate: (desc: string, priority: string) => void;
-}) {
-  const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState("medium");
-
+    );
+  const groups = [
+    ...config.columns.map((c) => ({
+      ...c,
+      tasks: notes.filter((n) => boardStatus(n, config) === c.id),
+    })),
+    {
+      id: null,
+      label: "Ungrouped",
+      tasks: notes.filter((n) => boardStatus(n, config) === null),
+    },
+  ];
+  const active = notes.find((n) => n.id === activeId);
   return (
-    <div
-      className="fixed inset-0 flex items-center justify-center z-50"
-      style={{ background: "rgba(0,0,0,0.5)" }}
-      onClick={onClose}
+    <section
+      aria-label="Task board"
+      className="flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-primary)] text-[var(--text-primary)]"
     >
-      <div
-        className="glass-elevated p-6 rounded-xl w-96 space-y-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="text-lg font-medium" style={{ color: "var(--text-primary)" }}>New Task</h3>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Task description..."
-          className="w-full rounded-lg p-3 text-sm resize-none outline-none"
-          style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-          rows={3}
-          autoFocus
-        />
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
         <div>
-          <label className="text-xs mb-1 block" style={{ color: "var(--text-muted)" }}>Priority</label>
-          <select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-            className="w-full h-8 rounded-md px-2 text-sm outline-none"
-            style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
-          >
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="critical">Critical</option>
-          </select>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Workspace / Tasks
+          </p>
+          <h1 className="mt-1 text-xl font-semibold">{boardTitle(note)}</h1>
         </div>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={() => onCreate(description, priority)} disabled={!description.trim()}>
-            Create
-          </Button>
+        <div className="flex gap-2">
+          {canEdit(note) && (
+            <button className={boardControl} onClick={() => setSettings(true)}>
+              <Settings2 size={15} className="mr-2 inline" />
+              View settings
+            </button>
+          )}
+          {canCreate && (
+            <button className={boardControl} onClick={() => setCreating(true)}>
+              <Plus size={16} className="mr-1 inline" />
+              New task
+            </button>
+          )}
         </div>
+      </header>
+      <div className="flex flex-wrap items-center gap-3 px-5 py-3">
+        <div role="group" aria-label="Task view" className="flex gap-1">
+          {(["board", "list"] as const).map((v) => (
+            <button
+              key={v}
+              aria-pressed={mode === v}
+              className={boardControl}
+              style={{
+                background: mode === v ? "var(--glass-active)" : undefined,
+              }}
+              onClick={() => setView(v)}
+            >
+              {v === "board" ? (
+                <LayoutGrid size={14} className="mr-2 inline" />
+              ) : (
+                <List size={14} className="mr-2 inline" />
+              )}
+              {v === "board" ? "Board" : "List"}
+            </button>
+          ))}
+        </div>
+        <input
+          aria-label="Filter tasks"
+          placeholder="Filter tasks…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className={boardControl + " min-w-[180px] flex-1"}
+        />
+        <span className="text-xs text-[var(--text-secondary)]">
+          {notes.length} tasks · grouped by {config.groupBy}
+        </span>
       </div>
-    </div>
+      {error && (
+        <div
+          role="alert"
+          className="mx-5 mb-3 rounded-lg border border-[var(--color-error)] p-3 text-sm"
+        >
+          {error}
+          <button
+            className={boardControl + " ml-3"}
+            onClick={() => void refresh()}
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+      <p role="status" className="px-5 text-xs text-[var(--text-secondary)]">
+        {busy ? "Saving…" : notice}
+      </p>
+      {tasks.isFetching ? (
+        <p className="p-6 text-sm">Loading tasks…</p>
+      ) : tasks.isError ? (
+        <div role="alert" className="p-6">
+          Tasks could not be loaded.{" "}
+          <button className={boardControl} onClick={() => void tasks.refetch()}>
+            Try again
+          </button>
+        </div>
+      ) : (
+        <>
+          {(tasks.data?.length ?? 0) >= 2000 && (
+            <p className="px-5 py-2 text-xs">
+              Showing a limited set of tasks. Narrow the source in View
+              settings.
+            </p>
+          )}
+          <DndContext
+            sensors={sensors}
+            onDragStart={(e) => setActiveId(String(e.active.id))}
+            onDragCancel={() => setActiveId(null)}
+            onDragEnd={dragEnd}
+          >
+            <div
+              className={
+                mode === "board"
+                  ? "flex min-h-0 flex-1 gap-4 overflow-auto p-5"
+                  : "min-h-0 flex-1 overflow-auto p-5"
+              }
+            >
+              {groups
+                .filter((g) => g.id !== null || g.tasks.length > 0)
+                .map((group) => (
+                  <Column
+                    key={group.id ?? "ungrouped"}
+                    group={group}
+                    list={mode === "list"}
+                    disabled={readOnly || !!busy}
+                  >
+                    {group.tasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        config={config}
+                        readOnly={!canEdit(task)}
+                        disabled={!!busy}
+                        onOpen={() => void open(task)}
+                        onMove={(target) => void move(task, target)}
+                      />
+                    ))}
+                  </Column>
+                ))}
+            </div>
+            <DragOverlay>
+              {active && (
+                <div className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-elevated)] p-4 shadow-xl">
+                  {boardTitle(active)}
+                </div>
+              )}
+            </DragOverlay>
+          </DndContext>
+        </>
+      )}
+      {settings && (
+        <BoardSettings
+          config={config}
+          busy={!!busy}
+          error={error}
+          onClose={() => setSettings(false)}
+          onSave={save}
+        />
+      )}
+      {creating && (
+        <BoardTaskForm
+          config={config}
+          busy={!!busy}
+          error={error}
+          onClose={() => setCreating(false)}
+          onCreate={create}
+        />
+      )}
+    </section>
+  );
+}
+
+function Column({
+  group,
+  list,
+  disabled,
+  children,
+}: {
+  group: { id: string | null; label: string; tasks: Note[] };
+  list: boolean;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: "column:" + (group.id ?? "ungrouped"),
+    data: { column: group.id },
+    disabled: disabled || group.id === null,
+  });
+  return (
+    <section
+      ref={setNodeRef}
+      aria-label={group.label}
+      className={
+        list ? "mb-6" : "flex w-[min(290px,calc(100vw-56px))] shrink-0 flex-col"
+      }
+    >
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
+        <span className="h-2 w-2 rounded-full bg-[var(--text-muted)]" />
+        {group.label}
+        <span className="text-xs font-normal text-[var(--text-secondary)]">
+          {group.tasks.length}
+        </span>
+      </h2>
+      <div
+        className="min-h-24 space-y-2 rounded-xl p-1"
+        style={{ background: isOver ? "var(--glass-active)" : "var(--glass)" }}
+      >
+        {children}
+        {!group.tasks.length && (
+          <p className="px-3 py-6 text-xs text-[var(--text-secondary)]">
+            No tasks
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+function TaskCard({
+  task,
+  config,
+  readOnly,
+  disabled,
+  onOpen,
+  onMove,
+}: {
+  task: Note;
+  config: BoardConfig;
+  readOnly: boolean;
+  disabled: boolean;
+  onOpen: () => void;
+  onMove: (value: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: task.id,
+    disabled: readOnly || disabled,
+  });
+  const status = boardStatus(task, config);
+  const raw = task.metadata?.[config.groupBy];
+  return (
+    <article
+      ref={setNodeRef}
+      aria-label={boardTitle(task)}
+      className="relative rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3 shadow-sm"
+      style={{ opacity: isDragging ? 0.4 : 1 }}
+    >
+      <div className="flex items-start gap-1">
+        <button
+          onClick={onOpen}
+          className="min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
+        >
+          {boardTitle(task)}
+          <ArrowUpRight
+            size={13}
+            className="ml-1 inline text-[var(--text-secondary)]"
+          />
+        </button>
+        {!readOnly && (
+          <button
+            {...attributes}
+            {...listeners}
+            disabled={disabled}
+            aria-label={"Drag " + boardTitle(task)}
+            className="min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
+          >
+            <GripVertical size={16} />
+          </button>
+        )}
+      </div>
+      <dl className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
+        {config.cardFields.map((field) => {
+          const value =
+            task.metadata?.[field] ??
+            (field === "deadline" ? task.metadata?.due : undefined);
+          return value == null ? null : (
+            <div key={field} className="min-w-0 max-w-full break-words">
+              <dt className="sr-only">{field}</dt>
+              <dd>
+                {typeof value === "object"
+                  ? JSON.stringify(value)
+                  : String(value)}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {readOnly ? (
+        <p className="text-xs text-[var(--text-secondary)]">
+          {config.columns.find((c) => c.id === status)?.label ??
+            (typeof raw === "string" ? raw : "No " + config.groupBy)}
+        </p>
+      ) : (
+        <select
+          aria-label={"Move " + boardTitle(task)}
+          value={status ?? ""}
+          disabled={disabled}
+          onChange={(e) => onMove(e.target.value)}
+          className={boardControl + " w-full"}
+        >
+          {status === null && (
+            <option value="" disabled>
+              {typeof raw === "string"
+                ? "Ungrouped: " + raw
+                : "No " + config.groupBy}
+            </option>
+          )}
+          {config.columns.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      )}
+    </article>
   );
 }

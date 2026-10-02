@@ -28,7 +28,7 @@ The registry is `packages/core/src/components/renderers/Registry.ts`; collaborat
 | Event and Calendar dashboard | Matching ambiguity/time tests; actual private event→exact meeting/transcript navigation on web/native; overlap/multi-day layout | Private external-calendar update/recurrence/notification readback; manual transcript overrides and multiple-recording writer |
 | Code / collaborative code | Registered renderer and host/collab implementation retained | Two clients edit separate lines; language/source round-trip; rename/export; read-only denial |
 | Presentation | Registered renderer retained | Slide navigation, editing, fullscreen and export in web/native; small screen controls |
-| Task / task board | Existing pointer board retained; unknown-status fallback and broad metadata copying identified for R11 | Configurable columns/source/order; explicit ungrouped statuses; keyboard/touch move; version conflict; underlying note opens |
+| Task / task board | Configurable per-note views, explicit ungrouped values, guarded property moves, list/menu/drag/read-only and pending-write fixtures pass | Production private board lifecycle; manual rank ordering, advanced filter editing and complete paginated inventory |
 | Project | Registered renderer retained | Related tasks/notes, property edits and linked-source navigation in both clients |
 | Spreadsheet / collaborative spreadsheet | Registered adapters retained | Concurrent cell edits; formulas/import/export; paste ranges; read-only and reload |
 | Website | Registered renderer retained | Safe preview/source edit, hosted build/publish controls and private preview; no secret-bearing embeds |

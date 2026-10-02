@@ -123,6 +123,8 @@ export interface VaultClient {
   getNote(id: string): Promise<Note>;
   createNote(params: CreateNoteParams): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams): Promise<Note>;
+  /** True while this audience has deferred or uncertain writes awaiting sync/review. */
+  hasPendingWrites?(): Promise<boolean>;
   deleteNote(id: string): Promise<void>;
   search(query: string, tags?: string[], limit?: number): Promise<Note[]>;
   /** Hybrid semantic search (dense vectors + full-text), when the host provides

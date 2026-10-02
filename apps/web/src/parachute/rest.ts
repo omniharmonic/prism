@@ -77,6 +77,12 @@ function nowISO(): string {
 
 const isOffline = () => typeof navigator !== "undefined" && !navigator.onLine;
 
+/** Audience-bound gate for workflows which must distinguish local acceptance
+ * from server confirmation (for example moving a task or configuring a view). */
+export async function hasPendingWrites(): Promise<boolean> {
+  return hasPending(await captureWriteContext());
+}
+
 /**
  * Mutation whose JSON response we return (create/update note). When offline or
  * the fetch fails with a network error, queue it in the outbox and resolve with

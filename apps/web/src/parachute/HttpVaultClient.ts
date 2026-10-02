@@ -24,6 +24,7 @@ export const httpVaultClient: VaultClient = {
   getStats: rest.getStats,
   getLinks: rest.getLinks,
   createLink: rest.createLink,
+  hasPendingWrites: rest.hasPendingWrites,
   deleteLink: rest.deleteLink,
   getGraph: rest.getGraph,
   getNeighborhood: rest.getNeighborhood,

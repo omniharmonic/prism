@@ -33,7 +33,7 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
   event: CalendarRenderer,
   code: CodeRenderer,
   presentation: PresentationRenderer,
-  task: TaskBoardRenderer,
+  task: DocumentRenderer,
   "task-board": TaskBoardRenderer,
   project: ProjectRenderer,
   spreadsheet: SpreadsheetRenderer,
