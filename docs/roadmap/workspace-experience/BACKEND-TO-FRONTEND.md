@@ -4,18 +4,20 @@ Updated 2026-10-02 by the backend agent. This is the single file to read for eve
 
 ## Branches ready for you to look at
 
-| Slice | Branch | Worktree | Tip | Base | State |
-|---|---|---|---|---|---|
-| Transcript/calendar review | `feat/backend-transcripts` | `.worktrees/backend-transcripts` | `ea412e0` | `6069ccd` | Implemented, independently reviewed, review fixes applied. Ready for integration review. |
-| Human suggest-only enforcement (server half) | `feat/backend-followup` | `.worktrees/backend-followup` | `75346a2` + this file | `6069ccd` | Implemented. Two independent security reviews; every finding fixed with tests. The last fix round (`be7ad2b`, `67abdd7`) has not itself been re-reviewed. **Ready for integration review, to be deployed with `COLLAB_SUGGEST_ENFORCED=false` first** (see release order). |
-| Graph identity + linking (people ↔ messages/emails/meetings/tasks) | `feat/backend-graph` | `.worktrees/backend-graph` | in progress | `6069ccd` | Being implemented. Server-only. |
+**Integrate ONE branch: `feat/backend-combined`** (worktree `.worktrees/backend-combined`, base `6069ccd`). It merges the three slices below; the per-slice branches are kept only for reference/review history.
+
+| Slice | Source branch | State |
+|---|---|---|
+| Human suggest-only enforcement (server half) | `feat/backend-followup` | Two independent security reviews; every finding fixed with tests (last fix round not itself re-reviewed; fails closed). Deploy with `COLLAB_SUGGEST_ENFORCED=false` first — see release order. |
+| Transcript/calendar review | `feat/backend-transcripts` | Independently reviewed; fixes applied. Ready. |
+| Graph identity + linking (people ↔ messages/emails/meetings/tasks/projects) | `feat/backend-graph` + agent tools committed on `feat/backend-combined` | Two independent reviews; fixes applied. Deploys inert: every new flag off, every job dry-run by default. Agent tools under a third (short) review at time of writing. |
 
 Detailed contracts live on each branch:
 
 - `docs/roadmap/workspace-experience/BACKEND-STATUS-TRANSCRIPTS.md` (on `feat/backend-transcripts`)
 - `docs/roadmap/workspace-experience/BACKEND-STATUS.md` (on `feat/backend-followup`)
 
-Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → transcripts branch 1,490 → suggestions branch 1,522, all passing on each branch separately. The two branches have not been merged together yet; they overlap on a few adjacent lines in `apps/server/src/routes/api.ts` and `apps/server/test/helpers.ts`. The backend agent will produce the combined branch — please don't resolve that by replacing either file.
+Test counts (server suite, `npm test -w @prism/server`): baseline 1,440 → combined branch 1,673, all passing; root `npm run typecheck` passes. Known flake: the Proton test "a hostile message … parses fast" is timing-bound and can fail under machine load (unrelated code; rerun that file alone).
 
 ---
 
@@ -136,14 +138,47 @@ Signed-in users only (capability links and anon → 401). Full status-code table
 
 ---
 
-## 3. Release notes for whoever cuts the combined server release
+## 3. Graph identity + linking (why People / messages-by-person look empty)
+
+Diagnosis (live vault audit, 2026-10-02): server ingest has written no person links since the Matrix/email ingest moved to the server (0 of 1,177 threads since July, 0 of 2,299 emails since August), meetings mostly link by `wikilink` not `attended-by`, tasks hold assignee/project as plain strings, and 102 merged stubs still hold 636 links. The UI reads typed links only, so most context is invisible. The backend fix is a deterministic identity index + review queue + backfill job + forward linking + owner-approved merge, plus Prism MCP tools for agents. Full contract: `docs/roadmap/workspace-experience/BACKEND-STATUS-GRAPH.md` (routes under `/api/admin/people/*`, owner-only + CSRF).
+
+### Needs a frontend change (small, high value)
+
+1. **`VaultMessagesDashboard` lists merged people** (tombstones). It reads `GET /api/notes?tag=person` through the owner passthrough, which the server cannot filter without changing every consumer. Exact change at `packages/core/src/components/comms/VaultMessagesDashboard.tsx` line 93:
+   ```ts
+   const isMerged = (n: Note) =>
+     n.tags?.includes("merged-stub") || n.tags?.includes("superseded") ||
+     n.metadata?.status === "merged_into_canonical";
+   const personNotes = peopleError ? undefined : loadedPeople?.filter((n) => !isMerged(n));
+   ```
+   (Use exactly this rule — tag `merged-stub`/`superseded` or that status. A bare `merged_into` pointer without a marker is deliberately treated as a live person server-side.)
+2. **Add `email-to` to that dashboard's link filter** if recipients should count (server now writes `email-to`).
+3. `GET /api/people` and the person detail route already hide tombstones server-side; opening a tombstone id returns the canonical person with an additive `mergedFrom` field. `PeopleWorkspace` ignores unknown keys, so no change is required — showing "merged from …" is optional.
+
+### Could add (no backend change needed)
+
+- **Review queue UI:** `GET /api/admin/people/candidates` grouped by key; "This is …" → resolve (optionally "remember this address" = `addIdentity`, "apply to all N" = `applyToKey`); "Not a person" → dismiss. `tombstone-unresolved` rows need a person picker. `open.total` for a badge.
+- **Possible matches / merge on a person page:** `/duplicates` filtered to that id; Merge → dry run → confirmation (identities, skipped fields, link counts) → write with `canonicalId` + `expect`. `confirmUnrelated` only behind a second explicit confirmation. Merges refuse agent origin, so this must be a human UI action.
+- **Agent recommendations + audit:** `GET /duplicates` returns agents' merge `recommendations` (show beside the pair with the rationale; dismiss → `POST /recommendations/:id/dismiss`); `GET /agent/decisions` lists what agents resolved.
+- **"This is me"** on a person note → `PUT /owner`.
+- **Backfill control panel:** per-phase dry run → table (`byEvidence`, `queuedByReason`, bulk samples) → write, like "Resolve All Wikilinks".
+
+### Behaviour change on deploy (no flag)
+
+Calendar ingest creates fewer new person notes (an attendee matching an existing alias becomes a review candidate instead of a duplicate), and adds a one-time batch of `attended-by` links to canonical people for meetings in the current window.
+
+
+---
+
+## 4. Release notes for whoever cuts the combined server release
 
 - **Transcripts:** worker linking changes on the next server restart (version-checked writes, multiple recordings per event). Kill switch: `TRANSCRIPT_LINK_JOURNAL=0`. Hand-made half-linked pairs in the current calendar window are completed once (two history versions each).
 - **Suggestions:** see release order above; kill switch `COLLAB_SUGGEST_ENFORCED=false`.
-- Both slices create their SQLite tables on first start (`collab_command_receipts`; four `transcript_link_*` tables). Take the usual online DB backup first.
+- **Graph linking:** deploys inert (all `MATRIX_LINK_EXISTING`, `MATRIX_STORE_PARTICIPANT_IDS`, `PROTON_LINK_RECIPIENTS`, `TRANSCRIPT_LINK_PEOPLE`, `CLICKUP_LINK_ENABLED`, `PEOPLE_QUEUE_ON_INGEST` off; jobs dry-run by default). The live cleanup follows the staged runbook in `BACKEND-STATUS-GRAPH.md` and is run by the backend agent with the owner, not as part of the deploy.
+- The slices create their SQLite tables on first start (`collab_command_receipts`; four `transcript_link_*` tables; `identity_candidates`; people-agent tables). Take the usual online DB backup first. Take the usual online DB backup first.
 - Docs still describing the old "read-only below suggest" rule, to be updated by the backend agent after review: `CLAUDE.md`, `docs/mcp-access.md`, `docs/native-auth.md`, `docs/federation.md`.
 
-## 4. Boundary reminders
+## 5. Boundary reminders
 
 - Backend has not edited and will not edit: `CollabDoc.tsx`, `CollabEditor.tsx`, `CommentsSidebar.tsx`, `collab/access.ts`, `humanCommands.ts`, `ShareDialog.tsx`, `apps/server/src/app.ts`, manifests/lockfiles (other than the one export line above).
 - Backend will not advance main, deploy, restart the server, or rebuild the client. Codex owns the combined release.
