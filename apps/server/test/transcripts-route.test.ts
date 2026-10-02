@@ -6,6 +6,10 @@ import { config } from "../src/config";
 import { setTranscriptLinkVaultForTests } from "../src/transcript-links";
 import { resetDb, installFakeVault, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault, type FakeNote } from "./helpers";
 
+// The review's transcript listing is reused for a few seconds in production; the
+// tests reseed between requests, so reuse is off except where it is the subject.
+process.env.TRANSCRIPT_LIST_TTL_MS = "0";
+
 let fv: FakeVault;
 const OWNER = config.ownerEmail;
 const MEMBER = "member@test.local";
@@ -174,10 +178,11 @@ test("private candidates and a private old meeting are never disclosed", async (
 });
 
 test("candidate enumeration is bounded and says so; query is a title/path filter capped at 50", async () => {
-  for (let i = 0; i < 205; i++) transcript(`bulk-${String(i).padStart(3, "0")}`, { title: i < 60 ? `Budget offsite ${i}` : `Meeting M ${i}`, date: i < 60 ? "2025-01-01" : "2026-10-05", attendees: [] });
+  for (let i = 0; i < 290; i++) transcript(`bulk-${String(i).padStart(3, "0")}`, { title: i < 60 ? `Budget offsite ${i}` : `Meeting M ${i}`, date: i < 60 ? "2025-01-01" : "2026-10-05", attendees: i < 60 ? [] : ["Ada Example"] });
   const wide = (await (await review(OWNER)).json()) as Review;
+  assert.equal(wide.candidates.length, 200, "232 recordings match; exactly the cap is returned");
   assert.equal(wide.limited, true);
-  assert.ok(wide.candidates.length <= 200);
+  assert.ok(wide.candidates.every((c) => c.score > 0));
   const hits = (await (await review(OWNER, "M", "budget OFFSITE")).json()) as Review;
   assert.equal(hits.candidates.length, 50);
   assert.equal(hits.limited, true);
@@ -185,6 +190,106 @@ test("candidate enumeration is bounded and says so; query is a title/path filter
   const one = (await (await review(OWNER, "M", "transcripts/bulk-07")).json()) as Review;
   assert.equal(one.candidates.length, 10, "path substring");
   assert.equal(one.limited, false);
+  const none = (await (await review(OWNER, "M", "no such recording")).json()) as Review;
+  assert.deepEqual([none.candidates.length, none.limited], [0, false]);
+});
+
+test("an OLD meeting still finds its recordings: candidates are anchored on the meeting, and backpointer-only links are found anywhere in the scan", async () => {
+  meeting("OLD", { title: "Kickoff", date: "2024-03-01", start: "2024-03-01T10:00:00Z", calendarEventId: "ev-old" });
+  const old = (id: string, extra: Record<string, unknown>) => fv.put({ id, path: `vault/transcripts/${id}`, tags: ["transcript", "team"], createdAt: "2024-03-01T12:00:00.000Z", metadata: { title: "Kickoff", date: "2024-03-01", attendees: ["Ada Example"], ...extra } });
+  old("OLD-REC", {});
+  old("OLD-EXACT", { calendarEventId: "ev-old", title: "untitled", date: "2024-03-09", attendees: [] });
+  old("OLD-BACK", { meetingNoteId: "OLD", title: "something unrelated", date: "2023-01-01", attendees: [] });
+  // 400 newer recordings push all three far outside any "newest 200" window.
+  for (let i = 0; i < 400; i++) transcript(`new-${i}`, { title: "Weekly", date: "2026-09-01", attendees: [] });
+  const data = (await (await review(OWNER, "OLD")).json()) as Review;
+  assert.deepEqual(data.candidates.map((c) => c.id), ["OLD-EXACT", "OLD-REC"]);
+  assert.deepEqual(data.linked.map((l) => l.id), ["OLD-BACK"]);
+  assert.equal(data.limited, false, "nothing was cut off, so nothing is claimed to be");
+});
+
+test("limited never reveals how many transcripts exist to someone who cannot see them", async () => {
+  for (let i = 0; i < 5000; i++) fv.put({ id: `hidden-${i}`, path: `vault/transcripts/hidden-${i}`, tags: ["transcript", "restricted"], createdAt: "2026-10-06T00:00:00.000Z", metadata: { title: "Meeting M", date: "2026-10-05", attendees: ["Ada Example"] } });
+  grantUser(MEMBER, "tag", "team", "edit");
+  const member = (await (await review(MEMBER)).json()) as Review;
+  assert.deepEqual(member.candidates.map((c) => c.id), [], "the newest 5,000 are all hidden from this member");
+  assert.equal(member.limited, false, "computed from viewable rows only");
+  const owner = (await (await review(OWNER)).json()) as Review;
+  assert.equal(owner.limited, true, "a whole-vault role is told the scan was full");
+});
+
+test("the review costs the vault ONE lean listing: metadata-filtered, no content, coalesced in flight and reused briefly", async () => {
+  const lists = () => fv.calls.filter((c) => c.method === "GET" && c.path.endsWith("/notes") && c.search.includes("tag=transcript"));
+  const a = await Promise.all([review(OWNER), review(OWNER, "M", "meeting"), review(OWNER)]);
+  assert.deepEqual(a.map((r) => r.status), [200, 200, 200]);
+  assert.equal(lists().length, 1, "three concurrent reviews share one in-flight list");
+  const q = new URLSearchParams(lists()[0]!.search);
+  assert.equal(q.get("include_content"), null);
+  assert.equal(q.get("limit"), "5000");
+  assert.deepEqual(q.get("include_metadata")!.split(",").sort(), ["attendeeEmails", "attendees", "calendarEventId", "date", "meetingNoteId", "prism_creator", "prism_visibility", "start", "title"]);
+  const perNote = fv.calls.filter((c) => c.method === "GET" && /\/notes\/T[12]$/.test(c.path)).length;
+  assert.equal(perNote, 0, "no per-candidate note fetch");
+
+  process.env.TRANSCRIPT_LIST_TTL_MS = "60000";
+  try {
+    await review(OWNER);
+    const before = lists().length;
+    await review(OWNER);
+    await review(OWNER, "M", "meeting");
+    assert.equal(lists().length, before, "reused inside the TTL");
+    // A decision invalidates it, so the next review sees fresh updatedAt values.
+    assert.equal((await decide(OWNER, body())).status, 200);
+    const after = (await (await review(OWNER)).json()) as Review;
+    assert.equal(lists().length, before + 1);
+    assert.equal(after.linked[0]!.updatedAt, stamp("T1"));
+  } finally {
+    process.env.TRANSCRIPT_LIST_TTL_MS = "0";
+  }
+});
+
+test("both routes are rate limited per user", async () => {
+  process.env.TRANSCRIPT_REVIEW_PER_MINUTE = "3";
+  process.env.TRANSCRIPT_DECISIONS_PER_MINUTE = "2";
+  try {
+    grantUser("busy@test.local", "tag", "team", "edit");
+    const codes = [];
+    for (let i = 0; i < 5; i++) codes.push((await review("busy@test.local")).status);
+    assert.deepEqual(codes, [200, 200, 200, 429, 429]);
+    const limited = await review("busy@test.local");
+    assert.ok(Number(limited.headers.get("retry-after")) > 0);
+    assert.equal(((await limited.json()) as { error: string }).error, "rate_limited");
+    const posts = [];
+    for (let i = 0; i < 4; i++) posts.push((await decide("busy@test.local", { ...body(), expectedRevision: 9, requestId: `rl-${i}` })).status);
+    assert.deepEqual(posts, [409, 409, 429, 429]);
+    grantUser("calm@test.local", "tag", "team", "view");
+    assert.equal((await review("calm@test.local")).status, 200, "another user's budget is separate");
+  } finally {
+    delete process.env.TRANSCRIPT_REVIEW_PER_MINUTE;
+    delete process.env.TRANSCRIPT_DECISIONS_PER_MINUTE;
+  }
+});
+
+test("ids are canonical over HTTP: a path alias or malformed id is 404/400 and never reaches the journal", async () => {
+  fv.put({ id: "T9", path: "alias-t9", tags: ["transcript", "team"], createdAt: "2026-10-05T12:00:00.000Z", metadata: { title: "Meeting M", date: "2026-10-05", attendees: ["Ada Example"] } });
+  fv.put({ id: "M9", path: "alias-m9", tags: ["meeting", "team"], metadata: { title: "Meeting M9", calendarEventId: "ev-9", date: "2026-10-05" } });
+  assert.equal((await review(OWNER, "M9")).status, 200);
+  const viaAlias = await review(OWNER, "alias-m9");
+  assert.deepEqual([viaAlias.status, await viaAlias.json()], [404, { error: "not_found" }]);
+  const stamps = { meetingUpdatedAt: stamp("M"), transcriptUpdatedAt: stamp("T9"), expectedRevision: 0, reason: "same call", action: "link" as const };
+  const aliasBody = await decide(OWNER, { ...stamps, transcriptId: "alias-t9", requestId: "a1" });
+  assert.deepEqual([aliasBody.status, await aliasBody.json()], [404, { error: "not_found" }]);
+  assert.equal((await decide(OWNER, { ...stamps, meetingUpdatedAt: stamp("M9"), transcriptUpdatedAt: stamp("T1"), transcriptId: "T1", requestId: "a2" }, "alias-m9")).status, 404);
+  const calls = fv.calls.length;
+  for (const bad of ["vault/transcripts/T9", "..", "a b", "x\u0000"]) assert.equal((await decide(OWNER, { ...stamps, transcriptId: bad, requestId: "a3" })).status, 400, bad);
+  assert.equal((await review(OWNER, "vault%2Fmeetings%2FM")).status, 404);
+  assert.equal((await decide(OWNER, { ...stamps, transcriptId: "T9", requestId: "a4" }, "a%2Fb")).status, 404);
+  assert.equal(fv.calls.length, calls, "a malformed id never reaches the vault");
+  assert.deepEqual(journal(), []);
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH").length, 0);
+  // The canonical id works, and what it writes is the canonical id.
+  assert.equal((await decide(OWNER, { ...stamps, transcriptId: "T9", requestId: "a5" })).status, 200);
+  assert.deepEqual(meta("M").transcriptNoteIds, ["T9"]);
+  assert.equal(journal()[0]!.transcript_id, "T9");
 });
 
 test("POST validates strictly: content type, exact keys, reason length, revision and request id", async () => {

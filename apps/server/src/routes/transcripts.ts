@@ -14,9 +14,14 @@ import { resolveActor, type Actor } from "../auth/actor";
 import { effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
 import { vaultClient, type Note } from "../parachute";
+import { consumeRateLimit } from "../middleware/ratelimit";
 import { meetingFromNote, score } from "../worker/transcript-match";
 import {
   currentMeetingOf,
+  fetchNoteById,
+  isNoteId,
+  leanTranscripts,
+  TRANSCRIPT_SCAN,
   decideTranscriptLink,
   decisionRevision,
   journalTranscriptsFor,
@@ -26,11 +31,19 @@ import {
   type LinkScope,
 } from "../transcript-links";
 
-/** Candidate enumeration is bounded; `limited` tells the client when a bound bit. */
-const WINDOW = 200;
-const QUERY_SCAN = 2000;
+/**
+ * Candidate enumeration is bounded; `limited` tells the client when a bound bit.
+ * The scan is ONE lean, cached listing of the vault's newest TRANSCRIPT_SCAN
+ * transcripts; the matcher itself anchors candidates on the meeting (an exact
+ * event id, or a date within a day), so an old meeting still finds its recordings.
+ */
+const CANDIDATE_CAP = 200;
 const QUERY_CAP = 50;
 const LINKED_CAP = 100;
+const perMinute = (name: string, fallback: number): number => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
 const REASON_MAX = 500;
 
 type UserActor = Extract<Actor, { kind: "user" }>;
@@ -60,9 +73,16 @@ const titleOf = (n: Note): string =>
 const startOf = (n: Note): string | undefined => str(n.metadata?.start) ?? undefined;
 
 /** The signed-in user bound to a still-registered vault, or the refusal to send. */
-function guard(c: Context): { actor: UserActor; scope: LinkScope } | Response {
+function guard(c: Context, kind: "review" | "decide"): { actor: UserActor; scope: LinkScope } | Response {
   const actor = resolveActor(c);
   if (actor.kind !== "user") return c.json({ error: "unauthorized" }, 401);
+  // Per USER (not per IP): a review is a vault listing, a decision is note writes.
+  const max = kind === "review" ? perMinute("TRANSCRIPT_REVIEW_PER_MINUTE", 60) : perMinute("TRANSCRIPT_DECISIONS_PER_MINUTE", 60);
+  const retry = consumeRateLimit(`transcripts-${kind}:${actor.email}`, max, 60_000);
+  if (retry !== null) {
+    c.header("Retry-After", String(retry));
+    return c.json({ error: "rate_limited", retryAfter: retry }, 429);
+  }
   const header = c.req.header("x-prism-vault");
   const scope = linkScope(actor.vaultId);
   if ((header && header !== actor.vaultId) || !scope) return c.json({ error: "vault_unavailable" }, 409);
@@ -72,7 +92,7 @@ function guard(c: Context): { actor: UserActor; scope: LinkScope } | Response {
 export const transcriptsApi = new Hono();
 
 transcriptsApi.get("/events/:meetingId", async (c) => {
-  const g = guard(c);
+  const g = guard(c, "review");
   if (g instanceof Response) return g;
   const { actor, scope } = g;
   c.header("Cache-Control", "private, no-store");
@@ -81,7 +101,8 @@ transcriptsApi.get("/events/:meetingId", async (c) => {
   try {
     let meeting: Note;
     try {
-      meeting = await vc.getNote(meetingId, { includeLinks: true });
+      // Canonical id only: a path/title alias the vault would resolve is a 404.
+      meeting = await fetchNoteById(vc, meetingId, true);
     } catch (e) {
       if (is404(e)) return c.json({ error: "not_found" }, 404);
       throw e;
@@ -91,14 +112,16 @@ transcriptsApi.get("/events/:meetingId", async (c) => {
     if (!meetingCaps.has("view") || !hasTag(meeting, "meeting")) return c.json({ error: "not_found" }, 404);
 
     const query = (c.req.query("query") ?? "").trim().toLowerCase().slice(0, 200);
-    const scan = query ? QUERY_SCAN : WINDOW;
-    const listed = (await vc.listNotes({ tags: ["transcript"], limit: scan, orderBy: "created_at" }))
-      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-    let limited = listed.length >= scan;
+    const scanned = await leanTranscripts(scope);
     // View-filter BEFORE anything is scored, counted or titled.
-    const visible = listed.slice(0, scan).filter((t) => capsOf(actor, t).has("view"));
+    const visible = scanned.filter((t) => capsOf(actor, t).has("view"));
     const byId = new Map(visible.map((t) => [t.id, t]));
+    // A full scan may hide older recordings. Only an actor whose role already
+    // sees the whole vault is told; for anyone else `limited` is computed purely
+    // from rows they can view, so it never reveals how many transcripts exist.
+    let limited = scanned.length >= TRANSCRIPT_SCAN && roleFloor(actor.role) !== null;
 
+    // Backpointer-only recordings are found across the WHOLE scan, not a window.
     const linkedIds = [
       ...new Set([
         ...meetingTranscriptIds(meeting),
@@ -106,20 +129,24 @@ transcriptsApi.get("/events/:meetingId", async (c) => {
         ...visible.filter((t) => currentMeetingOf(scope, t) === meeting.id).map((t) => t.id),
       ]),
     ];
-    if (linkedIds.length > LINKED_CAP) limited = true;
     const linked = [];
-    for (const id of linkedIds.slice(0, LINKED_CAP)) {
+    for (const id of linkedIds) {
       let t = byId.get(id);
       if (!t) {
+        if (linked.length >= LINKED_CAP) break;
         try {
-          t = await vc.getNote(id);
+          t = await fetchNoteById(vc, id); // outside the scan, or not tagged transcript
         } catch (e) {
-          if (is404(e)) continue; // dangling id: nothing to show
+          if (is404(e)) continue; // dangling id or alias: nothing to show
           throw e;
         }
       }
       const caps = capsOf(actor, t);
       if (!caps.has("view")) continue; // silently dropped
+      if (linked.length >= LINKED_CAP) {
+        limited = true;
+        break;
+      }
       linked.push({
         id: t.id,
         title: titleOf(t),
@@ -132,23 +159,6 @@ transcriptsApi.get("/events/:meetingId", async (c) => {
 
     const asMeeting = meetingFromNote(meeting);
     const taken = new Set(linkedIds);
-    // Whether the actor may also write the meeting a candidate would be moved FROM.
-    // Only a boolean ever leaves here — never that meeting's id or title.
-    const otherEditable = new Map<string, boolean>();
-    const mayEditOther = async (id: string): Promise<boolean> => {
-      if (!otherEditable.has(id)) {
-        let ok: boolean;
-        try {
-          const caps = capsOf(actor, await vc.getNote(id));
-          ok = caps.has("view") && caps.has("edit");
-        } catch (e) {
-          if (!is404(e)) throw e;
-          ok = true; // dangling backpointer: a link simply replaces it
-        }
-        otherEditable.set(id, ok);
-      }
-      return otherEditable.get(id)!;
-    };
     let scored = visible
       .filter((t) => !taken.has(t.id))
       .flatMap((t) => {
@@ -160,27 +170,45 @@ transcriptsApi.get("/events/:meetingId", async (c) => {
         return s && s.score > 0 ? [{ t, score: s.score, evidence: s.evidence }] : [];
       })
       .sort((a, b) => b.score - a.score || a.t.id.localeCompare(b.t.id));
-    const cap = query ? QUERY_CAP : WINDOW;
+    const cap = query ? QUERY_CAP : CANDIDATE_CAP;
     if (scored.length > cap) {
       limited = true;
       scored = scored.slice(0, cap);
     }
-    const candidates = [];
-    for (const { t, score: value, evidence } of scored) {
-      const current = currentMeetingOf(scope, t);
-      const linkedElsewhere = !!current && current !== meeting.id;
-      candidates.push({
+    // Whether the actor may also write the meeting a candidate would be moved FROM.
+    // Only a boolean ever leaves here — never that meeting's id or title. Each
+    // distinct other meeting is read once, a few at a time.
+    const current = new Map(scored.map(({ t }) => [t.id, currentMeetingOf(scope, t)]));
+    const others = [...new Set([...current.values()].filter((id): id is string => !!id && id !== meeting.id))];
+    const otherEditable = new Map<string, boolean>();
+    for (let i = 0; i < others.length; i += 6) {
+      await Promise.all(
+        others.slice(i, i + 6).map(async (id) => {
+          try {
+            const caps = capsOf(actor, await fetchNoteById(vc, id));
+            otherEditable.set(id, caps.has("view") && caps.has("edit"));
+          } catch (e) {
+            if (!is404(e)) throw e;
+            otherEditable.set(id, true); // dangling backpointer: a link simply replaces it
+          }
+        }),
+      );
+    }
+    const candidates = scored.map(({ t, score: value, evidence }) => {
+      const other = current.get(t.id);
+      const linkedElsewhere = !!other && other !== meeting.id;
+      return {
         id: t.id,
         title: titleOf(t),
         ...(startOf(t) ? { start: startOf(t) } : {}),
         updatedAt: t.updatedAt ?? "",
         decisionRevision: decisionRevision(scope, t.id),
-        canManage: capsOf(actor, t).has("edit") && hasTag(t, "transcript") && (!linkedElsewhere || (await mayEditOther(current!))),
+        canManage: capsOf(actor, t).has("edit") && hasTag(t, "transcript") && (!linkedElsewhere || otherEditable.get(other!) === true),
         score: value,
         evidence,
         linkedElsewhere,
-      });
-    }
+      };
+    });
 
     return c.json({
       meeting: { id: meeting.id, eventId: str(meeting.metadata?.calendarEventId) ?? "", title: titleOf(meeting), updatedAt: meeting.updatedAt ?? "" },
@@ -213,7 +241,7 @@ function parseBody(input: unknown): DecisionBody | null {
   const keys = Object.keys(b);
   if (keys.length !== BODY_KEYS.length || !BODY_KEYS.every((k) => k in b)) return null;
   const short = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
-  if (!short(b.transcriptId, 300) || !short(b.meetingUpdatedAt, 64) || !short(b.transcriptUpdatedAt, 64)) return null;
+  if (!isNoteId(b.transcriptId) || !short(b.meetingUpdatedAt, 64) || !short(b.transcriptUpdatedAt, 64)) return null;
   if (b.action !== "link" && b.action !== "unlink") return null;
   if (typeof b.reason !== "string" || !b.reason.trim() || b.reason.length > REASON_MAX) return null;
   if (!Number.isSafeInteger(b.expectedRevision) || (b.expectedRevision as number) < 0) return null;
@@ -239,7 +267,7 @@ const ERROR_STATUS = {
 } as const;
 
 transcriptsApi.post("/events/:meetingId/decisions", async (c) => {
-  const g = guard(c);
+  const g = guard(c, "decide");
   if (g instanceof Response) return g;
   const { actor, scope } = g;
   c.header("Cache-Control", "private, no-store");
