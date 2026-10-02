@@ -1,6 +1,6 @@
 # Backend status — human suggest-only enforcement
 
-Updated 2026-10-02 (second pass, after an independent security review — see "Security review follow-up"). Branch `feat/backend-followup`, worktree `.worktrees/backend-followup`. **Not merged, not deployed, no server restarted.** Everything below was verified against fixtures only (in-memory SQLite, fake vault, a real in-process Hocuspocus server with real WebSocket provider clients). Nothing here was run in a browser, against production, or with the real editor.
+Updated 2026-10-02 (third pass: two independent security reviews — see "Security review follow-up" and "Second review follow-up"). Branch `feat/backend-followup`, worktree `.worktrees/backend-followup`. **Not merged, not deployed, no server restarted.** Everything below was verified against fixtures only (in-memory SQLite, fake vault, a real in-process Hocuspocus server with real WebSocket provider clients). Nothing here was run in a browser, against production, or with the real editor.
 
 This closes the server half of `BACKEND-HANDOFF.md` §1. The client half is not done and is frontend-owned; the exact contract and hunks are in "Client contract requested for suggest-only enforcement" below.
 
@@ -61,7 +61,7 @@ Request:
 - Credentials exactly as other `/api` calls: session cookie, or `Authorization: Bearer pd_…`, or a capability link as `?t=<token>` or `Authorization: Capability <token>`. A signed-in user who opened a suggest link should send both the session and `?t=`; the server combines the grants the same way the socket does and attributes the change to the account.
 - `X-Prism-Vault`, if sent, must be the id of the vault the caller is bound to (a link's own vault; for an account, a registered vault). An unknown or different id is refused (403 `vault_mismatch`); it never silently falls back to the primary vault.
 - Cookie requests with `Sec-Fetch-Site: cross-site|same-site`, or an `Origin` that is not `APP_ORIGIN`/a native origin, are refused (403 `csrf_refused`). Same-origin PWA and native bearer requests are unaffected. A Vite dev server on another port is `same-site`: use its proxy.
-- Body ≤ 80,000 bytes. 120 requests/minute per client IP.
+- Body ≤ 80,000 bytes. 120 requests/minute per client IP, and **30 accepted-for-processing requests/minute per actor per document** (`COLLAB_COMMANDS_PER_MINUTE`).
 
 Body (types in `@prism/core/collab-commands`; the schema is **strict** — any unknown key is a 400, so do not send author, name, color or actor fields):
 
@@ -78,7 +78,8 @@ type HumanCollabCommand =
 - `createdAt`: `Date.now()` when prepared. More than 24 h old or more than 5 min in the future → 409 `expired`.
 - `revision`: see §4.
 - `from`/`to`: ProseMirror positions (`editor.state.selection`). `quote`: `editor.state.doc.textBetween(from, to, "\n", "￼")`.
-- `suggest` operation is decided by shape: `from === to` + text → insert; `from < to` + `""` → delete; `from < to` + text → replace. `text` is plain text, ≤ 10,000 chars, **with no line break** (`\n`, `\r`, U+2028/9 → 400). `from` and `to` must be in the **same paragraph** (text block), and the range must be fully markable: a selection that includes inline code, a line break or an embedded node is refused whole (400), never applied in part. The composer should offer one suggestion per paragraph and disable submit for such selections.
+- `suggest` operation is decided by shape: `from === to` + text → insert; `from < to` + `""` → delete; `from < to` + text → replace. `text` is plain text, ≤ 10,000 chars, **with no line break** (`\n`, `\r`, U+2028/9 → 400), no tab or other control character, no run of two whitespace characters, not whitespace-only, and no leading/trailing space where HTML would collapse it (at a paragraph edge or next to another space). These are refused because the stored note is HTML and the document is rebuilt from it after an external edit. The range may cover at most 100 differently formatted text runs.
+- Every text field must be well-formed Unicode (`str.isWellFormed()`); a lone surrogate is a 400. Comment and reply text may contain line breaks and tabs, but no other control characters. `threadId` must match `[A-Za-z0-9_-]{1,200}`. `from` and `to` must be in the **same paragraph** (text block), and the range must be fully markable: a selection that includes inline code, a line break or an embedded node is refused whole (400), never applied in part. The composer should offer one suggestion per paragraph and disable submit for such selections.
 - `comment` / `reply` `text`: 1–4,000 chars (`HUMAN_COLLAB_LIMITS.commentText`).
 - `:id` must be the note's **id** (`[A-Za-z0-9_-]{1,128}`). A path or title is answered 404 exactly like a missing note, even though the gateway's `GET /api/notes/:x` resolves them. Always use `note.id` from the note you loaded.
 - `threadId`: the thread's id in the `comments` Y.Map.
@@ -109,12 +110,13 @@ Errors — always `{ error: <code>, message: <text safe to show>, retry?: true, 
 | 409 | `suggestion_overlap` | The passage (or the caret position) already carries or touches a pending suggestion. |
 | 409 | `thread_missing` | The thread was deleted. |
 | 409 | `thread_full` | The thread has 200 comments. Start a new thread. |
-| 413 | `document_too_large` | The change would push the rendered note past 1,000,000 bytes, or the comments past 1,000,000 bytes. Not retryable until an editor reviews/cleans up. |
+| 413 | `document_too_large` | The change would push the rendered note past 1,000,000 bytes or the comments past 1,000,000 bytes, or one command would add more than 64,000 bytes. Applies to deletions too (their marks add markup). |
 | 409 | `request_id_reused` | This `requestId` was already used with a different body. Use a new id. |
 | 409 | `expired` | `createdAt` out of range. Prepare the change again. |
 | 415 | `unsupported_media_type` | Missing JSON content type. |
-| 429 | `rate_limited` | 120 requests/min per client IP. `Retry-After` header; body is the shared middleware's `{ error, retryAfter }` (no `message`). |
-| 429 | `actor_request_limit` | This actor has 500 receipts on this document in the retention window (~24 h). |
+| 429 | `rate_limited` | Either 120 requests/min per client IP (body is the shared middleware's `{ error, retryAfter }`, no `message`) or 30/min per actor per document (`{ error, message, retry: true }`). Both set `Retry-After`. |
+| 429 | `actor_growth_limit` | This actor has added 100,000 bytes of rendered body, or 100,000 bytes of comments, to this document within ~24 h. Resolve / delete-comment still work. |
+| 429 | `actor_request_limit` | This actor has 500 suggest/comment/reply receipts on this document in ~24 h (resolve and delete-comment are counted separately, 500). Checked before anything expensive, so it wins over `stale_revision`. |
 | 429 | `document_request_limit` | 20,000 receipts on this document across all actors (backstop). |
 | 429 | `too_many_pending_suggestions` | This actor already has 100 unreviewed suggestions on this document. |
 | 429 | `too_many_threads` | The document has 1,000 comment threads. |
@@ -139,6 +141,7 @@ Any change to the body or to any comment thread by anyone between capture and su
 - `suggest`, `comment`, `reply`: suggest level or higher. A comment-level actor is refused (comments still need suggest).
 - `resolve` / reopen: any actor at suggest or higher, on any thread. Same as the shipped editor and the MCP tools.
 - `delete-comment`: an editor (edit/own) may delete any thread. A suggest actor may delete a thread only if **every** comment in it carries that actor's server-stamped `actorId`. This is narrower than the shipped editor, where a suggest user could delete any thread including other people's replies. Consequences: a thread with someone else's reply cannot be deleted by its starter; a thread written by the old raw client (no `actorId`) can be deleted only by an editor.
+- **Budgets are per actor.** A signed-in user who also presents a link is still that one account (same budgets — tested). The same person acting once signed-in and once as an anonymous guest of a link is two actors; the server cannot tell them apart.
 - **Guests on one link are one actor.** A capability link is the principal: everyone using the same link shares one `actorId`, one idempotency namespace and one set of per-actor budgets, all show as "Guest", and any of them can delete a thread that only guests of that link wrote. Per-person guest identity does not exist in Prism today.
 - Attribution written by the server: suggestion marks get `user` = the account's profile name (else email) or `"Guest"`, `color`, `suggestionId`, `actorId`; comment items get `{ id, author, actorId, color, text, createdAt, agent: false }`. `actorId` is an opaque keyed hash (`h_…`), not the email. To show "delete" only on own threads the client needs its own `actorId`; there is no endpoint for that yet (open question 3).
 
@@ -157,24 +160,24 @@ Table `collab_command_receipts`, primary key `(vault_id, note_id, actor, request
 Two states:
 
 - **applied** — inserted in the same better-sqlite3 transaction and the same JS tick as the Yjs mutation. The change exists only in the in-memory document.
-- **durable** — set by `storeDocumentState` in the same transaction that writes the document snapshot (`collab_docs`), only if the vault write succeeded or the content already matched, and only for the receipts that already existed when that store **rendered** the content it wrote. A command applied while a store's vault write is in flight is not confirmed by that store; its own store confirms it.
+- **durable** — set by `storeDocumentState` in the same transaction that writes the document snapshot (`collab_docs`), only if the vault write succeeded or the content already matched, and only for the receipts that already existed when that store **rendered** the content it wrote **and whose change was still in the document at that moment** (suggestion marks / thread + anchor + comment item present). A change a vault fold has removed is cleaned up and its receipt deleted: the caller gets 503, the retry 409 `stale_revision`. A command applied while a store's vault write is in flight is not confirmed by that store; its own store confirms it.
 
 Rules:
 
 - The endpoint returns 200 only when the receipt is durable. Otherwise 503 `not_confirmed`.
 - A durable receipt answers a replay on its own, without loading the document and without a revision check. So a replay returns the original result after unload/reload, after a reviewer accepted or rejected the suggestion, and after an external vault edit reseeded the document.
-- Loading a document deletes the `applied` receipts of **that document name** before anything else, and then removes whatever those commands left in the restored snapshot (`undoLostCommands`: reject that suggestion id, delete that thread and anchor, remove that reply; for a lost `delete-comment`/`resolve` it makes body and comments map agree). The document is then the pre-command state, so the retry applies the command afresh rather than reporting a change that was lost.
+- Loading a document deletes the `applied` receipts of **that document name** before anything else, and then removes whatever those commands left in the restored snapshot (`undoLostCommands`: reject that suggestion id; remove the comment item the command created and, only if nobody else has replied, the thread and its anchor; remove that reply; for a lost `delete-comment`/`resolve` it makes body and comments map agree — those two cannot be undone, their retry gets 409). The document is then the pre-command state, so the retry applies the command afresh rather than reporting a change that was lost.
 - A retry that finds an `applied` receipt while the document is still in memory does not re-apply; it runs the store again and answers when that confirms.
 - Same `requestId`, different body → 409 `request_id_reused`.
 - Independent of receipts: applying requires the document's revision to equal the pre-command revision, and every effect changes the revision, so a command cannot apply twice while its first effect is present.
 - A refused command releases the document without storing, so a refusal never causes a vault write.
-- Retention: 24 h + 10 min (command max age + twice the 5-min clock skew), pruned per document on each command and globally at most hourly. A pruned receipt can never be re-applied: a receipt's `created_at` is the server time of application and the command was accepted only with `createdAt ≤ created_at + 5 min`; once `created_at < now − retention`, `createdAt < now − 24 h`, which is refused as `expired`. Caps: 500 receipts per (document, actor), 20,000 per document.
+- Retention: 24 h + 10 min (command max age + twice the 5-min clock skew), pruned per document on each command and globally at most hourly. A pruned receipt can never be re-applied: a receipt's `created_at` is the server time of application and the command was accepted only with `createdAt ≤ created_at + 5 min`; once `created_at < now − retention`, `createdAt < now − 24 h`, which is refused as `expired`. Caps: 500 suggest/comment/reply receipts and, separately, 500 resolve/delete-comment receipts per (document, actor); 20,000 per document. Each receipt also records the body and comment bytes it added, which is what the per-actor size budgets sum.
 
 What "durable" does not promise: a later reviewer action or an external vault edit can remove the change's effect. The receipt still answers with the original result and the command is not re-applied. That is "applied, then superseded", and it is what the external-reseed acceptance case requires.
 
 ## Evidence
 
-Baseline at HEAD `6069ccd`: 1,440 tests, 1,440 pass. After the first pass: 1,499. Final, after the review follow-up: 1,513 tests, 1,513 pass (`npm test -w @prism/server`). `npm run typecheck` at the repo root passes for core, desktop, web and server.
+Baseline at HEAD `6069ccd`: 1,440 tests, 1,440 pass. After the first pass: 1,499. After the first review follow-up: 1,513. Final, after the second: 1,522 tests, 1,522 pass (`npm test -w @prism/server`). `npm run typecheck` at the repo root passes for core, desktop, web and server.
 
 The raw-socket rejection tests were run against HEAD before the change: 14 of 16 failed there (the 2 kill-switch tests pass at HEAD because they describe the old behaviour), and all 16 pass after it.
 
@@ -221,7 +224,41 @@ Each finding was reproduced first, then fixed. Test names are in `human-collab.t
 | Loopback `COLLAB_TOKEN` | Added; unchanged behaviour. | `suggest-enforcement` → "the loopback COLLAB_TOKEN owner path is unchanged …" |
 | Awareness from a read-only socket | Added (real awareness; leaked intervals cleared in the test). | `suggest-enforcement` → "presence: a read-only suggest socket can publish awareness …" |
 
-Contract changes since the first pass, for the client: no line breaks in suggested text; one paragraph per suggestion; fully markable ranges only; `:id` is the note id only; comment/reply text ≤ 4,000; new error codes `actor_request_limit`, `too_many_pending_suggestions`, `too_many_threads`, `thread_full`, `document_too_large`; `HumanCommandContext`/table gained a document name (server-internal).
+Contract changes in the second pass, for the client (see the next section for the third): no line breaks in suggested text; one paragraph per suggestion; fully markable ranges only; `:id` is the note id only; comment/reply text ≤ 4,000; new error codes `actor_request_limit`, `too_many_pending_suggestions`, `too_many_threads`, `thread_full`, `document_too_large`; `HumanCommandContext`/table gained a document name (server-internal).
+
+## Second review follow-up (third pass)
+
+Each item was reproduced or A/B-tested against the previous behaviour. Tests are in `human-collab.test.ts` unless noted.
+
+| Item | Outcome | Test |
+|---|---|---|
+| 1 Store fold confirms a removed change | Fixed. Every store checks that each unconfirmed command's change is still present before confirming; otherwise it cleans up and forgets the receipt. This also covers folds done by the reconciler before the store. Fails with the check removed. | "R1: a store that folds a newer vault copy does NOT confirm …" |
+| 2 Lone surrogate / control text | Fixed: all text fields must be well-formed; control characters refused (comments keep `\n` and `\t`); suggested text also refuses tabs, whitespace-only, double whitespace and edge spaces. Display names are cleaned and capped at 80 characters. | "R2: ill-formed or control text is refused …" |
+| 3 Deletion skips the size budget | Fixed: the budget applies to every suggest and to comment anchors; one command may add at most 64,000 rendered bytes; a range may cover at most 100 text runs. | "R3: a deletion-only suggestion is under the size budget too …" |
+| 4 Cost / DoS | Fixed: limits before planning; 30/min per actor per document; verification and size delta on the touched blocks only; revision hash cached per document state. Timings below. | "R4: limits are checked before the expensive work …" |
+| 5 One actor blocks others | Fixed: per-actor budgets of 100,000 body bytes and 100,000 comment bytes per document per ~24 h; resolve/delete-comment budgeted separately. | "R5: per-actor size budgets …", "R4 …" |
+| 6 Alias on the socket | Fixed in `resolveLevel` for every credential including the owner token: id shape first, then the vault's resolved id must equal the name. Fails with the check removed. | `suggest-enforcement` → "socket: a path or title alias of a note is refused …", "socket: every legitimate document name still works …"; federation space keys: existing `federation.test.ts` |
+| 7 No migration | Fixed: `migrateCollabReceipts` runs at module load; an older table shape is dropped and recreated with the current indexes. | "R7: a database created by the earlier branch commits is migrated at boot …" |
+| LOW cleanup deletes others' replies | Fixed (see Receipt design). | "LOW: cleaning up a lost comment never deletes other people's replies" |
+| LOW overstated comment | Corrected in `human-collab.ts` and here: a lost resolve/delete-comment is not re-applied; its retry gets 409. | — |
+| LOW fake vault title | The fixture vault resolves id → path → unique title; the endpoint and socket alias tests use all three. | "H2: the endpoint addresses a note ONLY by its id …" |
+
+**Document names the socket accepts** (anything else is refused): a note id `[A-Za-z0-9_-]{1,128}` in the primary vault; `<vaultId>::<note id>` for another vault; a federation `space_note_key` when federation is on (mapped to its local note id before the check). The owner token keeps opening a note the vault cannot read, as before.
+
+**Timings**, ~898 KB rendered document (3,880 formatted paragraphs), one command including the revision hash, measured in-process on the development Mac (not production hardware):
+
+| | Before | After |
+|---|---|---|
+| suggest insert | 364 ms | 45–87 ms |
+| comment | 239 ms | 42–86 ms |
+
+About 45 ms of the remaining time is the revision hash of the whole document, which is needed once per document state. The store that follows every command still renders the whole document; that cost is the same as for any editor's store and was not changed. At 30 commands/minute one actor can keep the event loop busy for roughly 2–3 s per minute on a document this size.
+
+Known gaps after this pass:
+- Raw typing by editors between two stores is not in the rendered-size estimate until the next store (seconds).
+- The size estimate after a load of a Markdown-source note is measured once with a full render (one slow command per load).
+- A change that a reviewer accepts or rejects in the few milliseconds between a command and its store is treated like a fold: the caller gets 503 and then 409, although the reviewer saw it.
+- Dropping an older receipts table loses durable receipts younger than 24 h; a retry of such a command gets 409 `stale_revision` (or applies once if the document is back in its pre-command state).
 
 ## Limits and things not proven
 
