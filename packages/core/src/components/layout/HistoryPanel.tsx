@@ -8,6 +8,8 @@ import { VersionViewer } from "../history/VersionViewer";
 import { ago, dayLabel, formatWhen, opLabel, savedAt, sizeDelta } from "../history/labels";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
+import { useAgentChatStore } from "../../lib/agent/chatStore";
+import "./context-panels.css";
 
 interface HistoryPanelProps {
   note: Note;
@@ -20,6 +22,13 @@ interface HistoryPanelProps {
  * On a vault without history, falls back to the created/modified timeline.
  */
 export function HistoryPanel({ note }: HistoryPanelProps) {
+  const client = useVaultClient();
+  const audience = useAgentChatStore(state => state.scope);
+  const scope = client.scope?.() ?? audience;
+  return <ScopedHistory key={JSON.stringify([scope, note.id])} note={note} />;
+}
+
+function ScopedHistory({ note }: HistoryPanelProps) {
   const client = useVaultClient();
   const history = useNoteVersions(note.id);
   const [openIx, setOpenIx] = useState<number | null>(null);
@@ -44,7 +53,8 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
     : undefined;
 
   return (
-    <div className="space-y-3">
+    <section className="prism-context-history space-y-3" aria-label="Page history">
+      <header><h2>Version history</h2><p>Saved versions of this page</p></header>
       {restoredFrom !== undefined && (
         <div
           className="flex items-start gap-2 rounded-lg p-2.5 text-xs"
@@ -72,17 +82,18 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
         last={versions.length === 0}
       />
 
-      {history.isLoading ? (
-        <div className="flex justify-center py-4">
-          <Spinner size={16} />
+      {(history.isLoading || (history.isFetching && !history.isFetchingNextPage)) ? (
+        <div role="status" className="flex items-center justify-center gap-2 py-4 text-xs">
+          <Spinner size={16} /> Loading history…
         </div>
       ) : history.error ? (
-        <div className="text-xs" style={{ color: "var(--color-danger)" }}>
-          Couldn't load history: {(history.error as Error).message}
+        <div role="alert" className="prism-context-state">
+          <p>History could not be loaded. Check your connection and page access.</p>
+          <button type="button" onClick={() => void history.refetch()}>Try again</button>
         </div>
       ) : versions.length === 0 ? (
         <div className="text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          No earlier versions yet. From now on, every change to this note is saved here and can be restored.
+          No earlier versions yet. Saved versions will appear here as this page changes.
         </div>
       ) : (
         <div>
@@ -103,7 +114,7 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
                 <TimelineRow
                   onClick={() => setOpenIx(i)}
                   title={when ? formatWhen(when) : "Oldest saved version"}
-                  subtitle={`then ${opLabel(v.op)} ${ago(v.supersededAt)}`}
+                  subtitle={`then ${opLabel(v.op)} ${ago(v.supersededAt)}${v.actor ? ` · ${v.actor}` : ""}${v.via ? ` · via ${v.via}` : ""}`}
                   badge={delta && delta.sign !== 0 ? delta : undefined}
                   icon={v.op === "restore" ? <RotateCcw size={10} /> : <Clock size={10} />}
                   last={i === versions.length - 1}
@@ -127,7 +138,7 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
 
       <div className="text-[11px] leading-relaxed pt-2" style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}>
         {total > 0 ? `${total} saved version${total === 1 ? "" : "s"}. ` : ""}
-        Parachute keeps every note's recent history — at least 20 versions, up to 100, for 180 days.
+        History availability and retention are managed by your vault.
       </div>
 
       {openIx !== null && versions[openIx] && (
@@ -144,7 +155,7 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
           }}
         />
       )}
-    </div>
+    </section>
   );
 }
 
@@ -169,8 +180,8 @@ function TimelineRow({
   return (
     <Tag
       type={onClick ? "button" : undefined}
-      onClick={onClick}
-      className="w-full text-left flex items-start gap-2.5 py-1.5 px-1 -mx-1 rounded-md relative transition-colors"
+      onClick={onClick ? event => { event.currentTarget.focus(); onClick(); } : undefined}
+      className="prism-context-history-row w-full text-left flex items-start gap-2.5 py-1.5 px-1 -mx-1 rounded-md relative transition-colors"
       style={{ cursor: onClick ? "pointer" : "default" }}
       onMouseEnter={(e) => onClick && (e.currentTarget.style.background = "var(--glass-hover)")}
       onMouseLeave={(e) => onClick && (e.currentTarget.style.background = "transparent")}
@@ -203,7 +214,7 @@ function TimelineRow({
           )}
         </div>
         {subtitle && (
-          <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
+          <div className="prism-context-history-detail text-xs" style={{ color: "var(--text-muted)" }}>
             {subtitle}
           </div>
         )}

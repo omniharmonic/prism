@@ -59,3 +59,23 @@
 .prism-context-switch-track > span { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; }
 .prism-context-chip-remove { min-width: 32px; min-height: 32px; display: inline-grid; place-items: center; }
 @media (max-width: 640px) { .prism-context-chip-remove { min-width: 44px; min-height: 44px; } }
+
+.prism-context-history { min-width: 0; color: var(--text-primary); }
+.prism-context-history header { padding-bottom: 12px; border-bottom: 1px solid var(--glass-border); }
+.prism-context-history h2 { color: var(--text-primary); font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.prism-context-history header p { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.prism-context-history .prism-context-history-row { min-height: 64px; padding-top: 10px; padding-bottom: 10px; }
+.prism-context-history-detail { overflow-wrap: anywhere; line-height: 1.6; }
+.prism-context-history button:focus-visible, .prism-version-dialog button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-version-dialog { width: min(960px, calc(100vw - 48px)); max-width: none; max-height: none; padding: 0; margin: auto; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 24px 80px #0003; overflow: hidden; }
+.prism-version-dialog::backdrop { background: #0006; }
+.prism-version-layout { height: min(86dvh, 900px); min-width: 0; }
+.prism-version-dialog .prism-context-state { margin: 8px 0; }
+.prism-version-dialog button { min-height: 34px; }
+.prism-version-dialog [class*=font-mono] { overflow-wrap: anywhere; }
+@media(max-width:640px) {
+ .prism-version-dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+ .prism-version-layout { height: 100dvh; padding-top: env(safe-area-inset-top); }
+ .prism-version-dialog button { min-height: 44px; }
+ .prism-version-dialog button[aria-label] { min-width: 44px; }
+}
