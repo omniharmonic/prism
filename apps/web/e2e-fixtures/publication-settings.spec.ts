@@ -261,6 +261,7 @@ test("settings sections support keyboard navigation and a failed clipboard never
       },
     });
   });
+  await page.locator("summary").filter({hasText: "Site address & membership"}).click();
   await page.getByRole("button", { name: "Copy", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("could not be copied");
   await expect(

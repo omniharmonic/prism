@@ -139,7 +139,7 @@ export function PublicationSettings({
           </button>
         ))}
       </div>
-      <p className="text-xs text-[var(--text-secondary)]">
+      <p hidden={section === "appearance" && !!sharing.getPublicationPresentation} className="text-xs text-[var(--text-secondary)]">
         {sharing.getPublicationPresentation
           ? "Appearance uses private drafts and an explicit publish step. Content and access apply when saved."
           : "Changes apply to the live site when you save."}{" "}
