@@ -13,7 +13,7 @@ import { ServerPanel } from "./network/ServerPanel";
 import { GovernancePanel } from "./network/governance/GovernancePanel";
 
 /**
- * The Network surface — a top-level virtual tab (not a per-note dialog) where the
+ * Workspace settings — a top-level virtual tab (not a per-note dialog) where the
  * owner operates their vault as a node in a knowledge network:
  *   • Publish — turn a slice (tag/directory) into a public read-only Wiki.
  *   • Federate — pair with peer hubs and keep slices in two-way CRDT sync.
@@ -76,10 +76,9 @@ export default function NetworkRenderer(_props: RendererProps) {
     ...(canServer ? [{ id: "server", label: "Server", icon: <Server size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>("publish");
-  // Keep the active tab valid as role/vault gating changes which tabs exist.
-  useEffect(() => {
-    if (tabs.length && !tabs.some((t) => t.id === tab)) setTab(tabs[0]!.id);
-  }, [tabs.map((t) => t.id).join(","), tab]);
+  // Resolve against permitted tabs during render, so a removed capability never
+  // leaves its management panel mounted while an effect catches up.
+  const activeTab = tabs.some((item) => item.id === tab) ? tab : tabs[0]?.id;
 
   // Role still loading (web, first paint before getViewer resolves).
   if (role === null) {
@@ -91,30 +90,47 @@ export default function NetworkRenderer(_props: RendererProps) {
   }
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <header style={{ padding: "20px 28px 12px", borderBottom: "1px solid var(--glass-border)", flexShrink: 0 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text-primary)" }}>Network</h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "4px 0 0" }}>
-          {isAdmin
-            ? "Publish slices of your vault to the web, and federate them peer-to-peer with other vaults."
-            : "The workspaces you belong to. Ask a workspace admin for management access to publish or federate."}
-        </p>
-        <div style={{ marginTop: 14 }}>
-          <Tabs tabs={tabs} activeTab={tab} onChange={setTab} />
+    <section
+      aria-label="Workspace settings"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--bg-base)]"
+    >
+      <header className="shrink-0 border-b border-[var(--glass-border)] px-4 pb-3 pt-5 sm:px-7 sm:pt-7">
+        <div className="mx-auto max-w-[880px]">
+          <h1 className="m-0 text-[22px] font-semibold tracking-tight text-[var(--text-primary)]">Workspace settings</h1>
+          <p className="mb-0 mt-1 text-[13px] leading-relaxed text-[var(--text-secondary)]">
+            {isAdmin
+              ? "Manage your people, published sites, connected vaults, and shared workspace."
+              : "Explore your connected vaults and workspace governance. Your admin manages access and publishing."}
+          </p>
+          {tabs.length > 0 && (
+            <div className="mt-4 min-w-0">
+              <Tabs
+                tabs={tabs}
+                activeTab={activeTab!}
+                onChange={setTab}
+                className="[&>button]:min-h-11"
+              />
+            </div>
+          )}
         </div>
       </header>
-      <div style={{ flex: 1, overflow: "auto", padding: "20px 28px 48px" }}>
-        <div style={{ maxWidth: 880, margin: "0 auto" }}>
-          {tab === "workspaces" && <WorkspacesPanel />}
-          {tab === "access" && <WorkspacePanel />}
-          {tab === "publish" && <PublishPanel />}
-          {tab === "federate" && <FederatePanel />}
-          {tab === "members" && <MembersPanel />}
-          {tab === "vaults" && <VaultsPanel />}
-          {tab === "governance" && <GovernancePanel />}
-          {tab === "server" && <ServerPanel />}
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto px-4 pb-12 pt-5 sm:px-7">
+        <div className="mx-auto max-w-[880px]">
+          {activeTab === "workspaces" && <WorkspacesPanel />}
+          {activeTab === "access" && <WorkspacePanel />}
+          {activeTab === "publish" && <PublishPanel />}
+          {activeTab === "federate" && <FederatePanel />}
+          {activeTab === "members" && <MembersPanel />}
+          {activeTab === "vaults" && <VaultsPanel />}
+          {activeTab === "governance" && <GovernancePanel />}
+          {activeTab === "server" && <ServerPanel />}
+          {!activeTab && (
+            <p role="status" className="text-sm leading-relaxed text-[var(--text-secondary)]">
+              Workspace settings aren't available for this connection. Ask a workspace admin if you need management access.
+            </p>
+          )}
         </div>
       </div>
-    </div>
+    </section>
   );
 }

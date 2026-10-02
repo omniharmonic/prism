@@ -350,7 +350,7 @@ function Board({
   return (
     <section
       aria-label="Task board"
-      className="flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-primary)] text-[var(--text-primary)]"
+      className="flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-base)] text-[var(--text-primary)]"
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
         <div>
