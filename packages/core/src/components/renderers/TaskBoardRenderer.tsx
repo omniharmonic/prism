@@ -76,6 +76,8 @@ function Board({
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const writeLock = useRef(false);
+  const refreshLock = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -101,11 +103,32 @@ function Board({
   });
   // Fresh authorization is required before cached rows are displayed again.
   const notes =
-    !tasks.isFetching && !tasks.isError && config
+    !refreshing && !tasks.isFetching && !tasks.isError && config
       ? boardTasks(tasks.data ?? [], config, query)
       : [];
   const mode = view ?? config?.view ?? "board";
   const refresh = () => queries.invalidateQueries({ queryKey: ["vault"] });
+  const recover = async () => {
+    if (!current() || writeLock.current || refreshLock.current) return;
+    // Query notifications are batched. Hide old rows synchronously with the
+    // user's refresh action so a quick retry cannot use the previous revision.
+    refreshLock.current = true;
+    setRefreshing(true);
+    setNotice("");
+    try {
+      const result = await tasks.refetch();
+      if (result.error) throw result.error;
+      if (current()) {
+        setError("");
+        setNotice("Tasks refreshed.");
+      }
+    } catch {
+      if (current()) setError("Tasks could not be refreshed. Try again.");
+    } finally {
+      refreshLock.current = false;
+      if (current()) setRefreshing(false);
+    }
+  };
   const receipt = async (confirmed: string) => {
     const pending = await client.hasPendingWrites?.();
     if (current())
@@ -117,7 +140,8 @@ function Board({
     return !!pending;
   };
   const run = async (id: string, fn: () => Promise<void>) => {
-    if (readOnly || !current() || writeLock.current) return;
+    if (readOnly || !current() || writeLock.current || refreshLock.current)
+      return;
     writeLock.current = true;
     setBusy(id);
     setError("");
@@ -338,7 +362,8 @@ function Board({
           {error}
           <button
             className={boardControl + " ml-3"}
-            onClick={() => void refresh()}
+            disabled={refreshing || !!busy}
+            onClick={() => void recover()}
           >
             Refresh
           </button>
@@ -347,12 +372,12 @@ function Board({
       <p role="status" className="px-5 text-xs text-[var(--text-secondary)]">
         {busy ? "Saving…" : notice}
       </p>
-      {tasks.isFetching ? (
+      {refreshing || tasks.isFetching ? (
         <p className="p-6 text-sm">Loading tasks…</p>
       ) : tasks.isError ? (
         <div role="alert" className="p-6">
           Tasks could not be loaded.{" "}
-          <button className={boardControl} onClick={() => void tasks.refetch()}>
+          <button className={boardControl} onClick={() => void recover()}>
             Try again
           </button>
         </div>

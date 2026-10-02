@@ -75,7 +75,20 @@ test("failed and conflicting moves stay in place and require deliberate recovery
     "changed in another window",
   );
   await expect(move).toHaveValue("todo");
+  await page.evaluate(() => {
+    (window as any).prismBoardFixture.hold = true;
+  });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Loading tasks…", { exact: true })).toBeVisible();
+  await expect(move).toHaveCount(0);
+  await page.evaluate(() => {
+    const fixture = (window as any).prismBoardFixture;
+    fixture.hold = false;
+    fixture.readRelease();
+  });
+  await expect(
+    page.getByText("Tasks refreshed.", { exact: true }),
+  ).toBeVisible();
   await expect(move).toBeVisible();
   await move.selectOption("done");
   await expect(move).toHaveValue("done");
