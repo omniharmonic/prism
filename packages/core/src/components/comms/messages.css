@@ -1,0 +1,351 @@
+.prism-messages-workspace,
+.prism-conversation {
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.prism-messages-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 24px 18px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.prism-messages-heading h1 {
+  font-size: 24px;
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+}
+.prism-messages-heading .prism-message-search {
+  flex: 1 1 100%;
+  min-height: 44px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+}
+.prism-message-views {
+  border: 0 !important;
+  padding: 3px;
+  gap: 2px;
+  background: var(--glass);
+}
+.prism-message-views button {
+  min-height: 44px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.prism-message-tier {
+  min-height: 44px;
+  margin-top: 12px;
+  background: transparent;
+  border: 0;
+  padding: 10px 24px;
+}
+.prism-message-tier .prism-tier-name {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.prism-message-row {
+  width: calc(100% - 16px);
+  margin: 2px 8px;
+  padding: 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+.prism-message-row:hover {
+  background: var(--glass-hover);
+}
+.prism-message-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.prism-message-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(
+    in srgb,
+    var(--avatar-tone, var(--color-accent)) 18%,
+    var(--bg-base)
+  );
+  color: var(--text-primary);
+}
+.prism-message-preview {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.prism-message-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.prism-conversation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.prism-conversation-title {
+  min-width: 120px;
+  flex: 1;
+}
+.prism-conversation-title h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.prism-conversation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.prism-thread-view-toggle {
+  min-height: 32px;
+  padding: 2px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prism-thread-status {
+  min-height: 44px;
+  max-width: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  padding: 6px 10px;
+  background: var(--glass);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.prism-thread-content {
+  padding: 24px;
+}
+.prism-thread-content > article,
+.prism-thread-content > [role="separator"] {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.prism-message-group {
+  gap: 12px;
+}
+.prism-message-group + .prism-message-group {
+  margin-top: 24px;
+}
+.prism-message-group .prism-message-avatar {
+  width: 36px;
+  height: 36px;
+  margin-top: 1px;
+}
+.prism-message-byline {
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+.prism-message-byline > .prism-sender {
+  font-size: 13px;
+}
+.prism-message-bubble {
+  padding: 12px 15px;
+  border-radius: 3px 15px 15px 15px;
+  background: var(--glass-hover);
+  color: var(--text-primary);
+  line-height: 1.55;
+  font-size: 16px;
+  max-width: min(640px, 100%);
+}
+.prism-message-outgoing {
+  margin-left: auto;
+  padding-left: 48px;
+}
+.prism-message-outgoing .prism-message-avatar {
+  display: none;
+}
+.prism-message-outgoing .prism-message-bubble {
+  border-radius: 15px 3px 15px 15px;
+  background: color-mix(in srgb, var(--action-bg) 12%, var(--bg-base));
+}
+.prism-earlier-messages {
+  min-height: 44px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  text-decoration: none;
+}
+.prism-message-composer {
+  padding: 14px 24px;
+  background: var(--bg-base);
+}
+.prism-compose-surface {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 10px;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 14px;
+  box-shadow: 0 2px 5px #00000004;
+  background: var(--bg-base);
+}
+.prism-compose-surface:focus-within {
+  border-color: color-mix(in srgb, var(--action-bg) 55%, var(--glass-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--action-bg) 7%, transparent);
+}
+.prism-compose-surface textarea {
+  border: 0;
+  outline: 0;
+  padding: 7px 9px;
+  background: transparent;
+  line-height: 1.5;
+}
+.prism-compose-surface .prism-send-message {
+  border-radius: 50%;
+  transition: opacity 0.15s;
+}
+.prism-send-message:disabled {
+  opacity: 0.35;
+}
+.prism-compose-hint {
+  max-width: 920px;
+  margin: 6px auto 0;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+@media (max-width: 640px) {
+  .prism-messages-heading {
+    padding: 20px 16px 14px;
+    gap: 14px;
+  }
+  .prism-messages-heading h1 {
+    font-size: 24px;
+  }
+  .prism-message-views {
+    order: 3;
+    width: 100%;
+  }
+  .prism-message-views button {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .prism-message-row {
+    padding: 14px 8px;
+    border-radius: 9px;
+  }
+  .prism-message-row .prism-message-avatar {
+    width: 40px;
+    height: 40px;
+  }
+  .prism-conversation-heading {
+    padding: 14px 16px;
+    gap: 10px;
+  }
+  .prism-conversation-heading > .prism-message-avatar {
+    display: none;
+  }
+  .prism-thread-status {
+    max-width: 135px;
+    min-height: 44px;
+    font-size: 11px;
+  }
+  .prism-thread-content {
+    padding: 16px 12px;
+  }
+  .prism-message-group {
+    gap: 9px;
+  }
+  .prism-message-group .prism-message-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 11px;
+  }
+  .prism-message-bubble {
+    padding: 10px 12px;
+    font-size: 16px;
+  }
+  .prism-message-outgoing {
+    padding-left: 39px;
+  }
+  .prism-message-composer {
+    padding: 10px 12px;
+  }
+  .prism-compose-surface {
+    padding: 6px;
+    border-radius: 13px;
+  }
+  .prism-compose-hint {
+    display: none;
+  }
+}
+@media (pointer: coarse) {
+  .prism-compose-hint {
+    display: none;
+  }
+}
+.prism-message-split {
+  display: grid;
+  grid-template-columns: minmax(280px, 350px) minmax(0, 1fr);
+}
+.prism-messages-list {
+  border-right: 1px solid var(--glass-border);
+}
+.prism-messages-list .prism-message-views {
+  width: 100%;
+  order: 3;
+}
+.prism-messages-list .prism-message-views button {
+  flex: 1;
+  justify-content: center;
+}
+.prism-message-row[aria-current="true"] {
+  background: var(--surface-selected);
+  border-color: color-mix(in srgb, var(--action-bg) 12%, transparent);
+}
+@media (max-width: 899px) {
+  .prism-message-split {
+    display: flex;
+    flex-direction: column;
+  }
+  .prism-messages-list {
+    flex: 1;
+    border-right: 0;
+  }
+  .prism-messages-detail {
+    display: none;
+  }
+  .prism-message-split.has-selection .prism-messages-list {
+    display: none;
+  }
+  .prism-message-split.has-selection .prism-messages-detail {
+    display: flex;
+    flex: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  .prism-thread-view-toggle {
+    min-height: 44px;
+  }
+}
