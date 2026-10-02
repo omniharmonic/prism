@@ -99,6 +99,18 @@ export function fakeNote(p: Partial<FakeNote> & { id: string }): FakeNote {
   };
 }
 
+/** Parachute PATCH uses JSON Merge Patch; omitted keys survive, null deletes. */
+function mergeMetadata(target: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = target && typeof target === "object" && !Array.isArray(target)
+    ? { ...target as Record<string, unknown> } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete out[key];
+    else Object.defineProperty(out, key, { value: value && typeof value === "object" && !Array.isArray(value)
+      ? mergeMetadata(out[key], value as Record<string, unknown>) : value, enumerable: true, configurable: true, writable: true });
+  }
+  return out;
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -276,7 +288,7 @@ export function installFakeVault(): FakeVault {
           existing.tags = [...set];
         }
         if (typeof b.content === "string") existing.content = b.content;
-        if (b.metadata && typeof b.metadata === "object") existing.metadata = b.metadata as Record<string, unknown>;
+        if (b.metadata && typeof b.metadata === "object") existing.metadata = mergeMetadata(existing.metadata, b.metadata as Record<string, unknown>);
         if (typeof b.path === "string") existing.path = b.path;
         existing.updatedAt = new Date(2026, 5, 1, 0, 0, seq++).toISOString();
         return json(existing);

@@ -29,6 +29,7 @@ import {
   removeGrant,
   removeGrantBySubjectResource,
   grantsForResource,
+  grantsForCapability,
   grantsForPeer,
   createCapability,
   capabilitiesForResource,
@@ -214,6 +215,16 @@ async function sharerCaps(c: Context, scope: ShareScope): Promise<Set<Cap>> {
 // share routes above, which additionally admit a signed-in holder of `share` on
 // the specific resource being shared.
 acl.use("*", async (c, next) => {
+  // Never let an explicitly selected, removed vault fall back to primary.
+  const requestedVault = c.req.header("x-prism-vault");
+  if (requestedVault && !getVaultRegistry().some((v) => v.id === requestedVault)) {
+    return c.json({ error: "unknown_vault" }, 400);
+  }
+  const expectedActor = c.req.header("x-prism-write-actor");
+  const actor = resolveActor(c);
+  if (expectedActor && expectedActor !== (actor.kind === "user" ? `user:${actor.email}` : null)) {
+    return c.json({ error: "write_actor_changed" }, 409);
+  }
   if (roleAtLeast(resolveActor(c).role, "admin")) return next();
   const scope = shareScopeFor(c);
   if (!scope) return c.json({ error: "forbidden" }, 403);
@@ -544,13 +555,16 @@ acl.post("/mirrors/:id/sync", async (c) => {
  *  currently reach it (because the note carries a granted tag). */
 acl.get("/notes/:id", async (c) => {
   const id = c.req.param("id");
+  const vaultId = resolveActor(c).vaultId;
   try {
-    const note = await vault.getNote(id);
+    const note = await vaultClient(vaultId).getNote(id);
     const tags = note.tags ?? [];
-    const people = grantsForResource("note", id)
+    const grants = grantsForResource("note", id, vaultId);
+    const people = grants
       .filter((g) => g.subject_type === "user")
-      .map((g) => ({ email: g.subject, level: g.level }));
-    const links = capabilitiesForResource("note", id).map((cap) => ({
+      .map((g) => ({ email: g.subject, level: g.level, caps: g.caps ?? expandLevel(g.level) }));
+    const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
+    const links = capabilitiesForResource("note", id).filter((cap) => linkIds.has(cap.id)).map((cap) => ({
       id: cap.id,
       level: cap.level,
       label: cap.label,
@@ -610,12 +624,16 @@ acl.delete("/notes/:id/people/:email", (c) => {
 
 acl.post("/notes/:id/links", async (c) => {
   const id = c.req.param("id");
-  const { level, expiresInDays, label } = await c.req.json<{
-    level?: string;
-    expiresInDays?: number;
-    label?: string;
-  }>();
+  const body = await c.req.json<unknown>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+  const { level, expiresInDays, label } = body as { level?: string; expiresInDays?: number; label?: string };
   if (!isLevel(level)) return c.json({ error: "bad_request" }, 400);
+  if (expiresInDays !== undefined && (!Number.isFinite(expiresInDays) || expiresInDays <= 0 || expiresInDays > 365)) {
+    return c.json({ error: "bad_request", reason: "expiresInDays must be greater than zero and at most 365" }, 400);
+  }
+  if (label !== undefined && (typeof label !== "string" || label.length > 200)) {
+    return c.json({ error: "bad_request", reason: "label must be at most 200 characters" }, 400);
+  }
   const capId = randomUUID();
   const exp = Date.now() + (expiresInDays ?? 30) * 86_400_000;
   createCapability({ id: capId, resource_type: "note", resource: id, level, label: label ?? null, expires_at: exp });
@@ -633,15 +651,20 @@ acl.post("/notes/:id/links", async (c) => {
 
 acl.delete("/notes/:id/links/:capId", (c) => {
   const capId = c.req.param("capId");
-  deleteCapability(capId);
-  removeGrantBySubjectResource("link", capId, "note", c.req.param("id"), resolveActor(c).vaultId);
+  const vaultId = resolveActor(c).vaultId;
+  const noteId = c.req.param("id");
+  // Capabilities are global IDs; authority comes from their vault-bound grant.
+  // A known ID from another note/vault is never enough to revoke it.
+  if (!grantsForResource("note", noteId, vaultId).some((g) => g.subject_type === "link" && g.subject === capId)) return c.json({ error: "not_found" }, 404);
+  removeGrantBySubjectResource("link", capId, "note", noteId, vaultId);
+  if (!grantsForCapability(capId).length) deleteCapability(capId);
   return c.json({ ok: true });
 });
 
 // Mark a note private-to-creator (or back to workspace-visible). One path for
 // BOTH shells: web + desktop call this (desktop can't reach the /api gateway
-// PATCH directly). Merges metadata (prism_creator preserved) and uses the vault
-// client's force write, so it never 428s on the optimistic-concurrency guard.
+// PATCH directly). Patch only the visibility key against the observed revision;
+// a concurrent edit must be reviewed, never overwritten by a force retry.
 acl.put("/notes/:id/visibility", async (c) => {
   const id = c.req.param("id");
   const { isPrivate } = await c.req.json<{ isPrivate?: boolean }>().catch(() => ({}) as { isPrivate?: boolean });
@@ -649,11 +672,16 @@ acl.put("/notes/:id/visibility", async (c) => {
   const vc = vaultClient(resolveActor(c).vaultId);
   try {
     const note = await vc.getNote(id);
+    if (!note.updatedAt) return c.json({ error: "conflict", detail: "Reload this note before changing visibility." }, 409);
     await vc.updateNote(id, {
-      metadata: { ...(note.metadata ?? {}), prism_visibility: isPrivate ? "private" : "workspace" },
+      metadata: { prism_visibility: isPrivate ? "private" : "workspace" },
+      ifUpdatedAt: note.updatedAt,
     });
     return c.json({ ok: true, visibility: isPrivate ? "private" : "workspace" });
   } catch (e) {
+    if (e instanceof VaultError && (e.status === 409 || e.status === 428)) {
+      return c.json({ error: "conflict", detail: "This note changed. Reload before changing visibility." }, 409);
+    }
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);
   }
@@ -663,12 +691,12 @@ acl.put("/notes/:id/visibility", async (c) => {
 acl.post("/notes/:id/tags", async (c) => {
   const { tag } = await c.req.json<{ tag?: string }>();
   if (!tag) return c.json({ error: "bad_request" }, 400);
-  await vault.addTags(c.req.param("id"), [tag]);
+  await vaultClient(resolveActor(c).vaultId).addTags(c.req.param("id"), [tag]);
   return c.json({ ok: true });
 });
 
 acl.delete("/notes/:id/tags/:tag", async (c) => {
-  await vault.removeTags(c.req.param("id"), [decodeURIComponent(c.req.param("tag"))]);
+  await vaultClient(resolveActor(c).vaultId).removeTags(c.req.param("id"), [decodeURIComponent(c.req.param("tag"))]);
   return c.json({ ok: true });
 });
 

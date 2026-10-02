@@ -553,7 +553,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   }
   if (role !== "owner" && token && token !== "session") {
     const claims = verifyCapability(token);
-    if (claims) grants = grants.concat(grantsForCapability(claims.id));
+    if (claims) grants = grants.concat(grantsForCapability(claims.id).filter((g) => g.vault_id === vaultId));
   }
   let tags: string[] = [];
   let creator: string | null = null;
