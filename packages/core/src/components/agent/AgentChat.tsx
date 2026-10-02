@@ -1,4 +1,5 @@
 import "./agent-chat.css";
+import { useSelectionHandoff, SelectionHandoffNotice } from "./SelectionHandoff";
 import { AgentFollowupQueue, followupKey } from "./AgentFollowupQueue";
 import { AgentSnapshotAttachments, AgentSnapshotPreview } from "./AgentSnapshotAttachments";
 import { validContextSnapshots, type AgentContextSnapshot } from "../../lib/agent/contextSnapshots";
@@ -412,6 +413,12 @@ export function Conversation({
 
   const isDraft = !sessionId;
   const awaitingSession = !isDraft && (conv.loading || conv.session?.id !== sessionId);
+  const selectionHandoff = useSelectionHandoff({
+    scope: client.scope?.() || null, sessionId, noteId: isDraft ? draft?.noteId : conv.session?.note_id,
+    ready: !awaitingSession && !limitsQuery.isPending, limits: limits?.contextSnapshots,
+    snapshots: contextSnapshots, setSnapshots: snapshotDraft.setText, inputRef,
+    busy: sending || !!creating || !!pendingQueuedRequest,
+  });
   const running = !!conv.active;
   const canQueue = !!sessionId && !!limits?.followups && !!client.queueFollowup && !!client.listFollowups && !!client.changeFollowup;
   // A turn just finished → today's spend changed: refresh the budget line.
@@ -674,6 +681,7 @@ export function Conversation({
       {isDraft && <AgentBudgetLine />}
       {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
       {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
+      <SelectionHandoffNotice handoff={selectionHandoff} />
       {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
       {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
       {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}

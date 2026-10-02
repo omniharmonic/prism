@@ -1,5 +1,8 @@
 import { useAgentDocumentSnapshot } from "../../lib/agent/documentSnapshots";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BubbleMenu } from "@tiptap/react/menus";
+import { SelectionActions } from "./SelectionActions";
+import { useAgentClient } from "../../data/AgentClientContext";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNotes } from "../../app/hooks/useParachute";
@@ -264,6 +267,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const { inlinePromptOpen, inlinePromptPosition, inlinePromptSelection, openInlinePrompt, closeInlinePrompt } = useUIStore();
   const hostServices = useHostServices();
   const inlineAgent = isDesktop || !!hostServices;
+  const sessionAgent = useAgentClient();
 
   // Handle Cmd+S and Cmd+J
   useEffect(() => {
@@ -276,7 +280,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       // server agent: WP4.3 host services)
       if ((e.metaKey || e.ctrlKey) && e.key === "j") {
         e.preventDefault();
-        if (!editor || !inlineAgent) return;
+        if (sessionAgent || !editor || !inlineAgent) return;
         const { from, to } = editor.state.selection;
         const selectedText = editor.state.doc.textBetween(from, to, " ");
         if (!selectedText.trim()) return; // Need selected text
@@ -292,7 +296,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [saveNow, editor, openInlinePrompt, inlineAgent]);
+  }, [saveNow, editor, openInlinePrompt, inlineAgent, sessionAgent]);
 
   // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is
@@ -332,6 +336,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   return (
     <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
+      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty}>
+        <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
+      </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
       {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
