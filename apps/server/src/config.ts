@@ -74,6 +74,15 @@ export const config = {
   // VAPID `sub` claim (a contact the push service can reach). Default mailto:OWNER_EMAIL.
   vapidSubject: process.env.VAPID_SUBJECT ?? (process.env.OWNER_EMAIL ? `mailto:${process.env.OWNER_EMAIL.trim()}` : ""),
 
+  // APNs (iOS push, apns.ts). Host bootstrap config: `.env` ONLY — never add any
+  // of these to EDITABLE_ENV. APNS_KEY_PATH = the Apple .p8 auth key (must be
+  // 0600 or stricter, else APNs stays off with a startup warning). Unset key
+  // path / key id / team id → APNs disabled (web push is unaffected).
+  apnsKeyPath: (process.env.APNS_KEY_PATH ?? "").trim(),
+  apnsKeyId: (process.env.APNS_KEY_ID ?? "").trim(),
+  apnsTeamId: (process.env.APNS_TEAM_ID ?? "").trim(),
+  apnsTopic: (process.env.APNS_TOPIC ?? "").trim() || "com.benjaminlife.prism.client",
+
   // Governance integrity (WP0.3, governance-integrity.ts): the HMAC key that signs
   // every governance-* note the governance service writes. Set → notes with a
   // missing/invalid `gov_sig` are IGNORED (a forged membership or vote written

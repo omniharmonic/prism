@@ -17,6 +17,7 @@ import { bootSweepAgentSessions, startAgentMaintenance } from "./agent-sessions"
 import { startBillingProbe } from "./agent-billing";
 import { attachCollab } from "./collab";
 import { governanceIntegrityEnabled, reportGovernanceIntegrity } from "./governance-integrity";
+import { reportApns } from "./apns";
 
 assertConfig();
 
@@ -42,6 +43,8 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.bin
   console.log(`  governance integrity: ${governanceIntegrityEnabled() ? "ON (gov_sig verified)" : "OFF"}`);
   // Loud one-time warning when integrity is off (or the secret is weak).
   reportGovernanceIntegrity();
+  // iOS push: ON / off / a loud warning when a configured key is refused (perms).
+  reportApns();
   // Say which embedder is live at BOOT. The offline fallback returns plausible
   // results instead of failing, so "semantic" search silently ran on lexical
   // hashes for months with nothing anywhere saying so (audit 2026-08-13, F3).
