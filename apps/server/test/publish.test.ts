@@ -632,3 +632,68 @@ test("owner publication preview matches public membership and preserves explicit
   assert.ok([401, 403].includes((await acl.request("/publications/preview-site/preview")).status));
   assert.equal((await ownerReq("/publications/missing/preview")).status, 404);
 });
+
+test("presentation drafts publish and restore atomically without changing access or note content", async () => {
+  seedWiki(); publishTag("revisions", "wiki", {title:"Original",password_hash:hashPassword("fixture-password")});
+  const before = getPublicationBySlug("revisions")!;
+  const get = async () => readJson(await ownerReq("/publications/revisions/presentation"));
+  const act = (action:string, body:object) => ownerReq(`/publications/revisions/presentation/${action}`, {method:"POST",body:JSON.stringify(body)});
+  const initial = await get();
+  assert.equal(initial.liveRevision,0); assert.equal(initial.draft,null);
+  const presentation = {title:"New site",template:"docs",theme:{font:"serif",contentWidth:"wide",showGraph:false}};
+  const saved = await readJson(await act("draft",{presentation,draftRevision:0,liveRevision:0}));
+  assert.equal(saved.draftRevision,1);
+  assert.equal(getPublicationBySlug("revisions")!.title,"Original");
+  assert.equal((await act("draft",{presentation,draftRevision:0,liveRevision:0})).status,409);
+  const live = await readJson(await act("publish",{draftRevision:1,liveRevision:0}));
+  assert.equal(live.liveRevision,1); assert.equal(live.draft,null);
+  assert.equal(getPublicationBySlug("revisions")!.template,"docs");
+  assert.equal(getPublicationBySlug("revisions")!.password_hash,before.password_hash);
+  assert.equal((await publish.request("/revisions/notes/n1")).status,401);
+  const restored = await readJson(await act("restore",{revision:0,draftRevision:2,liveRevision:1}));
+  assert.equal(restored.draft.title,"Original");
+  assert.equal(getPublicationBySlug("revisions")!.title,"New site");
+  await act("publish",{draftRevision:3,liveRevision:1});
+  const final = await get();
+  assert.equal(final.live.title,"Original"); assert.equal(final.history.length,3);
+  assert.ok(!JSON.stringify(final).includes("password_hash"));
+  await ownerReq("/publications/revisions",{method:"DELETE"});
+  assert.equal((db.prepare("SELECT count(*) n FROM publication_presentations WHERE slug='revisions'").get() as {n:number}).n,0);
+  assert.equal((db.prepare("SELECT count(*) n FROM publication_presentation_history WHERE slug='revisions'").get() as {n:number}).n,0);
+});
+
+test("legacy presentation changes conflict with saved drafts and malformed themes cannot enter revisions", async () => {
+  seedWiki();publishTag("stale-presentation","wiki");
+  const path="/publications/stale-presentation/presentation";
+  const write=(suffix:string,body:object)=>ownerReq(path+suffix,{method:"POST",body:JSON.stringify(body)});
+  const presentation={title:"Draft",template:"wiki",theme:null};
+  await write("/draft",{presentation,draftRevision:0,liveRevision:0});
+  await ownerReq("/publications/stale-presentation/settings",{method:"PUT",body:JSON.stringify({title:"Other editor"})});
+  assert.equal((await write("/publish",{draftRevision:1,liveRevision:0})).status,409);
+  const state=await readJson(await ownerReq(path));
+  assert.equal(state.liveRevision,1);assert.equal(state.draftBaseRevision,0);
+  assert.equal((await write("/publish",{draftRevision:1,liveRevision:1})).status,409);
+  for (const theme of [{accent:{x:1}},{logoUrl:"javascript:alert(1)"},{logoUrl:"https://user:secret@example.test/image"},{showGraph:"false"},{arbitraryScript:"alert(1)"}]) {
+    assert.equal((await write("/draft",{presentation:{...presentation,theme},draftRevision:1,liveRevision:1})).status,400);
+  }
+  assert.ok([401,403].includes((await acl.request(path)).status));
+  assert.equal(getPublicationBySlug("stale-presentation")!.title,"Other editor");
+});
+
+test("private presentation preview uses actual reader membership and never changes the public site", async () => {
+  seedWiki(); publishTag("draft-preview", "wiki", {title:"Live title",password_hash:hashPassword("fixture-password")});
+  fv.put({id:"hidden-draft-note",path:"wiki/hidden.md",tags:["wiki"],content:"# NEVER_PREVIEW_PRIVATE",metadata:{prism_visibility:"private"}});
+  const path="/publications/draft-preview/presentation";
+  await ownerReq(path+"/draft",{method:"POST",body:JSON.stringify({presentation:{title:"Private draft title",template:"landing",theme:{description:"Private draft description"}},draftRevision:0,liveRevision:0})});
+  const response=await ownerReq(path+"/preview?draftRevision=1");
+  assert.equal(response.status,200);assert.equal(response.headers.get("cache-control"),"no-store");
+  const body=await readJson(response);
+  assert.equal(body.manifest.title,"Private draft title");assert.equal(body.manifest.template,"landing");
+  assert.deepEqual(body.manifest.notes.map((n:{id:string})=>n.id).sort(),["n1","n2"]);
+  assert.equal(body.note.id,"n1");assert.ok(!JSON.stringify(body).includes("NEVER_PREVIEW_PRIVATE"));
+  assert.equal((await ownerReq(path+"/preview?draftRevision=1&noteId=hidden-draft-note")).status,404);
+  assert.equal((await ownerReq(path+"/preview?draftRevision=0")).status,409);
+  assert.ok([401,403].includes((await acl.request(path+"/preview?draftRevision=1")).status));
+  const live=await readJson(await publish.request("/draft-preview"));
+  assert.equal(live.title,"Live title");assert.equal(live.locked,true);assert.deepEqual(live.notes,[]);
+});

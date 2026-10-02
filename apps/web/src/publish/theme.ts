@@ -14,6 +14,12 @@ import type { PublicationTheme } from "@prism/core";
 export interface SafeTheme {
   /** Validated http(s) logo URL, or null. */
   logoUrl: string | null;
+  coverUrl: string | null;
+  description: string;
+  contentWidth: number;
+  showSearch: boolean;
+  showGraph: boolean;
+  showMap: boolean;
   /** CSS custom properties to set on the wiki root (only the ones provided). */
   vars: Record<string, string>;
   /** Resolved body font-family, or null to keep the default. */
@@ -29,17 +35,21 @@ const FUNC_RE = /^(?:rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/]+\)$/i;
 const NAMED_RE = /^[a-z]{3,20}$/i;
 
 function safeColor(v: string | undefined): string | null {
-  if (!v) return null;
+  if (typeof v !== "string" || !v) return null;
   const c = v.trim();
   if (HEX_RE.test(c) || FUNC_RE.test(c) || NAMED_RE.test(c)) return c;
   return null;
 }
 
 function safeLogoUrl(v: string | undefined): string | null {
-  if (!v) return null;
+  if (typeof v !== "string" || !v) return null;
   try {
     const u = new URL(v.trim());
-    return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
+    return !u.username &&
+      !u.password &&
+      (u.protocol === "http:" || u.protocol === "https:")
+      ? u.href
+      : null;
   } catch {
     return null;
   }
@@ -51,7 +61,9 @@ const FONT_STACKS: Record<NonNullable<PublicationTheme["font"]>, string> = {
   mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
 };
 
-export function resolveTheme(theme: PublicationTheme | null | undefined): SafeTheme {
+export function resolveTheme(
+  theme: PublicationTheme | null | undefined,
+): SafeTheme {
   const vars: Record<string, string> = {};
   const accent = safeColor(theme?.accent);
   const bg = safeColor(theme?.bg);
@@ -65,9 +77,31 @@ export function resolveTheme(theme: PublicationTheme | null | undefined): SafeTh
   if (text) {
     vars["--text"] = text;
     vars["--text-primary"] = text;
+    vars["--text-secondary"] =
+      `color-mix(in srgb, ${text} 76%, ${bg ?? "var(--bg-base)"})`;
+    vars["--text-muted"] =
+      `color-mix(in srgb, ${text} 62%, ${bg ?? "var(--bg-base)"})`;
+    vars["--glass-border"] = `color-mix(in srgb, ${text} 18%, transparent)`;
   }
 
-  const font = theme?.font && FONT_STACKS[theme.font] ? FONT_STACKS[theme.font] : null;
+  const font =
+    typeof theme?.font === "string" &&
+    Object.prototype.hasOwnProperty.call(FONT_STACKS, theme.font)
+      ? FONT_STACKS[theme.font]
+      : null;
 
-  return { logoUrl: safeLogoUrl(theme?.logoUrl), vars, fontFamily: font };
+  return {
+    logoUrl: safeLogoUrl(theme?.logoUrl),
+    coverUrl: safeLogoUrl(theme?.coverUrl),
+    description:
+      typeof theme?.description === "string"
+        ? theme.description.slice(0, 500)
+        : "",
+    contentWidth: theme?.contentWidth === "wide" ? 1120 : 760,
+    showSearch: theme?.showSearch !== false,
+    showGraph: theme?.showGraph !== false,
+    showMap: theme?.showMap !== false,
+    vars,
+    fontFamily: font,
+  };
 }

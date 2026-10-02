@@ -61,3 +61,6 @@ apps/server/.incident-*/
 # Parachute upgrade research + probe scripts: local-only (they quote private vault contents)
 docs/roadmap/parachute-upgrade/research/
 docs/roadmap/parachute-upgrade/rehearsal-tools/
+
+# Durable isolated implementation checkouts
+/.worktrees/

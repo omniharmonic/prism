@@ -142,8 +142,10 @@ export function PublicationSettings({
         ))}
       </div>
       <p className="text-xs text-[var(--text-secondary)]">
-        Changes apply to the live site when you save. Switching sections keeps
-        your unsaved settings here.
+        {sharing.getPublicationPresentation
+          ? "Appearance uses private drafts and an explicit publish step. Content and access apply when saved."
+          : "Changes apply to the live site when you save."}{" "}
+        Switching sections keeps your unsaved settings here.
       </p>
       <section
         role="tabpanel"
@@ -151,43 +153,56 @@ export function PublicationSettings({
         aria-labelledby={`${sectionId}-tab-details`}
         hidden={section !== "details"}
       >
-        {/* Title */}
-        <Field
-          label="Title"
-          hint="Shown as the Wiki's heading. Defaults to the tag name."
-        >
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ flex: 1, minWidth: 180 }}>
-              <Input
-                disabled={savingTitle}
-                aria-label="Publication title"
-                value={title}
-                placeholder={pub.title || pubSlice(pub)}
-                onChange={(e) => setTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void saveTitle();
-                }}
-              />
-            </div>
+        {sharing.getPublicationPresentation ? (
+          <div className="space-y-3 text-sm">
+            <p className="font-medium">{pub.title || pubSlice(pub)}</p>
+            <p className="break-all text-[var(--text-secondary)]">{pub.url}</p>
             <Button
               variant="secondary"
               size="sm"
-              loading={savingTitle}
-              disabled={!titleDirty}
-              onClick={saveTitle}
+              onClick={() => setSection("appearance")}
             >
-              Save
+              Edit title and appearance
             </Button>
           </div>
-          {titleError && <ErrText>{titleError}</ErrText>}
-        </Field>
+        ) : (
+          <Field
+            label="Title"
+            hint="Shown as the Wiki's heading. Defaults to the tag name."
+          >
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <Input
+                  disabled={savingTitle}
+                  aria-label="Publication title"
+                  value={title}
+                  placeholder={pub.title || pubSlice(pub)}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveTitle();
+                  }}
+                />
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={savingTitle}
+                disabled={!titleDirty}
+                onClick={saveTitle}
+              >
+                Save
+              </Button>
+            </div>
+            {titleError && <ErrText>{titleError}</ErrText>}
+          </Field>
+        )}
       </section>
       <section
         role="tabpanel"

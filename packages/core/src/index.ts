@@ -64,6 +64,8 @@ export type {
   SetPersonResult,
   PublicationInfo,
   PublicationPreview,
+  PublicationPresentation,
+  PublicationPresentationState,
   PublicationTheme,
   NodeIdentity,
   PeerInfo,
@@ -227,3 +229,5 @@ export {
 export { useAgentDocumentSnapshot } from "./lib/agent/documentSnapshots";
 
 export type { MatrixMessage, MessageBatch } from "./lib/matrix/types";
+
+export { PublicationPreviewProvider, type PublicationPreviewProps } from "./data/PublicationPreviewContext";

@@ -46,7 +46,7 @@ function articleFeature(note: PubNote): { id: string; kind: string; name: string
 /** Below this width the wiki renders its single-column phone layout. */
 const MOBILE_BP = 880;
 
-function useIsMobile(): boolean {
+function useIsMobile(viewportWidth?: number): boolean {
   const [mobile, setMobile] = useState(
     () => typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_BP}px)`).matches,
   );
@@ -56,7 +56,7 @@ function useIsMobile(): boolean {
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, []);
-  return mobile;
+  return viewportWidth === undefined ? mobile : viewportWidth <= MOBILE_BP;
 }
 
 /** Phone chrome styles: the drawer slide, trailhead chips, readable prose. One
@@ -114,6 +114,7 @@ const MOBILE_CSS = `
 
 export default function WikiTemplate({
   manifest,
+  viewportWidth,
   slug,
   activeId,
   note,
@@ -128,7 +129,7 @@ export default function WikiTemplate({
   // Map view: offered only when the publication actually has geo-bearing notes
   // (manifest.mapFeatureCount). Opening it triggers the lazy feature fetch.
   const [mapOpen, setMapOpen] = useState(false);
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile(viewportWidth);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // Hub notes (the bioregion, indexes) can have hundreds of backlinks — show a
   // page, offer the rest. Reset per note.
@@ -148,7 +149,7 @@ export default function WikiTemplate({
       window.removeEventListener("keydown", onKey);
     };
   }, [drawerOpen]);
-  const hasMap = (manifest.mapFeatureCount ?? 0) > 0;
+  const hasMap = manifest.theme?.showMap !== false && (manifest.mapFeatureCount ?? 0) > 0;
   const openMap = useCallback(() => {
     setMapOpen(true);
     onRequestMap();
@@ -158,6 +159,18 @@ export default function WikiTemplate({
   // Owner-set theme, re-validated here before it touches the page (untrusted on a
   // public site). Applied as CSS custom properties + a body font on the wiki root.
   const safeTheme = useMemo(() => resolveTheme(manifest.theme), [manifest.theme]);
+
+  const landing = manifest.template === "landing";
+  const documentation = manifest.template === "docs";
+  const home = !activeId || activeId === manifest.homeNoteId;
+  const introduction = home && (landing || safeTheme.coverUrl || safeTheme.description) ? (
+    <section data-testid="publication-introduction" style={{marginBottom:32}}>
+      {safeTheme.coverUrl && <img src={safeTheme.coverUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",maxHeight:280,objectFit:"cover",borderRadius:16,marginBottom:24}}/>}
+      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"clamp(30px,5vw,52px)",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
+      {safeTheme.description && <p style={{fontSize:18,lineHeight:1.65,color:"var(--text-secondary)",maxWidth:680}}>{safeTheme.description}</p>}
+      {landing && <nav aria-label="Collection pages" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12,marginTop:24}}>{manifest.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</nav>}
+    </section>
+  ) : null;
 
   const linkIndex = useMemo(() => buildLinkIndex(manifest.notes), [manifest.notes]);
 
@@ -243,7 +256,8 @@ export default function WikiTemplate({
   // phone drawer (16px input font on mobile — iOS zooms any smaller input).
   const navBody = (
     <>
-      <input
+      {safeTheme.showSearch && <input
+        aria-label="Search this site"
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -260,7 +274,7 @@ export default function WikiTemplate({
           fontSize: isMobile ? 16 : 13,
           outline: "none",
         }}
-      />
+      />}
       {searchResults ? (
         searchResults.length > 0 ? (
           searchResults.map((n) => (
@@ -294,7 +308,7 @@ export default function WikiTemplate({
 
   // ── Phone layout: one column, drawer nav, trailhead chips ──────────────────
   if (isMobile) {
-    const f = !noteLoading && note ? articleFeature(note) : null;
+    const f = safeTheme.showMap && !noteLoading && note ? articleFeature(note) : null;
     return (
       <div style={rootStyle} className="pubwiki-m">
         <style>{MOBILE_CSS}</style>
@@ -348,7 +362,8 @@ export default function WikiTemplate({
           </main>
         ) : (
           <main style={{ flex: 1, padding: "0 16px" }}>
-            <div style={{ maxWidth: 680, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
+            <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
+              {introduction}
               {note && (
                 <h1 style={{ margin: "0 0 12px", fontSize: "clamp(24px, 6.4vw, 30px)", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
                   {note.title}
@@ -415,7 +430,7 @@ export default function WikiTemplate({
                 </section>
               )}
 
-              {graph && graph.nodes.length > 0 && (
+              {safeTheme.showGraph && graph && graph.nodes.length > 0 && (
                 <section style={{ marginTop: 28 }}>
                   <details className="pubwiki-toc">
                     <summary>Graph</summary>
@@ -494,9 +509,9 @@ export default function WikiTemplate({
             style={{ height: 24, width: "auto", maxWidth: 160, objectFit: "contain", display: "block" }}
           />
         )}
-        <span style={{ fontWeight: 600, fontSize: 15, color: "var(--text-primary, #fff)" }}>
-          {manifest.title}
-        </span>
+        <button onClick={()=>manifest.homeNoteId && onNavigate(manifest.homeNoteId)} style={{border:0,background:"transparent",textAlign:"left",minHeight:44,cursor:"pointer",fontWeight:600,fontSize:15,color:"var(--text-primary, #fff)"}}>
+          {manifest.title}{documentation && <small style={{display:"block",fontSize:11,fontWeight:400,color:"var(--text-secondary)"}}>Documentation</small>}
+        </button>
         {hasMap && (
           <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
             <HeaderTab label="Article" active={!mapOpen} onClick={() => setMapOpen(false)} />
@@ -509,7 +524,8 @@ export default function WikiTemplate({
         {/* Left column: search (above) + path tree nav */}
         <nav
           style={{
-            width: 260,
+            width: documentation ? 230 : 260,
+            display: landing ? "none" : undefined,
             flexShrink: 0,
             borderRight: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
             overflowY: "auto",
@@ -532,8 +548,9 @@ export default function WikiTemplate({
             />
           </main>
         ) : (
-        <main style={{ flex: 1, overflowY: "auto", padding: "0 24px" }}>
-          <div style={{ maxWidth: 760, margin: "0 auto", padding: "40px 0 96px" }}>
+        <main style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "0 24px" }}>
+          <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "40px 0 96px" }}>
+            {introduction}
             {note && (
               <h1 style={{ marginTop: 0, fontSize: 28, color: "var(--text-primary, #fff)" }}>
                 {note.title}
@@ -541,7 +558,7 @@ export default function WikiTemplate({
             )}
             {noteLoading && <p style={{ color: "var(--text-muted, #888)" }}>Loading…</p>}
               {!noteLoading && !manifest.notes.length && <PublicationEmpty />}
-            {!noteLoading && note && (() => { const f = articleFeature(note); return f ? (
+            {!noteLoading && note && (() => { const f = safeTheme.showMap ? articleFeature(note) : null; return f ? (
               <div style={{ margin: "0 0 20px" }}>
                 <Suspense fallback={<div style={{ height: 360, borderRadius: 12, background: "var(--glass, rgba(128,128,128,0.08))" }} />}>
                   <ArticleCommonsMap features={[f as never]} height={360} showControls={false} testId="article-map" />
@@ -577,7 +594,8 @@ export default function WikiTemplate({
         {/* Right rail: TOC + backlinks */}
         <aside
           style={{
-            width: 240,
+            width: documentation ? 200 : 240,
+            display: landing ? "none" : undefined,
             flexShrink: 0,
             borderLeft: "1px solid var(--glass-border, rgba(255,255,255,0.1))",
             overflowY: "auto",
@@ -639,7 +657,7 @@ export default function WikiTemplate({
           {/* Graph: a collapsible, in-rail force graph built ONLY from the
               publication-scoped (leak-proof) /api/p/:slug/graph endpoint. Click a
               node to navigate (same routing as the nav tree). */}
-          {graph && graph.nodes.length > 0 && (
+          {safeTheme.showGraph && graph && graph.nodes.length > 0 && (
             <section style={{ marginTop: 28 }}>
               <button
                 onClick={() => setGraphOpen((o) => !o)}

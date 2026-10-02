@@ -1,3 +1,5 @@
+import { PublicationPreviewProvider } from "@prism/core";
+const PresentationPreview = React.lazy(() => import("./publish/PresentationPreview"));
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
@@ -268,6 +270,7 @@ export async function start() {
       <PlatformProvider value="web">
         <VaultClientProvider client={httpVaultClient}>
           <CollabSharingProvider value={capability ? null : webCollabSharing}>
+          <PublicationPreviewProvider component={PresentationPreview}>
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
                 <PushProvider value={pushClient}>
@@ -291,6 +294,7 @@ export async function start() {
                 </PushProvider>
               </CollabDocumentProvider>
             </AccountProvider>
+          </PublicationPreviewProvider>
           </CollabSharingProvider>
         </VaultClientProvider>
       </PlatformProvider>

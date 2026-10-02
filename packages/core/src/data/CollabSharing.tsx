@@ -203,6 +203,26 @@ export interface PublicationTheme {
   text?: string;
   /** Body font family. */
   font?: "sans" | "serif" | "mono";
+  contentWidth?: "reading" | "wide";
+  coverUrl?: string;
+  description?: string;
+  showSearch?: boolean;
+  showGraph?: boolean;
+  showMap?: boolean;
+}
+
+export interface PublicationPresentation {
+  title: string | null;
+  template: "wiki" | "docs" | "landing";
+  theme: PublicationTheme | null;
+}
+export interface PublicationPresentationState {
+  liveRevision: number;
+  draftRevision: number;
+  draftBaseRevision: number | null;
+  live: PublicationPresentation;
+  draft: PublicationPresentation | null;
+  history: Array<{revision:number;createdAt:number;createdBy:string|null;presentation:PublicationPresentation}>;
 }
 
 /** A published tag: a public, read-only site ("Wiki") covering every note that
@@ -439,6 +459,10 @@ export interface CollabSharing {
    *  without it (desktop no-op, capability viewers) simply never show the tab. */
   listPublications?(): Promise<PublicationInfo[]>;
   previewPublication?(slug: string): Promise<PublicationPreview>;
+  getPublicationPresentation?(slug:string): Promise<PublicationPresentationState>;
+  savePublicationPresentation?(slug:string, presentation:PublicationPresentation, draftRevision:number, liveRevision:number): Promise<PublicationPresentationState>;
+  publishPublicationPresentation?(slug:string, draftRevision:number, liveRevision:number): Promise<PublicationPresentationState>;
+  restorePublicationPresentation?(slug:string, revision:number, draftRevision:number, liveRevision:number): Promise<PublicationPresentationState>;
   publishTag?(
     tag: string,
     opts?: { template?: string; title?: string; password?: string },

@@ -314,6 +314,8 @@ test("a delegated vault admin cannot list, preview, change or remove another vau
   assert.equal((await request("/publications/other-site/settings", { method: "PUT", body: JSON.stringify({ title: "forbidden-change" }) })).status, 404);
   assert.equal((await request("/publications/other-site/password", { method: "PUT", body: JSON.stringify({ password: "" }) })).status, 404);
   assert.equal((await request("/publications/other-site", { method: "DELETE" })).status, 404);
+  for (const suffix of ["presentation", "presentation/preview?draftRevision=1"]) assert.equal((await request("/publications/other-site/"+suffix)).status,404);
+  for (const action of ["draft","publish","restore"]) assert.equal((await request("/publications/other-site/presentation/"+action,{method:"POST",body:"{}"})).status,404);
   assert.ok(getPublicationBySlug("other-site")?.password_hash);
   assert.notEqual(getPublicationBySlug("other-site")?.title, "forbidden-change");
 });

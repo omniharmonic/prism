@@ -8,6 +8,8 @@ import type {
   PeerEditInfo,
   PublicationInfo,
   PublicationPreview,
+  PublicationPresentation,
+  PublicationPresentationState,
   PublicationTheme,
   SetPersonResult,
   ShareLevel,
@@ -34,7 +36,7 @@ import type { ViewerIdentity } from "@prism/core";
  * browser never holds a vault token; these calls ride the owner's session
  * cookie. Powers the full share dialog (people + capability links + tag-grants).
  */
-async function managementRequest(prefix: "/acl" | "/api", path: string, init?: RequestInit): Promise<Response> {
+export async function managementRequest(prefix: "/acl" | "/api", path: string, init?: RequestInit): Promise<Response> {
   const scope = agentScope();
   const me = getMe();
   if (!scope || !me?.email || !me.vaultId || !me.workspace?.id) {
@@ -271,6 +273,18 @@ export const webCollabSharing: CollabSharing = {
   },
   async previewPublication(slug: string): Promise<PublicationPreview> {
     return (await acl(`/publications/${enc(slug)}/preview`)).json();
+  },
+  async getPublicationPresentation(slug: string): Promise<PublicationPresentationState> {
+    return (await acl(`/publications/${enc(slug)}/presentation`)).json();
+  },
+  async savePublicationPresentation(slug: string, presentation: PublicationPresentation, draftRevision: number, liveRevision: number): Promise<PublicationPresentationState> {
+    return (await acl(`/publications/${enc(slug)}/presentation/draft`, {method:"POST",body:JSON.stringify({presentation,draftRevision,liveRevision})})).json();
+  },
+  async publishPublicationPresentation(slug: string, draftRevision: number, liveRevision: number): Promise<PublicationPresentationState> {
+    return (await acl(`/publications/${enc(slug)}/presentation/publish`, {method:"POST",body:JSON.stringify({draftRevision,liveRevision})})).json();
+  },
+  async restorePublicationPresentation(slug: string, revision: number, draftRevision: number, liveRevision: number): Promise<PublicationPresentationState> {
+    return (await acl(`/publications/${enc(slug)}/presentation/restore`, {method:"POST",body:JSON.stringify({revision,draftRevision,liveRevision})})).json();
   },
   async publishTag(
     tag: string,

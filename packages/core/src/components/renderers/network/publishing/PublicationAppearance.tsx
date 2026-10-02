@@ -1,3 +1,4 @@
+import { PresentationDraft } from "./PresentationDraft";
 import { useMemo, useRef, useState } from "react";
 import type { PublicationTheme } from "../../../../data/CollabSharing";
 import { Button } from "../../../ui/Button";
@@ -17,7 +18,7 @@ function cleanTheme(t: PublicationTheme): PublicationTheme {
   return out;
 }
 
-export function PublicationAppearance({
+function LegacyPublicationAppearance({
   pub,
   sharing,
   onChanged,
@@ -233,3 +234,18 @@ function ColorField({
 // public set when the tag/path heuristic sweeps in something that shouldn't be
 // public (or renders messily). Owner-only; uses the full vault to enumerate the
 // candidate set (including currently-excluded notes, so they can be re-included).
+
+export function PublicationAppearance(props: {
+  pub: PublicationInfo;
+  sharing: CollabSharing;
+  onChanged: () => void | Promise<void>;
+}) {
+  return props.sharing.getPublicationPresentation &&
+    props.sharing.savePublicationPresentation &&
+    props.sharing.publishPublicationPresentation &&
+    props.sharing.restorePublicationPresentation ? (
+    <PresentationDraft {...props} />
+  ) : (
+    <LegacyPublicationAppearance {...props} />
+  );
+}

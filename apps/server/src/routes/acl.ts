@@ -1,3 +1,5 @@
+import { publicationGraph, publicationMap } from "../publication-projections";
+import { getPresentation, savePresentationDraft, publishPresentationDraft, restorePresentationDraft, PresentationError } from "../publication-presentation";
 /**
  * Access-control management — owner-only. Lives at /acl/* (NOT /api, whose
  * owner-passthrough would proxy to the vault; NOT /share, which is the public
@@ -1356,6 +1358,67 @@ acl.get("/publications/:slug/preview", async (c) => {
       publishedCount: expired ? 0 : notes.filter(n => !n.excluded).length, expired });
   } catch { return c.json({ error: "preview_unavailable" }, 502); }
 });
+
+// Presentation drafts are private management state, never a public access token.
+acl.get("/publications/:slug/presentation", (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json(getPresentation(pub.id));
+});
+acl.get("/publications/:slug/presentation/preview", async (c) => {
+  const pub = managedPublication(c);
+  if (!pub) return c.json({ error: "not_found" }, 404);
+  c.header("Cache-Control", "no-store");
+  const state = getPresentation(pub.id);
+  const revision = Number(c.req.query("draftRevision"));
+  if (!state.draft || !Number.isSafeInteger(revision) || revision !== state.draftRevision) return c.json({ error: "presentation_conflict", detail: "The saved draft changed. Reload its current revision to preview." }, 409);
+  try {
+    // Same reader-eligible set; management authority never adds private pages.
+    const notes = await publicationNotes(pub, true);
+    // Revalidate after the asynchronous vault read: do not serve a stale draft
+    // or a deleted/recreated publication after authority/settings changed.
+    const fresh = managedPublication(c);
+    if (!fresh || JSON.stringify(fresh) !== JSON.stringify(pub)) return c.json({ error: "presentation_conflict" }, 409);
+    if (getPresentation(pub.id).draftRevision !== revision) return c.json({ error: "presentation_conflict" }, 409);
+    const nav = notes.map(n => ({id:n.id,title:navTitle({...n,content:""}),path:n.path,tags:n.tags ?? []}));
+    const home = nav.some(n=>n.id===pub.home_note_id) ? pub.home_note_id : nav[0]?.id ?? null;
+    const requested = c.req.query("noteId");
+    const selected = notes.find(n=>n.id===(requested ?? home));
+    if (requested && !selected) return c.json({error:"not_found"},404);
+    const mapFeatures = publicationMap(notes);
+    return c.json({
+      manifest: {slug:pub.id,title:state.draft.title || nav.find(n=>n.id===home)?.title || pub.resource,
+        template:state.draft.template,theme:state.draft.theme,homeNoteId:home,passwordRequired:!!pub.password_hash,locked:false,
+        notes:nav,mapFeatureCount:mapFeatures.length},
+      note: selected ? {...selected,title:navTitle(selected)} : null,
+      graph:publicationGraph(notes),mapFeatures,
+      expired:pub.expires_at !== null && pub.expires_at <= Date.now(),draftRevision:revision,
+    });
+  } catch { return c.json({error:"preview_unavailable"},502); }
+});
+
+for (const action of ["draft", "publish", "restore"] as const) {
+  acl.post(`/publications/:slug/presentation/${action}`, async (c) => {
+    const pub = managedPublication(c);
+    if (!pub) return c.json({ error: "not_found" }, 404);
+    c.header("Cache-Control", "no-store");
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+    try {
+      const actor = resolveActor(c);
+      const result = action === "draft"
+        ? savePresentationDraft(pub.id, body.presentation, body.draftRevision, body.liveRevision)
+        : action === "restore"
+          ? restorePresentationDraft(pub.id, body.revision, body.draftRevision, body.liveRevision)
+          : publishPresentationDraft(pub.id, body.draftRevision, body.liveRevision, actor.kind === "user" ? actor.email : "");
+      return c.json(result);
+    } catch (error) {
+      if (error instanceof PresentationError) return c.json({ error: error.code, detail: error.message }, error.code === "bad_presentation" ? 400 : 409);
+      throw error;
+    }
+  });
+}
 
 acl.post("/tags/:tag/publish", async (c) => {
   const tag = decodeURIComponent(c.req.param("tag"));

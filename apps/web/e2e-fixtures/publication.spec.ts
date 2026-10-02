@@ -170,3 +170,11 @@ test("phone publication chrome and canvas follow both actual workspace theme pal
     path: test.info().outputPath("publication-empty-dark-mobile.png"),
   });
 });
+
+
+test("malformed legacy theme fields do not break the public reader",async({page})=>{
+  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
+  await page.goto("/e2e-fixtures/publication.html?malformed-theme");
+  await expect(page.getByText("PRISM_PUBLICATION_guide_first_BODY",{exact:true})).toBeVisible();
+  expect(errors).toEqual([]);
+});

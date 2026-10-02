@@ -52,7 +52,7 @@ window.fetch = async (input, init) => {
         slug,
         title: slug === "other" ? "Other publication" : "Prism field guide",
         template: "wiki",
-        theme: null,
+        theme: params.has("malformed-theme") ? { accent: {invalid:true},logoUrl:42,font:["serif"],coverUrl:{},description:3 } : null,
         homeNoteId: locked ? null : (notes[0]?.id ?? null),
         passwordRequired: controls.protected,
         locked,

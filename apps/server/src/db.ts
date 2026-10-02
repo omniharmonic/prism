@@ -130,6 +130,16 @@ db.exec(`
     created_at    INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS publications_resource ON publications(resource_type, resource);
+  CREATE TABLE IF NOT EXISTS publication_presentations (
+    slug TEXT PRIMARY KEY, live_revision INTEGER NOT NULL, live_json TEXT NOT NULL,
+    draft_revision INTEGER NOT NULL DEFAULT 0, draft_json TEXT, draft_base_revision INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS publication_presentation_history (
+    slug TEXT NOT NULL, revision INTEGER NOT NULL, presentation_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL, created_by TEXT,
+    PRIMARY KEY(slug,revision)
+  );
+
 
   -- ── Parachute-to-Parachute collaboration (Horizon C) ───────────────────
   -- A paired peer hub, identified by its Ed25519 public key (base64url). We
@@ -1784,7 +1794,7 @@ const selectPublicationByResource = db.prepare(
 const selectPublications = db.prepare("SELECT * FROM publications ORDER BY created_at DESC");
 const deletePublicationStmt = db.prepare("DELETE FROM publications WHERE id = ?");
 const updatePublicationStmt = db.prepare(
-  `UPDATE publications SET title=@title, home_note_id=@home_note_id, excluded_note_ids=@excluded_note_ids, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
+  `UPDATE publications SET template=@template, title=@title, home_note_id=@home_note_id, excluded_note_ids=@excluded_note_ids, password_hash=@password_hash, theme=@theme, expires_at=@expires_at WHERE id=@id`,
 );
 
 export function createPublication(
@@ -1820,18 +1830,23 @@ export function listPublications(): Publication[] {
   return selectPublications.all() as Publication[];
 }
 export function deletePublication(slug: string): void {
-  deletePublicationStmt.run(slug);
+  db.transaction(() => {
+    db.prepare("DELETE FROM publication_presentations WHERE slug = ?").run(slug);
+    db.prepare("DELETE FROM publication_presentation_history WHERE slug = ?").run(slug);
+    deletePublicationStmt.run(slug);
+  })();
 }
 /** Patch the mutable fields of a publication (title/home/excluded/password/theme/expiry). */
 export function updatePublication(
   slug: string,
-  patch: Partial<Pick<Publication, "title" | "home_note_id" | "excluded_note_ids" | "password_hash" | "theme" | "expires_at">>,
+  patch: Partial<Pick<Publication, "template" | "title" | "home_note_id" | "excluded_note_ids" | "password_hash" | "theme" | "expires_at">>,
 ): Publication | null {
   const existing = getPublicationBySlug(slug);
   if (!existing) return null;
   const merged: Publication = { ...existing, ...patch };
   updatePublicationStmt.run({
     id: slug,
+    template: merged.template,
     title: merged.title,
     home_note_id: merged.home_note_id,
     excluded_note_ids: merged.excluded_note_ids,

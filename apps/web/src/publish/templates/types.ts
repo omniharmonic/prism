@@ -60,6 +60,8 @@ export interface PubMapFeature {
 }
 
 export interface PublicationTemplateProps {
+  /** Explicit embedded-preview width; ordinary readers use their own window. */
+  viewportWidth?: number;
   manifest: PublicationManifest;
   slug: string;
   /** The note currently being viewed (null until loaded / when none selected). */

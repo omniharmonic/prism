@@ -14,6 +14,8 @@ const WikiTemplate = lazy(() => import("./WikiTemplate"));
 
 const TEMPLATE_MAP: Record<string, React.LazyExoticComponent<PublicationTemplate>> = {
   wiki: WikiTemplate,
+  docs: WikiTemplate,
+  landing: WikiTemplate,
 };
 
 export const DEFAULT_TEMPLATE = "wiki";
