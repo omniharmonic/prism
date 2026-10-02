@@ -30,7 +30,7 @@ Screenshots are actual fixture renders, not generated mockups:
 
 ## Remaining release gates
 
-1. Integrate the approved server transcript slice (`feat/backend-transcripts`, reviewed contract at `ea412e0`) through the root agent's combined backend branch. The frontend does not provide matching or authorization itself.
+1. **Do not deploy this enabled frontend provider against the old production server:** the new read endpoint must be live, otherwise it would replace working stored-link navigation with404. Do not treat404 as unsupported because it also represents access loss. Integrate the approved server transcript slice (`feat/backend-transcripts`, reviewed contract at `ea412e0`) through the root agent's combined backend branch. The frontend does not provide matching or authorization itself.
 2. Exercise real authenticated GET/POST with an isolated owner-only meeting/transcript pair: link, unlink, competing revision, pending retry, and loss of access. Confirm persistence/restart behavior against the actual backend journal, not this fixture model.
 3. Verify the installed native WKWebView exposes `navigator.locks`, review/open/link flows work, and a pending request survives an app restart without an automatic write. Playwright WebKit passing is not installed desktop evidence.
 4. Confirm real read-only/capability views disclose no hidden meeting identities and preserve stored-link navigation, and check phone/desktop layout inside the integrated shell.

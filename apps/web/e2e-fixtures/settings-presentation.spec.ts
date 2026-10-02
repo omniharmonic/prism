@@ -24,6 +24,8 @@ for (const width of [1440, 390, 320]) {
     await expect(dialog.getByLabel("Sidebar Label", { exact: true })).toHaveValue("Knowledge");
     if (width === 320) await dialog.getByRole("button", { name: "Dark", exact: true }).click();
     else await dialog.getByRole("button", { name: "Light", exact: true }).click();
+    await expect(dialog.locator(".prism-settings")).toHaveCSS("background-color", width === 320 ? "rgb(32, 33, 38)" : "rgb(255, 255, 255)");
+    await expect(dialog.getByRole("heading", { name: "Settings", exact: true })).toHaveCSS("color", width === 320 ? "rgb(237, 238, 239)" : "rgb(41, 42, 48)");
     const contrast = await dialog.evaluate(el => {
       const heading = el.querySelector("h2")!;
       const surface = el.querySelector(".prism-settings")!;
@@ -37,7 +39,7 @@ for (const width of [1440, 390, 320]) {
     expect(contrast).toBeGreaterThan(4.5);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath(`settings-${width}.png`) });
+    await page.screenshot({ path: testInfo.outputPath(`settings-${width}.png`), animations: "disabled" });
     await dialog.getByRole("button", { name: "Close settings" }).click();
     await expect(dialog).toHaveCount(0);
     await page.reload();
