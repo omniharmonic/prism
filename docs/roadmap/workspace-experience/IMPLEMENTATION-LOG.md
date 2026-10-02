@@ -76,3 +76,9 @@ Boards can opt into an ordered ID list on their own configuration. Earlier/later
 List view now omits empty groups and gives a single useful zero-match explanation; board mode keeps empty columns as drop targets. Reordering does not reset a locally chosen list/board mode. Controls require edit access to the board; this intentionally does not require mutating the task itself.
 
 All 19 focused board journeys pass, including rank/reload/task preservation, independent views, concurrent settings rejection, role-gated ordering and phone zero-result layout. Application/e2e typechecks and web build pass. Full browser and packaged-native checks are running; actual production order acceptance is pending. In-column drag reordering, large-inventory paging, and multi-human production concurrency remain separate gates.
+
+### R12/R13 — folder publishing honors private visibility
+
+Publishing review found that folder membership bypassed the private-note exclusion already present in tag publications. The shared path-publication predicate now requires both directory membership and non-private visibility. Manifest/home selection, graph, map, direct note reads and initial folder-publication counts apply it. A publication password does not override a note's private status; changing an already published note to private removes it from subsequent public reads without changing the publication.
+
+All 1,433 server tests and server typechecks pass. Two new router journeys cover private in-folder notes across every public projection/count and private revocation after a valid password unlock while another public note remains readable. Existing path boundaries, exclusions, passwords and multi-vault tests pass. Production deployment and an owner-only protected fixture are pending at this checkpoint. The publishing settings/preview redesign remains in progress.

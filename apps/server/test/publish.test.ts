@@ -566,3 +566,36 @@ test("a caps-only anyone grant without `view` (e.g. [\"create\"]) exposes nothin
   assert.deepEqual(manifest.notes, [], "no note is listed");
   assert.equal((await publish.request("/dropbox/notes/n1")).status, 403, "no note is readable by id");
 });
+
+test("folder publications exclude private notes from navigation, direct reads, graph, map and counts", async () => {
+  seedPaths();
+  fv.put({ id: "private-in-folder", path: "docs/guide/private-location.md", tags: ["place"], content: "# Private location\nPRISM_PRIVATE_FOLDER_BODY", metadata: { prism_visibility: "private", title: "PRISM_PRIVATE_FOLDER_TITLE", geometry: { type: "Point", coordinates: [-105, 40] } } });
+  const created = await readJson(await ownerReq("/publish/path", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pathPrefix: "docs/guide" }) }));
+  assert.equal(created.count, 2);
+  const manifest = await readJson(await publish.request(`/${created.slug}`));
+  assert.deepEqual(manifest.notes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+  assert.equal(manifest.mapFeatureCount, 0);
+  assert.equal((await publish.request(`/${created.slug}/notes/private-in-folder`)).status, 403);
+  const graph = await readJson(await publish.request(`/${created.slug}/graph`));
+  assert.deepEqual(graph.nodes.map((n: { id: string }) => n.id).sort(), ["g1", "g2"]);
+  const map = await readJson(await publish.request(`/${created.slug}/map`));
+  assert.deepEqual(map.features, []);
+  assert.ok(!JSON.stringify({ manifest, graph, map }).includes("PRISM_PRIVATE_FOLDER"));
+});
+
+test("making a published folder note private revokes every public read, even after password unlock", async () => {
+  seedPaths();
+  const created = await readJson(await ownerReq("/publish/path", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pathPrefix: "docs/guide", password: "isolated-test-password" }) }));
+  const unlocked = await publish.request(`/${created.slug}/auth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "isolated-test-password" }) });
+  const cookie = unlocked.headers.get("set-cookie")!.split(";")[0]!;
+  const headers = { cookie };
+  assert.equal((await publish.request(`/${created.slug}/notes/g1`, { headers })).status, 200);
+  fv.put({ id: "g1", path: "docs/guide/intro.md", tags: [], content: "# PRISM_REVOKED_FOLDER_TITLE", metadata: { prism_visibility: "private" } });
+  assert.equal((await publish.request(`/${created.slug}/notes/g1`, { headers })).status, 403);
+  const manifest = await readJson(await publish.request(`/${created.slug}`, { headers }));
+  assert.deepEqual(manifest.notes.map((n: { id: string }) => n.id), ["g2"]);
+  assert.equal(manifest.homeNoteId, "g2");
+  const graph = await readJson(await publish.request(`/${created.slug}/graph`, { headers }));
+  assert.deepEqual(graph.nodes.map((n: { id: string }) => n.id), ["g2"]);
+  assert.equal((await publish.request(`/${created.slug}/notes/g2`, { headers })).status, 200);
+});

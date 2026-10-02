@@ -100,7 +100,7 @@ import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtml } from "../collab";
-import { normalizePathPrefix, pathInPrefix } from "../paths";
+import { normalizePathPrefix, pathInPrefix, pathPublicationIncludes } from "../paths";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
 import { getSecret, secretsConfigured } from "../secrets";
@@ -1397,8 +1397,8 @@ acl.delete("/tags/:tag/publish", (c) => {
 
 // ── Publish-by-path-prefix: a public, read-only site rooted at a directory ──
 // Unlike tag pubs, a path publication uses NO `anyone` grant — the public read
-// path (routes/publish.ts) guards it purely by the path-membership predicate on
-// the vault's own `path` field. So this only writes the `publications` row.
+// path (routes/publish.ts) requires directory membership and excludes private
+// notes. So this only writes the `publications` row.
 acl.post("/publish/path", async (c) => {
   const body = await c.req
     .json<{ pathPrefix?: string; title?: string; slug?: string; password?: string }>()
@@ -1442,7 +1442,7 @@ acl.post("/publish/path", async (c) => {
   // path uses — never trust a vault query.
   let count = 0;
   try {
-    count = (await vaultClient(vaultId).listNotes({})).filter((n) => pathInPrefix(n.path, prefix)).length;
+    count = (await vaultClient(vaultId).listNotes({})).filter((n) => pathPublicationIncludes(n, prefix)).length;
   } catch {
     /* best-effort */
   }

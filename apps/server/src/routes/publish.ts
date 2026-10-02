@@ -20,7 +20,7 @@ import { vaultClient, VaultError, type Note } from "../parachute";
 import type { Actor } from "../auth/actor";
 import { getPublicationBySlug, grantsForResource, excludedNoteIds, publicationVaultId, type Publication } from "../db";
 import { effectiveCaps, type NoteRef } from "../permissions";
-import { pathInPrefix } from "../paths";
+import { pathPublicationIncludes } from "../paths";
 import { config } from "../config";
 import { verifyPassword } from "../auth/password";
 
@@ -150,7 +150,7 @@ const pubVault = (pub: Publication) => vaultClient(publicationVaultId(pub));
  *   authoritative guard.
  * - `path` pubs: notes whose `path` is inside the publication's prefix. The
  *   path-membership predicate (evaluated on the vault's OWN `path` field) is the
- *   authoritative, read-only, view-level guard — grants/caps play no
+ *   directory guard, with explicit private notes excluded — grants/caps play no
  *   part. We fetch all notes and filter in-process because Parachute's `?path=`
  *   is an exact match, not a prefix filter; publish.ts must guarantee prefix
  *   membership itself regardless.
@@ -164,7 +164,7 @@ async function publicationNotes(pub: Publication, includeContent: boolean): Prom
   const excluded = new Set(excludedNoteIds(pub));
   if (pub.resource_type === "path") {
     const notes = await pubVault(pub).listNotes({ includeContent });
-    return notes.filter((n) => !excluded.has(n.id) && pathInPrefix(n.path, pub.resource));
+    return notes.filter((n) => !excluded.has(n.id) && pathPublicationIncludes(n, pub.resource));
   }
   const actor = publicationActor(pub);
   const notes = await pubVault(pub).listNotes({ tags: [pub.resource], includeContent });
@@ -455,7 +455,7 @@ publish.get("/:slug/map", async (c) => {
 
 // 2. Single note (read-only). Served only if it is part of the publication set:
 //    - tag pubs: the `view` cap (canPublicView) AND it carries the publication's tag;
-//    - path pubs: its `path` is inside the publication's prefix.
+//    - path pubs: its path is in the prefix and its visibility is not private.
 //    Either way an out-of-set id is forbidden (no id-guessing into private notes).
 publish.get("/:slug/notes/:id", async (c) => {
   const pub = getPublicationBySlug(c.req.param("slug"));
@@ -476,7 +476,7 @@ publish.get("/:slug/notes/:id", async (c) => {
   const allowed =
     !excluded.has(note.id) &&
     (pub.resource_type === "path"
-      ? pathInPrefix(note.path, pub.resource)
+      ? pathPublicationIncludes(note, pub.resource)
       : tags.includes(pub.resource) &&
         canPublicView(publicationActor(pub).grants, note));
   if (!allowed) return c.json({ error: "forbidden" }, 403);
