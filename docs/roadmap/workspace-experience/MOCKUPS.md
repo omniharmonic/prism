@@ -271,3 +271,17 @@ An event connects its canonical people and conversation records. Review candidat
 [![Sharing and governance concept](assets/23-sharing-governance.png)](assets/23-sharing-governance.png)
 
 Document, active-vault and publishing scopes remain distinct. Show actual access and proposal attribution, retain invitation links when clipboard access fails, and state partial success truthfully. Do not infer server enforcement from the raster's role labels: human suggest-only remains gated on the coordinated backend/client release. The generated shell, navigation additions, slogans and sample proposal content are not new requirements; use the existing Prism shell and vector brand.
+
+### 24 · Publishing studio (D06 / R13)
+
+[![Publishing studio concept](assets/24-publishing-studio.png)](assets/24-publishing-studio.png)
+
+A quiet settings column beside an explicitly requested private preview, with draft and live revisions kept distinct. Use actual supported templates (Wiki, Docs, Landing); the generated Blog/Portfolio names, navigation links, stock imagery and slogans are illustrative, not new capabilities. Preserve publication-specific branding, scope/access, saved draft, restore and explicit publish. Navigation is separately gated on its reviewed contract. Existing vector logo remains authoritative.
+
+### 25 · Connections and settings (D07 / R14)
+
+[![Connections and settings concept](assets/25-connections-settings.png)](assets/25-connections-settings.png)
+
+Organize existing accounts, synchronization controls and processing settings around what the user is connecting. A connected account is not proof every item has synced. Only actual returned health, scope and actions may appear; the fixture rows and statuses are illustrative. Do not invent reconnect, disconnect, calendar selection, conflict repair or processing metrics where the current host lacks them. Preserve exact authority and distinguish owner settings from personal preferences.
+
+Both boards were generated with built-in imagegen; exact prompts are recorded in [expanded-mockup-prompts.json](expanded-mockup-prompts.json). They are visual references, not implementation evidence.
