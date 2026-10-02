@@ -26,6 +26,10 @@
  *     CALENDAR_SHADOW adds a separate "calendar-shadow"
  *     server source and leaves "calendar" inferred from the desktop's notes.
  *
+ *   - `people-link` (identity + linking layer): not an ingest. It reports the
+ *     review-queue depth and the last backfill job (`detail`), appears only once
+ *     a job has run or identities are queued, and never goes stale.
+ *
  * Status: disabled (not configured / no data ever) | failing (streak >=
  * WORKER_FAIL_STREAK) | stale (nothing succeeded within the threshold) | ok.
  * Alerts fire ONCE per episode on entry to stale/failing (email to OWNER_EMAIL
@@ -40,6 +44,8 @@ import { vaultClient } from "../parachute";
 import { sendEmail } from "../auth/email";
 import { calendarMode, calendarSourceName } from "./calendar";
 import { PROTON_CREDENTIAL, protonMode } from "./proton";
+import { openCandidateCounts } from "../identity-store";
+import { lastLinkJobOutcome } from "../people-link-job";
 
 export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
 export type SourceKind = "server" | "desktop";
@@ -53,6 +59,8 @@ export interface SourceHealth {
   failureStreak: number;
   staleAfterMs: number;
   status: SourceStatus;
+  /** Source-specific numbers (only `people-link` sets it): counts, never content. */
+  detail?: Record<string, string | number | boolean | null>;
 }
 
 interface Rec {
@@ -317,6 +325,36 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       failureStreak: r?.streak ?? 0,
       staleAfterMs,
       status: computeStatus({ configured: true, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+    });
+  }
+
+  // Identity + linking layer: the review-queue depth and the last backfill job.
+  // Reported only once there is something to say (a job has run, or identities
+  // are waiting) and it never goes `stale` — a queue is the owner's to-do list,
+  // not an outage. Only repeated job ERRORS (WORKER_FAIL_STREAK) alert.
+  for (const entry of getVaultRegistry()) {
+    const last = lastLinkJobOutcome(entry.id);
+    const open = openCandidateCounts(entry.id);
+    if (!last && !open.total) continue;
+    const lastSuccessAt = last?.lastSuccessAt ? Date.parse(last.lastSuccessAt) : null;
+    out.push({
+      name: entry.id === "primary" ? "people-link" : `people-link@${entry.id}`,
+      kind: "server",
+      vaultId: entry.id,
+      lastSuccessAt: iso(Number.isFinite(lastSuccessAt as number) ? lastSuccessAt : null),
+      lastError: last?.error ? scrubError(last.error) : null,
+      failureStreak: last?.failStreak ?? 0,
+      staleAfterMs: 0,
+      status: computeStatus({ configured: true, lastSuccessAt, streak: last?.failStreak ?? 0, staleAfterMs: 0, now, baselineAt: BOOT_AT }),
+      detail: {
+        openCandidates: open.total,
+        lastJobStatus: last?.status ?? null,
+        lastJobAt: last?.at ?? null,
+        lastJobDryRun: last?.dryRun ?? null,
+        lastJobWrites: last?.writes ?? null,
+        lastJobLinked: last?.linked ?? null,
+        lastJobQueued: last?.queued ?? null,
+      },
     });
   }
 
