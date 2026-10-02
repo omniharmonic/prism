@@ -6,6 +6,7 @@
  * ("share everything tagged X with this person"). Authorization for the shared
  * content itself is still enforced by the /api gateway via these grants.
  */
+import { notifyAccessChanged } from "../access-events";
 import { Hono, type Context } from "hono";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { config } from "../config";
@@ -677,6 +678,7 @@ acl.put("/notes/:id/visibility", async (c) => {
       metadata: { prism_visibility: isPrivate ? "private" : "workspace" },
       ifUpdatedAt: note.updatedAt,
     });
+    notifyAccessChanged(resolveActor(c).vaultId);
     return c.json({ ok: true, visibility: isPrivate ? "private" : "workspace" });
   } catch (e) {
     if (e instanceof VaultError && (e.status === 409 || e.status === 428)) {
@@ -692,11 +694,13 @@ acl.post("/notes/:id/tags", async (c) => {
   const { tag } = await c.req.json<{ tag?: string }>();
   if (!tag) return c.json({ error: "bad_request" }, 400);
   await vaultClient(resolveActor(c).vaultId).addTags(c.req.param("id"), [tag]);
+  notifyAccessChanged(resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
 
 acl.delete("/notes/:id/tags/:tag", async (c) => {
   await vaultClient(resolveActor(c).vaultId).removeTags(c.req.param("id"), [decodeURIComponent(c.req.param("tag"))]);
+  notifyAccessChanged(resolveActor(c).vaultId);
   return c.json({ ok: true });
 });
 

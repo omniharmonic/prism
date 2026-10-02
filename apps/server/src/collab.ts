@@ -24,7 +24,8 @@
  * from @prism/core, so HTML↔Yjs conversion matches the client exactly.
  */
 import { Window } from "happy-dom";
-import { Hocuspocus } from "@hocuspocus/server";
+import { accessRevision, onAccessChanged } from "./access-events";
+import { Hocuspocus, type Connection } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
@@ -508,7 +509,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
         try {
           tags = (await vaultClient(fedVault).getNote(fed.local_id)).tags ?? [];
         } catch {
-          /* unreadable note — match on id/space only */
+          return null; // Cannot establish current privacy for an unreadable note.
         }
         // Read gate on the `view` CAP (WP0.2), like the non-peer path below. Peer
         // grants are level-only today (acl.ts writes no caps for them), so this is
@@ -566,7 +567,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     creator = (note.metadata?.prism_creator as string | undefined) ?? null;
     visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
   } catch {
-    /* new/unknown note — no tags/metadata */
+    if (role !== "owner") return null; // Never infer public visibility from a failed read.
   }
   const noteRef = { id: noteId, tags, creator, visibility };
   // Collab authorization goes through the CAPS, projected onto the ladder this
@@ -603,9 +604,11 @@ export async function authorizeConnection(
   connectionConfig: { readOnly: boolean },
   isLocal = false,
 ): Promise<Level> {
+  const revision = accessRevision();
   const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
+  if (revision !== accessRevision()) throw new Error("Access changed. Reconnect.");
   if (!atLeast(level, "view")) throw new Error("Forbidden");
-  if (!atLeast(level, "suggest")) connectionConfig.readOnly = true;
+  connectionConfig.readOnly = !atLeast(level, "suggest");
   return level as Level;
 }
 
@@ -742,6 +745,32 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId);
 }
 
+interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }
+
+/** Recheck incoming updates against current grants, credentials and note privacy. */
+async function revalidateConnection(connection: Connection<LiveAccess>): Promise<void> {
+  const { context } = connection;
+  try {
+    if (!connection.document.hasConnection(connection) || !context) throw new Error("Access changed. Reconnect.");
+    const revision = accessRevision();
+    const level = await resolveLevel(connection.document.name, context.token, context.cookie, context.isLocal);
+    if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
+      throw new Error("Access changed. Reconnect.");
+    }
+    connection.readOnly = !atLeast(level, "suggest");
+  } catch (error) {
+    connection.readOnly = true;
+    connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    throw error;
+  }
+}
+
+/** Also checks idle readers, so expired credentials do not keep a live feed. */
+export async function revalidateLiveAccess(): Promise<void> {
+  const connections = [...hocuspocus.documents.values()].flatMap(doc => doc.getConnections());
+  await Promise.allSettled(connections.map(connection => revalidateConnection(connection)));
+}
+
 export const hocuspocus = new Hocuspocus({
   async onAuthenticate(data) {
     const cookie = headerGet(data.requestHeaders, "cookie");
@@ -749,10 +778,31 @@ export const hocuspocus = new Hocuspocus({
     // Only local connections may use the owner-token path (see resolveLevel).
     const isLocal = isLocalRequest((k) => headerGet(data.requestHeaders, k));
     const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig, isLocal);
-    return { level };
+    // Credentials stay only in the connection's server-side context.
+    return { level, token: data.token, cookie, isLocal } satisfies LiveAccess;
+  },
+  async beforeHandleMessage({ connection }) {
+    await revalidateConnection(connection);
+  },
+  async beforeSync({ connection }) {
+    // A permission write can close the connection during an awaited message hook.
+    if (!connection.document.hasConnection(connection)) throw new Error("Access changed. Reconnect.");
   },
   onLoadDocument: (data) => loadDocumentState(data.documentName, data.document),
   onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),
+});
+
+// Permission mutations invalidate sessions synchronously, before the response
+// confirms revocation. The provider reconnects and receives its current mode.
+// Scope to one vault when known; credential/peer revocations span vaults.
+onAccessChanged((vaultId) => {
+  for (const doc of hocuspocus.documents.values()) {
+    if (vaultId && federationTarget(doc.name).vaultId !== vaultId) continue;
+    for (const connection of doc.getConnections()) {
+      connection.readOnly = true;
+      connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    }
+  }
 });
 
 /**
@@ -790,6 +840,14 @@ export function attachCollab(server: Server): void {
   // and fold them into the live Y.Doc so every open editor updates within a tick.
   const stopReconciler = startReconciler(hocuspocus as unknown as LiveDocs);
   server.on("close", stopReconciler);
+  let checkingAccess = false;
+  const accessTimer = setInterval(() => {
+    if (checkingAccess) return;
+    checkingAccess = true;
+    void revalidateLiveAccess().finally(() => { checkingAccess = false; });
+  }, 5_000);
+  accessTimer.unref();
+  server.on("close", () => clearInterval(accessTimer));
 
   // Federation (GATED): bring up the peer-bridge once collab is live. A no-op
   // unless getFederationEnabled() (the runtime flag, persisted; defaults to the

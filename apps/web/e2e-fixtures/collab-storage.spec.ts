@@ -58,7 +58,12 @@ test("failed access checks report a connection problem while a rejected session 
 test("real collaborative editor survives StrictMode and reload with scoped durable edits", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", e => errors.push(e.message));
-  const server = new Server({ address: "127.0.0.1", port: 0, quiet: true, debounce: 10, async onAuthenticate() { return { fixture: true }; } });
+  let level: "own" | "view" | "denied" = "own";
+  const server = new Server({ address: "127.0.0.1", port: 0, quiet: true, debounce: 10, async onAuthenticate({ connectionConfig }) {
+    if (level === "denied") throw new Error("Forbidden");
+    connectionConfig.readOnly = level === "view";
+    return { fixture: true };
+  } });
   await server.listen();
   const sockets: WebSocket[] = [];
   try {
@@ -70,9 +75,10 @@ test("real collaborative editor survives StrictMode and reload with scoped durab
       socket.on("open", () => { for (const message of pending) socket.send(message); });
       socket.on("message", (message, binary) => route.send(binary ? Buffer.from(message as Buffer) : message.toString()));
       route.onClose(() => socket.close());
+      socket.on("close", () => route.close({ code: 1000 }));
     });
     await page.route("**/auth/me", route => route.fulfill({ json: { authenticated: true, email: "alice@example.test", vaultId: "primary", workspace: { id: "workspace-a" } } }));
-    await page.route("**/api/notes/denied-note", route => route.fulfill({ json: { id: "denied-note", path: "Private fixture", content: "", _level: "own", metadata: {}, tags: [] } }));
+    await page.route("**/api/notes/denied-note", route => level === "denied" ? route.fulfill({ status: 403, json: { error: "forbidden" } }) : route.fulfill({ json: { id: "denied-note", path: "Private fixture", content: "", _level: level, metadata: {}, tags: [] } }));
     await page.route("**/api/federated/**", route => route.fulfill({ status: 204 }));
     await page.goto("/e2e-fixtures/collab-storage.html?live");
     await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
@@ -86,6 +92,20 @@ test("real collaborative editor survives StrictMode and reload with scoped durab
     })).toBe(1);
     await page.reload();
     await expect(page.locator(".tiptap")).toHaveText("SCOPED_CRDT_EDIT");
+    // The real document-level CLOSE frame must refresh both authorization and UI.
+    level = "view";
+    for (const doc of server.hocuspocus.documents.values()) for (const connection of doc.getConnections()) {
+      connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    }
+    await expect(page.locator(".tiptap[contenteditable=false]")).toHaveText("SCOPED_CRDT_EDIT");
+    await expect(page.getByText("Live · View only", { exact: true })).toBeVisible();
+    await expect.poll(() => [...server.hocuspocus.documents.values()].reduce((sum, doc) => sum + doc.getConnectionsCount(), 0)).toBeGreaterThan(0);
+    level = "denied";
+    for (const doc of server.hocuspocus.documents.values()) for (const connection of doc.getConnections()) {
+      connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });
+    }
+    await expect(page.getByRole("heading", { name: "Request access" })).toBeVisible();
+    await expect(page.locator(".tiptap")).toHaveCount(0);
     expect(errors).toEqual([]);
     await page.goto("about:blank");
   } finally {

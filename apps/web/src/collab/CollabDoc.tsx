@@ -129,6 +129,7 @@ function ScopedCollabDoc({
   const [localSave, setLocalSave] = useState<LocalSaveState>("saving");
   const [connectionError, setConnectionError] = useState(false);
   const [denied, setDenied] = useState(false);
+  const [checkingAccess, setCheckingAccess] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
@@ -254,11 +255,59 @@ function ScopedCollabDoc({
           persistence = await persistLocalDocument(localDocumentKey(context.scope, name), doc, (state) => { if (current()) setLocalSave(state); });
         } catch { if (current()) setLocalSave("unavailable"); }
         if (!(await stillCurrent())) { persistence?.close(); return; }
+        // A server permission change closes just this document session. Refresh
+        // the actual note level before reconnecting or exposing editing controls.
+        // Ordinary network loss retains the existing offline-editing behavior.
+        let accessCheck = 0;
+        const refreshAccess = async (): Promise<boolean> => {
+          const request = ++accessCheck;
+          try {
+            const r = await serverFetch(`${apiBase()}/notes/${encodeURIComponent(noteId)}`, { headers: context.headers });
+            if (!(await stillCurrent()) || request !== accessCheck) return false;
+            if (!r.ok) {
+              if ([401, 403, 404, 410].includes(r.status)) setDenied(true);
+              else setConnectionError(true);
+              return false;
+            }
+            const fresh = await r.json();
+            if (!(await stillCurrent()) || request !== accessCheck) return false;
+            setLevel(fresh._level ?? "own");
+            setDenied(false);
+            setConnectionError(false);
+            return true;
+          } catch {
+            if (current() && request === accessCheck) setConnectionError(true);
+            return false;
+          }
+        };
         p = new HocuspocusProvider({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
           onStatus: ({ status }) => { if (current()) setConnected(status === "connected"); },
-          onSynced: () => { if (current()) setSynced(true); },
-          onAuthenticationFailed: () => { if (current()) setDenied(true); },
+          onSynced: () => { if (current()) { setSynced(true); setConnected(true); } },
+          onAuthenticationFailed: () => { if (current()) { setLevel(null); setDenied(true); } },
+          onAuthenticated: () => {
+            void refreshAccess().then(ok => { if (ok && current()) { setCheckingAccess(false); } });
+          },
+          onClose: ({ event }) => {
+            if (!current() || !event.reason?.startsWith("Access changed.")) return;
+            setCheckingAccess(true);
+            setLevel(null);
+            setConnected(false);
+            setSynced(false);
+            const transport = p?.configuration.websocketProvider;
+            if (!transport || !p) return;
+            // Wait for the transport close before reconnecting: connect() is a
+            // no-op while its old socket still reports Connected. Reattaching
+            // to that socket can race its queued document-close frame.
+            const closed = new Promise<void>(resolve => {
+              const done = () => { transport.off("close", done); resolve(); };
+              transport.on("close", done);
+              p!.disconnect();
+            });
+            void Promise.all([refreshAccess(), closed]).then(([ok]) => {
+              if (ok && current()) void p?.connect();
+            });
+          },
         });
         setConnection({ doc, provider: p });
       } catch { if (current()) setConnectionError(true); }
@@ -336,6 +385,7 @@ function ScopedCollabDoc({
     <p>Reconnect to open this document. Saved changes remain on this device.</p>
     <button className="focus-ring mt-3 rounded-lg border px-3 py-2" onClick={() => window.location.reload()}>Try again</button>
   </div>;
+  if (checkingAccess) return <p role="status" className="p-6 text-sm">Checking updated access…</p>;
   if (!provider || !ydoc) return <p role="status" className="p-6 text-sm">Opening document…</p>;
 
   const outer: React.CSSProperties = embedded

@@ -31,9 +31,10 @@ import { HocuspocusProvider } from "@hocuspocus/provider";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createApp } from "../src/app";
-import { addGrant, ensureUser, grantsForUser, suggestionsForNote, setUserProfile } from "../src/db";
+import { addGrant, addVaultEntry, grantsForCapability, removeGrant, upsertGrant, ensureUser, grantsForUser, suggestionsForNote, setUserProfile } from "../src/db";
+import { signCapability, verifyCapability } from "../src/auth/capability";
 import { issuePat } from "../src/auth/pat";
-import { attachCollab, collabSchema, hocuspocus, reconcileLoadedDocs, resetReconcileState, resolveLevel, yDocToHtml } from "../src/collab";
+import { attachCollab, collabSchema, hocuspocus, revalidateLiveAccess, reconcileLoadedDocs, resetReconcileState, resolveLevel, yDocToHtml } from "../src/collab";
 import { collabAccess } from "../src/mcp/tool-collab";
 import { workspaceRole } from "../src/roles";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
@@ -576,4 +577,91 @@ test("create: a vault path conflict reads 'a note already exists at <path>' (mem
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("revoking a share disconnects an idle live reader before the mutation returns", { timeout: 10000 }, async () => {
+  const token = makeCapability("note", "d1", "edit");
+  const client = await human("d1", token);
+  const live = hocuspocus.documents.get("d1")!;
+  const old = live.getConnections()[0]!;
+  const [grant] = grantsForCapability(verifyCapability(token)!.id);
+  removeGrant(grant!.id);
+  assert.equal(live.hasConnection(old), false, "removed synchronously before another broadcast");
+  typeInParagraph(client, 0, " REVOKED_WRITE");
+  await settle();
+  assert.doesNotMatch(yDocToHtml(live), /REVOKED_WRITE/);
+  assert.equal(await resolveLevel("d1", token, null), null);
+});
+
+test("downgrading a live link forces reauthentication and new connections are read-only", { timeout: 10000 }, async () => {
+  const token = makeCapability("note", "d1", "edit");
+  await human("d1", token);
+  const live = hocuspocus.documents.get("d1")!;
+  const old = live.getConnections()[0]!;
+  const [grant] = grantsForCapability(verifyCapability(token)!.id);
+  upsertGrant({ ...grant!, level: "view", caps: null });
+  assert.equal(live.hasConnection(old), false);
+  const reader = await human("d1", token);
+  assert.ok(live.getConnections().every(c => c.readOnly));
+  typeInParagraph(reader, 0, " READ_ONLY_WRITE");
+  await settle();
+  assert.doesNotMatch(yDocToHtml(live), /READ_ONLY_WRITE/);
+});
+
+test("a grant change leaves live documents in another vault connected", { timeout: 10000 }, async () => {
+  addVaultEntry({ id: "team-b", label: "B", url: "http://vault.test", vault: "team-b", token: "t" });
+  fv.putIn("team-b", { id: "d1", content: "<p>secondary</p>", tags: [] });
+  const id = "secondary-cap", exp = Date.now() + 60000;
+  addGrant({ vault_id: "team-b", subject_type: "link", subject: id, resource_type: "note", resource: "d1", level: "edit", created_by: OWNER });
+  await human("team-b::d1", signCapability({ id, exp }));
+  const live = hocuspocus.documents.get("team-b::d1")!;
+  const connection = live.getConnections()[0]!;
+  const token = makeCapability("note", "d1", "edit");
+  const [grant] = grantsForCapability(verifyCapability(token)!.id);
+  removeGrant(grant!.id);
+  assert.ok(live.hasConnection(connection));
+});
+
+test("expired links are removed from the idle feed by live revalidation", { timeout: 10000 }, async () => {
+  const claims = verifyCapability(makeCapability("note", "d1", "view"))!;
+  const token = signCapability({ ...claims, exp: Date.now() + 300 });
+  await human("d1", token);
+  const live = hocuspocus.documents.get("d1")!;
+  const connection = live.getConnections()[0]!;
+  await settle(350);
+  await revalidateLiveAccess();
+  assert.equal(live.hasConnection(connection), false);
+});
+
+test("external privacy changes are checked before an incoming live edit", { timeout: 10000 }, async () => {
+  const client = await human("d1", makeCapability("tag", "garden", "edit"));
+  const live = hocuspocus.documents.get("d1")!;
+  const connection = live.getConnections()[0]!;
+  fv.notes.get("d1")!.metadata = { prism_visibility: "private", prism_creator: OTHER };
+  typeInParagraph(client, 0, " PRIVATE_WRITE");
+  await settle();
+  assert.equal(live.hasConnection(connection), false);
+  assert.doesNotMatch(yDocToHtml(live), /PRIVATE_WRITE/);
+});
+
+test("revocation during an awaited live authorization cannot admit the queued update", { timeout: 10000 }, async () => {
+  const token = makeCapability("note", "d1", "edit");
+  const client = await human("d1", token);
+  const live = hocuspocus.documents.get("d1")!;
+  const fetchBefore = globalThis.fetch;
+  let entered!: () => void, release!: () => void;
+  const waiting = new Promise<void>(r => { entered = r; });
+  const gate = new Promise<void>(r => { release = r; });
+  globalThis.fetch = async (...args) => {
+    if (String(args[0]).includes("/notes/d1")) { entered(); await gate; }
+    return fetchBefore(...args);
+  };
+  try {
+    typeInParagraph(client, 0, " RACING_WRITE");
+    await waiting;
+    removeGrant(grantsForCapability(verifyCapability(token)!.id)[0]!.id);
+    release();
+    await settle();
+    assert.doesNotMatch(yDocToHtml(live), /RACING_WRITE/);
+  } finally { release(); globalThis.fetch = fetchBefore; }
 });

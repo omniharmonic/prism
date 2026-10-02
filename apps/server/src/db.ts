@@ -4,6 +4,7 @@
  * vault data, only who-can-do-what.
  */
 import Database from "better-sqlite3";
+import { notifyAccessChanged } from "./access-events";
 import { randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { config, vaultRegistry, type VaultEntry } from "./config";
@@ -1185,7 +1186,7 @@ export function getSession(id: string): Session | null {
   return s;
 }
 export function destroySession(id: string): void {
-  deleteSession.run(id);
+  if (deleteSession.run(id).changes) notifyAccessChanged();
 }
 
 // ---- device tokens (WP2.1 native sign-in; see auth/device.ts) ----
@@ -1240,7 +1241,9 @@ export function touchDeviceToken(id: string, lastSeen: number, expiresAt: number
   db.prepare("UPDATE device_tokens SET last_seen_at = ?, expires_at = ? WHERE id = ? AND revoked_at IS NULL").run(lastSeen, expiresAt, id);
 }
 export function revokeDeviceTokenRow(id: string): boolean {
-  return db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(now(), id).changes > 0;
+  const changed = db.prepare("UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").run(now(), id).changes > 0;
+  if (changed) notifyAccessChanged();
+  return changed;
 }
 /** Live (unrevoked, unexpired) devices — for one user, or every user when email is null. */
 export function listLiveDeviceTokens(email: string | null): DeviceTokenRow[] {
@@ -1508,7 +1511,8 @@ export function vaultIdsWithGrantsForUser(email: string): string[] {
   return (selectGrantVaultsByUser.all(email.toLowerCase()) as Array<{ vault_id: string }>).map((r) => r.vault_id);
 }
 export function removeGrant(id: string): void {
-  deleteGrantStmt.run(id);
+  const grant = getGrantById(id);
+  if (deleteGrantStmt.run(id).changes) notifyAccessChanged(grant?.vault_id);
 }
 
 // ── governance-materialized grants (P2) ──────────────────────────────────────
@@ -1563,6 +1567,7 @@ export function upsertGrant(g: GrantInput): Grant {
     const caps = normalizeCaps(g.caps);
     const level = caps ? levelForCaps(caps) : g.level;
     updateGrantLevel.run(level, expires_at, serializeCaps(caps), existing.id);
+    notifyAccessChanged(vaultId);
     return { ...existing, level, expires_at, caps };
   }
   return addGrant(g);
@@ -1578,7 +1583,7 @@ export function removeGrantBySubjectResource(
   resource: string,
   vaultId = "primary",
 ): void {
-  deleteGrantBySubjectResourceStmt.run(vaultId, subjectType, subject, resourceType, resource);
+  if (deleteGrantBySubjectResourceStmt.run(vaultId, subjectType, subject, resourceType, resource).changes) notifyAccessChanged(vaultId);
 }
 
 // ── Memberships (Phase 1 multi-tenancy) ──────────────────────────────────────
@@ -1610,9 +1615,10 @@ export function getMembershipRole(email: string, vaultId: string): string | null
 export function setMembership(vaultId: string, email: string, role: string, createdBy: string | null): void {
   ensureUser(email);
   upsertMembershipStmt.run({ vault_id: vaultId, email, role, created_by: createdBy, created_at: now() });
+  notifyAccessChanged(vaultId);
 }
 export function removeMembership(vaultId: string, email: string): void {
-  deleteMembershipStmt.run(vaultId, email);
+  if (deleteMembershipStmt.run(vaultId, email).changes) notifyAccessChanged(vaultId);
 }
 export function listMemberships(vaultId: string): MembershipRow[] {
   return selectMembershipsByVault.all(vaultId) as MembershipRow[];
@@ -1832,7 +1838,7 @@ export function listPeers(): Peer[] {
   return selectPeers.all() as Peer[];
 }
 export function removePeer(pubkey: string): void {
-  deletePeerStmt.run(pubkey);
+  if (deletePeerStmt.run(pubkey).changes) notifyAccessChanged();
 }
 
 // ---- peer pairing codes (single-use, hashed, TTL'd) ----
