@@ -8,12 +8,12 @@ Snapshot: **2026-10-02, resumed release verification**. This concise status supe
 
 | Artifact | State at this checkpoint |
 | --- | --- |
-| Production server/web | `6445136`, including the site studio; production health and PWA activation recorded in [release checkpoints](RELEASE-CHECKPOINTS.md#site-studio-deployed-user-requested-pause--2026-10-02) |
-| Release candidate | `86461c9` on `feat/workspace-experience`, in `.worktrees/workspace-experience`; combined builds and verification ongoing |
+| Production server/web | Web `86461c9`; running server retains compatible `6445136` behavior. Main source includes the equivalent escaped-NUL cleanup; no server restart was needed for this frontend release. |
+| Verified frontend release | `86461c9` on `feat/workspace-experience`; combined builds and 218 browser journeys passed. |
 | Candidate follow-ups | Long-title reader/phone-preview wrapping (`b09a6d0`), responsive settings and available-panel handling (`0102059`), honest human suggestion-permission guidance (`86461c9`) |
-| Installed desktop | Last recorded installed build `0495e07`; current installation and real desktop verification ongoing. Browser authentication and computer-use access have been restored. |
+| Installed desktop | `86461c9`, locally signed and installed in Applications. Saved sign-in, private editing, browser/native live collaboration, document-bound read-only agent, boards, canvas and private preview exercised. |
 
-The last deployed baseline passed 209 Chromium journeys, 1,440 server tests, ten focused WebKit publishing journeys, web/macOS builds and six packaged startup checks. These counts apply to that baseline, not an uncompleted candidate run. The suggestion disclosure separately passed all ten sharing browser journeys.
+The final frontend release passed all 218 Chromium journeys, application/e2e typechecks, web/macOS builds, six packaged Chromium/WebKit startup checks, and host/agent/event/media verifiers. The overflow slice additionally passed 30 focused Chromium/WebKit journeys. The server baseline passed 1,440 tests; the equivalent source separator cleanup passed 44 focused publishing tests. These counts do not replace the actual production evidence below.
 
 ## Implemented, with evidence
 
@@ -24,13 +24,13 @@ The last deployed baseline passed 209 Chromium journeys, 1,440 server tests, ten
 | Conversations and people | Clear sender identity, multiline rendering, saved/live history, retained reply drafts, canonical person profiles and exact-identity conflict handling. One controlled private Matrix send was verified end to end. |
 | Connected knowledge | Scoped semantic search/index maintenance, wikilinks, exact calendar/transcript navigation, focused graph, canvas note picker and durable relationship assertions. Named private web journeys and earlier native journeys recorded. |
 | Tasks and sharing | Configurable boards, property/date filters, manual per-view ordering, phone list mode; People/Links/Publish/Sync controls and live access revocation. Private production journeys preserve underlying note data. |
-| Publishing | Scoped content preview, private exclusions, password recovery, appearance drafts/history, wiki/docs/landing layouts and private reader preview. Production draft save/preview passed; full publish/restore acceptance remains below. |
+| Publishing | Scoped content preview, private exclusions, password recovery, appearance drafts/history, wiki/docs/landing layouts and private reader preview. Production save, 390px preview, publish, restore-as-draft and native preview passed with password/private-note boundaries preserved; the temporary site was removed. |
 
 Evidence: [implementation log](IMPLEMENTATION-LOG.md), [historical implementation checkpoints](IMPLEMENTATION.md), and [production release checkpoints](RELEASE-CHECKPOINTS.md). Earlier native success does not certify later uninstalled changes.
 
 ## Release gates still open
 
-1. Complete combined candidate checks, production publish/restore, and the actual installed desktop batch. Recheck the observed 390px long-title overflow after deploying its fix.
+1. The current frontend release checks and named desktop journeys passed. Physical mobile/device tests, less-used native extras, and broader integration/concurrent-review journeys remain distinct unfinished acceptance work; do not generalize the passed slice to every capability.
 2. **Human “Can suggest” is not a server-enforced restriction on direct edits.** Current guidance says to grant it only to trusted collaborators. Client tracking is distinct from the enforced agent session policies; restricted guest collaboration remains an open authorization gate.
 3. Complete real mobile-device keyboard/IME/PWA coverage, remaining native extras, and multi-person/reviewer concurrency evidence. Fixture/WebKit tests cannot substitute for those environments.
 
