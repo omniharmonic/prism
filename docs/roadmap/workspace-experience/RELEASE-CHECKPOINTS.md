@@ -179,3 +179,12 @@ Screenshot `/tmp/prism-live-thread-self-production-mobile.png` revealed the floa
 Mobile clearance follow-up `3a29cc0`: 27 message/workspace browser journeys, web/native builds and six exact packaged checks pass. PWA activated index-CKWhqoFj.js; no server restart. Backup `/private/tmp/prism-release-before-3a29cc0/web`. The production composer now ends 24px above the floating navigation at 390px, with no overflow; `/tmp/prism-live-thread-final-production-mobile.png` reviewed. Real Load earlier messages reaches the end of the owner-only source without duplicating its one event. Desktop-width layout also fits. Resizing revealed the existing Shell breakpoint remount resets the selected live view; a stable document-area layout is the next correction. Prepared native is 3a29cc0, not installed while the Mac is locked.
 
 The normal Matrix worker subsequently ingested the private self-room message into its existing fixture note exactly once. Readback confirms one live source event and one saved transcript occurrence, with the initial saved marker, private visibility and unrelated metadata retained. This verifies the browser→server action→Matrix→server ingestion→vault path without the retired Prism.app running. It does not establish external Telegram bridging or non-self canonical-person matching.
+
+
+### Stable responsive document area — 130903c
+
+All 163 browser journeys, application/e2e typechecks, web/native builds and six packaged Chromium/WebKit startup checks pass. Client-only release; no server restart. Previous web backed up at `/private/tmp/prism-release-before-130903c/web`, retaining old hashed assets.
+
+Authenticated production PWA activated the new build. The private self-thread's live reader retained the exact DOM node and its one source event across 1280→390→1280; no phone overflow. A new owner-private synthetic document under `_test/prism-responsive-20261001/` retained its exact Tiptap node and typed text across both breakpoints. Independent vault readback confirms the edit occurs exactly once, with the original body marker, private visibility and unrelated metadata preserved. Anonymous access was denied. Native 130903c is prepared and packaged-tested, but Applications remains 0495e07 while the Mac is locked.
+
+Production exploration exposed a separate shortcut defect: Cmd+K opens an inert search behind focused canvas. A modal-aware shortcut correction is in progress; this interaction is not yet accepted.

@@ -7,7 +7,13 @@ export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      if (!mod || e.defaultPrevented) return;
+      // A modal owns the current interaction. Do not change the underlying
+      // document or open a second workspace overlay behind its inert boundary.
+      if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) {
+        if (["w", "b", "\\", "k"].includes(e.key)) e.preventDefault();
+        return;
+      }
 
       switch (e.key) {
         case "w":

@@ -252,3 +252,20 @@ test("focused canvas remains mounted and keeps new mobile controls inert until i
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
 });
+
+
+test("focused canvas owns shortcuts until it closes without trapping search behind it", async ({ page }) => {
+  await page.goto("/e2e-fixtures/workspace.html?session&canvas");
+  await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("focus-canvas", "Canvas fixture", "canvas"));
+  await page.getByRole("button", { name: "Focus canvas", exact: true }).click();
+  const focused = page.getByRole("dialog", { name: "Focused canvas" });
+  await expect(focused).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByRole("dialog", { name: "Search workspace", includeHidden: true })).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+w");
+  await expect(focused).toBeVisible();
+  await focused.getByRole("button", { name: "Back to document", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
+  await expect(page.getByRole("combobox")).toBeFocused();
+});
