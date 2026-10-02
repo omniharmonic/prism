@@ -70,6 +70,29 @@ test("neighborhood preserves direction/types, deduplicates hydration, and disclo
   assert.equal(bounded.truncated, true);
 });
 
+test("graph labels use explicit names or filenames, never generated body excerpts", () => {
+  const unnamed = { ...note("a"), displayTitle: "<p>Private body excerpt</p>" };
+  assert.equal(graphNeighborhood([unnamed], "a", 1, 10)!.nodes[0]?.title, "a");
+  assert.equal(
+    graphNeighborhood(
+      [{ ...unnamed, metadata: { title: "  Project plan  " } }],
+      "a",
+      1,
+      10,
+    )!.nodes[0]?.title,
+    "Project plan",
+  );
+  assert.equal(
+    graphNeighborhood(
+      [{ ...unnamed, path: null, metadata: { title: "  " } }],
+      "a",
+      1,
+      10,
+    )!.nodes[0]?.title,
+    "a",
+  );
+});
+
 test("graph authorizes both endpoints before traversal and never discloses hidden totals or bodies", async () => {
   Object.assign(fv.put(note("a")), {
     links: [edge("a", "b"), edge("a", "secret")],

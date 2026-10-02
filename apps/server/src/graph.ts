@@ -81,9 +81,10 @@ export function graphNeighborhood(
         id,
         path: note.path,
         title:
-          typeof note.metadata?.title === "string"
-            ? note.metadata.title
-            : note.displayTitle || note.path?.split("/").pop() || id,
+          (typeof note.metadata?.title === "string" &&
+            note.metadata.title.trim()) ||
+          note.path?.split("/").pop() ||
+          id,
         tags: note.tags ?? [],
       };
     }),
