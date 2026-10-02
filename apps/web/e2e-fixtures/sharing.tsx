@@ -4,11 +4,19 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   useAgentChatStore,
+  useUIStore,
+  CollabSharingProvider,
   type CollabSharing,
   type NoteAccess,
   type PublicationInfo,
 } from "@prism/core";
 import { ShareDialog } from "../../../packages/core/src/components/layout/ShareDialog";
+import { TabBar } from "../../../packages/core/src/components/layout/TabBar";
+const toolbar = new URLSearchParams(location.search).has("toolbar");
+if (toolbar)
+  useUIStore
+    .getState()
+    .openTab("private", "A calmer place to think", "document");
 const scoped = new URLSearchParams(location.search).has("scoped");
 useAgentChatStore.setState({ scope: "sharing-owner" });
 const access: NoteAccess = {
@@ -160,6 +168,11 @@ function Fixture() {
   const [open, setOpen] = useState(false);
   return (
     <main style={{ padding: 24 }}>
+      {toolbar && (
+        <CollabSharingProvider value={sharing}>
+          <TabBar />
+        </CollabSharingProvider>
+      )}
       <h1>Prism workspace</h1>
       <button onClick={() => setOpen(true)}>Share fixture</button>
       <button>Outside action</button>

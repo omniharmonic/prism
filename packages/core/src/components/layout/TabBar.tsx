@@ -104,7 +104,7 @@ export function TabBar() {
             <Star size={18} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
           </IconButton>
         )}
-        <ShareButton />
+        <ShareButton key="share" />
       </div>
     );
   }
@@ -214,7 +214,10 @@ export function TabBar() {
             <Star size={16} fill={isFav ? "var(--color-accent)" : "none"} color={isFav ? "var(--color-accent)" : undefined} />
           </IconButton>
         )}
-        <ShareButton />
+      </div>
+      {/* Keep sharing at the same keyed parent on desktop and mobile. */}
+      <ShareButton key="share" />
+      <div className="flex items-center gap-0.5 flex-shrink-0">
         {/* Bot = opens Agent specifically */}
         <IconButton
           onClick={() => {

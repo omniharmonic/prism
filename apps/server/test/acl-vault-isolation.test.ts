@@ -308,3 +308,12 @@ test("sharing serializes legacy level capabilities and narrows sharer grant choi
   assert.deepEqual(access.allowedLevels, ["view"]);
   assert.equal(access.canManageLinks, false);
 });
+
+test("sharing names the document by its title or path before a body excerpt", async () => {
+  fv.putIn("team-b", { id: "same", path: "Plans/Launch", content: "Unrelated document text", metadata: { title: "Launch workspace", prism_creator: ADMIN } });
+  let r = await req("/notes/same");
+  assert.equal((await r.json() as any).note.title, "Launch workspace");
+  fv.putIn("team-b", { id: "same", path: "Plans/Launch", content: "Unrelated document text", metadata: { prism_creator: ADMIN } });
+  r = await req("/notes/same");
+  assert.equal((await r.json() as any).note.title, "Launch");
+});

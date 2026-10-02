@@ -269,3 +269,30 @@ test("custom permissions remain explicit until deliberately replaced by a role",
   await expect(control).toHaveValue("view");
   await expect(page.getByText(/Custom: view, edit, share/)).toHaveCount(0);
 });
+
+test("real workspace sharing keeps the dialog and invitation draft across responsive headers", async ({
+  page,
+}) => {
+  await page.goto("/e2e-fixtures/sharing.html?toolbar");
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByLabel("Add a collaborator").fill("draft@example.test");
+  await page.getByLabel("Collaborator permission").selectOption("suggest");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByRole("dialog", { name: "Share document" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Add a collaborator")).toHaveValue(
+    "draft@example.test",
+  );
+  await expect(page.getByLabel("Collaborator permission")).toHaveValue(
+    "suggest",
+  );
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByLabel("Add a collaborator")).toHaveValue(
+    "draft@example.test",
+  );
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "Share", exact: true }),
+  ).toBeFocused();
+});

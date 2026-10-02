@@ -590,7 +590,7 @@ acl.get("/notes/:id", async (c) => {
     const creator = (note.metadata?.prism_creator as string | undefined) ?? null;
     const held = canManageLinks ? null : await sharerCaps(c, { kind: "note", resource: id });
     const allowedLevels = LEVELS.filter(level => level !== "own" && (!held || [...expandLevel(level)].every(cap => held.has(cap))));
-    return c.json({ note: { id, tags, title: deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks, allowedLevels });
+    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator }, people, links, tagAccess, canManageLinks, allowedLevels });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);
