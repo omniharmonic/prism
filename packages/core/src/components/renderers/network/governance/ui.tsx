@@ -9,7 +9,7 @@ export const card: CSSProperties = {
   borderRadius: 10,
   padding: 16,
   marginBottom: 18,
-  background: "var(--glass-bg)",
+  background: "var(--bg-surface)",
 };
 
 export const subCard: CSSProperties = {
@@ -34,7 +34,7 @@ export const selectStyle: CSSProperties = {
   fontSize: 13,
   padding: "6px 8px",
   borderRadius: 6,
-  background: "var(--glass-bg)",
+  background: "var(--bg-surface)",
   color: "var(--text-primary)",
   border: "1px solid var(--glass-border)",
 };
@@ -62,8 +62,8 @@ export function Section({
   testId?: string;
 }) {
   return (
-    <div style={card} data-testid={testId}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: subtitle ? 4 : 12 }}>
+    <div className="prism-governance-section" style={card} data-testid={testId}>
+      <div className="prism-governance-section-heading" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: subtitle ? 4 : 12 }}>
         {icon}
         <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: "var(--text-primary)", flex: 1 }}>{title}</h2>
         {actions}
@@ -106,9 +106,9 @@ export function Chip({
         fontSize: 12,
         padding: "3px 8px",
         borderRadius: 999,
-        border: `1px solid ${tone === "accent" ? "var(--accent)" : "var(--glass-border)"}`,
-        background: tone === "accent" ? "var(--accent-dim)" : "var(--glass)",
-        color: tone === "accent" ? "var(--accent)" : "var(--text-secondary)",
+        border: `1px solid ${tone === "accent" ? "var(--color-accent)" : "var(--glass-border)"}`,
+        background: tone === "accent" ? "var(--color-accent-dim)" : "var(--glass)",
+        color: tone === "accent" ? "var(--color-accent)" : "var(--text-secondary)",
       }}
     >
       {children}
@@ -137,7 +137,7 @@ export function Progress({ value, needed, testId }: { value: number; needed: num
           style={{
             width: `${pct}%`,
             height: "100%",
-            background: done ? "var(--color-success, #2e7d32)" : "var(--accent)",
+            background: done ? "var(--color-success, #2e7d32)" : "var(--color-accent)",
             transition: "width 160ms ease",
           }}
         />

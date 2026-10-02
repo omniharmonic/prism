@@ -48,6 +48,7 @@ import {
   isReadOnlyProfile,
   prismMcpConfig,
   prismProfileScope,
+  profileEnabled,
   prismProfilesEnabled,
   profileAllowedTools,
   profileServer,
@@ -669,8 +670,8 @@ export async function startTurn(
       );
     }
   }
-  if (isPrismProfile(s.profile) && !prismProfilesEnabled()) {
-    throw new ProfileUnavailableError(`profile ${s.profile} is disabled (AGENT_PRISM_PROFILES)`);
+  if (!profileEnabled(s.profile)) {
+    throw new ProfileUnavailableError(`profile ${s.profile} is disabled (${s.profile === "prism-graph" ? "AGENT_GRAPH_PROFILE" : "AGENT_PRISM_PROFILES"})`);
   }
 
   const firstTurn = (q.countTurns.get(sessionId) as { n: number }).n === 0;

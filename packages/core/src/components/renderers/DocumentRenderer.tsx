@@ -1,5 +1,8 @@
 import { useAgentDocumentSnapshot } from "../../lib/agent/documentSnapshots";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BubbleMenu } from "@tiptap/react/menus";
+import { SelectionActions } from "./SelectionActions";
+import { useAgentClient } from "../../data/AgentClientContext";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { useUIStore } from "../../app/stores/ui";
 import { useNotes } from "../../app/hooks/useParachute";
@@ -32,8 +35,9 @@ import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
+import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbar } from "./EditorToolbar";
-import { PageHeader, renamePath, type ContentFont } from "./DocumentChrome";
+import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
@@ -91,11 +95,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // extension; updates the open tab's label).
   const updateNote = useUpdateNote();
   const renameTab = useUIStore((s) => s.renameTab);
-  const handleRename = useCallback((newName: string) => {
+  const handleRename = useCallback(async (newName: string) => {
     if (readOnly || governed) return; // read-only surface / no edit access: never rename/persist
     const next = renamePath(note.path, newName);
     if (!next) return;
-    updateNote.mutate({ id: note.id, path: next });
+    await updateNote.mutateAsync({ id: note.id, path: next });
     renameTab(note.id, newName.trim());
   }, [note.path, note.id, updateNote, renameTab, readOnly, governed]);
 
@@ -263,6 +267,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const { inlinePromptOpen, inlinePromptPosition, inlinePromptSelection, openInlinePrompt, closeInlinePrompt } = useUIStore();
   const hostServices = useHostServices();
   const inlineAgent = isDesktop || !!hostServices;
+  const sessionAgent = useAgentClient();
 
   // Handle Cmd+S and Cmd+J
   useEffect(() => {
@@ -275,7 +280,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       // server agent: WP4.3 host services)
       if ((e.metaKey || e.ctrlKey) && e.key === "j") {
         e.preventDefault();
-        if (!editor || !inlineAgent) return;
+        if (sessionAgent || !editor || !inlineAgent) return;
         const { from, to } = editor.state.selection;
         const selectedText = editor.state.doc.textBetween(from, to, " ");
         if (!selectedText.trim()) return; // Need selected text
@@ -291,7 +296,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [saveNow, editor, openInlinePrompt, inlineAgent]);
+  }, [saveNow, editor, openInlinePrompt, inlineAgent, sessionAgent]);
 
   // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is
@@ -330,9 +335,13 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full" data-content-font={contentFont}>
+    <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
+      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty}>
+        <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
+      </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
+      {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
 
       {/* Governed note (web, non-owner): the propose-for-review affordance, plus
           the per-note history. Never rendered when `_caps` is absent. */}
@@ -347,10 +356,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       )}
 
       {/* Editor */}
-      <div className="flex-1 overflow-auto relative" style={{ padding: "var(--space-10) var(--space-6) var(--space-12)" }}>
-        <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}>
+      <div className="document-writing-scroll flex-1 overflow-auto relative">
+        <div className="document-writing-measure">
           <PageHeader
             path={note.path}
+            details={<PageProperties path={note.path} tags={note.tags ?? []} updatedAt={note.updatedAt} onOpenAll={() => useUIStore.setState({contextPanelOpen:true,contextPanelTab:"metadata"})}/>}
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
@@ -374,7 +384,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       {/* Footer: save status (the font switch now lives in the shell bottom bar /
           More sheet, registered via the store). */}
       <div
-        className="flex items-center justify-end px-4 py-1 text-xs gap-3"
+        className="document-save-footer flex items-center justify-end px-4 py-1 text-xs gap-3"
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
         <div className="flex items-center gap-3">

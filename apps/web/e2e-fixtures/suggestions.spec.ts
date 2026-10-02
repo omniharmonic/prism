@@ -29,7 +29,12 @@ test("review list pairs replacements, names their author, and uses current posit
   await page.goto("/e2e-fixtures/suggestions.html");
   await page.getByText("2 suggested changes", { exact: true }).click();
   const changes = page.getByRole("region", { name: "Change by Alex (agent)" });
-  await expect(changes).toHaveCount(2);
+  await expect(changes).toHaveCount(1);
+  await expect(page.getByText("Change 1 of 2", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next suggested change" }).click();
+  await expect(changes).toContainText("Old two");
+  await expect(page.getByText("Change 2 of 2", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Previous suggested change" }).click();
   await expect(changes.first()).toContainText("Old one");
   await expect(changes.first()).toContainText("New one");
   await expect(changes.first()).toContainText("Agent suggestion");

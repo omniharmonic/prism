@@ -163,3 +163,48 @@ test("3D tooltip consumer treats document and relationship markup as literal tex
     await page.evaluate(() => (window as any).prismTooltipInjected),
   ).toBeUndefined();
 });
+
+
+test("search filters the loaded neighborhood without fetching and keeps the current focus", async ({ page }) => {
+  await page.goto("/e2e-fixtures/graph.html");
+  await expect(page.getByRole("heading", { name: "A living workspace", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.getByLabel("Search loaded connections").fill("research");
+  const list = page.getByRole("list", { name: "Connected documents" });
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list).toContainText("#research");
+  await expect(list).toContainText("Outgoing · explores");
+  await page.getByLabel("Relationship filter").selectOption("supports");
+  await expect(list.getByRole("button")).toHaveCount(1);
+  await expect(page.getByText("No connections match these filters.", { exact: false })).toBeVisible();
+  await expect(page.getByText("No connections yet.", { exact: false })).toHaveCount(0);
+  await page.getByLabel("Search loaded connections").fill("");
+  await expect(list.getByRole("button")).toHaveCount(2);
+  expect(await page.evaluate(() => (window as any).prismGraphFixture.calls)).toEqual(["home"]);
+  await list.getByRole("button", { name: "Focus Connected ideas" }).click();
+  await expect(page.getByLabel("Relationship filter")).toHaveValue("");
+  await expect(page.getByLabel("Search loaded connections")).toHaveValue("");
+});
+
+for (const width of [1440, 390, 320]) {
+  test(`dense graph remains bounded and all loaded notes are available in list at ${width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/e2e-fixtures/graph.html?dense${width === 320 ? "&dark" : ""}`);
+    const map = page.getByRole("group", { name: "Document connection map" });
+    await expect(map.getByRole("button")).toHaveCount(width > 600 ? 9 : 5);
+    await expect(page.getByText(`of 32 documents.`, { exact: false })).toBeVisible();
+    await map.focus();
+    const originalView = await map.getAttribute("viewBox");
+    await page.keyboard.press("ArrowRight");
+    await expect(map).not.toHaveAttribute("viewBox", originalView!);
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await page.getByRole("button", { name: "Reset view" }).click();
+    await expect(map).toHaveAttribute("viewBox", originalView!);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await page.screenshot({ path: testInfo.outputPath(`graph-${width}.png`) });
+    await page.getByRole("button", { name: "List", exact: true }).click();
+    await expect(page.getByRole("list", { name: "Connected documents" }).getByRole("button")).toHaveCount(32);
+    await page.getByLabel("Search loaded connections").fill("Research/Document 28");
+    await expect(page.getByRole("list", { name: "Connected documents" }).getByRole("button")).toHaveCount(2);
+  });
+}

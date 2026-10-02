@@ -9,6 +9,10 @@ import { join } from "node:path";
 import {
   PRISM_READ_TOOLS,
   PRISM_WRITE_TOOLS,
+  PRISM_GRAPH_READ_TOOLS,
+  PRISM_GRAPH_WRITE_TOOLS,
+  PRISM_GRAPH_TOOLS,
+  prismProfileScope,
   SKILL_TOOLS,
   READ_WRITE_TOOLS,
   profileAllowedTools,
@@ -55,6 +59,37 @@ test("prism profiles: tool names are real catalog tools with the right scope; no
   const rw = profileAllowedTools("prism-rw");
   assert.ok(rw.includes("mcp__prism__prism_create_note") && rw.includes("mcp__prism__prism_query_notes"));
   assert.ok(profileAllowedTools("prism-ro").every((t) => PRISM_TOOLS.find((p) => `mcp__prism__${p.name}` === t)!.scope === "read"));
+});
+
+test("graph-maintenance tools: ONLY the explicit prism-graph profile has them; it needs AGENT_GRAPH_PROFILE on top of AGENT_PRISM_PROFILES", () => {
+  const people = PRISM_TOOLS.map((t) => t.name).filter((n) => n.startsWith("prism_people_"));
+  const reads = ["prism_people_review_queue", "prism_people_review_context", "prism_people_duplicates", "prism_people_link_status"];
+  const writes = ["prism_people_review_decide", "prism_people_recommend_merge", "prism_people_file_review"];
+  assert.deepEqual([...people].sort(), [...reads, ...writes].sort(), "a new prism_people_* tool needs an explicit profile decision here");
+  assert.deepEqual([...PRISM_GRAPH_READ_TOOLS].sort(), [...reads].sort());
+  assert.deepEqual([...PRISM_GRAPH_WRITE_TOOLS].sort(), [...writes].sort());
+  const byName = new Map(PRISM_TOOLS.map((t) => [t.name, t]));
+  for (const n of PRISM_GRAPH_TOOLS) assert.ok(byName.has(n), `${n} exists`);
+  const graph = profileAllowedTools("prism-graph");
+  for (const n of people) assert.ok(graph.includes(`mcp__prism__${n}`), `${n} in prism-graph`);
+  for (const p of ["prism-ro", "prism-rw", "prism-suggest", "vault-ro", "vault-rw", "skill"] as AgentProfile[])
+    assert.ok(!profileAllowedTools(p).some((t) => t.includes("prism_people_")), `${p} has no graph tool`);
+  for (const banned of ["prism_delete_note", "prism_share", "prism_restore_version", "prism_vote", "prism_propose_change"]) assert.ok(!graph.includes(`mcp__prism__${banned}`), banned);
+  assert.equal(prismProfileScope("prism-graph"), "write");
+  // Gates
+  assert.equal(isSessionProfile("prism-graph"), false);
+  process.env.AGENT_PRISM_PROFILES = "true";
+  assert.equal(isSessionProfile("prism-graph"), false, "AGENT_PRISM_PROFILES alone is not enough");
+  assert.ok(!availableSessionProfiles().includes("prism-graph"));
+  process.env.AGENT_GRAPH_PROFILE = "true";
+  try {
+    assert.equal(isSessionProfile("prism-graph"), true);
+    assert.ok(availableSessionProfiles().includes("prism-graph"));
+    delete process.env.AGENT_PRISM_PROFILES;
+    assert.equal(isSessionProfile("prism-graph"), false, "…and AGENT_GRAPH_PROFILE alone is not enough");
+  } finally {
+    delete process.env.AGENT_GRAPH_PROFILE;
+  }
 });
 
 test("buildClaudeArgs: a prism run may name ONLY prism tools; a vault run only vault tools", () => {

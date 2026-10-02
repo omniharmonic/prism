@@ -60,6 +60,20 @@ if (new URLSearchParams(location.search).has("alternate")) {
     },
   };
 }
+if (new URLSearchParams(location.search).has("manual-drag")) {
+  notes[0].metadata = {
+    ...notes[0].metadata,
+    prism_board: {
+      ...DEFAULT_BOARD,
+      order: ["hidden-rank", "blank", "custom", "design"],
+    },
+  };
+  notes[1].metadata = { ...notes[1].metadata, status: "todo" };
+  notes[2].metadata = { ...notes[2].metadata, status: "todo" };
+  notes[3].metadata = { ...notes[3].metadata, status: "done" };
+  if (new URLSearchParams(location.search).has("task-readonly"))
+    notes[1]._caps = ["view"];
+}
 let revision = 0,
   scope = "board-owner";
 useAgentChatStore.setState({ scope });

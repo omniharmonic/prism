@@ -59,7 +59,11 @@ export default function NetworkRenderer(_props: RendererProps) {
   // The Workspaces/Access + Server surfaces span the whole box → server-owner only.
   const canWorkspaces = !!sharing?.listWorkspaceEntities && isServerOwner;
   const canAccess = !!sharing?.getWorkspace && isServerOwner;
-  const canServer = !!sharing?.getServerInfo && isServerOwner;
+  // Integration credentials are vault-scoped admin work; operator controls
+  // remain server-owner-only inside ServerPanel after getServerInfo succeeds.
+  const canConnections = !!sharing?.getViewer && isAdmin && !!sharing.getIntegrationStatus;
+  const canServer = canConnections || (!!sharing?.getServerInfo && isServerOwner
+    && (!sharing.getIntegrationStatus || !!sharing.getViewer));
   // Governance is member-authed in its own handler (members vote on proposals),
   // so it is NOT admin-gated: show it wherever the Network surface has any web
   // capability; hidden on desktop / for capability viewers.
@@ -73,7 +77,7 @@ export default function NetworkRenderer(_props: RendererProps) {
     ...(canMembers ? [{ id: "members", label: "Members", icon: <Users size={14} /> }] : []),
     ...(canVaults ? [{ id: "vaults", label: "Vaults", icon: <Database size={14} /> }] : []),
     ...(canGovern ? [{ id: "governance", label: "Governance", icon: <Scale size={14} /> }] : []),
-    ...(canServer ? [{ id: "server", label: "Server", icon: <Server size={14} /> }] : []),
+    ...(canServer ? [{ id: "server", label: canConnections ? "Connections" : "Server", icon: <Server size={14} /> }] : []),
   ];
   const [tab, setTab] = useState<string>("publish");
   // Resolve against permitted tabs during render, so a removed capability never
@@ -95,7 +99,7 @@ export default function NetworkRenderer(_props: RendererProps) {
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--bg-base)]"
     >
       <header className="shrink-0 border-b border-[var(--glass-border)] px-4 pb-3 pt-5 sm:px-7 sm:pt-7">
-        <div className="mx-auto max-w-[880px]">
+        <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
           <h1 className="m-0 text-[22px] font-semibold tracking-tight text-[var(--text-primary)]">Workspace settings</h1>
           <p className="mb-0 mt-1 text-[13px] leading-relaxed text-[var(--text-secondary)]">
             {isAdmin
@@ -115,7 +119,7 @@ export default function NetworkRenderer(_props: RendererProps) {
         </div>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-4 pb-12 pt-5 sm:px-7">
-        <div className="mx-auto max-w-[880px]">
+        <div className={`mx-auto ${activeTab === "publish" ? "max-w-[1180px]" : "max-w-[880px]"}`}>
           {activeTab === "workspaces" && <WorkspacesPanel />}
           {activeTab === "access" && <WorkspacePanel />}
           {activeTab === "publish" && <PublishPanel />}

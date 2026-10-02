@@ -1,204 +1,126 @@
 ---
 name: Entity Reconciliation
-description: "Three-phase deduplication and matching of extracted entities against existing Parachute Vault notes. Determines whether each extracted entity should create a new note, update an existing one, or be merged with a duplicate. Uses exact matching, fuzzy matching, and semantic reasoning."
-version: 1.0.0
+description: "Match extracted entities against existing Parachute Vault notes and decide, per entity, MATCH (an existing note), CREATE (genuinely new) or AMBIGUOUS (route to Prism's review queue). Uses the real vault 0.7.9 MCP tools with small paged queries, follows merged-person tombstones, and never merges: duplicates go to Prism as recommendations for the owner."
+version: 2.0.0
 ---
 
 # Entity Reconciliation Skill
 
-You are reconciling newly extracted entities against the existing knowledge in a Parachute Vault. Your job is to prevent duplicates, merge related entries, and ensure the vault remains a clean, authoritative knowledge graph.
+You reconcile newly extracted entities (from the `extract-entities` skill)
+against the vault, so the graph gains links to the RIGHT existing notes and no
+duplicates. You do not merge, and you do not decide anything a person must
+decide: ambiguous identities and duplicate pairs go to Prism, where the owner
+approves them.
 
 ## When to Use
 
-This skill activates after entity extraction, before entities are written to the vault. It is called by the `/oparachute-process` command pipeline.
+After entity extraction, before anything is written to the vault.
 
-## Reconciliation Pipeline
+## Tools and credentials
 
-### Phase 0: Load Existing Entity Index (Efficient)
+- **Parachute vault MCP** (`mcp__parachute-vault__*`): `query-notes`,
+  `list-tags`, `vault-info`, and — only to apply MATCH links / CREATE notes the
+  caller asked for — `update-note`, `create-note`. These are the only note
+  tools vault 0.7.9 has; there is no `read-notes`, `get-note`, `search-notes`,
+  `semantic-search`, `get-links`, `create-link`, `delete-link`, `batch-tag`.
+- **Prism MCP** with Benjamin's token (`prism-rw` profile, or a Read & write
+  token from Prism → Settings → Account → Connect your agent):
+  `prism_people_review_queue`, `prism_people_file_review`,
+  `prism_people_duplicates`, `prism_people_recommend_merge`. Without it, list
+  AMBIGUOUS items and duplicates in your output instead of filing them.
 
-Before matching individual entities, build a lightweight index of existing typed notes:
+## Limits
 
-```
-For each resource type tag defined in the schema:
-  mcp__parachute-vault__read-notes
-    tags: [type_tag]
-    include_content: false    ← KEY: returns NoteIndex (id, path, metadata, preview, byteSize) — no full content
-    limit: 200
-    sort: "desc"
-```
+- Every list query: `limit` ≤ 25, `include_content: false`, and
+  `include_metadata` naming only the fields you compare. Never page through a
+  whole tag to build an index.
+- Read a candidate's body only when you must, with `content_length` ≤ 6000.
+- ≤ 5 candidate lookups per entity.
 
-This gives you paths, metadata (including aliases), and previews for matching WITHOUT downloading full note content. Only fetch full content (`get-note`) when you need to inspect a specific match candidate.
+## Where notes live
 
-Also use `path_prefix` to efficiently browse entity directories:
-```
-mcp__parachute-vault__read-notes
-  path_prefix: "person/"     ← browse all persons
-  include_content: false
-```
+- People: `vault/people/<Name>` (tag `person`). Not `person/…`.
+- Organizations: tag `organization`; projects: tag `project`; meetings:
+  `vault/meetings/<date>/<title>` (tag `meeting`); transcripts: tag
+  `transcript`.
+- Check `vault-info` once for the current tags if the entity type is unusual.
 
-### Phase 1: Exact Match
+## Tombstones (merged people)
 
-For each extracted entity, check for exact matches:
+A `person` note tagged `merged-stub` or `superseded`, or with `status:
+merged_into_canonical`, is a merged duplicate. Never match TO it: follow
+`metadata.merged_into` (a note id or path, `[[…]]` allowed; follow chains,
+stop on a loop) and match the live note. If the pointer leads nowhere, treat
+the entity as AMBIGUOUS. A note that merely carries a `merged_into` pointer
+without one of those markers is still a live person.
 
-1. **Path match** — Search for a note at the expected path `{type}/{slug}`
-   - Use `mcp__parachute-vault__get-note` with `path: "{type}/{slug}"`
-   - If found: this is an UPDATE operation
+## Matching, in order (stop at the first decisive result)
 
-2. **Batch path check** — For multiple entities of the same type, use the preloaded NoteIndex from Phase 0 to check paths in memory before making individual calls
+For a **person**:
 
-3. **Name match** — Search for notes whose content or metadata contains the canonical name
-   - Use `mcp__parachute-vault__search-notes` with the canonical name as query and `tags: [type_tag]` to narrow scope
-   - Search returns full Note shape — use for content-level matching
+1. **Strong key** — the entity's email, Matrix id (`@x:server`), Telegram
+   handle/id, or international phone (`+…`):
+   `query-notes { tag: "person", search: "<address or id>", limit: 5, include_metadata: ["name","email","emails","channels","matrix","telegram","phone","merged_into","status"] }`
+   and confirm the key literally appears in the returned metadata.
+   Exactly one live person (after following tombstones) → **MATCH**. Two or
+   more → **AMBIGUOUS** (it is probably a duplicate pair — see below).
+2. **Exact path** — `query-notes { path: "vault/people/<Full Name>", include_content: false }`.
+   One live note → MATCH only if a second signal agrees (same organization,
+   or the entity's context names the same project/meeting the note is linked
+   to). Otherwise AMBIGUOUS.
+3. **Name** — `query-notes { tag: "person", search: "<full name>", limit: 10, include_metadata: ["name","aliases","organization"] }`.
+   A name is never decisive on its own: one hit → AMBIGUOUS with that one
+   candidate unless a second signal agrees (same organization or a shared
+   linked note via `query-notes { near: { note_id: <candidate>, depth: 1 }, limit: 25 }`).
+   Several hits → AMBIGUOUS with all of them. Single-token names ("Sam") are
+   always AMBIGUOUS.
+4. Nothing found → **CREATE**, only if the entity is clearly a real human
+   with a full name; a first name only, a role mailbox, a bot or a group is
+   never created.
 
-4. **Alias match** — Check the preloaded NoteIndex metadata for alias arrays, then confirm with search if needed
-   - Use `mcp__parachute-vault__search-notes` with each alias
+For an **organization / project / concept**: exact path or exact name
+(`query-notes { tag, search, limit: 10 }`, compare `name` and `aliases`
+case-insensitively) → MATCH; several → AMBIGUOUS; none → CREATE.
 
-**If exact match found** → Generate UPDATE operation (merge new info into existing note)
+Never match across types: a person and an organization with the same name are
+different entities.
 
-### Phase 2: Fuzzy Match
-
-For entities that didn't match exactly:
-
-1. **Similar name search** — Search for notes with similar names
-   - Use `mcp__parachute-vault__search-notes` with partial name variations
-   - Consider common variations:
-     - With/without middle names
-     - Abbreviations vs full names
-     - Hyphenated vs separate words
-     - Singular vs plural
-
-2. **Levenshtein-style assessment** — For each search result, assess string similarity:
-   - Names within edit distance 3 (for names > 8 chars) are candidates
-   - Names that share 2+ words are candidates
-   - Organization names that share key terms are candidates
-
-**If fuzzy match found** → Flag for REVIEW with both entities shown side-by-side
-
-### Phase 3: Semantic Match
-
-For entities that didn't match in phases 1-2:
-
-1. **Semantic search** — If embeddings are available, use `mcp__parachute-vault__semantic-search` to find conceptually similar notes
-   - Filter by type tag: `tags: [type_tag]`
-   - Use `exclude_tags: ["needs-review"]` to skip unconfirmed entities
-   - Set `hybrid: true` for combined keyword + semantic matching (default)
-   - Look at the top 5 results
-
-2. **Contextual reasoning** — For each candidate:
-   - Consider: Are these describing the same real-world entity?
-   - Factor in: type, description, relationships, dimensional attributes
-   - A "Participatory Budgeting" pattern and a "Community Budget Process" pattern might be the same thing
-
-3. **Confidence thresholds**:
-   - **> 0.85**: Merge automatically (add alias, combine metadata)
-   - **0.7 - 0.85**: Flag for REVIEW with merge recommendation
-   - **< 0.7**: Treat as NEW entity
-
-### Phase 4: Generate Operations
-
-For each extracted entity, produce one operation:
+## Output (one line per entity)
 
 ```
-OPERATION: CREATE | UPDATE | MERGE | REVIEW
-─────────────────────────────────────────────
-Entity: [canonical name]
-Type: [resource type tag]
-Confidence: [0.0-1.0]
-Rationale: "Why this decision"
-
-For UPDATE:
-  Existing note: [note ID and path]
-  Changes: [what would be added/changed]
-
-For MERGE:
-  Primary: [note ID — the one to keep]
-  Secondary: [note ID — the one to merge in]
-  Combined aliases: [union of both]
-  Combined metadata: [merged fields]
-
-For REVIEW:
-  Candidates: [list of potential matches with similarity scores]
-  Recommendation: [what you think should happen]
-
-For CREATE:
-  Path: [type/slug]
-  Tags: [type tag + dimension tags]
-  Metadata: [all extracted fields]
-  Content: [generated note content]
+MATCH      <type> "<canonical name>" → <note id> (<path>)   evidence: <key or signals>
+CREATE     <type> "<canonical name>" → vault/people/<Name>   evidence: <why it is new>
+AMBIGUOUS  <type> "<canonical name>" → candidates [<id>, <id>]   evidence: <what is missing>
 ```
 
-## Merge Rules
+then a short summary (counts of each).
 
-When merging two entities:
+## What happens to each result
 
-1. **Primary selection** — Keep the entity with:
-   - More links/relationships (more connected)
-   - Earlier creation date (established first)
-   - More complete metadata
+- **MATCH** — the caller links its source note to the matched note using a
+  **canonical** relationship (`attended-by`, `email-from`, `email-to`,
+  `messages-with`, `assigned-to`, `belongs-to`, `member-of`, `works-at`,
+  `references`, `related-to`) in the right direction, with
+  `update-note { id: <source>, if_updated_at, links: { add: [{ target, relationship }] } }`,
+  after checking the link does not already exist.
+- **CREATE** — only when the calling workflow allows creating notes. For a
+  person, prefer filing instead: `prism_people_file_review` with no
+  candidates (the owner creates the person). Never create a person whose name
+  matched anyone.
+- **AMBIGUOUS** — for a person on a record (meeting, email, thread, task):
+  `prism_people_file_review { source_note_id, relationship, key: { kind: "name" | "email" | …, value }, display, candidate_ids, rationale }`.
+  Otherwise list it for the owner.
+- **Duplicates noticed** (two live person notes for one human, e.g. a strong
+  key on both): check `prism_people_duplicates`; if the pair is detected and
+  the evidence is strong, `prism_people_recommend_merge { person_ids, canonical_id, rationale, confidence }`.
+  This only records a recommendation; the owner merges in Prism.
 
-2. **Alias union** — Combine all aliases from both entities (include the secondary's canonical name)
+## Never
 
-3. **Metadata merge**:
-   - Arrays: union (deduplicated)
-   - Strings: prefer longer/more descriptive value
-   - Numbers (mention_count): sum them
-   - Enums (status): prefer the more "active" value
-
-4. **Content merge** — Append secondary's unique content under a "## Merged From" section
-
-5. **Link transfer** — All links pointing to/from the secondary should be updated to point to the primary
-   - Use `mcp__parachute-vault__get-links` with `id: secondary_id, direction: "both"` to get all links
-   - Recreate each link pointing to/from the primary via `mcp__parachute-vault__create-link`
-   - Delete old links via `mcp__parachute-vault__delete-link`
-
-6. **Alias redirect** — The secondary's path should become an alias entry pointing to the primary
-
-7. **Batch operations** — When merging results in tag changes across multiple notes, use `mcp__parachute-vault__batch-tag` and `mcp__parachute-vault__batch-untag` for efficiency
-
-## Output Format
-
-Present operations as a reconciliation report:
-
-```
-## Reconciliation Report
-
-### Summary
-- Entities processed: N
-- CREATE (new): N
-- UPDATE (existing): N
-- MERGE (duplicates): N
-- REVIEW (uncertain): N
-
-### Operations
-
-#### CREATE: Sarah Chen (person, confidence: 0.95)
-Path: person/sarah-chen
-Tags: person, sector/governance
-Metadata: {role: "Director", org: "BFC", aliases: ["Sarah"]}
-Rationale: No existing match found in vault
-
-#### UPDATE: Bioregional Food Council (organization, confidence: 0.90)
-Existing: note-id-123 at organization/bioregional-food-council
-Add to metadata: {member_count: 15}
-Add mention from: [source document]
-Rationale: Exact path match, adding new information
-
-#### MERGE: Community Budgeting → Participatory Budgeting (pattern)
-Primary: note-id-456 (Participatory Budgeting)
-Secondary: note-id-789 (Community Budgeting)
-Combined aliases: ["PB", "Community Budgeting", "community budgets"]
-Rationale: Semantic match confidence 0.92 — same concept, different names
-
-#### REVIEW: Open Civics Lab (organization, confidence: 0.75)
-Candidate 1: OpenCivics Labs (note-id-101, similarity: 0.82)
-Candidate 2: Open Civic Innovation Lab (note-id-102, similarity: 0.71)
-Recommendation: Likely match with Candidate 1 (name variation)
-```
-
-## Important Guidelines
-
-1. **Err on the side of REVIEW over automatic MERGE** — False merges destroy information; missed merges can be caught later
-2. **Never merge across types** — A person and an organization with similar names are NOT the same entity
-3. **Check relationships for clues** — Two entities with overlapping relationships are more likely to be the same
-4. **Consider temporal context** — An entity mentioned in 2024 and one in 2026 with the same name might be different (organizations rebrand, people change roles)
-5. **Preserve provenance** — Always record which source document triggered each operation
+- Never merge, never write `merged_into` / `merged-stub`, never delete a note,
+  never move links between notes. (The old "auto-merge above 0.85" rule is
+  gone: false merges destroy information.)
+- Never use `force: true`; every update carries `if_updated_at`.
+- Never invent a relationship name or a tag.
+- Never link on a name alone.
+- Always record which source note produced each operation.

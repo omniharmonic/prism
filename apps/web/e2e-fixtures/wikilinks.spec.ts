@@ -30,7 +30,7 @@ test('aliases resolve consistently and late responses cannot navigate another au
   expect(await page.evaluate(()=>(window as any).prismLinkFixture.opened)).toEqual(['a']);
 });
 
-test('autocomplete supports keyboard selection, stores stable IDs, and keeps titles as literal text',async({page})=>{
+test('autocomplete supports keyboard selection, stores stable IDs, and keeps titles as literal text',async({page,browserName})=>{
   await page.goto('/e2e-fixtures/wikilinks.html');
   await expect(page.getByRole('textbox',{name:'Document'})).toBeVisible();
   await page.evaluate(()=>{(window as any).prismLinkFixture.editor.commands.setContent('<p></p>');});
@@ -49,10 +49,27 @@ test('autocomplete supports keyboard selection, stores stable IDs, and keeps tit
   await expect(editor).toContainText('[[literal|<b>Literal</b>]]');
   expect(await editor.locator('b,strong').count()).toBe(0);
   expect(await page.evaluate(()=>(window as any).prismLinkFixture.editor.getText())).toContain('[[literal|<b>Literal</b>]]');
-  await page.context().grantPermissions(['clipboard-read','clipboard-write']);
-  await editor.focus();await page.keyboard.press('ControlOrMeta+a');await page.keyboard.press('ControlOrMeta+c');
-  expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('[[literal|<b>Literal</b>]]');
-  await page.evaluate(()=>{(window as any).prismLinkFixture.editor.commands.setContent('<p></p>');});
-  await editor.focus();await page.keyboard.press('ControlOrMeta+v');
+  if (browserName === 'chromium') {
+    await page.context().grantPermissions(['clipboard-read','clipboard-write']);
+    await editor.focus();await page.keyboard.press('ControlOrMeta+a');await page.keyboard.press('ControlOrMeta+c');
+    expect(await page.evaluate(()=>navigator.clipboard.readText())).toContain('[[literal|<b>Literal</b>]]');
+    await page.evaluate(()=>{(window as any).prismLinkFixture.editor.commands.setContent('<p></p>');});
+    await editor.focus();await page.keyboard.press('ControlOrMeta+v');
+  } else {
+    // WebKit automation has no clipboard permission grant. Exercise its real
+    // editor copy/paste handlers with a DataTransfer; OS clipboard proof is separate.
+    const copied = await page.evaluate(()=>{
+      const editor=(window as any).prismLinkFixture.editor;
+      editor.chain().focus().selectAll().run();
+      const clipboardData=new DataTransfer();
+      editor.view.dom.dispatchEvent(new ClipboardEvent('copy',{bubbles:true,cancelable:true,clipboardData}));
+      const text=clipboardData.getData('text/plain');
+      editor.commands.setContent('<p></p>');
+      editor.commands.focus();
+      editor.view.dom.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData}));
+      return text;
+    });
+    expect(copied).toContain('[[literal|<b>Literal</b>]]');
+  }
   await expect(editor).toContainText('[[literal|<b>Literal</b>]]');
 });

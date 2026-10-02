@@ -1,240 +1,509 @@
-// WorkspacePanel — the server-owner surface (Network → Workspace). A WORKSPACE is
-// the whole server: a permission boundary grouping every vault. Here the owner
-// sees the people × vaults access matrix and, in one step, adds a person to a
-// CHOSEN vault at a chosen access level (and optionally a management role).
-// Everything flows through useCollabSharing() and is server-owner-gated server-side;
-// the panel hides when the seam lacks getWorkspace (desktop / non-server-owner).
-import { useCallback, useEffect, useState } from "react";
-import { Building2, UserPlus, Trash2, Copy, Database, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { UserPlus, Database, ShieldCheck } from "lucide-react";
 import { Button } from "../../ui/Button";
-import { Badge } from "../../ui/Badge";
-import { Input } from "../../ui/Input";
 import {
   useCollabSharing,
   useVaultChangeSignal,
   type WorkspaceOverview,
   type WorkspaceRole,
   type ShareLevel,
+  type SetPersonResult,
 } from "../../../data/CollabSharing";
+import { useAgentChatStore } from "../../../lib/agent/chatStore";
+import {
+  ACCESS_LABELS,
+  AccessHelp,
+  InvitationResult,
+} from "./InvitationResult";
 
-const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
-const MANAGE_ROLES: (WorkspaceRole | "none")[] = ["none", "member", "admin", "owner"];
-
+type AccessReceipt = {
+  who: string;
+  vaultId: string;
+  vaultLabel: string;
+  level: ShareLevel;
+  role: WorkspaceRole | "none";
+  result: SetPersonResult;
+  roleError?: string;
+  roleDone: boolean;
+};
 export function WorkspacePanel() {
   const sharing = useCollabSharing();
-  const vaultSignal = useVaultChangeSignal();
-
+  const scope = useAgentChatStore((state) => state.scope);
+  const signal = useVaultChangeSignal();
+  return (
+    <AccessPanel
+      key={JSON.stringify([scope, signal])}
+      sharing={sharing}
+      scope={scope}
+    />
+  );
+}
+function AccessPanel({
+  sharing,
+  scope,
+}: {
+  sharing: ReturnType<typeof useCollabSharing>;
+  scope: string | null;
+}) {
   const [data, setData] = useState<WorkspaceOverview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [email, setEmail] = useState("");
   const [vaultId, setVaultId] = useState("");
   const [level, setLevel] = useState<ShareLevel>("edit");
   const [role, setRole] = useState<WorkspaceRole | "none">("none");
   const [busy, setBusy] = useState(false);
-
+  const [receipt, setReceipt] = useState<AccessReceipt | null>(null);
+  const [removeReceipt, setRemoveReceipt] = useState<{
+    who: string;
+    vaultId: string;
+    vaultLabel: string;
+  } | null>(null);
+  const alive = useRef(true);
+  const lock = useRef(false);
+  const reads = useRef(0);
+  const latestSharing = useRef(sharing);
+  latestSharing.current = sharing;
+  const current = useCallback(
+    () =>
+      alive.current &&
+      latestSharing.current === sharing &&
+      useAgentChatStore.getState().scope === scope,
+    [sharing, scope],
+  );
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      reads.current++;
+    };
+  }, []);
   const refresh = useCallback(async () => {
-    if (!sharing?.getWorkspace) return;
-    setError(null);
-    try {
-      const ws = await sharing.getWorkspace();
-      setData(ws);
-      // Default the "add" vault selector to the first vault once loaded.
-      setVaultId((v) => v || ws.vaults[0]?.id || "");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load the workspace.");
+    if (!sharing?.getWorkspace) {
+      setLoading(false);
+      return;
     }
-  }, [sharing]);
-
+    const read = ++reads.current;
+    setLoading(true);
+    try {
+      const next = await sharing.getWorkspace();
+      if (!current() || read !== reads.current) return;
+      setData(next);
+      setVaultId((previous) =>
+        next.vaults.some((vault) => vault.id === previous)
+          ? previous
+          : (next.vaults[0]?.id ?? ""),
+      );
+    } catch (cause) {
+      if (current() && read === reads.current)
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Couldn't load people and vault access.",
+        );
+    } finally {
+      if (current() && read === reads.current) setLoading(false);
+    }
+  }, [sharing, current]);
   useEffect(() => {
     void refresh();
-  }, [refresh, vaultSignal]);
-
-  const showInvite = (r: { invited: boolean; inviteUrl?: string }, who: string) => {
-    if (r.invited && r.inviteUrl) {
-      void navigator.clipboard?.writeText(r.inviteUrl).catch(() => {});
-      setNotice(`Invite link for ${who} copied — send it to them to join.`);
-    } else {
-      setNotice(`${who} updated.`);
+  }, [refresh]);
+  const run = async (operation: () => Promise<void>) => {
+    if (lock.current || !current()) return;
+    lock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await operation();
+    } catch (cause) {
+      if (current())
+        setError(
+          cause instanceof Error ? cause.message : "Couldn't update access.",
+        );
+    } finally {
+      lock.current = false;
+      if (current()) setBusy(false);
     }
   };
-
-  const addPerson = useCallback(async () => {
-    if (!sharing?.setWorkspaceAccess || !email.trim() || !vaultId) return;
-    const who = email.trim().toLowerCase();
-    setBusy(true);
-    setError(null);
+  const completeRole = async (confirmed: AccessReceipt) => {
+    if (
+      !sharing?.setWorkspaceMemberRole ||
+      confirmed.role === "none" ||
+      !current()
+    )
+      return;
     try {
-      // Access to the chosen vault at the chosen level, plus an optional
-      // management role in that same vault.
-      const res = await sharing.setWorkspaceAccess(who, vaultId, level);
-      if (role !== "none" && sharing.setWorkspaceMemberRole) {
-        await sharing.setWorkspaceMemberRole(who, vaultId, role);
-      }
-      const vaultLabel = data?.vaults.find((v) => v.id === vaultId)?.label ?? vaultId;
-      showInvite(res, `${who} → ${vaultLabel} (${level}${role !== "none" ? `, ${role}` : ""})`);
-      setEmail("");
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't add the person.");
-    } finally {
-      setBusy(false);
+      const result = await sharing.setWorkspaceMemberRole(
+        confirmed.who,
+        confirmed.vaultId,
+        confirmed.role,
+      );
+      if (!current()) return;
+      setReceipt({
+        ...confirmed,
+        result: result.inviteUrl ? result : confirmed.result,
+        roleDone: true,
+        roleError: undefined,
+      });
+    } catch (cause) {
+      if (current())
+        setReceipt({
+          ...confirmed,
+          roleDone: false,
+          roleError:
+            cause instanceof Error
+              ? cause.message
+              : "The management role could not be saved.",
+        });
     }
-  }, [sharing, email, vaultId, level, role, data, refresh]);
-
-  const removeAccess = useCallback(
-    async (who: string, vid: string) => {
-      if (!sharing?.removeWorkspaceAccess) return;
-      try {
-        await sharing.removeWorkspaceAccess(vid, who);
-        if (sharing.removeWorkspaceMemberRole) await sharing.removeWorkspaceMemberRole(vid, who);
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Couldn't remove access.");
+  };
+  const addPerson = () =>
+    run(async () => {
+      if (!sharing?.setWorkspaceAccess || !email.trim() || !vaultId) return;
+      const who = email.trim().toLowerCase();
+      const result = await sharing.setWorkspaceAccess(who, vaultId, level);
+      if (!current()) return;
+      const confirmed: AccessReceipt = {
+        who,
+        vaultId,
+        vaultLabel:
+          data?.vaults.find((vault) => vault.id === vaultId)?.label ?? vaultId,
+        level,
+        role,
+        result,
+        roleDone: role === "none",
+      };
+      setReceipt(confirmed);
+      setEmail("");
+      if (role !== "none") await completeRole(confirmed);
+      if (current()) await refresh();
+    });
+  const removeRole = async (target: {
+    who: string;
+    vaultId: string;
+    vaultLabel: string;
+  }) => {
+    if (!sharing?.removeWorkspaceMemberRole || !current()) return;
+    try {
+      await sharing.removeWorkspaceMemberRole(target.vaultId, target.who);
+      if (!current()) return;
+      setRemoveReceipt(null);
+      setNotice(
+        `Vault grant and management role removed for ${target.who} in ${target.vaultLabel}. Other document or tag grants may still provide access.`,
+      );
+    } catch (cause) {
+      if (current()) {
+        setRemoveReceipt(target);
+        setError(
+          `The vault-wide grant was removed, but the management role was not confirmed removed. ${cause instanceof Error ? cause.message : "Try removing the role again."}`,
+        );
       }
-    },
-    [sharing, refresh],
-  );
-
-  if (!sharing?.getWorkspace) {
+    }
+  };
+  const removeAccess = (who: string, vid: string) =>
+    run(async () => {
+      if (!sharing?.removeWorkspaceAccess) return;
+      await sharing.removeWorkspaceAccess(vid, who);
+      if (!current()) return;
+      setReceipt((previous) =>
+        previous?.who === who && previous.vaultId === vid ? null : previous,
+      );
+      const target = {
+        who,
+        vaultId: vid,
+        vaultLabel:
+          data?.vaults.find((vault) => vault.id === vid)?.label ?? vid,
+      };
+      if (sharing.removeWorkspaceMemberRole) await removeRole(target);
+      else
+        setNotice(
+          `Vault-wide grant removed for ${who}. Other grants or roles may still provide access.`,
+        );
+      if (current()) await refresh();
+    });
+  if (!sharing?.getWorkspace)
     return (
-      <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>
-        Workspace management isn't available here (server owner only).
+      <p role="status" className="text-sm text-[var(--text-secondary)]">
+        Cross-vault access management is available to the server owner.
       </p>
     );
-  }
-
-  const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
-  const cardStyle = {
-    border: "1px solid var(--glass-border)",
-    borderRadius: 10,
-    padding: 16,
-    marginBottom: 18,
-    background: "var(--glass-bg)",
-  } as const;
-  const selectStyle = {
-    fontSize: 13,
-    padding: "6px 8px",
-    borderRadius: 6,
-    background: "var(--glass-bg)",
-    color: "var(--text-primary)",
-    border: "1px solid var(--glass-border)",
-  } as const;
-
+  const field =
+    "focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
   const vaults = data?.vaults ?? [];
-  const people = data?.people ?? [];
-
   return (
-    <div>
-      {error && <Badge variant="error">{error}</Badge>}
-      {notice && (
-        <div style={{ ...cardStyle, display: "flex", gap: 8, alignItems: "center", color: "var(--text-primary)", fontSize: 13 }}>
-          <Copy size={14} /> {notice}
+    <div className="space-y-6">
+      <header>
+        <h2 className="m-0 flex items-center gap-2 text-lg font-semibold">
+          <ShieldCheck size={20} /> People &amp; vault access
+        </h2>
+        <p className="mb-0 mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+          Choose which vault a person can use. Document access and management
+          roles are separate; these changes apply only to the vault you select.
+        </p>
+      </header>
+      {error && (
+        <div
+          role="alert"
+          className="rounded-lg border border-[var(--glass-border)] p-4 text-sm"
+        >
+          <p className="mt-0">{error}</p>
+          {!removeReceipt && (
+            <Button
+              className="min-h-11"
+              disabled={busy}
+              onClick={() => {
+                setError("");
+                void refresh();
+              }}
+            >
+              Refresh access
+            </Button>
+          )}
         </div>
       )}
-
-      {/* What this is */}
-      <div style={{ ...cardStyle, display: "flex", gap: 10, alignItems: "flex-start" }}>
-        <Building2 size={16} style={{ marginTop: 2 }} />
-        <div>
-          <h2 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 4px" }}>This workspace</h2>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: 0 }}>
-            The whole server — grouping {vaults.length} {vaults.length === 1 ? "vault" : "vaults"}. Add people and set their
-            access per vault. Access = what they can see/do; role = management rights over that vault.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-            {vaults.map((v) => (
-              <span key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--glass-border)", borderRadius: 6, padding: "3px 8px" }}>
-                <Database size={12} /> {v.label}
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Add a person to a chosen vault */}
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <UserPlus size={15} />
-          <div style={labelStyle}>Add someone to a vault</div>
-        </div>
-        <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 10px" }}>
-          They'll get access to the chosen vault at the chosen level. If they have no account yet, you'll get an invite
-          link to send them.
+      {notice && (
+        <p role="status" className="text-sm">
+          {notice}
         </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <Input placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
-          <select value={vaultId} onChange={(e) => setVaultId(e.target.value)} style={selectStyle} title="Vault">
-            {vaults.map((v) => (
-              <option key={v.id} value={v.id}>{v.label}</option>
-            ))}
-          </select>
-          <select value={level} onChange={(e) => setLevel(e.target.value as ShareLevel)} style={selectStyle} title="Access level">
-            {LEVELS.map((l) => (
-              <option key={l} value={l}>{l}</option>
-            ))}
-          </select>
-          <select value={role} onChange={(e) => setRole(e.target.value as WorkspaceRole | "none")} style={selectStyle} title="Management role">
-            {MANAGE_ROLES.map((r) => (
-              <option key={r} value={r}>{r === "none" ? "no mgmt role" : `${r} (manage)`}</option>
-            ))}
-          </select>
-          <Button onClick={() => void addPerson()} disabled={busy || !email.trim() || !vaultId}>
-            <UserPlus size={14} /> Add
+      )}
+      {removeReceipt && (
+        <section className="rounded-xl border border-[var(--glass-border)] p-4">
+          <p className="mt-0 text-sm">
+            The vault grant for {removeReceipt.who} in{" "}
+            {removeReceipt.vaultLabel} is removed. Retry only the remaining
+            management role.
+          </p>
+          <Button
+            className="min-h-11"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                await removeRole(removeReceipt);
+                if (current()) await refresh();
+              })
+            }
+          >
+            Retry removing role
           </Button>
+        </section>
+      )}
+      {receipt && (
+        <div className="space-y-3">
+          <p role="status" className="text-sm">
+            {ACCESS_LABELS[receipt.level]} granted to {receipt.who} in{" "}
+            {receipt.vaultLabel}.
+            {receipt.role !== "none" && receipt.roleDone
+              ? ` ${receipt.role} role saved.`
+              : ""}
+          </p>
+          <InvitationResult
+            key={`${receipt.who}:${receipt.result.inviteUrl ?? "existing"}`}
+            who={receipt.who}
+            result={receipt.result}
+          />
+          {receipt.roleError && (
+            <section className="rounded-xl border border-[var(--glass-border)] p-4">
+              <p role="alert" className="mt-0 text-sm">
+                Vault access was granted. The {receipt.role} management role was
+                not confirmed saved: {receipt.roleError}
+              </p>
+              <Button
+                className="min-h-11"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    await completeRole(receipt);
+                    if (current()) await refresh();
+                  })
+                }
+              >
+                Retry management role
+              </Button>
+            </section>
+          )}
         </div>
-      </div>
-
-      {/* People × vaults matrix */}
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <ShieldCheck size={16} />
-          <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>People &amp; access</h2>
-        </div>
-        {people.length === 0 ? (
-          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>No one has access yet.</p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {people.map((p) => (
-              <div key={p.email} style={{ padding: "8px 0", borderBottom: "1px solid var(--glass-border)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, color: "var(--text-primary)" }}>
-                    {p.name ? `${p.name} · ` : ""}
-                    <span style={{ color: "var(--text-secondary)" }}>{p.email}</span>
+      )}
+      {sharing.setWorkspaceAccess && (
+        <form
+          className="rounded-xl border border-[var(--glass-border)] p-4 sm:p-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void addPerson();
+          }}
+        >
+          <h3 className="m-0 text-base font-semibold">
+            Add someone to a vault
+          </h3>
+          <p className="mb-4 mt-2 text-sm text-[var(--text-secondary)]">
+            Existing accounts receive access. New people get a private
+            invitation link for you to share.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm">
+              Email
+              <input
+                type="email"
+                required
+                className={`${field} mt-2`}
+                value={email}
+                disabled={busy}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="text-sm">
+              Vault
+              <select
+                className={`${field} mt-2`}
+                value={vaultId}
+                disabled={busy || loading}
+                onChange={(event) => setVaultId(event.target.value)}
+              >
+                {!vaults.length && (
+                  <option value="">No available vaults</option>
+                )}
+                {vaults.map((vault) => (
+                  <option key={vault.id} value={vault.id}>
+                    {vault.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm">
+              Document access
+              <select
+                className={`${field} mt-2`}
+                value={level}
+                disabled={busy}
+                onChange={(event) => setLevel(event.target.value as ShareLevel)}
+              >
+                {Object.entries(ACCESS_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {sharing.setWorkspaceMemberRole && (
+              <label className="text-sm">
+                Management role
+                <select
+                  className={`${field} mt-2`}
+                  value={role}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setRole(event.target.value as WorkspaceRole | "none")
+                  }
+                >
+                  {["none", "member", "admin", "owner"].map((value) => (
+                    <option key={value} value={value}>
+                      {value === "none"
+                        ? "No management role"
+                        : value[0].toUpperCase() + value.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+          <AccessHelp level={level} />
+          <Button
+            type="submit"
+            variant="primary"
+            className="mt-4 min-h-11"
+            disabled={busy || loading || !email.trim() || !vaultId}
+            loading={busy}
+          >
+            <UserPlus size={16} /> Add person
+          </Button>
+        </form>
+      )}
+      {loading && (
+        <p role="status" className="text-sm text-[var(--text-muted)]">
+          Loading people and access…
+        </p>
+      )}
+      <section className="rounded-xl border border-[var(--glass-border)] p-4 sm:p-5">
+        <h3 className="m-0 text-base font-semibold">Current access</h3>
+        {!loading && !error && !data?.people.length && (
+          <p className="text-sm text-[var(--text-secondary)]">
+            No people are listed yet.
+          </p>
+        )}
+        <div className="mt-3 divide-y divide-[var(--glass-border)]">
+          {data?.people.map((person) => (
+            <article key={person.email} className="py-4">
+              <p
+                className="m-0 break-words text-sm font-medium"
+                style={{ overflowWrap: "anywhere" }}
+              >
+                {person.name ? `${person.name} · ` : ""}
+                {person.email}
+                {person.isServerOwner && (
+                  <span className="ml-2 text-xs text-[var(--text-muted)]">
+                    Server owner
                   </span>
-                  {p.isServerOwner && <Badge variant="success">server owner</Badge>}
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {vaults.map((v) => {
-                    const a = p.access[v.id];
-                    if (!a || (!a.role && !a.level)) return null;
+                )}
+              </p>
+              <div className="mt-2 space-y-2">
+                {vaults
+                  .filter(
+                    (vault) =>
+                      person.access[vault.id]?.level ||
+                      person.access[vault.id]?.role,
+                  )
+                  .map((vault) => {
+                    const access = person.access[vault.id];
                     return (
-                      <span key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, border: "1px solid var(--glass-border)", borderRadius: 6, padding: "3px 8px", color: "var(--text-secondary)" }}>
-                        <Database size={11} /> {v.label}
-                        {a.level && <Badge>{a.level}</Badge>}
-                        {a.role && <Badge variant="info">{a.role}</Badge>}
-                        {!p.isServerOwner && (
-                          <button
-                            onClick={() => void removeAccess(p.email, v.id)}
-                            title={`Remove ${p.email} from ${v.label}`}
-                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", padding: 0, display: "inline-flex" }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
+                      <div
+                        key={vault.id}
+                        className="flex flex-wrap items-center gap-2 text-sm"
+                      >
+                        <Database size={14} />
+                        <span className="break-words">{vault.label}</span>
+                        {access.level && (
+                          <span className="rounded bg-[var(--glass)] px-2 py-1 text-xs">
+                            {ACCESS_LABELS[access.level]}
+                          </span>
                         )}
-                      </span>
+                        {access.role && (
+                          <span className="text-xs text-[var(--text-muted)]">
+                            {access.role} role
+                          </span>
+                        )}
+                        {!person.isServerOwner &&
+                          sharing.removeWorkspaceAccess && (
+                            <Button
+                              variant="ghost"
+                              className="min-h-11"
+                              disabled={busy}
+                              onClick={() =>
+                                void removeAccess(person.email, vault.id)
+                              }
+                              aria-label={`Remove ${person.email} from ${vault.label}`}
+                            >
+                              Remove access
+                            </Button>
+                          )}
+                      </div>
                     );
                   })}
-                  {vaults.every((v) => { const a = p.access[v.id]; return !a || (!a.role && !a.level); }) && (
-                    <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>no vault access</span>
-                  )}
-                </div>
+                {vaults.every(
+                  (vault) =>
+                    !person.access[vault.id]?.level &&
+                    !person.access[vault.id]?.role,
+                ) && (
+                  <p className="text-xs text-[var(--text-muted)]">
+                    No vault-wide grant or management role.
+                  </p>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

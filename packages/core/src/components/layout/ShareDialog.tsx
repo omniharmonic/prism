@@ -112,7 +112,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       alive.current = false;
       clearTimeout(copyTimer.current);
       element?.close();
-      if (trigger?.isConnected) trigger.focus();
+      if (trigger?.isConnected && !trigger.matches("body, html")) trigger.focus();
       else
         document
           .querySelector<HTMLButtonElement>("button[data-prism-share-trigger]")
@@ -289,15 +289,13 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
         ].filter(
           (el) => !el.matches(":disabled") && el.getClientRects().length,
         );
-        const first = items[0],
-          last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last?.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first?.focus();
-        }
+        // Safari can skip buttons in native tab order. Move explicitly through
+        // the dialog's visible controls so focus cannot escape between them.
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        items[event.shiftKey
+          ? (index <= 0 ? items.length - 1 : index - 1)
+          : (index + 1) % items.length]?.focus();
       }}
       onCancel={onClose}
       className="prism-share-dialog"

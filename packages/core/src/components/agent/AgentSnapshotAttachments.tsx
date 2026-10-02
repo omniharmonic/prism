@@ -96,7 +96,7 @@ export function AgentSnapshotAttachments({
           >
             <button
               className={control + " min-w-0 truncate"}
-              onClick={() => setPreview(s)}
+              onClick={event => { event.currentTarget.focus({ preventScroll: true }); setPreview(s); }}
             >
               <FileText size={13} className="mr-1 inline" />
               {s.kind === "selection"

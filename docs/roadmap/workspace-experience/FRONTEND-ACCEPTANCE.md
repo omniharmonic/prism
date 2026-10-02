@@ -12,6 +12,64 @@ Each row has **two independent gates**: behavior and visual/interaction fidelity
 
 For each completed slice attach: source commit; fixture scenario and viewport/theme; actual screenshot path; visual comparison against the named board; focused behavior results; remaining limitations; deployed web/native IDs and actual production checks when applicable. Use fictional fixture screenshots for reviewable artifacts. Keep private production captures out of git.
 
+## Integrated follow-up status · October 2
+
+Current integration snapshot: **`9c84b6c`**, including reviewed backend `98287de` and D06 server adapter `7c7c2b4`. The original baseline findings below remain an audit trail. The integration branch contains the tested slices below; **none of this newer candidate is deployed or accepted as full roadmap completion**. Production web and installed desktop remain `86461c9`; production server remains `6445136` behavior. Source is in `.worktrees/workspace-experience`; backend changes have now been integrated there, not merely left in a separate branch.
+
+| Scope | Integrated work / source | Current evidence and limits |
+| --- | --- | --- |
+| A02/A04 | Navigation hierarchy `883c759`; device sidebar preferences `c2344aa`; open documents `b36cd5e` | Fictional navigation screenshots retained; primary destinations/tools, 320px preferences, keyboard reorder, 20 tabs and unsaved markers checked. Final tab visibility reacts to late layout changes in `c0ca3e0`; 18 Chromium/WebKit tab/tablet checks passed. |
+| A03 | Shared title-first flow `a02fa9e`; command/tree integration `cf86872` | 34 Chromium/WebKit checks pass, including explicit tree parent, mobile modal focus, all formats and email draft preservation, create→edit. No atomic uniqueness promise beyond existing API. |
+| A04/A08 | Width-aware companion `c0ca3e0`; duplicate drawer header removed `257b984` | Actual Shell desktop→tablet→phone preserves editor DOM, text, unsent agent draft and widths. 36 workspace/layout browser checks passed after final chrome change. Physical phone keyboard/PWA acceptance remains open. |
+| A05/A06 | Shared page/properties/toolbar and outline through `701288c` | [Detailed evidence](A05-A06-VERIFICATION.md). Plain and real collaborative host tests; read-only outline and selection preservation. Collaborative title failure/queued acceptance is now frontend-owned and verified in the actual Hocuspocus host; see the same evidence note. Selection-to-agent integrated `20dd19e`/`804caa2`: unsent attachment, preserved session/mode/drafts and explicit cross-document choice; root88 combined agent/selection checks pass. |
+| B01–B03 | Session/history `52e1b81`, source/context `5644a0a`, activity/stop `710031d` | [Agent workspace evidence](verification/frontend-20261002/AGENT-WORKSPACE-VERIFICATION.md). Root88 combined agent/selection checks pass;14 additional agent state checks pass. No production proof of this batch yet. |
+| C01/C02/C04/C05/C07 | Master/detail `c8f597d`; To/Cc `6cb8ada`; agent draft `f495ee8` | [Message](verification/frontend-20261002/MESSAGES-VERIFICATION.md) and [agent draft](verification/frontend-20261002/AGENT-REPLY-VERIFICATION.md) evidence. 39 journeys on each engine for reply slice. Docked email+agent and conservative quoted-history folding are now integrated in `0bce1e3`; exact content/recipient and resize/draft preservation checked. Attachments remain labels under the existing contract; no unsupported download or automatic Reply all claim. |
+| D04 | View-local drag order `6618e8b`; header/cards/phone List default `7385cbd` | 62 combined board/access checks pass. Board20 guides hierarchy. Visual review performed on fictional desktop/phone; dense board and production acceptance remain open. |
+| D09 | Name-first workspace setup and explicit vault moves `2a3f9e9` | Same 58 integrated checks include owner gates, failed/pending writes, scope changes and narrow/dark layout. D05 invitations/access integrated `64bd9cd`, with copy recovery and partial success reporting; [workspace evidence](WORKSPACE-SETTINGS-EVIDENCE.md). |
+| C06 | People directory/profile `ddb47de` | [People evidence](verification/frontend-20261002/PEOPLE-WORKSPACE-VERIFICATION.md):28 combined Chromium/WebKit journeys pass. Exact identity, scoped reads, revision guards, mobile filter/focus return. Richer excerpts/transport dates remain unavailable in the existing API. |
+| D03 canvas | Canvas surfaces/cards `14727b5` | [Canvas evidence](D03-CANVAS-VERIFICATION.md):40 combined browser journeys pass. Fixed the opaque interactive hover overlay; existing scene styles and relationship/save semantics retained. Native/multipeer acceptance remains open. |
+| D03 graph | Readable map/list/search `a3e7ece` | [Graph evidence](verification/frontend-20261002/GRAPH-VERIFICATION.md):18 final graph browser journeys pass,32-note fixture,320/390/1440 plus dark. Explicit device-local saved exploration is now integrated; [saved-view evidence](verification/frontend-20261002/GRAPH-SAVED-VIEWS.md) records36 graph journeys. Large-vault performance, shared/named views and3D camera persistence remain separate limits. |
+| D07 preferences | Settings rail/pane `6e05bc9` | [Settings evidence](verification/frontend-20261002/SETTINGS-VERIFICATION.md).38 combined workspace checks and6 final settled-theme/contrast checks pass. Integration/account controls are also integrated; see D07 connections below. Controlled provider journeys remain separate. |
+| D02 | Calendar/transcript UI `1c9ddca` | [Calendar evidence](TRANSCRIPT-CALENDAR-EVIDENCE.md):70 combined browser checks pass. The reviewed transcript routes are now included through combined backend integration. Deploy that server contract before or with this provider; actual production/native review and recovery remain release gates. |
+
+Additional integrated checkpoints (same unreleased branch):
+
+| Scope | Integrated work / source | Evidence and remaining boundary |
+| --- | --- | --- |
+| A01 / D01 | Small-size prism mark `0107356`, search density/action separation `aeca78f` | [Search/brand evidence](SEARCH-BRAND-ENTRY-EVIDENCE.md). Real icon atlas, light/dark/zoom and navigation checks. Unsent Add-to-context is integrated in `6fc479a`/`9d93b3a`; [D01 evidence](D01-SAVED-CONTEXT-EVIDENCE.md) covers fresh authorization, unchanged session/mode/draft, explicit destination changes and unresolved-send protection. OS icon-cache verification remains open. |
+| A07 | Links `3e41174`, Properties `0ef3c2d`, History `a81c36d` | [Context evidence](A07-CONTEXT-VERIFICATION.md). Actual ContextPanel fixtures: scoped fresh reads, safe links, suggest/read-only metadata gates, pagination, focus and flush→fresh-version→restore. Root28 History checks passed; Properties/Links included in root138-case batch. |
+| B05 review | Focused suggestion review `a2421c6` | [Review evidence](verification/frontend-20261002/SUGGESTION-REVIEW-VERIFICATION.md).24 combined review/selection journeys passed. The queue, author/provenance and focus flow improve existing tracked edits; this is not human command enforcement or a new audit ledger. |
+| B05 integration | Canonical standalone route `e46f2d4`; independent helpers `a84de7f` | [Route audit](COLLAB-COMMAND-FRONTEND-AUDIT.md) and [helper gates](B05-COMMAND-HELPERS.md). Eight actual-entry browser journeys passed. No production command caller/lifecycle wiring. Authoritative actor/audience, expected-actor binding, native bearer/capability alignment and pre-sync retired-cache protection remain gates. Combined backend tests and basic orphan-comment retry recovery are now delivered; neither activates the frontend. |
+| C04/C05/C07 | Quiet email reader and docked agent `0bce1e3` | [Email evidence](verification/frontend-20261002/EMAIL-COLLABORATION-VERIFICATION.md). Same portal/controller across width changes; failed/uncertain/retried reply, content and recipient preservation. Root138 combined email/search/brand/connections/properties/links journeys passed. Dedicated read-only summaries are integrated in `64dc31c`; [summary evidence](AGENT-SUMMARY-VERIFICATION.md) records102 Chromium/WebKit journeys across summary/reply/email/thread. Task extraction-to-created-tasks remains a separate C07 contract gap. |
+| D06 | Publishing reader/studio `818e07b` | [Publishing evidence](verification/frontend-20261002/PUBLISHING-STUDIO-VERIFICATION.md). Root102 combined publishing/connections/settings journeys passed; explicit preview, saved/live/draft distinction and existing access protection. Navigation frontend `825c2b5`, compact studio `b6abd39` and compatible server adapter `7c7c2b4` are now integrated. See the current D06 evidence below; production/installed acceptance remains pending. |
+| D07 connections | Accounts/processing/operations `cd04c6c`, confirmed admin entry `3a90cdd` | [Connections evidence](CONNECTIONS-EVIDENCE.md). Existing account fields/actions retained, loading/error separate from health, scoped reset, owner/admin entry. No newly invented sync mapping/job semantics. |
+| D08 | Specialist preservation `bce409a` | [Renderer evidence](verification/frontend-20261002/RENDERER-PRESERVATION-VERIFICATION.md). Fixed lost plain-sheet edits and injected-client bypasses; preserve read-only/render/save/retry paths across actual renderer/widget inventory. Root62 combined governance/renderer/lazy-engine checks:56 first-pass,6 timeouts passed unchanged with2 workers after resource contention. Fullscreen/export/formula/CSV/GPU/native/production gaps remain explicit. |
+
+Further checkpoints: A08 labeled mobile navigation (`f5b7c2d`, [evidence](A08-MOBILE-VERIFICATION.md)); C09 scoped event/offset reopening (`5fe35d9`, [evidence](verification/frontend-20261002/THREAD-READING-VERIFICATION.md)); root50 combined mobile/composer/thread journeys pass. D05 focused governance sections (`a07328d`, [evidence](verification/frontend-20261002/GOVERNANCE-WORKSPACE-VERIFICATION.md)); C10 auto-growing composer (`183959a`, [evidence](verification/frontend-20261002/COMPOSER-GROWTH-VERIFICATION.md)); D03 device-local saved views (see above).
+
+The October 2 follow-ups now integrated are:
+
+| Scope | Source / observed improvement | Evidence and remaining boundary |
+| --- | --- | --- |
+| A04/A08/B01 | Compact companion `50cb648`; width-aware agent draft sizing `33814df` | [Companion evidence](COMPANION-DENSITY-VERIFICATION.md): 28 combined composer/companion two-engine checks; same editor/input/session, wrapped draft and selected text survive reflow. The working page and all three agent permission choices remain explicit. |
+| C01/C06 | Classified inbox discoverability `90ae371`; canonical-human/recipient-email parity `53571f5` | [Visual audit](FRONTEND-VISUAL-AUDIT.md) and [identity evidence](MESSAGES-PEOPLE-IDENTITY-EVIDENCE.md). Eight visibility checks, eight identity checks and 22 existing inbox checks passed across engines. Explicit collapse survives refetch; classification uses actual backend predicates without changing raw note data or send routing. |
+| D06 | Navigation `825c2b5`; compact studio `b6abd39`; server validation/projection `7c7c2b4` | [Navigation](PUBLICATION-NAVIGATION-VERIFICATION.md), [compact studio](PUBLISHING-COMPACT-VERIFICATION.md), [server evidence](D06-PUBLICATION-CONTRACT-EVIDENCE.md). Compact/navigation browser suites: 45 per engine; final spacing follow-up: eight per engine. Server publishing/multi-vault: 47 passed plus typecheck. These replace the historical unmerged-contract status; no deployment claim follows. |
+
+The integrated visual audit reviewed fictional document/agent, inbox/thread, email and publishing states against the approved boards. It captured 48 viewport/theme states, then the compact companion and studio follow-ups addressed its concrete density findings. This is screen-specific aesthetic evidence, not full feature parity or physical browser zoom evidence.
+
+C07 confirmed task extraction remains a frontend/backend contract gap. D01 unsent context, C07 summaries, D06 navigation/compact preview and the inbox follow-ups are implemented in this candidate. Human command activation and physical mobile/installed/production gates E01–E04 remain open.
+
+Boards19–25 in the [gallery](mockups.html) extend the promised connected-screen references. Generated concepts are not test evidence or permission/API specifications. All production artifacts remain as recorded in CURRENT-RELEASE.md until a coordinated frontend build is installed and checked.
+
+## Reading the original requirement tables
+
+Sections A–D below preserve the original source requirements and reconciliation
+baseline, including gaps recorded before the integrated work above. Their
+baseline descriptions are **not a current unimplemented-feature list**. Use the
+integrated status and linked evidence first; the explicit remaining gates there
+and in section E still apply. Selected backend and C07 rows below are updated to
+avoid stale requests for contracts that have since been delivered.
+
 ## A. Shared workspace and everyday writing
 
 Paths in code-evidence cells are under `packages/core/src/` unless prefixed otherwise. Inspection baseline is frontend release `86461c9`; isolated follow-up work is explicitly identified.
@@ -36,7 +94,7 @@ Paths in code-evidence cells are under `packages/core/src/` unless prefixed othe
 | B02 · R06.2/4; boards03/04/12 | Selected/current draft, attached notes/files and retrievable vault scope are understandable; sources open without retargeting. | AgentContextAttachments, AgentSnapshotAttachments, AgentSourcePreview and snapshot capture exist with fixture/live evidence. Full visual comparison remains open. | Polish picker/chips/source peek and provenance/excerpt labels using actual data. Test unavailable source, unsaved selection, switching page mid-run and retained draft; never invent “sources used.” |
 | B03 · R06.3; board05 | Stream, work status, stop, follow-up queue, edit/remove and reconnect stay legible. | Durable queue and agent reducer flows implemented and recorded; AgentChat contains separate status/context/permissions regions. | Audit clutter and consolidate presentation without losing execution distinctions. Exercise queued/running/cancelling/interrupted/failed/unknown receipt, IME Enter and long tool output. |
 | B04 · R06.5; R07.2–3; board18 | Per-session Read-only / Suggested edits only / Read/write, changeable with truthful pending state. | Implemented selector and server policies; native flows recorded. Do not rebuild these or collapse to suggested-only. | Visual polish only unless a reproducible defect is found. Verify selected mode/pending downgrade/disabled state after navigation and reload; policies remain backend-owned. |
-| B05 · R07.1/4–5; Interface direction; boards06/13 | Presence, clear change attribution, affected passages, discussion and review with distinguishable history/governance. | Suggestion review/marks/comments exist. Current Activity=version history does not fulfill combined activity on its own. Existing SuggestionReview has before/after, Show in document, Accept/Reject; next/previous focused review and return-to-conversation remain gaps. Safe inverse/undo semantics require backend support. Human suggest-only enforcement remains a separate backend gap. | Audit actual review surface and add missing readable transitions/attribution, previous/next and return-to-conversation only where current contracts support them. Two-reviewer/concurrent-edit coverage remains required. Hand off new event/enforcement contracts rather than fabricate events. |
+| B05 · R07.1/4–5; Interface direction; boards06/13 | Presence, clear change attribution, affected passages, discussion and review with distinguishable history/governance. | Suggestion review/marks/comments exist. Current Activity=version history does not fulfill combined activity on its own. Existing SuggestionReview has before/after, Show in document, Accept/Reject; next/previous focused review and return-to-conversation remain gaps. Safe inverse/undo semantics require backend support. The backend human command implementation is integrated, but the frontend identity/lifecycle activation and native credential alignment remain open; initial rollout must keep enforcement explicitly off. | Audit actual review surface and add missing readable transitions/attribution, previous/next and return-to-conversation only where current contracts support them. Two-reviewer/concurrent-edit coverage remains required. Hand off new event/enforcement contracts rather than fabricate events. |
 
 ## C. Messages, email and people
 
@@ -51,7 +109,7 @@ Paths in code-evidence cells are under `packages/core/src/` unless prefixed othe
 
 ### Message requirements not hidden under “polish”
 
-- **C07 · F08.6 / board10:** Agent-assisted draft, summarize and task extraction are original commitments. No such action was found in the message components. Reuse real scoped agent/context flows; a proposed reply enters the human draft and cannot send itself. This remains a named implementation gap, not an optional decorative button.
+- **C07 · F08.6 / board10:** Agent-assisted draft, summarize and task extraction are original commitments. Draft assistance and dedicated read-only summaries are now integrated with the evidence above; proposed replies remain unsent human drafts. Confirmed extraction-to-created-tasks is still a named contract/implementation gap, not an optional decorative button.
 - **C08 · R04.3–4 / F06.3–4:** Lean summary pagination, complete archives and typed edit/redaction/reply/media data remain backend-owned. Current inbox still reads bounded note bodies and a graph. A redesigned list does not complete this requirement.
 - **C09 · R05.3 / F07.5:** Existing near-bottom/prepend logic is present; persisted reopen anchors and delayed-media layout require additional verification/implementation. Test first visible message plus offset, not merely scrollHeight.
 - **C10 · R05.4–5 / F08:** Auto-growing composition, supported attachments, accepted-event reconciliation and conflict-safe triage are separately tracked gaps. Preserve current honest limitations where the server lacks the contract; hand off atomic triage/delivery lookup rather than displaying fictional confirmation.
@@ -63,11 +121,11 @@ These screens remain in the full frontend scope. They are not all being redesign
 | ID / source | Required experience | Current evidence / gap | Remaining frontend acceptance and backend seam |
 | --- | --- | --- | --- |
 | D01 · R09.2/5; board11 | Search/command palette with context, clear actions and accessible linking. | SearchPanel/CommandBar and scoped semantic results/wikilinks have recorded tests/live navigation. | Review fidelity, result density, keyboard and empty/degraded states; preserve open vs attach distinction. Large-inventory/recall/index backend work handed off. |
-| D02 · R08.1/3/5 | Calendar details connect meeting, transcript, people, decisions/tasks and agent. | CalendarDashboard/EventTranscripts and exact navigation verified. Isolated transcript review UI prototype exists, backend not implemented. Expanded board absent. | Design calendar/transcript board; polish existing event experience now, merge ambiguity controls only with implemented contract. Manual link/reconcile backend handoff contains exact API and WIP. |
+| D02 · R08.1/3/5 | Calendar details connect meeting, transcript, people, decisions/tasks and agent. | Board22, calendar/review UI and reviewed transcript server routes are integrated. See D02 evidence above. | Deploy the compatible server with the provider; verify real production/native review, durable retry and credential scope. Do not infer decisions/tasks/player capabilities from the illustrative board or call integrated routes unimplemented. |
 | D03 · R10.1/4–5 | Usable note canvas and readable focused graph with touch/list alternatives. | CanvasRenderer/NoteDrawer, scoped 2D/list/3D graph and durable relationships exist. Saved exploration/performance/cleanup remain open; expanded boards absent. | Create Canvas/Graph boards then audit actual card/drop/link/filter/pan/selection states and saved exploration. Do not rewrite Excalidraw or mutate decorative edges. Backend owns large graph/claim cleanup. |
 | D04 · R11.1–4 | Configurable boards, quick add, filters, card fields/order, phone list. | TaskBoardRenderer and view configuration deployed; isolated tested drag-order commit14f86c5 not merged. Expanded board absent. | Create board reference, review configuration/card/empty/unknown-status states and merge ordering after integration checks. Preserve same tasks across views and pending/error feedback. |
 | D05 · R12.1–5 | Clear invitation/link/publication choices, effective access and understandable governance. | ShareDialog sections and policy/proposal UI exist; some revocation tests recorded. Effective preview/onboarding/guest enforcement incomplete; expanded boards absent. | Add Sharing/Governance boards, then polish present flows and explicit limitations. Backend agent owns authorization/preview contract; frontend must not suggest an unenforced permission is enforced. |
-| D06 · R13.1–4 | Scope, appearance, navigation, preview/access/status with distinct live/draft. | Site studio and private preview/publish/restore verified. Optional navigation branch51ec5bc tested but unmerged. Expanded board absent. | Create Publishing board, review existing studio against it, integrate navigation separately with its contract/security evidence. Preserve password/private exclusions and publication custom branding. |
+| D06 · R13.1–4 | Scope, appearance, navigation, preview/access/status with distinct live/draft. | Board24 studio, compact Settings/Preview view and versioned navigation now integrated with server validation and eligible-note projection. | Combined release and actual production/installed preview acceptance remain. Preserve password/private exclusions, optimistic revisions, arbitrary stored-version fallback and custom branding; do not treat the earlier held-branch warning as a missing implementation. |
 | D07 · R14.1–4; board15 plus expanded Integrations | Coherent settings/integrations show account, scope, health, mapping, conflicts and actions. | Settings, NetworkRenderer, HostServices and per-feature controls exist; consolidation incomplete. | Add Integrations board; reorganize delivered controls around user tasks, separate appearance from operations, disclose unavailable actions. Backend owns missing job/mapping/provider contracts, not the screen styling. |
 | D08 · R03.5; R15.2 | Code, sheet, presentation, dashboard/project, website, map and unknown types stay useful in the new shell. | Registry/feature ledger identifies all existing renderers; coverage varies. Basic native code/sheet rendering is not formula/export acceptance. | Run the named renderer journeys from FEATURE-LEDGER. Preserve wide layouts, focus/shortcuts and raw unsupported content; record individual gaps instead of redesigning specialist engines without cause. |
 | D09 · R03.1; R14; latest user clarification | Workspaces are easy to define with existing membership/vault semantics. | VaultSwitcher and WorkspacesPanel exist. Setup currently leads with server/subdomain terminology; clearer creation is an owner priority. | Name-first workspace setup and progressive disclosure of hosting; actual vault assignment/access remains explicit. This UX refinement extends existing scope; it does not authorize a new workspace/folder ontology or imply local grouping grants access. |
@@ -89,7 +147,7 @@ These screens remain in the full frontend scope. They are not all being redesign
 4. **Connected/shared screens:** C06 and D01–D09, each using its existing or newly required board and ledger. Reuse implemented features; missing backend semantics go to the separate handoff. Keep all incomplete rows visible.
 5. **Integrated acceptance:** E01–E04 plus original RELEASE-GATES and FEATURE-LEDGER. A frontend release can be accepted as that scope only; the full original roadmap remains incomplete where handed-off backend/device gates are open.
 
-## Work already in motion, not accepted
+## Original reconciliation baseline (superseded by integrated status above)
 
 - Root navigation/vault placement prototype: uncommitted at this reconciliation, no new checks run.
 - `feat/page-creation`: title-first prototype, isolated; its author is auditing original requirements before continuing.
@@ -106,3 +164,38 @@ The three independent area audits were reconciled on 2026-10-02. They confirm th
 The audits also found two concrete email concerns to verify before redesign acceptance: EmailRenderer has a hard-coded personal account fallback and does not propagate its renderer readOnly input. These are contained frontend correctness work in C04/C05, not a reason to expand this pass into another ingestion rebuild.
 
 Current unaccepted code stays isolated until each assigned slice satisfies this matrix. Replacing a top bar or adding a title field alone cannot close R03; adding bubbles alone cannot close R05.
+
+
+## Combined fixture regression · October 2
+
+Root ran all64 fixture files at `373d1fd`, Chromium+WebKit, two workers: **1,046 passed,2 skipped,4 failed** in10minutes. The skips are native-mode-only human transport fixtures, exercised separately; no installed-app claim follows. Failures were two obsolete all-at-once suggestion-list expectations, one WebKit clipboard permission grant unsupported by Playwright, and one real Share keyboard-focus failure.
+
+`a5e7d32` fixes Share's Safari tab sequence and its fallback when pointer activation left the body focused; the fixture now marks the opener with the same attribute as the real share control. Review assertions exercise next/previous plus remote-position changes. Chromium still tests the OS clipboard; WebKit exercises the actual editor copy/paste handlers with DataTransfer because it cannot grant clipboard permission. This is explicitly not WebKit OS clipboard evidence.
+
+After D01/C07 integration, the affected136-case batch passed135 with one remaining Share focus-return failure; the final correction then passed all36 sharing/review/wikilink journeys on both engines. D01's subsequent fresh-read follow-up passed26 journeys in its isolated branch. These are targeted regression results after source changes, not a second all-files pass. Final build/production/native checks still await the complete integrated candidate.
+
+
+## Current combined backend and release gate · `9c84b6c`
+
+Root reports **1,684/1,684 server tests passed in 48 seconds** after integrating
+reviewed backend `98287de` and publication contract `7c7c2b4`. This supersedes
+older uncombined/WIP and missing-publication-adapter summaries. Basic
+failed-comment-store → unload → identical retry recovery is already implemented;
+preserving others' replies can leave an unanchored thread that the UI must
+represent honestly, not delete or report as a missing basic retry fix.
+
+Initial rollout must explicitly use **`COLLAB_SUGGEST_ENFORCED=false`**, since the
+server defaults enforcement on and the human command frontend remains inactive.
+Retain the trusted-collaborator “Can suggest” disclosure. Authoritative
+actor/audience identity, compatible expected-actor binding, native
+bearer/capability alignment and pre-sync cache retirement remain activation
+gates. Existing agent session permission modes are a separate working feature.
+
+Root is building subsequent heading-scale follow-up `252657b`; no build result
+is claimed here. Final authenticated production web/installed WKWebView journeys
+remain pending. Production web/desktop are still `86461c9`,
+server still `6445136` behavior. Physical mobile IME/keyboard/dictation/PWA,
+actual browser zoom, less-used native extras, broad provider journeys and
+multi-reviewer concurrency are not closed by the test totals. C07 confirmed task
+creation remains explicitly unfinished. Normal vault use need not wait for these
+remaining roadmap slices.

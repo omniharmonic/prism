@@ -49,6 +49,15 @@ const graph: VaultNeighborhood = {
   ],
   truncated: true,
 };
+const params = new URLSearchParams(location.search);
+if (params.has("dense")) {
+  for (let index = 0; index < 28; index++) {
+    const id = `extra-${index}`;
+    nodes.push({ id, title: `Research document ${index + 1}`, path: `Research/Document ${index + 1}`, tags: ["research"] });
+    graph.edges.push({ source: "home", target: id, relationship: "references" });
+  }
+}
+if (params.has("dark")) document.documentElement.className = "dark";
 const controls = {
   showTooltip: (text: string) => {
     const target = document.createElement("div");
@@ -63,6 +72,7 @@ const controls = {
       }),
     );
   },
+  setRoot: null as null | ((id: string) => void),
   calls: [] as string[],
   fail: false,
   hold: false,
@@ -104,13 +114,18 @@ Object.assign(window, {
   prismGraphUI: useUIStore,
   prismGraphQuery: query,
 });
+function RootGraph() {
+  const [id, setId] = React.useState("home");
+  React.useEffect(() => { controls.setRoot = setId; return () => { controls.setRoot = null; }; }, []);
+  return <GraphExplorer noteId={id} />;
+}
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={query}>
       <PlatformProvider value="web">
         <VaultClientProvider client={client}>
           <main style={{ height: "100dvh", maxWidth: 880, margin: "auto" }}>
-            <GraphExplorer noteId="home" />
+            <RootGraph />
             <GraphFullscreen />
           </main>
         </VaultClientProvider>

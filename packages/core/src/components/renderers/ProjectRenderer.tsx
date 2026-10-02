@@ -16,7 +16,7 @@ export default function ProjectRenderer({ note }: RendererProps) {
 
   const projectNotes = (allNotes || []).filter((n) => {
     // Match by path prefix
-    if (n.path && projectPath && n.path.startsWith(projectPath) && n.id !== note.id) return true;
+    if (n.path && projectPath && n.path.startsWith(`${projectPath.replace(/\/+$/, "")}/`) && n.id !== note.id) return true;
     // Match by project metadata
     const m = n.metadata as Record<string, unknown> | null;
     if (m?.project === projectName) return true;

@@ -1,14 +1,18 @@
+import "./boards/BoardWorkspace.css";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type CollisionDetection,
 } from "@dnd-kit/core";
 import {
   GripVertical,
@@ -24,6 +28,7 @@ import type { RendererProps } from "./RendererProps";
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useUIStore } from "../../app/stores/ui";
 import { noteCaps } from "../../lib/governance/review";
 import { inferContentType } from "../../lib/schemas/content-types";
@@ -32,13 +37,29 @@ import {
   boardTasks,
   boardTitle,
   readBoardConfig,
+  reorderBoardTasks,
   safeBoardField,
   type BoardConfig,
 } from "../../lib/boards/config";
 import { BoardSettings, BoardTaskForm } from "./boards/BoardForms";
 
 export const boardControl =
-  "min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+  "board-control focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-secondary)] hover:bg-[var(--glass-hover)] disabled:opacity-50";
+
+// Prefer the card under the pointer to its containing column. Exclude the
+// dragged card itself so overlapping its original slot cannot capture the drop.
+const boardCollision: CollisionDetection = (args) => {
+  const candidates = {
+    ...args,
+    droppableContainers: args.droppableContainers.filter(
+      (container) => container.id !== "task:" + args.active.id,
+    ),
+  };
+  const pointer = pointerWithin(candidates);
+  const hits = pointer.length ? pointer : rectIntersection(candidates);
+  const cards = hits.filter((hit) => String(hit.id).startsWith("task:"));
+  return cards.length ? cards : hits;
+};
 
 export default function TaskBoardRenderer(props: RendererProps) {
   const client = useVaultClient();
@@ -109,7 +130,8 @@ function Board({
     !refreshing && !tasks.isFetching && !tasks.isError && config
       ? boardTasks(tasks.data ?? [], config, query)
       : [];
-  const mode = view ?? config?.view ?? "board";
+  const isMobile = useIsMobile();
+  const mode = view ?? (isMobile ? "list" : config?.view ?? "board");
   const refresh = () => queries.invalidateQueries({ queryKey: ["vault"] });
   const recover = async () => {
     if (!current() || writeLock.current || refreshLock.current) return;
@@ -240,15 +262,19 @@ function Board({
     direction: "earlier" | "later",
   ) => {
     if (!config?.order || !canEdit(note) || !current()) return;
-    const order = [
-      ...new Set([
-        ...config.order,
-        ...boardTasks(tasks.data ?? [], config, "").map((n) => n.id),
-      ]),
-    ].filter((id) => id !== task.id);
-    const target = order.indexOf(neighbor.id);
-    if (target < 0) return;
-    order.splice(target + (direction === "later" ? 1 : 0), 0, task.id);
+    const order = reorderBoardTasks(
+      config,
+      tasks.data ?? [],
+      task.id,
+      neighbor.id,
+      direction,
+    );
+    if (
+      !order ||
+      (order.every((id, i) => id === config.order![i]) &&
+        order.length === config.order.length)
+    )
+      return;
     if (order.length > 10000) {
       setError(
         "This view has reached its manual-order limit. Use property sorting or narrow the source.",
@@ -326,8 +352,35 @@ function Board({
   const dragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const task = notes.find((n) => n.id === event.active.id);
-    const column = event.over?.data.current?.column;
-    if (task && typeof column === "string") void move(task, column);
+    if (!task || !config || !event.over) return;
+    const column = event.over.data.current?.column;
+    if (column !== null && typeof column !== "string") return;
+    if (column !== boardStatus(task, config)) {
+      // A group change is one task-property CAS, just like the Move menu.
+      // Preserve its view rank; two independent notes cannot be saved atomically.
+      if (typeof column === "string") void move(task, column);
+      return;
+    }
+    if (!config.order || !canEdit(note)) return;
+    const targetId = event.over.data.current?.taskId;
+    const target = notes.find((n) => n.id === targetId);
+    if (target && target.id !== task.id) {
+      const pointerY =
+        "clientY" in event.activatorEvent
+          ? Number(event.activatorEvent.clientY) + event.delta.y
+          : (event.active.rect.current.translated?.top ?? 0) +
+            (event.active.rect.current.translated?.height ?? 0) / 2;
+      const direction =
+        pointerY < event.over.rect.top + event.over.rect.height / 2
+          ? "earlier"
+          : "later";
+      void reorder(task, target, direction);
+    } else if (!targetId) {
+      const last = notes
+        .filter((n) => n.id !== task.id && boardStatus(n, config) === column)
+        .at(-1);
+      if (last) void reorder(task, last, "later");
+    }
   };
   if (!config)
     return (
@@ -350,14 +403,14 @@ function Board({
   return (
     <section
       aria-label="Task board"
-      className="flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-base)] text-[var(--text-primary)]"
+      className="board-workspace flex h-full min-h-0 min-w-0 overflow-hidden flex-col bg-[var(--bg-base)] text-[var(--text-primary)]"
     >
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
+      <header className="board-header flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-5 py-4">
         <div>
           <p className="text-xs text-[var(--text-secondary)]">
-            Workspace / Tasks
+            {note.path?.split("/").slice(0, -1).filter((part, index) => index !== 0 || part !== "vault").join(" / ") || "Tasks"}
           </p>
-          <h1 className="mt-1 text-xl font-semibold">{boardTitle(note)}</h1>
+          <h1 className="board-title mt-1 font-semibold">{boardTitle(note)}</h1>
         </div>
         <div className="flex gap-2">
           {canEdit(note) && (
@@ -367,14 +420,14 @@ function Board({
             </button>
           )}
           {canCreate && (
-            <button className={boardControl} onClick={() => setCreating(true)}>
+            <button className={boardControl + " board-primary"} onClick={() => setCreating(true)}>
               <Plus size={16} className="mr-1 inline" />
               New task
             </button>
           )}
         </div>
       </header>
-      <div className="flex flex-wrap items-center gap-3 px-5 py-3">
+      <div className="board-viewbar flex flex-wrap items-center gap-3 px-5 py-3">
         <div role="group" aria-label="Task view" className="flex gap-1">
           {(["board", "list"] as const).map((v) => (
             <button
@@ -400,7 +453,7 @@ function Board({
           placeholder="Filter tasks…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className={boardControl + " min-w-[180px] flex-1"}
+          className={boardControl + " board-filter min-w-0"}
         />
         <span className="text-xs text-[var(--text-secondary)]">
           {notes.length} tasks · grouped by {config.groupBy}
@@ -474,6 +527,7 @@ function Board({
           )}
           <DndContext
             sensors={sensors}
+            collisionDetection={boardCollision}
             onDragStart={(e) => setActiveId(String(e.active.id))}
             onDragCancel={() => setActiveId(null)}
             onDragEnd={dragEnd}
@@ -481,8 +535,8 @@ function Board({
             <div
               className={
                 mode === "board"
-                  ? "flex min-h-0 flex-1 gap-4 overflow-auto p-5"
-                  : "min-h-0 flex-1 overflow-auto p-5"
+                  ? "board-columns flex min-h-0 flex-1 gap-4 overflow-auto p-5"
+                  : "board-list min-h-0 flex-1 overflow-auto p-5"
               }
             >
               {mode === "list" && !notes.length && (
@@ -592,7 +646,7 @@ function Column({
       ref={setNodeRef}
       aria-label={group.label}
       className={
-        list ? "mb-6" : "flex w-[min(290px,calc(100vw-56px))] shrink-0 flex-col"
+        list ? "board-group board-list-group mb-6" : "board-group flex w-[min(280px,calc(100vw-56px))] shrink-0 flex-col"
       }
     >
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -603,8 +657,8 @@ function Column({
         </span>
       </h2>
       <div
-        className="min-h-24 space-y-2 rounded-xl p-1"
-        style={{ background: isOver ? "var(--glass-active)" : "var(--glass)" }}
+        className="board-column-body min-h-24 space-y-2 rounded-xl p-1"
+        style={{ background: isOver ? "var(--glass-active)" : "transparent" }}
       >
         {children}
         {!group.tasks.length && (
@@ -637,23 +691,40 @@ function TaskCard({
   onOpen: () => void;
   onMove: (value: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setDragRef,
+    isDragging,
+  } = useDraggable({
     id: task.id,
-    disabled: readOnly || disabled,
+    disabled: (!ordering && readOnly) || disabled,
   });
   const status = boardStatus(task, config);
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: "task:" + task.id,
+    data: { column: status, taskId: task.id },
+    disabled: !ordering || disabled,
+  });
   const raw = task.metadata?.[config.groupBy];
   return (
     <article
-      ref={setNodeRef}
+      ref={(node) => {
+        setDragRef(node);
+        setDropRef(node);
+      }}
       aria-label={boardTitle(task)}
-      className="relative rounded-xl border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3 shadow-sm"
-      style={{ opacity: isDragging ? 0.4 : 1 }}
+      className="board-card relative rounded-lg border border-[var(--glass-border)] bg-[var(--bg-surface)] p-3"
+      style={{
+        opacity: isDragging ? 0.4 : 1,
+        outline: isOver ? "2px solid var(--accent)" : undefined,
+        outlineOffset: isOver ? 2 : undefined,
+      }}
     >
       <div className="flex items-start gap-1">
         <button
           onClick={onOpen}
-          className="min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
+          className="board-card-title focus-ring min-h-11 min-w-0 flex-1 break-words text-left text-sm font-medium"
         >
           {boardTitle(task)}
           <ArrowUpRight
@@ -661,13 +732,13 @@ function TaskCard({
             className="ml-1 inline text-[var(--text-secondary)]"
           />
         </button>
-        {!readOnly && (
+        {(!readOnly || ordering) && (
           <button
             {...attributes}
             {...listeners}
             disabled={disabled}
             aria-label={"Drag " + boardTitle(task)}
-            className="min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
+            className="board-card-drag focus-ring min-h-11 w-8 shrink-0 touch-none cursor-grab text-[var(--text-secondary)]"
           >
             <GripVertical size={16} />
           </button>
@@ -709,7 +780,7 @@ function TaskCard({
             task.metadata?.[field] ??
             (field === "deadline" ? task.metadata?.due : undefined);
           return value == null ? null : (
-            <div key={field} className="min-w-0 max-w-full break-words">
+            <div key={field} data-board-field={field} data-priority={field === "priority" && typeof value === "string" ? value.toLowerCase() : undefined} className="min-w-0 max-w-full break-words">
               <dt className="sr-only">{field}</dt>
               <dd>
                 {typeof value === "object"

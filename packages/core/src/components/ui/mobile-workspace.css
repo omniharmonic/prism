@@ -1,0 +1,32 @@
+.prism-mobile-navigation { position: absolute; inset: auto 0 0; z-index: var(--z-sticky); display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 2px; height: 68px; padding: 5px 8px 7px; box-sizing: border-box; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); }
+.prism-mobile-navigation[hidden] { display: none; }
+.prism-mobile-navigation > button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; min-width: 44px; min-height: 44px; border-radius: 7px; font-size: 11px; line-height: 1.2; font-weight: 500; }
+.prism-mobile-navigation > button:hover { background: var(--glass-hover); }
+.prism-mobile-navigation > button[aria-pressed=true] { color: var(--color-accent); background: var(--surface-selected); }
+.prism-mobile-navigation > button:focus-visible, .prism-mobile-sheet button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.prism-mobile-sheet { position: fixed; top: auto; left: 0; right: 0; width: min(100% - 16px, 440px); max-width: none; max-height: 82dvh; padding: 0; margin: auto auto calc(env(safe-area-inset-bottom) + 8px); border: 1px solid var(--glass-border); border-radius: 16px; background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 16px 60px #0003; overflow: hidden; }
+.prism-mobile-sheet::backdrop { background: #0006; }
+.prism-mobile-sheet-panel { display: flex; flex-direction: column; max-height: inherit; min-height: 0; }
+.prism-mobile-sheet-handle { display: grid; place-items: center; flex-shrink: 0; height: 22px; touch-action: none; cursor: grab; }
+.prism-mobile-sheet-handle > span { width: 36px; height: 4px; border-radius: 3px; background: var(--glass-border-strong); }
+.prism-mobile-sheet-heading { display: flex; align-items: center; gap: 12px; padding: 0 10px 8px 20px; flex-shrink: 0; border-bottom: 1px solid var(--border-subtle); }
+.prism-mobile-sheet-heading h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; color: var(--text-primary); overflow-wrap: anywhere; }
+.prism-mobile-sheet-heading button { width: 44px; height: 44px; display: grid; place-items: center; flex-shrink: 0; border-radius: 6px; color: var(--text-muted); }
+.prism-mobile-sheet-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
+.prism-mobile-sheet-context button { min-height: 44px; min-width: 44px; }
+.prism-mobile-sheet-context { padding: 12px 20px; border-bottom: 1px solid var(--border-subtle); }
+.prism-mobile-sheet-actions > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 10px 20px; text-align: left; color: var(--text-primary); font-size: 14px; line-height: 1.5; }
+.prism-mobile-sheet-actions > button.starts-group { margin-top: 6px; border-top: 1px solid var(--border-subtle); }
+.prism-mobile-sheet-actions > button:hover, .prism-mobile-sheet-heading button:hover, .prism-mobile-document-open:hover, .prism-mobile-document-close:hover { background: var(--glass-hover); }
+.prism-mobile-sheet-actions > button.active { background: var(--surface-selected); }
+.prism-mobile-sheet-actions > button.danger { color: var(--color-danger); }
+.prism-mobile-sheet-icon { flex-shrink: 0; display: grid; place-items: center; width: 22px; color: var(--text-secondary); }
+.prism-mobile-sheet-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.prism-mobile-sheet-detail { flex-shrink: 0; color: var(--text-muted); font-size: 12px; }
+.prism-mobile-document-row { display: flex; align-items: center; gap: 4px; padding: 4px 10px; }
+.prism-mobile-document-row[data-active=true] { background: var(--surface-selected); }
+.prism-mobile-document-open { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; min-height: 50px; padding: 8px 10px; text-align: left; font-size: 14px; border-radius: 5px; }
+.prism-mobile-document-title { overflow-wrap: anywhere; min-width: 0; }
+.prism-mobile-document-dirty { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--color-accent); }
+.prism-mobile-document-close { display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; border-radius: 6px; color: var(--text-muted); }
+.prism-mobile-new-page { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 10px 20px; border-top: 1px solid var(--border-subtle); color: var(--color-accent); font-size: 14px; text-align: left; }

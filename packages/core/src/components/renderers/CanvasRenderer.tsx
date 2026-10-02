@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
+import "./canvas-workspace.css";
 import { Link2, Link2Off, PanelLeftOpen, PanelLeftClose, ExternalLink } from "lucide-react";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
@@ -223,37 +224,38 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
   }, [showLinks, isDark, client]);
 
   return (
-    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} className="flex flex-col h-full" style={presentation.style}>
+    <div ref={presentation.ref} role={presentation.expanded ? "dialog" : undefined} aria-modal={presentation.expanded || undefined} aria-label={presentation.expanded ? "Focused canvas" : undefined} onKeyDown={presentation.onKeyDown} className="prism-canvas-workspace flex flex-col h-full" style={presentation.style}>
       {/* Toolbar */}
       <div
-        className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs flex-shrink-0"
+        className="prism-canvas-toolbar"
         style={{ borderBottom: "1px solid var(--glass-border)", background: "var(--bg-surface)" }}
       >
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span style={{ color: "var(--text-secondary)" }}>
-            {note.path?.split("/").pop() || "Canvas"}
-          </span>
+        <div className="prism-canvas-heading"><h2>{note.path?.split("/").pop() || "Canvas"}</h2><p>Map your notes, ideas, and connections.</p></div>
+        <div className="prism-canvas-actions">
           {!readOnly && <>
-          <div style={{ width: 1, height: 16, background: "var(--glass-border)" }} />
+
           <button
             onClick={() => { setShowDrawer(!showDrawer);closeCardList(); }}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showDrawer ? "var(--color-accent)" : "var(--text-secondary)" }}
             title="Note drawer"
+            aria-expanded={showDrawer}
+            data-canvas-primary="true"
           >
             {showDrawer ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
-            Notes
+            Add notes
           </button>
           <button
             onClick={toggleLinks}
             className="focus-ring flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--glass-hover)] transition-colors"
             style={{ color: showLinks ? "var(--color-accent)" : "var(--text-secondary)" }}
             title={showLinks ? "Hide existing links" : "Show existing links"}
+            aria-pressed={showLinks}
           >
             {showLinks ? <Link2Off size={13} /> : <Link2 size={13} />}
             {showLinks ? "Hide links" : "Show links"}
           </button>
-          <label className="flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
+          <label className="prism-canvas-copy flex min-h-11 items-center gap-2 px-3 py-2 cursor-pointer" style={{ color: "var(--text-muted)" }}>
             <input
               type="checkbox"
               checked={includeBody}
@@ -278,7 +280,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
           {browseCards}
           {presentation.control}
         </div>
-        <span style={{ color: "var(--text-muted)" }}>
+        <span className="prism-canvas-save" style={{ color: "var(--text-muted)" }}>
           {isSaving ? "Saving..." : lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : ""}
         </span>
       </div>
@@ -286,7 +288,7 @@ export default function CanvasRenderer({ note, readOnly }: RendererProps) {
       {saveError && <p role="alert" className="px-3 py-2 text-xs">{saveError} <button type="button" className="focus-ring min-h-11 rounded-lg border border-[var(--glass-border)] px-3" onClick={saveNow}>Retry canvas save</button></p>}
       {relations.status}
       {access.error && <p role="alert" className="px-4 py-2 text-sm">{access.error}</p>}
-      <div className="relative flex-1 flex min-h-0">
+      <div className="prism-canvas-body relative flex-1 flex min-h-0">
         {cardList}
         {showDrawer && (
           <NoteDrawer onClose={() => setShowDrawer(false)} onAddNote={handleAddNoteCard} canvasNoteIds={getCanvasNoteIds(apiRef.current?.getSceneElements() || [])} />

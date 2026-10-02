@@ -3,7 +3,7 @@ import type { Note } from "../../lib/types";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { findNoteElement } from "./canvas-cards";
-import { ExternalLink, X } from "lucide-react";
+import { ExternalLink, FileText, List, X } from "lucide-react";
 
 export interface CanvasCard {
   id: string;
@@ -73,7 +73,7 @@ export function CanvasCardList({
           onClose();
         }
       }}
-      className="absolute inset-0 z-20 flex min-w-0 flex-col border-r border-[var(--glass-border)] bg-[var(--bg-surface)] sm:static sm:w-80 sm:shrink-0"
+      className="prism-canvas-drawer absolute inset-0 z-20 flex min-w-0 flex-col border-r border-[var(--glass-border)] bg-[var(--bg-surface)] sm:static sm:w-80 sm:shrink-0"
     >
       <header className="flex items-center justify-between gap-2 p-3">
         <h2 className="text-sm font-medium">
@@ -112,13 +112,13 @@ export function CanvasCardList({
       )}
       <ul className="min-h-0 flex-1 overflow-auto px-3 pb-3">
         {rows.slice(0, limit).map((c) => (
-          <li key={c.id} className="border-t border-[var(--glass-border)] py-2">
-            <div className="px-2 py-1">
+          <li key={c.id} className="prism-canvas-list-card border-t border-[var(--glass-border)] py-2">
+            <div className="prism-canvas-card-heading px-2 py-1"><FileText aria-hidden="true" size={17} className="prism-canvas-note-icon"/><div>
               <p className="break-words text-sm font-medium">{c.title}</p>
               <p className="break-all text-xs text-[var(--text-muted)]">
                 {c.path}
               </p>
-            </div>
+            </div></div>
             <div className="flex flex-wrap gap-1">
               <button
                 type="button"
@@ -215,7 +215,7 @@ export function useCanvasCardNavigation(
         closePicker();
       }}
     >
-      Browse cards
+      <List aria-hidden="true" size={15}/>Browse cards
     </button>
   );
   return {

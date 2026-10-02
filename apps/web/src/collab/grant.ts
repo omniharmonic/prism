@@ -64,19 +64,28 @@ const api = (path: string, init?: RequestInit) => managementRequest("/api", path
 
 /** An Error carrying the server's `{error, detail}` (e.g. 409 `disabled`) so the
  *  UI can say something useful. Server error bodies never carry secret values. */
-async function serverError(r: Response, what: string): Promise<Error & { status: number; code?: string }> {
+async function serverError(r: Response, what: string): Promise<Error & { status: number; code?: string; retryAfter?: number }> {
   let code: string | undefined;
   let detail: string | undefined;
+  let retryAfter: number | undefined;
   try {
-    const b = (await r.json()) as { error?: unknown; detail?: unknown };
+    const b = (await r.json()) as { error?: unknown; detail?: unknown; retryAfter?: unknown };
+    if (typeof b.retryAfter === "number" && Number.isFinite(b.retryAfter) && b.retryAfter >= 0) retryAfter = b.retryAfter;
     if (typeof b.error === "string") code = b.error;
     if (typeof b.detail === "string") detail = b.detail.slice(0, 300);
   } catch {
     /* non-JSON body */
   }
-  const e = new Error(`${what} → ${r.status}${code ? ` ${code}` : ""}${detail ? `: ${detail}` : ""}`) as Error & { status: number; code?: string };
+  const retryHeader = r.headers.get("Retry-After");
+  if (retryHeader) {
+    const seconds = Number(retryHeader);
+    const value = Number.isFinite(seconds) ? seconds : (Date.parse(retryHeader) - Date.now()) / 1000;
+    if (Number.isFinite(value)) retryAfter = Math.max(0, value);
+  }
+  const e = new Error(`${what} → ${r.status}${code ? ` ${code}` : ""}${detail ? `: ${detail}` : ""}`) as Error & { status: number; code?: string; retryAfter?: number };
   e.status = r.status;
   e.code = code;
+  if (retryAfter !== undefined) e.retryAfter = Math.min(3600, Math.ceil(retryAfter));
   return e;
 }
 

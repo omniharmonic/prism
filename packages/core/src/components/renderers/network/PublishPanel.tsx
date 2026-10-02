@@ -1,3 +1,4 @@
+import "./publishing/publishing-studio.css";
 // Publishing management; server membership is shared with the public reader.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -349,8 +350,9 @@ function PublicationRow({
   return (
     <div
       data-pub-slug={pub.slug}
+      className="prism-publication-card"
       style={{
-        background: "var(--glass)",
+        background: "var(--bg-surface)",
         border: "1px solid var(--glass-border)",
         borderRadius: "var(--radius-lg, 14px)",
         overflow: "hidden",
@@ -393,7 +395,7 @@ function PublicationRow({
           >
             <span
               style={{
-                fontSize: 14.5,
+                fontSize: 19,
                 fontWeight: 600,
                 color: "var(--text-primary)",
               }}
@@ -450,64 +452,61 @@ function PublicationRow({
         </div>
       </div>
 
-      {/* URL + copy. */}
-      <div
-        style={{
-          padding: "0 14px 14px",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        <input
-          readOnly
-          aria-label="Publication address"
-          value={pub.url}
-          onFocus={(e) => e.currentTarget.select()}
+      <details className="prism-publication-details">
+        <summary className="focus-ring">
+          {count !== undefined ? (
+            <>
+              <strong>{count}</strong> {count === 1 ? "page is" : "pages are"}{" "}
+              currently visible.
+            </>
+          ) : (
+            "Page count is unavailable."
+          )}
+          <span>Site address & membership</span>
+        </summary>
+        {/* URL + copy. */}
+        <div
           style={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: 12.5,
-            padding: "7px 10px",
-            borderRadius: 8,
-            outline: "none",
-            background: "var(--bg-surface, var(--glass))",
-            border: "1px solid var(--glass-border)",
-            color: "var(--text-secondary)",
-            fontFamily: "var(--font-mono, ui-monospace, monospace)",
+            padding: "0 14px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
           }}
-        />
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={copied === copyKey ? <Check size={13} /> : <Copy size={13} />}
-          onClick={() => onCopy(pub.url, copyKey)}
         >
-          {copied === copyKey ? "Copied" : "Copy"}
-        </Button>
-      </div>
+          <input
+            readOnly
+            aria-label="Publication address"
+            value={pub.url}
+            onFocus={(e) => e.currentTarget.select()}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 12.5,
+              padding: "7px 10px",
+              borderRadius: 8,
+              outline: "none",
+              background: "var(--bg-surface, var(--glass))",
+              border: "1px solid var(--glass-border)",
+              color: "var(--text-secondary)",
+              fontFamily: "var(--font-mono, ui-monospace, monospace)",
+            }}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={copied === copyKey ? <Check size={13} /> : <Copy size={13} />}
+            onClick={() => onCopy(pub.url, copyKey)}
+          >
+            {copied === copyKey ? "Copied" : "Copy"}
+          </Button>
+        </div>
 
-      {/* Dynamic-count honesty line (principle 8). */}
-      <div
-        style={{
-          padding: "0 14px 12px",
-          fontSize: 11.5,
-          color: "var(--text-muted)",
-          lineHeight: 1.5,
-        }}
-      >
-        {count !== undefined ? (
-          <>
-            <strong>{count}</strong> {count === 1 ? "page is" : "pages are"}{" "}
-            currently visible.
-          </>
-        ) : (
-          "Page count is unavailable."
-        )}{" "}
-        New eligible notes {pub.kind === "path" ? "under" : "tagged"}{" "}
-        <span style={{ color: "var(--text-secondary)" }}>{slice}</span> are
-        included automatically. Private notes stay excluded.
-      </div>
+        <p className="prism-publication-membership">
+          New eligible notes {pub.kind === "path" ? "under" : "tagged"}{" "}
+          <span style={{ color: "var(--text-secondary)" }}>{slice}</span> are
+          included automatically. Private notes stay excluded.
+        </p>
+      </details>
 
       {/* Expandable per-publication settings. */}
       {opened && (

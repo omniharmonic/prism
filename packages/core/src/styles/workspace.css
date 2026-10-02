@@ -127,3 +127,34 @@ button:disabled { cursor: not-allowed; }
   box-sizing: border-box;
 }
 .workspace-mobile-drawer::backdrop { background: rgb(20 22 28 / 35%); }
+
+/* The sidebar follows the approved writing mockup: identity, everyday work,
+   pages, optional tools, and one clear creation action. */
+.workspace-vault-heading { padding: 0 12px 14px; }
+.workspace-vault-heading:empty { display: none; }
+.workspace-navigation .workspace-nav-row:hover { background: var(--glass-hover); }
+.workspace-navigation .workspace-nav-row[data-active="true"] { color: var(--text-accent, var(--color-accent)); }
+.workspace-navigation .workspace-section-actions { display: flex; opacity: 0; transition: opacity 100ms ease; }
+.workspace-navigation section:hover .workspace-section-actions,
+.workspace-navigation section:focus-within .workspace-section-actions { opacity: 1; }
+.workspace-new-page {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px;
+  border-radius: 7px; padding: 8px 12px; background: var(--action-bg);
+  color: var(--action-fg); font-size: 14px; font-weight: 550; border: 0;
+}
+.workspace-new-page:hover { background: var(--action-hover); }
+@media (pointer: coarse) {
+  .workspace-navigation .workspace-section-actions { opacity: 1; }
+  .workspace-navigation button { min-height: 44px; }
+}
+
+.workspace-navigation[data-density="comfortable"] { --workspace-control-height: 38px; }
+.workspace-navigation[data-density="compact"] { --workspace-control-height: 30px; }
+.workspace-navigation-preferences {
+  width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto;
+  margin: auto; padding: 24px; border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 16px 64px rgb(0 0 0 / 15%);
+}
+.workspace-navigation-preferences::backdrop { background: rgb(20 22 28 / 30%); }
+@media (pointer: coarse) { .workspace-navigation[data-density] { --workspace-control-height: 44px; } }
+@media (max-width: 480px) { .workspace-navigation-preferences { padding: 18px; } }

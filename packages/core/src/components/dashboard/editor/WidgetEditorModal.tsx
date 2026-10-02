@@ -3,8 +3,11 @@ import {
   X, List, Columns3, LayoutGrid, Hash, BarChart3, Clock, PieChart, FileText, Zap,
   type LucideIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useVaultClient } from "../../../data/VaultClientContext";
+import { useAgentChatStore } from "../../../lib/agent/chatStore";
 import { Button } from "../../ui/Button";
-import { useTags, useVaultPaths, useNotes } from "../../../app/hooks/useParachute";
+import { useTags, useNotes } from "../../../app/hooks/useParachute";
 import {
   WIDGET_TYPES, getWidgetType,
   type DashboardWidgetConfig, type WidgetTypeId, type WidgetColumn,
@@ -93,10 +96,30 @@ const TEMPLATES: { label: string; description: string; config: Partial<Dashboard
 export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModalProps) {
   const isNew = !initial;
   const { data: allTags } = useTags();
-  const { data: allPaths } = useVaultPaths();
+  const client = useVaultClient();
+  const audience = useAgentChatStore((state) => state.scope);
+  const scope = client.scope?.();
+  const pathHints = useQuery({
+    queryKey: ["vault", "widget-path-hints", audience, scope],
+    queryFn: async ({ signal }) => {
+      const entries = await client.listTree();
+      if (signal.aborted || client.scope?.() !== scope || useAgentChatStore.getState().scope !== audience)
+        throw new Error("Workspace changed before loading location hints.");
+      const directories = new Set<string>();
+      for (const entry of entries) {
+        const path = entry.path?.replace(/^vault\//, "");
+        if (!path) continue;
+        const segments = path.split("/");
+        for (let i = 1; i < segments.length; i++) directories.add(segments.slice(0, i).join("/"));
+      }
+      return [...directories].sort();
+    },
+    staleTime: 0,
+    retry: false,
+  });
   const { data: allNotes } = useNotes();
   const tagOptions = (allTags || []).map((t) => t.tag).sort();
-  const pathOptions = allPaths || [];
+  const pathOptions = pathHints.isError ? [] : pathHints.data || [];
   // State
   const [widgetType, setWidgetType] = useState<WidgetTypeId>(initial?.type ?? "list");
   const [title, setTitle] = useState(initial?.title ?? "");
@@ -312,6 +335,7 @@ export function WidgetEditorModal({ initial, onSave, onClose }: WidgetEditorModa
                 </Section>
 
                 <Section label="Filter by Path">
+                  {pathHints.isError && <p role="status" className="text-xs mb-2">Location hints are unavailable. You can still type a path. <button type="button" onClick={() => void pathHints.refetch()}>Retry location hints</button></p>}
                   <Autocomplete
                     placeholder="Type to search paths..."
                     options={pathOptions}

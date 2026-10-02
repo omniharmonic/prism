@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Database, MessageSquare, Mail, Cloud, Bot, Sun, Moon, Plus, Trash2, Check, Video, Mic, Cpu, FileText, Zap } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useUIStore } from "../../app/stores/ui";
 import { useSettingsStore, type Theme } from "../../app/stores/settings";
 import { ollamaApi, localAiApi } from "../../lib/parachute/client";
 import { useIsWeb } from "../../data/Platform";
@@ -11,6 +12,7 @@ import { useHostServices } from "../../data/HostServicesContext";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { ServerAiModels } from "./ServerAiModels";
 import { SearchIndexSettings } from "./SearchIndexSettings";
+import "./settings-workspace.css";
 
 interface SettingsProps {
   open: boolean;
@@ -157,35 +159,23 @@ export function Settings({ open, onClose }: SettingsProps) {
 
   return (
     <dialog ref={dialog} aria-label="Settings" onCancel={(event) => { event.preventDefault(); onClose(); }} className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 p-3 text-[var(--text-primary)] z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={onClose}>
-      <div className="glass-elevated flex w-full max-w-[620px] max-h-[90dvh] flex-col overflow-hidden rounded-xl" onClick={(e) => e.stopPropagation()}>
-        {/* Header with tabs */}
-        <div className="px-6 pt-4 pb-0" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Settings</h2>
-            <button aria-label="Close settings" onClick={onClose} className="focus-ring p-3 rounded hover:bg-[var(--glass-hover)]">
-              <X size={18} style={{ color: "var(--text-muted)" }} />
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-1">
+      <div className="prism-settings" onClick={(e) => e.stopPropagation()}>
+        <header className="prism-settings__header">
+          <div><h2>Settings</h2><p>Make Prism work the way you do.</p></div>
+          <button aria-label="Close settings" onClick={onClose} className="focus-ring p-3 rounded hover:bg-[var(--glass-hover)]"><X size={18} /></button>
+        </header>
+        <div className="prism-settings__body">
+          <nav aria-label="Settings sections" className="prism-settings__navigation">
             {tabs.map((t) => (
-              <button
-                key={t.id}
-                aria-pressed={activeTab === t.id}
-                onClick={() => setTab(t.id)}
-                className="px-3 py-1.5 text-xs font-medium rounded-t-lg transition-colors"
-                style={{
-                  color: activeTab === t.id ? "var(--text-primary)" : "var(--text-muted)",
-                  background: activeTab === t.id ? "var(--glass-active)" : "transparent",
-                  borderBottom: activeTab === t.id ? "2px solid var(--color-accent)" : "2px solid transparent",
-                }}
-              >
-                {t.label}
-              </button>
+              <button key={t.id} aria-pressed={activeTab === t.id} onClick={() => setTab(t.id)} className="focus-ring">{t.label}</button>
             ))}
-          </div>
-        </div>
-
-        <div className="min-h-0 overflow-auto px-4 py-4 space-y-6 sm:px-6">
+            <p>Appearance preferences apply on this device. Account and service settings use their displayed scope.</p>
+          </nav>
+          <div className="prism-settings__content">
+            <div className="prism-settings__section-heading">
+              <h3>{tabs.find((item) => item.id === activeTab)?.label}</h3>
+              <p>{activeTab === "appearance" ? "A comfortable place to read and write. Changes apply immediately on this device." : activeTab === "account" ? "Your sign-in and personal account preferences." : activeTab === "sources" ? "Configure the sources that bring context into your vault." : "Connections, search and agent services available on this host."}</p>
+            </div>
           {settingsError && <p role="alert" className="text-sm">{settingsError} <button className="focus-ring underline" onClick={() => { setSettingsError(""); void loadConfig(); }}>Reload settings</button></p>}
           {/* Account Tab (web session only) */}
           {activeTab === "account" && <AccountSettings />}
@@ -199,10 +189,13 @@ export function Settings({ open, onClose }: SettingsProps) {
                   Configure connections to core infrastructure. Changes take effect on restart.
                 </p>
                 {isWeb ? (
-                  <DesktopOnlyNotice
-                    feature="Service credentials"
-                    detail="This app holds no vault token. Integration credentials (Matrix, Google, Notion, ClickUp, Proton Bridge, transcripts) are stored on the Prism Server: the server owner sets them in Network → Server."
-                  />
+                  <div>
+                    <DesktopOnlyNotice
+                      feature="Service credentials"
+                      detail="Integration credentials are saved on the Prism Server. Workspace owners and admins manage available accounts in Workspace settings → Connections. Server operations remain with the server owner."
+                    />
+                    <button type="button" className="focus-ring mt-2 min-h-11 rounded-lg border border-[var(--glass-border)] px-3 text-sm" onClick={() => { onClose(); useUIStore.getState().openTab("network", "Workspace settings", "network"); }}>Open workspace settings</button>
+                  </div>
                 ) : (
                 <>
                 <ServiceField
@@ -524,7 +517,7 @@ export function Settings({ open, onClose }: SettingsProps) {
               <Section title="Theme">
                 <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--glass-border)" }}>
                   {(["dark", "light"] as Theme[]).map((t) => (
-                    <button key={t} onClick={() => setTheme(t)}
+                    <button key={t} aria-pressed={theme === t} onClick={() => setTheme(t)}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs"
                       style={{ background: theme === t ? "var(--glass-active)" : "transparent", color: "var(--text-primary)" }}>
                       {t === "dark" ? <Moon size={12} /> : <Sun size={12} />}
@@ -536,31 +529,31 @@ export function Settings({ open, onClose }: SettingsProps) {
 
               <Section title="Typography">
                 <Row label="UI Font">
-                  <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
+                  <select aria-label="UI Font" value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
                     {FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
                   </select>
                 </Row>
                 <Row label="Editor Font">
-                  <select value={editorFontFamily} onChange={(e) => setEditorFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
+                  <select aria-label="Editor Font" value={editorFontFamily} onChange={(e) => setEditorFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
                     {EDITOR_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
                   </select>
                 </Row>
                 <Row label="Code Font">
-                  <select value={monoFontFamily} onChange={(e) => setMonoFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
+                  <select aria-label="Code Font" value={monoFontFamily} onChange={(e) => setMonoFontFamily(e.target.value)} className="h-7 rounded-md px-2 text-xs outline-none"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}>
                     {MONO_FONT_OPTIONS.map((f) => <option key={f} value={f} style={{ background: "var(--bg-elevated)" }}>{f}</option>)}
                   </select>
                 </Row>
                 <Row label="Font Size">
                   <div className="flex items-center gap-2">
-                    <input type="range" min={11} max={18} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-24" />
+                    <input aria-label="Font Size" type="range" min={11} max={18} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-24" />
                     <span className="text-xs w-8" style={{ color: "var(--text-secondary)" }}>{fontSize}px</span>
                   </div>
                 </Row>
                 <Row label="Sidebar Label">
-                  <input value={sidebarLabel} onChange={(e) => setSidebarLabel(e.target.value)}
+                  <input aria-label="Sidebar Label" value={sidebarLabel} onChange={(e) => setSidebarLabel(e.target.value)}
                     className="h-7 rounded-md px-2 text-xs outline-none w-32"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
                     placeholder="Projects" />
@@ -575,6 +568,7 @@ export function Settings({ open, onClose }: SettingsProps) {
               </Section>
             </>
           )}
+          </div>
         </div>
       </div>
     </dialog>
@@ -584,11 +578,11 @@ export function Settings({ open, onClose }: SettingsProps) {
 // ─── Shared Components ──────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div><h3 className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>{title}</h3>{children}</div>;
+  return <section className="prism-settings__section"><h4>{title}</h4>{children}</section>;
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="flex items-center justify-between py-1.5"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
+  return <div className="prism-settings__row"><span className="text-sm" style={{ color: "var(--text-primary)" }}>{label}</span>{children}</div>;
 }
 
 // ─── Ingest mode (host vs client) ────────────────────────────

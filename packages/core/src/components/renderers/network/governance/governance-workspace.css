@@ -1,0 +1,130 @@
+.prism-governance {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.prism-governance-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--glass-border);
+  margin: 20px 0 24px;
+}
+.prism-governance .prism-governance-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+}
+.prism-governance .prism-governance-tabs button[aria-selected="true"] {
+  border-color: var(--color-accent);
+  color: var(--text-accent);
+}
+.prism-governance-tabs button span {
+  background: var(--color-accent-dim);
+  border-radius: 12px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.prism-governance button,
+.prism-governance select,
+.prism-governance input:not([type="checkbox"]) {
+  min-height: 44px;
+  max-width: 100%;
+}
+.prism-governance label:has(input[type="checkbox"]) {
+  min-height: 44px;
+}
+.prism-governance input:not([type="checkbox"]),
+.prism-governance select,
+.prism-governance textarea {
+  font-size: 14px;
+  min-width: 0;
+}
+.prism-governance pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prism-governance-section-heading {
+  flex-wrap: wrap;
+}
+.prism-governance-section-heading h2 {
+  min-width: 120px;
+}
+.prism-governance-intro {
+  margin-bottom: 24px;
+}
+.prism-governance-intro h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.prism-governance-intro p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 600px;
+}
+.prism-governance-overview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.prism-governance-overview-actions button {
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.prism-governance [data-testid="gov-audit"] > div > div {
+  flex-wrap: wrap;
+}
+@media (max-width: 500px) {
+  .prism-governance-section {
+    padding: 12px !important;
+  }
+  .prism-governance input:not([type="checkbox"]),
+  .prism-governance select,
+  .prism-governance textarea {
+    font-size: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prism-governance * {
+    transition: none !important;
+  }
+}
+
+.prism-governance-compose {
+  margin: 12px 0;
+}
+.prism-governance summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.prism-governance-compose > summary {
+  color: var(--text-primary);
+  padding: 8px 0;
+}
+@media (max-width: 500px) {
+  .prism-governance-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    overflow: visible;
+  }
+  .prism-governance .prism-governance-tabs button {
+    justify-content: center;
+    padding: 8px 3px;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+}

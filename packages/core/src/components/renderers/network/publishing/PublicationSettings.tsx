@@ -91,9 +91,10 @@ export function PublicationSettings({
 
   return (
     <div
+      className="prism-publication-settings"
       style={{
         borderTop: "1px solid var(--glass-border)",
-        background: "var(--glass-hover)",
+        background: "var(--bg-surface)",
         padding: 14,
         display: "flex",
         flexDirection: "column",
@@ -103,7 +104,7 @@ export function PublicationSettings({
       <div
         role="tablist"
         aria-label="Publication settings"
-        className="grid grid-cols-2 gap-1 sm:grid-cols-4"
+        className="prism-publication-tabs"
       >
         {sections.map(([id, label], index) => (
           <button
@@ -113,10 +114,7 @@ export function PublicationSettings({
             aria-controls={`${sectionId}-panel-${id}`}
             aria-selected={section === id}
             tabIndex={section === id ? 0 : -1}
-            className="min-h-11 rounded-lg px-3 text-sm"
-            style={{
-              background: section === id ? "var(--glass-active)" : undefined,
-            }}
+            className="focus-ring"
             onClick={() => setSection(id)}
             onKeyDown={(event) => {
               const next =
@@ -141,7 +139,7 @@ export function PublicationSettings({
           </button>
         ))}
       </div>
-      <p className="text-xs text-[var(--text-secondary)]">
+      <p hidden={section === "appearance" && !!sharing.getPublicationPresentation} className="text-xs text-[var(--text-secondary)]">
         {sharing.getPublicationPresentation
           ? "Appearance uses private drafts and an explicit publish step. Content and access apply when saved."
           : "Changes apply to the live site when you save."}{" "}

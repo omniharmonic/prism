@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/react";
-import { Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus } from "lucide-react";
+import { Sparkles, Type, Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote, Code2, Minus } from "lucide-react";
+import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
 import type { SlashCommandState } from "../../lib/tiptap/SlashCommand";
 
 interface SlashItem {
+  agent?: boolean;
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -40,16 +42,23 @@ export function SlashMenu({
   onClose: () => void;
 }) {
   const [selected, setSelected] = useState(0);
+  const action = useSelectionAsk(editor);
   const q = state.query.toLowerCase();
+  const documentText = editor && editor.state.doc.textBetween(0, state.from, "\n") + editor.state.doc.textBetween(state.to, editor.state.doc.content.size, "\n");
+  const canAsk = action.canAsk && editor?.isEditable && !!documentText?.trim();
   const items = useMemo(
-    () => (q ? ITEMS.filter((it) => it.title.toLowerCase().includes(q) || it.keywords.some((k) => k.includes(q))) : ITEMS),
-    [q],
+    () => {
+      const all = canAsk ? [...ITEMS, { agent: true, title: "Ask agent", subtitle: "Discuss this page in your conversation", icon: <Sparkles size={16} />, keywords: ["ask", "agent", "ai"], run: () => {} }] : ITEMS;
+      return q ? all.filter(it => it.title.toLowerCase().includes(q) || it.keywords.some(k => k.includes(q))) : all;
+    },
+    [q, canAsk],
   );
 
   useEffect(() => setSelected(0), [q]);
 
   const select = (it: SlashItem) => {
     if (!editor) return;
+    if (it.agent) { if (action.ask("document", { from: state.from, to: state.to })) onClose(); return; }
     editor.chain().focus().deleteRange({ from: state.from, to: state.to }).run();
     it.run(editor);
     onClose();
@@ -67,7 +76,7 @@ export function SlashMenu({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, selected, editor, state.from, state.to]);
+  }, [items, selected, editor, state.from, state.to, action.ask]);
 
   if (!editor || items.length === 0) return null;
   const coords = editor.view.coordsAtPos(state.to);

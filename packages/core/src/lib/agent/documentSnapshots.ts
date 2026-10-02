@@ -8,6 +8,8 @@ import {
 } from "./contextSnapshots";
 
 type Capture = {
+  /** Memory-only identity; never included in a context payload. */
+  editor?: Editor;
   document: AgentContextSnapshot;
   selection: AgentContextSnapshot | null;
 };
@@ -31,7 +33,7 @@ export function useAgentDocumentSnapshot(
   useEffect(() => {
     if (!scope || !editor || editor.isDestroyed || !enabled) {
       const state = useDocumentSnapshots.getState();
-      if (state.notes[noteId]) {
+      if (editor && state.notes[noteId]?.editor === editor) {
         const notes = { ...state.notes };
         delete notes[noteId];
         useDocumentSnapshots.setState({ notes });
@@ -62,6 +64,7 @@ export function useAgentDocumentSnapshot(
       };
       const { from, to } = editor.state.selection;
       const value = {
+        editor,
         document: snapshot("document", 0, doc.content.size),
         selection: from === to ? null : snapshot("selection", from, to),
       };
@@ -80,6 +83,19 @@ export function useAgentDocumentSnapshot(
     return () => {
       editor.off("update", capture);
       editor.off("selectionUpdate", capture);
+      // An older host must not unregister a replacement editor for this note.
+      const state = useDocumentSnapshots.getState();
+      if (state.scope === scope && state.notes[noteId]?.editor === editor) {
+        const { editor: _editor, ...snapshot } = state.notes[noteId];
+        useDocumentSnapshots.setState({ notes: { ...state.notes, [noteId]: snapshot } });
+      }
     };
   }, [editor, noteId, label, baseUpdatedAt, enabled, scope]);
+}
+
+/** Resolve only the registered editor, never whichever document is active in the shell. */
+export function captureForEditor(editor: Editor | null) {
+  const state = useDocumentSnapshots.getState();
+  if (!editor || editor.isDestroyed || !state.scope || state.scope !== useAgentChatStore.getState().scope) return null;
+  return Object.values(state.notes).find(capture => capture.editor === editor) ?? null;
 }

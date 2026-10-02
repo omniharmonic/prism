@@ -12,7 +12,7 @@
  */
 import type { Note } from "../parachute";
 import { byteLen, isArchiveNote, isTooLarge, rolloverLimits, rolloverThread } from "./matrix-rollover";
-import { PeopleIndex } from "./people";
+import { PeopleIndex, type PersonReview } from "./people";
 import type { IfExists, NoteLinkInput } from "../parachute";
 
 export interface MatrixCreds {
@@ -582,19 +582,28 @@ export async function participantLinks(
   members: Record<string, string>,
   people: PeopleIndex,
   vault: Pick<IngestVault, "createNote">,
-  opts: { platform: string; selfUserId?: string | null },
+  opts: {
+    platform: string;
+    selfUserId?: string | null;
+    /** false = MATRIX_LINK_EXISTING: never create a person. */
+    allowCreate?: boolean;
+    /** Never link this person (the owner's own note — it would become a hub of every thread). */
+    skipPersonId?: string | null;
+    /** DMs only: told about a counterpart that has a candidate but no exact match. */
+    review?: (r: PersonReview) => void;
+  },
 ): Promise<NoteLinkInput[]> {
   const ids = Object.keys(members);
-  const allowCreate = ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION;
+  const allowCreate = opts.allowCreate !== false && ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION;
   const out: NoteLinkInput[] = [];
   const seen = new Set<string>();
   for (const mid of ids) {
     if (isBridgeBot(mid) || mid === opts.selfUserId) continue;
     const name = members[mid] || mid;
     const r = await people
-      .findOrCreate(vault, name, { matrixId: mid, platform: opts.platform, allowCreate })
+      .findOrCreate(vault, name, { matrixId: mid, platform: opts.platform, allowCreate, ...(opts.review && ids.length <= MAX_MEMBERS_FOR_PERSON_CREATION ? { review: opts.review } : {}) })
       .catch(() => null);
-    if (r && !seen.has(r.id)) {
+    if (r && r.id !== opts.skipPersonId && !seen.has(r.id)) {
       seen.add(r.id);
       out.push({ target: r.id, relationship: "messages-with" });
     }
@@ -624,8 +633,16 @@ export async function ingestMatrix(
     probeInvites?: boolean;
     /** MATRIX_LINK_PEOPLE: link each thread to its participants' person notes. */
     linkPeople?: boolean;
+    /** MATRIX_LINK_EXISTING: link participants who ALREADY have a person note; create nobody. */
+    linkExisting?: boolean;
+    /** MATRIX_STORE_PARTICIPANT_IDS: keep the members' stable Matrix ids on the thread note. */
+    storeParticipantIds?: boolean;
     /** The sync user's mxid (never linked as a participant). */
     selfUserId?: string | null;
+    /** The owner's own person note, resolved from the pass's people index (never linked). */
+    ownerPersonId?: (people: PeopleIndex) => string | null;
+    /** PEOPLE_QUEUE_ON_INGEST: collects unresolved DM counterparts; flushed with the thread's note id. */
+    reviewSink?: { collect(roomId: string): (r: PersonReview) => void; flush(roomId: string, noteId: string | null | undefined): void };
   } = {},
 ): Promise<IngestResult> {
   const { nextBatch, rooms, invites: fresh } = await client.sync(opts.since);
@@ -747,21 +764,28 @@ export async function ingestMatrix(
     // linking costs no extra PATCH. Full joined membership decides the group
     // cap — an incremental sync only carries member deltas.
     let links: NoteLinkInput[] = [];
-    if (opts.linkPeople && client.joinedMembers) {
+    let memberIds: string[] | null = null;
+    if ((opts.linkPeople || opts.linkExisting) && client.joinedMembers) {
       try {
         const members = await client.joinedMembers(rb.roomId);
+        memberIds = Object.keys(members);
         people ??= await PeopleIndex.load(vault);
         links = await participantLinks(members, people, vault, {
           platform: detectPlatform(Object.keys(members)),
           selfUserId: opts.selfUserId,
+          allowCreate: !!opts.linkPeople,
+          skipPersonId: opts.ownerPersonId?.(people) ?? null,
+          ...(opts.reviewSink ? { review: opts.reviewSink.collect(rb.roomId) } : {}),
         });
       } catch (e) {
         console.warn(`[worker] matrix: people for ${rb.roomId} skipped: ${String(e)}`);
       }
     }
     try {
-      await ingestRoom(rb, vault, byRoom, { dedupe, links });
+      await ingestRoom(rb, vault, byRoom, { dedupe, links, ...(opts.storeParticipantIds ? { participantIds: memberIds ?? rb.memberIds } : {}) });
       peopleLinked += links.length;
+      // A thread created this pass has no id here yet; its counterpart queues on the next append.
+      opts.reviewSink?.flush(rb.roomId, byRoom.get(rb.roomId)?.id);
     } catch (e) {
       failed++;
       console.warn(
@@ -817,6 +841,11 @@ export async function resolveDisplayNames(
     }
 }
 
+/** Union of stored + current Matrix ids (unioned like `participants`: /sync carries deltas). */
+const mergeIds = (prev: unknown, now: string[]): string[] => [
+  ...new Set([...(Array.isArray(prev) ? prev.filter((x): x is string => typeof x === "string") : []), ...now]),
+];
+
 /** Short stable suffix so two rooms with the same display name get distinct paths. */
 const roomSlug = (roomId: string): string =>
   roomId.replace(/^!/, "").replace(/:.*$/, "").slice(0, 8).toLowerCase();
@@ -838,7 +867,7 @@ async function ingestRoom(
   rb: RoomBatch,
   vault: IngestVault,
   byRoom: Map<string, Note>,
-  opts: { dedupe?: boolean; links?: NoteLinkInput[] } = {},
+  opts: { dedupe?: boolean; links?: NoteLinkInput[]; /** Stable member ids to keep on the note (MATRIX_STORE_PARTICIPANT_IDS). */ participantIds?: string[] } = {},
 ): Promise<boolean> {
   const linkAdd = opts.links?.length ? { links: { add: opts.links } } : {};
   const platform = detectPlatform(rb.memberIds);
@@ -879,6 +908,7 @@ async function ingestRoom(
       ...(mergedParticipants.length
         ? { participants: mergedParticipants }
         : {}),
+      ...(opts.participantIds ? { participantIds: mergeIds(prev.participantIds, opts.participantIds) } : {}),
     };
     const content = `${note.content.trimEnd()}\n${lines.join("\n")}`;
     // Past the size limit, append + archive the oldest messages in ONE live
@@ -932,6 +962,7 @@ async function ingestRoom(
         lastMessageAt,
         messageCount: lines.length,
         participants,
+        ...(opts.participantIds ? { participantIds: mergeIds(undefined, opts.participantIds) } : {}),
       },
       ...(opts.links?.length ? { links: opts.links } : {}),
     };

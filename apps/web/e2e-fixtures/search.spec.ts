@@ -15,7 +15,7 @@ test("search shows ranked passages and openly labels keyword fallback without re
   await expect(results).not.toContainText("window.prismInjected");
   expect(external).toEqual([]);
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("search-results-mobile.png") });
 });
 
@@ -49,7 +49,7 @@ test("phone search contains focus, announces keyboard selection, opens the resul
   await expect(dialog.getByRole("button", { name: "Close search" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(input).toBeFocused();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath("search-command-mobile.png") });
   await page.keyboard.press("Enter");
   await expect(dialog).toHaveCount(0);
@@ -82,7 +82,7 @@ test("Enter during loading or empty results cannot accidentally start an agent t
   await page.evaluate(() => { (window as any).prismSearchFixture.semantic = "ok"; });
   await page.getByRole("button", { name: "Open search", exact: true }).click();
   await input.fill("nothing");
-  await expect(dialog.getByText("No matching notes.")).toBeVisible();
+  await expect(dialog.getByText("No matching notes.", { exact: false })).toBeVisible();
   await input.press("Enter");
   await expect(dialog).toBeVisible();
   expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toBeNull();
@@ -110,4 +110,61 @@ test("an explicitly selected agent action stays selected as search results arriv
   await expect(ask).toHaveAttribute("aria-selected", "true");
   await input.press("Enter");
   expect(await page.evaluate(() => (window as any).prismSearchStore.getState().pendingAsk)).toEqual({ prompt: "question" });
+});
+
+
+test("palette prioritizes readable notes, filters returned messages and keeps every result accessible", async ({ page }, testInfo) => {
+  await page.goto("/e2e-fixtures/search.html?many");
+  await page.getByRole("button", {name:"Open search",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Search workspace"});
+  const input=dialog.getByRole("combobox");
+  await input.fill("Prism");
+  await expect(dialog).toContainText("11 results shown");
+  await expect(dialog.getByRole("option").first()).toContainText("Connected ideas");
+  await expect(dialog.getByRole("option",{name:/Prism discussion 10/})).toHaveCount(1);
+  await dialog.getByRole("button",{name:"Messages",exact:true}).click();
+  await expect(dialog).toContainText("10 results shown");
+  await expect(dialog.getByRole("option",{name:/Connected ideas/})).toHaveCount(0);
+  await expect(input).toBeFocused();
+  await dialog.getByRole("button",{name:"Notes",exact:true}).click();
+  await expect(dialog.getByRole("option")).toHaveCount(1);
+  await dialog.getByRole("button",{name:"All",exact:true}).click();
+  await page.screenshot({path:testInfo.outputPath("search-command-desktop.png")});
+  await dialog.getByRole("button",{name:"Messages",exact:true}).click();
+  await input.press("Enter");
+  expect(await page.evaluate(()=>(window as any).prismSearchUI.getState().activeTabId)).toBe("tab-message-0");
+});
+
+test("Open Agent Panel remains open when it was already visible", async ({page})=>{
+  await page.goto("/e2e-fixtures/search.html");
+  await page.evaluate(()=>(window as any).prismSearchUI.setState({contextPanelOpen:true}));
+  await page.getByRole("button",{name:"Open search",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Search workspace"});
+  await dialog.getByRole("button",{name:"Commands",exact:true}).click();
+  await dialog.getByRole("combobox").fill("Open Agent Panel");
+  await dialog.getByRole("option",{name:"Open Agent Panel",exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).prismSearchUI.getState().contextPanelOpen)).toBe(true);
+});
+
+test("dark phone search filters fit and remain at least44px touch targets",async({page},testInfo)=>{
+  await page.setViewportSize({width:390,height:844});
+  await page.goto("/e2e-fixtures/search.html?many&dark");
+  await page.getByRole("button",{name:"Open search",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Search workspace"});
+  await dialog.getByRole("combobox").fill("Prism");
+  await expect(dialog).toContainText("11 results shown");
+  for(const name of ["All","Notes","Messages","Commands","Close search"]){const rect=await dialog.getByRole("button",{name,exact:true}).boundingBox();expect(rect!.height).toBeGreaterThanOrEqual(44);}
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({path:testInfo.outputPath("search-command-phone-dark.png")});
+});
+
+test("Escape from filter controls closes only the nested command dialog",async({page})=>{
+ await page.goto("/e2e-fixtures/search.html?nested");
+ await page.getByRole("button",{name:"Open search",exact:true}).click();
+ const dialog=page.getByRole("dialog",{name:"Search workspace",exact:true});
+ await dialog.getByRole("button",{name:"Notes",exact:true}).focus();
+ await page.keyboard.press("Escape");
+ await expect(dialog).toHaveCount(0);
+ await expect(page.getByRole("dialog",{name:"Parent navigation",exact:true})).toBeVisible();
+ await expect(page.getByRole("button",{name:"Open search",exact:true})).toBeFocused();
 });

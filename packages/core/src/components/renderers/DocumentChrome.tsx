@@ -1,5 +1,6 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
-import { Smile } from "lucide-react";
+import "./DocumentChrome.css";
+import { ChevronRight, Folder, Smile } from "lucide-react";
 import type { EmojiClickData, EmojiStyle, Theme } from "emoji-picker-react";
 
 // Full emoji picker, lazy-loaded so it never weighs down the editor chunk —
@@ -8,19 +9,24 @@ const LazyEmojiPicker = React.lazy(() => import("emoji-picker-react"));
 
 const titleStyle: React.CSSProperties = {
   fontFamily: "var(--font-sans)",
-  fontSize: "clamp(28px, 3vw, 36px)",
+  fontSize: "var(--document-title-size, clamp(32px, 3.2vw, 42px))",
   fontWeight: 700,
-  letterSpacing: "-0.022em",
+  margin: 0,
+  overflowWrap: "anywhere",
+  letterSpacing: "-0.035em",
   lineHeight: 1.15,
   color: "var(--text-primary)",
 };
 
 /** Inline-editable page title: click to rename, Enter/blur commits, Esc cancels.
  *  Looks identical to the static <h1>. Commits the new (display) name only. */
-function EditableTitle({ name, onRename }: { name: string; onRename: (newName: string) => void }) {
+function EditableTitle({ name, onRename }: { name: string; onRename: (newName: string) => void | Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!editing) setDraft(name);
@@ -30,28 +36,45 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     if (editing) inputRef.current?.select();
   }, [editing]);
 
-  const commit = () => {
-    setEditing(false);
+  const commit = async () => {
+    if (savingRef.current) return;
     const v = draft.trim();
-    if (v && v !== name) onRename(v);
-    else setDraft(name);
+    if (!v || v === name) { setDraft(name); setEditing(false); setError(""); return; }
+    savingRef.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await onRename(v);
+      setEditing(false);
+    } catch {
+      setError("Could not rename this page. Your title is still here; press Enter to retry.");
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   };
 
   if (editing) {
     return (
-      <input
+      <div className="document-title-edit"><input
         ref={inputRef}
         aria-label="Document title"
         value={draft}
+        disabled={saving}
+        aria-invalid={!!error}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onBlur={() => { void commit(); }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); commit(); }
-          if (e.key === "Escape") { setDraft(name); setEditing(false); }
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(); }
+          if (e.key === "Escape") { setDraft(name); setEditing(false); setError(""); }
         }}
         spellCheck={false}
         style={{ ...titleStyle, width: "100%", background: "transparent", border: "none", outline: "none", padding: 0 }}
       />
+      {saving && <p role="status" className="document-title-notice">Renaming…</p>}
+      {error && <p role="alert" className="document-title-notice">{error}</p>}
+      </div>
     );
   }
   return (
@@ -177,7 +200,7 @@ function IconTile({
         ref={ref}
         onClick={() => editable && setOpen((o) => !o)}
         title={editable ? "Change icon" : undefined}
-        className="interactive focus-ring"
+        className={`interactive focus-ring document-icon-control ${icon ? "has-icon" : ""}`}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -242,14 +265,17 @@ export function PageHeader({
   icon,
   typeIcon,
   onIconChange,
+  details,
 }: {
   path?: string | null;
   /** Used when the path has no usable filename (e.g. a content-derived title). */
   fallbackName?: string;
   right?: React.ReactNode;
+  /** Quiet metadata/properties row, supplied by hosts with those capabilities. */
+  details?: React.ReactNode;
   /** When provided, the title becomes click-to-edit and commits the new display
    *  name here (the host turns it into a path rename). */
-  onRename?: (newName: string) => void;
+  onRename?: (newName: string) => void | Promise<void>;
   /** The object's emoji icon (from metadata), if set. */
   icon?: string | null;
   /** Fallback icon (e.g. a type glyph) shown when no emoji is set. */
@@ -264,39 +290,21 @@ export function PageHeader({
   const name = baseName || fallbackName || "Untitled";
   const crumbs = parts.slice(0, -1);
   return (
-    <header
-      style={{
-        marginBottom: "var(--space-6)",
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 16,
-      }}
-    >
-      <div style={{ minWidth: 0, flex: "1 1 320px" }}>
+    <header className="document-page-header">
+      {crumbs.length > 0 && (
+        <nav className="document-breadcrumb" aria-label="Document location">
+          <Folder size={14} aria-hidden="true" className="shrink-0" />
+          {crumbs.map((c, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <ChevronRight size={12} aria-hidden="true" className="shrink-0" />}
+              <span title={c} className="document-breadcrumb-part">{c}</span>
+            </React.Fragment>
+          ))}
+        </nav>
+      )}
+      <div className="document-page-heading">
         {(icon || onIconChange) && (
           <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />
-        )}
-        {crumbs.length > 0 && (
-          <nav
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: 4,
-              marginBottom: "var(--space-3)",
-              fontSize: "var(--text-xs)",
-              color: "var(--text-muted)",
-            }}
-          >
-            {crumbs.map((c, i) => (
-              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <span className="truncate" style={{ maxWidth: 160 }}>{c}</span>
-                {i < crumbs.length - 1 && <span style={{ opacity: 0.6 }}>/</span>}
-              </span>
-            ))}
-          </nav>
         )}
         {onRename ? (
           <EditableTitle name={name} onRename={onRename} />
@@ -304,7 +312,10 @@ export function PageHeader({
           <h1 style={titleStyle}>{name}</h1>
         )}
       </div>
-      {right && <div style={{ maxWidth: "100%" }}>{right}</div>}
+      {(details || path || right) && <div className="document-page-details">
+        {(details || path) && <div className="document-page-metadata">{details ?? <PageProperties path={path} />}</div>}
+        {right && <div className="document-page-status">{right}</div>}
+      </div>}
     </header>
   );
 }
@@ -341,4 +352,28 @@ export function FontSwitch({ value, onChange }: { value: ContentFont; onChange: 
       })}
     </div>
   );
+}
+
+
+/** A compact, read-only properties disclosure shared by normal and live pages.
+ * Hosts may supply their existing full-properties action; this never mutates a
+ * document or invents save/permission state. */
+export function PageProperties({path, tags, updatedAt, onOpenAll}: {
+  path?: string | null; tags?: string[]; updatedAt?: string | null; onOpenAll?: () => void;
+}) {
+  const date = updatedAt && !Number.isNaN(new Date(updatedAt).getTime()) ? new Date(updatedAt) : null;
+  return <>
+    {date && <time dateTime={updatedAt!} title={date.toLocaleString()}>Updated {date.toLocaleDateString(undefined,{month:"short",day:"numeric"})}</time>}
+    <details className="document-properties-disclosure">
+      <summary className="focus-ring">Properties <ChevronRight size={14} aria-hidden="true" /></summary>
+      <div className="document-properties-content">
+        <dl>
+          {path && <><dt>Location</dt><dd>{path}</dd></>}
+          {tags && <><dt>Tags</dt><dd>{tags.length ? tags.map(tag => <span className="document-property-tag" key={tag}>{tag}</span>) : "No tags"}</dd></>}
+          {date && <><dt>Updated</dt><dd>{date.toLocaleString()}</dd></>}
+        </dl>
+        {onOpenAll && <button type="button" className="document-properties-control focus-ring" onClick={onOpenAll}>Open all properties <ChevronRight size={14} aria-hidden="true" /></button>}
+      </div>
+    </details>
+  </>;
 }

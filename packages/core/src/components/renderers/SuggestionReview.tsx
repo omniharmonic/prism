@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Check, X } from "lucide-react";
+import "./suggestion-review.css";
 import { useEditorState, type Editor } from "@tiptap/react";
 import type { Node, Mark } from "@tiptap/pm/model";
 
@@ -26,34 +28,66 @@ function changesIn(doc: Node): Change[] {
   return [...changes.values()];
 }
 
-/** Read current positions at click time, so remote edits cannot leave stale review ranges. */
+/** Resolve the current live range when acting; remote edits never freeze positions. */
 export function SuggestionReview({ editor, canReview }: { editor: Editor; canReview: boolean }) {
   const changes = useEditorState({ editor, selector: ({ editor: current }) => changesIn(current.state.doc) });
+  const [cursor, setCursor] = useState<{ key: string; index: number } | null>(null);
   const [notice, setNotice] = useState("");
+  const review = useRef<HTMLDetailsElement>(null);
+  const complete = useRef<HTMLParagraphElement>(null);
+  const found = cursor ? changes.findIndex(change => change.key === cursor.key) : 0;
+  const index = found >= 0 ? found : Math.min(cursor?.index ?? 0, changes.length - 1);
+  const change = changes[index];
+
+  function choose(nextIndex: number) {
+    const next = changes[nextIndex];
+    if (next) { setCursor({ key: next.key, index: nextIndex }); setNotice(""); }
+  }
   function act(key: string, action: "show" | "accept" | "reject") {
     if (editor.isDestroyed) return;
-    const current = changesIn(editor.state.doc).find((change) => change.key === key);
+    const current = changesIn(editor.state.doc).find(item => item.key === key);
     if (!current) { setNotice("This change has already been reviewed or changed."); return; }
     if (action !== "show" && !canReview) return;
     const command = editor.chain().focus().setTextSelection(current.from);
     const applied = action === "show" ? command.scrollIntoView().run() : action === "accept" ? command.acceptSuggestion().run() : command.rejectSuggestion().run();
-    setNotice(action === "show" ? "" : applied ? `${action === "accept" ? "Accepted" : "Rejected"} change by ${current.author}.` : "This change could not be reviewed. Check the current document and try again.");
+    if (action === "show") { setNotice(""); return; }
+    setNotice(applied ? `${action === "accept" ? "Accepted" : "Rejected"} change by ${current.author}.` : "This change could not be reviewed. Check the current document and try again.");
+    if (applied) {
+      const remaining = changesIn(editor.state.doc);
+      const nextIndex = Math.min(index, remaining.length - 1);
+      const next = remaining[nextIndex];
+      setCursor(next ? { key: next.key, index: nextIndex } : null);
+      // Keep keyboard review in the queue rather than dropping into the body.
+      requestAnimationFrame(() => {
+        const target = review.current?.querySelector<HTMLButtonElement>('[data-review-show]') ?? complete.current;
+        target?.focus({ preventScroll: true });
+      });
+    }
   }
-  if (!changes.length) return notice ? <p role="status" className="mb-3 text-xs" style={{ color: "var(--text-secondary)" }}>{notice}</p> : null;
-  return <details className="mb-4 rounded-xl border text-sm" style={{ borderColor: "var(--glass-border)", background: "var(--bg-surface)" }}>
-    <summary className="focus-ring cursor-pointer rounded-xl px-4 py-3 font-medium">{changes.length} suggested {changes.length === 1 ? "change" : "changes"}</summary>
-    <div className="max-h-80 space-y-3 overflow-y-auto px-3 pb-3">
-      {!canReview && <p className="px-1 text-xs" style={{ color: "var(--text-muted)" }}>You can inspect changes. A collaborator with edit access can accept or reject them.</p>}
-      {changes.map((change) => <section key={change.key} aria-label={`Change by ${change.author}`} className="rounded-lg border p-3" style={{ borderColor: "var(--glass-border)" }}>
-        <div className="mb-2 flex flex-wrap items-center gap-2"><span className="font-medium break-words">{change.author}</span>{change.turn && <span className="text-xs" style={{ color: "var(--text-muted)" }}>Agent suggestion</span>}</div>
-        {change.before && <div className="mb-2"><span className="text-xs" style={{ color: "var(--text-muted)" }}>Remove</span><p className="whitespace-pre-wrap break-words line-through [overflow-wrap:anywhere]">{change.before}</p></div>}
-        {change.after && <div className="mb-2"><span className="text-xs" style={{ color: "var(--text-muted)" }}>Insert</span><p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{change.after}</p></div>}
-        <div className="flex flex-wrap gap-2">
-          <button className="interactive focus-ring rounded-lg px-3 py-2" onClick={() => act(change.key, "show")}>Show in document</button>
-          {canReview && <><button className="interactive focus-ring rounded-lg px-3 py-2" onClick={() => act(change.key, "accept")}>Accept</button><button className="interactive focus-ring rounded-lg px-3 py-2" onClick={() => act(change.key, "reject")}>Reject</button></>}
+  if (!change) return notice ? <p ref={complete} tabIndex={-1} role="status" className="prism-review-complete">{notice} No suggested changes remain.</p> : null;
+  return <details ref={review} className="prism-suggestion-review">
+    <summary className="focus-ring">{changes.length} suggested {changes.length === 1 ? "change" : "changes"}</summary>
+    <div className="prism-review-body">
+      <nav aria-label="Suggested changes" className="prism-review-navigation">
+        <span aria-live="polite">Change {index + 1} of {changes.length}</span>
+        <div>
+          <button className="focus-ring" aria-label="Previous suggested change" disabled={index <= 0} onClick={() => choose(index - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
+          <button className="focus-ring" aria-label="Next suggested change" disabled={index >= changes.length - 1} onClick={() => choose(index + 1)}><ChevronRight size={16} aria-hidden="true" /></button>
         </div>
-      </section>)}
-      {notice && <p role="status" className="px-1 text-xs">{notice}</p>}
+      </nav>
+      {!canReview && <p className="prism-review-hint">You can inspect changes. A collaborator with edit access can accept or reject them.</p>}
+      <section aria-label={`Change by ${change.author}`}>
+        <header className="prism-review-author"><strong>{change.author}</strong>{change.turn && <span>Agent suggestion</span>}</header>
+        <div className="prism-review-diff">
+          {change.before && <div className="prism-review-before"><span>Remove</span><p>{change.before}</p></div>}
+          {change.after && <div className="prism-review-after"><span>Insert</span><p>{change.after}</p></div>}
+        </div>
+        <div className="prism-review-actions">
+          <button data-review-show className="focus-ring" onClick={() => act(change.key, "show")}>Show in document</button>
+          {canReview && <><button className="focus-ring" onClick={() => act(change.key, "reject")}><X size={15} aria-hidden="true" />Reject</button><button className="focus-ring prism-review-accept" onClick={() => act(change.key, "accept")}><Check size={15} aria-hidden="true" />Accept</button></>}
+        </div>
+      </section>
+      {notice && <p role="status" className="prism-review-hint">{notice}</p>}
     </div>
   </details>;
 }

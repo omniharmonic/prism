@@ -1,290 +1,526 @@
-// MembersPanel — the team-workspace surface (Network → Members). Manage who
-// belongs to the ACTIVE vault and at what role, share a folder/tag with an email,
-// and grant whole-workspace access. Everything flows through useCollabSharing()
-// (web-owner/admin only); the panel hides when the seam lacks listMembers.
-//
-// Phase 2 of the multi-tenant platform — docs/roadmap/platform-roadmap.md.
-import { useCallback, useEffect, useState } from "react";
-import { Users, UserPlus, Trash2, Copy, FolderInput, KeyRound, ShieldCheck, ScrollText } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Users, UserPlus, KeyRound, ShieldCheck } from "lucide-react";
 import { Button } from "../../ui/Button";
-import { Badge } from "../../ui/Badge";
-import { Input } from "../../ui/Input";
 import {
   useCollabSharing,
+  useVaultChangeSignal,
   type WorkspaceMember,
   type WorkspaceGrant,
   type WorkspaceRole,
   type ShareLevel,
+  type SetPersonResult,
 } from "../../../data/CollabSharing";
-
+import { useAgentChatStore } from "../../../lib/agent/chatStore";
+import {
+  ACCESS_LABELS,
+  AccessHelp,
+  InvitationResult,
+} from "./InvitationResult";
 const ROLES: WorkspaceRole[] = ["guest", "member", "admin", "owner"];
-const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
 
-/** `initialTag` pre-fills the folder-share row — the ProjectTree "Share this
- *  folder" deep-link opens the panel with the tag already filled. */
+/** Existing tree/tag deep links still prefill the tag form. */
 export function MembersPanel({ initialTag = "" }: { initialTag?: string }) {
   const sharing = useCollabSharing();
-
+  const scope = useAgentChatStore((state) => state.scope);
+  const signal = useVaultChangeSignal();
+  return (
+    <VaultMembers
+      key={JSON.stringify([scope, signal])}
+      sharing={sharing}
+      scope={scope}
+      initialTag={initialTag}
+    />
+  );
+}
+function VaultMembers({
+  sharing,
+  scope,
+  initialTag,
+}: {
+  sharing: ReturnType<typeof useCollabSharing>;
+  scope: string | null;
+  initialTag: string;
+}) {
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [grants, setGrants] = useState<WorkspaceGrant[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
+  const [vaultLabel, setVaultLabel] = useState("the active vault");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [invitation, setInvitation] = useState<{
+    who: string;
+    result: SetPersonResult;
+  } | null>(null);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<WorkspaceRole>("member");
-
   const [tag, setTag] = useState(initialTag);
   const [tagEmail, setTagEmail] = useState("");
   const [tagLevel, setTagLevel] = useState<ShareLevel>("edit");
-
-  const [wsEmail, setWsEmail] = useState("");
-  const [wsLevel, setWsLevel] = useState<ShareLevel>("edit");
-
-  const refresh = useCallback(async () => {
-    if (!sharing?.listMembers) return;
-    setError(null);
-    try {
-      setMembers(await sharing.listMembers());
-      if (sharing.listGrants) setGrants(await sharing.listGrants());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load members.");
-    }
-  }, [sharing]);
-
+  const [vaultEmail, setVaultEmail] = useState("");
+  const [vaultLevel, setVaultLevel] = useState<ShareLevel>("edit");
+  const [pending, setPending] = useState<string | null>(null);
+  const alive = useRef(true);
+  const lock = useRef(false);
+  const reads = useRef(0);
+  const latestSharing = useRef(sharing);
+  latestSharing.current = sharing;
+  const current = useCallback(
+    () =>
+      alive.current &&
+      latestSharing.current === sharing &&
+      useAgentChatStore.getState().scope === scope,
+    [sharing, scope],
+  );
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // Keep the folder field synced if the panel is re-opened with a new deep-link tag.
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      reads.current++;
+    };
+  }, []);
   useEffect(() => {
     if (initialTag) setTag(initialTag);
   }, [initialTag]);
-
-  const showInvite = (r: { invited: boolean; inviteUrl?: string }, who: string) => {
-    if (r.invited && r.inviteUrl) {
-      void navigator.clipboard?.writeText(r.inviteUrl).catch(() => {});
-      setNotice(`Invite link for ${who} copied to your clipboard — send it to them to join.`);
-    } else {
-      setNotice(`${who} updated.`);
+  const refresh = useCallback(async () => {
+    if (!sharing?.listMembers) {
+      setLoading(false);
+      return;
+    }
+    const read = ++reads.current;
+    setLoading(true);
+    try {
+      const [nextMembers, nextGrants, vaults] = await Promise.all([
+        sharing.listMembers(),
+        sharing.listGrants?.() ?? Promise.resolve([]),
+        sharing.listVaults?.().catch(() => []) ?? Promise.resolve([]),
+      ]);
+      if (!current() || read !== reads.current) return;
+      setMembers(nextMembers);
+      setGrants(nextGrants);
+      setVaultLabel(
+        vaults.find((vault) => vault.active)?.label ?? "the active vault",
+      );
+    } catch (cause) {
+      if (current() && read === reads.current)
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Couldn't load members and grants.",
+        );
+    } finally {
+      if (current() && read === reads.current) setLoading(false);
+    }
+  }, [sharing, current]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  const act = async (
+    key: string,
+    operation: () => Promise<SetPersonResult | void>,
+    success: () => string,
+    who?: string,
+  ) => {
+    if (lock.current || !current()) return;
+    lock.current = true;
+    setPending(key);
+    setError("");
+    setNotice("");
+    try {
+      const result = await operation();
+      if (!current()) return;
+      if (who && result) setInvitation({ who, result });
+      setNotice(success());
+      await refresh();
+    } catch (cause) {
+      if (current())
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Couldn't save this change. Your draft is kept.",
+        );
+    } finally {
+      lock.current = false;
+      if (current()) setPending(null);
     }
   };
-
-  const addMember = useCallback(async () => {
-    if (!sharing?.setMember || !email.trim()) return;
-    try {
-      const res = await sharing.setMember(email.trim().toLowerCase(), role);
-      showInvite(res, email.trim().toLowerCase());
-      setEmail("");
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't add member.");
-    }
-  }, [sharing, email, role, refresh]);
-
-  const removeMember = useCallback(
-    async (m: WorkspaceMember) => {
-      if (!sharing?.removeMember) return;
-      await sharing.removeMember(m.email);
-      await refresh();
-    },
-    [sharing, refresh],
-  );
-
-  const shareFolder = useCallback(async () => {
-    if (!sharing?.setTagPerson || !tag.trim() || !tagEmail.trim()) return;
-    try {
-      const res = await sharing.setTagPerson(tag.trim(), tagEmail.trim().toLowerCase(), tagLevel);
-      showInvite(res, `${tagEmail.trim().toLowerCase()} (folder #${tag.trim()})`);
-      setTagEmail("");
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't share folder.");
-    }
-  }, [sharing, tag, tagEmail, tagLevel, refresh]);
-
-  const grantWorkspace = useCallback(async () => {
-    if (!sharing?.setVaultPerson || !wsEmail.trim()) return;
-    try {
-      const res = await sharing.setVaultPerson(wsEmail.trim().toLowerCase(), wsLevel);
-      showInvite(res, `${wsEmail.trim().toLowerCase()} (whole workspace, ${wsLevel})`);
-      setWsEmail("");
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't grant workspace access.");
-    }
-  }, [sharing, wsEmail, wsLevel, refresh]);
-
-  const revoke = useCallback(
-    async (g: WorkspaceGrant) => {
-      if (!sharing?.revokeGrant) return;
-      try {
-        await sharing.revokeGrant(g.id);
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Couldn't revoke grant.");
-      }
-    },
-    [sharing, refresh],
-  );
-
-  if (!sharing?.listMembers) {
+  if (!sharing?.listMembers)
     return (
-      <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>
-        Member management isn't available here (web owner/admin only).
+      <p role="status" className="text-sm text-[var(--text-secondary)]">
+        Member management is available to vault owners and administrators.
       </p>
     );
-  }
-
-  const labelStyle = { fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 } as const;
-  const cardStyle = {
-    border: "1px solid var(--glass-border)",
-    borderRadius: 10,
-    padding: 16,
-    marginBottom: 18,
-    background: "var(--glass-bg)",
-  } as const;
-
+  const field =
+    "focus-ring min-h-11 w-full min-w-0 rounded-lg border border-[var(--glass-border)] bg-[var(--bg-base)] px-3 text-sm";
+  const card = "rounded-xl border border-[var(--glass-border)] p-4 sm:p-5";
+  const levels = Object.entries(ACCESS_LABELS).map(([value, label]) => (
+    <option key={value} value={value}>
+      {label}
+    </option>
+  ));
   return (
-    <div>
-      {error && <Badge variant="error">{error}</Badge>}
-      {notice && (
-        <div style={{ ...cardStyle, display: "flex", gap: 8, alignItems: "center", color: "var(--text-primary)", fontSize: 13 }}>
-          <Copy size={14} /> {notice}
+    <div className="space-y-6">
+      <header>
+        <h2 className="m-0 flex items-center gap-2 text-lg font-semibold">
+          <Users size={20} /> Members &amp; sharing
+        </h2>
+        <p className="mb-0 mt-2 break-words text-sm text-[var(--text-secondary)]">
+          Manage people and grants for {vaultLabel}. Roles, tag grants and
+          vault-wide access are separate.
+        </p>
+      </header>
+      {error && (
+        <div role="alert" className={card}>
+          <p className="mt-0 text-sm">{error}</p>
+          <Button
+            className="min-h-11"
+            disabled={!!pending}
+            onClick={() => {
+              setError("");
+              void refresh();
+            }}
+          >
+            Refresh access
+          </Button>
         </div>
       )}
-
-      {/* Members list */}
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <Users size={16} />
-          <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Members of this workspace</h2>
-        </div>
-        {members.length === 0 ? (
-          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>
-            No members yet. Invite someone below — they'll get a link to create an account.
+      {notice && (
+        <p role="status" className="text-sm">
+          {notice}
+        </p>
+      )}
+      {invitation && (
+        <InvitationResult
+          key={`${invitation.who}:${invitation.result.inviteUrl ?? "existing"}`}
+          who={invitation.who}
+          result={invitation.result}
+        />
+      )}
+      {sharing.setMember && (
+        <form
+          className={card}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const who = email.trim().toLowerCase();
+            if (!who) return;
+            void act(
+              "invite",
+              () => sharing.setMember!(who, role),
+              () => {
+                setEmail("");
+                return `${role} membership saved for ${who} in ${vaultLabel}.`;
+              },
+              who,
+            );
+          }}
+        >
+          <h3 className="m-0 text-base font-semibold">Invite a member</h3>
+          <p className="mb-4 mt-2 text-sm text-[var(--text-secondary)]">
+            Choose their role in this vault. New accounts receive an invitation
+            link for you to share.
           </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {members.map((m) => (
-              <div key={m.email} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--glass-border)" }}>
-                <span style={{ flex: 1, fontSize: 13, color: "var(--text-primary)" }}>
-                  {m.name ? `${m.name} · ` : ""}
-                  <span style={{ color: "var(--text-secondary)" }}>{m.email}</span>
-                </span>
-                <select
-                  value={m.role}
-                  onChange={async (e) => {
-                    await sharing.setMember?.(m.email, e.target.value as WorkspaceRole);
-                    await refresh();
-                  }}
-                  style={{ fontSize: 12, padding: "2px 6px", borderRadius: 6, background: "var(--glass-bg)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm">
+              Member email
+              <input
+                type="email"
+                required
+                className={`${field} mt-2`}
+                value={email}
+                disabled={!!pending}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="text-sm">
+              Member role
+              <select
+                className={`${field} mt-2`}
+                value={role}
+                disabled={!!pending}
+                onChange={(event) =>
+                  setRole(event.target.value as WorkspaceRole)
+                }
+              >
+                {ROLES.filter((value) => value !== "owner").map((value) => (
+                  <option key={value} value={value}>
+                    {value[0].toUpperCase() + value.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <Button
+            type="submit"
+            variant="primary"
+            className="mt-4 min-h-11"
+            disabled={!!pending || !email.trim()}
+            loading={pending === "invite"}
+          >
+            <UserPlus size={16} /> Invite member
+          </Button>
+        </form>
+      )}
+      <section className={card}>
+        <h3 className="m-0 text-base font-semibold">Current members</h3>
+        {loading && (
+          <p role="status" className="text-sm text-[var(--text-muted)]">
+            Loading members…
+          </p>
+        )}
+        {!loading && !error && !members.length && (
+          <p className="text-sm text-[var(--text-secondary)]">
+            No members listed for this vault.
+          </p>
+        )}
+        <div className="mt-3 divide-y divide-[var(--glass-border)]">
+          {members.map((member) => (
+            <div
+              key={member.email}
+              className="flex flex-wrap items-center gap-3 py-3"
+            >
+              <p
+                className="m-0 min-w-0 flex-1 break-words text-sm"
+                style={{ minWidth: 140, overflowWrap: "anywhere" }}
+              >
+                {member.name ? `${member.name} · ` : ""}
+                {member.email}
+              </p>
+              <select
+                className={`${field} sm:max-w-36`}
+                value={member.role}
+                disabled={!!pending || !sharing.setMember}
+                aria-label={`Role for ${member.email}`}
+                onChange={(event) => {
+                  const nextRole = event.target.value as WorkspaceRole;
+                  void act(
+                    `role:${member.email}`,
+                    () => sharing.setMember!(member.email, nextRole),
+                    () => `Role updated for ${member.email}.`,
+                  );
+                }}
+              >
+                {ROLES.map((value) => (
+                  <option key={value} value={value}>
+                    {value[0].toUpperCase() + value.slice(1)}
+                  </option>
+                ))}
+              </select>
+              {sharing.removeMember && (
+                <Button
+                  variant="ghost"
+                  className="min-h-11"
+                  disabled={!!pending}
+                  aria-label={`Remove member ${member.email}`}
+                  onClick={() =>
+                    void act(
+                      `remove:${member.email}`,
+                      () => sharing.removeMember!(member.email),
+                      () =>
+                        `Membership removed for ${member.email}. Other grants may still provide access.`,
+                    )
+                  }
                 >
-                  {ROLES.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-                <button onClick={() => void removeMember(m)} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}>
-                  <Trash2 size={14} />
-                </button>
+                  Remove
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+      {sharing.setTagPerson && (
+        <form
+          className={card}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const who = tagEmail.trim().toLowerCase();
+            if (!who || !tag.trim()) return;
+            void act(
+              "tag",
+              () => sharing.setTagPerson!(tag.trim(), who, tagLevel),
+              () => {
+                setTagEmail("");
+                return `Tag #${tag.trim()} shared with ${who}.`;
+              },
+              who,
+            );
+          }}
+        >
+          <h3 className="m-0 text-base font-semibold">
+            Share notes with a tag
+          </h3>
+          <p className="mb-4 mt-2 text-sm text-[var(--text-secondary)]">
+            This grant applies to notes carrying the tag, including future
+            notes. It does not grant access to an untagged folder path;
+            private-note rules still apply.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <label className="text-sm">
+              Tag
+              <input
+                className={`${field} mt-2`}
+                value={tag}
+                required
+                disabled={!!pending}
+                onChange={(event) => setTag(event.target.value)}
+                placeholder="projects"
+              />
+            </label>
+            <label className="text-sm">
+              Recipient email
+              <input
+                type="email"
+                required
+                className={`${field} mt-2`}
+                value={tagEmail}
+                disabled={!!pending}
+                onChange={(event) => setTagEmail(event.target.value)}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="text-sm">
+              Tag access
+              <select
+                className={`${field} mt-2`}
+                value={tagLevel}
+                disabled={!!pending}
+                onChange={(event) =>
+                  setTagLevel(event.target.value as ShareLevel)
+                }
+              >
+                {levels}
+              </select>
+            </label>
+          </div>
+          <AccessHelp level={tagLevel} />
+          <Button
+            type="submit"
+            className="mt-4 min-h-11"
+            disabled={!!pending || !tag.trim() || !tagEmail.trim()}
+            loading={pending === "tag"}
+          >
+            <KeyRound size={16} /> Share tagged notes
+          </Button>
+        </form>
+      )}
+      {sharing.setVaultPerson && (
+        <form
+          className={card}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const who = vaultEmail.trim().toLowerCase();
+            if (!who) return;
+            void act(
+              "vault",
+              () => sharing.setVaultPerson!(who, vaultLevel),
+              () => {
+                setVaultEmail("");
+                return `Vault-wide grant saved for ${who} in ${vaultLabel}.`;
+              },
+              who,
+            );
+          }}
+        >
+          <h3 className="m-0 text-base font-semibold">
+            Grant vault-wide access
+          </h3>
+          <p className="mb-4 mt-2 text-sm text-[var(--text-secondary)]">
+            Grant document access across {vaultLabel} without adding a
+            management role. Private-note rules still apply.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm">
+              Vault recipient email
+              <input
+                type="email"
+                required
+                className={`${field} mt-2`}
+                value={vaultEmail}
+                disabled={!!pending}
+                onChange={(event) => setVaultEmail(event.target.value)}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="text-sm">
+              Vault access
+              <select
+                className={`${field} mt-2`}
+                value={vaultLevel}
+                disabled={!!pending}
+                onChange={(event) =>
+                  setVaultLevel(event.target.value as ShareLevel)
+                }
+              >
+                {levels}
+              </select>
+            </label>
+          </div>
+          <AccessHelp level={vaultLevel} />
+          <Button
+            type="submit"
+            className="mt-4 min-h-11"
+            disabled={!!pending || !vaultEmail.trim()}
+            loading={pending === "vault"}
+          >
+            <ShieldCheck size={16} /> Grant vault access
+          </Button>
+        </form>
+      )}
+      {sharing.listGrants && (
+        <section className={card}>
+          <h3 className="m-0 text-base font-semibold">Current grants</h3>
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">
+            Removing one grant may leave access through other grants or
+            management roles.
+          </p>
+          {!loading && !error && !grants.length && (
+            <p className="text-sm text-[var(--text-muted)]">
+              No grants listed for this vault.
+            </p>
+          )}
+          <div className="divide-y divide-[var(--glass-border)]">
+            {grants.map((grant) => (
+              <div
+                key={grant.id}
+                className="flex flex-wrap items-center gap-3 py-3 text-sm"
+              >
+                <div
+                  className="min-w-0 flex-1 break-words"
+                  style={{ minWidth: 140, overflowWrap: "anywhere" }}
+                >
+                  <p className="m-0">
+                    {grant.subjectType === "user"
+                      ? `${grant.subjectName ? `${grant.subjectName} · ` : ""}${grant.subject}`
+                      : `${grant.subjectType}${grant.subject && grant.subject !== "*" ? ` · ${grant.subject.slice(0, 10)}` : ""}`}
+                  </p>
+                  <p className="mb-0 mt-1 text-xs text-[var(--text-secondary)]">
+                    {grant.resourceType === "vault"
+                      ? "This vault"
+                      : `${grant.resourceType} · ${grant.resource}`}{" "}
+                    · {ACCESS_LABELS[grant.level]}
+                  </p>
+                </div>
+                {sharing.revokeGrant && (
+                  <Button
+                    variant="ghost"
+                    className="min-h-11"
+                    disabled={!!pending}
+                    aria-label={`Revoke grant for ${grant.subject}`}
+                    onClick={() =>
+                      void act(
+                        `revoke:${grant.id}`,
+                        () => sharing.revokeGrant!(grant.id),
+                        () =>
+                          "Grant removed. Other grants or roles may still provide access.",
+                      )
+                    }
+                  >
+                    Revoke grant
+                  </Button>
+                )}
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* Invite a member */}
-      <div style={cardStyle}>
-        <div style={labelStyle}>Invite a member</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <Input placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
-          <select value={role} onChange={(e) => setRole(e.target.value as WorkspaceRole)} style={{ fontSize: 13, padding: "6px 8px", borderRadius: 6, background: "var(--glass-bg)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}>
-            {ROLES.filter((r) => r !== "owner").map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
-          <Button onClick={() => void addMember()} disabled={!email.trim()}>
-            <UserPlus size={14} /> Invite
-          </Button>
-        </div>
-      </div>
-
-      {/* Share a folder/tag */}
-      {sharing.setTagPerson && (
-        <div style={cardStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <FolderInput size={15} />
-            <div style={labelStyle}>Share a folder (tag) with someone</div>
-          </div>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 10px" }}>
-            They'll see every note carrying this tag (dynamic — future notes included), at the level you choose.
-          </p>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <Input placeholder="tag (e.g. projects)" value={tag} onChange={(e) => setTag(e.target.value)} style={{ width: 160 }} />
-            <Input placeholder="email@example.com" value={tagEmail} onChange={(e) => setTagEmail(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
-            <select value={tagLevel} onChange={(e) => setTagLevel(e.target.value as ShareLevel)} style={{ fontSize: 13, padding: "6px 8px", borderRadius: 6, background: "var(--glass-bg)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}>
-              {LEVELS.map((l) => (
-                <option key={l} value={l}>{l}</option>
-              ))}
-            </select>
-            <Button onClick={() => void shareFolder()} disabled={!tag.trim() || !tagEmail.trim()}>
-              <KeyRound size={14} /> Share
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Whole-workspace access grant (2.6) — broad note access without a role. */}
-      {sharing.setVaultPerson && (
-        <div style={cardStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <ShieldCheck size={15} />
-            <div style={labelStyle}>Grant whole-workspace access</div>
-          </div>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, margin: "0 0 10px" }}>
-            Access to every note in this workspace — without management rights (that's a role).
-          </p>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <Input placeholder="email@example.com" value={wsEmail} onChange={(e) => setWsEmail(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
-            <select value={wsLevel} onChange={(e) => setWsLevel(e.target.value as ShareLevel)} style={{ fontSize: 13, padding: "6px 8px", borderRadius: 6, background: "var(--glass-bg)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}>
-              {LEVELS.map((l) => (
-                <option key={l} value={l}>{l}</option>
-              ))}
-            </select>
-            <Button onClick={() => void grantWorkspace()} disabled={!wsEmail.trim()}>
-              <ShieldCheck size={14} /> Grant
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Grants audit (2.2) — every grant in the vault, each revocable. */}
-      {sharing.listGrants && (
-        <div style={cardStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <ScrollText size={16} />
-            <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Access audit</h2>
-          </div>
-          {grants.length === 0 ? (
-            <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>No grants in this workspace yet.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {grants.map((g) => (
-                <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--glass-border)", fontSize: 12 }}>
-                  <span style={{ flex: 1, color: "var(--text-primary)" }}>
-                    {g.subjectType === "user" ? (g.subjectName ? `${g.subjectName} · ${g.subject}` : g.subject) : `${g.subjectType}${g.subject && g.subject !== "*" ? ` · ${g.subject.slice(0, 10)}` : ""}`}
-                  </span>
-                  <span style={{ color: "var(--text-secondary)" }}>
-                    {g.resourceType === "vault" ? "whole workspace" : `${g.resourceType} · ${g.resource}`}
-                  </span>
-                  <Badge>{g.level}</Badge>
-                  <button onClick={() => void revoke(g)} title="Revoke" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        </section>
       )}
     </div>
   );

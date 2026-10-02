@@ -1,16 +1,19 @@
 /** Real shared workspace, fictional data. Never connects to a live server. */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
+import { AgentClientProvider, App, InvalidationSourceProvider, PageHeader, CollabSharingProvider, VaultClientProvider, PlatformProvider, useUIStore, type Note } from "@prism/core";
 import { navigateWikilink } from "../../../packages/core/src/lib/wikilinkNavigation";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
-import { fetchMe, setActiveVault, getActiveVault } from "../src/config";
+import { fetchMe, setActiveVault, getActiveVault, agentScope } from "../src/config";
+
+import { replyAgent } from "./reply-agent";
 
 import type { InvalidationHandlers, InvalidationSource } from "../../../packages/core/src/lib/events/invalidation";
 let eventHandlers: InvalidationHandlers | null = null;
 const eventSource: InvalidationSource = { open(handlers) { eventHandlers = handlers; handlers.onOpen(); return () => { if (eventHandlers === handlers) eventHandlers = null; }; } };
 Object.assign(window, { prismFixtureInvalidate: (id: string) => eventHandlers?.onEvent({ type: "note", id, op: "upsert" }) });
 const params = new URLSearchParams(location.search);
+if (params.has("dark")) { document.documentElement.classList.remove("light"); document.documentElement.classList.add("dark"); }
 const readGates = new Map<string, () => void>();
 const reads: string[] = [];
 const date = "2026-10-01T12:00:00.000Z";
@@ -69,6 +72,14 @@ window.fetch = async (input, init) => {
   if (path === "/api/wikilinks/resolve") return Response.json({ kind: "ambiguous", candidates: notes.slice(1,3).map(n => ({ id: n.id, path: n.path, title: "Duplicate" })) });
   if (path === "/api/tree") return Response.json(notes.map((n) => ({ ...n, content: undefined, type: "document" })));
   if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("tag") || n.tags?.includes(url.searchParams.get("tag")!)));
+  if (path === "/api/notes" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    writes.push(body);
+    if (controls.rejectWrite) return Response.json({ error: "fixture_write_denied" }, { status: controls.rejectWriteStatus });
+    const note: Note = { id: `created-${notes.length}`, content: " ", metadata: {}, tags: [], ...body, createdAt: date, updatedAt: date };
+    notes.push(note);
+    return Response.json(note);
+  }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
     if (method === "GET") {
@@ -100,9 +111,16 @@ window.fetch = async (input, init) => {
 };
 setActiveVault("primary");
 await fetchMe();
+const agent = params.has("agent") ? replyAgent(() => agentScope() ?? "") : null;
 useUIStore.setState({ contextPanelOpen: true, contextPanelTab: "agent", sidebarWidth: 240, contextPanelWidth: 360 });
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
+  <React.StrictMode><AgentClientProvider client={agent}><InvalidationSourceProvider source={params.has("events") ? eventSource : null}><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ ...(params.has("navigation") ? {
+      listVaults: async () => [{ id: "primary", label: "Personal vault", vault: "personal", active: true }, { id: "secondary", label: "Shared research", vault: "research", active: false }],
+      getActiveVault: () => "primary",
+      setActiveVault: (id: string) => { writes.push({ switchedVault: id }); },
+      listWorkspaceEntities: async () => [{ id: "default", name: "Personal workspace", hostname: null, isDefault: true, vaults: [{ id: "primary", label: "Personal vault", vault: "personal" }] }],
+      setActiveWorkspace: (id: string) => { writes.push({ switchedWorkspace: id }); },
+    } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
     {location.search.includes("header") ? <div style={{ padding: 24 }}><PageHeader path="_test/prism-native-workspace-20261001" right={<div className="flex items-center gap-3"><span>Live · Editing</span><span>Two people</span><button>Comments</button></div>} /></div> : <App skipOnboarding initialTab={params.has("session") ? undefined : location.search.includes("people") ? { id: "people", title: "People", type: "people" as any } : location.search.includes("thread") ? { id: "thread", title: "Project discussion", type: "message-thread" } : { id: "workspace", title: "A living workspace", type: "document" }} />}
-  </CollabSharingProvider></VaultClientProvider></PlatformProvider></InvalidationSourceProvider></React.StrictMode>,
+  </CollabSharingProvider></VaultClientProvider></PlatformProvider></InvalidationSourceProvider></AgentClientProvider></React.StrictMode>,
 );

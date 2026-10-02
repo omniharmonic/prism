@@ -4,16 +4,25 @@
  * token and the ACL store:
  *
  *  - onAuthenticate: resolve the connection's level (session cookie OR ?t=
- *    capability) against the note; reject below "view"; mark view/comment
- *    connections read-only (their edits are dropped by Hocuspocus).
+ *    capability) against the note; reject below "view"; mark every connection
+ *    below EDIT read-only (Hocuspocus refuses a read-only connection's Update
+ *    and SyncStep2 messages wholesale — nothing is applied, nothing pends).
+ *    RAW YJS WRITES NEED EDIT (suggest-only enforcement, R07/R12): a raw update
+ *    can carry anything — plain text, deletions, other Y roots — so a "suggest"
+ *    socket that could write was only a client-side promise. Suggest-level
+ *    people and capability guests keep live reading + presence and mutate the
+ *    document only through the bounded, server-authored commands in
+ *    human-collab.ts (`POST /api/collab/:id/commands`): suggested
+ *    insert/delete/replace and comment threads. `COLLAB_SUGGEST_ENFORCED=false`
+ *    restores the old writable suggest socket (rollback switch).
  *    COMMENTS NEED SUGGEST (WP0.2): a comment thread is a write to the shared
  *    Y.Doc — its anchor is a `comment` MARK in the body fragment and its data a
- *    `comments` Y.Map — so a "comment"-level socket stays read-only and cannot
- *    persist comments. A server-side "comments-map-only" update filter is NOT
- *    safe: the anchor lives in the body, and dropping one of a client's updates
- *    leaves a gap in its Yjs clock, so every later update from that client pends
- *    forever. The UI hides the comment affordances below suggest instead
- *    (@prism/core `collabAffordances`).
+ *    `comments` Y.Map — so a "comment"-level actor can neither write it over the
+ *    socket nor through the command endpoint. A server-side "comments-map-only"
+ *    update filter is NOT safe: the anchor lives in the body, and dropping one
+ *    of a client's updates leaves a gap in its Yjs clock, so every later update
+ *    from that client pends forever. That is also why enforcement is
+ *    all-or-nothing per connection rather than a per-update filter.
  *  - onLoadDocument: seed the Y.Doc server-side from Parachute (so the owner's
  *    browser need not be open), preferring persisted CRDT state unless Parachute
  *    was edited externally since (then re-seed — external edit wins).
@@ -46,6 +55,10 @@ import {
   grantsForCapability,
   getDocState,
   saveDocState,
+  saveDocStateConfirming,
+  takeUnconfirmedCollabReceipts,
+  unconfirmedCollabReceipts,
+  type UnconfirmedCollabReceipt,
   getFederatedByKey,
   getPeer,
   grantsForPeer,
@@ -82,6 +95,11 @@ export function contentToYUpdate(content: string): Uint8Array {
 
 export function yDocToHtml(doc: Y.Doc): string {
   return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
+}
+
+/** Render a ProseMirror document of the shared schema to the HTML a store would write. */
+export function proseToHtml(node: { toJSON(): unknown }): string {
+  return generateHTML(node.toJSON() as never, exts);
 }
 
 // ---- server-side suggested edits (G2b) ----
@@ -187,6 +205,12 @@ export const PEER_ORIGIN = "peer-federation";
 // (backward-compatible with existing clients + persisted collab_docs rows), and
 // every other vault prefixes `${vaultId}::`. Federated docs are exempt (their
 // space_note_key is already globally unique and resolved before this split).
+
+/** The shape of a vault note id (the vault's own ids are timestamp/token
+ *  strings). Paths, titles with spaces or dots, and `::` wire names are not ids.
+ *  Shared by the collab socket and the human command endpoint. */
+const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+export const isNoteId = (s: string): boolean => NOTE_ID_RE.test(s);
 
 /** Compose the wire documentName for a (vault, note). Primary → bare id. */
 export function docNameFor(vaultId: string, noteId: string): string {
@@ -298,6 +322,14 @@ export function yDocToScene(doc: Y.Doc): string {
   map.forEach((el) => elements.push(el));
   return JSON.stringify({ elements, appState: {} });
 }
+
+/** Byte size of the HTML the last store rendered for a live document. The human
+ *  command engine estimates a change's effect on the stored note as this plus
+ *  the change's own delta, instead of re-rendering the whole document; every
+ *  store replaces the estimate with the exact figure. */
+const renderedSize = new WeakMap<Y.Doc, number>();
+export const renderedSizeOf = (doc: Y.Doc): number | undefined => renderedSize.get(doc);
+export const setRenderedSize = (doc: Y.Doc, bytes: number): void => void renderedSize.set(doc, bytes);
 
 // Kind is stable per note; cache it at load so store doesn't need to re-fetch.
 const kindCache = new Map<string, CollabKind>();
@@ -530,6 +562,14 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
 
   // Non-federated: decode the vault + note from the wire name (primary → bare id).
   const { vaultId, noteId } = parseDocName(documentName);
+  // A document is named by a note ID only. The vault also resolves a path or a
+  // unique title for /notes/:x; a socket opened under such an alias would load
+  // a SECOND Y.Doc (and snapshot row) for the same note, whose stores the
+  // reconciler then folds over the real live document. Refuse non-id shapes
+  // up front, and below refuse any name the vault resolved to a different id.
+  // (Federated space keys never reach this line: they are mapped to their local
+  // note id above.)
+  if (!isNoteId(noteId)) return null;
 
   // Desktop owner path: the trusted Tauri app (on localhost) presents the dedicated
   // COLLAB_TOKEN to join live docs as the owner — kept separate from the vault token
@@ -537,6 +577,13 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   // the public tunnel is ignored, so a leaked token grants nothing from the internet.
   // The vault token is accepted too (its holder already has full vault access).
   if (isLocal && token && ((config.collabToken && token === config.collabToken) || (config.parachuteToken && token === config.parachuteToken))) {
+    // Same alias rule for the owner: a readable note must answer to this id.
+    // (An unreadable note keeps the old behaviour — the owner may still open it.)
+    try {
+      if ((await vaultClient(vaultId).getNote(noteId)).id !== noteId) return null;
+    } catch {
+      /* unreadable: unchanged */
+    }
     return "own";
   }
 
@@ -561,6 +608,7 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   let visibility: "private" | "workspace" = "workspace";
   try {
     const note = await vaultClient(vaultId).getNote(noteId);
+    if (note.id !== noteId) return null; // resolved through a path/title alias
     tags = note.tags ?? [];
     // Private-to-creator also gates LIVE editing: a private note is editable only
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
@@ -569,20 +617,34 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   } catch {
     if (role !== "owner") return null; // Never infer public visibility from a failed read.
   }
-  const noteRef = { id: noteId, tags, creator, visibility };
-  // Collab authorization goes through the CAPS, projected onto the ladder this
-  // socket understands (P1/P2). Two asymmetries the level column alone gets wrong:
-  //  - a caps grant that omits `view` (a create-only drop-box) projects to level
-  //    "view" for ladder consumers, but confers NO read — refuse the socket, or
-  //    it leaks a note the HTTP gateway refuses to serve;
-  //  - a caps grant like ["view","suggest","edit"] (a governance role's compiled
-  //    grant) projects to level "view" via levelForCaps' containment rule, but its
-  //    holder may PATCH over HTTP — the socket must grant the same write access.
-  // For level-only grants caps === the level's expansion, so this returns exactly
-  // effectiveLevel and every pre-caps grant behaves identically.
-  const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email ?? null);
+  return collabLevelFor(grants, { id: noteId, tags, creator, visibility }, role, email ?? null);
+}
+
+/**
+ * The collab level a set of grants confers on a note — the ONE projection the
+ * socket (`resolveLevel`) and the human command endpoint (routes/human-collab.ts)
+ * share, so the two can never disagree about who may suggest or edit.
+ *
+ * Collab authorization goes through the CAPS, projected onto the ladder this
+ * socket understands (P1/P2). Two asymmetries the level column alone gets wrong:
+ *  - a caps grant that omits `view` (a create-only drop-box) projects to level
+ *    "view" for ladder consumers, but confers NO read — refuse the socket, or
+ *    it leaks a note the HTTP gateway refuses to serve;
+ *  - a caps grant like ["view","suggest","edit"] (a governance role's compiled
+ *    grant) projects to level "view" via levelForCaps' containment rule, but its
+ *    holder may PATCH over HTTP — the socket must grant the same write access.
+ * For level-only grants caps === the level's expansion, so this returns exactly
+ * effectiveLevel and every pre-caps grant behaves identically.
+ */
+export function collabLevelFor(
+  grants: Grant[],
+  noteRef: { id: string; tags: string[]; creator: string | null; visibility: "private" | "workspace" },
+  role: Role,
+  email: string | null,
+): Level | null {
+  const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email);
   if (lvl === "own") return "own";
-  const caps = effectiveCaps(grants, noteRef, roleFloor(role), email ?? null);
+  const caps = effectiveCaps(grants, noteRef, roleFloor(role), email);
   if (!caps.has("view")) return null;
   if (caps.has("edit")) return maxLevel(lvl, "edit");
   if (caps.has("suggest")) return maxLevel(lvl, "suggest");
@@ -590,11 +652,20 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
   return lvl ?? "view";
 }
 
+/** The lowest level whose socket may send raw Yjs updates: "edit" while
+ *  suggest-only enforcement is on (default), the legacy "suggest" when the
+ *  COLLAB_SUGGEST_ENFORCED=false rollback switch is set. Read per call. */
+export function rawWriteLevel(): Level {
+  return config.collabSuggestEnforced ? "edit" : "suggest";
+}
+
 /**
  * Authorize a collab connection against a note. Throws "Forbidden" below
- * "view"; marks the connection read-only below "suggest" (so view/comment
- * peers can watch but their edits — INCLUDING comment threads, see the header —
- * are dropped). Returns the effective level.
+ * "view"; marks the connection read-only below the raw-write level (EDIT, or
+ * "suggest" with the kill switch off — see `rawWriteLevel`), so view / comment /
+ * suggest connections can watch but every raw update they send is refused.
+ * Returns the effective level. The client learns the outcome from Hocuspocus's
+ * Authenticated message (provider `authorizedScope`: "readonly" | "read-write").
  * Extracted from the Hocuspocus hook so it is directly testable.
  */
 export async function authorizeConnection(
@@ -608,8 +679,22 @@ export async function authorizeConnection(
   const level = await resolveLevel(documentName, token, cookieHeader, isLocal);
   if (revision !== accessRevision()) throw new Error("Access changed. Reconnect.");
   if (!atLeast(level, "view")) throw new Error("Forbidden");
-  connectionConfig.readOnly = !atLeast(level, "suggest");
+  connectionConfig.readOnly = !atLeast(level, rawWriteLevel());
   return level as Level;
+}
+
+/** Keep the unconfirmed receipts whose change is still present in `doc`; clean
+ *  up and forget the rest. Returns the rowids kept. Registered by human-collab.ts. */
+let commandEffects: ((doc: Y.Doc, pending: UnconfirmedCollabReceipt[]) => number[]) | null = null;
+export function setCommandEffectsCheck(fn: typeof commandEffects): void {
+  commandEffects = fn;
+}
+
+/** Undo what unconfirmed human commands left in a restored snapshot. Registered
+ *  by human-collab.ts (which imports this module — a setter avoids the cycle). */
+let lostCommandCleanup: ((doc: Y.Doc, lost: UnconfirmedCollabReceipt[]) => void) | null = null;
+export function setLostCommandCleanup(fn: typeof lostCommandCleanup): void {
+  lostCommandCleanup = fn;
 }
 
 /**
@@ -620,6 +705,14 @@ export async function authorizeConnection(
  */
 export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
+  // A (re)load starts a NEW in-memory document. Any human command still marked
+  // 'applied' for THIS document name (never confirmed by a store) belonged to a
+  // previous instance that is gone — a crash, or an unload before its store
+  // succeeded. Forget those receipts NOW (before any await) so a retry
+  // re-applies the command rather than replaying a result for a change that was
+  // lost; what they may have left in a half-saved snapshot is removed below.
+  // Confirmed ('durable') receipts are kept: they survive every reload/reseed.
+  const lost = takeUnconfirmedCollabReceipts(documentName);
   let note: { content: string; updatedAt: string | null } | null = null;
   let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
@@ -666,11 +759,27 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
             : contentToYUpdate(note.content);
     Y.applyUpdate(doc, seed); // first-ever seed into a fresh, empty doc
   }
+  // A snapshot written by a FAILED store (or one taken while a command's own
+  // vault write was still pending) can hold pieces of a command that was never
+  // confirmed: the fold above restores the body from the vault, but not the
+  // `comments` map. Remove exactly what those forgotten commands left behind, so
+  // the document is consistent and the retry starts from the pre-command state.
+  if (lost.length > 0 && kind === "document") {
+    try {
+      lostCommandCleanup?.(doc, lost);
+    } catch (e) {
+      console.error("[collab] lost-command cleanup failed:", e instanceof Error ? e.message : "unknown");
+    }
+  }
   // Persist NOW, even without an edit. Otherwise a view-only note (which never
   // triggers a store) has no stored state, so every connection re-seeds a fresh
   // client-ID copy and reconnecting clients accumulate duplicates (the "content
   // repeats again and again" bug). Recording it means the next load restores this
   // exact state instead of re-seeding.
+  // A note already stored as collab HTML renders back to (about) its own size;
+  // the next store replaces this with the exact figure. Markdown sources are
+  // left unknown — the command engine measures those once when it needs to.
+  if (note && kind === "document" && note.content.trimStart().startsWith("<")) setRenderedSize(doc, Buffer.byteLength(note.content));
   if (note) {
     saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
     lastReconciled.set(documentName, toMs(note.updatedAt));
@@ -687,6 +796,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
   let sourceUpdatedAt: number | null = null;
+  let vaultWritten = false; // the vault copy now reflects (or already matched) the rendered doc
   // Fetch the current note up front: it resolves the kind (a wrong default would
   // persist e.g. code as HTML and corrupt the note) AND lets us detect an
   // external edit we haven't folded in yet. Stores are debounced, so the read is
@@ -718,7 +828,16 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
     }
   }
 
+  let rendered: number[] = [];
   try {
+    // Same tick as the render below: exactly the commands this content contains
+    // — and only those whose change is STILL in the document. A fold of a newer
+    // vault copy (here above, or by the reconciler since the command ran) can
+    // have removed a command's effect; confirming it would report a lost change
+    // as applied. Those are cleaned up and forgotten instead (the caller gets
+    // 503, the retry 409 stale_revision).
+    const pending = kind === "document" ? unconfirmedCollabReceipts(documentName) : [];
+    rendered = pending.length && commandEffects ? commandEffects(doc, pending) : pending.map((r) => r.rowid);
     const content =
       kind === "code"
         ? yDocToCode(doc)
@@ -727,6 +846,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
           : kind === "canvas"
             ? yDocToScene(doc)
             : yDocToHtml(doc);
+    if (kind === "document") setRenderedSize(doc, Buffer.byteLength(content));
     if (current && content === current.content) {
       // Nothing to persist (e.g. the store right after folding an external edit
       // or a version restore). Skipping matters on vault ≥0.7.9: every write
@@ -737,12 +857,21 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       const updated = await vaultClient(target.vaultId).updateNote(target.noteId, { content });
       sourceUpdatedAt = toMs(updated.updatedAt);
     }
+    vaultWritten = true;
     // G2b: persisted suggestion marks land in the owner's durable review queue.
     if (kind === "document") captureSuggestions(target.noteId, content);
   } catch {
     /* vault write failed — still persist CRDT state below */
   }
-  saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId);
+  // Snapshot + receipt confirmation are ONE transaction, and it confirms ONLY
+  // the commands that were already applied when `content` was rendered — the
+  // ones the vault write above really carried. A command applied during that
+  // await is in this snapshot but not in the vault; its own store (which its
+  // request is waiting on) confirms it, and if that store fails the receipt
+  // stays unconfirmed and the caller is told to retry — never a false success.
+  // After a failed vault write nothing is confirmed: that snapshot has no source
+  // version, the next load folds the (older) vault copy back over it.
+  saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten ? rendered : []);
 }
 
 interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }
@@ -757,7 +886,7 @@ async function revalidateConnection(connection: Connection<LiveAccess>): Promise
     if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
       throw new Error("Access changed. Reconnect.");
     }
-    connection.readOnly = !atLeast(level, "suggest");
+    connection.readOnly = !atLeast(level, rawWriteLevel());
   } catch (error) {
     connection.readOnly = true;
     connection.close({ code: 4403, reason: "Access changed. Reconnect to check your permissions." });

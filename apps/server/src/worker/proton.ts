@@ -95,6 +95,8 @@ import { config, type VaultEntry } from "../config";
 import { getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret } from "../secrets";
 import { PeopleIndex, type PeopleVault } from "./people";
+import { ForwardLinker } from "../people-forward";
+import { ownerConfigFor } from "../people-owner";
 import { EMAIL_FROM, extractDisplayName, extractEmailAddress } from "./gmail";
 import { isUnreadFlags, messageIdOf, noteContent, noteMetadata, notePath, parseMessage, parseMime, relabelUnread, SOURCE, NOTE_DIR } from "./proton-parse";
 
@@ -561,6 +563,11 @@ export interface ProtonPassOptions {
   /** IANA zone for the `date` field / `**Date:**` line (the script used the host's). */
   tz?: string;
   linkPeople?: boolean;
+  /** Identity layer (PROTON_LINK_RECIPIENTS / PEOPLE_QUEUE_ON_INGEST): `email-to`
+   *  links + the review queue. Absent = exactly the behaviour above. */
+  forward?: ForwardLinker;
+  /** With `forward`: also add `email-to` for direct recipients. */
+  linkRecipients?: boolean;
   /** Messages larger than this (RFC822.SIZE) are never downloaded. */
   maxMessageBytes?: number;
   now?: number;
@@ -825,6 +832,15 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
       const hit = name ? await people.findOrCreate(vault, name, { email: addr.includes("@") ? addr : null, allowCreate: false }) : null;
       if (hit) links = [{ target: hit.id, relationship: EMAIL_FROM }];
     }
+    // Identity layer (off unless opts.forward): recipients by exact address, and —
+    // for a sender the exact match above missed — a review-queue entry. A display
+    // name never links mail. Rides in the same create.
+    const plan = opts.forward
+      ? await opts.forward
+          .email({ from: m.from, to: m.to, labels: metadata.labels }, { sender: !!opts.linkPeople && !links, recipients: !!opts.linkRecipients })
+          .catch(() => null)
+      : null;
+    if (plan?.links.length) links = [...(links ?? []), ...plan.links.filter((l) => !(links ?? []).some((x) => x.target === l.target))];
 
     if (opts.shadow) {
       res.created++;
@@ -839,6 +855,7 @@ export async function syncProton(source: ImapSource, vault: ProtonVault, opts: P
     } else {
       res.created++;
       if (links) res.linked++;
+      if (plan?.pending.length) opts.forward?.queue(note.id, plan.pending);
       intent({ action: "create", effect: "applied", mailbox, uid, noteId: note.id, ...ids, ...hashes });
     }
     idx.byMid.set(m.messageId, note);
@@ -981,6 +998,18 @@ export async function runProtonOnce(entry: VaultEntry, opts: { force?: boolean; 
         account: c.username,
         tz: config.protonTimezone || undefined,
         linkPeople: config.protonLinkPeople,
+        ...((config.protonLinkPeople && config.peopleQueueOnIngest) || config.protonLinkRecipients
+          ? {
+              linkRecipients: config.protonLinkRecipients,
+              forward: new ForwardLinker(vaultClient(entry.id), {
+                vaultId: entry.id,
+                origin: "ingest:proton",
+                owner: ownerConfigFor(entry.id, { emails: [c.username] }),
+                queue: config.peopleQueueOnIngest,
+                maxRecipients: config.peopleLinkMaxRecipients,
+              }),
+            }
+          : {}),
         maxMessageBytes: config.protonMaxMessageBytes,
         now,
         uidValidity,

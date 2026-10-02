@@ -38,15 +38,15 @@ export function AgentSourcePreview({ noteId, onClose }: { noteId: string; onClos
     dialog?.showModal();
     return () => { dialog?.close(); if (previous?.isConnected) previous.focus(); };
   }, []);
-  return <dialog ref={dialogRef} aria-label="Source preview" className="agent-source-preview"
+  return <dialog ref={dialogRef} aria-label="Source preview" className="agent-source-preview prism-agent-source-peek"
     onCancel={(event) => { event.preventDefault(); onClose(); }}
     onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="flex max-h-[85dvh] min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
-        <div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold">{name}</h2><p className="text-xs" style={{ color: "var(--text-muted)" }}>Saved text preview</p></div>
+        <div className="min-w-0 flex-1"><h2 className="break-words text-lg font-semibold">{name}</h2><p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>Saved text preview{note?.updatedAt && <span> · Updated <time dateTime={note.updatedAt} title={note.updatedAt}>{Number.isNaN(Date.parse(note.updatedAt)) ? note.updatedAt : new Date(/^\d{4}-\d{2}-\d{2}$/.test(note.updatedAt) ? `${note.updatedAt}T12:00:00` : note.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</time></span>}</p></div>
         <button onClick={onClose} aria-label="Close source preview" className="interactive focus-ring flex h-10 w-10 items-center justify-center rounded-lg"><X size={18} /></button>
       </div>
-      <div className="min-h-0 overflow-y-auto p-5 text-sm leading-relaxed">
+      <div className="prism-agent-source-body min-h-0 overflow-y-auto p-5 text-sm leading-relaxed">
         {(source.isFetching || source.isPending) && scope ? <p role="status">Loading source…</p> : null}
         {(!scope || source.isError) && <div role="alert"><p>This source is unavailable. It may have moved, been deleted, or your access may have changed.</p><button onClick={() => void source.refetch()} disabled={!scope} className="interactive focus-ring mt-3 rounded-lg border px-3 py-2" style={{ borderColor: "var(--glass-border)" }}>Try again</button></div>}
         {note && (textHtml !== null ? <div className="agent-markdown" dangerouslySetInnerHTML={{ __html: textHtml }} /> : <AgentMarkdown text={note.content} />)}

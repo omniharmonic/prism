@@ -14,7 +14,7 @@ async function save(path: string, contents: string | Buffer) {
 }
 const mark = renderToStaticMarkup(createElement(PrismMark, { width: 96, height: 64, color: "#25262a" }));
 const mono = renderToStaticMarkup(createElement(PrismMark, { width: 96, height: 64, monochrome: true, color: "#25262a" }));
-const icon = renderToStaticMarkup(createElement(PrismAppIcon));
+const icon = renderToStaticMarkup(createElement(PrismAppIcon, { compact: true }));
 for (const app of ["web", "desktop"]) {
   await save(`apps/${app}/public/prism-mark.svg`, mark);
   await save(`apps/${app}/public/prism-monochrome.svg`, mono);

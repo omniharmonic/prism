@@ -337,6 +337,8 @@ export interface FirefliesBudget {
 
 export interface FirefliesLoopOptions {
   budget: FirefliesBudget;
+  /** TRANSCRIPT_LINK_PEOPLE: link new transcripts to EXISTING people. */
+  forward?: import("../people-forward").ForwardLinker;
   /** ids known to be un-deletable (ownership/permission) — skipped without cost.
    *  Persist across runs (module-level in the scheduler) so we don't retry them. */
   skipSet?: Set<string>;
@@ -733,21 +735,25 @@ export async function ingestAndCleanupFireflies(
       // Two Fireflies transcripts of the same meeting slug to the same path.
       // Retry once with the transcript id appended, and never let one bad note
       // abort the run (which would strand the rest of the backlog).
+      // Identity layer (off unless opts.forward): `attended-by` rides in the create.
+      const plan = opts.forward ? await opts.forward.attendees(note.metadata.attendees as string[], note.metadata.attendeeEmails as string[]).catch(() => null) : null;
+      const linked = plan?.links.length ? { links: plan.links } : {};
       let created: Note;
       try {
-        created = await vault.createNote(note);
+        created = await vault.createNote({ ...note, ...linked });
       } catch (e) {
         if (!/path_conflict|409/.test(String((e as Error).message))) {
           out.skipped++;
           continue;
         }
         try {
-          created = await vault.createNote({ ...note, path: `${note.path}-${id.slice(-6).toLowerCase()}` });
+          created = await vault.createNote({ ...note, ...linked, path: `${note.path}-${id.slice(-6).toLowerCase()}` });
         } catch {
           out.skipped++;
           continue;
         }
       }
+      if (plan?.pending.length) opts.forward?.queue(created.id, plan.pending);
       candidates.set(id, [created.id]);
       out.created++;
       newThisRun++;

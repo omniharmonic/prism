@@ -1,3 +1,7 @@
+import { useComposerAutosize } from "../comms/useComposerAutosize";
+import { useSavedNoteHandoff, SavedNoteHandoffNotice } from "./SavedNoteHandoff";
+import "./agent-chat.css";
+import { useSelectionHandoff, SelectionHandoffNotice } from "./SelectionHandoff";
 import { AgentFollowupQueue, followupKey } from "./AgentFollowupQueue";
 import { AgentSnapshotAttachments, AgentSnapshotPreview } from "./AgentSnapshotAttachments";
 import { validContextSnapshots, type AgentContextSnapshot } from "../../lib/agent/contextSnapshots";
@@ -128,6 +132,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const activeSessionId = useAgentChatStore((s) => s.activeSessionId);
   const setActiveSession = useAgentChatStore((s) => s.setActiveSession);
   const pendingAsk = useAgentChatStore((s) => s.pendingAsk);
+  const pendingSavedNote = useAgentChatStore((s) => s.pendingSavedNote);
   const setPendingAsk = useAgentChatStore((s) => s.setPendingAsk);
   const draft = useAgentChatStore((s) => s.draft);
   const setDraft = useAgentChatStore((s) => s.setDraft);
@@ -135,7 +140,7 @@ function AgentChatView({ client }: { client: AgentClient }) {
   const queryClient = useQueryClient();
   const keys = agentKeys(client);
 
-  const { data: sessions, isLoading } = useQuery({
+  const { data: sessions, isLoading, isError: listError, refetch: reloadSessions } = useQuery({
     queryKey: keys.list(false),
     queryFn: () => client.listSessions({ limit: 50 }),
     refetchInterval: (q) => ((q.state.data as AgentSessionSummary[] | undefined)?.some((s) => isRunning(s.lastTurnStatus)) ? 5_000 : 60_000),
@@ -226,17 +231,23 @@ function AgentChatView({ client }: { client: AgentClient }) {
     />
   ) : null;
 
-  const list = (
+  const list = (<>
+    {!showingConversation && pendingSavedNote && <section aria-label="Pending context destination" className="border-b border-[var(--glass-border)] p-3 text-xs">
+      <p>A context note is waiting. Choose a conversation or start a new one; nothing has been sent.</p>
+      <button className="focus-ring min-h-11 underline" onClick={() => useAgentChatStore.getState().dismissSavedNote(pendingSavedNote.id)}>Dismiss pending note</button>
+    </section>}
     <SessionList
       sessions={sessions ?? []}
       loading={isLoading}
+      error={listError}
+      onRetry={() => void reloadSessions()}
       activeId={activeSessionId}
       onOpen={openSession}
       onNew={startNew}
       onArchive={(id) => void archive(id)}
       mobile={isMobile}
     />
-  );
+  </>);
 
   if (isMobile) {
     return (
@@ -247,8 +258,8 @@ function AgentChatView({ client }: { client: AgentClient }) {
     );
   }
   return (
-    <div className="flex h-full" data-testid="agent-chat">
-      <div className="h-full flex-shrink-0 overflow-hidden" style={{ width: 272, borderRight: "1px solid var(--glass-border)" }}>
+    <div className="prism-agent-workspace flex h-full" data-testid="agent-chat">
+      <div className="prism-agent-rail h-full flex-shrink-0 overflow-hidden">
         {list}
       </div>
       <div className="h-full min-w-0 flex-1">
@@ -270,119 +281,53 @@ function AgentChatView({ client }: { client: AgentClient }) {
 
 // ── session list ─────────────────────────────────────────────────────────────
 
-function SessionList({
-  sessions,
-  loading,
-  activeId,
-  onOpen,
-  onNew,
-  onArchive,
-  mobile,
-}: {
-  sessions: AgentSessionSummary[];
-  loading: boolean;
-  activeId: string | null;
-  onOpen: (id: string) => void;
-  onNew: () => void;
-  onArchive: (id: string) => void;
-  mobile: boolean;
+function SessionList({ sessions, loading, error, onRetry, activeId, onOpen, onNew, onArchive, mobile }: {
+  sessions: AgentSessionSummary[]; loading: boolean; error: boolean; onRetry: () => void;
+  activeId: string | null; onOpen: (id: string) => void; onNew: () => void;
+  onArchive: (id: string) => void; mobile: boolean;
 }) {
   const billing = useAgentLimits()?.billing;
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-shrink-0 items-center gap-2 px-4" style={{ height: 52, borderBottom: "1px solid var(--glass-border)" }}>
-        <PrismMark width={27} height={20} decorative style={{ color: "var(--text-primary)" }} />
-        <span className="flex-1 font-semibold" style={{ color: "var(--text-primary)" }}>
-          Conversations
-        </span>
-        <button
-          onClick={onNew}
-          data-testid="agent-new-session"
-          className="press focus-ring flex items-center gap-1 rounded-full px-3 py-1.5 text-sm"
-          style={{ background: "var(--color-accent)", color: "#fff" }}
-        >
-          <Plus size={14} /> New
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto py-1" style={{ paddingBottom: mobile ? 110 : 8 }}>
-        {loading && (
-          <div className="flex justify-center py-6">
-            <Spinner size={18} />
-          </div>
-        )}
-        {!loading && sessions.length === 0 && (
-          <p className="px-4 py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
-            No conversations yet.
-          </p>
-        )}
-        {sessions.map((s) => {
-          const active = s.id === activeId;
-          const running = isRunning(s.lastTurnStatus);
-          return (
-            <div
-              key={s.id}
-              className="group mx-1.5 flex items-center rounded-lg pr-1"
-              style={{ background: active ? "var(--surface-selected)" : undefined }}
-            >
-              <button
-                data-testid="agent-session-row"
-                onClick={() => onOpen(s.id)}
-                aria-current={active ? "true" : undefined}
-                className="interactive focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-left"
-                style={{ minHeight: mobile ? 56 : 48 }}
-              >
-              <span
-                className={running ? "animate-pulse" : undefined}
-                title={running ? "Running" : s.lastTurnStatus ?? "idle"}
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: 999,
-                  flexShrink: 0,
-                  background: running
-                    ? "var(--color-accent)"
-                    : s.lastTurnStatus === "error"
-                      ? "var(--color-danger)"
-                      : "var(--glass-border)",
-                }}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm" style={{ color: "var(--text-primary)", fontWeight: active ? 560 : 450 }}>
-                  {s.title || "Untitled session"}
-                </span>
-                <span className="flex items-center gap-1.5 truncate text-xs" style={{ color: "var(--text-muted)" }}>
-                  {running ? <span style={{ color: "var(--color-accent)" }}>{s.lastTurnStatus === "queued" ? "Queued" : "Working…"}</span> : relTime(s.lastTurnAt ?? s.updated_at)}
-                  {isReadOnlyProfile(s.profile) && (
-                    <span className="flex items-center gap-0.5">
-                      · <Lock size={10} /> read-only
-                    </span>
-                  )}
-                  {s.cost_usd > 0 && (
-                    <span className="truncate" title={formatAgentCost(s.cost_usd, billing)?.title} data-testid="agent-session-cost">
-                      · {formatAgentCost(s.cost_usd, billing)?.text}
-                    </span>
-                  )}
-                </span>
+  const [filter, setFilter] = useState("");
+  const shown = sessions.filter(session => (session.title || "Untitled session").toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const groups = [
+    { title: "Today", rows: shown.filter(session => (session.lastTurnAt ?? session.updated_at) >= today.getTime()) },
+    { title: "Yesterday", rows: shown.filter(session => (session.lastTurnAt ?? session.updated_at) < today.getTime() && (session.lastTurnAt ?? session.updated_at) >= yesterday.getTime()) },
+    { title: "Earlier", rows: shown.filter(session => (session.lastTurnAt ?? session.updated_at) < yesterday.getTime()) },
+  ];
+  return <div className="prism-agent-sessions flex h-full min-h-0 flex-col">
+    <header className="prism-agent-list-heading">
+      <h2>Agent</h2>
+      <button onClick={onNew} data-testid="agent-new-session" className="prism-agent-new focus-ring"><Plus size={16} /> New conversation</button>
+      <input aria-label="Filter recent conversations" placeholder="Filter recent conversations…" value={filter} onChange={event => setFilter(event.target.value)} className="prism-agent-session-filter focus-ring" />
+      <p>Recent conversations{sessions.length >= 50 ? " · latest 50" : ""}</p>
+    </header>
+    <div className="prism-agent-session-scroll min-h-0 flex-1 overflow-y-auto" style={{ paddingBottom: mobile ? 110 : 16 }}>
+      {loading && <div role="status" className="flex justify-center gap-2 p-5 text-sm"><Spinner size={18} /> Loading conversations…</div>}
+      {error && <div role="alert" className="prism-agent-list-feedback">Couldn’t refresh conversations. <button onClick={onRetry} className="focus-ring underline">Try again</button></div>}
+      {!loading && !error && sessions.length === 0 && <p className="prism-agent-list-feedback">Start a conversation about a page or explore your vault.</p>}
+      {!loading && sessions.length > 0 && shown.length === 0 && <p className="prism-agent-list-feedback">No recent conversations match this filter.</p>}
+      {groups.filter(group => group.rows.length > 0).map(group => <section key={group.title} aria-label={group.title}>
+        <h3 className="prism-agent-list-group">{group.title}</h3>
+        {group.rows.map(session => {
+          const active = session.id === activeId;
+          const running = isRunning(session.lastTurnStatus);
+          const status = session.lastTurnStatus === "queued" ? "Queued" : session.lastTurnStatus === "running" ? "Working…" : session.lastTurnStatus === "error" ? "Failed" : session.lastTurnStatus === "interrupted" ? "Interrupted" : session.lastTurnStatus === "cancelled" ? "Stopped" : session.lastTurnStatus === "done" ? "Completed" : "No messages yet";
+          return <div key={session.id} className="prism-agent-session-row group" data-active={active || undefined}>
+            <button data-testid="agent-session-row" onClick={event => { event.currentTarget.focus({ preventScroll: true }); onOpen(session.id); }} aria-current={active ? "true" : undefined} className="prism-agent-session-open focus-ring">
+              {session.note_id ? <FileText size={18} className="shrink-0" /> : <Bot size={18} className="shrink-0" />}
+              <span className="min-w-0 flex-1"><span className="prism-agent-session-title">{session.title || "Untitled session"}</span>
+                <span className="prism-agent-session-meta"><span className={running ? "prism-agent-session-running" : undefined}>{status}</span><span aria-hidden="true">·</span><span>{relTime(session.lastTurnAt ?? session.updated_at)}</span></span>
+                {(isReadOnlyProfile(session.profile) || session.cost_usd > 0) && <span className="prism-agent-session-meta">{isReadOnlyProfile(session.profile) && <span className="inline-flex items-center gap-1"><Lock size={10} /> Read-only</span>}{session.cost_usd > 0 && <span title={formatAgentCost(session.cost_usd, billing)?.title} data-testid="agent-session-cost">{formatAgentCost(session.cost_usd, billing)?.text}</span>}</span>}
               </span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onArchive(s.id);
-                }}
-                aria-label="Archive session"
-                title="Archive"
-                className={`interactive focus-ring flex flex-shrink-0 items-center justify-center rounded ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}
-                style={{ width: mobile ? 44 : 32, height: mobile ? 44 : 32, color: "var(--text-muted)" }}
-              >
-                <Archive size={14} />
-              </button>
-            </div>
-          );
+            </button>
+            <button onClick={() => onArchive(session.id)} tabIndex={0} aria-label="Archive session" title="Archive" className={`prism-agent-session-archive focus-ring ${mobile ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}><Archive size={14} /></button>
+          </div>;
         })}
-      </div>
+      </section>)}
     </div>
-  );
+  </div>;
 }
 
 // ── conversation ─────────────────────────────────────────────────────────────
@@ -397,6 +342,7 @@ export function Conversation({
   onBack,
   onArchive,
   onExpand,
+  headerActions,
   fullScreen,
   compact,
 }: {
@@ -409,6 +355,7 @@ export function Conversation({
   onBack?: () => void;
   onArchive?: () => void;
   onExpand?: () => void;
+  headerActions?: ReactNode;
   fullScreen?: boolean;
   compact?: boolean;
 }) {
@@ -475,6 +422,15 @@ export function Conversation({
 
   const isDraft = !sessionId;
   const awaitingSession = !isDraft && (conv.loading || conv.session?.id !== sessionId);
+  const selectionHandoff = useSelectionHandoff({
+    scope: client.scope?.() || null, sessionId, noteId: isDraft ? draft?.noteId : conv.session?.note_id,
+    ready: !awaitingSession && !limitsQuery.isPending, limits: limits?.contextSnapshots,
+    snapshots: contextSnapshots, setSnapshots: snapshotDraft.setText, inputRef,
+    busy: sending || !!creating || !!pendingQueuedRequest,
+  });
+  const savedNoteHandoff = useSavedNoteHandoff({ scope: client.scope?.() || null, sessionId,
+    ready: !awaitingSession && !limitsQuery.isPending, busy: sending || !!creating || !!pendingFollowup.text,
+    sendingRef, maxNotes: limits?.contextNotes?.maxNotes, contextText: contextDraft.text, updateContext: contextDraft.updateText });
   const running = !!conv.active;
   const canQueue = !!sessionId && !!limits?.followups && !!client.queueFollowup && !!client.listFollowups && !!client.changeFollowup;
   // A turn just finished → today's spend changed: refresh the budget line.
@@ -497,13 +453,8 @@ export function Conversation({
     if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  // Autosize the composer.
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [input]);
+  // Remeasure wrapping when the companion or viewport width changes, too.
+  useComposerAutosize(inputRef, input, 40);
 
   const submit = useCallback(
     async (textArg?: string) => {
@@ -628,77 +579,9 @@ export function Conversation({
   };
 
   const title = isDraft ? (draft?.noteTitle ? `About ${draft.noteTitle}` : "New session") : conv.session?.title || "Untitled session";
-  const sessionProfile = conv.session?.profile;
   const noteId = isDraft ? draft?.noteId : (conv.session?.note_id ?? undefined);
 
-  const header = (
-    <div
-      className="flex flex-shrink-0 items-center gap-2 px-3"
-      style={{
-        minHeight: compact ? 40 : 52,
-        paddingTop: fullScreen ? "env(safe-area-inset-top)" : undefined,
-        borderBottom: "1px solid var(--glass-border)",
-      }}
-    >
-      {onBack && (
-        <button onClick={onBack} aria-label="Back to sessions" className="interactive flex items-center justify-center rounded-full" style={{ width: 36, height: 36, color: "var(--text-secondary)" }}>
-          <ArrowLeft size={19} />
-        </button>
-      )}
-      <div className="min-w-0 flex-1">
-        <div className={`truncate ${compact ? "text-xs" : "text-sm"} font-medium`} style={{ color: "var(--text-primary)" }} data-testid="agent-conversation-title">
-          {title}
-        </div>
-        {!compact && (sessionProfile || conv.conn === "reconnecting") && (
-          <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-            {sessionProfile && isReadOnlyProfile(sessionProfile) ? (
-              <>
-                <Lock size={10} /> {PROFILE_LABELS[sessionProfile].label}
-              </>
-            ) : sessionProfile ? (
-              <>
-                <PenLine size={10} /> {sessionProfile === "vault-rw" ? "Can edit your vault" : PROFILE_LABELS[sessionProfile].label}
-              </>
-            ) : null}
-            {conv.conn === "reconnecting" && <span style={{ color: "var(--color-warning, var(--text-muted))" }}>· reconnecting…</span>}
-          </div>
-        )}
-        {!compact && !isDraft && <AgentBudgetLine sessionCostUsd={conv.session?.cost_usd} />}
-      </div>
-      {onExpand && (
-        <button onClick={onExpand} aria-label="Open in Agent tab" title="Open in Agent tab" className="interactive flex items-center justify-center rounded" style={{ width: 28, height: 28, color: "var(--text-muted)" }}>
-          <Maximize2 size={13} />
-        </button>
-      )}
-      {onArchive && !compact && (
-        <button onClick={onArchive} aria-label="Archive session" title="Archive" className="interactive flex items-center justify-center rounded" style={{ width: 32, height: 32, color: "var(--text-muted)" }}>
-          <Archive size={15} />
-        </button>
-      )}
-    </div>
-  );
-
-  const empty = isDraft && !creating && (
-    <div className="flex flex-col items-center gap-3 px-4 pt-10 text-center">
-      <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
-      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-        {draft?.noteId ? "Ask anything about this note." : "Ask the agent about your vault."}
-        <br />
-        It keeps working if you close the app.
-      </p>
-    </div>
-  );
-
-  const composer = (
-    <div
-      className="flex-shrink-0 px-3 pt-2"
-      style={{
-        borderTop: "1px solid var(--glass-border)",
-        paddingBottom: fullScreen ? "calc(env(safe-area-inset-bottom) + 8px)" : 8,
-        background: fullScreen ? "var(--bg-surface)" : undefined,
-      }}
-    >
-      {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
+  const permissionControls = <>
       {isDraft && !permissionModes?.length && (
         <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <div className="flex flex-wrap rounded-full p-0.5" style={{ background: "var(--glass)", border: "1px solid var(--glass-border)" }} role="radiogroup" aria-label="Agent permissions">
@@ -741,9 +624,74 @@ export function Conversation({
           {permissionPending && <span role="status">Stopping previous work before switching to {modeLabels[permissionPending]}…</span>}
         </div>
       )}
+  </>;
+
+  const header = (
+    <div
+      className="prism-agent-heading flex-shrink-0"
+      style={{
+        minHeight: compact ? 40 : 52,
+        paddingTop: fullScreen ? "env(safe-area-inset-top)" : undefined,
+        borderBottom: "1px solid var(--glass-border)",
+      }}
+    >
+      <div className="prism-agent-heading-top">
+      {onBack && (
+        <button onClick={onBack} aria-label="Back to sessions" className="interactive flex items-center justify-center rounded-full" style={{ width: 36, height: 36, color: "var(--text-secondary)" }}>
+          <ArrowLeft size={19} />
+        </button>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="prism-agent-conversation-title" style={{ color: "var(--text-primary)" }} data-testid="agent-conversation-title">
+          {title}
+        </div>
+        {!compact && !isDraft && <AgentBudgetLine sessionCostUsd={conv.session?.cost_usd} />}
+      </div>
+      {headerActions}
+      {onExpand && (
+        <button onClick={onExpand} aria-label="Open in Agent tab" title="Open in Agent tab" className="interactive flex items-center justify-center rounded" style={{ width: 28, height: 28, color: "var(--text-muted)" }}>
+          <Maximize2 size={13} />
+        </button>
+      )}
+      {onArchive && !compact && (
+        <button onClick={onArchive} aria-label="Archive session" title="Archive" className="interactive flex items-center justify-center rounded" style={{ width: 32, height: 32, color: "var(--text-muted)" }}>
+          <Archive size={15} />
+        </button>
+      )}
+      </div>
+      {noteId && <div className="prism-agent-working-document" data-testid="agent-working-document"><span>Working on</span><NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} /></div>}
+      <div className="prism-agent-permissions">{permissionControls}{!isDraft && conv.session && !(permissionModes?.length && client.updatePermissions) && <p className="text-xs text-[var(--text-secondary)]">{conv.session.permission_mode ? modeLabels[conv.session.permission_mode] : PROFILE_LABELS[conv.session.profile].label}</p>}</div>
+      {conv.conn === "reconnecting" && <p role="status" className="prism-agent-connection">Reconnecting… Your conversation and draft are kept here.</p>}
+    </div>
+  );
+
+  const empty = isDraft && !creating && (
+    <div className="flex flex-col items-center gap-3 px-4 pt-10 text-center">
+      <PrismMark width={58} height={40} decorative style={{ color: "var(--text-primary)" }} />
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        {draft?.noteId ? "Ask anything about this note." : "Ask the agent about your vault."}
+        <br />
+        It keeps working if you close the app.
+      </p>
+    </div>
+  );
+
+  const composer = (
+    <div
+      className="prism-agent-composer flex-shrink-0"
+      style={{
+        borderTop: "1px solid var(--glass-border)",
+        paddingBottom: fullScreen ? "calc(env(safe-area-inset-bottom) + 8px)" : 8,
+        background: fullScreen ? "var(--bg-surface)" : undefined,
+      }}
+    >
+      {canQueue && sessionId && <AgentFollowupQueue client={client} sessionId={sessionId} mode={conv.session?.permission_mode ?? "read-only"} policyVersion={conv.session?.policy_version ?? 0} onAdmitted={conv.reload}/> }
       {isDraft && <AgentBudgetLine />}
+      {conv.cancelling && <p role="status" className="prism-agent-stop-status">Stop requested · waiting for the task to finish stopping.</p>}
       {pendingQueuedRequest && <p role="status" className="mb-2 text-xs">A queued message is awaiting confirmation. Check it before sending another instruction.</p>}
       {pendingFollowup.error && <p role="status" className="mb-2 text-xs">{pendingFollowup.error}</p>}
+      <SelectionHandoffNotice handoff={selectionHandoff} />
+      <SavedNoteHandoffNotice handoff={savedNoteHandoff} />
       {(limits?.contextSnapshots || contextSnapshots.length > 0) && <AgentSnapshotAttachments noteId={isDraft ? draft?.noteId : conv.session?.note_id} snapshots={contextSnapshots} available={!!limits?.contextSnapshots} onReading={setReadingFile} disabled={sending} onChange={next=>snapshotDraft.setText(next.length ? JSON.stringify(next) : "")} />}
       {snapshotDraft.error && <p role="status" className="mb-2 text-xs">{snapshotDraft.error}</p>}
       {(limits?.contextNotes || contextNoteIds.length > 0) && <AgentContextAttachments ids={contextNoteIds} onChange={(ids) => contextDraft.setText(ids.length ? JSON.stringify(ids) : "")} onPreview={setAttachmentPreview} disabled={sending} maxNotes={limits?.contextNotes?.maxNotes ?? 0} maxCharacters={limits?.contextNotes?.maxCharactersPerNote ?? 8000} />}
@@ -754,7 +702,7 @@ export function Conversation({
       </p>}
       {isDraft && draftPermissions.error && <p role="status" className="mb-2 text-xs">{draftPermissions.error}</p>}
       {composerDraft.error && <p role="status" className="mb-2 text-xs" style={{ color: "var(--text-secondary)" }}>{composerDraft.error}</p>}
-      <div className="flex items-end gap-2">
+      <div className="prism-agent-compose-surface flex items-end gap-2">
         <textarea
           ref={inputRef}
           value={input}
@@ -766,10 +714,10 @@ export function Conversation({
           enterKeyHint={mobileComposer ? "enter" : undefined}
           placeholder={running ? (canQueue ? "Add a follow-up…" : "The agent is working…") : isDraft ? "Ask the agent…" : "Reply…"}
           data-testid="agent-input"
-          className="min-w-0 flex-1 resize-none rounded-2xl px-3.5 py-2 outline-none"
+          className="prism-agent-input min-w-0 flex-1 resize-none outline-none"
           style={{
-            background: "var(--glass)",
-            border: "1px solid var(--glass-border)",
+            background: "transparent",
+            border: "none",
             color: "var(--text-primary)",
             fontSize: 16, // no iOS zoom-on-focus
             lineHeight: 1.4,
@@ -781,13 +729,14 @@ export function Conversation({
         {running ? (
           <button
             onClick={() => void conv.cancel()}
-            aria-label="Stop"
-            title="Stop"
+            aria-label={conv.cancelling ? "Stop requested" : "Stop"}
+            title={conv.cancelling ? "Waiting for the task to stop" : "Stop"}
+            disabled={conv.cancelling}
             data-testid="agent-cancel"
             className="press flex flex-shrink-0 items-center justify-center rounded-full"
-            style={{ width: 40, height: 40, background: "var(--color-danger)", color: "#fff" }}
+            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--color-danger)", color: "#fff" }}
           >
-            <Square size={14} fill="#fff" />
+            {conv.cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={14} fill="#fff" />}
           </button>
         ) : (
           <button
@@ -796,7 +745,7 @@ export function Conversation({
             aria-label={pendingQueuedRequest ? "Check queued message" : "Send"}
             data-testid="agent-send"
             className="press flex flex-shrink-0 items-center justify-center rounded-full disabled:opacity-40"
-            style={{ width: 40, height: 40, background: "var(--color-accent)", color: "#fff" }}
+            style={{ width: 44, height: 44, borderRadius: 9, background: "var(--action-bg)", color: "var(--action-fg)" }}
           >
             {creating ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
@@ -806,20 +755,14 @@ export function Conversation({
   );
 
   const body = (
-    <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-3" data-testid="agent-messages">
+    <div ref={scrollRef} onScroll={onScroll} className="prism-agent-transcript min-h-0 flex-1 overflow-y-auto" data-testid="agent-messages">
       {empty}
       {conv.loading && conv.state.turns.length === 0 && !isDraft && (
         <div className="flex justify-center py-8">
           <Spinner size={18} />
         </div>
       )}
-      {noteId && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs" data-testid="agent-working-document" style={{ color: "var(--text-muted)" }}>
-          <span>Working document</span>
-          <NoteChip noteId={noteId} label={isDraft ? draft?.noteTitle : undefined} />
-        </div>
-      )}
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+      <div className="prism-agent-turns mx-auto flex flex-col">
         {conv.state.turns.map((t) => (
           <TurnBlock key={t.id} turn={t} compact={compact} />
         ))}
@@ -849,7 +792,7 @@ export function Conversation({
   if (fullScreen) {
     return (
       <div
-        className="fixed left-0 right-0 top-0 flex flex-col"
+        className="prism-agent-conversation fixed left-0 right-0 top-0 flex flex-col"
         style={{ height: vvh ?? "100dvh", zIndex: "var(--z-overlay)" as unknown as number, background: "var(--bg-base, var(--bg-surface))" }}
         data-testid="agent-conversation"
       >
@@ -860,7 +803,7 @@ export function Conversation({
     );
   }
   return (
-    <div className="flex h-full flex-col" data-testid="agent-conversation">
+    <div className="prism-agent-conversation flex h-full min-h-0 flex-col" data-compact={compact || undefined} data-testid="agent-conversation">
       {header}
       {body}
       {composer}
@@ -870,11 +813,11 @@ export function Conversation({
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div className="flex flex-col items-end gap-1.5">
-      <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>You</span>
+    <div className="prism-agent-user-block">
+      <div className="prism-agent-speaker"><span className="prism-agent-avatar" aria-hidden="true">Y</span><span>You</span></div>
       <div
-        className="max-w-[92%] whitespace-pre-wrap rounded-xl px-3.5 py-2.5 text-sm leading-relaxed [overflow-wrap:anywhere]"
-        style={{ background: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--glass-border)" }}
+        className="prism-agent-user-text whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]"
+        style={{ color: "var(--text-primary)" }}
         data-testid="agent-user-message"
       >
         {text}
@@ -901,43 +844,29 @@ function TurnBlock({ turn, compact }: { turn: TurnView; compact?: boolean }) {
   const dur = fmtDuration(turn.durationMs);
   const hasText = turn.blocks.some((b) => b.text.trim());
   return (
-    <div className="flex flex-col gap-2" data-testid="agent-turn" data-status={turn.status}>
+    <div className="prism-agent-turn flex flex-col gap-2" data-compact={compact || undefined} data-testid="agent-turn" data-status={turn.status}>
       {turn.prompt && <UserBubble text={turn.prompt} />}
       {snapshotPreview && <AgentSnapshotPreview snapshot={snapshotPreview} onClose={()=>setSnapshotPreview(null)}/>}
       {!!turn.context?.length && <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="agent-supplied-context" style={{ color: "var(--text-muted)" }}>
         <span>{turn.context.some(s=>s.snapshot) ? "Context supplied:" : "Saved text supplied:"}</span>
-        {turn.context.map((source,index) => <span key={`${source.noteId}:${index}`} className="flex flex-wrap items-center gap-1">{source.snapshot ? <button className="focus-ring min-h-10 rounded-lg border border-[var(--glass-border)] px-2" onClick={()=>setSnapshotPreview(source.snapshot!)}>{source.snapshot.kind === "selection" ? "Selected passage" : source.snapshot.kind === "document" ? "Document snapshot" : "Text file"}</button> : <NoteChip noteId={source.noteId} op="context" />}<span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
+        {turn.context.map((source,index) => <span key={`${source.noteId}:${index}`} className="flex flex-wrap items-center gap-1">{source.snapshot ? <button className="focus-ring min-h-10 rounded-lg border border-[var(--glass-border)] px-2" onClick={event=>{ event.currentTarget.focus({ preventScroll: true }); setSnapshotPreview(source.snapshot!); }}>{source.snapshot.kind === "selection" ? "Selected passage" : source.snapshot.kind === "document" ? "Document snapshot" : "Text file"}</button> : <NoteChip noteId={source.noteId} op="context" />}<span title={source.updatedAt ? `Saved version: ${source.updatedAt}` : undefined}>{source.characters.toLocaleString()} characters{source.truncated ? " · truncated" : ""}</span></span>)}
       </div>}
-      <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
-        <PrismMark width={25} height={18} decorative />
+      <div className="prism-agent-speaker prism-agent-speaker-assistant" style={{ color: "var(--text-secondary)" }}>
+        <span className="prism-agent-avatar" aria-hidden="true"><PrismMark width={24} height={18} decorative /></span>
         <span className="font-medium">Prism agent</span>
         {turn.startedAt && <time dateTime={new Date(turn.startedAt).toISOString()} title={new Date(turn.startedAt).toLocaleString()} style={{ color: "var(--text-muted)" }}>{new Date(turn.startedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
       </div>
       {turn.tools.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {turn.tools.map((tool) => (
-            <span
-              key={tool.id}
-              title={tool.summary}
-              data-testid="agent-tool-chip"
-              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs"
-              style={{
-                background: "var(--glass)",
-                border: `1px solid ${tool.ok === false ? "color-mix(in srgb, var(--color-danger) 50%, transparent)" : "var(--glass-border)"}`,
-                color: tool.ok === false ? "var(--color-danger)" : "var(--text-secondary)",
-              }}
-            >
-              <Wrench size={10} />
-              {tool.name}
-              {tool.ok === true && <Check size={11} style={{ color: "var(--color-success)" }} />}
-              {tool.ok === false && <X size={11} />}
-              {tool.ok === undefined && running && <Loader2 size={10} className="animate-spin" />}
-            </span>
-          ))}
-        </div>
+        <details className="prism-agent-activity" open={running || turn.tools.some(tool => tool.ok === false)}>
+          <summary>Activity <span>{turn.tools.length} {turn.tools.length === 1 ? "action" : "actions"}{running ? turn.status === "queued" ? " · queued" : " · working" : ""}</span></summary>
+          <ol>{turn.tools.map(tool => <li key={tool.id} data-testid="agent-tool-chip">
+            <span className="prism-agent-activity-icon" aria-hidden="true">{tool.ok === true ? <Check size={14} /> : tool.ok === false ? <X size={14} /> : running ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}</span>
+            <div className="min-w-0 flex-1"><div className="prism-agent-activity-title"><span>{tool.name.replace(/[_-]+/g, " ")}</span><span>{tool.ok === true ? "Completed" : tool.ok === false ? "Failed" : running ? "In progress" : "Recorded"}</span></div>{tool.summary && <p className="prism-agent-activity-summary">{tool.summary}</p>}</div>
+          </li>)}</ol>
+        </details>
       )}
       {hasText && (
-        <div className={`min-w-0 max-w-full [overflow-wrap:anywhere] ${compact ? "text-[13px]" : "text-sm"} leading-relaxed`} style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
+        <div className="prism-agent-assistant-text min-w-0 max-w-full [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }} data-testid="agent-assistant-message">
           {turn.blocks
             .filter((b) => b.text.trim())
             .map((b, i) => (
@@ -983,9 +912,9 @@ function NoteChip({ noteId, op, label }: { noteId: string; op?: string; label?: 
     <>
     <button
       disabled={deleted}
-      onClick={() => setPreview(true)}
+      onClick={event => { event.currentTarget.focus({ preventScroll: true }); setPreview(true); }}
       data-testid="agent-note-chip"
-      className="flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs disabled:cursor-default"
+      className="prism-agent-note-chip focus-ring flex max-w-full items-center gap-1 text-xs disabled:cursor-default"
       style={{
         background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
         border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)",
@@ -1023,11 +952,6 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
   const startNew = () => { setActiveSession(null); setDraft({ noteId, noteTitle }); };
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-shrink-0 items-center justify-end gap-1 px-2 py-1" style={{ borderBottom: "1px solid var(--glass-border)" }}>
-        <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="interactive focus-ring flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ color: "var(--text-secondary)" }}>
-          <Plus size={12} /> New
-        </button>
-      </div>
       <div className="min-h-0 flex-1">
         <Conversation
           key={`${client.scope?.() ?? ""}:${activeSessionId ?? `draft:${draft?.noteId ?? ""}`}`}
@@ -1035,6 +959,11 @@ export function AgentPanelChat({ client }: { client: AgentClient }) {
           sessionId={activeSessionId}
           draft={draft}
           onCreated={(id) => setActiveSession(id)}
+          headerActions={
+            <button onClick={startNew} title={noteTitle ? `New conversation about ${noteTitle}` : "New vault conversation"} className="prism-agent-panel-new focus-ring">
+              <Plus size={14} /> New
+            </button>
+          }
           onExpand={() => {
             // Expansion moves the conversation; do not leave a second composer
             // beside it (or an open mobile drawer covering the expanded view).

@@ -31,6 +31,7 @@ import { GitHubSyncModal } from "../layout/GitHubSyncModal";
 import { useUIStore } from "../../app/stores/ui";
 import { inferContentType } from "../../lib/schemas/content-types";
 import type { ContentType, NoteTreeEntry } from "../../lib/types";
+import { NewContentMenu } from "./NewContentMenu";
 import { Spinner } from "../ui/Spinner";
 import { cn } from "../../lib/cn";
 import { useQueryClient } from "@tanstack/react-query";
@@ -546,6 +547,8 @@ export function ProjectTree() {
   const createNote = useCreateNote();
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [creationFolder, setCreationFolder] = useState<string | null>(null);
+  const contextTrigger = useRef<HTMLElement | null>(null);
   const [renaming, setRenaming] = useState<TreeNode | null>(null);
   const [newFolder, setNewFolder] = useState<{ parentPath: string } | null>(null);
   const [moveTarget, setMoveTarget] = useState<TreeNode | null>(null);
@@ -582,6 +585,7 @@ export function ProjectTree() {
   const handleContextMenu = useCallback((e: React.MouseEvent, node: TreeNode) => {
     e.preventDefault();
     e.stopPropagation();
+    contextTrigger.current = e.currentTarget as HTMLElement;
     setContextMenu({ x: e.clientX, y: e.clientY, node });
   }, []);
 
@@ -599,14 +603,9 @@ export function ProjectTree() {
     setNewFolder(null);
   }, [newFolder, createNote, invalidate]);
 
-  const handleNewNote = useCallback(async (parentNode: TreeNode) => {
-    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
-    const path = `${parentNode.rawPath}/Untitled ${ts}`;
-    const note = await createNote.mutateAsync({ content: " ", path });
-    const openTab = useUIStore.getState().openTab;
-    openTab(note.id, `Untitled ${ts}`, "document");
-    invalidate();
-  }, [createNote, invalidate]);
+  const handleNewNote = useCallback((parentNode: TreeNode) => {
+    setCreationFolder(parentNode.rawPath);
+  }, []);
 
   const handleRename = useCallback(async (node: TreeNode, newName: string) => {
     try {
@@ -905,6 +904,8 @@ export function ProjectTree() {
           />
         ))}
       </div>
+
+      {creationFolder !== null && <NewContentMenu initialFolder={creationFolder} returnFocus={contextTrigger.current} onClose={() => setCreationFolder(null)} />}
 
       {/* Context menu */}
       {contextMenu && (

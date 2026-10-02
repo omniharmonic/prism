@@ -1,0 +1,10 @@
+.document-selection-actions { display: flex; align-items: center; gap: 3px; padding: 4px; max-width: calc(100vw - 24px); flex-wrap: wrap; background: var(--bg-surface); border: 1px solid var(--glass-border); box-shadow: 0 4px 18px #0002; border-radius: 8px; }
+.document-selection-actions:empty, .cd-bubble:empty { display: none; }
+.document-selection-actions button { display: inline-flex; align-items: center; gap: 5px; min-width: 32px; min-height: 32px; padding: 0 7px; border-radius: 5px; font-size: 12px; color: var(--text-secondary); }
+.document-selection-actions button:hover { background: var(--glass-hover); }
+.document-selection-actions button[aria-pressed=true] { background: var(--glass-active); color: var(--text-primary); }
+.document-selection-actions button:disabled { opacity: .5; cursor: default; }
+@media (max-width:767px) { .document-selection-actions button, .cd-bubble button { min-height: 44px; min-width: 44px; } }
+
+.cd-bubble:has([aria-label="Ask agent about selection"]) { flex-wrap: wrap; max-width: calc(100vw - 24px); }
+.cd-bubble button[aria-pressed=true] { background: var(--glass-active); }

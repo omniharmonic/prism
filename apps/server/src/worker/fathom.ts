@@ -11,6 +11,7 @@
  */
 import type { Note } from "../parachute";
 import type { IngestVault } from "./matrix";
+import type { ForwardLinker } from "../people-forward";
 
 export interface FathomMeeting {
   recording_id?: string | number;
@@ -154,7 +155,7 @@ export interface FathomIngestResult {
 export async function ingestFathom(
   client: Pick<FathomClient, "listMeetings" | "summary" | "transcript">,
   vault: IngestVault,
-  opts: { days?: number; now?: number } = {},
+  opts: { days?: number; now?: number; /** TRANSCRIPT_LINK_PEOPLE: link new transcripts to EXISTING people. */ forward?: ForwardLinker } = {},
 ): Promise<FathomIngestResult> {
   const days = opts.days ?? 7;
   const sinceIso = new Date((opts.now ?? Date.now()) - days * 86_400_000).toISOString();
@@ -180,7 +181,11 @@ export async function ingestFathom(
       skipped++;
       continue;
     }
-    await vault.createNote(fathomNote(m, summary, transcript));
+    const note = fathomNote(m, summary, transcript);
+    // Identity layer (off unless opts.forward): `attended-by` rides in the create.
+    const plan = opts.forward ? await opts.forward.attendees(note.metadata.attendees as string[], note.metadata.attendeeEmails as string[]).catch(() => null) : null;
+    const made = await vault.createNote(plan?.links.length ? { ...note, links: plan.links } : note);
+    if (plan?.pending.length && made?.id) opts.forward?.queue(made.id, plan.pending);
     seen.add(rid); // guard against dupes within one run
     created++;
   }

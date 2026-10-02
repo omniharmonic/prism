@@ -16,6 +16,8 @@ import { WikilinkDropdown } from "./WikilinkDropdown";
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { SlashMenu } from "./SlashMenu";
 import type { Note } from "../../lib/types";
+import { SelectionActions } from "./SelectionActions";
+import { DocumentOutline } from "./DocumentOutline";
 import { CollabToolbar } from "./CollabToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 
@@ -95,6 +97,7 @@ export function CollabEditor({
    *  (e.g. a recipient on a share link with no notes list). */
   wikilinkNotes?: Note[];
 }) {
+  const suggestionBubble = useRef<HTMLDivElement>(null);
   // Inline comment composer anchored to a captured selection range.
   const [composer, setComposer] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
@@ -196,9 +199,12 @@ export function CollabEditor({
           canReview={canReview}
         />
       )}
+      {toolbar && editor && (!editable || commentOnly) && (
+        <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>
+      )}
       {editor && <SuggestionReview editor={editor} canReview={!!canReview} />}
       {/* On-selection "Comment" bubble (Google-Docs style). */}
-      {editor && canComment && (
+      {editor && (
         <BubbleMenu
           editor={editor}
           pluginKey="commentBubble"
@@ -209,7 +215,8 @@ export function CollabEditor({
           }}
         >
           <div className="cd-bubble">
-            <button
+            <SelectionActions editor={editor} allowFormatting={editable && !commentOnly} />
+            {canComment && <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 const sel = editor.state.selection;
@@ -224,7 +231,7 @@ export function CollabEditor({
               }}
             >
               <MessageSquarePlus size={14} /> Comment
-            </button>
+            </button>}
           </div>
         </BubbleMenu>
       )}
@@ -234,9 +241,9 @@ export function CollabEditor({
         <BubbleMenu
           editor={editor}
           pluginKey="suggestionBubble"
-          shouldShow={({ state }) => !!suggestionAt(state, state.selection.from)}
+          shouldShow={({ editor: current, state }) => (current.isFocused || !!suggestionBubble.current?.contains(document.activeElement)) && !!suggestionAt(state, state.selection.from)}
         >
-          <div className="cd-bubble">
+          <div ref={suggestionBubble} className="cd-bubble">
             <button onMouseDown={(e) => e.preventDefault()} onClick={() => editor.chain().focus().acceptSuggestion().run()}>
               <Check size={14} color="#22c55e" /> Accept
             </button>

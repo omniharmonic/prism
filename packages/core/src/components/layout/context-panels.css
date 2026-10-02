@@ -1,0 +1,81 @@
+.prism-context-links { min-width: 0; color: var(--text-primary); }
+.prism-context-links > header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 24px; }
+.prism-context-links > header > svg { margin-top: 3px; color: var(--text-muted); }
+.prism-context-links h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.prism-context-links header p { margin-top: 5px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.prism-context-links h3 { display: flex; gap: 7px; align-items: center; font-size: 12px; font-weight: 600; margin: 22px 0 8px; color: var(--text-secondary); }
+.prism-context-links ul { list-style: none; margin: 0; padding: 0; }
+.prism-context-links li { border-bottom: 1px solid var(--glass-border); }
+.prism-context-count { font-size: 11px; color: var(--text-muted); }
+.prism-context-link { width: 100%; min-height: 76px; display: flex; align-items: flex-start; gap: 10px; padding: 14px 4px; text-align: left; border-radius: 6px; }
+.prism-context-link:hover { background: var(--glass-hover); }
+.prism-context-link > svg:last-child { margin-top: 3px; flex-shrink: 0; color: var(--text-muted); }
+.prism-context-note-icon { flex-shrink: 0; margin-top: 2px; color: var(--color-accent); }
+.prism-context-link-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 5px; overflow-wrap: anywhere; }
+.prism-context-link-copy strong { font-size: 13px; font-weight: 500; line-height: 1.5; }
+.prism-context-link-copy > span { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.prism-context-link-copy .prism-context-relationship { align-self: flex-start; border-radius: 4px; padding: 2px 6px; background: var(--glass-hover); font-size: 11px; color: var(--text-secondary); }
+.prism-context-state { margin: 12px 0; padding: 14px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.prism-context-state p + p { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.prism-context-state button, .prism-context-more { margin-top: 10px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--glass-border); border-radius: 6px; font-size: 12px; color: var(--text-primary); }
+.prism-context-more { width: 100%; }
+.prism-context-links button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-context-links button:disabled { opacity: .55; }
+.prism-context-unavailable { display: flex; gap: 10px; padding: 16px 4px; font-size: 12px; color: var(--text-muted); }
+.prism-context-metadata { min-width: 0; color: var(--text-primary); }
+.prism-context-metadata > header { padding-bottom: 12px; border-bottom: 1px solid var(--glass-border); }
+.prism-context-metadata h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.prism-context-metadata header p, .prism-context-caption { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.prism-context-metadata h3 { margin: 18px 0 8px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.prism-context-properties { margin: 12px 0; }
+.prism-context-properties > div { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--glass-border); font-size: 12px; }
+.prism-context-properties dt { color: var(--text-muted); text-transform: capitalize; overflow-wrap: anywhere; }
+.prism-context-properties dd { margin: 0; overflow-wrap: anywhere; }
+.prism-context-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.prism-context-tags > span, .prism-context-tags > button { display: inline-flex; align-items: center; border-radius: 5px; background: var(--glass-hover); font-size: 12px; }
+.prism-context-tags button { min-height: 32px; padding: 5px 8px; }
+.prism-context-tag-input { display: flex; gap: 6px; margin-top: 10px; }
+.prism-context-tag-input input { flex: 1; min-width: 0; }
+.prism-context-metadata input:not([type=checkbox]), .prism-context-metadata select { min-height: 34px; border: 1px solid var(--glass-border); border-radius: 6px; padding: 7px 9px; background: var(--bg-surface); color: var(--text-primary); }
+.prism-context-tag-input button, .prism-context-field-error button { min-height: 34px; padding: 6px 10px; border: 1px solid var(--glass-border); border-radius: 6px; font-size: 12px; }
+.prism-context-tag-suggestions { display: flex; flex-direction: column; padding: 5px; margin-top: 5px; border: 1px solid var(--glass-border); border-radius: 6px; }
+.prism-context-tag-suggestions button { padding: 9px; text-align: left; font-size: 12px; }
+.prism-context-tag-suggestions button:hover { background: var(--glass-hover); }
+.prism-context-field-error { display: block; color: var(--color-danger); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+.prism-context-property-row { flex-wrap: wrap; }
+.prism-context-property-row .prism-context-field-error { flex-basis: 100%; }
+.prism-context-field-error button { margin-left: 8px; color: var(--text-primary); }
+.prism-context-sync { padding: 2px 0 12px; border-top: 1px solid var(--glass-border); border-bottom: 1px solid var(--glass-border); }
+.prism-context-metadata :is(button,input,select):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-context-metadata button:disabled { opacity: .5; }
+@media (max-width: 640px) {
+  .prism-context-metadata input:not([type=checkbox]), .prism-context-metadata select, .prism-context-tag-input button, .prism-context-tags button, .prism-context-field-error button, .prism-context-tag-suggestions button { min-height: 44px; }
+  .prism-context-metadata input, .prism-context-metadata select { font-size: 16px; }
+}
+
+.prism-context-metadata select { appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888888'%3E%3Cpath d='m3 4 3 3 3-3'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+.prism-context-switch { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+.prism-context-switch-track { display: block; width: 28px; height: 16px; border-radius: 9px; padding: 2px; }
+.prism-context-switch-track > span { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; }
+.prism-context-chip-remove { min-width: 32px; min-height: 32px; display: inline-grid; place-items: center; }
+@media (max-width: 640px) { .prism-context-chip-remove { min-width: 44px; min-height: 44px; } }
+
+.prism-context-history { min-width: 0; color: var(--text-primary); }
+.prism-context-history header { padding-bottom: 12px; border-bottom: 1px solid var(--glass-border); }
+.prism-context-history h2 { color: var(--text-primary); font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+.prism-context-history header p { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.prism-context-history .prism-context-history-row { min-height: 64px; padding-top: 10px; padding-bottom: 10px; }
+.prism-context-history-detail { overflow-wrap: anywhere; line-height: 1.6; }
+.prism-context-history button:focus-visible, .prism-version-dialog button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.prism-version-dialog { width: min(960px, calc(100vw - 48px)); max-width: none; max-height: none; padding: 0; margin: auto; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 24px 80px #0003; overflow: hidden; }
+.prism-version-dialog::backdrop { background: #0006; }
+.prism-version-layout { height: min(86dvh, 900px); min-width: 0; }
+.prism-version-dialog .prism-context-state { margin: 8px 0; }
+.prism-version-dialog button { min-height: 34px; }
+.prism-version-dialog [class*=font-mono] { overflow-wrap: anywhere; }
+@media(max-width:640px) {
+ .prism-version-dialog { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+ .prism-version-layout { height: 100dvh; padding-top: env(safe-area-inset-top); }
+ .prism-version-dialog button { min-height: 44px; }
+ .prism-version-dialog button[aria-label] { min-width: 44px; }
+}

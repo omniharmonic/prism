@@ -557,8 +557,6 @@ export function ProposalsSection({
       }
       testId="gov-proposals"
     >
-      {ctx.state.locked && <AmendmentComposer ctx={ctx} />}
-
       {live.length === 0 && <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0 }}>Nothing is waiting on a decision.</p>}
 
       {liveContent.length > 0 && (
@@ -578,6 +576,8 @@ export function ProposalsSection({
           ))}
         </div>
       )}
+
+      {ctx.state.locked && <details className="prism-governance-compose"><summary>Propose a rule or role change</summary><AmendmentComposer ctx={ctx} /></details>}
 
       {closed.length > 0 && (
         <details style={{ marginTop: 8 }}>

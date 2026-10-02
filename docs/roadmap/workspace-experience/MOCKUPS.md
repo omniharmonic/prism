@@ -238,3 +238,50 @@ Honest empty, access, offline, source, send-failure, and interrupted-task treatm
 This set covers the proposed redesigned surfaces and representative normal, loading, review, and recovery states. It does not propose new designs for every existing specialist renderer. Canvas, spreadsheet, code, presentations, maps, calendars, governance, publishing, and other preserved tools remain in scope for navigation and regression checks; they are not being independently redesigned by this plan. Native clients inherit the shared interface.
 
 The source prompts for all sixteen new boards are recorded verbatim in [mockup-prompts.json](mockup-prompts.json). No application code or architecture-v2 files were changed to create this set.
+
+
+## Expanded references · October 2
+
+### 19 · Canvas and graph (D03 / R10)
+
+[![Canvas and graph concept](assets/19-canvas-graph.png)](assets/19-canvas-graph.png)
+
+Fictional concept, not implementation evidence. Extends the neutral writing system to existing note cards, authored connections, graph inspection and a phone list alternative. Preserve the real canvas toolbar/Excalidraw controls. Only authored note relationships are written to metadata; reference links stay decorative. Generated relation names and snippets are illustrative: only display types/body data actually returned by the current access-filtered clients. The approved vector logo remains authoritative; this raster's logo, extra navigation labels and slogans do not add product requirements.
+
+### 20 · Task boards (D04 / R11)
+
+[![Configurable task board concept](assets/20-task-boards.png)](assets/20-task-boards.png)
+
+Fictional concept for view configuration, readable cards, manual ordering with keyboard alternatives and phone list mode. The same underlying tasks retain their data across views; ordering belongs to the configured view. Current client/server capabilities govern edits and conflicts. The generated logo, device furniture, bottom navigation and sample dates are illustrative; preserve the shared Prism vector and actual shell. [Generation prompt](expanded-mockup-prompts.json).
+
+### 21 · People and related records (C06 / R04)
+
+[![People directory and canonical profile concept](assets/21-people-profile.png)](assets/21-people-profile.png)
+
+Browse canonical people, explicit linked identities, conversations, meetings and tasks using existing related-record APIs. Generated snippets/platform decorations require real source data and are omitted when absent. Unknown participants remain unlinked; the illustration's review queue is unavailable until the backend contract exists. Do not infer identity from display names or add fake verified badges. Mobile uses one profile surface with a clear return to the directory.
+
+### 22 · Calendar and transcript review (D02 / R08)
+
+[![Calendar and transcript review concept](assets/22-calendar-transcripts.png)](assets/22-calendar-transcripts.png)
+
+An event connects its canonical people and conversation records. Review candidates before linking; preserve the same pending decision during uncertain outcomes. Linked-elsewhere records reveal no other meeting identity. Backend contracts govern evidence, visibility, date-only starts and retry semantics. Generated playback, inline notes, task checkboxes and participant photographs are illustrative: only surface real supported capabilities and records, never synthesize them from this board. The selected event and single-surface phone detail are the interaction reference.
+
+### 23 · Sharing and governance (D05 / R12)
+
+[![Sharing and governance concept](assets/23-sharing-governance.png)](assets/23-sharing-governance.png)
+
+Document, active-vault and publishing scopes remain distinct. Show actual access and proposal attribution, retain invitation links when clipboard access fails, and state partial success truthfully. Do not infer server enforcement from the raster's role labels: human suggest-only remains gated on the coordinated backend/client release. The generated shell, navigation additions, slogans and sample proposal content are not new requirements; use the existing Prism shell and vector brand.
+
+### 24 · Publishing studio (D06 / R13)
+
+[![Publishing studio concept](assets/24-publishing-studio.png)](assets/24-publishing-studio.png)
+
+A quiet settings column beside an explicitly requested private preview, with draft and live revisions kept distinct. Use actual supported templates (Wiki, Docs, Landing); the generated Blog/Portfolio names, navigation links, stock imagery and slogans are illustrative, not new capabilities. Preserve publication-specific branding, scope/access, saved draft, restore and explicit publish. Navigation is separately gated on its reviewed contract. Existing vector logo remains authoritative.
+
+### 25 · Connections and settings (D07 / R14)
+
+[![Connections and settings concept](assets/25-connections-settings.png)](assets/25-connections-settings.png)
+
+Organize existing accounts, synchronization controls and processing settings around what the user is connecting. A connected account is not proof every item has synced. Only actual returned health, scope and actions may appear; the fixture rows and statuses are illustrative. Do not invent reconnect, disconnect, calendar selection, conflict repair or processing metrics where the current host lacks them. Preserve exact authority and distinguish owner settings from personal preferences.
+
+Both boards were generated with built-in imagegen; exact prompts are recorded in [expanded-mockup-prompts.json](expanded-mockup-prompts.json). They are visual references, not implementation evidence.

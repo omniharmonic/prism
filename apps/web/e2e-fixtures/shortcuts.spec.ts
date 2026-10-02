@@ -17,10 +17,11 @@ test("favorites and mobile recents persist only IDs and reopen with current auth
   await expect.poll(async () => (await stored(page))[0]?.recents).toEqual(["field-notes"]);
   await page.getByRole("button", { name: "Add to Favorites", exact: true }).click();
   await expect(page.getByRole("button", { name: "Remove from Favorites", exact: true })).toBeVisible();
-  expect(await stored(page)).toEqual([{ scope: ["http://127.0.0.1:5188/api", "default", "primary", "owner@example.test"], version: 1, favorites: ["field-notes"], recents: ["field-notes"], legacyHandled: false }]);
+  expect(await stored(page)).toEqual([{ scope: [new URL(page.url()).origin + "/api", "default", "primary", "owner@example.test"], version: 1, favorites: ["field-notes"], recents: ["field-notes"], legacyHandled: false }]);
   await page.reload();
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toContainText("Field notes");
+  await page.getByRole("button", { name: "Recent", exact: true }).click();
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toContainText("Field notes");
 });
 
@@ -71,6 +72,7 @@ test("late shortcut access reads cannot populate a different vault", async ({ pa
   await page.evaluate(() => (window as any).prismFixtureReleaseRead("field-notes"));
   await expect(page.getByRole("region", { name: "Favorites", exact: true })).toHaveCount(0);
   await open(page, "weekly-review");
+  await page.getByRole("button", { name: "Recent", exact: true }).click();
   await expect(page.getByRole("region", { name: "Recent", exact: true })).toContainText("Weekly review");
   await expect(page.getByRole("region", { name: "Recent", exact: true })).not.toContainText("Field notes");
 });

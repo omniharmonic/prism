@@ -19,6 +19,8 @@ import {
   Undo2,
   Redo2,
 } from "lucide-react";
+import { DocumentOutline } from "./DocumentOutline";
+import { FormattingBar } from "./FormattingBar";
 import { cn } from "../../lib/cn";
 
 interface EditorToolbarProps {
@@ -27,13 +29,7 @@ interface EditorToolbarProps {
 
 export function EditorToolbar({ editor }: EditorToolbarProps) {
   return (
-    <div
-      className="no-scrollbar flex items-center gap-0.5 px-3 py-1 overflow-x-auto flex-shrink-0"
-      style={{
-        borderBottom: "1px solid var(--glass-border)",
-        background: "var(--bg-surface)",
-      }}
-    >
+    <FormattingBar navigation={<DocumentOutline editor={editor} />}>
       {/* Undo / Redo */}
       <ToolbarButton
         icon={<Undo2 size={15} />}
@@ -176,7 +172,7 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
         }
         title="Insert table"
       />
-    </div>
+    </FormattingBar>
   );
 }
 
@@ -195,6 +191,10 @@ function ToolbarButton({
 }) {
   return (
     <button
+      type="button"
+      onMouseDown={event => event.preventDefault()}
+      aria-label={title}
+      aria-pressed={active}
       onClick={onClick}
       disabled={disabled}
       title={title}

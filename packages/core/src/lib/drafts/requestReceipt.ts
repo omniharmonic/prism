@@ -36,3 +36,9 @@ export function clearRequestReceipt(scope: string, conversation: string, id: str
 class ExpiredReceiptError extends Error {
   constructor() { super("The previous send is too old to retry safely. Check the conversation first; edit the draft only if you intend to send a new message."); }
 }
+
+/** Read-only guard for context handoffs. Even malformed receipts remain pending.
+ * Throws when storage cannot be inspected; never clears or replaces a receipt. */
+export function hasRequestReceipt(scope: string, conversation: string, namespace = "agent"): boolean {
+  return localStorage.getItem(keyFor(scope, conversation, namespace)) !== null;
+}

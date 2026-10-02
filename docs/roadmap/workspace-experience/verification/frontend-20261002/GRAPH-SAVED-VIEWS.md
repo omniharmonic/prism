@@ -1,0 +1,9 @@
+# Saved graph exploration
+
+October2,2026 · D03/R10.4 · board19. One explicit saved view per document on this device, bounded to50 most recently saved document views. Account/workspace/vault audience and starting document form the storage identity; unknown identity cannot persist. Saved state contains focus IDs/history, depth,2D/List/3D mode, relationship/search filters and normalized2D pan/zoom. It stores no returned document titles, bodies, tags or graph records.
+
+Restore is explicit and revalidates live access; revoked reads hide cached graph labels. Saving/reading storage failures leave the current exploration usable. Switching view modes retains2D position, and scope or starting-document changes reset the mounted exploration. Saved views do not sync between devices and do not persist the3D camera. There is no new graph algorithm, whole-vault loading, named-view catalog, or network mutation.
+
+Verification:36 Chromium/WebKit graph journeys passed, including18 existing graph regressions and18 new persistence/visual journeys. Exact focus/filter restoration after reload,2D camera, fullscreen restoration, document/audience/unknown identity separation, denied-access revalidation, corrupt/denied storage,1440/390/320dark controls and44px actions. Aggregate fixture types passed before final selector/copy refinements; the combined build remains a release gate. An initial run found ambiguous status locators in the new tests; scoped to the Saved view region, all final cases passed.14 composer-growth cases also passed in that earlier combined run.
+
+Reviewed actual fictional images: [desktop](graph-saved-1440-chromium.png), [phone](graph-saved-390-chromium.png), [dark narrow](graph-saved-320-webkit.png). Saved controls are collapsed by default; expanding them on a short screen leaves the existing graph region scrollable. No production/native/physical-device proof is claimed.

@@ -1,0 +1,233 @@
+.prism-email-workspace {
+  container-type: inline-size;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.prism-email-layout {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.prism-email-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.prism-email-header {
+  padding: 20px 24px 14px;
+  flex-shrink: 0;
+}
+.prism-email-header h2 {
+  font-size: 22px;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.prism-email-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.prism-email-messages {
+  flex: 1;
+  min-height: 100px;
+  overflow: auto;
+  padding: 8px 24px 24px;
+}
+.prism-email-message {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--glass-border);
+  overflow-wrap: anywhere;
+}
+.prism-email-message:last-child {
+  border-bottom: 0;
+}
+.prism-email-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.prism-email-author > div {
+  flex: 1;
+  min-width: 0;
+}
+.prism-email-author strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 550;
+}
+.prism-email-author p {
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.prism-email-author time {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-top: 3px;
+}
+.prism-email-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  justify-content: center;
+  align-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 550;
+}
+.prism-email-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-primary);
+}
+.prism-email-quoted {
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.prism-email-quoted summary {
+  cursor: pointer;
+  padding: 12px 0;
+  min-height: 44px;
+}
+.prism-email-quoted pre {
+  padding: 12px 0 12px 16px;
+  border-left: 2px solid var(--glass-border);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.prism-email-attachments {
+  margin-top: 20px;
+}
+.prism-email-attachments > div {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  max-width: 440px;
+  padding: 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+}
+.prism-email-attachments svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.prism-email-attachments strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.prism-email-attachments small {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.prism-email-empty {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 20px 0;
+}
+.prism-email-reply {
+  flex-shrink: 0;
+  border-top: 1px solid var(--glass-border);
+}
+.prism-email-agent-dock:empty,
+.prism-email-agent-dock:not(:has(> :not([hidden]))) {
+  display: none;
+}
+.prism-agent-draft-panel {
+  padding: 24px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  overflow-y: auto;
+  min-width: 0;
+}
+.prism-agent-draft-panel [role="alert"],
+.prism-agent-draft-panel [role="status"] {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.prism-agent-draft-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.prism-agent-draft-panel [role="alert"] button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.prism-agent-draft-panel .prism-agent-draft-explainer {
+  padding: 14px;
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  border-radius: 8px;
+}
+.prism-agent-draft-panel .prism-agent-draft-output {
+  padding: 18px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+}
+@container (min-width: 840px) {
+  .prism-email-layout:has(.prism-agent-draft-panel:not([hidden])) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+  .prism-email-agent-dock {
+    min-height: 0;
+    border-left: 1px solid var(--glass-border);
+  }
+  .prism-agent-draft-panel {
+    height: 100%;
+  }
+}
+@container (max-width: 839px) {
+  .prism-email-layout:has(.prism-agent-draft-panel:not([hidden])) {
+    overflow-y: auto;
+  }
+  .prism-email-layout:has(.prism-agent-draft-panel:not([hidden]))
+    .prism-email-main {
+    height: max(640px, 85dvh);
+  }
+  .prism-email-agent-dock {
+    border-top: 1px solid var(--glass-border);
+  }
+}
+@container (max-width: 440px) {
+  .prism-email-header {
+    padding: 16px;
+  }
+  .prism-email-header h2 {
+    font-size: 20px;
+  }
+  .prism-email-messages {
+    padding: 0 16px 16px;
+  }
+  .prism-email-author time {
+    flex-basis: 100%;
+    padding-left: 50px;
+  }
+  .prism-agent-draft-panel {
+    padding: 20px 16px;
+  }
+}

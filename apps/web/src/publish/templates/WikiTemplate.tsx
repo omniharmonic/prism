@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, Suspense, lazy } from "react";
-import { sanitizeHtml } from "@prism/core";
+import { sanitizeHtml, eligiblePublicationNavigation } from "@prism/core";
 import type { PubNote, PublicationTemplateProps } from "./types";
 import { resolveTheme } from "../theme";
 import { WikiGraph } from "./WikiGraph";
@@ -46,6 +46,10 @@ function articleFeature(note: PubNote): { id: string; kind: string; name: string
 /** Below this width the wiki renders its single-column phone layout. */
 const MOBILE_BP = 880;
 
+// Keep reader typography with its rendered tree, including the private iframe.
+// A missing font leaves legacy defaults intact; code retains its monospace rule.
+const PUBLICATION_FONT_CSS = `[data-publication-font="custom"] .prose-editor :is(h1, h2, h3, h4, h5, h6) { font-family: inherit; }`;
+
 function useIsMobile(viewportWidth?: number): boolean {
   const [mobile, setMobile] = useState(
     () => typeof window !== "undefined" && window.matchMedia(`(max-width: ${MOBILE_BP}px)`).matches,
@@ -64,6 +68,13 @@ function useIsMobile(viewportWidth?: number): boolean {
 const MOBILE_CSS = `
 .pubwiki-m article.prose-editor { font-size: 16px; line-height: 1.7; }
 .pubwiki-m article.prose-editor h1, .pubwiki-m article.prose-editor h2 { text-wrap: balance; }
+/* Use the reader's own viewport (including the private iframe), not the studio
+ * width. Preserve body size and long-token wrapping at these narrow widths. */
+@media (max-width: 390px) {
+  .pubwiki-m { --pubwiki-narrow-heading: clamp(22px, 7vw, 28px); }
+  .pubwiki-m article.prose-editor h1 { font-size: var(--pubwiki-narrow-heading); }
+  .pubwiki-m article.prose-editor h2 { font-size: clamp(20px, 6vw, 22px); }
+}
 .pubwiki-scrim {
   position: fixed; inset: 0; z-index: 40;
   background: rgba(0,0,0,0.5);
@@ -160,15 +171,31 @@ export default function WikiTemplate({
   // public site). Applied as CSS custom properties + a body font on the wiki root.
   const safeTheme = useMemo(() => resolveTheme(manifest.theme), [manifest.theme]);
 
+  const navigation = useMemo(() => {
+    const sections = eligiblePublicationNavigation(manifest.theme?.navigation, new Set(manifest.notes.map(n => n.id)))?.sections ?? [];
+    const byId = new Map(manifest.notes.map(n => [n.id, n]));
+    const assigned = new Set(sections.flatMap(section => section.noteIds));
+    return {
+      sections: sections.map(section => ({title: section.title, notes: section.noteIds.map(id => byId.get(id)!)})),
+      assigned,
+      remaining: manifest.notes.filter(n => !assigned.has(n.id)),
+    };
+  }, [manifest.theme?.navigation, manifest.notes]);
   const landing = manifest.template === "landing";
   const documentation = manifest.template === "docs";
   const home = !activeId || activeId === manifest.homeNoteId;
   const introduction = home && (landing || safeTheme.coverUrl || safeTheme.description) ? (
     <section data-testid="publication-introduction" style={{marginBottom:32}}>
       {safeTheme.coverUrl && <img src={safeTheme.coverUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",maxHeight:280,objectFit:"cover",borderRadius:16,marginBottom:24}}/>}
-      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"clamp(30px,5vw,52px)",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
+      {landing && <><p style={{fontSize:12,letterSpacing:".1em",textTransform:"uppercase",color:"var(--text-secondary)"}}>A collection of ideas</p><h1 style={{fontSize:"var(--pubwiki-narrow-heading, clamp(30px,5vw,52px))",lineHeight:1.1,letterSpacing:"-.035em",margin:"12px 0 20px",color:"var(--text-primary)"}}>{manifest.title}</h1></>}
       {safeTheme.description && <p style={{fontSize:18,lineHeight:1.65,color:"var(--text-secondary)",maxWidth:680}}>{safeTheme.description}</p>}
-      {landing && <nav aria-label="Collection pages" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12,marginTop:24}}>{manifest.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minWidth:0,minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</nav>}
+      {landing && <nav aria-label="Collection pages">{[
+        ...navigation.sections,
+        ...(navigation.remaining.length ? [{title: navigation.sections.length ? "More pages" : "", notes: navigation.remaining}] : []),
+      ].map((section, i) => <section key={i} style={{marginTop:24}}>
+        {section.title && <h2 style={{fontSize:18,fontWeight:600,marginBottom:12}}>{section.title}</h2>}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,220px),1fr))",gap:12}}>{section.notes.map(n=><button key={n.id} onClick={()=>onNavigate(n.id)} style={{minWidth:0,minHeight:88,textAlign:"left",border:"1px solid var(--glass-border)",background:"var(--glass)",borderRadius:12,padding:18,color:"var(--text-primary)",cursor:"pointer"}}><span style={{fontWeight:600}}>{n.title}</span><span aria-hidden="true" style={{float:"right",color:"var(--accent)"}}>↗</span></button>)}</div>
+      </section>)}</nav>}
     </section>
   ) : null;
 
@@ -201,7 +228,7 @@ export default function WikiTemplate({
     [graph, effectiveId, manifest.notes],
   );
 
-  const tree = useMemo(() => buildTree(manifest.notes), [manifest.notes]);
+  const tree = useMemo(() => buildTree(navigation.remaining), [navigation.remaining]);
   const homeNote = useMemo(
     () =>
       manifest.homeNoteId
@@ -252,7 +279,7 @@ export default function WikiTemplate({
     display: "flex",
     flexDirection: "column",
     ...safeTheme.vars,
-    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily } : null),
+    ...(safeTheme.fontFamily ? { fontFamily: safeTheme.fontFamily, "--content-font": safeTheme.fontFamily } : null),
     background: "var(--bg, var(--bg-base, #191a1e))",
   };
 
@@ -289,7 +316,12 @@ export default function WikiTemplate({
         )
       ) : (
         <>
-          {homeNote && (
+          {navigation.sections.map((section, i) => <section key={i} aria-label={section.title} style={{marginBottom:16}}>
+            <h3 style={{fontSize:11,fontWeight:600,color:"var(--text-muted)",padding:"6px 10px"}}>{section.title}</h3>
+            {section.notes.map(n => <NavLink key={n.id} label={n.title} active={n.id === effectiveId} depth={0} onClick={() => onNavigate(n.id)} />)}
+          </section>)}
+          {navigation.sections.length > 0 && navigation.remaining.length > 0 && <RailHeading>More pages</RailHeading>}
+          {homeNote && !navigation.assigned.has(homeNote.id) && (
             <NavLink
               label={`🏠 ${homeNote.title}`}
               active={homeNote.id === effectiveId}
@@ -314,8 +346,8 @@ export default function WikiTemplate({
   if (isMobile) {
     const f = safeTheme.showMap && !noteLoading && note ? articleFeature(note) : null;
     return (
-      <div style={rootStyle} className="pubwiki-m">
-        <style>{MOBILE_CSS}</style>
+      <div style={rootStyle} className="pubwiki-m" data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+        <style>{MOBILE_CSS}{PUBLICATION_FONT_CSS}</style>
         <header
           style={{
             position: "sticky", top: 0, zIndex: 30,
@@ -369,7 +401,7 @@ export default function WikiTemplate({
             <div style={{ maxWidth: safeTheme.contentWidth, margin: "0 auto", padding: "20px 0 calc(env(safe-area-inset-bottom) + 56px)" }}>
               {introduction}
               {note && (
-                <h1 style={{ margin: "0 0 12px", fontSize: "clamp(24px, 6.4vw, 30px)", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
+                <h1 style={{ margin: "0 0 12px", fontSize: "var(--pubwiki-narrow-heading, clamp(24px, 6.4vw, 30px))", lineHeight: 1.25, color: "var(--text-primary, #fff)" }}>
                   {note.title}
                 </h1>
               )}
@@ -495,7 +527,8 @@ export default function WikiTemplate({
 
   // ── Desktop layout (unchanged) ─────────────────────────────────────────────
   return (
-    <div style={rootStyle}>
+    <div style={rootStyle} data-publication-font={safeTheme.fontFamily ? "custom" : undefined}>
+      <style>{PUBLICATION_FONT_CSS}</style>
       {/* Header: optional logo + title */}
       <header
         style={{

@@ -4,7 +4,7 @@ test("shared workspace keeps writing and navigation available", async ({ page })
   await page.goto("/e2e-fixtures/workspace.html");
   await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
   await expect(page.getByText("A shared place to think, write, and build with the same context.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Inbox" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages" })).toBeVisible();
   await expect(page.getByText("Agent unavailable")).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-desktop.png", fullPage: true, animations: "disabled" });
 });
@@ -15,8 +15,8 @@ test("mobile workspace fits the viewport and opens navigation", async ({ page })
   await expect(page.getByRole("heading", { name: "A living workspace" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/workspace-mobile-document.png", fullPage: true, animations: "disabled" });
-  await page.getByRole("button", { name: "Files", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Inbox" })).toBeVisible();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages" })).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-mobile.png", fullPage: true, animations: "disabled" });
 });
 
@@ -52,11 +52,11 @@ test("mobile agent panel fills the screen and restores navigation focus", async 
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(agent).toBeFocused();
-  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
   const navigation = page.getByRole("dialog", { name: "Workspace navigation" });
   await expect(navigation).toBeVisible();
   await navigation.getByRole("button", { name: "Close navigation" }).click();
-  await expect(page.getByRole("button", { name: "Files", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Notes", exact: true })).toBeFocused();
 });
 
 test("document title supports keyboard rename and cancel", async ({ page }) => {
@@ -132,7 +132,7 @@ test("command search opens usable phone settings and Escape closes the modal", a
 
 test("rich-text bold shortcut edits the document without closing navigation", async ({ page }) => {
   await page.goto("/e2e-fixtures/workspace.html");
-  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages", exact: true })).toBeVisible();
   const editor = page.locator(".tiptap[contenteditable=true]");
   await editor.click();
   await page.keyboard.press("ControlOrMeta+End");
@@ -141,7 +141,7 @@ test("rich-text bold shortcut edits the document without closing navigation", as
   await page.keyboard.press("ControlOrMeta+b");
   await page.keyboard.type("BOLD_SHORTCUT_FIXTURE");
   await expect(editor.locator("strong")).toContainText("BOLD_SHORTCUT_FIXTURE");
-  await expect(page.getByRole("button", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace destinations" }).getByRole("button", { name: "Messages", exact: true })).toBeVisible();
 });
 
 
@@ -153,11 +153,11 @@ test("linked document choices survive desktop/mobile layout changes", async ({ p
   const choice = picker.getByRole("button", { name: "Duplicate Projects/Prism/Field notes" });
   await expect(choice).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("button", { name: "Files", exact: true })).toBeAttached();
+  await expect(page.getByRole("button", { name: "Notes", exact: true })).toBeAttached();
   await expect(choice).toBeVisible();
   expect(await picker.evaluate(e => (e as HTMLDialogElement).open)).toBe(true);
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(page.getByRole("button", { name: "Files", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Notes", exact: true })).toHaveCount(0);
   await expect(choice).toBeVisible();
   await choice.click();
   await expect(picker).toHaveCount(0);
@@ -171,11 +171,11 @@ test("sharing survives the complete desktop/mobile workspace layout and restores
   await page.getByLabel("Add a collaborator").fill("unsent@example.test");
   await page.getByLabel("Collaborator permission").selectOption("suggest");
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("button", { name: "Files", exact: true })).toBeAttached();
+  await expect(page.getByRole("button", { name: "Notes", exact: true })).toBeAttached();
   await expect(page.getByLabel("Add a collaborator")).toHaveValue("unsent@example.test");
   await expect(page.getByLabel("Collaborator permission")).toHaveValue("suggest");
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(page.getByRole("button", { name: "Files", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Notes", exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Add a collaborator")).toHaveValue("unsent@example.test");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -183,17 +183,17 @@ test("sharing survives the complete desktop/mobile workspace layout and restores
 });
 
 
-test("phone thread composer stays above the floating workspace controls", async ({ page }) => {
+test("phone thread composer stays above the mobile workspace navigation", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/e2e-fixtures/workspace.html?thread");
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await expect(composer).toBeVisible();
   const input = (await composer.boundingBox())!;
-  const navigation = (await page.locator(".command-pill").boundingBox())!;
+  const navigation = (await page.locator(".prism-mobile-navigation").boundingBox())!;
   expect(input.y + input.height).toBeLessThan(navigation.y);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
   await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(page.locator(".command-pill")).toHaveCount(0);
+  await expect(page.locator(".prism-mobile-navigation")).toHaveCount(0);
   await expect(composer).toBeVisible();
   expect(await composer.locator("..").locator("..").evaluate(e => getComputedStyle(e).paddingBottom)).toBe("12px");
 });
@@ -210,7 +210,7 @@ test("the same editor and unsaved text survive both responsive breakpoints", asy
   await page.evaluate(() => (window as any).prismEditorBeforeResize = document.querySelector(".tiptap[contenteditable=true]"));
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 844 });
-    await expect(page.locator(".command-pill")).toHaveCount(width === 390 ? 1 : 0);
+    await expect(page.locator(".prism-mobile-navigation")).toHaveCount(width === 390 ? 1 : 0);
     expect(await page.evaluate(() => (window as any).prismEditorBeforeResize === document.querySelector(".tiptap[contenteditable=true]"))).toBe(true);
     await expect(editor).toContainText("RESPONSIVE_DRAFT_STAYS");
     expect(await page.evaluate(() => (window as any).prismFixtureWrites.filter((w: any) => w.content !== undefined))).toEqual([]);
@@ -228,7 +228,7 @@ test("live thread view survives desktop and phone layout changes", async ({ page
   await page.evaluate(() => (window as any).prismThreadBeforeResize = document.querySelector(".workspace-message-thread"));
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 844 });
-    await expect(page.locator(".command-pill")).toHaveCount(width === 390 ? 1 : 0);
+    await expect(page.locator(".prism-mobile-navigation")).toHaveCount(width === 390 ? 1 : 0);
     await expect(page.getByText("LIVE_RESPONSIVE_THREAD_FIXTURE", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => (window as any).prismThreadBeforeResize === document.querySelector(".workspace-message-thread"))).toBe(true);
   }
@@ -241,14 +241,14 @@ test("focused canvas remains mounted and keeps new mobile controls inert until i
   await page.getByRole("button", { name: "Focus canvas", exact: true }).click();
   await page.evaluate(() => (window as any).prismCanvasBeforeResize = document.querySelector(".excalidraw"));
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator(".command-pill")).toHaveCount(1);
+  await expect(page.locator(".prism-mobile-navigation")).toHaveCount(1);
   const focused = page.getByRole("dialog", { name: "Focused canvas" });
   await expect(focused).toBeVisible();
   expect(await page.evaluate(() => (window as any).prismCanvasBeforeResize === document.querySelector(".excalidraw"))).toBe(true);
-  expect(await page.locator(".command-pill").evaluate(e => !!e.closest("[inert]"))).toBe(true);
+  expect(await page.locator(".prism-mobile-navigation").evaluate(e => !!e.closest("[inert]"))).toBe(true);
   expect((await focused.boundingBox())!.width).toBe(390);
   await focused.getByRole("button", { name: "Back to document", exact: true }).click();
-  expect(await page.locator(".command-pill").evaluate(e => !!e.closest("[inert]"))).toBe(false);
+  expect(await page.locator(".prism-mobile-navigation").evaluate(e => !!e.closest("[inert]"))).toBe(false);
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
 });

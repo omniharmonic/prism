@@ -5,6 +5,8 @@
  * reopening the app lands back in the conversation.
  */
 import { create } from "zustand";
+import type { AgentContextSnapshot } from "./contextSnapshots";
+import { isVaultNoteId } from "../noteIdentity";
 import type { ContentType } from "../types";
 import { useUIStore } from "../../app/stores/ui";
 
@@ -47,7 +49,31 @@ export interface PendingAsk {
   noteTitle?: string;
 }
 
+export interface SelectionHandoff {
+  id: string;
+  scope: string;
+  snapshot: AgentContextSnapshot;
+  targetSessionId: string | null;
+  targetDraftNoteId: string | null;
+}
+
+export interface SavedNoteHandoff {
+  id: string; scope: string; noteId: string; label: string;
+  /** Pending handoffs are window-local; object identity distinguishes new drafts on the same note. */
+  targetDraft: AgentDraftContext | null;
+  targetSessionId: string | null; targetDraftNoteId: string | null;
+}
 interface AgentChatState {
+  pendingSavedNote: SavedNoteHandoff | null;
+  beginSavedNote: (noteId: string, label: string) => boolean;
+  commitSavedNote: (id: string, append: () => boolean) => boolean;
+  retargetSavedNote: (id: string) => void;
+  dismissSavedNote: (id: string) => void;
+  pendingSelection: SelectionHandoff | null;
+  beginSelection: (snapshot: AgentContextSnapshot) => boolean;
+  claimSelection: (id: string) => SelectionHandoff | null;
+  dismissSelection: (id: string) => void;
+  selectionInNewDocument: (id: string) => void;
   scope: string | null;
   bindScope: (scope: string | null) => void;
   activeSessionId: string | null;
@@ -62,19 +88,65 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   scope: null,
   bindScope: (scope) => {
     if (get().scope === scope) return;
-    set({ scope, activeSessionId: load(scope), draft: loadDraft(scope), pendingAsk: null });
+    set({ scope, activeSessionId: load(scope), draft: loadDraft(scope), pendingAsk: null, pendingSelection: null, pendingSavedNote: null });
+  },
+  pendingSavedNote: null,
+  beginSavedNote: (noteId, label) => {
+    const state = get();
+    if (!state.scope || !isVaultNoteId(noteId) || state.pendingSavedNote) return false;
+    const draft = !state.activeSessionId && !state.draft ? {} : state.draft;
+    if (draft !== state.draft) saveDraft(state.scope, draft);
+    set({ draft, pendingSavedNote: { id: crypto.randomUUID(), scope: state.scope, noteId, label, targetDraft: draft, targetSessionId: state.activeSessionId, targetDraftNoteId: draft?.noteId ?? null } });
+    return true;
+  },
+  commitSavedNote: (id, append) => {
+    const state = get(), pending = state.pendingSavedNote;
+    if (!pending || pending.id !== id || pending.scope !== state.scope || pending.targetSessionId !== state.activeSessionId || (!state.activeSessionId && pending.targetDraft !== state.draft)) return false;
+    if (!append()) return false;
+    if (get().pendingSavedNote?.id === id) set({ pendingSavedNote: null });
+    return true;
+  },
+  retargetSavedNote: (id) => {
+    const state = get(), pending = state.pendingSavedNote;
+    if (pending?.id === id && pending.scope === state.scope) set({ pendingSavedNote: { ...pending, targetDraft: state.draft, targetSessionId: state.activeSessionId, targetDraftNoteId: state.draft?.noteId ?? null } });
+  },
+  dismissSavedNote: (id) => { if (get().pendingSavedNote?.id === id) set({ pendingSavedNote: null }); },
+  pendingSelection: null,
+  beginSelection: (snapshot) => {
+    const state = get();
+    if (!state.scope || !snapshot.noteId || state.pendingSelection) return false;
+    const draft = !state.activeSessionId && !state.draft ? { noteId: snapshot.noteId, noteTitle: snapshot.label } : state.draft;
+    if (draft !== state.draft) saveDraft(state.scope, draft);
+    set({ draft, pendingSelection: { id: crypto.randomUUID(), scope: state.scope, snapshot: { ...snapshot }, targetSessionId: state.activeSessionId, targetDraftNoteId: draft?.noteId ?? null } });
+    return true;
+  },
+  claimSelection: (id) => {
+    const state = get();
+    const pending = state.pendingSelection;
+    if (!pending || pending.id !== id || pending.scope !== state.scope || pending.targetSessionId !== state.activeSessionId || (!state.activeSessionId && pending.targetDraftNoteId !== (state.draft?.noteId ?? null))) return null;
+    set({ pendingSelection: null });
+    return pending;
+  },
+  dismissSelection: (id) => { if (get().pendingSelection?.id === id) set({ pendingSelection: null }); },
+  selectionInNewDocument: (id) => {
+    const state = get();
+    const pending = state.pendingSelection;
+    if (!pending || pending.id !== id || pending.scope !== state.scope || !pending.snapshot.noteId) return;
+    const draft = { noteId: pending.snapshot.noteId, noteTitle: pending.snapshot.label };
+    save(state.scope, null); saveDraft(state.scope, draft);
+    set({ activeSessionId: null, draft, pendingSelection: { ...pending, targetSessionId: null, targetDraftNoteId: draft.noteId } });
   },
   activeSessionId: null,
   pendingAsk: null,
   draft: null,
   setDraft: (draft) => {
     saveDraft(get().scope, draft);
-    set({ draft });
+    set({ draft, ...(get().pendingSelection && !get().activeSessionId && get().pendingSelection!.targetDraftNoteId !== (draft?.noteId ?? null) ? { pendingSelection: null } : {}) });
   },
   setActiveSession: (id) => {
     save(get().scope, id);
     if (id) saveDraft(get().scope, null);
-    set({ activeSessionId: id, ...(id ? { draft: null } : {}) });
+    set({ activeSessionId: id, ...(id !== get().activeSessionId ? { pendingSelection: null } : {}), ...(id ? { draft: null } : {}) });
   },
   setPendingAsk: (a) => set({ pendingAsk: a }),
 }));

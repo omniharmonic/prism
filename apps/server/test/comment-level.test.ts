@@ -1,18 +1,25 @@
 /**
- * WP0.2 — "comments need suggest", pinned end to end.
+ * WP0.2 — "comments need suggest", pinned end to end — updated for suggest-only
+ * enforcement (R07/R12): RAW Yjs writes now need EDIT.
  *
  * A comment thread is a Y.Doc write (its data lives in the `comments` Y.Map, its
- * anchor is a `comment` mark in the body), and the collab socket is READ-ONLY
- * below "suggest". We decided NOT to filter comment-level updates server-side
- * (the anchor is a body write, and dropping any one of a client's updates leaves
- * a gap in its Yjs clock so later updates pend forever) — instead the UI offers
- * no comment affordance below suggest. These tests pin both halves:
+ * anchor is a `comment` mark in the body). The collab socket is READ-ONLY below
+ * "edit", so no socket below edit can write one. We decided NOT to filter
+ * updates server-side (the anchor is a body write, and dropping any one of a
+ * client's updates leaves a gap in its Yjs clock so later updates pend forever);
+ * instead a read-only connection's updates are refused wholesale, and:
  *
- *   1. over a REAL Hocuspocus socket, a comment-level client's write to the
- *      comments map never reaches the server's document, while a suggest-level
- *      client's does;
- *   2. the shared UI table (`@prism/core/collab-access`) offers comments only at
- *      suggest and above — so the UI never shows an affordance the server drops.
+ *   - comment level: no comment affordance at all (the UI table below), and the
+ *     command endpoint refuses it too — comments still need suggest;
+ *   - suggest level: comments go through POST /api/collab/:id/commands, which
+ *     the server authors itself (test/human-collab.test.ts);
+ *   - edit level: the raw socket, as before.
+ *
+ * These tests pin, over a REAL Hocuspocus socket, that a comment-level AND a
+ * suggest-level client's raw write to the comments map never reaches the
+ * server's document while an edit-level client's does; that a suggest actor's
+ * comment made through the command endpoint DOES reach it (and a comment-level
+ * actor's is refused); and the shared UI table.
  */
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -22,7 +29,10 @@ import * as Y from "yjs";
 import WebSocket from "ws";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { collabAffordances } from "@prism/core/collab-access";
+import { randomUUID } from "node:crypto";
 import { attachCollab, hocuspocus, resetReconcileState } from "../src/collab";
+import { createApp } from "../src/app";
+import { humanRevision } from "../src/human-collab";
 import { installFakeVault, resetDb, makeCapability, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -115,25 +125,66 @@ test("a comment-level socket cannot persist a comment thread (dropped server-sid
   }
 });
 
-test("a suggest-level socket DOES persist a comment thread", { timeout: 15000 }, async () => {
+test("a suggest-level socket cannot persist a raw comment thread either; an edit-level socket can", { timeout: 15000 }, async () => {
   fv.put({ id: "cn2", content: "<p>hello world</p>", tags: ["team"] });
-  const { doc, provider } = await connect("cn2", makeCapability("tag", "team", "suggest"));
+  const suggest = await connect("cn2", makeCapability("tag", "team", "suggest"));
+  const edit = await connect("cn2", makeCapability("tag", "team", "edit"));
   try {
-    writeThread(doc, "c-2");
+    assert.equal(suggest.provider.authorizedScope, "readonly");
+    writeThread(suggest.doc, "c-2");
     await settle();
-    assert.equal(serverThreads("cn2"), 1, "the thread reached the server's document");
+    assert.equal(suggest.doc.getMap("comments").size, 1, "the client applied it locally");
+    assert.equal(serverThreads("cn2"), 0, "a raw comment write from a suggest socket is refused");
+    assert.equal(edit.doc.getMap("comments").size, 0, "nobody else ever sees it");
+    writeThread(edit.doc, "c-3");
+    await settle();
+    assert.equal(serverThreads("cn2"), 1, "the edit-level thread reached the server's document");
+    assert.equal(hocuspocus.documents.get("cn2")!.getMap("comments").has("c-3"), true);
   } finally {
-    provider.destroy();
+    suggest.provider.destroy();
+    edit.provider.destroy();
   }
 });
 
-test("UI table: comment affordances only at suggest and above (matches the socket)", () => {
+test("comments still need suggest: a suggest actor comments through the command endpoint, a comment-level actor cannot", { timeout: 15000 }, async () => {
+  fv.put({ id: "cn3", content: "<p>hello world</p>", tags: ["team"] });
+  const app = createApp();
+  const reader = await connect("cn3", makeCapability("tag", "team", "view")); // keeps the doc loaded; sees the result live
+  const send = (token: string) =>
+    app.request(`/api/collab/cn3/commands?t=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "10.9.8.7" },
+      // "hello" = ProseMirror positions 1..6 of <p>hello world</p>.
+      body: JSON.stringify({ requestId: randomUUID(), createdAt: Date.now(), revision: humanRevision(hocuspocus.documents.get("cn3")!), kind: "comment", from: 1, to: 6, quote: "hello", text: "a real comment" }),
+    });
+  try {
+    const refused = await send(makeCapability("tag", "team", "comment"));
+    assert.equal(refused.status, 403);
+    assert.equal(serverThreads("cn3"), 0, "no thread from a comment-level actor");
+    const ok = await send(makeCapability("tag", "team", "suggest"));
+    assert.equal(ok.status, 200);
+    const { threadId } = (await ok.json()) as { threadId: string };
+    await settle();
+    assert.equal(serverThreads("cn3"), 1, "the suggest actor's thread is in the server's document");
+    assert.equal(reader.doc.getMap("comments").has(threadId), true, "…and reached a connected client");
+  } finally {
+    reader.provider.destroy();
+  }
+});
+
+test("UI table: comment affordances only at suggest and above", () => {
   for (const lvl of ["view", "comment"]) {
     const a = collabAffordances(lvl);
     assert.equal(a.canComment, false, `${lvl}: no comment affordance`);
     assert.equal(a.editable, false, `${lvl}: read-only`);
     assert.equal(a.canReview, false);
   }
+  // The SHIPPED table still says a suggest body is editable (typed-in tracked
+  // changes over the raw socket). With enforcement on that socket is read-only,
+  // so the client must switch this row to `editable: false` and send commands
+  // instead — a frontend-owned change, specified in
+  // docs/roadmap/workspace-experience/BACKEND-STATUS.md. Pinned here as shipped
+  // so the change is deliberate when it lands.
   const s = collabAffordances("suggest");
   assert.deepEqual(s, { editable: true, suggestOnly: true, canComment: true, canReview: false });
   for (const lvl of ["edit", "own", null]) {
