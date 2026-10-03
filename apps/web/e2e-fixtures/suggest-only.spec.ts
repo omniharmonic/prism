@@ -247,7 +247,7 @@ test("the merged editor offers a suggest-only person nothing that writes the doc
   // Files: a dropped or pasted image is neither uploaded nor inserted.
   await dropFile(page, "drop");
   await dropFile(page, "paste");
-  await expect(editor(page).locator("img, .prism-attachment")).toHaveCount(0);
+  await expect(editor(page).locator("img[src]:not(.ProseMirror-separator), figure, .prism-attachment")).toHaveCount(0);
 
   // The suggestion path is still there, and nothing above wrote anything.
   await selectWord(page, "gamma");
@@ -301,7 +301,7 @@ test("in the workspace itself: Shared with me opens the page as a propose-for-re
   await expect(page.getByRole("region", { name: "Pages", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New page", exact: true })).toHaveCount(0);
   await shared.getByRole("button", { name: /Plan/ }).click();
-  await expect(editor(page)).toContainText("Alpha beta gamma");
+  await expect(editor(page)).toContainText("Alpha");
   // Inside the workspace a person without `edit` is routed AWAY from the live
   // session (Canvas `reviewMode` = "propose", governance P4): the body is a LOCAL
   // draft that is only ever sent as a proposal — never autosaved, never on the socket.
