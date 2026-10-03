@@ -27,6 +27,8 @@ if (params.has("reset")) localStorage.removeItem("fixture-inbox");
 const NOW = Date.now();
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const iso = (ms: number) => new Date(ms).toISOString();
+// Local noon tomorrow: "NOW + 26h" is the day after tomorrow once it is past 22:00, which made the Home test time-of-day dependent.
+const TOMORROW_NOON = (() => { const d = new Date(NOW); d.setDate(d.getDate() + 1); d.setHours(12, 0, 0, 0); return d.getTime(); })();
 const doc = (id: string, path: string, html: string, extra: Partial<Note> = {}): Note => ({
   id, path, content: html, tags: ["page"], metadata: { type: "document" }, createdAt: iso(NOW - 10 * DAY), updatedAt: iso(NOW - DAY), ...extra,
 });
@@ -38,7 +40,7 @@ const notes: Note[] = [
   doc("task-1", "vault/tasks/Write release notes", "<p>For the inbox release.</p>", { tags: ["task"], metadata: { type: "task", status: "in-progress", due: iso(NOW + DAY).slice(0, 10) } }),
   doc("task-2", "vault/tasks/Review access requests", "<p>Weekly.</p>", { tags: ["task"], metadata: { type: "task", status: "todo" } }),
   doc("task-3", "vault/tasks/Old cleanup", "<p>Done.</p>", { tags: ["task"], metadata: { type: "task", status: "done" } }),
-  doc("meet-1", "vault/meetings/Design sync", "<p>Agenda.</p>", { tags: ["meeting"], metadata: { type: "meeting", title: "Design sync", start: iso(NOW + 26 * HOUR), end: iso(NOW + 27 * HOUR) } }),
+  doc("meet-1", "vault/meetings/Design sync", "<p>Agenda.</p>", { tags: ["meeting"], metadata: { type: "meeting", title: "Design sync", start: iso(TOMORROW_NOON), end: iso(TOMORROW_NOON + 3_600_000) } }),
   doc("meet-2", "vault/meetings/Old retro", "<p>Past.</p>", { tags: ["meeting"], metadata: { type: "meeting", title: "Old retro", start: iso(NOW - 3 * DAY), end: iso(NOW - 3 * DAY + HOUR) } }),
 ];
 
