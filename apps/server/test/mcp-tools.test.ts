@@ -198,7 +198,7 @@ test("get_note: content + _caps + collab kind/live; viewer gets [view]; secret a
 
   assert.equal((await call(ed, "prism_get_note", { id: "s1" })).ok, false);
   const priv = await call(ed, "prism_get_note", { id: "p1" });
-  assert.ok(!priv.ok && priv.error === "forbidden");
+  assert.ok(!priv.ok && priv.error === "not_found");
   assert.deepEqual(must(await call(await connect(pat(VIEWER)), "prism_get_note", { id: "g1" }))._caps, ["view"]);
   const ow = must(await call(await connect(pat(OWNER)), "prism_get_note", { id: "s1" }));
   assert.ok(ow._caps.includes("delete") && ow._caps.includes("view"), "owner caps are computed, not absent");
@@ -303,7 +303,7 @@ test("update_note: anti-escalation and permission rules are the gateway's (edito
   const retag = await call(ed, "prism_update_note", { id: "g1", add_tags: ["garden/x"], if_updated_at: "2026-02-01T00:00:00.000Z" });
   assert.ok(!retag.ok && retag.error === "forbidden", "tag changes need organize");
   const secret = await call(ed, "prism_update_note", { id: "s1", content: "hijack", if_updated_at: "x" });
-  assert.ok(!secret.ok && secret.error === "forbidden");
+  assert.ok(!secret.ok && secret.error === "not_found");
   assert.equal(fv.notes.get("s1")!.content, "hello secret");
 
   const viewer = await connect(pat(VIEWER));
@@ -342,7 +342,7 @@ test("LIVE collab doc: restores are refused; metadata/tag-only updates proceed (
   hocuspocus.documents.set(docNameFor("primary", "s1"), {} as never);
   try {
     const hidden = await call(ed, "prism_update_note", { id: "s1", content: "x", if_updated_at: "x" });
-    assert.ok(!hidden.ok && hidden.error === "forbidden", "403 before any liveness answer");
+    assert.ok(!hidden.ok && hidden.error === "not_found", "404 before any liveness answer");
   } finally {
     hocuspocus.documents.delete(docNameFor("primary", "s1"));
   }

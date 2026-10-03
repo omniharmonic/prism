@@ -235,7 +235,13 @@ export async function getNote(id: string, options?: { fresh?: boolean }): Promis
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
   const temporaryId = `offline-${crypto.randomUUID()}`;
-  return writeJson("POST", `/notes`, params, () => ({
+  // Named fields only: the gateway refuses any other key on a non-owner create
+  // (strict schema), and callers reach this through untyped shims (`vault_create_note`).
+  const body: CreateNoteParams = { content: params.content ?? "" };
+  if (params.path != null) body.path = params.path;
+  if (params.tags != null) body.tags = params.tags;
+  if (params.metadata != null) body.metadata = params.metadata;
+  return writeJson("POST", `/notes`, body, () => ({
     id: temporaryId,
     content: params.content,
     path: params.path ?? null,

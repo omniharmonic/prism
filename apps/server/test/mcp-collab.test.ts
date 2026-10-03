@@ -527,7 +527,7 @@ test("permission matrix: viewer / commenter / suggester / editor; private note i
     ["prism_list_comments", { id: "priv" }],
     ["prism_add_comment", { id: "priv", quote: "private", text: "x" }],
     ["prism_suggest_edit", { id: "priv", find: "private", replace: "x" }],
-  ] as const) refused(await call(e, tool, args), "forbidden");
+  ] as const) refused(await call(e, tool, args), "not_found");
   assert.equal(hocuspocus.documents.has("priv"), false, "a refused call never opens the doc");
   refused(await call(e, "prism_list_comments", { id: "missing" }), "not_found");
 });

@@ -37,6 +37,7 @@
  * in the worker cursor table so a restart mid-episode does not re-alert.
  * Error text is scrubbed and truncated before it leaves this module.
  */
+import { untrustedSkillCount } from "./skills";
 import { config } from "../config";
 import { getVaultRegistry, getWorkerCursor, setWorkerCursor } from "../db";
 import { getSecret, secretsConfigured } from "../secrets";
@@ -51,6 +52,8 @@ export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
 export type SourceKind = "server" | "desktop";
 
 export interface SourceHealth {
+  /** skills only: `agent-skill` notes the scheduler refused to run last pass. */
+  untrustedSkills?: number;
   name: string;
   kind: SourceKind;
   vaultId: string;
@@ -325,6 +328,8 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
       failureStreak: r?.streak ?? 0,
       staleAfterMs,
       status: computeStatus({ configured: true, lastSuccessAt: r?.lastSuccessAt ?? null, streak: r?.streak ?? 0, staleAfterMs, now, baselineAt: BOOT_AT }),
+      // `agent-skill` notes the scheduler refused to run (wrong location / non-owner creator).
+      untrustedSkills: untrustedSkillCount(),
     });
   }
 

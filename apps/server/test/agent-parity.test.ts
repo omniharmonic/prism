@@ -255,7 +255,7 @@ test("routing test: local = one tiny completion behind the guard; a refusal is r
 test("running skills + cancel route: lists the in-flight server run; cancel → 200, unknown → 404, bad name → 400", async () => {
   const notes = new Map<string, Note>();
   const add = (n: Partial<Note> & { id: string }) => notes.set(n.id, { content: "", path: null, metadata: null, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", tags: [], ...n } as Note);
-  add({ id: "sk", tags: ["agent-skill"], content: "Do it.", metadata: { skillName: "nightly", enabled: true, runner: "server" } });
+  add({ id: "sk", path: "vault/agent/skills/nightly", tags: ["agent-skill"], content: "Do it.", metadata: { skillName: "nightly", enabled: true, runner: "server" } });
   let cancelled = false;
   const deps: SkillsDeps = {
     vault: {

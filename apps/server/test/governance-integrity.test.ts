@@ -402,7 +402,7 @@ test("content proposals cannot create or edit governance notes when integrity is
   assert.equal(create.status, 400);
   const cfgId = notesTagged(GOV_TAGS.config)[0]!.id;
   const edit = await jreq("/content/propose", cookieFor(A1), "POST", { action: "edit_note", target: cfgId, content: "x" });
-  assert.equal(edit.status, 400);
+  assert.ok([400, 404].includes(edit.status), "refused: 404 when the proposer cannot view it, 400 when they can");
 });
 
 // ── back-compat: no secret ────────────────────────────────────────────────────

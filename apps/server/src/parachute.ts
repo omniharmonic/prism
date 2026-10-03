@@ -6,6 +6,7 @@
  * Mirrors the shapes in apps/web/src/parachute/rest.ts (Parachute 0.5.x returns
  * camelCase notes; PATCH needs if_updated_at or force).
  */
+import { canonicalTagsStrict } from "./tags";
 import { type VaultEntry } from "./config";
 import { resolveVaultEntry } from "./db";
 
@@ -81,6 +82,18 @@ export class VaultConflictError extends VaultError {
   }
 }
 
+/**
+ * Tags at the SINK (defence in depth): every tag this client sends is the canonical
+ * form the vault would store (`canonicalTag`), and a tag that canonicalises to
+ * nothing is refused instead of silently vanishing. Callers canonicalise before
+ * their permission checks; this makes sure nothing un-canonical leaves the process.
+ */
+function sinkTags(tags: readonly string[]): string[] {
+  const out = canonicalTagsStrict(tags);
+  if (!out) throw new VaultError(400, "refused before sending: an empty or invalid tag");
+  return out;
+}
+
 function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined) sp.append(k, String(v));
@@ -146,7 +159,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     // needs ~4 keys, not every note's full metadata blob.
     if (opts.includeMetadata?.length) sp.set("include_metadata", opts.includeMetadata.join(","));
     if (opts.pathPrefix) sp.set("path_prefix", opts.pathPrefix);
-    for (const t of opts.tags ?? []) sp.append("tag", t);
+    for (const t of sinkTags(opts.tags ?? [])) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },
 
@@ -170,9 +183,15 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     links?: NoteLinkInput[];
     ifExists?: IfExists;
   }): Promise<Note & { existed?: boolean }> {
-    const { ifExists, ...rest } = params;
-    const body: Record<string, unknown> = { ...rest };
-    if (ifExists !== undefined) body.if_exists = ifExists;
+    // Built key by key, never spread: the vault's POST also honours `notes` (batch),
+    // `id`, `created_at`, `extension` — a caller that hands over an object with more
+    // on it than the type says (a request body) must not be able to send them.
+    const body: Record<string, unknown> = { content: params.content };
+    if (params.path !== undefined) body.path = params.path;
+    if (params.metadata !== undefined) body.metadata = params.metadata;
+    if (params.tags !== undefined) body.tags = sinkTags(params.tags);
+    if (params.links !== undefined) body.links = params.links;
+    if (params.ifExists !== undefined) body.if_exists = params.ifExists;
     return (await req(`/notes`, { method: "POST", body: JSON.stringify(body) })).json() as Promise<Note & { existed?: boolean }>;
   },
 
@@ -194,7 +213,9 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
     if (params.path !== undefined) body.path = params.path;
     if (params.metadata !== undefined) body.metadata = params.metadata;
     if (params.links !== undefined) body.links = params.links;
-    if (params.tags !== undefined) body.tags = params.tags;
+    if (params.tags !== undefined) {
+      body.tags = { ...(params.tags.add ? { add: sinkTags(params.tags.add) } : {}), ...(params.tags.remove ? { remove: sinkTags(params.tags.remove) } : {}) };
+    }
     if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
     if (body.if_updated_at === undefined) body.force = true;
     return (await req(`/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) })).json() as Promise<Note>;
@@ -203,14 +224,14 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
   async addTags(id: string, tags: string[]): Promise<void> {
     await req(`/notes/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ tags: { add: tags }, force: true }),
+      body: JSON.stringify({ tags: { add: sinkTags(tags) }, force: true }),
     });
   },
 
   async removeTags(id: string, tags: string[]): Promise<void> {
     await req(`/notes/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ tags: { remove: tags }, force: true }),
+      body: JSON.stringify({ tags: { remove: sinkTags(tags) }, force: true }),
     });
   },
 
@@ -242,7 +263,7 @@ export function vaultClient(vaultId?: string, opts: { /** Abort any single vault
 
   async search(query: string, tags: string[] = [], limit = 50): Promise<Note[]> {
     const sp = new URLSearchParams({ search: query, limit: String(limit), include_content: "true" });
-    for (const t of tags) sp.append("tag", t);
+    for (const t of sinkTags(tags)) sp.append("tag", t);
     return (await req(`/notes?${sp.toString()}`)).json() as Promise<Note[]>;
   },
 

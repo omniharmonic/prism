@@ -87,12 +87,12 @@ test("owner write-through: create / update / tag change / delete show up without
   const created = (await (await ownerReq("/notes", { method: "POST", body: JSON.stringify({ content: "n", path: "new/n.md", tags: ["t"] }) })).json()) as { id: string };
   await tick();
   let body = await tree(await ownerReq("/tree"));
-  assert.equal(body.find((e) => e.id === created.id)?.path, "new/n.md");
+  assert.equal(body.find((e) => e.id === created.id)?.path, "new/n"); // the vault strips a trailing .md (the fake now does too)
 
   await ownerReq(`/notes/${created.id}`, { method: "PATCH", body: JSON.stringify({ path: "moved/n.md" }) });
   await tick();
   body = await tree(await ownerReq("/tree"));
-  assert.equal(body.find((e) => e.id === created.id)?.path, "moved/n.md");
+  assert.equal(body.find((e) => e.id === created.id)?.path, "moved/n");
 
   await ownerReq("/notes/a", { method: "PATCH", body: JSON.stringify({ tags: { add: ["y"], remove: ["x"] } }) });
   await tick();

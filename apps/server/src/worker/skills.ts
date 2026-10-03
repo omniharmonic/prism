@@ -64,6 +64,7 @@
  * Everything external is injected (`SkillsDeps`) so the whole pass is tested with
  * a fake vault, a fake LM Studio and a fake claude runner.
  */
+import { roleAtLeast, workspaceRole } from "../roles";
 import { randomUUID } from "node:crypto";
 import { config } from "../config";
 import { VaultConflictError, vaultClient, type Note } from "../parachute";
@@ -164,7 +165,35 @@ export interface SkillsDeps {
   localParts: (d: Date) => { hour: number; day: string };
   settings: SkillsSettings;
   log: (msg: string) => void;
+  /** Is this account allowed to author skills (workspace owner/admin)? Default:
+   *  the primary vault's role (`workspaceRole`). Injected by tests. */
+  isTrustedCreator?: (email: string) => boolean;
 }
+
+/**
+ * DEFENCE IN DEPTH. A skill's body is a prompt that runs with the VAULT token, so the
+ * `agent-skill` tag alone must never be enough to get one run: if any write path ever
+ * lets a non-owner put that tag on a note, this is what stands between their text and
+ * the vault. A skill note is run only when it lives where skills live —
+ * `vault/agent/skills/<name>` (the desktop seeder and the skill builder both write
+ * there; a location non-owners cannot create in or move to) — AND was not created by
+ * a non-owner (`metadata.prism_creator`, which the gateway stamps on every non-owner
+ * create and nobody but the owner can change; absent = written by the owner, the
+ * desktop or an ingest). Returns why a note is NOT trusted, or null.
+ */
+export const SKILLS_PATH_PREFIX = "vault/agent/skills/";
+export function untrustedSkillReason(note: Pick<Note, "path" | "metadata">, isTrustedCreator: (email: string) => boolean): string | null {
+  const path = (note.path ?? "").normalize("NFC");
+  if (!path.toLowerCase().startsWith(SKILLS_PATH_PREFIX) || path.length === SKILLS_PATH_PREFIX.length) return "not under vault/agent/skills/";
+  const creator = note.metadata?.prism_creator;
+  if (creator === undefined || creator === null || creator === "") return null;
+  if (typeof creator !== "string" || !isTrustedCreator(creator.toLowerCase())) return "created by a non-owner";
+  return null;
+}
+let lastUntrusted = 0;
+const untrustedWarned = new Set<string>();
+/** Skill-tagged notes the last pass refused to run (surfaced in /acl/workers). */
+export const untrustedSkillCount = (): number => lastUntrusted;
 
 // ── pure: metadata parsing + due evaluation ──────────────────────────────────
 
@@ -579,6 +608,8 @@ export interface PassResult {
   refused: Array<{ skill: string; reason: string }>;
   /** Skills leased to the server this pass. */
   leased: string[];
+  /** `agent-skill` notes skipped as untrusted (wrong location or a non-owner creator). */
+  untrusted: number;
   /** Local runs that finished this pass (claude runs finish asynchronously). */
   finished: Array<{ skill: string; status: RunResult["status"] }>;
 }
@@ -722,10 +753,23 @@ async function persist(deps: SkillsDeps, id: string, skill: string, r: RunResult
  * run (health reporting).
  */
 export async function runSkillsOnce(deps: SkillsDeps, onOutcome?: (r: RunResult) => void): Promise<PassResult> {
-  const res: PassResult = { dispatched: [], refused: [], leased: [], finished: [] };
+  const res: PassResult = { dispatched: [], refused: [], leased: [], untrusted: 0, finished: [] };
   if (!deps.settings.enabled) return res;
 
-  const skills = await deps.vault.listNotes({ tags: [SKILL_TAG], limit: 100, includeContent: true });
+  const listed = await deps.vault.listNotes({ tags: [SKILL_TAG], limit: 100, includeContent: true });
+  // Only trusted skill notes exist for the rest of the pass (run, lease, dependsOn).
+  const trusted = deps.isTrustedCreator ?? defaultTrustedCreator;
+  const skills = listed.filter((n) => {
+    const why = untrustedSkillReason(n, trusted);
+    if (!why) return true;
+    res.untrusted++;
+    if (!untrustedWarned.has(n.id)) {
+      untrustedWarned.add(n.id);
+      deps.log(`[skills] untrusted skill note ${n.id} (${n.path ?? "no path"}) skipped: ${why}`);
+    }
+    return false;
+  });
+  lastUntrusted = res.untrusted;
   const now = deps.now();
 
   for (let skill of skills) {
@@ -987,6 +1031,11 @@ export function settingsFromConfig(): SkillsSettings {
     loadFreeMinPct: config.skillsLoadFreeMinPct,
     localRunTimeoutMs: config.skillsLocalRunTimeoutMs,
   };
+}
+
+/** Workspace owner/admin of the primary vault (the vault skills run on). */
+function defaultTrustedCreator(email: string): boolean {
+  return roleAtLeast(workspaceRole(email, "primary"), "admin");
 }
 
 export function defaultSkillsDeps(): SkillsDeps {

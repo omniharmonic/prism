@@ -79,7 +79,7 @@ test("a share-cap holder grants view on THEIR note, and the recipient's access i
     (await aclReq(`/notes/n1/people/${encodeURIComponent(RECIPIENT)}`, { method: "DELETE", cookie: login(SHARER) })).status,
     200,
   );
-  assert.equal((await req(api, "/notes/n1", { cookie: login(RECIPIENT) })).status, 403);
+  assert.equal((await req(api, "/notes/n1", { cookie: login(RECIPIENT) })).status, 404);
 });
 
 test("a tag share-cap holder shares the whole folder", async () => {
@@ -94,7 +94,7 @@ test("a tag share-cap holder shares the whole folder", async () => {
   });
   assert.equal(res.status, 200);
   assert.equal((await req(api, "/notes/n1", { cookie: login(RECIPIENT) })).status, 200, "the tag grant reaches the note");
-  assert.equal((await req(api, "/notes/n2", { cookie: login(RECIPIENT) })).status, 403, "and no further");
+  assert.equal((await req(api, "/notes/n2", { cookie: login(RECIPIENT) })).status, 404, "and no further");
 
   assert.equal(
     (await aclReq(`/tags/team/people/${encodeURIComponent(RECIPIENT)}`, { method: "DELETE", cookie })).status,

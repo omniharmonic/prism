@@ -43,6 +43,8 @@ async function bootstrapContentCommons() {
   }
   const cfg = await jreq("/config", owner, "POST", { enabled: true, bootstrapOwner: OWNER, defaultEligibleRole: "gardener" });
   assert.equal(cfg.status, 200);
+  // Proposing an edit needs VIEW on the target; the gardeners can read both folders.
+  for (const g of ["g1@test.local", "g2@test.local"]) for (const t of ["medicine", "food"]) grantUser(g, "tag", t, "view");
 }
 
 // ── edit_note ──────────────────────────────────────────────────────────────────
@@ -180,4 +182,93 @@ test("edit_note requires a target note id", async () => {
   await bootstrapContentCommons();
   const r = await jreq("/content/propose", cookieFor("g1@test.local"), "POST", { action: "edit_note", content: "x" });
   assert.equal(r.status, 400);
+});
+
+// ── payload allowlist (security hotfix: a member writes the payload, the vault token applies it) ──
+
+test("a new entry cannot carry a system tag or land on a protected / invalid path", async () => {
+  await bootstrapContentCommons();
+  const g1 = cookieFor("g1@test.local");
+  for (const extra of [
+    { tags: ["medicine", "agent-skill"] },
+    { tags: ["medicine", "governance-membership"] },
+    { tags: ["medicine", "person"] },
+    { tags: ["medicine", "prism-trashed"] },
+    { tags: ["medicine"], path: "vault/people/Mallory" },
+    { tags: ["medicine"], path: "vault/agent/skills/evil" },
+    { tags: ["medicine"], path: "medicine/../secret" },
+    { tags: ["medicine"], path: "medicine//x" },
+  ]) {
+    const r = await jreq("/content/propose", g1, "POST", { action: "new_entry", content: "x", ...extra });
+    assert.equal(r.status, 400, JSON.stringify(extra));
+  }
+  // The generic proposal route takes a raw payload — the same rules bite at apply.
+  const raw = await jreq("/proposals", g1, "POST", { action: "new_entry", target: "", payload: { content: "run me", tags: ["medicine", "agent-skill"], metadata: { skillName: "evil", enabled: true } } });
+  assert.equal(raw.status, 201);
+  const { id } = await body(raw);
+  await jreq(`/proposals/${id}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${id}/vote`, cookieFor("g2@test.local"), "POST", { vote: "approve" });
+  const applied = await jreq(`/proposals/${id}/apply`, cookieFor(OWNER), "POST");
+  assert.equal(applied.status, 400);
+  assert.ok(![...fv.notes.values()].some((n) => (n.tags ?? []).includes("agent-skill")));
+});
+
+test("reserved metadata (creator / visibility / lock / trash / writer stamp) never rides a governed change", async () => {
+  fv.put({ id: "n_med", content: "old", tags: ["medicine"], metadata: { prism_creator: "someone@test.local", prism_visibility: "private" } });
+  await bootstrapContentCommons();
+  const owner = cookieFor(OWNER);
+  const g1 = cookieFor("g1@test.local");
+  const g2 = cookieFor("g2@test.local");
+  const forged = { prism_creator: "g1@test.local", prism_visibility: "workspace", prism_locked: true, prism_trashed_at: "2020-01-01T00:00:00.000Z", prism_order: 1, prism_last_writer: "u_forged", note: "kept" };
+
+  // edit_note (auto-publishes): the vault PATCH carries only the ordinary key.
+  // (proposed by the private note's own creator — nobody else can view it, so nobody else may propose)
+  grantUser("someone@test.local", "tag", "medicine", "view");
+  const edit = await jreq("/content/propose", cookieFor("someone@test.local"), "POST", { action: "edit_note", target: "n_med", content: "new", metadata: forged });
+  assert.equal(edit.status, 201);
+  const editId = (await body(edit)).id;
+  await jreq(`/proposals/${editId}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${editId}/vote`, g2, "POST", { vote: "approve" });
+  assert.equal((await jreq(`/proposals/${editId}/apply`, owner, "POST")).status, 200);
+  const edited = fv.notes.get("n_med")!;
+  assert.equal(edited.content, "new");
+  assert.equal(edited.metadata!.prism_creator, "someone@test.local");
+  assert.equal(edited.metadata!.prism_visibility, "private", "a governed edit cannot un-private a note");
+  assert.ok(!("prism_locked" in edited.metadata!) && !("prism_trashed_at" in edited.metadata!) && !("prism_last_writer" in edited.metadata!));
+  assert.equal(edited.metadata!.note, "kept");
+
+  // new_entry (staged → publish): same.
+  const open = await jreq("/content/propose", g1, "POST", { action: "new_entry", tags: ["medicine"], path: "medicine/mint", content: "# Mint", metadata: forged });
+  const newId = (await body(open)).id;
+  await jreq(`/proposals/${newId}/vote`, g1, "POST", { vote: "approve" });
+  await jreq(`/proposals/${newId}/vote`, g2, "POST", { vote: "approve" });
+  assert.equal((await jreq(`/proposals/${newId}/apply`, owner, "POST")).status, 200);
+  assert.equal((await jreq(`/proposals/${newId}/publish`, g1, "POST")).status, 200);
+  const mint = [...fv.notes.values()].find((n) => n.path === "medicine/mint")!;
+  assert.ok(mint, "the entry is live");
+  for (const k of Object.keys(forged).filter((k) => k !== "note")) assert.ok(!(k in (mint.metadata ?? {})), k);
+  assert.equal(mint.metadata!.note, "kept");
+});
+
+test("edit_note: the proposer must be able to view the target (404 like a missing note); system notes are never a target", async () => {
+  fv.put({ id: "n_secret", content: "secret", tags: ["secret"], path: "secret/plan" });
+  fv.put({ id: "n_private", content: "private", tags: ["medicine"], metadata: { prism_creator: OWNER, prism_visibility: "private" } });
+  fv.put({ id: "n_med", content: "old", tags: ["medicine"], path: "medicine/yarrow" });
+  fv.put({ id: "n_skill", content: "prompt", tags: ["medicine", "agent-skill"] });
+  await bootstrapContentCommons();
+  const g1 = cookieFor("g1@test.local");
+  const missing = await jreq("/content/propose", g1, "POST", { action: "edit_note", target: "nope", content: "x" });
+  assert.equal(missing.status, 404);
+  const missingBody = await missing.text();
+  for (const target of ["n_secret", "n_private", "secret/plan", "medicine/yarrow"]) {
+    for (const route of ["/content/propose", "/proposals"]) {
+      const r = await jreq(route, g1, "POST", { action: "edit_note", target, content: "pwned", payload: { content: "pwned" } });
+      assert.equal(r.status, 404, `${route} ${target}`);
+      assert.equal(await r.text(), missingBody, `${route} ${target}`);
+    }
+  }
+  for (const route of ["/content/propose", "/proposals"]) {
+    assert.equal((await jreq(route, g1, "POST", { action: "edit_note", target: "n_skill", content: "x", payload: { content: "x" } })).status, 400, route);
+  }
+  assert.equal((await jreq("/content/propose", g1, "POST", { action: "edit_note", target: "n_med", content: "fine" })).status, 201);
 });
