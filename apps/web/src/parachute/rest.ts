@@ -682,6 +682,19 @@ export async function uploadAttachment(noteId: string, file: File, opts?: { kind
   return (await resp.json()) as import("@prism/core").UploadedAttachment;
 }
 
+/** Copy the files a duplicated page references into the copy (POST /api/notes/:id/attachments/copy). */
+export async function copyAttachments(noteId: string): Promise<{ copied: number; failed: number; skipped: number; more: boolean }> {
+  if (isOffline()) throw Object.assign(new Error("offline"), { userMessage: "you're offline" });
+  let total = { copied: 0, failed: 0, skipped: 0, more: false };
+  // 50 files per call; a page with more is finished in a few rounds.
+  for (let round = 0; round < 6; round++) {
+    const r = (await (await req(`/notes/${encodeURIComponent(noteId)}/attachments/copy`, { method: "POST", body: "{}", cache: "no-store" })).json()) as typeof total;
+    total = { copied: total.copied + r.copied, failed: total.failed + r.failed, skipped: r.skipped, more: r.more };
+    if (!r.more || r.copied + r.failed === 0) break;
+  }
+  return total;
+}
+
 /** Link preview for a bookmark (GET /api/unfurl, signed-in only, SSRF-guarded server-side). */
 export async function unfurl(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }> {
   return (await req(`/unfurl${qs({ u: url })}`, { cache: "no-store" })).json();

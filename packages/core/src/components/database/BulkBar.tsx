@@ -136,6 +136,8 @@ export function BulkBar({ rows, props, dbPath, canEditRow, canCreate, onDone, on
         const title = `${noteTitle(r)} (copy)`;
         const n = await client.createNote({ content: src.content ?? "", path: rowPath(dbPath, `${title} ${Date.now().toString(36).slice(-4)}`), tags: (src.tags ?? []).filter((t) => t !== "prism-trashed"), metadata: { ...meta, title } });
         made.push(n.id);
+        // Each copy gets its own files (wave 3); a failure leaves the row, never the batch.
+        if (client.copyAttachments && ((src.content ?? "").includes("/api/attachments/") || JSON.stringify(meta).includes("/api/attachments/"))) await client.copyAttachments(n.id).catch(() => undefined);
       } catch {
         failed.push({ title: noteTitle(r), error: "error" });
       }

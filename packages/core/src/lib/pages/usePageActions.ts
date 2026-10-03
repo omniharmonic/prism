@@ -10,7 +10,7 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, duplicateCopy, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, duplicateCopy, referencesAttachments, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
 
@@ -140,9 +140,17 @@ export function usePageActions() {
         const [note, tree] = await Promise.all([client.getNote(page.id, { fresh: true }), client.listTree()]);
         const copy = duplicateCopy(note, tree.map((t) => t.path));
         const created = await client.createNote(copy);
+        // The copy gets its OWN files (before it opens): until then its links name the
+        // original page's attachments, which only people who can see the original load.
+        let filesNote = "";
+        if (client.copyAttachments && referencesAttachments(copy)) {
+          const files = await client.copyAttachments(created.id).catch(() => null);
+          if (!files) filesNote = " Its files could not be copied.";
+          else if (files.failed) filesNote = ` ${files.failed} ${files.failed === 1 ? "file was" : "files were"} not copied.`;
+        }
         await refresh();
         useUIStore.getState().openTab(created.id, pageTitle(created.path ?? copy.path), inferContentType(created));
-        toast(`Duplicated “${page.title}”`);
+        toast(`Duplicated “${page.title}”${filesNote ? `.${filesNote}` : ""}`);
       } catch (e) {
         fail(e, "Couldn’t duplicate this page.");
       }

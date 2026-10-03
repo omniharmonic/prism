@@ -294,6 +294,11 @@ export function duplicateCopy(
   return copy;
 }
 
+/** Does a page's body or metadata reference an uploaded file (`/api/attachments/<id>`)? */
+export function referencesAttachments(note: { content?: string | null; metadata?: Record<string, unknown> | null }): boolean {
+  return (note.content ?? "").includes("/api/attachments/") || JSON.stringify(note.metadata ?? {}).includes("/api/attachments/");
+}
+
 // ── wire types (server ⇄ clients) ───────────────────────────────────────────
 
 export interface MoveRequest {
