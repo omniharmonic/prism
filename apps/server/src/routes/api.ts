@@ -29,6 +29,8 @@ import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
+import { isTrashed, TRASH_TAG } from "@prism/core/pages";
+import { createPagesApi } from "../pages";
 
 export const api = new Hono();
 
@@ -194,6 +196,9 @@ api.use("/transcripts/*", async (c, next) => {
   if (c.req.method !== "GET") readCache.clear();
 });
 api.route("/transcripts", transcriptsApi);
+// Pages (nested-page move, Trash, synced preferences): before the owner passthrough,
+// like /tree — these are Prism routes, not vault routes. Writes drop cached owner reads.
+api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
@@ -263,7 +268,8 @@ api.get("/events", async (c) => {
   return openEventStream(c, {
     entry,
     principal: actor.kind === "user" ? `u:${actor.email}` : `l:${actor.capabilityId}`,
-    canView: owner ? () => true : (r) => capsFor(actor, r).has("view"),
+    // Trashed pages leave a non-owner's channel: the trash itself is the last event.
+    canView: owner ? () => true : (r) => !r.tags.includes(TRASH_TAG) && capsFor(actor, r).has("view"),
   });
 });
 
@@ -325,6 +331,8 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
   const stamp = annotated(actor);
   const out: Array<Note & { _caps?: Cap[] }> = [];
   for (const n of notes) {
+    // Trashed pages are hidden from every list and search (GET /api/trash lists them).
+    if (isTrashed(n)) continue;
     const caps = capsFor(actor, ref(n));
     if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : n);
   }

@@ -1,4 +1,5 @@
 /** Publication membership shared by the public reader and owner preview. */
+import { TRASH_TAG } from "@prism/core/pages";
 import { vaultClient, type Note } from "./parachute";
 import type { Actor } from "./auth/actor";
 import {
@@ -54,7 +55,8 @@ export function publicationActor(pub: Publication): Actor {
  * exactly the level's expansion, so this is identical to the old check.
  */
 export const canPublicView = (grants: Actor["grants"], note: Note): boolean =>
-  effectiveCaps(grants, ref(note), null).has("view");
+  // A trashed page leaves its public site too (restoring brings it back).
+  !(note.tags ?? []).includes(TRASH_TAG) && effectiveCaps(grants, ref(note), null).has("view");
 
 /** The vault client bound to the publication's own vault — EVERY vault read on
  *  the public path goes through this, never the primary singleton. */

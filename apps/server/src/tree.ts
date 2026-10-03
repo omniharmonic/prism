@@ -29,9 +29,21 @@ import { createHash } from "node:crypto";
 import type { VaultEntry } from "./config";
 import { vaultClient } from "./parachute";
 import type { NoteRef } from "./permissions";
+import { TRASH_TAG, TRASH_META, ORDER_KEY } from "@prism/core/pages";
 
 /** Metadata keys the projection reads — the ONLY ones requested from the vault. */
-export const TREE_META_KEYS = ["type", "prism_type", "prism_creator", "prism_visibility"] as const;
+export const TREE_META_KEYS = [
+  "type",
+  "prism_type",
+  "prism_creator",
+  "prism_visibility",
+  // Pages (nested pages / trash): sibling order is emitted; trash state is internal
+  // (trashed rows are never in the tree — GET /api/trash reads them from here).
+  ORDER_KEY,
+  TRASH_META.at,
+  TRASH_META.by,
+  TRASH_META.root,
+] as const;
 
 /** What the client receives. `type`/`prismType` are the two metadata keys the tree's
  *  icon/renderer inference (`inferContentType`) actually reads; both omitted when unset. */
@@ -42,12 +54,18 @@ export interface TreeEntry {
   updatedAt: string | null;
   type?: string;
   prismType?: string;
+  /** `metadata.prism_order`: the page's fractional sibling order, when set. */
+  order?: number;
 }
 
 /** Internal row: the entry plus what the private-note rule needs (never emitted). */
 export interface TreeRow extends TreeEntry {
   creator: string | null;
   visibility: "workspace" | "private";
+  /** Trash state (tag {@link TRASH_TAG} + `prism_trashed_*`), never emitted. */
+  trashedAt?: string;
+  trashedBy?: string;
+  trashedRoot?: string;
 }
 
 /** The subset of the WebSocket API the projection uses (injectable for tests). */
@@ -159,6 +177,11 @@ function rowFromNote(n: unknown): TreeRow | null {
   };
   if (typeof m.type === "string") row.type = m.type;
   if (typeof m.prism_type === "string") row.prismType = m.prism_type;
+  const order = m[ORDER_KEY];
+  if (typeof order === "number" && Number.isFinite(order)) row.order = order;
+  if (typeof m[TRASH_META.at] === "string") row.trashedAt = m[TRASH_META.at] as string;
+  if (typeof m[TRASH_META.by] === "string") row.trashedBy = m[TRASH_META.by] as string;
+  if (typeof m[TRASH_META.root] === "string") row.trashedRoot = m[TRASH_META.root] as string;
   return row;
 }
 
@@ -169,6 +192,7 @@ function emit(r: TreeRow): TreeEntry {
   const e: TreeEntry = { id: r.id, path: r.path, tags: r.tags, updatedAt: r.updatedAt };
   if (r.type !== undefined) e.type = r.type;
   if (r.prismType !== undefined) e.prismType = r.prismType;
+  if (r.order !== undefined) e.order = r.order;
   return e;
 }
 
@@ -408,7 +432,9 @@ export function renderTree(
     return { body: st.cache.body, etag: st.cache.etag, count: st.rows.size };
   }
   const list: TreeEntry[] = [];
-  for (const r of st.rows.values()) if (!canView || canView(rowRef(r))) list.push(emit(r));
+  // Trashed pages are hidden from the tree for EVERYONE (owner included); the
+  // Trash view reads them separately (GET /api/trash).
+  for (const r of st.rows.values()) if (!r.tags.includes(TRASH_TAG) && (!canView || canView(rowRef(r)))) list.push(emit(r));
   const body = JSON.stringify(list);
   const etag = `W/"${createHash("sha1").update(body).digest("hex").slice(0, 24)}"`;
   if (!canView) st.cache = { version: st.version, body, etag };
