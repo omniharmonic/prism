@@ -38,13 +38,24 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
     if (editing) inputRef.current?.select();
   }, [editing]);
 
-  const commit = async () => {
+  // NP-PG-03: Enter commits the title and moves into the body (first block),
+  // like pressing Enter at the end of a heading. Blur and Esc leave focus alone.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const toBody = () => {
+    for (let node: HTMLElement | null = wrapRef.current; node; node = node.parentElement) {
+      const body = node.querySelector<HTMLElement>('.tiptap[contenteditable="true"]');
+      if (body) { body.focus(); return; }
+    }
+  };
+  const commit = async (thenBody = false) => {
     if (savingRef.current) return;
     const v = draft.trim();
-    if (!v || v === name) { setDraft(name); setEditing(false); setError(""); return; }
+    if (!v || v === name) { if (thenBody) toBody(); setDraft(name); setEditing(false); setError(""); return; }
     savingRef.current = true;
     setSaving(true);
     setError("");
+    // Move first: the rename may take a moment, and typing should not wait for it.
+    if (thenBody) toBody();
     try {
       await onRename(v);
       setEditing(false);
@@ -61,7 +72,7 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
 
   if (editing) {
     return (
-      <div className="document-title-edit"><input
+      <div className="document-title-edit" ref={wrapRef}><input
         ref={inputRef}
         aria-label="Document title"
         value={draft}
@@ -73,7 +84,7 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => { void commit(); }}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(); }
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(true); }
           if (e.key === "Escape") { setDraft(name); setEditing(false); setError(""); }
         }}
         spellCheck={false}

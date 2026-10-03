@@ -150,3 +150,33 @@ test("page info footer", async ({ page }) => {
   await expect(value("Last edited by")).toHaveText("You");
   await page.screenshot({ path: `${shots}/page-info.png` });
 });
+
+/** NP-PG-03 */
+test("Enter in the title moves into the body", async ({ page }) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  await page.getByRole("button", { name: "Rename A living workspace", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await title.fill("A living plan");
+  await title.press("Enter");
+  // The rename is committed and typing continues in the page, no click needed.
+  await expect(editor).toBeFocused();
+  await expect(page.getByRole("button", { name: "Rename A living plan", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismShell.note("workspace").path)).toBe("Projects/Prism/A living plan");
+  await page.keyboard.type("Typed straight after the title. ");
+  await expect(editor).toContainText("Typed straight after the title.");
+  // Unchanged title + Enter also lands in the body; Esc and blur do not move focus there.
+  await page.getByRole("button", { name: "Rename A living plan", exact: true }).click();
+  await title.press("Enter");
+  await expect(editor).toBeFocused();
+  await page.getByRole("button", { name: "Rename A living plan", exact: true }).click();
+  await title.press("Escape");
+  await expect(editor).not.toBeFocused();
+  // A new page: name it, Enter, write.
+  await page.locator(".workspace-navigation").getByRole("button", { name: "New page", exact: true }).click();
+  await expect(title).toBeFocused();
+  await title.fill("Sprint notes");
+  await title.press("Enter");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeFocused();
+});
