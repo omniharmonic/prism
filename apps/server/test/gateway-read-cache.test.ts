@@ -96,3 +96,16 @@ test("no-cache / no-store on a single-note GET bypasses the reuse window; ordina
   await ownerReq("/notes?tag=x", { headers: { "cache-control": "no-cache" } });
   assert.equal(lists(), before);
 });
+
+// 4A × 4B: "Move to" (POST /notes/:id/blocks/append) writes the target outside the
+// owner proxy. The open target page re-reads on the change event; that read — and
+// an ordinary one — must see the appended blocks, never the cached pre-append body.
+test("a block append drops the owner's cached read of the target", async () => {
+  fv.put({ id: "n9", path: "n9", content: "<p>before</p>", tags: [], metadata: { type: "document" } });
+  assert.equal(await content(await ownerReq("/notes/n9")), "<p>before</p>"); // now inside the 5 s reuse window
+  const append = await ownerReq("/notes/n9/blocks/append", { method: "POST", body: JSON.stringify({ html: "<p>moved</p>", requestId: "req-00000001" }) });
+  assert.equal(append.status, 200);
+  const after = await content(await ownerReq("/notes/n9"));
+  assert.match(after, /before/);
+  assert.match(after, /moved/, "an ordinary read after the append is not the cached pre-append body");
+});

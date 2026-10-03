@@ -281,6 +281,10 @@ api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== 
 api.route("/", databasesApi);
 // Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
 api.route("/", attachmentsApi);
+// "Move to" appends to a page outside the owner proxy: the target's cached owner read
+// (and any read in flight across the append) must not be served afterwards — the open
+// target page re-reads on the event and has to see the appended blocks.
+api.use("/notes/:id/blocks/*", async (c, next) => { await next(); dropReadCache(); });
 api.route("/", blocksApi); // POST /notes/:id/blocks/append ("Move to" a page, through the live doc when open; wave 4A)
 api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
@@ -288,7 +292,7 @@ api.route("/", notificationsRoutes);
 // Import / export (wave 3A): Prism routes, before the owner passthrough. An import
 // writes notes outside the owner proxy: drop cached owner reads as it goes.
 api.route("/", exportApi);
-api.route("/", createImportApi({ onWrite: () => readCache.clear() }));
+api.route("/", createImportApi({ onWrite: () => dropReadCache() }));
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
