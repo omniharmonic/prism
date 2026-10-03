@@ -277,9 +277,13 @@ export async function noteInfo(vaultId: string, noteId: string, opts: { fresh?: 
   const hit = refCache.get(key);
   if (!opts.fresh && hit && Date.now() - hit.at < REF_TTL_MS) return hit.info;
   let info: NoteInfo | null = null;
+  let treeSaysMissing = false;
   try {
     const tree = await ensureTree(entry);
     const row = tree.state.rows.get(noteId);
+    // Read-time lookups trust a loaded projection's "not there" (deleted notes must
+    // not cost a vault call per inbox row); producers (`fresh`) still ask the vault.
+    treeSaysMissing = !row && tree.state.loaded && !opts.fresh;
     // The projection is live (vault subscribe socket + gateway write-through), so
     // `fresh` only bypasses the short TTL cache, never the tree.
     if (row) {
@@ -288,7 +292,7 @@ export async function noteInfo(vaultId: string, noteId: string, opts: { fresh?: 
   } catch {
     /* tree unavailable: fall back to the vault */
   }
-  if (!info) {
+  if (!info && !treeSaysMissing) {
     try {
       const n = await vaultClient(vaultId, { timeoutMs: 10_000 }).getNote(noteId);
       info = n.id === noteId ? infoFromNote(n) : null;
