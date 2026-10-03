@@ -207,22 +207,27 @@ test("M2: discarding a conflict never lets the next save overwrite the server's 
   await context.setOffline(false);
   const review = page.getByRole("button", { name: /Needs review/ }).first();
   await expect(review).toBeVisible({ timeout: 20000 });
-  // While it waits for review, a fresh read is the SERVER's page, not the stuck text on the server's revision.
-  const fresh = await client<{ content: string }>(page, `c.getNote("workspace", { fresh: true })`);
-  expect(fresh.content).toBe("<p>Server version from another device.</p>");
+  // While it waits for review the draft is still readable — paired with ITS base
+  // revision, never with the server's newest one (a save built on it must conflict).
+  const serverRevision = await page.evaluate(() => (window as any).prismShell.note("workspace").updatedAt as string);
+  const fresh = await client<{ content: string; updatedAt: string }>(page, `c.getNote("workspace", { fresh: true })`);
+  expect(fresh.content).toContain("Mine, offline.");
+  expect(fresh.updatedAt).not.toBe(serverRevision);
   await review.click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Discard…" }).click();
   await dialog.getByRole("button", { name: "Discard saved change" }).click();
   await expect.poll(async () => (await outbox(page)).length).toBe(0);
   await dialog.getByRole("button", { name: "Close" }).click();
+  // The editor reloaded the server's page; the discarded text is gone from it.
+  await expect(editor(page)).toContainText("Server version from another device.");
+  await expect(editor(page)).not.toContainText("Mine, offline.");
   await type(page, " Typed after discarding.");
-  await page.waitForTimeout(4000);
+  await expect.poll(async () => (await server(page, "workspace"))!.content, { timeout: 10000 }).toContain("Typed after discarding.");
   const after = (await server(page, "workspace"))!.content;
-  // Either the page adopted the server's text and saved on top of it, or the new save is held for review — never a silent overwrite.
-  const held = (await outbox(page)).some((r) => r.state === "conflict");
-  expect(after.includes("Server version from another device.") || held).toBe(true);
-  if (!after.includes("Server version from another device.")) expect(after).not.toContain("Typed after discarding.");
+  expect(after).toContain("Server version from another device."); // built on the server's text, not over it
+  expect(after).not.toContain("Mine, offline.");
+  await noReview(page);
 });
 
 test("M3: an offline property edit does not overwrite a value changed elsewhere; nested values need a connection", async ({ page, context }) => {

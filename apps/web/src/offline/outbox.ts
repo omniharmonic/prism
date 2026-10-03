@@ -251,6 +251,7 @@ export async function discardAllCurrent(): Promise<void> {
 }
 
 export async function discard(id: number): Promise<void> {
+  let discardedNote: string | null = null;
   const context = await captureWriteContext();
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
@@ -266,6 +267,7 @@ export async function discard(id: number): Promise<void> {
         reason = "Wait for this change to finish before discarding it.";
       if (reason) { tx.abort(); return; }
       store.delete(id);
+      discardedNote = noteKey(row!);
       // Later saves of the same page were typed on top of the discarded one
       // (review M2): they must not go out as if it had been applied.
       const all = store.getAll();
@@ -281,6 +283,9 @@ export async function discard(id: number): Promise<void> {
       reject(new Error(reason || "Could not remove the saved change."));
   });
   notify();
+  // The open editor may still hold the discarded text: have the app reload the
+  // page from the server so the next save is built on what is really there.
+  if (discardedNote && typeof window !== "undefined") window.dispatchEvent(new CustomEvent("prism:note-discarded", { detail: { noteId: discardedNote } }));
 }
 
 function requiresReview(method: string, body?: string): boolean {
@@ -432,17 +437,19 @@ export async function localNote(
         updatedAt: new Date(item.queuedAt).toISOString(),
       };
     }
-    // Only rows that WILL be sent are laid over the server copy. A row awaiting
-    // review must not be: the cache would pair its text with the server's newest
-    // revision, and the next save would overwrite the server (review M2).
     if (
       note &&
       item.method === "PATCH" &&
-      (item.state === "queued" || item.state === "sending" || target.startsWith("offline-")) &&
       (target === id || ids.get(target)?.noteId === id) &&
       item.body
     ) {
       const body = parse(item.body);
+      // A row awaiting review still shows its text (the draft stays recoverable in
+      // the editor) — but paired with ITS OWN base revision, never the server's
+      // newest one: a save built on it then conflicts instead of overwriting the
+      // server (review M2). Saves to this note also queue behind the stuck row.
+      const waitingForReview = item.state !== "queued" && item.state !== "sending";
+      if (waitingForReview && typeof body.if_updated_at === "string") note = { ...note, updatedAt: body.if_updated_at };
       // Overlay, never replace: a queued metadata write holds only the keys it
       // sets (a database/canvas note must keep prism_type and render as itself).
       note = {
@@ -768,7 +775,12 @@ export async function flush(): Promise<void> {
       const key = noteKey(saved);
       const canonical = map.get(key)?.noteId ?? key;
       const hold = () => { held.add(key); held.add(canonical); };
-      if (saved.state !== "queued") { hold(); continue; }
+      if (saved.state !== "queued") {
+        // Another sender has it: look again once it could be considered dead.
+        if (saved.state === "sending") nextRetry = Math.min(nextRetry, (saved.attemptedAt ?? Date.now()) + staleSendingMs + 50);
+        hold();
+        continue;
+      }
       if (held.has(key) || held.has(canonical)) continue;
       if ((saved.nextAttemptAt ?? 0) > Date.now()) { nextRetry = Math.min(nextRetry, saved.nextAttemptAt!); hold(); continue; }
       const current = await captureWriteContext(true);

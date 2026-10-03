@@ -68,8 +68,15 @@ function ShellLayout() {
       const id = (event as CustomEvent<{ noteId?: string }>).detail?.noteId;
       if (id) void queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
     };
+    // A saved-on-device change was discarded: reload the page from the server and
+    // remount its editor, so nothing typed next is built on the discarded text.
+    const discarded = (event: Event) => {
+      const id = (event as CustomEvent<{ noteId?: string }>).detail?.noteId;
+      if (id) void queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) }).then(() => useUIStore.getState().bumpNoteRevision(id));
+    };
     window.addEventListener("prism:note-confirmed", confirmed);
-    return () => window.removeEventListener("prism:note-confirmed", confirmed);
+    window.addEventListener("prism:note-discarded", discarded);
+    return () => { window.removeEventListener("prism:note-confirmed", confirmed); window.removeEventListener("prism:note-discarded", discarded); };
   }, [queryClient]);
   const peek = useSidebarPeek(!isMobile && !sidebarOpen);
   const swipe = useEdgeSwipe(isMobile && !sidebarOpen);
