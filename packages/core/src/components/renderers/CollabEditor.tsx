@@ -25,6 +25,11 @@ import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
+import "../../lib/tiptap/MentionView";
+import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/MentionSuggest";
+import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
+import { MentionMenu } from "../../lib/tiptap/MentionMenu";
+import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
 
 export interface CollabUser {
   name: string;
@@ -66,6 +71,7 @@ export function CollabEditor({
   wikilinkNotes,
   uploadImage,
   onUploadError,
+  noteId,
 }: {
   ydoc: Y.Doc;
   provider: AwarenessProvider | null;
@@ -108,6 +114,8 @@ export function CollabEditor({
   uploadImage?: ImageUploader;
   /** User-facing upload failure message. */
   onUploadError?: (message: string) => void;
+  /** The note this editor shows (date-chip reminders are created for it). */
+  noteId?: string;
 }) {
   const suggestionBubble = useRef<HTMLDivElement>(null);
   // Inline comment composer anchored to a captured selection range.
@@ -117,6 +125,10 @@ export function CollabEditor({
   const [autocomplete, setAutocomplete] = useState<WikilinkAutocompleteState | null>(null);
   // `/` slash-command menu state.
   const [slash, setSlash] = useState<SlashCommandState | null>(null);
+  // `@` mention menu state.
+  const [mention, setMention] = useState<MentionSuggestState | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const draftMentions = useCommentMentionPicker(draftRef, draft, setDraft);
   const handleUpdate = useCallback(
     ({ editor }: { editor: { getHTML: () => string } }) => onChange?.(editor.getHTML()),
     [onChange],
@@ -145,6 +157,8 @@ export function CollabEditor({
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SlashCommand.configure({ onStateChange: setSlash }),
+      MentionSuggest.configure({ onStateChange: setMention }),
+      MentionContext.configure({ noteId: noteId ?? null }),
       BlockKeymap,
       ImageUpload.configure({
         upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
@@ -178,6 +192,8 @@ export function CollabEditor({
     const store = editor?.storage as unknown as Record<string, { active: boolean }> | undefined;
     if (store?.commentOnly) store.commentOnly.active = !!commentOnly;
   }, [editor, commentOnly]);
+
+  useEffect(() => setMentionNoteId(editor, noteId ?? null), [editor, noteId]);
 
   useEffect(() => {
     onEditor?.(editor);
@@ -291,6 +307,9 @@ export function CollabEditor({
         <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
       )}
 
+      {/* `@` mention menu: people, pages, dates, reminders */}
+      {editor && mention?.active && <MentionMenu editor={editor} state={mention} notes={wikilinkNotes || []} />}
+
       {/* Comment composer, anchored to the captured selection. */}
       {composer && editor && (
         <div
@@ -308,14 +327,20 @@ export function CollabEditor({
           }}
         >
           <textarea
+            ref={draftRef}
             autoFocus
+            aria-label="Comment"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onSelect={draftMentions.onSelect}
+            onInput={draftMentions.onInput}
+            {...draftMentions.fieldProps}
             onKeyDown={(e) => {
+              if (draftMentions.onKeyDown(e)) return;
               if (e.key === "Escape") setComposer(null);
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitComment();
             }}
-            placeholder="Add a comment…  (⌘↵ to post)"
+            placeholder="Add a comment… @ to mention  (⌘↵ to post)"
             rows={3}
             style={{
               width: "100%",
@@ -331,6 +356,7 @@ export function CollabEditor({
               boxSizing: "border-box",
             }}
           />
+          {draftMentions.menu}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
             <button
               onClick={() => setComposer(null)}

@@ -18,18 +18,20 @@ self.addEventListener("push", (event) => {
     data = {};
   }
   const isTurn = data && data.type === "agent-turn" && typeof data.sessionId === "string";
+  // Wave 2A inbox items: ids only — the generic text never names a page or person.
+  const isNote = data && data.type === "notification" && typeof data.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(data.id);
   const failed = isTurn && data.status !== "done";
   const title = "Prism";
-  const body = isTurn ? (failed ? "Agent needs attention" : "Your agent finished") : "Notifications are working";
+  const body = isNote ? "You have a new notification" : isTurn ? (failed ? "Agent needs attention" : "Your agent finished") : "Notifications are working";
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
       // One notification per session: a newer turn replaces the older one.
-      tag: isTurn ? "agent-" + data.sessionId : "prism-test",
+      tag: isNote ? "notification-" + data.id : isTurn ? "agent-" + data.sessionId : "prism-test",
       renotify: true,
-      data: { sessionId: isTurn ? data.sessionId : null },
+      data: { sessionId: isTurn ? data.sessionId : null, notificationId: isNote ? data.id : null },
     }),
   );
 });
@@ -37,14 +39,16 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const sessionId = event.notification.data && event.notification.data.sessionId;
-  // sessionId is a server uuid; encode defensively anyway.
-  const target = sessionId ? "/agent/" + encodeURIComponent(sessionId) : "/";
+  const notificationId = event.notification.data && event.notification.data.notificationId;
+  // Ids are server uuids; encode defensively anyway.
+  const target = notificationId ? "/inbox/" + encodeURIComponent(notificationId) : sessionId ? "/agent/" + encodeURIComponent(sessionId) : "/";
   event.waitUntil(
     (async () => {
       const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const win = wins.find((c) => new URL(c.url).origin === self.location.origin);
       if (win) {
-        if (sessionId) win.postMessage({ type: "prism:open-agent-session", sessionId });
+        if (notificationId) win.postMessage({ type: "prism:open-notification", notificationId });
+        else if (sessionId) win.postMessage({ type: "prism:open-agent-session", sessionId });
         return win.focus();
       }
       return self.clients.openWindow(target);

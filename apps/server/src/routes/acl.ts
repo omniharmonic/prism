@@ -112,6 +112,7 @@ import { getSecret, secretsConfigured } from "../secrets";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, copyFile } from "node:fs/promises";
+import { notifyShare } from "../notifications";
 const pexec = promisify(execFile);
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -615,6 +616,8 @@ acl.put("/notes/:id/people", async (c) => {
   const denied = await denyEscalation(c, { kind: "note", resource: c.req.param("id") }, normEmail(email), caps ?? expandLevel(lvl));
   if (denied) return denied;
   const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "note", c.req.param("id"), grantAuthor(c), resolveActor(c).vaultId, caps);
+  // Wave 2A inbox: "shared a page with you" (ids only; view re-checked at delivery).
+  { const a = resolveActor(c); notifyShare({ vaultId: a.vaultId, noteId: c.req.param("id"), recipient: normEmail(email), actorEmail: a.kind === "user" ? a.email : null }); }
   return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
 

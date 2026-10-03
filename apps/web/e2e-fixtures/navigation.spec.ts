@@ -62,7 +62,7 @@ test("sidebar preferences pin, hide and order tools without changing document da
   await page.screenshot({ path: testInfo.outputPath("sidebar-preferences.png") });
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   const primary = page.getByRole("navigation", { name: "Workspace destinations" });
-  expect(await primary.getByRole("button").allTextContents()).toEqual(["Messages", "", "People", "Calendar"]);
+  expect(await primary.getByRole("button").allTextContents()).toEqual(["Home", "Messages", "", "People", "Calendar"]);
   expect(await page.evaluate(() => (window as any).prismFixtureWrites)).toEqual([]);
   await page.reload();
   await expect(primary.getByRole("button", { name: "People", exact: true })).toBeVisible();

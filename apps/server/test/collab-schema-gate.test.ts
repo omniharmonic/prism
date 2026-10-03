@@ -33,11 +33,11 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 // ── 1. The schema is pinned to its version ───────────────────────────────────
 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
-const SCHEMA_V2 = {
+const SCHEMA_V3 = {
   nodes: {
     blockquote: ["blockColor"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], codeBlock: ["language"], column: [],
     columns: [], doc: [], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["alt", "height", "src", "title", "width"],
-    listItem: [], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "colspan", "colwidth", "rowspan"],
+    listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "colspan", "colwidth", "rowspan"],
     tableHeader: ["align", "colspan", "colwidth", "rowspan"], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor"], toggleSummary: [],
   },
   marks: {
@@ -54,8 +54,8 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
     nodes: names(Object.fromEntries(Object.entries(schema.nodes).map(([k, v]) => [k, v.spec]))),
     marks: names(Object.fromEntries(Object.entries(schema.marks).map(([k, v]) => [k, v.spec]))),
   };
-  assert.equal(COLLAB_SCHEMA_VERSION, 2, "bump the snapshot above together with the version");
-  assert.deepEqual(actual, SCHEMA_V2, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V2");
+  assert.equal(COLLAB_SCHEMA_VERSION, 3, "bump the snapshot above together with the version");
+  assert.deepEqual(actual, SCHEMA_V3, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V3");
 });
 
 test("schema params parse strictly", () => {
@@ -188,7 +188,13 @@ test("the non-owner route is gated the same way", async () => {
   grantUser(EDITOR, "tag", "team", "edit");
   fv.put({ id: "r3", content: V2, tags: ["team"] });
   assert.equal((await patch("r3", { content: "<p>x</p>" }, {}, EDITOR)).status, 409);
-  assert.equal((await patch("r3", { content: `${V2}<p>y</p>` }, { "X-Prism-Editor-Schema": "2" }, EDITOR)).status, 200);
+  assert.equal((await patch("r3", { content: `${V2}<p>y</p>` }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) }, EDITOR)).status, 200);
+});
+
+test("v3: a stored mention chip refuses a v2 editor's content write", async () => {
+  fv.put({ id: "m3", content: '<p>Hi <span data-type="mention" data-kind="person" data-id="p1" data-label="Ada">@Ada</span></p>', tags: [] });
+  assert.equal((await patch("m3", { content: "<p>Hi @Ada</p>" }, { "X-Prism-Editor-Schema": "2" })).status, 409);
+  assert.equal((await patch("m3", { content: "<p>Hi again</p>" }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) })).status, 200);
 });
 
 test("in-process MCP dispatches (agents) are exempt", async () => {
