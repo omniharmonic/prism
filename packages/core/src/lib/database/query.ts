@@ -52,6 +52,9 @@ export interface QuerySpec {
   fields?: string[];
   /** Case-insensitive substring over the title. */
   search?: string;
+  /** The caller's `Date#getTimezoneOffset()` (minutes, −840…840): `@today` and
+   *  date-vs-datetime comparisons use the caller's local day. Default 0 (UTC). */
+  tzOffset?: number;
 }
 
 /** The lean note shape the engine evaluates (no content). */
@@ -63,6 +66,7 @@ export interface QueryInput {
   updatedAt: string | null;
   metadata: Record<string, unknown> | null;
   _caps?: string[];
+  canEdit?: boolean;
 }
 export interface QueryRow {
   id: string;
@@ -74,6 +78,8 @@ export interface QueryRow {
   metadata: Record<string, unknown>;
   /** Non-owner, signed-in rows only (the gateway's caps annotation). */
   _caps?: string[];
+  /** Whether THIS caller may edit the row (server answer; absent from the fallback engine). */
+  canEdit?: boolean;
 }
 export interface QueryPage {
   rows: QueryRow[];
@@ -165,6 +171,10 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
     }
     spec.fields = [...new Set(raw.fields as string[])];
   }
+  if (raw.tzOffset !== undefined) {
+    if (typeof raw.tzOffset !== "number" || !Number.isInteger(raw.tzOffset) || Math.abs(raw.tzOffset) > 840) return { ok: false, error: "tzOffset must be minutes in −840…840" };
+    spec.tzOffset = raw.tzOffset;
+  }
   if (raw.search !== undefined && raw.search !== "") {
     if (typeof raw.search !== "string" || raw.search.length > 200) return { ok: false, error: "search must be ≤200 chars" };
     spec.search = raw.search;
@@ -212,20 +222,37 @@ const norm = (v: string) => v.trim().replace(/^\[\[(.*)\]\]$/, "$1").replace(/\|
 
 const isEmpty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
 
-/** `@today`, `@today+7`, `@today-3` → YYYY-MM-DD (UTC) relative to `now`. */
-export function resolveRelative(v: unknown, now: Date): unknown {
+/** `@today`, `@today+7`, `@today-3` → YYYY-MM-DD on the caller's local day. */
+export function resolveRelative(v: unknown, now: Date, tzOffset = 0): unknown {
   if (typeof v !== "string") return v;
   const m = v.match(/^@today([+-]\d{1,4})?$/);
   if (!m) return v;
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const d = new Date(now.getTime() - tzOffset * 60_000);
   d.setUTCDate(d.getUTCDate() + Number(m[1] ?? 0));
   return d.toISOString().slice(0, 10);
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}[\d:.]*(Z|[+-]\d{2}:?\d{2})?)?$/;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const HAS_ZONE = /(Z|[+-]\d{2}:?\d{2})$/;
+/** Instant of an ISO datetime; a zone-less one is wall time in the caller's zone. */
+function instant(s: string, tzOffset: number): number {
+  if (HAS_ZONE.test(s)) return Date.parse(s.replace(" ", "T"));
+  return Date.parse(`${s.replace(" ", "T")}Z`) + tzOffset * 60_000;
+}
+/** The caller's local calendar day of an ISO date/datetime. */
+function localDay(s: string, tzOffset: number): string {
+  if (DATE_ONLY.test(s) || !HAS_ZONE.test(s)) return s.slice(0, 10);
+  const t = Date.parse(s.replace(" ", "T"));
+  return Number.isNaN(t) ? s.slice(0, 10) : new Date(t - tzOffset * 60_000).toISOString().slice(0, 10);
+}
 
-/** Total order for two present scalar values: numbers, then ISO dates, then text. */
-export function compareValues(a: unknown, b: unknown): number {
+/**
+ * Total order for two present scalar values: numbers, then ISO dates (a date vs
+ * a datetime compares the datetime's LOCAL day; two datetimes compare as
+ * instants, across zones), then text.
+ */
+export function compareValues(a: unknown, b: unknown, tzOffset = 0): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   if (typeof a === "boolean" || typeof b === "boolean") return Number(a === true) - Number(b === true);
   const sa = String(a);
@@ -234,20 +261,27 @@ export function compareValues(a: unknown, b: unknown): number {
   const nb = Number(sb);
   if (sa.trim() !== "" && sb.trim() !== "" && Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
   if (ISO_DATE.test(sa) && ISO_DATE.test(sb)) {
-    // Date-only vs datetime: compare on the shared prefix first, so "2026-10-02"
-    // equals any time on that day for gt/lt purposes.
-    const len = Math.min(sa.length, sb.length) === 10 ? 10 : Math.max(sa.length, sb.length);
-    return sa.slice(0, len) < sb.slice(0, len) ? -1 : sa.slice(0, len) > sb.slice(0, len) ? 1 : 0;
+    if (DATE_ONLY.test(sa) || DATE_ONLY.test(sb)) {
+      const da = localDay(sa, tzOffset);
+      const dbb = localDay(sb, tzOffset);
+      return da < dbb ? -1 : da > dbb ? 1 : 0;
+    }
+    const ia = instant(sa, tzOffset);
+    const ib = instant(sb, tzOffset);
+    if (!Number.isNaN(ia) && !Number.isNaN(ib)) return ia - ib;
   }
   return norm(sa).localeCompare(norm(sb));
 }
 
-function equalsOne(actual: unknown, expected: unknown): boolean {
-  if (Array.isArray(actual)) return actual.some((a) => equalsOne(a, expected));
+function equalsOne(actual: unknown, expected: unknown, tz = 0): boolean {
+  if (Array.isArray(actual)) return actual.some((a) => equalsOne(a, expected, tz));
   if (isEmpty(actual)) return isEmpty(expected);
-  if (typeof actual === "string" && typeof expected === "string") return norm(actual) === norm(expected);
+  if (typeof actual === "string" && typeof expected === "string") {
+    if (ISO_DATE.test(actual.trim()) && ISO_DATE.test(expected.trim())) return compareValues(actual.trim(), expected.trim(), tz) === 0;
+    return norm(actual) === norm(expected);
+  }
   if (typeof actual === "boolean" || typeof expected === "boolean") return String(actual) === String(expected);
-  return compareValues(actual, expected) === 0;
+  return compareValues(actual, expected, tz) === 0;
 }
 
 function contains(actual: unknown, needle: unknown): boolean {
@@ -257,36 +291,37 @@ function contains(actual: unknown, needle: unknown): boolean {
   return norm(String(actual)).includes(n);
 }
 
-function ordered(actual: unknown, expected: unknown, test: (c: number) => boolean): boolean {
+function ordered(actual: unknown, expected: unknown, test: (c: number) => boolean, tz: number): boolean {
   if (isEmpty(actual) || isEmpty(expected)) return false;
   const values = Array.isArray(actual) ? actual : [actual];
-  return values.some((v) => !isEmpty(v) && test(compareValues(v, expected)));
+  return values.some((v) => !isEmpty(v) && test(compareValues(v, expected, tz)));
 }
 
-export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date()): boolean {
+export function evaluateCondition(n: QueryInput, c: QueryCondition, now = new Date(), tzOffset = 0): boolean {
   const actual = readKey(n, c.key);
-  const value = resolveRelative(c.value, now);
+  const value = resolveRelative(c.value, now, tzOffset);
+  const tz = tzOffset;
   switch (c.op) {
-    case "eq": return equalsOne(actual, value);
-    case "ne": return !equalsOne(actual, value);
-    case "in": return (value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now)));
-    case "nin": return !(value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now)));
+    case "eq": return equalsOne(actual, value, tz);
+    case "ne": return !equalsOne(actual, value, tz);
+    case "in": return (value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now, tz), tz));
+    case "nin": return !(value as unknown[]).some((v) => equalsOne(actual, resolveRelative(v, now, tz), tz));
     case "contains": return contains(actual, value);
     case "not_contains": return !contains(actual, value);
-    case "gt": return ordered(actual, value, (x) => x > 0);
-    case "gte": return ordered(actual, value, (x) => x >= 0);
-    case "lt": return ordered(actual, value, (x) => x < 0);
-    case "lte": return ordered(actual, value, (x) => x <= 0);
+    case "gt": return ordered(actual, value, (x) => x > 0, tz);
+    case "gte": return ordered(actual, value, (x) => x >= 0, tz);
+    case "lt": return ordered(actual, value, (x) => x < 0, tz);
+    case "lte": return ordered(actual, value, (x) => x <= 0, tz);
     case "exists": return !isEmpty(actual);
     case "not_exists": return isEmpty(actual);
   }
 }
 
-export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date()): boolean {
+export function matchesFilter(n: QueryInput, f: QueryFilter | undefined, now = new Date(), tzOffset = 0): boolean {
   if (!f || !f.conditions.length) return true;
   return f.match === "all"
-    ? f.conditions.every((c) => evaluateCondition(n, c, now))
-    : f.conditions.some((c) => evaluateCondition(n, c, now));
+    ? f.conditions.every((c) => evaluateCondition(n, c, now, tzOffset))
+    : f.conditions.some((c) => evaluateCondition(n, c, now, tzOffset));
 }
 
 function sortValue(n: QueryInput, key: string): unknown {
@@ -295,7 +330,7 @@ function sortValue(n: QueryInput, key: string): unknown {
 }
 
 /** Stable multi-key sort; missing values last in either direction; id breaks ties. */
-export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | undefined): T[] {
+export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | undefined, tzOffset = 0): T[] {
   const keys = sort?.length ? sort : [{ key: "$updatedAt", dir: "desc" as const }];
   return [...rows].sort((a, b) => {
     for (const s of keys) {
@@ -307,7 +342,7 @@ export function sortRows<T extends QueryInput>(rows: T[], sort: QuerySort[] | un
         if (ea && eb) continue;
         return ea ? 1 : -1;
       }
-      const c = compareValues(va, vb);
+      const c = compareValues(va, vb, tzOffset);
       if (c !== 0) return s.dir === "asc" ? c : -c;
     }
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -364,6 +399,7 @@ export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRo
     updatedAt: n.updatedAt,
     metadata,
     ...(n._caps ? { _caps: n._caps } : {}),
+    ...(typeof n.canEdit === "boolean" ? { canEdit: n.canEdit } : {}),
   };
 }
 
@@ -383,10 +419,10 @@ export function runQuery(
   const matched = notes.filter(
     (n) =>
       spec.tags.every((t) => (n.tags ?? []).includes(t)) &&
-      matchesFilter(n, spec.filter, now) &&
+      matchesFilter(n, spec.filter, now, spec.tzOffset ?? 0) &&
       (!needle || noteTitle(n).toLowerCase().includes(needle)),
   );
-  const sorted = sortRows(matched, spec.sort);
+  const sorted = sortRows(matched, spec.sort, spec.tzOffset ?? 0);
   const limit = spec.limit ?? QUERY_DEFAULT_LIMIT;
   const page = sorted.slice(offset, offset + limit);
   const end = offset + page.length;

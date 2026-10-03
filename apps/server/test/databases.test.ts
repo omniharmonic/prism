@@ -9,7 +9,7 @@ import { api } from "../src/routes/api";
 import { addGrant } from "../src/db";
 import type { Cap } from "../src/permissions";
 import { resetTreeForTests } from "../src/tree";
-import { resetDatabaseCachesForTests, setSchemaAdminMinter } from "../src/routes/databases";
+import { resetDatabaseCachesForTests, setSchemaAdminMinter, setQueryCacheLimitsForTests } from "../src/routes/databases";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -289,11 +289,178 @@ test("query: without `fields` rows carry whole metadata (never content); non-own
   const owner = (await (await query({ tags: ["task"], search: "alpha" }, login(OWNER))).json()) as any;
   assert.deepEqual(Object.keys(owner.rows[0].metadata).sort(), ["due", "points", "prism_creator", "status", "title"]);
   const listing = fv.calls.find((call) => call.method === "GET" && call.path.endsWith("/notes"))!;
-  assert.doesNotMatch(listing.search, /include_metadata=/, "whole metadata");
+  assert.match(listing.search, /include_metadata=/, "a tag with a schema lists its canonical keys");
   assert.doesNotMatch(listing.search, /include_content=true/);
+  fv.put({ id: "f1", tags: ["plain"], metadata: { title: "Free", mood: "calm" } });
+  const free = (await (await query({ tags: ["plain"] }, login(OWNER))).json()) as any;
+  assert.deepEqual(free.rows[0].metadata, { title: "Free", mood: "calm" }, "no schema → whole metadata");
+  const plainListing = fv.calls.filter((call) => call.method === "GET" && /tag=plain/.test(call.search)).at(-1)!;
+  assert.doesNotMatch(plainListing.search, /include_metadata=/);
   assert.equal(JSON.stringify(owner).includes("BODY-"), false);
   grantUser("kai@test.local", "tag", "task", "view");
   const member = (await (await query({ tags: ["task"], search: "alpha" }, login("kai@test.local"))).json()) as any;
   assert.equal(member.rows[0].metadata.prism_creator, undefined);
   assert.equal(member.rows[0].metadata.points, 3);
+});
+
+// ── review fixes (H1, M1, M2, L1, L5, L6) ───────────────────────────────────
+
+/** Query listings (tag-filtered); the tree projection's own build is not one. */
+const listings = () => fv.calls.filter((call) => call.method === "GET" && call.path.endsWith("/notes") && /[?&]tag=/.test(call.search));
+
+test("H1: a non-admin querying a tag they cannot see gets nothing and costs no vault listing", async () => {
+  seedTasks();
+  fv.put({ id: "e1", tags: ["email"], metadata: { title: "Secret mail" } });
+  addGrant({ subject_type: "user", subject: "nina@test.local", resource_type: "note", resource: "t2", level: "view", created_by: "test" });
+  const r = await query({ tags: ["email"] }, login("nina@test.local"));
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as any;
+  assert.deepEqual(body.rows, []);
+  assert.equal(body.total, 0);
+  assert.equal(body.limited, true);
+  assert.equal(listings().length, 0, "no vault listing for an unseen tag");
+  // A capability link for an unrelated note: same.
+  const { makeCapability } = await import("./helpers");
+  const cap = makeCapability("note", "t2", "view");
+  const viaLink = await req("/query", { method: "POST", headers: { ...J, authorization: `Capability ${cap}` }, body: JSON.stringify({ tags: ["email"] }) });
+  assert.deepEqual(((await viaLink.json()) as any).rows, []);
+  assert.equal(listings().length, 0);
+  // The tag of a note they CAN view is allowed.
+  const ok = (await (await query({ tags: ["task"] }, login("nina@test.local"))).json()) as any;
+  assert.deepEqual(ok.rows.map((x: any) => x.id), ["t2"]);
+});
+
+test("H1: varying `fields` reuses ONE canonical listing per tag; projection happens per response", async () => {
+  seedTasks();
+  const cookie = login(OWNER);
+  await query({ tags: ["task"], fields: ["status"] }, cookie);
+  await query({ tags: ["task"], fields: ["due"] }, cookie);
+  const third = (await (await query({ tags: ["task"], fields: ["points"], search: "alpha" }, cookie)).json()) as any;
+  assert.equal(listings().length, 1);
+  assert.deepEqual(third.rows[0].metadata, { title: "Alpha", points: 3 });
+  assert.match(listings()[0]!.search, /order_by=updated_at/, "deterministic order from the vault");
+});
+
+test("H1: the listing cache is LRU-bounded", async () => {
+  seedTasks();
+  fv.put({ id: "x1", tags: ["alpha"], metadata: {} });
+  fv.put({ id: "x2", tags: ["beta"], metadata: {} });
+  setQueryCacheLimitsForTests({ entries: 2, rows: 1000 });
+  try {
+    const cookie = login(OWNER);
+    await query({ tags: ["task"] }, cookie);
+    await query({ tags: ["alpha"] }, cookie);
+    await query({ tags: ["beta"] }, cookie); // evicts task
+    await query({ tags: ["beta"] }, cookie);
+    await query({ tags: ["task"] }, cookie);
+    assert.equal(listings().length, 4);
+  } finally {
+    setQueryCacheLimitsForTests(null);
+  }
+});
+
+test("H1: /query is rate limited per actor", async () => {
+  seedTasks();
+  grantUser("rate@test.local", "tag", "task", "view");
+  process.env.QUERY_RATE_PER_MINUTE = "3";
+  try {
+    const cookie = login("rate@test.local");
+    const codes = [];
+    for (let i = 0; i < 5; i++) codes.push((await query({ tags: ["task"] }, cookie)).status);
+    assert.deepEqual(codes, [200, 200, 200, 429, 429]);
+  } finally {
+    delete process.env.QUERY_RATE_PER_MINUTE;
+  }
+});
+
+test("M1: property writes and queries refuse non-JSON and cross-site requests", async () => {
+  seedTasks();
+  const cookie = login(OWNER);
+  const form = await req("/properties/t1", { method: "POST", cookie, headers: { "content-type": "text/plain" }, body: JSON.stringify({ set: { status: "done" } }) });
+  assert.equal(form.status, 415);
+  const cross = await req("/properties/t1", { method: "POST", cookie, headers: { ...J, "sec-fetch-site": "cross-site" }, body: JSON.stringify({ set: { status: "done" } }) });
+  assert.equal(cross.status, 403);
+  const evil = await req("/properties/t1", { method: "POST", cookie, headers: { ...J, origin: "https://evil.example" }, body: JSON.stringify({ set: { status: "done" } }) });
+  assert.equal(evil.status, 403);
+  assert.equal((await req("/query", { method: "POST", cookie, headers: { "content-type": "text/plain" }, body: JSON.stringify({ tags: ["task"] }) })).status, 415);
+  assert.equal(fv.calls.filter((call) => call.method === "PATCH").length, 0);
+  assert.equal(fv.notes.get("t1")!.metadata!.status, "todo");
+});
+
+test("M2: the scan cap applies AFTER permission filtering; truncated never reveals hidden notes", async () => {
+  for (let i = 0; i < 6; i++) fv.put({ id: `h${i}`, tags: ["task"], metadata: { title: `Hidden ${i}`, prism_creator: "x@test.local", prism_visibility: "private" }, updatedAt: `2026-10-0${i + 1}T00:00:00.000Z` });
+  fv.put({ id: "v1", tags: ["task"], metadata: { title: "Visible" }, updatedAt: "2026-01-01T00:00:00.000Z" });
+  grantUser("kai@test.local", "tag", "task", "view");
+  process.env.QUERY_SCAN_MAX = "3";
+  try {
+    const member = (await (await query({ tags: ["task"] }, login("kai@test.local"))).json()) as any;
+    assert.deepEqual(member.rows.map((x: any) => x.id), ["v1"], "a visible row past the raw cut still appears");
+    assert.equal(member.truncated, false, "hidden notes never make a non-owner's view 'truncated'");
+    const owner = (await (await query({ tags: ["task"] }, login(OWNER))).json()) as any;
+    assert.equal(owner.truncated, true);
+    assert.equal(owner.total, 3);
+  } finally {
+    delete process.env.QUERY_SCAN_MAX;
+  }
+});
+
+test("L1: property writes take a strict note id and refuse aliases the vault would resolve", async () => {
+  seedTasks();
+  const cookie = login(OWNER);
+  assert.equal((await setProps(encodeURIComponent("Tasks/Alpha"), { set: { status: "done" } }, cookie)).status, 404);
+  assert.equal((await setProps("Alpha", { set: { status: "done" } }, cookie)).status, 404, "a title alias resolves to t1 — refused");
+  assert.equal(fv.calls.filter((call) => call.method === "PATCH").length, 0);
+});
+
+test("L5: query rows say whether the caller can edit them", async () => {
+  seedTasks();
+  grantUser("viewer@test.local", "tag", "task", "view");
+  grantUser("kai@test.local", "tag", "task", "edit");
+  const v = (await (await query({ tags: ["task"], search: "alpha" }, login("viewer@test.local"))).json()) as any;
+  assert.equal(v.rows[0].canEdit, false);
+  const k = (await (await query({ tags: ["task"], search: "alpha" }, login("kai@test.local"))).json()) as any;
+  assert.equal(k.rows[0].canEdit, true);
+  const o = (await (await query({ tags: ["task"], search: "alpha" }, login(OWNER))).json()) as any;
+  assert.equal(o.rows[0].canEdit, true);
+  const { makeCapability } = await import("./helpers");
+  const cap = makeCapability("tag", "task", "view");
+  const l = (await (await req("/query", { method: "POST", headers: { ...J, authorization: `Capability ${cap}` }, body: JSON.stringify({ tags: ["task"], search: "alpha" }) })).json()) as any;
+  assert.equal(l.rows[0].canEdit, false);
+  assert.equal(l.rows[0]._caps, undefined);
+});
+
+test("L6: system and ingest tags are protected from risky schema edits", async () => {
+  seedTasks();
+  const cookie = login(OWNER);
+  vaultTags.push({ name: "governance-role", count: 1, description: null, fields: { name: { type: "string" } } });
+  assert.equal((await put("governance-role", { fields: { extra: { type: "string" } } }, cookie)).status, 403);
+  assert.equal((await put("agent-skill", { fields: { extra: { type: "string" } } }, cookie)).status, 403);
+  const dflt = await put("task", { fields: { size: { type: "number", default: 1 } } }, cookie);
+  assert.equal(dflt.status, 409);
+  assert.equal(((await dflt.json()) as any).error, "protected_tag");
+  fv.put({ id: "t9", tags: ["task"], metadata: { title: "Odd", effort: "three" } });
+  const clash = await put("task", { fields: { effort: { type: "number" } } }, cookie);
+  assert.equal(clash.status, 409);
+  assert.equal(((await clash.json()) as any).error, "type_conflict");
+  assert.equal(tagPuts.length, 0);
+  assert.equal((await put("task", { fields: { size: { type: "number" } } }, cookie)).status, 200, "a new, unused field is still fine");
+});
+
+test("L6: concurrent schema edits serialise; neither field is lost", async () => {
+  const cookie = login(OWNER);
+  const [a, b] = await Promise.all([
+    put("task", { fields: { alpha_f: { type: "string" } } }, cookie),
+    put("task", { fields: { beta_f: { type: "string" } } }, cookie),
+  ]);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  const fields = vaultTags.find((t) => t.name === "task")!.fields;
+  assert.ok("alpha_f" in fields && "beta_f" in fields);
+});
+
+test("L5: GET /schemas says whether the caller may change schemas", async () => {
+  seedTasks();
+  grantUser("kai@test.local", "tag", "task", "edit");
+  assert.equal(((await (await req("/schemas", { cookie: login(OWNER) })).json()) as any).canEdit, true);
+  assert.equal(((await (await req("/schemas", { cookie: login("kai@test.local") })).json()) as any).canEdit, false);
 });

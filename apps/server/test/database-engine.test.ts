@@ -116,3 +116,15 @@ test("schema merge: additive only", () => {
   assert.equal(validateSchemaPatch({ fields: { _hidden: { type: "string" } } }).ok, false);
   assert.equal(validateSchemaPatch({}).ok, false);
 });
+
+test("L2: @today and dates resolve in the caller's timezone; datetimes compare as instants", () => {
+  // UTC-7 (getTimezoneOffset = 420): at 03:00Z on Oct 6 it is still Oct 5 locally.
+  const now = new Date("2026-10-06T03:00:00Z");
+  const a = n("a", { due: "2026-10-05", at: "2026-10-06T02:00:00Z", meet: "2026-10-05T10:00:00+02:00" });
+  assert.ok(evaluateCondition(a, { key: "due", op: "eq", value: "@today" }, now, 420));
+  assert.ok(evaluateCondition(a, { key: "at", op: "eq", value: "2026-10-05" }, now, 420), "a datetime falls on its local day");
+  assert.ok(!evaluateCondition(a, { key: "at", op: "eq", value: "2026-10-05" }, now, 0));
+  assert.ok(evaluateCondition(a, { key: "meet", op: "lt", value: "2026-10-05T09:30:00Z" }, now, 0), "08:00Z < 09:30Z across zones");
+  assert.equal(validateQuerySpec({ tags: ["a"], tzOffset: 9999 }).ok, false);
+  assert.equal(validateQuerySpec({ tags: ["a"], tzOffset: -330 }).ok, true);
+});

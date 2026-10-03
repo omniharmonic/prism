@@ -32,7 +32,8 @@ import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { effectiveCaps, grantedTags, type Cap, type NoteRef } from "../permissions";
 import { roleAtLeast, roleFloor } from "../roles";
 import { ensureTree, rowRef, treeUpsertNote } from "../tree";
-import { docNameFor, isDocLive, markReconciled } from "../collab";
+import { docNameFor, isDocLive, isNoteId, markReconciled } from "../collab";
+import { consumeRateLimit } from "../middleware/ratelimit";
 import { mintEphemeralAdminToken } from "../mcp-token";
 import { csrfRefusal } from "./actions";
 import {
@@ -129,6 +130,7 @@ async function vaultSchemas(entry: VaultEntry): Promise<Map<string, TagSchema>> 
 export function resetDatabaseCachesForTests(): void {
   schemaCache.clear();
   listCache.clear();
+  listRows = 0;
 }
 
 const hintKey = (vaultId: string, tag: string) => `schema-ui:${vaultId}:${tag}`;
@@ -200,7 +202,7 @@ databasesApi.get("/schemas", async (c) => {
     out[name] = present(schemas.get(name), hints.get(name));
   }
   c.header("Cache-Control", "private, no-store");
-  return c.json({ schemas: out });
+  return c.json({ schemas: out, canEdit: actor.kind === "user" && actor.role === "owner" });
 });
 
 /** Injectable admin-token source (tests). Production: the seeders' ephemeral mint. */
@@ -221,6 +223,36 @@ const echoable = (fields: Record<string, SchemaField>): Record<string, SchemaFie
   return out;
 };
 
+/**
+ * System/ingest tags (review L6). Governance + skill notes are read by code that
+ * signs or schedules them: no schema edits at all. Ingest-owned tags may gain
+ * fields/hints, but never a `default:` (the vault would stamp it into notes the
+ * ingesters own).
+ */
+const LOCKED_TAG = (t: string) => t === "agent-skill" || t === "agent-dispatch" || t.startsWith("governance-");
+const INGEST_TAGS = new Set(["email", "meeting", "message-thread", "message-archive", "person", "transcript", "task", "clickup", "alert"]);
+const JS_TYPE_OK: Record<string, (v: unknown) => boolean> = {
+  string: (v) => typeof v === "string",
+  date: (v) => typeof v === "string",
+  reference: (v) => typeof v === "string",
+  number: (v) => typeof v === "number",
+  integer: (v) => typeof v === "number" && Number.isInteger(v),
+  boolean: (v) => typeof v === "boolean",
+  array: (v) => Array.isArray(v),
+};
+/** One read-merge-write at a time per (vault, tag): two concurrent additive edits must not drop each other. */
+const schemaLocks = new Map<string, Promise<unknown>>();
+async function withSchemaLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = schemaLocks.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  schemaLocks.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (schemaLocks.get(key) === run) schemaLocks.delete(key);
+  }
+}
+
 databasesApi.put("/schemas/:tag", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "changing a schema is owner-only" }, 403);
@@ -232,7 +264,14 @@ databasesApi.put("/schemas/:tag", async (c) => {
   if (!parsed.ok) return c.json({ error: "bad_request", detail: parsed.error }, 400);
   const { patch } = parsed;
   const entry = entryFor(c, actor);
+  if (LOCKED_TAG(tag)) return c.json({ error: "forbidden", reason: "this tag's schema is managed by Prism" }, 403);
+  if (INGEST_TAGS.has(tag) && Object.values(patch.fields ?? {}).some((f) => f.default !== undefined)) {
+    return c.json({ error: "protected_tag", detail: "ingested tags cannot gain a default value" }, 409);
+  }
+  return withSchemaLock(`${entry.id}\u0000${tag}`, () => applySchemaPatch(c, entry, tag, patch));
+});
 
+async function applySchemaPatch(c: Context, entry: VaultEntry, tag: string, patch: import("@prism/core/database").SchemaPatch) {
   let current: TagSchema | undefined;
   try {
     schemaCache.delete(entry.id); // decide against the vault's CURRENT schema
@@ -242,6 +281,23 @@ databasesApi.put("/schemas/:tag", async (c) => {
   }
   const merged = mergeSchemaFields(current?.fields ?? {}, patch.fields ?? {});
   if (!merged.ok) return c.json({ error: "not_additive", detail: merged.error, field: merged.field }, 409);
+  // A NEW field whose name existing notes already use with a different value type
+  // would make those notes fail schema validation on their next write.
+  const added = Object.entries(patch.fields ?? {}).filter(([k, f]) => !current?.fields[k] && f.type);
+  if (added.length) {
+    let sample: Note[];
+    try {
+      sample = await vaultClient(entry.id).listNotes({ tags: [tag], includeMetadata: added.map(([k]) => k), limit: 2000 });
+    } catch (e) {
+      return vaultFailure(c, e);
+    }
+    for (const [k, f] of added) {
+      const ok = JS_TYPE_OK[f.type!] ?? (() => true);
+      if (sample.some((n) => n.metadata?.[k] !== undefined && n.metadata?.[k] !== null && !ok(n.metadata[k]))) {
+        return c.json({ error: "type_conflict", detail: `existing pages already use “${k}” with a different kind of value`, field: k }, 409);
+      }
+    }
+  }
   const description = patch.description ?? current?.description ?? "";
   const vaultChange = merged.changed || (patch.description !== undefined && patch.description !== (current?.description ?? ""));
 
@@ -276,58 +332,129 @@ databasesApi.put("/schemas/:tag", async (c) => {
   schemaCache.delete(entry.id);
   const fresh = vaultChange ? { description: description || null, fields: merged.fields } : current;
   return c.json({ tag, schema: present(fresh, readHints(entry.id).get(tag)) });
-});
+}
 
 // ── query ────────────────────────────────────────────────────────────────────
 
-const SCAN_MAX = Number(process.env.QUERY_SCAN_MAX ?? 20_000);
+// Read per call so an operator (and tests) can tune without a restart.
+const envInt = (name: string, dflt: number) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+};
+/** Rows evaluated per query (after permission filtering, review M2). */
+const scanMax = () => envInt("QUERY_SCAN_MAX", 20_000);
+/** Hard cap on one vault listing (the gateway's own list cap). */
+const RAW_MAX = 50_000;
 const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
-const listCache = new Map<string, { expires: number; value: Promise<Note[]> }>();
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
+const ROW_META = ["title", "type", "prism_type", "icon", "cover"];
 
-function leanList(entry: VaultEntry, tag: string, keys: string[] | null): Promise<Note[]> {
-  const k = `${entry.id}\u0000${tag}\u0000${keys ? [...keys].sort().join(",") : "*"}`;
+/**
+ * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's
+ * schema keys + row/permission keys, or whole metadata for a tag with no schema —
+ * so `fields` only shapes the response and can never force a fresh vault list.
+ * LRU-bounded by entries AND total rows.
+ */
+interface ListEntry { expires: number; value: Promise<Note[]>; rows: number }
+const listCache = new Map<string, ListEntry>();
+let listRows = 0;
+let limits: { entries: number; rows: number } | null = null;
+const cacheLimits = () => limits ?? { entries: envInt("QUERY_CACHE_MAX_ENTRIES", 24), rows: envInt("QUERY_CACHE_MAX_ROWS", 150_000) };
+export function setQueryCacheLimitsForTests(l: { entries: number; rows: number } | null): void {
+  limits = l;
+}
+function evictListing(k: string) {
+  const e = listCache.get(k);
+  if (!e) return;
+  listRows -= e.rows;
+  listCache.delete(k);
+}
+
+async function canonicalListing(entry: VaultEntry, tag: string): Promise<Note[]> {
+  const k = `${entry.id}\u0000${tag}`;
   const hit = listCache.get(k);
-  if (hit && hit.expires > Date.now()) return hit.value;
-  const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys ?? undefined, limit: SCAN_MAX + 1 });
-  listCache.set(k, { expires: Date.now() + LIST_TTL_MS, value });
-  value.catch(() => listCache.delete(k));
-  if (listCache.size > 100) for (const [key, v] of listCache) if (v.expires <= Date.now()) listCache.delete(key);
+  if (hit && hit.expires > Date.now()) {
+    listCache.delete(k); // LRU touch
+    listCache.set(k, hit);
+    return hit.value;
+  }
+  if (hit) evictListing(k);
+  const schema = (await vaultSchemas(entry)).get(tag);
+  const schemaKeys = Object.keys(schema?.fields ?? {});
+  const keys = schemaKeys.length ? [...new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS])] : undefined;
+  const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys, orderBy: "updated_at", limit: RAW_MAX });
+  const e: ListEntry = { expires: Date.now() + LIST_TTL_MS, value, rows: 0 };
+  listCache.set(k, e);
+  value.then((notes) => {
+    if (listCache.get(k) !== e) return;
+    e.rows = notes.length;
+    listRows += notes.length;
+    const { entries, rows } = cacheLimits();
+    for (const key of listCache.keys()) {
+      if (listCache.size <= entries && listRows <= rows) break;
+      if (key !== k) evictListing(key);
+    }
+  }, () => { if (listCache.get(k) === e) listCache.delete(k); });
+  const { entries } = cacheLimits();
+  for (const key of listCache.keys()) {
+    if (listCache.size <= entries) break;
+    if (key !== k) evictListing(key);
+  }
   return value;
 }
 
 databasesApi.post("/query", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind === "anon") return c.json({ error: "unauthorized" }, 401);
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
+  const owner = isAdmin(actor);
+  const who = actor.kind === "user" ? `u:${actor.email}` : actor.kind === "link" ? `l:${actor.capabilityId}` : "anon";
+  const wait = consumeRateLimit(`db-query:${who}`, envInt("QUERY_RATE_PER_MINUTE", owner ? 600 : 120), 60_000);
+  if (wait !== null) {
+    c.header("Retry-After", String(wait));
+    return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+  }
   const parsed = validateQuerySpec(await c.req.json().catch(() => null));
   if (!parsed.ok) return c.json({ error: "bad_request", detail: parsed.error }, 400);
   const spec = parsed.spec;
   const entry = entryFor(c, actor);
-  const owner = isAdmin(actor);
+  const empty = () => c.json({ rows: [], next: null, total: 0, limited: true, truncated: false });
+  // Non-admins may only list tags they can already see (memory-only check) —
+  // anything else is an empty answer that costs the vault nothing.
+  if (!owner) {
+    let seen: Set<string>;
+    try {
+      seen = await visibleTags(actor, entry);
+    } catch (e) {
+      return vaultFailure(c, e);
+    }
+    if (!spec.tags.every((t) => seen.has(t))) return empty();
+  }
   let notes: Note[];
   try {
-    const keys = metadataKeysFor(spec);
-    notes = await leanList(entry, spec.tags[0]!, keys ? [...keys, ...PERMISSION_KEYS] : null);
+    notes = await canonicalListing(entry, spec.tags[0]!);
   } catch (e) {
     return vaultFailure(c, e);
   }
-  const truncated = notes.length > SCAN_MAX;
-  if (truncated) notes = notes.slice(0, SCAN_MAX);
+  const cap = scanMax();
   const stamp = actor.kind === "user" && !owner;
   const visible: QueryInput[] = [];
   for (const n of notes) {
     if (owner) {
-      visible.push(n);
+      visible.push({ ...n, canEdit: true });
       continue;
     }
     const caps = capsFor(actor, ref(n));
-    if (caps.has("view")) visible.push(stamp ? { ...n, _caps: [...caps] } : n);
+    if (!caps.has("view")) continue;
+    visible.push({ ...n, canEdit: caps.has("edit"), ...(stamp ? { _caps: [...caps] } : {}) });
   }
+  // The cut happens AFTER permission filtering (review M2) on a deterministic
+  // updated_at-desc order, so a non-owner's "truncated" counts only rows they see.
+  const truncated = visible.length > cap || (owner && notes.length >= RAW_MAX);
   try {
-    const page = runQuery(visible, spec, { limited: !owner, truncated });
+    const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
     // Permission keys are read for the filter above, never returned unless asked for.
-    // (With `fields` omitted, the owner gets whole metadata as the passthrough would;
-    // a non-owner never gets another person's creator stamp from a listing.)
     for (const r of page.rows) for (const k of PERMISSION_KEYS) if (spec.fields ? !spec.fields.includes(k) : !owner) delete r.metadata[k];
     c.header("Cache-Control", "private, no-store");
     return c.json(page);
@@ -355,6 +482,11 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stri
 databasesApi.post("/properties/:id", async (c) => {
   const actor = resolveActor(c);
   if (actor.kind === "anon") return c.json({ error: "unauthorized" }, 401);
+  const csrf = csrfRefusal(c, requestVia(c));
+  if (csrf) return csrf;
+  // A note is named by its id only — never a path/title alias the vault would resolve (review L1).
+  const id = c.req.param("id");
+  if (!id || !isNoteId(id)) return c.json({ error: "not_found" }, 404);
   const body = (await c.req.json().catch(() => null)) as { set?: unknown; expect?: unknown } | null;
   const set = body?.set;
   if (!set || typeof set !== "object" || Array.isArray(set)) return c.json({ error: "bad_request", detail: "set must be an object" }, 400);
@@ -372,7 +504,6 @@ databasesApi.post("/properties/:id", async (c) => {
 
   const entry = entryFor(c, actor);
   const vc = vaultClient(entry.id);
-  const id = c.req.param("id");
   const patch = Object.fromEntries(entries);
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -382,6 +513,7 @@ databasesApi.post("/properties/:id", async (c) => {
     } catch (e) {
       return vaultFailure(c, e);
     }
+    if (note.id !== id) return c.json({ error: "not_found" }, 404);
     if (!isAdmin(actor)) {
       const caps = capsFor(actor, ref(note));
       if (!caps.has("view")) return c.json({ error: "not_found" }, 404);
@@ -416,7 +548,7 @@ databasesApi.post("/properties/:id", async (c) => {
       if (Number.isFinite(prev) && Number.isFinite(next)) markReconciled(docNameFor(entry.id, id), prev, next);
     }
     treeUpsertNote(entry, updated);
-    for (const k of listCache.keys()) if (k.startsWith(`${entry.id}\u0000`)) listCache.delete(k);
+    for (const k of [...listCache.keys()]) if (k.startsWith(`${entry.id}\u0000`)) evictListing(k);
     const metadata: Record<string, unknown> = { ...(updated.metadata ?? {}) };
     if (!isAdmin(actor)) for (const k of ACCESS_KEYS) delete metadata[k];
     return c.json({ id: updated.id, updatedAt: updated.updatedAt, metadata });
