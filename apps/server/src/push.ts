@@ -22,6 +22,7 @@
  */
 import { db } from "./db";
 import { config } from "./config";
+import { apnsEnabled, sendApnsToOwner, agentTurnNotification } from "./apns";
 
 export type PushTurnStatus = "done" | "error" | "interrupted" | "cancelled" | "queued" | "running";
 
@@ -170,12 +171,22 @@ export async function sendPush(email: string, payload: PushPayload): Promise<{ s
 export function notifyTurnEnd(sessionId: string, turnId: string, status: PushTurnStatus): void {
   if (status !== "done" && status !== "error" && status !== "interrupted") return;
   try {
-    if (!pushEnabled() && !sender) return;
+    const web = pushEnabled() || !!sender;
+    const apns = apnsEnabled();
+    if (!web && !apns) return;
     const row = q.owner.get(sessionId) as { owner_email: string } | undefined;
     if (!row) return;
-    void sendPush(row.owner_email, { type: "agent-turn", sessionId, turnId, status }).catch((e) =>
-      console.error(`[push] notify failed: ${(e as Error).message}`),
-    );
+    if (web) {
+      void sendPush(row.owner_email, { type: "agent-turn", sessionId, turnId, status }).catch((e) =>
+        console.error(`[push] notify failed: ${(e as Error).message}`),
+      );
+    }
+    // iOS (APNs): same ids-only, generic-text contract; independent of web push.
+    if (apns) {
+      void sendApnsToOwner(row.owner_email, agentTurnNotification(sessionId, turnId, status)).catch((e) =>
+        console.error(`[apns] notify failed: ${(e as Error).message}`),
+      );
+    }
   } catch (e) {
     console.error(`[push] notify failed: ${(e as Error).message}`);
   }
