@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
-import { TextSelection } from "@tiptap/pm/state";
+import { TextSelection, type Transaction } from "@tiptap/pm/state";
 import { GripVertical, Plus, Copy, Trash2, ArrowUp, ArrowDown, Repeat2, Palette } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
@@ -11,18 +11,21 @@ import {
   canTurnInto,
   deleteTopBlock,
   duplicateTopBlock,
-  moveTopBlock,
+  moveTopBlockIn,
   setTopBlockColor,
   topBlockAt,
   topLevelBlocks,
   turnTopBlocksInto,
 } from "../../lib/tiptap/blockCommands";
 import { EditorMenu, type EditorMenuItem } from "./EditorMenu";
+import { blockRefAt, locateBlock, mapBlockRef, type BlockRef } from "../../lib/tiptap/blockRef";
 import { TURN_INTO_ICONS, colorLabel } from "./blockUi";
 
 interface Hovered {
   index: number;
   pos: number;
+  /** The block's identity across edits (see blockRef.ts). */
+  ref: BlockRef;
   top: number;
   left: number;
 }
@@ -62,7 +65,7 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
   const [coarse, setCoarse] = useState(() => typeof window !== "undefined" && window.matchMedia(COARSE).matches);
   const [drop, setDrop] = useState<{ index: number; top: number; left: number; width: number } | null>(null);
   const handleRef = useRef<HTMLButtonElement>(null);
-  const dragFrom = useRef<number | null>(null);
+  const dragFrom = useRef<BlockRef | null>(null);
   const menuOpen = menu !== null;
   const menuRef = useRef(menuOpen);
   menuRef.current = menuOpen;
@@ -88,7 +91,9 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     const firstLine = Math.min(rect.height, parseFloat(style.lineHeight) || 24);
     const top = rect.top + parseFloat(style.paddingTop || "0") + Math.max(0, (firstLine - 24) / 2);
     if (top < bounds.top - 4 || top > bounds.bottom - 20) return null;
-    return { index, pos: block.pos, top, left: rect.left };
+    const ref = blockRefAt(editor, block.pos);
+    if (!ref) return null;
+    return { index, pos: block.pos, ref, top, left: rect.left };
   }, [editor]);
 
   const blockIndexAtY = useCallback((y: number): number | null => {
@@ -155,13 +160,28 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     return () => { window.removeEventListener("scroll", onScroll, true); window.removeEventListener("resize", onScroll); };
   }, [hovered?.index, place]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Document edits shift blocks: re-place (and close a menu whose block vanished).
+  // Every edit — local or a collaborator's — may shift or replace blocks: follow
+  // the hovered block by identity; if it is gone, close its menu and cancel a drag.
   useEffect(() => {
-    const onUpdate = () => setHovered((h) => (h ? place(Math.min(h.index, editor.state.doc.childCount - 1)) : h));
+    const onUpdate = ({ transaction }: { transaction: Transaction }) => {
+      if (!viewReady(editor) || !transaction.docChanged) return;
+      if (dragFrom.current) {
+        dragFrom.current = mapBlockRef(dragFrom.current, transaction);
+        if (!locateBlock(editor, dragFrom.current)) { dragFrom.current = null; setDrop(null); }
+      }
+      setHovered((h) => {
+        if (!h) return h;
+        const ref = mapBlockRef(h.ref, transaction);
+        const now = locateBlock(editor, ref);
+        if (!ref || !now) { setMenu(null); return null; }
+        const placed = place(now.index);
+        return placed ? { ...placed, ref } : menuRef.current ? { ...h, ...now, ref } : null;
+      });
+    };
     const onSelection = () => { if (!coarse && !menuRef.current && textRangeSelected(editor)) setHovered(null); };
-    editor.on("update", onUpdate);
+    editor.on("transaction", onUpdate);
     editor.on("selectionUpdate", onSelection);
-    return () => { editor.off("update", onUpdate); editor.off("selectionUpdate", onSelection); };
+    return () => { editor.off("transaction", onUpdate); editor.off("selectionUpdate", onSelection); };
   }, [editor, place, coarse]);
 
   // ⌘/ (Ctrl+/) opens the block menu for the caret's block.
@@ -189,17 +209,20 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     else handleRef.current?.focus({ preventScroll: true });
   }, [editor]);
 
-  const run = (build: () => ReturnType<typeof moveTopBlock>) => {
-    const tr = build();
-    if (tr) editor.view.dispatch(tr);
+  /** Act on the hovered block where it is NOW; refuse if it no longer exists. */
+  const run = (act: (at: { index: number; pos: number }) => Transaction | boolean | null) => {
+    const at = hovered && locateBlock(editor, hovered.ref);
     setMenu(null);
+    if (!at) { setHovered(null); return; }
+    const result = act(at);
+    if (result && typeof result === "object") editor.view.dispatch(result);
     editor.commands.focus();
   };
 
   // ── Drag and drop (desktop) ───────────────────────────────────────────────
   // Drag events are handled at the document in the capture phase while a block
   // drag is active, so ProseMirror's own drop handling never sees them and the
-  // move is exactly one replace step (moveTopBlock).
+  // move is one replace step (plain) or delete+insert (live; moveTopBlockIn).
   useEffect(() => {
     if (!enabled) return;
     const target = (y: number) => {
@@ -235,11 +258,10 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       if (dragFrom.current === null || !viewReady(editor)) return;
       event.preventDefault();
       event.stopPropagation();
-      const from = dragFrom.current;
+      const from = locateBlock(editor, dragFrom.current);
       dragFrom.current = null;
       setDrop(null);
-      const tr = moveTopBlock(editor.state, from, target(event.clientY));
-      if (tr) editor.view.dispatch(tr);
+      if (from) moveTopBlockIn(editor, from.index, target(event.clientY));
       editor.commands.focus();
     };
     document.addEventListener("dragover", onOver, true);
@@ -255,10 +277,13 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
   const gutterLeft = narrow ? Math.max(0, hovered.left - 21) : hovered.left - 52;
 
   const insertBelow = () => {
-    const end = hovered.pos + block.nodeSize;
-    const empty = block.type.name === "paragraph" && block.content.size === 0;
+    const at = locateBlock(editor, hovered.ref);
+    const node = at && editor.state.doc.nodeAt(at.pos);
+    if (!at || !node) { setHovered(null); return; }
+    const end = at.pos + node.nodeSize;
+    const empty = node.type.name === "paragraph" && node.content.size === 0;
     const chain = editor.chain().focus();
-    if (empty) chain.setTextSelection(hovered.pos + 1).insertContent("/");
+    if (empty) chain.setTextSelection(at.pos + 1).insertContent("/");
     else chain.insertContentAt(end, { type: "paragraph", content: [{ type: "text", text: "/" }] }).setTextSelection(end + 2);
     chain.run();
   };
@@ -268,23 +293,23 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
     ...(canTurnInto(block) ? [{ id: "turn", label: "Turn into", icon: <Repeat2 size={15} />, submenu: true, onSelect: () => setMenu("turn") }] : []),
     ...(canColor(block) ? [{ id: "color", label: "Color", icon: <Palette size={15} />, submenu: true, onSelect: () => setMenu("color") }] : []),
-    { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, onSelect: () => run(() => duplicateTopBlock(editor.state, hovered.pos)) },
-    { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌥⇧↑" : "Alt+Shift+↑", disabled: hovered.index === 0, onSelect: () => run(() => moveTopBlock(editor.state, hovered.index, hovered.index - 1)) },
-    { id: "down", label: "Move down", icon: <ArrowDown size={15} />, hint: isMac ? "⌥⇧↓" : "Alt+Shift+↓", disabled: hovered.index >= editor.state.doc.childCount - 1, onSelect: () => run(() => moveTopBlock(editor.state, hovered.index, hovered.index + 2)) },
-    { id: "delete", label: "Delete", icon: <Trash2 size={15} />, danger: true, onSelect: () => run(() => deleteTopBlock(editor.state, hovered.pos)) },
+    { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, onSelect: () => run((at) => duplicateTopBlock(editor.state, at.pos)) },
+    { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌥⇧↑" : "Alt+Shift+↑", disabled: hovered.index === 0, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index - 1)) },
+    { id: "down", label: "Move down", icon: <ArrowDown size={15} />, hint: isMac ? "⌥⇧↓" : "Alt+Shift+↓", disabled: hovered.index >= editor.state.doc.childCount - 1, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index + 2)) },
+    { id: "delete", label: "Delete", icon: <Trash2 size={15} />, danger: true, onSelect: () => run((at) => deleteTopBlock(editor.state, at.pos)) },
   ];
   const turnItems: EditorMenuItem[] = TURN_INTO.map((t) => ({
     id: t.kind,
     label: t.label,
     icon: TURN_INTO_ICONS[t.kind],
     checked: kind === t.kind,
-    onSelect: () => run(() => turnTopBlocksInto(editor.state, hovered.pos + 1, hovered.pos + 1, t.kind)),
+    onSelect: () => run((at) => turnTopBlocksInto(editor.state, at.pos + 1, at.pos + 1, t.kind)),
   }));
   const currentColor = (block.attrs.blockColor as BlockColorValue | null) ?? null;
   const colorItems: EditorMenuItem[] = [
-    { id: "default", label: "Default", section: "Text", checked: currentColor === null, icon: <span className="block-color-swatch" />, onSelect: () => run(() => setTopBlockColor(editor.state, hovered.pos, null)) },
-    ...BLOCK_COLORS.map((c) => ({ id: c, label: colorLabel(c), checked: currentColor === c, icon: <span className="block-color-swatch" data-text-color={c}>A</span>, onSelect: () => run(() => setTopBlockColor(editor.state, hovered.pos, c)) })),
-    ...BLOCK_COLORS.map((c, i) => ({ id: `${c}_background`, section: i === 0 ? "Background" : undefined, label: `${colorLabel(c)} background`, checked: currentColor === `${c}_background`, icon: <span className="block-color-swatch" data-block-color={`${c}_background`} />, onSelect: () => run(() => setTopBlockColor(editor.state, hovered.pos, `${c}_background` as BlockColorValue)) })),
+    { id: "default", label: "Default", section: "Text", checked: currentColor === null, icon: <span className="block-color-swatch" />, onSelect: () => run((at) => setTopBlockColor(editor.state, at.pos, null)) },
+    ...BLOCK_COLORS.map((c) => ({ id: c, label: colorLabel(c), checked: currentColor === c, icon: <span className="block-color-swatch" data-text-color={c}>A</span>, onSelect: () => run((at) => setTopBlockColor(editor.state, at.pos, c)) })),
+    ...BLOCK_COLORS.map((c, i) => ({ id: `${c}_background`, section: i === 0 ? "Background" : undefined, label: `${colorLabel(c)} background`, checked: currentColor === `${c}_background`, icon: <span className="block-color-swatch" data-block-color={`${c}_background`} />, onSelect: () => run((at) => setTopBlockColor(editor.state, at.pos, `${c}_background` as BlockColorValue)) })),
   ];
   const menuTop = Math.min(hovered.top + 28, window.innerHeight - 340);
   const menuStyle: React.CSSProperties = { position: "fixed", top: Math.max(8, menuTop), left: Math.max(8, Math.min(gutterLeft, window.innerWidth - 248)), zIndex: 70 };
@@ -314,7 +339,7 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
           onClick={() => setMenu((m) => (m ? null : "main"))}
           onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); setMenu("main"); } }}
           onDragStart={(event) => {
-            dragFrom.current = hovered.index;
+            dragFrom.current = hovered.ref;
             setMenu(null);
             event.dataTransfer.effectAllowed = "move";
             event.dataTransfer.setData("application/x-prism-block", String(hovered.index));

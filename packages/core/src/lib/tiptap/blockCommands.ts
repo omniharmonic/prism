@@ -146,6 +146,92 @@ export function moveTopBlock(state: EditorState, fromIndex: number, toIndex: num
   return tr.scrollIntoView();
 }
 
+// ── Moves in a LIVE collaborative document ─────────────────────────────────
+// y-prosemirror turns a ProseMirror change into Yjs ops by diffing documents,
+// and a one-step reorder diffs as "every block in the range was rewritten in
+// place". A collaborator typing concurrently into one of those blocks then sees
+// the text land in whichever block now occupies that slot (the review's probe:
+// "XX" typed into "one" while it moved ended up as "XXtwo"). Two transactions —
+// delete the block, then insert it at the target — make Yjs delete exactly that
+// block's element and create one new element; nothing else is touched. Text a
+// collaborator types into the moving block at that instant is dropped with the
+// old element (Yjs has no move), never misplaced. Both transactions fall inside
+// Y.UndoManager's capture window, so they undo as one step.
+
+export interface MovePlan {
+  /** Position before the moving node. */
+  from: number;
+  node: PMNode;
+  /** Where it goes, in the ORIGINAL document's coordinates. */
+  target: number;
+  /** Caret offset from the node's start after the move. */
+  caretOffset: number;
+}
+
+export function planSelectionMove(state: EditorState, dir: -1 | 1): MovePlan | null {
+  const unit = movableUnit(state);
+  if (!unit) return null;
+  const { from, node, parent, index } = unit;
+  const siblingIndex = index + dir;
+  if (siblingIndex < 0 || siblingIndex >= parent.childCount) return null;
+  const sibling = parent.child(siblingIndex);
+  const target = dir === -1 ? from - sibling.nodeSize : from + node.nodeSize + sibling.nodeSize;
+  return { from, node, target, caretOffset: state.selection.from - from };
+}
+
+export function planTopMove(state: EditorState, fromIndex: number, toIndex: number): MovePlan | null {
+  const { doc } = state;
+  const count = doc.childCount;
+  if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex > count) return null;
+  if (toIndex === fromIndex || toIndex === fromIndex + 1) return null;
+  const blocks = topLevelBlocks(doc);
+  const target = toIndex === count ? doc.content.size : blocks[toIndex].pos;
+  return { from: blocks[fromIndex].pos, node: blocks[fromIndex].node, target, caretOffset: 1 };
+}
+
+/** Is this editor bound to a shared Yjs document? */
+export function isCollaborative(editor: { extensionManager: { extensions: Array<{ name: string }> } }): boolean {
+  return editor.extensionManager.extensions.some((e) => e.name === "collaboration");
+}
+
+type Dispatcher = { state: EditorState; dispatch: (tr: Transaction) => void };
+
+/** Delete, then insert at the mapped target: two transactions (see above). */
+export function dispatchSplitMove(view: Dispatcher, plan: MovePlan): void {
+  const del = view.state.tr.delete(plan.from, plan.from + plan.node.nodeSize);
+  view.dispatch(del);
+  const at = del.mapping.map(plan.target);
+  const ins = view.state.tr.insert(at, plan.node);
+  placeCaret(ins, at + plan.caretOffset);
+  view.dispatch(ins.scrollIntoView());
+}
+
+type MoveEditor = Parameters<typeof isCollaborative>[0] & { state: EditorState; view: Dispatcher };
+
+/** Move the caret's block/list item: one step in a plain editor, delete+insert when live. */
+export function moveSelectionBlockIn(editor: MoveEditor, dir: -1 | 1): boolean {
+  if (isCollaborative(editor)) {
+    const plan = planSelectionMove(editor.state, dir);
+    if (plan) dispatchSplitMove(editor.view, plan);
+    return !!plan;
+  }
+  const tr = moveSelectionBlock(editor.state, dir);
+  if (tr) editor.view.dispatch(tr);
+  return !!tr;
+}
+
+/** Move a top-level block: one step in a plain editor, delete+insert when live. */
+export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: number): boolean {
+  if (isCollaborative(editor)) {
+    const plan = planTopMove(editor.state, fromIndex, toIndex);
+    if (plan) dispatchSplitMove(editor.view, plan);
+    return !!plan;
+  }
+  const tr = moveTopBlock(editor.state, fromIndex, toIndex);
+  if (tr) editor.view.dispatch(tr);
+  return !!tr;
+}
+
 export function duplicateTopBlock(state: EditorState, pos: number): Transaction | null {
   const node = state.doc.nodeAt(pos);
   if (!node) return null;
@@ -276,9 +362,7 @@ export const BlockKeymap = Extension.create({
   addKeyboardShortcuts() {
     const move = (dir: -1 | 1) => () => {
       if (!structuralEditsAllowed(this.editor)) return false;
-      const tr = moveSelectionBlock(this.editor.state, dir);
-      if (!tr) return true; // at the edge: swallow so the selection does not jump
-      this.editor.view.dispatch(tr);
+      moveSelectionBlockIn(this.editor, dir); // at the edge: swallowed so the selection does not jump
       return true;
     };
     return {

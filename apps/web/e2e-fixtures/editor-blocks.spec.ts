@@ -132,6 +132,18 @@ test.describe("plain editor block handles", () => {
     expect((await blockTexts(page))[2]).toBe("callout:Inside the callout");
   });
 
+  test("the block menu acts on its block even after an edit above it", async ({ page }) => {
+    const gutter = await gutterFor(page, "Foxtrot closing");
+    await gutter.getByRole("button", { name: /Drag to move/ }).click();
+    await expect(page.getByRole("menu", { name: "Block actions" })).toBeVisible();
+    await page.evaluate(() => (document.querySelector(".tiptap") as any).editor.commands.insertContentAt(0, "<p>Inserted above</p>"));
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    const texts = await blockTexts(page);
+    expect(texts).not.toContain("paragraph:Foxtrot closing");
+    expect(texts).toContain("blockquote:Echo quote");
+    expect(texts[0]).toBe("paragraph:Inserted above");
+  });
+
   test("read-only documents show no block handles", async ({ page }) => {
     await page.goto("/e2e-fixtures/editor-blocks.html?readonly");
     await page.getByText("Bravo paragraph", { exact: true }).hover();
@@ -229,4 +241,113 @@ test("live collaborative editor: a block move reaches the other client and the s
     for (const s of sockets) s.close();
     await server.destroy();
   }
+});
+
+test.describe("live collaborative editor: concurrent edits around block moves", () => {
+  let server: Server;
+  const sockets: WebSocket[] = [];
+  test.beforeEach(async () => {
+    server = new Server({ address: "127.0.0.1", port: 0, quiet: true, debounce: 10, async onAuthenticate() { return { fixture: true }; } });
+    await server.listen();
+  });
+  test.afterEach(async () => {
+    for (const s of sockets.splice(0)) s.close();
+    await server.destroy();
+  });
+
+  /** A client whose outgoing frames can be held (to make edits truly concurrent). */
+  async function client(browser: import("@playwright/test").Browser) {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+    const page = await context.newPage();
+    const ctl = { hold: false, queue: [] as (string | Buffer)[], socket: null as WebSocket | null };
+    await page.routeWebSocket(/\/collab(\?|$)/, (route) => {
+      const socket = new WebSocket(server.webSocketURL); sockets.push(socket); ctl.socket = socket;
+      const pending: (string | Buffer)[] = [];
+      route.onMessage((m) => { if (ctl.hold) ctl.queue.push(m); else if (socket.readyState === WebSocket.OPEN) socket.send(m); else pending.push(m); });
+      socket.on("open", () => { for (const m of pending) socket.send(m); });
+      socket.on("message", (m, binary) => route.send(binary ? Buffer.from(m as Buffer) : m.toString()));
+      route.onClose(() => socket.close()); socket.on("close", () => route.close({ code: 1000 }));
+    });
+    await page.route("**/auth/me", (r) => r.fulfill({ json: { authenticated: true, email: "alice@example.test", vaultId: "primary", workspace: { id: "workspace-a" } } }));
+    await page.route("**/api/notes/denied-note", (r) => r.fulfill({ json: { id: "denied-note", path: "Projects/Prism/Shared", content: "", _level: "own", metadata: {}, tags: [] } }));
+    await page.route("**/api/federated/**", (r) => r.fulfill({ status: 204 }));
+    await page.goto("/e2e-fixtures/collab-storage.html?live");
+    await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+    const release = () => { ctl.hold = false; for (const m of ctl.queue.splice(0)) ctl.socket!.send(m); };
+    return { context, page, ctl, release };
+  }
+  const order = (p: Page) => p.evaluate(() => { const out: string[] = []; (document.querySelector(".tiptap") as any).editor.state.doc.forEach((n: any) => out.push(n.textContent)); return out; });
+  /** Put the caret at the end of the top-level block whose text is `text`. */
+  const caretIn = async (p: Page, text: string) => {
+    await p.evaluate((t) => {
+      const editor = (document.querySelector(".tiptap") as any).editor;
+      let at = -1;
+      editor.state.doc.forEach((n: any, offset: number) => { if (at < 0 && n.textContent === t) at = offset + n.nodeSize - 1; });
+      editor.chain().focus().setTextSelection(at).run();
+    }, text);
+    await expect(p.locator(".tiptap")).toBeFocused();
+    await expect.poll(() => p.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe(text);
+  };
+
+  async function seed(browser: import("@playwright/test").Browser) {
+    const a = await client(browser);
+    await a.page.locator(".tiptap[contenteditable=true]").click();
+    await a.page.keyboard.type("one");
+    for (const w of ["two", "three", "four"]) { await a.page.keyboard.press("Enter"); await a.page.keyboard.type(w); }
+    const b = await client(browser);
+    await expect.poll(() => order(b.page)).toEqual(["one", "two", "three", "four"]);
+    return { a, b };
+  }
+
+  test("a move is two transactions, undoes as one step, and concurrent typing never lands in another block", async ({ browser }) => {
+    const { a, b } = await seed(browser);
+    // A types into "one" while its frames are held; B moves "one" down meanwhile.
+    await caretIn(a.page, "one");
+    a.ctl.hold = true;
+    await a.page.keyboard.type("XX");
+    await caretIn(b.page, "one");
+    await b.page.evaluate(() => {
+      const editor = (document.querySelector(".tiptap") as any).editor;
+      (window as any).moveTx = [] as number[];
+      editor.on("transaction", ({ transaction }: any) => { if (transaction.docChanged && !transaction.getMeta("y-sync$")) (window as any).moveTx.push(transaction.steps.length); });
+    });
+    await b.page.keyboard.press("Alt+Shift+ArrowDown");
+    expect(await b.page.evaluate(() => (window as any).moveTx)).toEqual([1, 1]); // delete, then insert
+    a.release();
+    await expect.poll(async () => JSON.stringify(await order(a.page))).toBe(JSON.stringify(await order(b.page)));
+    const final = await order(b.page);
+    test.info().annotations.push({ type: "converged", description: JSON.stringify(final) });
+    // "XX" belonged to "one": it is never grafted onto a neighbour ("XXtwo"/"twoXX").
+    for (const text of final) expect(["one", "oneXX", "two", "three", "four"]).toContain(text);
+    expect(final.filter((t) => t.startsWith("one"))).toHaveLength(1);
+    // One undo restores the order.
+    await caretIn(b.page, "three");
+    const beforeUndo = await order(b.page);
+    await b.page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => order(b.page)).not.toEqual(beforeUndo);
+    expect((await order(b.page)).map((t) => t.replace("XX", ""))).toEqual(["one", "two", "three", "four"]);
+    await a.context.close(); await b.context.close();
+  });
+
+  test("an open block menu follows its block when a collaborator inserts above, and closes if it is deleted", async ({ browser }) => {
+    const { a, b } = await seed(browser);
+    await a.page.getByText("three", { exact: true }).hover();
+    await a.page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await expect(a.page.getByRole("menu", { name: "Block actions" })).toBeVisible();
+    // B inserts a block at the very top.
+    await b.page.evaluate(() => (document.querySelector(".tiptap") as any).editor.commands.insertContentAt(0, "<p>zero</p>"));
+    await expect.poll(() => order(a.page)).toEqual(["zero", "one", "two", "three", "four"]);
+    await a.page.getByRole("menuitem", { name: "Delete" }).click();
+    await expect.poll(() => order(b.page)).toEqual(["zero", "one", "two", "four"]);
+    // Now the reverse: A's menu is open on "two" and B deletes "two".
+    await a.page.getByText("two", { exact: true }).hover();
+    await a.page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await expect(a.page.getByRole("menu", { name: "Block actions" })).toBeVisible();
+    await b.page.getByText("two", { exact: true }).hover();
+    await b.page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await b.page.getByRole("menuitem", { name: "Delete" }).click();
+    await expect.poll(() => order(a.page)).toEqual(["zero", "one", "four"]);
+    await expect(a.page.getByRole("menu", { name: "Block actions" })).toHaveCount(0);
+    await a.context.close(); await b.context.close();
+  });
 });
