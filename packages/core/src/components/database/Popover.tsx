@@ -53,6 +53,9 @@ export function Popover({
     const down = (e: PointerEvent) => {
       const t = e.target as Node;
       if (panel.current?.contains(t) || anchor.current?.contains(t)) return;
+      // A popover opened FROM this one (e.g. an option picker inside a bulk-edit
+      // panel) is portaled beside it; using it must not close its parent.
+      if (t instanceof Element && t.closest(".db-popover")) return;
       onClose();
     };
     const key = (e: KeyboardEvent) => {

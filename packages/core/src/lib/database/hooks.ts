@@ -17,6 +17,7 @@ import type { Note } from "../types";
 import tagSchemas from "../schemas/tag-schemas.json";
 import { runQuery, type QueryPage, type QuerySpec } from "./query";
 import type { SchemaMap, SchemaPatch, TagSchema } from "./schema";
+import type { PropertyBatchItem, PropertyBatchResult } from "./wire";
 
 /** The active audience (vault/workspace/account) — part of every cache key. */
 export function useScope(): string {
@@ -140,6 +141,90 @@ export function usePropertyWriter() {
     void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
     return result;
   }, [client, qc, scope]);
+}
+
+/**
+ * Bulk property writes (bulk edit / its Undo). One CAS write per row, one result
+ * per row — a refusal or conflict on one row never blocks the others. Uses the
+ * server batch route when present; otherwise one `updateProperties` (or the
+ * client-side CAS fallback) per row, sequentially.
+ */
+export function useBatchPropertyWriter() {
+  const client = useVaultClient();
+  const scope = useScope();
+  const qc = useQueryClient();
+  return useCallback(async (items: Array<PropertyBatchItem & { updatedAt?: string | null }>): Promise<PropertyBatchResult[]> => {
+    let results: PropertyBatchResult[] | null = null;
+    if (client.updatePropertiesBatch) {
+      try {
+        const out: PropertyBatchResult[] = [];
+        for (let i = 0; i < items.length; i += 100) out.push(...await client.updatePropertiesBatch(items.slice(i, i + 100).map(({ id, set, expect }) => ({ id, set, ...(expect ? { expect } : {}) }))));
+        results = out;
+      } catch (e) {
+        if (!unsupported(e)) throw e;
+      }
+    }
+    if (!results) {
+      results = [];
+      for (const it of items) {
+        try {
+          const r = client.updateProperties
+            ? await client.updateProperties(it.id, it.set, it.expect)
+            : await fallbackWrite(client, it.id, it.set, it.expect ?? {}, it.updatedAt ?? null, scope || undefined);
+          results.push({ id: it.id, ok: true, updatedAt: r.updatedAt, metadata: r.metadata });
+        } catch (e) {
+          if (e instanceof PropertyConflictError) results.push({ id: it.id, ok: false, error: "conflict", fields: e.fields, current: e.current });
+          else results.push({ id: it.id, ok: false, error: e instanceof VaultRequestError && e.status === 404 ? "not_found" : e instanceof VaultRequestError && e.status === 403 ? "forbidden" : "vault_error" });
+        }
+      }
+    }
+    for (const r of results) {
+      if (!r.ok) continue;
+      qc.setQueryData<Note>(queryKeys.vault.note(r.id), (old) => (old ? { ...old, updatedAt: r.updatedAt ?? old.updatedAt, metadata: { ...(old.metadata ?? {}), ...r.metadata } } : old));
+    }
+    void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "vault" && q.queryKey[1] === "notes" && typeof q.queryKey[2] !== "string" });
+    return results;
+  }, [client, qc, scope]);
+}
+
+/**
+ * Pages that link TO `note` through a relation whose schema asks for a reverse
+ * display (`reverseLabel`, with `relationTag` naming one of the note's tags).
+ * Read-only: computed by a view-filtered query, never written back (the forward
+ * relation stays the single source of truth, so nothing can drift).
+ */
+export function useReverseRelations(note: Pick<Note, "id" | "path" | "tags"> | null, schemas: SchemaMap) {
+  const client = useVaultClient();
+  const scope = useScope();
+  const tags = note?.tags ?? [];
+  const specs: Array<{ tag: string; key: string; label: string }> = [];
+  for (const [tag, s] of Object.entries(schemas)) {
+    for (const [key, f] of Object.entries(s.fields)) {
+      if (f.reverseLabel && f.relationTag && tags.includes(f.relationTag)) specs.push({ tag, key, label: f.reverseLabel });
+    }
+  }
+  return useQuery({
+    queryKey: ["vault", "notes", { reverse: scope, id: note?.id, path: note?.path, specs }],
+    enabled: !!note?.path && specs.length > 0,
+    staleTime: 15_000,
+    queryFn: async () => {
+      const out: Array<{ key: string; tag: string; label: string; rows: Array<{ id: string; path: string | null; title: string }>; more: boolean }> = [];
+      for (const s of specs.slice(0, 6)) {
+        const spec: QuerySpec = { tags: [s.tag], filter: { match: "all", conditions: [{ key: s.key, op: "eq", value: note!.path! }] }, sort: [{ key: "$title", dir: "asc" }], limit: 25, fields: ["title", s.key] };
+        let page: QueryPage;
+        if (client.queryNotes) {
+          try {
+            page = await client.queryNotes(spec);
+          } catch (e) {
+            if (!unsupported(e)) throw e;
+            page = runQuery(await client.listNotes({ tag: s.tag, limit: 5000 }), spec, { limited: false });
+          }
+        } else page = runQuery(await client.listNotes({ tag: s.tag, limit: 5000 }), spec, { limited: false });
+        out.push({ ...s, rows: page.rows.filter((r) => r.id !== note!.id).map((r) => ({ id: r.id, path: r.path, title: (typeof r.metadata.title === "string" && r.metadata.title) || r.path?.split("/").pop() || r.id })), more: !!page.next });
+      }
+      return out;
+    },
+  });
 }
 
 // ── database rows ────────────────────────────────────────────────────────────

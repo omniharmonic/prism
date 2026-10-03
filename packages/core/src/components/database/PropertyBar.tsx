@@ -12,7 +12,7 @@ import { ChevronRight, Plus, Search, Check, Tag as TagIcon, X } from "lucide-rea
 import type { Note } from "../../lib/types";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { reviewMode } from "../../lib/governance/review";
-import { noteAccess, useSchemas, usePropertyWriter, useScope, useUpdateSchema } from "../../lib/database/hooks";
+import { noteAccess, useReverseRelations, useSchemas, usePropertyWriter, useScope, useUpdateSchema } from "../../lib/database/hooks";
 import {
   isBlank,
   PROPERTY_KIND_LABELS,
@@ -105,6 +105,7 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
           />
         </div>
       ))}
+      <ReverseRelations note={note} />
       {showTags && (
         <div className="db-prop db-prop-tags">
           <span className="db-prop-label">Tags</span>
@@ -130,9 +131,10 @@ export function PropertyBar({ note, readOnly, onOpenAll, layout = "bar", trailin
               hiddenCount={hiddenEmpty.length}
               onToggleEmpty={() => setShowEmpty((v) => !v)}
               onReveal={reveal}
-              onCreateSchemaField={async (label, kind, tag) => {
+              onCreateSchemaField={async (label, kind, tag, relation) => {
                 const key = keyFromLabel(label);
-                await schemaEdit.update(tag, { fields: { [key]: { type: VAULT_TYPE_FOR_KIND[kind] } }, ui: { [key]: { kind, label: label.trim() } } });
+                const ui = { kind, label: label.trim(), ...(relation?.target ? { relationTag: relation.target } : {}), ...(relation?.target && relation.reverse ? { reverseLabel: relation.reverse } : {}) };
+                await schemaEdit.update(tag, { fields: { [key]: { type: VAULT_TYPE_FOR_KIND[kind] } }, ui: { [key]: ui } });
                 reveal(key);
               }}
               onCreateFree={(label, kind) => {
@@ -182,7 +184,7 @@ function relativeDay(iso: string): string {
 function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, showEmpty, hiddenCount, onToggleEmpty, onReveal, onCreateSchemaField, onCreateFree }: {
   empty: PropertyDef[]; canCreate: boolean; canEditSchema: boolean; firstTag: string | null; existing: string[];
   showEmpty: boolean; hiddenCount: number; onToggleEmpty: () => void; onReveal: (key: string) => void;
-  onCreateSchemaField: (label: string, kind: PropertyKind, tag: string) => Promise<void>;
+  onCreateSchemaField: (label: string, kind: PropertyKind, tag: string, relation?: { target: string; reverse: string }) => Promise<void>;
   onCreateFree: (label: string, kind: PropertyKind) => void;
 }) {
   const anchor = useRef<HTMLButtonElement>(null);
@@ -191,6 +193,8 @@ function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, show
   const schemaBacked = canEditSchema && !!firstTag;
   const kinds = schemaBacked ? [...PROPERTY_KINDS] : FREE_KINDS;
   const [kind, setKind] = useState<PropertyKind>("text");
+  const [target, setTarget] = useState("");
+  const [reverse, setReverse] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const key = keyFromLabel(name);
@@ -200,7 +204,7 @@ function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, show
     setBusy(true);
     setError("");
     try {
-      if (schemaBacked) await onCreateSchemaField(name, kind, firstTag!);
+      if (schemaBacked) await onCreateSchemaField(name, kind, firstTag!, kind === "relation" && target.trim() ? { target: target.trim(), reverse: reverse.trim() } : undefined);
       else onCreateFree(name, kind);
       setName("");
       setOpen(false);
@@ -249,6 +253,18 @@ function AddProperty({ empty, canCreate, canEditSchema, firstTag, existing, show
                 {kinds.map((k) => <option key={k} value={k}>{PROPERTY_KIND_LABELS[k]}</option>)}
               </select>
             </label>
+            {schemaBacked && kind === "relation" && (
+              <>
+                <label className="db-field">
+                  <span>Links to pages tagged</span>
+                  <input aria-label="Related database tag" value={target} maxLength={128} onChange={(e) => setTarget(e.target.value)} placeholder="e.g. project" />
+                </label>
+                <label className="db-field">
+                  <span>Show on those pages as (optional)</span>
+                  <input aria-label="Reverse property name" value={reverse} maxLength={80} disabled={!target.trim()} onChange={(e) => setReverse(e.target.value)} placeholder={firstTag ? `e.g. ${firstTag}s` : "e.g. Tasks"} />
+                </label>
+              </>
+            )}
             {clash && <p className="db-error" role="alert">This page already has that property.</p>}
             {error && <p className="db-error" role="alert">{error}</p>}
             <button type="submit" className="db-primary" disabled={busy || !name.trim() || clash}>{busy ? "Adding…" : "Add property"}</button>
@@ -337,5 +353,34 @@ function TagChips({ note, editable }: { note: Note; editable: boolean }) {
         )}
       </Popover>
     </span>
+  );
+}
+
+/**
+ * Reverse relations (NP-DB-12): pages whose relation property points AT this
+ * page, for relations whose schema asks for it (`reverseLabel`). Read-only and
+ * computed by query — the forward value is the only thing ever written, so the
+ * two sides cannot drift. Each chip opens the linking page.
+ */
+function ReverseRelations({ note }: { note: Note }) {
+  const { data } = useSchemas();
+  const reverse = useReverseRelations(note, data?.schemas ?? {});
+  if (!reverse.data?.length) return null;
+  return (
+    <>
+      {reverse.data.map((r) => (
+        <div className="db-prop db-prop-reverse" key={`${r.tag}:${r.key}`} data-kind="relation">
+          <span className="db-prop-label" title={`Pages tagged #${r.tag} whose ${r.key} links here`}>{r.label}</span>
+          <span className="db-chips" role="list" aria-label={r.label}>
+            {r.rows.map((row) => (
+              <button key={row.id} type="button" role="listitem" className="db-link-chip db-link-open" data-kind="relation"
+                onClick={() => useUIStore.getState().openTab(row.id, row.title, "document")}>{row.title}</button>
+            ))}
+            {!r.rows.length && <span className="db-empty">Empty</span>}
+            {r.more && <span className="db-pop-path">and more</span>}
+          </span>
+        </div>
+      ))}
+    </>
   );
 }

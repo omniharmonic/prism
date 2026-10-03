@@ -28,6 +28,7 @@ import type {
 } from "@prism/core";
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
+import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
 import { retainDraft, enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
@@ -488,4 +489,15 @@ export async function updateProperties(id: string, set: Record<string, unknown>,
     }
     throw e;
   }
+}
+
+/** Bulk property writes: one CAS result per row (200 all written, 207 partial). Never queued offline. */
+export async function updatePropertiesBatch(items: PropertyBatchItem[]): Promise<PropertyBatchResult[]> {
+  const body = (await (await req(`/properties/batch`, { method: "POST", body: JSON.stringify({ items }), cache: "no-store" })).json()) as { results?: PropertyBatchResult[] };
+  return body.results ?? [];
+}
+
+/** Owner/admin CSV import (dry-run by default). A 207 still carries the plan + result. */
+export async function importCsv(request: CsvImportRequest): Promise<CsvImportResponse> {
+  return (await req(`/databases/import/csv`, { method: "POST", body: JSON.stringify(request), cache: "no-store" })).json();
 }

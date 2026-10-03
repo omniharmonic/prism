@@ -17,10 +17,10 @@ import {
   type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Plus } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, EyeOff, Group, MoreHorizontal, Plus } from "lucide-react";
 import type { QueryRow } from "../../lib/database/query";
 import { noteTitle } from "../../lib/database/query";
-import { isBlank, optionColor, type PropertyDef } from "../../lib/database/schema";
+import { isBlank, optionColor, propertyValue, type PropertyDef } from "../../lib/database/schema";
 import { OptionChip, PropertyDisplay, PropertyValue } from "./PropertyValue";
 import { Popover } from "./Popover";
 import { applyRank, reorderRank, type DatabaseView } from "./config";
@@ -36,12 +36,56 @@ export interface ViewContext {
   canCreate: boolean;
   commit: (r: QueryRow, def: PropertyDef) => (next: unknown, base: unknown) => Promise<void>;
   createOption: (def: PropertyDef) => ((o: string) => Promise<void>) | undefined;
-  open: (r: QueryRow) => void;
+  /** Open a row (peek or page per the database preference; ⌘/Ctrl-click = full page). */
+  open: (r: QueryRow, e?: { metaKey?: boolean; ctrlKey?: boolean }) => void;
+  /** Row selection for bulk actions (table only; absent = no selection UI). */
+  selection?: RowSelection;
   create: (title: string, preset?: Record<string, unknown>) => Promise<void>;
   updateView: (patch: Partial<DatabaseView>) => void;
 }
 
 const title = (r: QueryRow) => noteTitle(r);
+/** A cell's value: metadata, or a note column for system properties. */
+export const cell = (r: QueryRow, def: PropertyDef) => propertyValue(r, def.key);
+
+export interface RowSelection {
+  ids: Set<string>;
+  /** Click on a row's checkbox; shift extends from the last clicked row over `ordered`. */
+  toggle: (id: string, shift: boolean, ordered: string[]) => void;
+  setAll: (ids: string[], on: boolean) => void;
+}
+
+/** Collapsed group keys, per view, for this session. */
+function useCollapsed(viewId: string) {
+  const key = `prism:db-collapsed:${viewId}`;
+  const [set, setSet] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem(key) ?? "[]") as string[]); } catch { return new Set(); }
+  });
+  const toggle = (g: string) => setSet((cur) => {
+    const next = new Set(cur);
+    if (next.has(g)) next.delete(g); else next.add(g);
+    try { sessionStorage.setItem(key, JSON.stringify([...next])); } catch { /* private mode */ }
+    return next;
+  });
+  return { collapsed: set, toggle };
+}
+
+/** A collapsible group header with its count (table and list). */
+function GroupHeader({ g, def, open, onToggle }: { g: { value: string | null; label: string; rows: QueryRow[] }; def: PropertyDef; open: boolean; onToggle: () => void }) {
+  return (
+    <h3 className="db-group-head">
+      <button type="button" className="db-group-toggle focus-ring" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${g.label}`} onClick={onToggle}>
+        {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+      </button>
+      {g.value !== null && def.kind !== "checkbox" && def.kind !== "person" ? <OptionChip value={g.value} color={def.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
+      <span className="db-badge-count" aria-label={`${g.rows.length} ${g.rows.length === 1 ? "page" : "pages"}`}>{g.rows.length}</span>
+    </h3>
+  );
+}
+const groupKey = (v: string | null) => v ?? "∅";
+/** Shift state of the click that is about to toggle a row checkbox (click fires before change). */
+let lastShift = false;
+const groupPreset = (def: PropertyDef, v: string | null) => (v === null ? undefined : { [def.key]: def.kind === "checkbox" ? v === "true" : def.kind === "multi_select" ? [v] : v });
 
 /** Inline "new row" title input. Enter creates, Escape cancels; failures keep the text. */
 export function NewRowForm({ onCreate, onCancel, label = "New page title" }: { onCreate: (t: string) => Promise<void>; onCancel: () => void; label?: string }) {
@@ -76,12 +120,13 @@ export function NewRowForm({ onCreate, onCancel, label = "New page title" }: { o
   );
 }
 
-function OpenTitle({ row, ctx }: { row: QueryRow; ctx: ViewContext }) {
+function OpenTitle({ row, ctx, select }: { row: QueryRow; ctx: ViewContext; select?: ReactNode }) {
   const icon = typeof row.metadata.icon === "string" ? row.metadata.icon : null;
   return (
     <span className="db-title-cell">
+      {select}
       {icon && <span aria-hidden="true">{icon}</span>}
-      <button type="button" className="db-row-open focus-ring" onClick={() => ctx.open(row)}>{title(row)}</button>
+      <button type="button" className="db-row-open focus-ring" onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
       <ArrowUpRight size={13} className="db-row-open-icon" aria-hidden="true" />
     </span>
   );
@@ -95,7 +140,7 @@ function groupRows(rows: QueryRow[], def: PropertyDef | undefined): Array<{ valu
   const buckets = new Map<string | null, QueryRow[]>();
   for (const v of order) buckets.set(v, []);
   for (const r of rows) {
-    const raw = r.metadata[def.key];
+    const raw = cell(r, def);
     const vals = def.kind === "checkbox" ? [String(raw === true)] : Array.isArray(raw) ? raw.map(String) : isBlank(raw) ? [null] : [String(raw)];
     for (const v of vals.length ? vals : [null]) {
       if (!buckets.has(v)) buckets.set(v, []);
@@ -112,7 +157,7 @@ function HeaderCell({ def, ctx, width, onResize }: { def: PropertyDef; ctx: View
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const sorted = ctx.view.sort?.find((s) => s.key === def.key);
-  const groupable = ["select", "status", "checkbox", "person"].includes(def.kind);
+  const groupable = ["select", "status", "checkbox", "person", "multi_select"].includes(def.kind) && !def.system;
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     const x0 = e.clientX;
@@ -157,17 +202,26 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
   const [widths, setWidths] = useState<Record<string, number>>(ctx.view.widths ?? {});
   const [adding, setAdding] = useState(false);
   const w = (k: string, d: number) => widths[k] ?? ctx.view.widths?.[k] ?? d;
+  const sel = ctx.selection;
+  const ids = rows.map((r) => r.id);
   const total = w("$title", 280) + ctx.shown.reduce((s, p) => s + w(p.key, 180), 0);
+  const allOn = !!sel && rows.length > 0 && rows.every((r) => sel.ids.has(r.id));
+  const someOn = !!sel && rows.some((r) => sel.ids.has(r.id));
   return (
     <div className="db-table-wrap">
-      <table className="db-table" style={{ width: total }} aria-label={label}>
+      <table className="db-table" style={{ width: total }} aria-label={label} aria-multiselectable={sel ? true : undefined}>
         <colgroup>
-          <col style={{ width: w("$title", 280) }} />
+          <col className="db-col-title" style={{ width: w("$title", 280) }} />
           {ctx.shown.map((p) => <col key={p.key} style={{ width: w(p.key, 180) }} />)}
         </colgroup>
         <thead>
           <tr>
-            <th scope="col" className="db-sticky"><span className="db-th"><span className="db-th-label">Title</span></span></th>
+            <th scope="col" className="db-sticky">
+              <span className="db-th">
+                {sel && <input type="checkbox" className="db-sel" aria-label={`Select all in ${label}`} checked={allOn} ref={(el) => { if (el) el.indeterminate = someOn && !allOn; }} onChange={(e) => sel.setAll(ids, e.target.checked)} />}
+                <span className="db-th-label">Title</span>
+              </span>
+            </th>
             {ctx.shown.map((p) => (
               <HeaderCell key={p.key} def={p} ctx={ctx} width={w(p.key, 180)} onResize={(px, done) => {
                 setWidths((cur) => ({ ...cur, [p.key]: px }));
@@ -178,11 +232,16 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} data-row-id={r.id}>
-              <th scope="row" className="db-sticky" style={{ fontWeight: 400 }}><OpenTitle row={r} ctx={ctx} /></th>
+            <tr key={r.id} data-row-id={r.id} aria-selected={sel ? sel.ids.has(r.id) : undefined}>
+              <th scope="row" className="db-sticky" style={{ fontWeight: 400 }}>
+                <OpenTitle row={r} ctx={ctx} select={sel ? (
+                  <input type="checkbox" className="db-sel" aria-label={`Select ${title(r)}`} checked={sel.ids.has(r.id)}
+                    onClick={(e) => { lastShift = e.shiftKey; }} onChange={() => { sel.toggle(r.id, lastShift, ids); lastShift = false; }} />
+                ) : undefined} />
+              </th>
               {ctx.shown.map((p) => (
                 <td key={p.key}>
-                  <PropertyValue def={p} value={r.metadata[p.key]} variant="cell" readOnly={!ctx.canEditRow(r)} onCommit={ctx.commit(r, p)} onCreateOption={ctx.createOption(p)} />
+                  <PropertyValue def={p} value={cell(r, p)} variant="cell" readOnly={!ctx.canEditRow(r) || !!p.system} onCommit={ctx.commit(r, p)} onCreateOption={ctx.createOption(p)} />
                 </td>
               ))}
             </tr>
@@ -204,18 +263,19 @@ function TableBlock({ ctx, rows, preset, label }: { ctx: ViewContext; rows: Quer
 
 export function TableView({ ctx }: { ctx: ViewContext }) {
   const groupDef = ctx.props.find((p) => p.key === ctx.view.groupBy);
+  const { collapsed, toggle } = useCollapsed(ctx.view.id);
   if (!groupDef) return <TableBlock ctx={ctx} rows={ctx.rows} label={ctx.view.name} />;
   return (
     <>
-      {groupRows(ctx.rows, groupDef).map((g) => (
-        <section key={g.value ?? "∅"} aria-label={g.label}>
-          <h3 className="db-group-head">
-            {g.value !== null && groupDef.kind !== "checkbox" && groupDef.kind !== "person" ? <OptionChip value={g.value} color={groupDef.options.find((o) => o.value === g.value)?.color ?? optionColor(g.value)} /> : <span>{g.label}</span>}
-            <span className="db-badge-count">{g.rows.length}</span>
-          </h3>
-          <TableBlock ctx={ctx} rows={g.rows} label={g.label} preset={g.value === null ? undefined : { [groupDef.key]: groupDef.kind === "checkbox" ? g.value === "true" : g.value }} />
-        </section>
-      ))}
+      {groupRows(ctx.rows, groupDef).map((g) => {
+        const open = !collapsed.has(groupKey(g.value));
+        return (
+          <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
+            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} />
+            {open && <TableBlock ctx={ctx} rows={g.rows} label={g.label} preset={groupPreset(groupDef, g.value)} />}
+          </section>
+        );
+      })}
     </>
   );
 }
@@ -230,9 +290,9 @@ const boardCollision: CollisionDetection = (args) => {
 };
 
 function CardProps({ row, props, max = 4 }: { row: QueryRow; props: PropertyDef[]; max?: number }) {
-  const filled = props.filter((p) => !isBlank(row.metadata[p.key])).slice(0, max);
+  const filled = props.filter((p) => !isBlank(cell(row, p))).slice(0, max);
   if (!filled.length) return null;
-  return <span className="db-card-props">{filled.map((p) => <span key={p.key} title={p.label}><PropertyDisplay def={p} value={row.metadata[p.key]} /></span>)}</span>;
+  return <span className="db-card-props">{filled.map((p) => <span key={p.key} title={p.label}><PropertyDisplay def={p} value={cell(row, p)} /></span>)}</span>;
 }
 
 function BoardCard({ row, ctx, columns, groupDef, colRows }: {
@@ -264,7 +324,7 @@ function BoardCard({ row, ctx, columns, groupDef, colRows }: {
       role="article"
       tabIndex={undefined}
     >
-      <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal", paddingRight: 26 }} onClick={() => ctx.open(row)}>{title(row)}</button>
+      <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal", paddingRight: 26 }} onClick={(e) => ctx.open(row, e)}>{title(row)}</button>
       <CardProps row={row} props={ctx.shown.filter((p) => p.key !== groupDef.key)} />
       <button ref={menuAnchor} type="button" className="db-card-menu focus-ring" aria-label={`Actions for ${title(row)}`} aria-haspopup="menu" aria-expanded={menu}
         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); setMenu((o) => !o); }}>
@@ -277,7 +337,7 @@ function BoardCard({ row, ctx, columns, groupDef, colRows }: {
           {editable && moveOpen && columns.filter((c) => c.value !== (isBlank(current) ? null : String(current))).map((c) => (
             <button key={c.value ?? "∅"} type="button" role="menuitem" style={{ paddingLeft: 28 }} onClick={() => {
               setMenu(false);
-              void ctx.commit(row, groupDef)(c.value === null ? null : groupDef.kind === "checkbox" ? c.value === "true" : c.value, current ?? null).catch(() => {});
+              void ctx.commit(row, groupDef)(c.value === null ? null : groupDef.kind === "checkbox" ? c.value === "true" : groupDef.kind === "multi_select" ? [c.value] : c.value, current ?? null).catch(() => {});
             }}>{c.label}</button>
           ))}
           {ctx.view.order !== undefined || at >= 0 ? <>
@@ -381,11 +441,11 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
         const icon = typeof r.metadata.icon === "string" ? r.metadata.icon : null;
         return (
           <article key={r.id} className="db-gcard" role="listitem" aria-label={title(r)}>
-            <button type="button" className="db-cover" aria-hidden="true" tabIndex={-1} onClick={() => ctx.open(r)}>
+            <button type="button" className="db-cover" aria-hidden="true" tabIndex={-1} onClick={(e) => ctx.open(r, e)}>
               {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span>{icon ?? title(r).slice(0, 1).toUpperCase()}</span>}
             </button>
             <div className="db-gcard-body">
-              <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal" }} onClick={() => ctx.open(r)}>{title(r)}</button>
+              <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal" }} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
               <CardProps row={r} props={ctx.shown} max={3} />
             </div>
           </article>
@@ -400,21 +460,40 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
   );
 }
 
-export function ListView({ ctx }: { ctx: ViewContext }) {
+function ListRows({ ctx, rows, preset, label }: { ctx: ViewContext; rows: QueryRow[]; preset?: Record<string, unknown>; label: string }) {
   const [adding, setAdding] = useState(false);
   return (
-    <ul className="db-list" aria-label={`${ctx.view.name} list`}>
-      {ctx.rows.map((r) => (
+    <ul className="db-list" aria-label={label}>
+      {rows.map((r) => (
         <li key={r.id}>
           {typeof r.metadata.icon === "string" && <span aria-hidden="true">{r.metadata.icon}</span>}
-          <button type="button" className="db-row-open focus-ring" onClick={() => ctx.open(r)}>{title(r)}</button>
+          <button type="button" className="db-row-open focus-ring" onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
           <CardProps row={r} props={ctx.shown} max={3} />
         </li>
       ))}
       {ctx.canCreate && (
-        <li>{adding ? <NewRowForm onCreate={(t) => ctx.create(t)} onCancel={() => setAdding(false)} /> : <button type="button" className="db-new-row" onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" /> New</button>}</li>
+        <li>{adding ? <NewRowForm onCreate={(t) => ctx.create(t, preset)} onCancel={() => setAdding(false)} /> : <button type="button" className="db-new-row" onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" /> New</button>}</li>
       )}
     </ul>
+  );
+}
+
+export function ListView({ ctx }: { ctx: ViewContext }) {
+  const groupDef = ctx.props.find((p) => p.key === ctx.view.groupBy);
+  const { collapsed, toggle } = useCollapsed(ctx.view.id);
+  if (!groupDef) return <ListRows ctx={ctx} rows={ctx.rows} label={`${ctx.view.name} list`} />;
+  return (
+    <>
+      {groupRows(ctx.rows, groupDef).map((g) => {
+        const open = !collapsed.has(groupKey(g.value));
+        return (
+          <section key={groupKey(g.value)} aria-label={g.label} className="db-group">
+            <GroupHeader g={g} def={groupDef} open={open} onToggle={() => toggle(groupKey(g.value))} />
+            {open && <ListRows ctx={ctx} rows={g.rows} label={`${g.label} list`} preset={groupPreset(groupDef, g.value)} />}
+          </section>
+        );
+      })}
+    </>
   );
 }
 
@@ -437,7 +516,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
     const m = new Map<string, QueryRow[]>();
     if (!key) return m;
     for (const r of ctx.rows) {
-      const v = key === "$createdAt" ? r.createdAt : r.metadata[key];
+      const v = propertyValue(r, key);
       if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) continue;
       // A datetime WITH a zone belongs to the viewer's local day (review L2);
       // a date or a zone-less wall time is taken as written.
@@ -482,7 +561,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
                 {ctx.canCreate && editableKey && <button type="button" className="db-cal-add" aria-label={`New page on ${k}`} onClick={() => setAdding(k)}><Plus size={13} aria-hidden="true" /></button>}
               </div>
               {adding === k && <NewRowForm label={`New page on ${k}`} onCreate={(t) => ctx.create(t, { [key]: k })} onCancel={() => setAdding(null)} />}
-              {items.slice(0, 3).map((r) => <button key={r.id} type="button" className="db-cal-item" title={title(r)} onClick={() => ctx.open(r)}>{title(r)}</button>)}
+              {items.slice(0, 3).map((r) => <button key={r.id} type="button" className="db-cal-item" title={title(r)} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>)}
               {items.length > 3 && <span className="db-pop-path" style={{ marginLeft: 4 }}>+{items.length - 3} more</span>}
             </div>
           );

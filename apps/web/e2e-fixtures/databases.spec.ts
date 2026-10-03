@@ -143,7 +143,8 @@ test("gallery, list and calendar render the same rows; calendar adds on a day", 
   await page.keyboard.press("Enter");
   await expect(cal.getByRole("button", { name: "Standup notes" })).toBeVisible();
   expect((await fx(page)).creates.at(-1).metadata.due).toBe(today);
-  await cal.getByRole("button", { name: "Standup notes" }).click();
+  // Rows open in the side peek by default (NP-DB-18); ⌘/Ctrl-click opens the page.
+  await cal.getByRole("button", { name: "Standup notes" }).click({ modifiers: ["ControlOrMeta"] });
   expect(await page.evaluate(() => (window as any).prismUI.getState().openTabs.some((t: any) => t.title === "Standup notes"))).toBe(true);
 });
 
@@ -156,6 +157,10 @@ test("adding a view and opening a row", async ({ page }) => {
   expect(views.at(-1)).toMatchObject({ type: "board", groupBy: "status" });
   await page.getByRole("tab", { name: "All tasks" }).click();
   await page.getByRole("button", { name: "Design new icon set", exact: true }).click();
+  // The side peek first; "Open as page" opens the row as a normal page.
+  const peek = page.getByRole("dialog", { name: /Design new icon set \(side peek\)/ });
+  await expect(peek).toBeVisible();
+  await peek.getByRole("button", { name: "Open as page" }).click();
   expect(await page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t4");
 });
 
