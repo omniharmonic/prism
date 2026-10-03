@@ -640,7 +640,7 @@ test("calendar drag reschedule and multi-day span", async ({ page }) => {
   // Month navigation.
   const heading = cal.locator("xpath=preceding-sibling::*").first();
   await page.getByRole("button", { name: "Next month" }).click();
-  await expect(page.getByRole("heading", { level: 3 })).not.toHaveText(now.toLocaleDateString("en-US", { month: "long", year: "numeric" }));
+  await expect(page.locator(".db-cal-head").getByRole("heading")).not.toHaveText(now.toLocaleDateString("en-US", { month: "long", year: "numeric" }));
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(cell(d(7))).toBeVisible();
   void heading;

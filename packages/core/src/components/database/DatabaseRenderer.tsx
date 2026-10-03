@@ -371,7 +371,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           </button>
         </header>
       ) : (
-        <header className="db-head">
+        <div className="db-head">
           {crumbs.length > 0 && <nav className="db-crumbs" aria-label="Database location">{crumbs.map((c, i) => <span key={i}>{i > 0 && <ChevronRight size={12} aria-hidden="true" />} {c}</span>)}</nav>}
           <div className="db-title-row">
             <span className="db-title-icon" aria-hidden="true">{typeof note.metadata?.icon === "string" ? note.metadata.icon : <Database size={18} />}</span>
@@ -379,7 +379,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
           </div>
           {description && <p className="db-desc">{description.slice(0, 400)}</p>}
           {config && <p className="db-source">Pages tagged {config.source.tags.map((t) => <code key={t}>#{t}</code>)}</p>}
-        </header>
+        </div>
       )}
       <div className="db-body" onKeyDown={onBodyKey}>
         {configError ? (

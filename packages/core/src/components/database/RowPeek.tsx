@@ -70,7 +70,7 @@ export function RowPeek({ noteId, mode, onMode, onClose, canSetMode }: {
   const body = (
     <div className={`db-peek db-peek-${mode}`} role="dialog" aria-modal={mode === "center" || undefined} aria-label={`${title} (${mode === "side" ? "side peek" : "center peek"})`}>
       <div ref={panel} tabIndex={-1} className="db-peek-panel">
-        <header className="db-peek-head">
+        <div className="db-peek-head">
           <button type="button" className="db-icon-btn" aria-label="Close peek" title="Close (Esc)" onClick={onClose}><X size={16} /></button>
           <div className="db-peek-modes" role="group" aria-label="Open pages in">
             <button type="button" className="db-icon-btn" aria-pressed={mode === "side"} title="Side peek" aria-label="Side peek" onClick={() => onMode("side")}><PanelRight size={15} /></button>
@@ -78,7 +78,7 @@ export function RowPeek({ noteId, mode, onMode, onClose, canSetMode }: {
             <button type="button" className="db-icon-btn" title="Full page" aria-label="Full page" onClick={() => { if (canSetMode) onMode("page"); openFull(); }}><Maximize2 size={15} /></button>
           </div>
           <button type="button" className="db-ghost" onClick={openFull}>Open as page</button>
-        </header>
+        </div>
         <div className="db-peek-body">
           {isLoading ? <p className="db-state" role="status">Loading page…</p>
             : isError || !note ? <div className="db-state" role="alert"><h2>This page can’t be opened</h2><p>It may have been moved, removed, or your access changed.</p></div>

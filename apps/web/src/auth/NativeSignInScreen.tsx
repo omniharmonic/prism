@@ -5,7 +5,7 @@ import { takeSignOutNotice } from "../config";
 
 /** Keep native credential/network waits visible instead of a frozen boot label. */
 export function NativeStartupScreen({ phase }: { phase: "credentials" | "connecting" }) {
-  return <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+  return <div role="main" style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
     <div className="workspace-auth-card" style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16 }}>
       <PrismMark width={72} height={48} decorative />
       <h1 style={{ margin: "16px 0 8px", fontSize: 22, fontWeight: 600 }}>Opening your workspace</h1>
@@ -33,7 +33,7 @@ export function NativeSignInScreen({ notice }: { notice?: string }) {
 
   const hasHost = !!getHost();
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div role="main" style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div
         className="workspace-auth-card"
         style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16, display: "flex", flexDirection: "column", gap: 14 }}

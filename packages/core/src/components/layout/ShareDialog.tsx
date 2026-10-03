@@ -443,6 +443,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
           </div>
         )}
         {notice && <p role="status">{notice}</p>}
+        {/* The Copy button only swaps its own label; say the outcome to a screen reader too. */}
+        <span className="sr-only" aria-live="polite" aria-atomic="true" data-testid="share-copy-status">{copied ? `${copied} copied` : ""}</span>
         {manualCopy && (
           <label>
             Clipboard unavailable. Select and copy this link.

@@ -484,7 +484,7 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
         const url = cover?.src ?? null;
         const icon = typeof r.metadata.icon === "string" ? r.metadata.icon : null;
         return (
-          <article key={r.id} className="db-gcard" role="listitem" aria-label={title(r)}>
+          <div key={r.id} className="db-gcard" role="listitem" aria-label={title(r)}>
             <button type="button" className="db-cover" aria-hidden="true" tabIndex={-1} onClick={(e) => ctx.open(r, e)}>
               {url ? <img src={url} alt="" loading="lazy" referrerPolicy="no-referrer" style={{ objectPosition: `50% ${cover!.y}%` }} />
                 : cover?.gradient ? <span className="db-cover-gradient" style={{ background: cover.gradient, width: "100%", height: "100%" }} />
@@ -494,7 +494,7 @@ export function GalleryView({ ctx }: { ctx: ViewContext }) {
               <button type="button" className="db-row-open db-card-title focus-ring" style={{ whiteSpace: "normal" }} onClick={(e) => ctx.open(r, e)}>{title(r)}</button>
               <CardProps row={r} props={ctx.shown} max={3} />
             </div>
-          </article>
+          </div>
         );
       })}
       </div>
@@ -656,7 +656,7 @@ export function CalendarView({ ctx, month, onMonth, onPickDate }: { ctx: ViewCon
   return (
     <div>
       <div className="db-cal-head">
-        <h3>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h3>
+        <h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2>
         <button type="button" className="db-icon-btn" aria-label="Previous month" onClick={() => onMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ChevronLeft size={16} /></button>
         <button type="button" className="db-control" onClick={() => onMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button>
         <button type="button" className="db-icon-btn" aria-label="Next month" onClick={() => onMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ChevronRight size={16} /></button>

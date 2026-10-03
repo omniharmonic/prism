@@ -399,6 +399,7 @@ function PasswordGate({
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Password"
           aria-label="Password"
+          data-a11y-light-ok
           style={{
             // Explicit, theme-independent colors: the unlock gate renders over the
             // publication's OWN theme (often light), where the inherited

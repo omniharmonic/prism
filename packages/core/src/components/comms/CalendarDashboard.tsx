@@ -388,13 +388,13 @@ function MonthView({ days, month, today, selectedDate, eventsByDate, onSelect, o
           const dayEvts = eventsByDate.get(dateKey(day)) || [];
           return (
             <div key={i} className="flex min-w-0 flex-col p-1 text-left"
-              style={{ background: isSel ? "var(--glass-active)" : "var(--bg-surface)", opacity: isMonth ? 1 : 0.4, minHeight: 60 }}>
+              style={{ background: isSel ? "var(--glass-active)" : "var(--bg-surface)", minHeight: 60 }} data-outside-month={isMonth ? undefined : "true"}>
               <button aria-label={`Select ${day.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`} onClick={() => onSelect(day)} className="focus-ring text-xs font-medium self-end min-w-8 min-h-8 flex items-center justify-center rounded-full"
-                style={{ color: isToday ? "white" : "var(--text-primary)", background: isToday ? "var(--color-accent)" : "transparent" }}>
+                style={{ color: isToday ? "var(--action-fg, white)" : isMonth ? "var(--text-primary)" : "var(--text-muted)", background: isToday ? "var(--action-bg, var(--color-accent))" : "transparent" }}>
                 {day.getDate()}
               </button>
               {dayEvts.slice(0, 3).map((ev, j) => (
-                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)", opacity: 0.85 }}>{ev.summary || "Event"}</button>
+                <button key={ev.vaultNoteId ?? j} onClick={(e) => { e.currentTarget.focus({ preventScroll: true }); onEventClick(ev); }} className="focus-ring text-left text-[10px] truncate px-1 py-1 rounded mt-0.5 hover:opacity-100" style={{ background: "var(--action-bg, var(--color-accent))", color: "var(--action-fg, #fff)" }}>{ev.summary || "Event"}</button>
               ))}
               {dayEvts.length > 3 && <button onClick={() => onSelect(day)} className="focus-ring text-left text-[10px] mt-0.5" style={{ color: "var(--text-muted)" }}>+{dayEvts.length - 3} more</button>}
             </div>
@@ -424,7 +424,7 @@ function WeekView({ days, today, selectedDate, eventsByDate, onSelect, onEventCl
               style={{ background: isSel ? "var(--glass-active)" : "transparent", borderLeft: "1px solid var(--glass-border)" }}>
               <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{WEEKDAYS[i]}</div>
               <div className="text-sm font-medium w-7 h-7 mx-auto flex items-center justify-center rounded-full"
-                style={{ color: isToday ? "white" : "var(--text-primary)", background: isToday ? "var(--color-accent)" : "transparent" }}>
+                style={{ color: isToday ? "var(--action-fg, white)" : "var(--text-primary)", background: isToday ? "var(--action-bg, var(--color-accent))" : "transparent" }}>
                 {d.getDate()}
               </div>
             </button>
