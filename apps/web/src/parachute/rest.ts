@@ -28,9 +28,9 @@ import type {
 } from "@prism/core/shell";
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core/shell";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core/shell";
-import { filtersToParams, type SearchFilters } from "@prism/core/search";
+import { filtersToParams, isCreatedByMe, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse, RemoveValuesResult } from "@prism/core/database";
-import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
+import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders, getMe } from "../config";
 import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
@@ -436,7 +436,9 @@ export async function searchNotes(query: string, filters: SearchFilters = {}, li
     // Vault scope (NP-SR-04): another vault is named by header; the server
     // re-resolves the caller's role and grants for THAT vault. Never cached.
     const rows = (await (await req(`/search?${sp.toString()}`, filters.vault ? { headers: { "X-Prism-Vault": filters.vault }, cache: "no-store" } : undefined)).json()) as Note[];
-    return filters.vault ? rows.map((n) => ({ ...n, _vault: filters.vault })) : rows;
+    // "Created by me": the server narrowed to created-or-edited by me; keep the pages I created.
+    const mine = filters.createdByMe ? rows.filter((n) => isCreatedByMe(n, getMe()?.email)) : rows;
+    return filters.vault ? mine.map((n) => ({ ...n, _vault: filters.vault })) : mine;
   } catch (error) {
     if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
     throw error;

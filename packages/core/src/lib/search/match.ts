@@ -13,6 +13,12 @@ export interface SearchFilters {
   tags?: string[];
   /** Created or last edited by this account (email, case-insensitive). */
   author?: string;
+  /**
+   * Client-only (NP-SR-04 "created by me"): sent as `author=me` (the server's one
+   * identity filter — creator OR last editor), then narrowed to pages the caller
+   * CREATED by {@link isCreatedByMe} on the rows that come back. Never a param.
+   */
+  createdByMe?: boolean;
   /** Inclusive ISO date bounds (YYYY-MM-DD or full ISO). */
   after?: string;
   before?: string;
@@ -262,7 +268,18 @@ export function parseSearchFilters(get: (name: string) => string | undefined): S
 }
 
 export function hasFilters(f: SearchFilters): boolean {
-  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.after || f.before || f.vault);
+  return !!(f.titleOnly || f.types?.length || f.tags?.length || f.author || f.createdByMe || f.after || f.before || f.vault);
+}
+
+/**
+ * Did the caller create this page? A non-admin's rows carry `_creator.me` (never
+ * someone else's address); an admin's rows carry the raw `prism_creator`, compared
+ * with the caller's own address (`me`). Unknown → false: never a guess.
+ */
+export function isCreatedByMe(note: { metadata?: Record<string, unknown> | null; _creator?: { me?: unknown } | null }, me?: string | null): boolean {
+  if (note._creator && typeof note._creator === "object") return note._creator.me === true;
+  const creator = note.metadata?.prism_creator;
+  return typeof creator === "string" && !!me && creator.toLowerCase() === me.toLowerCase();
 }
 
 /** Does `note` pass every filter? `typeOf` = inferContentType (kept injectable). */
@@ -278,6 +295,8 @@ export function matchesFilters(note: NoteLike, f: SearchFilters, terms: string[]
     const who = [meta.prism_creator, meta.prism_last_writer].filter((v): v is string => typeof v === "string").map((v) => v.toLowerCase());
     if (!who.includes(f.author)) return false;
   }
+  // Client-side fallback only (the server never parses this): the caller's address is `author` when it is one.
+  if (f.createdByMe && !isCreatedByMe(note, f.author && f.author !== "me" ? f.author : null)) return false;
   if (f.after || f.before) {
     const stamp = Date.parse((f.dateField === "created" ? note.createdAt : note.updatedAt) ?? "");
     if (!Number.isFinite(stamp)) return false;
@@ -293,7 +312,7 @@ export function filtersToParams(f: SearchFilters, params: URLSearchParams): URLS
   if (f.titleOnly) params.set("title", "1");
   if (f.types?.length) params.set("type", f.types.join(","));
   if (f.tags?.length) params.set("tag", f.tags.join(","));
-  if (f.author) params.set("author", f.author);
+  if (f.author || f.createdByMe) params.set("author", f.author ?? "me");
   if (f.after) params.set("after", f.after);
   if (f.before) params.set("before", f.before);
   if (f.dateField === "created") params.set("date", "created");

@@ -7,12 +7,14 @@ export interface SearchFilterState {
   titleOnly: boolean;
   type: string;
   author: "anyone" | "me";
+  /** "Created by": anyone, or only pages this account created. Combines with `author` (both = created by me). */
+  creator: "anyone" | "me";
   date: DateRange;
   /** "" = the vault you are in. */
   vault: string;
 }
 export interface SearchVault { id: string; label: string; active: boolean }
-export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", author: "anyone", date: "any", vault: "" };
+export const EMPTY_FILTERS: SearchFilterState = { titleOnly: false, type: "", author: "anyone", creator: "anyone", date: "any", vault: "" };
 
 const TYPES: Array<[string, string]> = [
   ["", "Any type"], ["document", "Pages"], ["database", "Databases"], ["task", "Tasks"],
@@ -30,17 +32,18 @@ export function toSearchFilters(state: SearchFilterState): SearchFilters {
   if (state.titleOnly) f.titleOnly = true;
   if (state.type) f.types = [state.type];
   if (state.author === "me") f.author = "me";
+  if (state.creator === "me") f.createdByMe = true;
   if (state.date !== "any") f.after = isoDaysAgo(state.date === "week" ? 7 : state.date === "month" ? 30 : 365);
   if (state.vault) f.vault = state.vault;
   return f;
 }
 
 export function activeFilterCount(state: SearchFilterState): number {
-  return Number(state.titleOnly) + Number(!!state.type) + Number(state.author !== "anyone") + Number(state.date !== "any") + Number(!!state.vault);
+  return Number(state.titleOnly) + Number(!!state.type) + Number(state.author !== "anyone") + Number(state.creator !== "anyone") + Number(state.date !== "any") + Number(!!state.vault);
 }
 
 /**
- * NP-SR-04: title-only, type, edited-by and date filters for ⌘K and the phone
+ * NP-SR-04: title-only, type, created-by, edited-by and date filters for ⌘K and the phone
  * Search tab. Native controls only, so keyboard and screen readers work as-is.
  */
 export function SearchFilterBar({ value, onChange, onDone, vaults }: { value: SearchFilterState; onChange: (next: SearchFilterState) => void; onDone?: () => void; vaults?: SearchVault[] }) {
@@ -62,9 +65,13 @@ export function SearchFilterBar({ value, onChange, onDone, vaults }: { value: Se
           <select aria-label="Type" value={value.type} onChange={(e) => set({ type: e.target.value })}>
             {TYPES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
           </select>
+          <select aria-label="Created by" value={value.creator} onChange={(e) => set({ creator: e.target.value as SearchFilterState["creator"] })}>
+            <option value="anyone">Created by anyone</option>
+            <option value="me">Created by me</option>
+          </select>
           <select aria-label="Edited by" value={value.author} onChange={(e) => set({ author: e.target.value as SearchFilterState["author"] })}>
-            <option value="anyone">Anyone</option>
-            <option value="me">Created or edited by me</option>
+            <option value="anyone">Edited by anyone</option>
+            <option value="me">Edited by me</option>
           </select>
           <select aria-label="Date" value={value.date} onChange={(e) => set({ date: e.target.value as DateRange })}>
             <option value="any">Any time</option>

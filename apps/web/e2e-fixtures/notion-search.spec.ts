@@ -62,6 +62,61 @@ test("filters narrow results", async ({ page }, info) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+/** NP-SR-04: "Created by me" beside "Edited by me"; the two combine; the date range narrows. */
+test("created by me and edited by me are separate filters that combine; the date range narrows", async ({ page }) => {
+  // ?authors: "Workshop agenda" was created by someone else and last edited by this account.
+  await page.goto("/e2e-fixtures/notion-shell.html?authors");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("combobox", { name: "Search notes and commands" }).fill("workshop");
+  const results = page.getByRole("group", { name: "Notes" });
+  await expect(results.getByRole("option")).toHaveCount(4);
+  await page.getByRole("button", { name: "Filters" }).click();
+  const panel = page.getByRole("group", { name: "Search filters" });
+  const created = panel.getByRole("combobox", { name: "Created by" });
+  const edited = panel.getByRole("combobox", { name: "Edited by" });
+  await expect(created.locator("option")).toHaveText(["Created by anyone", "Created by me"]);
+  await expect(edited.locator("option")).toHaveText(["Edited by anyone", "Edited by me"]);
+
+  // Edited by me: the page I edited but did not create is in.
+  await edited.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(4);
+  await expect(results).toContainText("Workshop agenda");
+  // Created by me (alone): it is out.
+  await edited.selectOption("anyone");
+  await created.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(3);
+  await expect(results).not.toContainText("Workshop agenda");
+  expect((await page.evaluate(() => (window as any).prismShell.searches as string[])).at(-1)).toContain("author=me");
+  // Both: created by me AND edited by me — still only the pages I created; two filters are counted.
+  await edited.selectOption("me");
+  await expect(results.getByRole("option")).toHaveCount(3);
+  await expect(results).not.toContainText("Workshop agenda");
+  await expect(page.getByRole("button", { name: "Filters · 2" })).toBeVisible();
+  // They combine with the other filters.
+  await panel.getByRole("combobox", { name: "Type" }).selectOption("database");
+  await expect(results.getByRole("option")).toHaveCount(1);
+  await expect(results.getByRole("option")).toContainText("Workshop tracker");
+
+  // Date range: three of the four were edited on 2026-10-01, the agenda on 2026-05-02. What each
+  // range keeps is worked out from today's date, so the assertion holds whenever the suite runs.
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(results.getByRole("option")).toHaveCount(4);
+  const stamps = ["2026-10-01T12:00:00.000Z", "2026-10-01T12:00:00.000Z", "2026-10-01T12:00:00.000Z", "2026-05-02T09:00:00.000Z"];
+  const within = (days: number) => {
+    const from = Date.parse(`${new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)}T00:00:00.000Z`);
+    return stamps.filter((s) => Date.parse(s) >= from).length;
+  };
+  expect(within(365)).toBeGreaterThan(within(30)); // the fixture's dates still tell the two ranges apart
+  await panel.getByRole("combobox", { name: "Date" }).selectOption("year");
+  await expect(results.getByRole("option")).toHaveCount(within(365));
+  await panel.getByRole("combobox", { name: "Date" }).selectOption("month");
+  await expect(results.getByRole("option")).toHaveCount(within(30));
+  await expect(results).not.toContainText("Workshop agenda");
+  const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  expect((await page.evaluate(() => (window as any).prismShell.searches as string[])).at(-1)).toContain(`after=${monthAgo}`);
+});
+
 test("vault scope searches another vault the account can reach", async ({ page }) => {
   await page.goto("/e2e-fixtures/notion-shell.html?vaults");
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();

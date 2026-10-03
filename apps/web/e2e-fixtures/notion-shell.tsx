@@ -30,6 +30,8 @@ const notes: Note[] = [
   { id: "blank", path: "Projects/Prism/Untitled", content: "", tags: [], metadata: { type: "document" }, createdAt: recent, updatedAt: recent },
   { id: "tpl", path: "Templates/Meeting notes", content: "<h2>Agenda</h2><p>Topics to cover.</p>", tags: ["template"], metadata: { type: "document" }, createdAt: recent, updatedAt: recent },
 ];
+// ?authors (NP-SR-04): the agenda was created by someone else and last edited by the owner.
+if (params.has("authors")) notes.find((n) => n.id === "agenda")!.metadata = { ...notes.find((n) => n.id === "agenda")!.metadata, prism_last_writer: "owner@example.test" };
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;
 for (const n of notes) if (savedMeta[n.id]) n.metadata = { ...n.metadata, ...savedMeta[n.id] };
