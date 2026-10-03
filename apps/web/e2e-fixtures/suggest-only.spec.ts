@@ -242,7 +242,7 @@ test("the merged editor offers a suggest-only person nothing that writes the doc
   await find.getByLabel("Find in note").fill("gamma");
   await expect(find.locator(".prism-find-count")).toHaveText("1 / 1");
   await expect(editor(page).locator(".prism-search-match").first()).toBeVisible();
-  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.keyboard.press("ControlOrMeta+Alt+f");
   await page.waitForTimeout(200);
   await expect(page.getByLabel("Replace with")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^(Show replace|Replace|Replace all)$/ })).toHaveCount(0);

@@ -13,21 +13,30 @@ const notes: Note[] = [
   { id: "blocks", path: "Projects/Prism/Block editor", content, tags: [], metadata: { type: "document" }, createdAt: date, updatedAt: date },
   { id: "roadmap", path: "Projects/Prism/Roadmap", content: "<p>Roadmap</p>", tags: [], metadata: { type: "document" }, createdAt: date, updatedAt: date },
 ];
-const writes: Array<{ id: string; content?: string }> = [];
+const writes: Array<{ id: string; content?: string; ifUpdatedAt?: string }> = [];
+const copies: string[] = [];
 const uploads: Array<{ noteId: string; name: string; type: string; size: number }> = [];
-const controls = { failUpload: false, hold: null as null | Promise<void>, release: () => {} };
+const controls = { failMove: false, failUpload: false, hold: null as null | Promise<void>, release: () => {} };
 const client = {
   getNote: async (id: string) => notes.find((n) => n.id === id)!,
   listNotes: async () => notes,
   listTree: async () => notes.map(({ id, path, tags, updatedAt }) => ({ id, path, tags, updatedAt })),
   getTags: async () => [],
   getLinks: async () => [],
-  updateNote: async (id: string, changes: Partial<Note>) => {
-    writes.push({ id, content: changes.content });
+  updateNote: async (id: string, changes: Partial<Note> & { ifUpdatedAt?: string }) => {
+    if (controls.failMove && id !== "blocks") throw new Error("PATCH /notes failed: 409");
+    writes.push({ id, content: changes.content, ifUpdatedAt: changes.ifUpdatedAt });
     const note = notes.find((n) => n.id === id)!;
     Object.assign(note, changes, { updatedAt: new Date().toISOString() });
     return note;
   },
+  ...(params.has("copy") ? {
+    copyAttachments: async (noteId: string) => {
+      copies.push(noteId);
+      if (params.get("copy") === "fail") throw new Error("POST /attachments/copy failed: 409");
+      return { copied: 1, failed: 0, skipped: 0, errors: 0, more: false };
+    },
+  } : {}),
   ...(params.has("upload") ? {
     uploadAttachment: async (noteId: string, file: File) => {
       await new Promise((r) => setTimeout(r, 30)); // a real round-trip is async
@@ -42,6 +51,7 @@ Object.assign(window, {
   prismHoldUploads: () => { controls.hold = new Promise<void>((r) => { controls.release = () => { controls.hold = null; r(); }; }); },
   prismBlockWrites: writes,
   prismBlockUploads: uploads,
+  prismBlockCopies: copies,
   prismBlockControls: controls,
   prismEditor: () => (document.querySelector(".tiptap") as unknown as { editor: unknown })?.editor,
 });

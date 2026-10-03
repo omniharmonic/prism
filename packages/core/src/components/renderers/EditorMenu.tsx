@@ -1,10 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 
 /**
  * A small accessible menu for editor surfaces (block menu, Turn into, colour).
  * role=menu + roving focus: ↑/↓/Home/End move, Enter/Space activate, → opens a
  * submenu, ← / Escape go back or close. Focus returns to `returnFocus` on close.
+ *
+ * `searchable` adds a search field (NP-ED-02). Focus still starts on the first
+ * item — typing any character from an item moves into the field ("type to
+ * search"), ↓ / Enter from the field go to / run the first match. While a query
+ * is typed the menu lists matches from `searchItems` (e.g. submenu entries
+ * flattened in), else from `items`.
  */
 export interface EditorMenuItem {
   id: string;
@@ -18,6 +24,8 @@ export interface EditorMenuItem {
   submenu?: boolean;
   /** A visual group heading rendered before this item. */
   section?: string;
+  /** Extra words the search field matches (the label always matches). */
+  keywords?: string;
   onSelect: () => void;
 }
 
@@ -29,6 +37,9 @@ export function EditorMenu({
   style,
   className,
   autoFocus = true,
+  searchable = false,
+  searchItems,
+  searchLabel = "Search actions",
 }: {
   label: string;
   items: EditorMenuItem[];
@@ -38,8 +49,15 @@ export function EditorMenu({
   style?: React.CSSProperties;
   className?: string;
   autoFocus?: boolean;
+  searchable?: boolean;
+  searchItems?: EditorMenuItem[];
+  searchLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shown = !searchable || !q ? items : (searchItems ?? items).filter((it) => !it.disabled && `${it.label} ${it.keywords ?? ""}`.toLowerCase().includes(q)).map((it) => ({ ...it, section: undefined }));
   const focusables = () => Array.from(ref.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])') ?? []);
 
   useLayoutEffect(() => {
@@ -60,13 +78,30 @@ export function EditorMenu({
     const list = focusables();
     const at = list.indexOf(document.activeElement as HTMLElement);
     const go = (i: number) => { event.preventDefault(); list[(i + list.length) % list.length]?.focus(); };
+    const inSearch = searchable && document.activeElement === searchRef.current;
+    if (inSearch) {
+      // The field keeps text keys (←/→/Home/End edit the query); ↓/↑ leave it, Enter runs the first match.
+      if (event.key === "ArrowDown") { go(0); return; }
+      if (event.key === "ArrowUp") { go(list.length - 1); return; }
+      if (event.key === "Enter") { event.preventDefault(); shown.find((it) => !it.disabled)?.onSelect(); return; }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (query) setQuery(""); else if (onBack) onBack(); else onClose(); return; }
+      if (event.key === "Tab") { event.preventDefault(); onClose(); }
+      return;
+    }
+    if (searchable && event.key.length === 1 && event.key !== " " && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      // Type to search from any item.
+      event.preventDefault();
+      setQuery((v) => v + event.key);
+      searchRef.current?.focus({ preventScroll: true });
+      return;
+    }
     switch (event.key) {
       case "ArrowDown": go(at + 1); break;
       case "ArrowUp": go(at - 1); break;
       case "Home": go(0); break;
       case "End": go(list.length - 1); break;
       case "ArrowRight": {
-        const item = items.find((it) => it.id === (document.activeElement as HTMLElement)?.dataset.itemId);
+        const item = shown.find((it) => it.id === (document.activeElement as HTMLElement)?.dataset.itemId);
         if (item?.submenu) { event.preventDefault(); item.onSelect(); }
         break;
       }
@@ -93,7 +128,21 @@ export function EditorMenu({
           <ChevronLeft size={14} aria-hidden="true" /> <span>{label}</span>
         </button>
       )}
-      {items.map((it) => {
+      {searchable && (
+        <input
+          ref={searchRef}
+          type="search"
+          role="searchbox"
+          aria-label={searchLabel}
+          placeholder={`${searchLabel}…`}
+          className="editor-menu-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onMouseDown={(event) => event.stopPropagation() /* let the field take focus */}
+        />
+      )}
+      {searchable && q && shown.length === 0 && <div className="editor-menu-empty" role="status">No results</div>}
+      {shown.map((it) => {
         const role = it.checked === undefined ? "menuitem" : "menuitemradio";
         return (
           <div key={it.id} className="contents">

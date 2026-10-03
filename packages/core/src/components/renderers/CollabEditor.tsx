@@ -23,6 +23,8 @@ import { KeyboardToolbar } from "./KeyboardToolbar";
 import { SuggestionReview } from "./SuggestionReview";
 import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload, type ImageUploader, type FileUploader } from "../../lib/tiptap/ImageUpload";
@@ -39,6 +41,12 @@ import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/Menti
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+import { ChildPages } from "../../lib/tiptap/childPage";
+import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
+import { trashPage } from "../../lib/pages/ops";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
+import { QueryClientContext } from "@tanstack/react-query";
+import { useContext } from "react";
 
 export interface CollabUser {
   name: string;
@@ -178,6 +186,13 @@ export function CollabEditor({
   const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
   const hostPathRef = useRef(hostPath);
   useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
+  // Sub-pages (NP-PG-15): where the host gave this page's path AND a vault client exists.
+  const vaultClient = useOptionalVaultClient();
+  const queryClient = useContext(QueryClientContext) ?? null;
+  const subPagesRef = useRef({ client: vaultClient, queryClient });
+  subPagesRef.current = { client: vaultClient, queryClient };
+  const noteIdRef = useRef(noteId);
+  noteIdRef.current = noteId;
   const findRef = useRef<HTMLDivElement>(null);
   const uploadErrorRef = useRef(onUploadError);
   useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
@@ -188,13 +203,14 @@ export function CollabEditor({
       // the SAME list the Prism Server uses to seed/persist the Yjs doc, so the
       // HTML↔CRDT round-trip is loss-free. View-only plugins are added here.
       ...collabExtensions(),
-      Placeholder.configure({ placeholder: "Start writing together…" }),
+      Placeholder.configure(editorPlaceholder("Start writing together…")),
       WikilinkExtension.configure({ onNavigate: (t) => navRef.current?.(t) }),
       WikilinkAutocomplete.configure({ onStateChange: setAutocomplete }),
       SlashCommand.configure({ onStateChange: setSlash }),
       MentionSuggest.configure({ onStateChange: setMention }),
       MentionContext.configure({ noteId: noteId ?? null }),
       BlockKeymap,
+      EditorKeys,
       ImageUpload.configure({
         upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
         uploadFile: uploadFile ? (file) => uploadFileRef.current!(file) : undefined,
@@ -203,6 +219,12 @@ export function CollabEditor({
       UrlPaste.configure({ onStateChange: setPasteState, unfurl: unfurl ? (url) => unfurlRef.current!(url) : undefined }),
       SearchHighlight,
       DatabaseInsert.configure({ onRequest: hostPath !== undefined ? setDbInsert : undefined }),
+      ChildPages.configure(hostPath !== undefined && vaultClient ? {
+        hostPath: () => hostPathRef.current,
+        create: () => (subPagesRef.current.client && hostPathRef.current ? createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, hostPathRef.current) : Promise.resolve(null)),
+        describe: describeSubPage(() => subPagesRef.current.client),
+        trash: (id: string) => (subPagesRef.current.client ? trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient?.invalidateQueries({ queryKey: ["vault"] })) : Promise.reject(new Error("unavailable"))),
+      } : {}),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -212,17 +234,17 @@ export function CollabEditor({
         : []),
     ],
     editable,
+    enablePasteRules: false, // one Markdown paste rule (EditorKeys); see DocumentRenderer
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });
 
-  // ⌘F find / ⌘⇧H find + replace, while focus is in this editor (or its find bar).
+  // ⌘F find / ⌘⌥F find + replace, while focus is in this editor (or its find bar).
   useEffect(() => {
     if (!editor) return;
     const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
-      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      const isReplace = isReplaceShortcut(e);
+      const isFind = !isReplace && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f";
       if (!isFind && !isReplace) return;
       const active = document.activeElement;
       let inside = false;
@@ -248,9 +270,12 @@ export function CollabEditor({
     const onPointer = (e: PointerEvent) => {
       try { pointerInside = editor.view.dom.contains(e.target as Node) || !!findRef.current?.contains(e.target as Node); } catch { pointerInside = false; }
     };
+    // Phone ⋯ → "Find in page" (NP-ED-22): the shell asks whichever editor is on screen.
+    const onFindRequest = () => { try { if (editorIsOnScreen(editor.view.dom)) setFind({ replace: false }); } catch { /* not mounted */ } };
     window.addEventListener("keydown", onKey);
+    window.addEventListener(FIND_IN_PAGE_EVENT, onFindRequest);
     window.addEventListener("pointerdown", onPointer, true);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("pointerdown", onPointer, true); };
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener(FIND_IN_PAGE_EVENT, onFindRequest); window.removeEventListener("pointerdown", onPointer, true); };
   }, [editor]);
 
   // Reflect editable changes (e.g. level resolved after connect) onto the editor.
@@ -325,7 +350,7 @@ export function CollabEditor({
           pluginKey="commentBubble"
           shouldShow={({ state }) => {
             const { from, to, empty } = state.selection;
-            if (empty || from === to) return false;
+            if (empty || from === to || blockSelectionActive(state)) return false;
             return !suggestionAt(state, from); // the suggestion bubble owns that case
           }}
         >
@@ -399,12 +424,24 @@ export function CollabEditor({
 
       {/* Block gutter. Structural moves are raw edits, so it is off while
           suggesting (tracked changes) or comment-only. */}
-      {editor && <BlockHandles editor={editor} enabled={editable && !commentOnly && !suggesting} />}
+      {editor && (
+        <BlockHandles
+          editor={editor}
+          enabled={editable && !commentOnly && !suggesting}
+          notes={wikilinkNotes}
+          noteId={noteId}
+          onComment={canComment && !humanCommands ? (range) => {
+            const c = editor.view.coordsAtPos(range.to);
+            setComposer({ from: range.from, to: range.to, top: c.bottom + 6, left: Math.max(8, Math.min(c.left, window.innerWidth - 288)) });
+            setDraft("");
+          } : undefined}
+        />
+      )}
       {editor && editable && !commentOnly && <TableControls editor={editor} />}
 
       {/* `[[` wikilink autocomplete dropdown */}
       {editor && autocomplete?.active && (
-        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} />
+        <WikilinkDropdown editor={editor} notes={wikilinkNotes || []} autocomplete={autocomplete} hostPath={editable && !commentOnly && !suggesting ? hostPath ?? undefined : undefined} />
       )}
 
       {/* `/` slash-command menu */}

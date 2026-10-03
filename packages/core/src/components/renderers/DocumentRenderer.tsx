@@ -23,6 +23,8 @@ import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/Menti
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
 import { MentionMenu } from "../../lib/tiptap/MentionMenu";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { EditorKeys, editorPlaceholder, blockSelectionActive } from "../../lib/tiptap/EditorKeys";
+import { FIND_IN_PAGE_EVENT, isReplaceShortcut, editorIsOnScreen } from "../../lib/tiptap/findShortcuts";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload } from "../../lib/tiptap/ImageUpload";
@@ -34,6 +36,10 @@ import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import { PageCover } from "./PageCover";
 import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { ChildPages } from "../../lib/tiptap/childPage";
+import { createSubPage, describeSubPage } from "../../lib/tiptap/subPages";
+import { trashPage } from "../../lib/pages/ops";
+import { useQueryClient } from "@tanstack/react-query";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -156,10 +162,23 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const unfurl = useMemo<Unfurler | undefined>(() => (vaultClient.unfurl ? (url) => unfurlRef.current!(url) : undefined), [!!vaultClient.unfurl]); // eslint-disable-line react-hooks/exhaustive-deps
   const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
   const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
+  // Sub-pages (NP-PG-15): only where this page itself may be written.
+  const queryClient = useQueryClient();
+  const pathRef = useRef(note.path);
+  pathRef.current = note.path;
+  const subPagesRef = useRef({ client: vaultClient, queryClient });
+  subPagesRef.current = { client: vaultClient, queryClient };
+  const canSubPage = !readOnly && !governed && !!note.path;
+  const childPages = useMemo(() => ChildPages.configure(canSubPage ? {
+    hostPath: () => pathRef.current,
+    create: () => createSubPage(subPagesRef.current.client, subPagesRef.current.queryClient, pathRef.current ?? ""),
+    describe: describeSubPage(() => subPagesRef.current.client),
+    trash: (id: string) => trashPage(subPagesRef.current.client, id).then(() => void subPagesRef.current.queryClient.invalidateQueries({ queryKey: ["vault"] })),
+  } : {}), [canSubPage]);
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
-    Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
+    Placeholder.configure(editorPlaceholder("Start writing, or press / for commands...")),
     // Images, tables, callouts, toggles, columns, colours: the SAME list the
     // live editor and the server use, so a note round-trips through either.
     ...blockSchemaExtensions(),
@@ -169,7 +188,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),
     Link.configure({ openOnClick: false, autolink: true }),
-    Typography,
+    Typography.configure({ raquo: false, laquo: false }),
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
     SlashCommand.configure({ onStateChange: setSlashState }),
@@ -177,11 +196,13 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     MentionContext.configure({ noteId: note.id }),
     SearchHighlight,
     BlockKeymap,
+    EditorKeys,
     ImageUpload.configure({ upload, uploadFile, onError: setUploadError }),
     UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
     // Inline/linked databases: only where the page itself may be written.
     DatabaseInsert.configure({ onRequest: readOnly || governed ? undefined : setDbInsert }),
-  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed]);
+    childPages,
+  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed, childPages]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -255,6 +276,10 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     extensions,
     content: initialHtml || "",
     editable: !notEditable,
+    // Pasted text is converted to Markdown blocks by ONE rule (EditorKeys / markdownClipboard:
+    // enough evidence, not program source). TipTap's per-mark paste rules would still turn
+    // `__init__` or a lone `*x*` in pasted text into bold/italic.
+    enablePasteRules: false,
     editorProps: {
       attributes: {
         class: "prose-editor outline-none min-h-[200px]",
@@ -359,7 +384,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [saveNow, editor, openInlinePrompt, inlineAgent, sessionAgent]);
 
-  // Cmd+F / Ctrl+F — scoped to the editor container. Only fires when focus is
+  // Cmd+F / Ctrl+F (find) and ⌘⌥F / Ctrl+Alt+F (replace) — scoped to the editor container. Only fires when focus is
   // inside this DocumentRenderer's subtree (or when document.activeElement is
   // inside it), so it won't hijack Cmd+F on dashboard/graph/agent views.
   useEffect(() => {
@@ -367,9 +392,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (!container) return;
 
     const handler = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
-      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      const isReplace = isReplaceShortcut(e);
+      const isFind = !isReplace && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f";
       if (!isFind && !isReplace) return;
       // Only activate if focus (or the event target) is inside this container.
       const active = document.activeElement;
@@ -383,9 +407,12 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       setFindOpen(true);
     };
 
+    // Phone ⋯ → "Find in page" (NP-ED-22): the shell asks whichever editor is on screen.
+    const onFindRequest = () => { if (editorIsOnScreen(container)) { setFindReplace(false); setFindOpen(true); } };
+    window.addEventListener(FIND_IN_PAGE_EVENT, onFindRequest);
     // Listen on the container itself so the event only bubbles from within.
     container.addEventListener("keydown", handler);
-    return () => container.removeEventListener("keydown", handler);
+    return () => { container.removeEventListener("keydown", handler); window.removeEventListener(FIND_IN_PAGE_EVENT, onFindRequest); };
     // Re-run when initialHtml flips from null → string: on first mount the
     // component renders a loading placeholder and containerRef is null, so
     // the listener must re-attach once the real container mounts.
@@ -401,7 +428,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   return (
     <div ref={containerRef} className="document-writing-surface flex flex-col h-full" data-content-font={contentFont}>
-      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty}>
+      {editor && <BubbleMenu editor={editor} pluginKey="documentSelectionActions" shouldShow={({ state }) => !state.selection.empty && !blockSelectionActive(state)}>
         <div className="document-selection-actions"><SelectionActions editor={editor} allowFormatting={!notEditable} /></div>
       </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
@@ -446,11 +473,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
-        {editor && <BlockHandles editor={editor} enabled={!notEditable} />}
+        {editor && <BlockHandles editor={editor} enabled={!notEditable} notes={governed ? undefined : allNotes} noteId={note.id} />}
         {editor && !notEditable && <TableControls editor={editor} />}
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
-          <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
+          <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} hostPath={canSubPage ? note.path : undefined} />
         )}
         {/* `/` slash-command menu */}
         {editor && slashState?.active && (

@@ -20,7 +20,9 @@ import {
   Type,
   MoveHorizontal,
   Printer,
+  Search,
 } from "lucide-react";
+import { requestFindInPage } from "../../lib/tiptap/findShortcuts";
 import { useOfflineAvailability } from "../../lib/offline/availability";
 import { useNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
@@ -102,6 +104,8 @@ export function usePageMenuItems(
       onClick: run(() => usePagesUI.getState().openMove({ ...page, path: subject.path ?? page.path })),
     },
     { id: "copy-link", label: "Copy link", icon: <Link2 size={15} />, startsGroup: true, onClick: run(() => void actions.copyLink(page)) },
+    // NP-ED-22: find in page without a keyboard (the open page's editor answers).
+    ...(activeNoteId === page.id ? [{ id: "find-in-page", label: "Find in page", icon: <Search size={15} />, onClick: run(() => { setTimeout(requestFindInPage, 60); }) }] : []),
     ...(canEdit && note
       ? [{
           id: "lock",

@@ -26,7 +26,7 @@ test.describe("plain editor selection toolbar", () => {
     const bubble = await select(page, "Bravo paragraph");
     const names = await bubble.getByRole("button").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
     expect(names).toEqual([
-      "Turn into (now Text)", "Bold selection", "Italic selection", "Underline selection", "Strikethrough selection", "Code selection", "Link", "Text color and highlight",
+      "Turn into (now Text)", "Bold selection", "Italic selection", "Underline selection", "Strikethrough selection", "Code selection", "Link", "Text color and highlight", "Mention a person, page or date",
     ]);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/selection-toolbar-1440.png` });
   });
@@ -58,14 +58,46 @@ test.describe("plain editor selection toolbar", () => {
     }
   });
 
-  // PRODUCT GAPS (NP-ED-05): ⌘K inside the editor opens quick find (NP-SB-02 takes the key), and ⌘⇧H opens Replace
-  // (SearchHighlight claims Mod-Shift-H above Highlight), so neither does what this row requires.
-  test.fixme("⌘K link, ⌘⇧H highlight", async ({ page }) => {
+  // NP-ED-05 / NP-ED-18: ⌘K with a text selection opens the inline link editor (no selection → quick find, the
+  // shell's key); ⌘⇧H applies the highlight — the colour last picked in the toolbar. Replace moved to ⌘⌥F.
+  test("⌘K link, ⌘⇧H highlight", async ({ page }) => {
     await select(page, "Bravo paragraph");
     await page.keyboard.press("ControlOrMeta+Shift+h");
-    await expect.poll(() => html(page)).toContain("<mark");
+    await expect.poll(() => html(page)).toContain("<p><mark>Bravo paragraph</mark></p>");
+    await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0); // not Replace any more
+    await page.keyboard.press("ControlOrMeta+Shift+h");
+    await expect.poll(() => html(page)).toContain("<p>Bravo paragraph</p>");
+    // The last colour picked in the toolbar is what the shortcut applies next.
+    await page.getByRole("button", { name: "Text color and highlight" }).click();
+    await page.getByRole("menuitemradio", { name: "Blue highlight" }).click();
+    const picked = (await html(page)).match(/<mark data-color="([^"]+)"/)![1];
+    await select(page, "Foxtrot closing");
+    await page.keyboard.press("ControlOrMeta+Shift+h");
+    await expect.poll(() => html(page)).toContain(`<mark data-color="${picked}" style="background-color: ${picked}; color: inherit;">Foxtrot closing</mark>`);
+    // ⌘K → the link field, typed and applied from the keyboard only.
+    await select(page, "Echo quote");
     await page.keyboard.press("ControlOrMeta+k");
-    await expect(page.getByRole("textbox", { name: /link/i })).toBeFocused();
+    const field = page.getByRole("textbox", { name: /link/i });
+    await expect(field).toBeFocused();
+    await page.keyboard.type("example.test/k");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => html(page)).toContain('href="https://example.test/k"');
+    // ⌘⌥F opens find with the replace row.
+    await page.getByText("Alpha", { exact: true }).click();
+    await page.keyboard.press("ControlOrMeta+Alt+f");
+    await expect(page.getByRole("textbox", { name: "Replace with" })).toBeVisible();
+  });
+
+  // NP-ED-17: Mention in the selection toolbar opens the @ menu right after the selection.
+  test("the Mention button opens the @ menu after the selection", async ({ page }) => {
+    const bubble = await select(page, "Bravo paragraph");
+    await bubble.getByRole("button", { name: "Mention a person, page or date" }).click();
+    await expect(page.getByRole("listbox", { name: "Mention a person, page or date" })).toBeVisible();
+    await expect.poll(() => html(page)).toContain("<p>Bravo paragraph @</p>");
+    await expect(page.locator(".tiptap")).toBeFocused();
+    await page.keyboard.type("Road");
+    await page.getByRole("option", { name: /Roadmap/ }).first().click();
+    await expect.poll(() => html(page)).toMatch(/<p>Bravo paragraph <span[^>]*data-type="mention"[^>]*data-kind="page"[^>]*data-id="roadmap"/);
   });
 
   test("links are typed inline, validated, applied and removable", async ({ page }) => {
@@ -160,12 +192,21 @@ test("live editor: the toolbar carries Comment, which anchors a thread on the se
     const editor = page.locator(".tiptap[contenteditable=true]");
     await editor.click();
     await page.keyboard.type("Shared sentence to discuss");
+    // NP-ED-02: the block menu's Comment opens the same composer on the whole block.
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("A second block to comment on");
+    await page.getByText("A second block to comment on", { exact: true }).hover();
+    await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Comment" }).click();
+    await page.getByPlaceholder(/Add a comment/).fill("Whole block");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => html(page)).toMatch(/<span[^>]*data-comment[^>]*>A second block to comment on<\/span>/);
     const bubble = await select(page, "Shared sentence to discuss");
     await expect(bubble.getByRole("button", { name: "Bold selection" })).toBeVisible();
     await bubble.getByRole("button", { name: "Comment on selection" }).click();
     await page.getByPlaceholder(/Add a comment/).fill("Can we tighten this?");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
-    await expect.poll(() => html(page)).toMatch(/data-comment/);
+    await expect.poll(async () => ((await html(page)).match(/<span[^>]*data-comment/g) ?? []).length).toBe(2);
     // While suggesting, untracked decorations (link, colour) are not offered.
     await page.getByRole("button", { name: "Editing", exact: true }).click();
     await expect(page.getByRole("button", { name: "Suggesting", exact: true })).toBeVisible();

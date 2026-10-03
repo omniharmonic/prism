@@ -26,8 +26,10 @@ import { mentionExtensions } from "../lib/tiptap/MentionNode";
  *   4 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
  *       databaseView (inline database), image align + caption; codeBlock is now the
  *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
+ *   5 — + childPage (sub-page row), toggle `level` (toggle headings), column `width`
+ *       and up to 5 columns, table cell `cellColor` (wave 4A)
  */
-export const COLLAB_SCHEMA_VERSION = 4;
+export const COLLAB_SCHEMA_VERSION = 5;
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -47,7 +49,8 @@ export function collabExtensions(): Extensions {
   return [
     StarterKit.configure({ undoRedo: false, link: false, codeBlock: false }),
     Link.configure({ openOnClick: false, autolink: true }),
-    Typography,
+    // « » are off: `>>` + space is the toggle shortcut (NP-ED-04), and a lone « reads oddly.
+    Typography.configure({ raquo: false, laquo: false }),
     Highlight.configure({ multicolor: true }),
     TaskList,
     TaskItem.configure({ nested: true }),

@@ -2,6 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Fragment, type Node as PMNode, type Schema } from "@tiptap/pm/model";
 import { TextSelection, type EditorState, type Transaction } from "@tiptap/pm/state";
 import { COLORABLE_BLOCKS, isBlockColor, type BlockColorValue } from "../../editor/blocks";
+import { newMentionUid } from "./MentionNode";
 
 /**
  * Pure block operations for the block handle, the block menu, the selection
@@ -155,26 +156,26 @@ export function moveSelectionBlock(state: EditorState, dir: -1 | 1): Transaction
 }
 
 /**
- * Move the top-level block at `fromIndex` so it lands before the block that is
- * currently at `toIndex` (toIndex === childCount → the end). One replace step
- * spanning only the blocks that actually change order.
+ * Move `count` top-level blocks starting at `fromIndex` so they land before the
+ * block that is currently at `toIndex` (toIndex === childCount → the end). One
+ * replace step spanning only the blocks that actually change order.
  */
-export function moveTopBlock(state: EditorState, fromIndex: number, toIndex: number): Transaction | null {
+export function moveTopBlock(state: EditorState, fromIndex: number, toIndex: number, count = 1): Transaction | null {
   const { doc } = state;
-  const count = doc.childCount;
-  if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex > count) return null;
-  if (toIndex === fromIndex || toIndex === fromIndex + 1) return null; // no-op
+  const total = doc.childCount;
+  if (count < 1 || fromIndex < 0 || fromIndex + count > total || toIndex < 0 || toIndex > total) return null;
+  if (toIndex >= fromIndex && toIndex <= fromIndex + count) return null; // no-op
   const blocks = topLevelBlocks(doc);
   const lo = Math.min(fromIndex, toIndex);
-  const hi = Math.max(fromIndex, toIndex - 1);
+  const hi = Math.max(fromIndex + count - 1, toIndex - 1);
   const start = blocks[lo].pos;
   const end = blocks[hi].pos + blocks[hi].node.nodeSize;
-  const moving = blocks[fromIndex].node;
-  const rest = blocks.slice(lo, hi + 1).filter((b) => b.index !== fromIndex).map((b) => b.node);
-  const ordered = fromIndex < toIndex ? [...rest, moving] : [moving, ...rest];
+  const moving = blocks.slice(fromIndex, fromIndex + count).map((b) => b.node);
+  const rest = blocks.slice(lo, hi + 1).filter((b) => b.index < fromIndex || b.index >= fromIndex + count).map((b) => b.node);
+  const ordered = fromIndex < toIndex ? [...rest, ...moving] : [...moving, ...rest];
   const tr = state.tr.replaceWith(start, end, Fragment.fromArray(ordered));
   let landed = start;
-  for (const n of ordered) { if (n === moving) break; landed += n.nodeSize; }
+  for (const n of ordered) { if (n === moving[0]) break; landed += n.nodeSize; }
   placeCaret(tr, landed + 1);
   return tr.scrollIntoView();
 }
@@ -195,6 +196,8 @@ export interface MovePlan {
   /** Position before the moving node. */
   from: number;
   node: PMNode;
+  /** A multi-block move: every moving node (starting with `node`). */
+  nodes?: PMNode[];
   /** Where it goes, in the ORIGINAL document's coordinates. */
   target: number;
   /** Caret offset from the node's start after the move. */
@@ -212,14 +215,15 @@ export function planSelectionMove(state: EditorState, dir: -1 | 1): MovePlan | n
   return { from, node, target, caretOffset: state.selection.from - from };
 }
 
-export function planTopMove(state: EditorState, fromIndex: number, toIndex: number): MovePlan | null {
+export function planTopMove(state: EditorState, fromIndex: number, toIndex: number, count = 1): MovePlan | null {
   const { doc } = state;
-  const count = doc.childCount;
-  if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex > count) return null;
-  if (toIndex === fromIndex || toIndex === fromIndex + 1) return null;
+  const total = doc.childCount;
+  if (count < 1 || fromIndex < 0 || fromIndex + count > total || toIndex < 0 || toIndex > total) return null;
+  if (toIndex >= fromIndex && toIndex <= fromIndex + count) return null;
   const blocks = topLevelBlocks(doc);
-  const target = toIndex === count ? doc.content.size : blocks[toIndex].pos;
-  return { from: blocks[fromIndex].pos, node: blocks[fromIndex].node, target, caretOffset: 1 };
+  const target = toIndex === total ? doc.content.size : blocks[toIndex].pos;
+  const nodes = blocks.slice(fromIndex, fromIndex + count).map((b) => b.node);
+  return { from: blocks[fromIndex].pos, node: nodes[0], nodes, target, caretOffset: 1 };
 }
 
 /** Is this editor bound to a shared Yjs document? */
@@ -231,10 +235,12 @@ type Dispatcher = { state: EditorState; dispatch: (tr: Transaction) => void };
 
 /** Delete, then insert at the mapped target: two transactions (see above). */
 export function dispatchSplitMove(view: Dispatcher, plan: MovePlan): void {
-  const del = view.state.tr.delete(plan.from, plan.from + plan.node.nodeSize);
+  const nodes = plan.nodes ?? [plan.node];
+  const size = nodes.reduce((n, node) => n + node.nodeSize, 0);
+  const del = view.state.tr.delete(plan.from, plan.from + size);
   view.dispatch(del);
   const at = del.mapping.map(plan.target);
-  const ins = view.state.tr.insert(at, plan.node);
+  const ins = view.state.tr.insert(at, Fragment.fromArray(nodes));
   placeCaret(ins, at + plan.caretOffset);
   view.dispatch(ins.scrollIntoView());
 }
@@ -254,23 +260,146 @@ export function moveSelectionBlockIn(editor: MoveEditor, dir: -1 | 1): boolean {
 }
 
 /** Move a top-level block: one step in a plain editor, delete+insert when live. */
-export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: number): boolean {
+export function moveTopBlockIn(editor: MoveEditor, fromIndex: number, toIndex: number, count = 1): boolean {
   if (isCollaborative(editor)) {
-    const plan = planTopMove(editor.state, fromIndex, toIndex);
+    const plan = planTopMove(editor.state, fromIndex, toIndex, count);
     if (plan) dispatchSplitMove(editor.view, plan);
     return !!plan;
   }
-  const tr = moveTopBlock(editor.state, fromIndex, toIndex);
+  const tr = moveTopBlock(editor.state, fromIndex, toIndex, count);
   if (tr) editor.view.dispatch(tr);
   return !!tr;
+}
+
+/**
+ * Drop `count` top-level blocks (from `fromIndex`) beside the block at
+ * `targetIndex` (NP-ED-09): a plain target becomes a two-column layout holding
+ * the target and the dragged blocks; a columns target (< 5 columns) gains one
+ * column on that side. One transaction. Null when it cannot be done (dropping
+ * on itself, a columns block dragged into columns, a full layout).
+ */
+export function moveBlocksBeside(state: EditorState, fromIndex: number, count: number, targetIndex: number, side: "left" | "right"): Transaction | null {
+  const { doc, schema } = state;
+  const { columns, column } = schema.nodes;
+  if (!columns || !column) return null;
+  const blocks = topLevelBlocks(doc);
+  const moving = blocks.slice(fromIndex, fromIndex + count);
+  const target = blocks[targetIndex];
+  if (!moving.length || !target || (targetIndex >= fromIndex && targetIndex < fromIndex + count)) return null;
+  if (moving.some((b) => b.node.type.name === "columns")) return null;
+  const dragged = column.create(null, moving.map((b) => b.node));
+  let layout: PMNode;
+  if (target.node.type.name === "columns") {
+    if (target.node.childCount >= 5) return null;
+    const cols: PMNode[] = [];
+    target.node.forEach((c) => cols.push(c));
+    layout = columns.create(target.node.attrs, side === "left" ? [dragged, ...cols] : [...cols, dragged]);
+  } else {
+    const own = column.create(null, target.node);
+    layout = columns.create(null, side === "left" ? [dragged, own] : [own, dragged]);
+  }
+  const tr = state.tr;
+  const from = moving[0].pos;
+  const last = moving[moving.length - 1];
+  const to = last.pos + last.node.nodeSize;
+  // Later range first, so the earlier positions stay valid.
+  if (target.pos > from) {
+    tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+    tr.delete(from, to);
+  } else {
+    tr.delete(from, to);
+    tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+  }
+  return placeCaret(tr, Math.min(tr.mapping.map(target.pos) + 3, tr.doc.content.size)).scrollIntoView();
+}
+
+/**
+ * Put blocks beside a block. Plain editor: one transaction (one undo step). LIVE
+ * document: delete the moving blocks, then replace the target in a SECOND
+ * transaction — y-prosemirror diffs documents, and a single delete+replace reads
+ * as "every block between the two was rewritten in place", so a collaborator
+ * typing into one of those unrelated blocks saw the text land in a neighbour or
+ * vanish (review H1). Split, Yjs deletes exactly the moving elements and swaps
+ * exactly the target; both fall inside Y.UndoManager's capture window.
+ */
+export function moveBlocksBesideIn(editor: MoveEditor, fromIndex: number, count: number, targetIndex: number, side: "left" | "right"): boolean {
+  if (!isCollaborative(editor)) {
+    const tr = moveBlocksBeside(editor.state, fromIndex, count, targetIndex, side);
+    if (tr) editor.view.dispatch(tr);
+    return !!tr;
+  }
+  if (!moveBlocksBeside(editor.state, fromIndex, count, targetIndex, side)) return false; // same refusals as the plain path
+  const { columns, column } = editor.state.schema.nodes;
+  const moving = topLevelBlocks(editor.state.doc).slice(fromIndex, fromIndex + count);
+  const last = moving[moving.length - 1];
+  editor.view.dispatch(editor.state.tr.delete(moving[0].pos, last.pos + last.node.nodeSize));
+  const target = topLevelBlocks(editor.view.state.doc)[targetIndex > fromIndex ? targetIndex - count : targetIndex];
+  if (!target) return true;
+  const dragged = column.create(null, moving.map((b) => b.node));
+  let layout: PMNode;
+  if (target.node.type.name === "columns") {
+    const cols: PMNode[] = [];
+    target.node.forEach((c) => cols.push(c));
+    layout = columns.create(target.node.attrs, side === "left" ? [dragged, ...cols] : [...cols, dragged]);
+  } else {
+    layout = columns.create(null, side === "left" ? [dragged, column.create(null, target.node)] : [column.create(null, target.node), dragged]);
+  }
+  const tr = editor.view.state.tr.replaceWith(target.pos, target.pos + target.node.nodeSize, layout);
+  editor.view.dispatch(placeCaret(tr, Math.min(target.pos + 3, tr.doc.content.size)).scrollIntoView());
+  return true;
 }
 
 export function duplicateTopBlock(state: EditorState, pos: number): Transaction | null {
   const node = state.doc.nodeAt(pos);
   if (!node) return null;
   const at = pos + node.nodeSize;
-  const tr = state.tr.insert(at, node);
+  const tr = state.tr.insert(at, freshCopy(node));
   return placeCaret(tr, at + 1);
+}
+
+/**
+ * A copy of `node` that is safe to put in the same document: every mention chip
+ * gets a NEW uid (the server tells new mentions from old by uid, and deep links
+ * target one) and loses its reminder (the reminder belongs to the original chip).
+ */
+export function freshCopy(node: PMNode): PMNode {
+  if (node.type.name === "mention") return node.type.create({ ...node.attrs, uid: newMentionUid(), reminder: null }, null, node.marks);
+  if (node.isLeaf || !node.content.size) return node;
+  const children: PMNode[] = [];
+  let changed = false;
+  node.forEach((child) => { const c = freshCopy(child); if (c !== child) changed = true; children.push(c); });
+  return changed ? node.copy(Fragment.fromArray(children)) : node;
+}
+
+/** Duplicate the caret's unit (a list item inside its list, else the top-level block); the caret moves into the copy. */
+export function duplicateSelectionBlock(state: EditorState): Transaction | null {
+  const unit = movableUnit(state);
+  if (!unit) return null;
+  const at = unit.from + unit.node.nodeSize;
+  const tr = state.tr.insert(at, freshCopy(unit.node));
+  return placeCaret(tr, at + (state.selection.from - unit.from)).scrollIntoView();
+}
+
+/** Duplicate `count` top-level blocks starting at `index`, right after them. One step. */
+export function duplicateTopBlocks(state: EditorState, index: number, count = 1): Transaction | null {
+  const blocks = topLevelBlocks(state.doc).slice(index, index + count);
+  if (!blocks.length) return null;
+  const last = blocks[blocks.length - 1];
+  const at = last.pos + last.node.nodeSize;
+  return state.tr.insert(at, Fragment.fromArray(blocks.map((b) => freshCopy(b.node))));
+}
+
+/** Delete `count` top-level blocks starting at `index` (an empty paragraph stays if nothing else would). One step. */
+export function deleteTopBlocks(state: EditorState, index: number, count = 1): Transaction | null {
+  const blocks = topLevelBlocks(state.doc).slice(index, index + count);
+  if (!blocks.length) return null;
+  const from = blocks[0].pos;
+  const last = blocks[blocks.length - 1];
+  const to = last.pos + last.node.nodeSize;
+  const tr = state.tr;
+  if (blocks.length === state.doc.childCount) tr.replaceWith(from, to, state.schema.nodes.paragraph.create());
+  else tr.delete(from, to);
+  return placeCaret(tr, Math.min(from + 1, tr.doc.content.size));
 }
 
 export function deleteTopBlock(state: EditorState, pos: number): Transaction | null {

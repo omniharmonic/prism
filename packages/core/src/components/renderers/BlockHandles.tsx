@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
-import { GripVertical, Plus, Copy, Trash2, ArrowUp, ArrowDown, Repeat2, Palette } from "lucide-react";
+import { GripVertical, Plus, Copy, CopyPlus, Trash2, ArrowUp, ArrowDown, Repeat2, Palette, FolderInput, MessageSquarePlus, Sparkles, FileText } from "lucide-react";
 import { BLOCK_COLORS, type BlockColorValue } from "../../editor/blocks";
 import {
   TURN_INTO,
@@ -14,8 +14,11 @@ import {
   deleteTopBlock,
   unwrapTopBlock,
   duplicateTopBlock,
+  moveBlocksBeside,
+  moveBlocksBesideIn,
   moveTopBlockIn,
   setTopBlockColor,
+  structuralEditsAllowed,
   topBlockAt,
   topLevelBlocks,
   turnTopBlocksInto,
@@ -23,6 +26,16 @@ import {
 import { EditorMenu, type EditorMenuItem } from "./EditorMenu";
 import { blockRefAt, locateBlock, mapBlockRef, type BlockRef } from "../../lib/tiptap/blockRef";
 import { TURN_INTO_ICONS, colorLabel } from "./blockUi";
+import { blockSelectionActive, blockSelectionRange, selectBlocks } from "../../lib/tiptap/EditorKeys";
+import { appendBlocksToPage, blocksToHtml, canMoveBlocksToPage, carryAttachments, copyBlocks, moveFailureText, newMoveRequestId } from "../../lib/tiptap/moveBlock";
+import { suppressTrashOffer } from "../../lib/tiptap/childPage";
+import { useSelectionAsk } from "../../lib/agent/useSelectionAsk";
+import { useOptionalVaultClient } from "../../data/VaultClientContext";
+import { noteLinkTitle } from "../../lib/wikilinks";
+import { inferContentType } from "../../lib/schemas/content-types";
+import { isTrashed, protectionReason } from "../../lib/pages/model";
+import type { Note } from "../../lib/types";
+import "./ShortcutSheet"; // installs ⌘/ → keyboard shortcuts
 
 interface Hovered {
   index: number;
@@ -59,16 +72,46 @@ function scrollBounds(dom: HTMLElement): { top: number; bottom: number } {
  * `+` (insert below, opens the slash menu) and `⋮⋮` (drag to reorder, click for
  * the block menu). On touch / phone widths there is no hover: the handle follows
  * the block holding the caret and a tap opens the same menu (with Move up/down).
- * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘/ / Ctrl+/
+ * Keyboard: Alt/Option+Shift+↑/↓ moves the block (BlockKeymap), ⌘⇧/ / Ctrl+Shift+/
  * opens the block menu for the block holding the caret.
+ *
+ * Wave 4A: the menu is searchable and gains Copy, Move to (another page),
+ * Comment and Ask agent; dragging a handle inside a block selection moves every
+ * selected block; dropping on a block's far left/right edge makes columns.
  */
-export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boolean }) {
+export interface BlockHandlesProps {
+  editor: Editor;
+  enabled: boolean;
+  /** Pages the block can be moved to ("Move to"). Omitted or empty → the item is hidden. */
+  notes?: Note[];
+  /** This page's id (never offered as a move target). */
+  noteId?: string | null;
+  /** Comment on the block's text (live documents). Omitted → the item is hidden. */
+  onComment?: (range: { from: number; to: number }) => void;
+}
+
+/** Where a dragged block would land. */
+type Drop =
+  | { kind: "line"; index: number; top: number; left: number; width: number }
+  | { kind: "side"; index: number; side: "left" | "right"; top: number; left: number; height: number };
+
+export function BlockHandles({ editor, enabled, notes, noteId, onComment }: BlockHandlesProps) {
   const [hovered, setHovered] = useState<Hovered | null>(null);
-  const [menu, setMenu] = useState<null | "main" | "turn" | "color">(null);
+  const [menu, setMenu] = useState<null | "main" | "turn" | "color" | "move">(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const client = useOptionalVaultClient();
+  const agent = useSelectionAsk(editor);
   const [coarse, setCoarse] = useState(() => typeof window !== "undefined" && window.matchMedia(COARSE).matches);
-  const [drop, setDrop] = useState<{ index: number; top: number; left: number; width: number } | null>(null);
+  const [drop, setDrop] = useState<Drop | null>(null);
   const handleRef = useRef<HTMLButtonElement>(null);
   const dragFrom = useRef<BlockRef | null>(null);
+  /** How many blocks the current drag carries (a block selection moves together). */
+  const dragCount = useRef(1);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), Math.max(3500, notice.length * 70));
+    return () => clearTimeout(t);
+  }, [notice]);
   const menuOpen = menu !== null;
   const menuRef = useRef(menuOpen);
   menuRef.current = menuOpen;
@@ -131,7 +174,7 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
         const er = editor.view.dom.getBoundingClientRect();
         const inside = event.clientX >= er.left - 72 && event.clientX <= er.right + 8 && event.clientY >= er.top - 4 && event.clientY <= er.bottom + 4;
         // A text range selection owns the selection toolbar; keep the gutter out of its way.
-        if (!inside || textRangeSelected(editor)) { setHovered(null); return; }
+        if (!inside || (textRangeSelected(editor) && !blockSelectionActive(editor.state))) { setHovered(null); return; }
         const index = blockIndexAtY(event.clientY);
         setHovered(index === null ? null : place(index));
       });
@@ -184,18 +227,18 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
         return placed ? { ...placed, ref } : menuRef.current ? { ...h, ...now, ref } : null;
       });
     };
-    const onSelection = () => { if (!coarse && !menuRef.current && textRangeSelected(editor)) setHovered(null); };
+    const onSelection = () => { if (!coarse && !menuRef.current && textRangeSelected(editor) && !blockSelectionActive(editor.state)) setHovered(null); };
     editor.on("transaction", onUpdate);
     editor.on("selectionUpdate", onSelection);
     return () => { editor.off("transaction", onUpdate); editor.off("selectionUpdate", onSelection); };
   }, [editor, place, coarse]);
 
-  // ⌘/ (Ctrl+/) opens the block menu for the caret's block.
+  // ⌘⇧/ (Ctrl+Shift+/) opens the block menu for the caret's block. (⌘/ alone is the shortcut sheet.)
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: KeyboardEvent) => {
       if (!viewReady(editor) || !editor.view.dom.contains(event.target as Node)) return;
-      if (event.key !== "/" || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if ((event.code !== "Slash" && event.key !== "/" && event.key !== "?") || !(isMac ? event.metaKey : event.ctrlKey) || event.altKey || !event.shiftKey) return;
       const block = topBlockAt(editor.state.doc, editor.state.selection.from);
       const at = block && place(block.index);
       if (!at) return;
@@ -242,7 +285,7 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       }
       return index;
     };
-    const lineAt = (index: number) => {
+    const lineAt = (index: number): Drop | null => {
       const blocks = topLevelBlocks(editor.state.doc);
       const er = editor.view.dom.getBoundingClientRect();
       const ref = blocks[Math.min(index, blocks.length - 1)];
@@ -251,21 +294,40 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       const r = dom.getBoundingClientRect();
       const ms = getComputedStyle(dom);
       const top = index >= blocks.length ? r.bottom + (parseFloat(ms.marginBottom) || 0) / 2 : r.top - (parseFloat(ms.marginTop) || 0) / 2;
-      return { index, top: top - 1, left: er.left, width: er.width };
+      return { kind: "line", index, top: top - 1, left: er.left, width: er.width };
     };
-    // Only the editor column (and its gutter) is a drop zone: anywhere else the
-    // drop is not accepted and the drag simply ends.
+    // Side zones (NP-ED-09): the page margin LEFT of the handles, and the last
+    // stretch of the column on the right. Over a block there = "put it beside".
+    const sideAt = (event: DragEvent): Drop | null => {
+      if (window.matchMedia("(max-width: 767px)").matches || !editor.schema.nodes.columns) return null;
+      const er = editor.view.dom.getBoundingClientRect();
+      const side = event.clientX < er.left - 60 ? "left" : event.clientX > er.right - Math.max(40, er.width * 0.12) ? "right" : null;
+      if (!side) return null;
+      const from = locateBlock(editor, dragFrom.current);
+      for (const b of topLevelBlocks(editor.state.doc)) {
+        const dom = editor.view.nodeDOM(b.pos) as HTMLElement | null;
+        if (!(dom instanceof HTMLElement)) continue;
+        const r = dom.getBoundingClientRect();
+        if (event.clientY < r.top || event.clientY > r.bottom) continue;
+        if (!from || !moveBlocksBeside(editor.state, from.index, dragCount.current, b.index, side)) return null;
+        return { kind: "side", index: b.index, side, top: r.top, left: side === "left" ? r.left - 6 : r.right + 3, height: r.height };
+      }
+      return null;
+    };
+    // Only the editor column (and its gutter / left margin) is a drop zone:
+    // anywhere else the drop is not accepted and the drag simply ends.
     const overEditor = (event: DragEvent) => {
       const er = editor.view.dom.getBoundingClientRect();
-      return event.clientX >= er.left - 72 && event.clientX <= er.right + 8 && event.clientY >= er.top - 24 && event.clientY <= er.bottom + 24;
+      return event.clientX >= er.left - 120 && event.clientX <= er.right + 8 && event.clientY >= er.top - 24 && event.clientY <= er.bottom + 24;
     };
+    const dropAt = (event: DragEvent): Drop | null => sideAt(event) ?? (event.clientX >= editor.view.dom.getBoundingClientRect().left - 72 ? lineAt(target(event.clientY)) : null);
     const onOver = (event: DragEvent) => {
       if (dragFrom.current === null || !viewReady(editor)) return;
       if (!overEditor(event)) { setDrop(null); return; }
       event.preventDefault();
       event.stopPropagation();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      setDrop(lineAt(target(event.clientY)));
+      setDrop(dropAt(event));
     };
     const onDrop = (event: DragEvent) => {
       if (dragFrom.current === null || !viewReady(editor)) return;
@@ -273,9 +335,21 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       event.preventDefault();
       event.stopPropagation();
       const from = locateBlock(editor, dragFrom.current);
+      const count = dragCount.current;
+      const where = dropAt(event);
       dragFrom.current = null;
+      dragCount.current = 1;
       setDrop(null);
-      if (from) moveTopBlockIn(editor, from.index, target(event.clientY));
+      if (from && where?.kind === "side") {
+        moveBlocksBesideIn(editor, from.index, count, where.index, where.side);
+      } else if (from && where) {
+        const to = where.index;
+        if (moveTopBlockIn(editor, from.index, to, count) && count > 1) {
+          // Keep the moved blocks selected where they landed.
+          const start = to > from.index ? to - count : to;
+          selectBlocks(editor.view, start, start + count - 1);
+        }
+      }
       editor.commands.focus();
     };
     document.addEventListener("dragover", onOver, true);
@@ -283,9 +357,10 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     return () => { document.removeEventListener("dragover", onOver, true); document.removeEventListener("drop", onDrop, true); };
   }, [editor, enabled]);
 
-  if (!enabled || !hovered) return null;
+  const noticeEl = notice ? createPortal(<div className="block-notice" role="status">{notice}</div>, document.body) : null;
+  if (!enabled || !hovered) return noticeEl;
   const block = editor.state.doc.nodeAt(hovered.pos);
-  if (!block) return null;
+  if (!block) return noticeEl;
   const kind = blockKind(block);
   const narrow = coarse;
   const gutterLeft = narrow ? Math.max(0, hovered.left - 21) : hovered.left - 52;
@@ -302,6 +377,46 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     chain.run();
   };
 
+  const textRange = { from: hovered.pos + 1, to: hovered.pos + block.nodeSize - 1 };
+  const hasText = block.textContent.trim().length > 0 && textRange.to > textRange.from;
+  const targets = (notes ?? []).filter((n) => n.id !== noteId && !isTrashed(n) && !protectionReason(n) && inferContentType(n) === "document");
+  const canMove = canMoveBlocksToPage() && targets.length > 0 && structuralEditsAllowed(editor);
+  const canAsk = agent.available && hasText;
+
+  /** Select the block's text so Comment / Ask agent act on exactly this block. */
+  const selectBlockText = (at: { pos: number }) => {
+    const node = editor.state.doc.nodeAt(at.pos);
+    if (!node) return null;
+    const range = { from: at.pos + 1, to: at.pos + node.nodeSize - 1 };
+    editor.chain().focus().setTextSelection(range).run();
+    return range;
+  };
+  const moveTo = (target: Note) => {
+    const at = locateBlock(editor, hovered.ref);
+    const node = at && editor.state.doc.nodeAt(at.pos);
+    setMenu(null);
+    if (!at || !node) { setHovered(null); return; }
+    const ref = hovered.ref;
+    const html = blocksToHtml(editor.schema, [node]);
+    const title = noteLinkTitle(target);
+    const requestId = newMoveRequestId(); // one id per invocation: a resend appends once
+    setNotice(`Moving to ${title}…`);
+    appendBlocksToPage(target.id, html, requestId).then(async () => {
+      // CONFIRMED by the server (never a queued write). Remove the block here only
+      // if it is still here, unchanged; a sub-page row that moves is not "deleted".
+      const now = editor.isDestroyed ? null : locateBlock(editor, ref);
+      const still = now && editor.state.doc.nodeAt(now.pos);
+      const removed = !!(now && still && still.eq(node));
+      if (removed) {
+        suppressTrashOffer(editor);
+        const tr = deleteTopBlock(editor.state, now!.pos);
+        if (tr) editor.view.dispatch(tr);
+      }
+      const files = await carryAttachments(client, target.id, html);
+      setNotice(`${removed ? `Moved to ${title}` : `Copied to ${title} — the block changed here, so it was kept`}${files ? `. ${files}` : ""}`);
+    }, (e) => setNotice(moveFailureText(e, title)));
+  };
+
   const mainItems: EditorMenuItem[] = [
     // Phones have no + button and no "/" key handy: insert lives in the menu.
     ...(narrow ? [{ id: "insert", label: "Insert block below", icon: <Plus size={15} />, onSelect: () => { setMenu(null); insertBelow(); } }] : []),
@@ -309,9 +424,27 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     // A wrapper holding images/tables cannot be re-shaped without loss: Unwrap keeps everything.
     ...(canUnwrap(block) ? [{ id: "unwrap", label: containsNonText(block) ? "Unwrap (keeps images and tables)" : "Unwrap", icon: <Repeat2 size={15} />, onSelect: () => run((at) => unwrapTopBlock(editor.state, at.pos)) }] : []),
     ...(canColor(block) ? [{ id: "color", label: "Color", icon: <Palette size={15} />, submenu: true, onSelect: () => setMenu("color") }] : []),
-    { id: "duplicate", label: "Duplicate", icon: <Copy size={15} />, onSelect: () => run((at) => duplicateTopBlock(editor.state, at.pos)) },
-    { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌥⇧↑" : "Alt+Shift+↑", disabled: hovered.index === 0, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index - 1)) },
-    { id: "down", label: "Move down", icon: <ArrowDown size={15} />, hint: isMac ? "⌥⇧↓" : "Alt+Shift+↓", disabled: hovered.index >= editor.state.doc.childCount - 1, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index + 2)) },
+    { id: "duplicate", label: "Duplicate", icon: <CopyPlus size={15} />, hint: isMac ? "⌘D" : "Ctrl+D", onSelect: () => run((at) => duplicateTopBlock(editor.state, at.pos)) },
+    { id: "copy", label: "Copy", icon: <Copy size={15} />, keywords: "clipboard markdown", onSelect: () => run((at) => {
+      const node = editor.state.doc.nodeAt(at.pos);
+      if (node) void copyBlocks(editor.schema, [node]).then((ok) => setNotice(ok ? "Copied block" : "Couldn’t copy — the browser refused clipboard access"));
+      return null;
+    }) },
+    ...(canMove ? [{ id: "move", label: "Move to", icon: <FolderInput size={15} />, keywords: "another page", submenu: true, onSelect: () => setMenu("move") }] : []),
+    ...(onComment && hasText ? [{ id: "comment", label: "Comment", icon: <MessageSquarePlus size={15} />, onSelect: () => {
+      const at = locateBlock(editor, hovered.ref);
+      setMenu(null);
+      const range = at && selectBlockText(at);
+      if (range) onComment(range);
+    } }] : []),
+    ...(canAsk ? [{ id: "ask", label: "Ask agent", icon: <Sparkles size={15} />, keywords: "ai assistant", disabled: !agent.canAsk, onSelect: () => {
+      const at = locateBlock(editor, hovered.ref);
+      setMenu(null);
+      // The block's text becomes the selection context of the SAME document-bound session.
+      if (at && selectBlockText(at)) agent.ask("selection");
+    } }] : []),
+    { id: "up", label: "Move up", icon: <ArrowUp size={15} />, hint: isMac ? "⌘⇧↑" : "Ctrl+Shift+↑", disabled: hovered.index === 0, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index - 1)) },
+    { id: "down", label: "Move down", icon: <ArrowDown size={15} />, hint: isMac ? "⌘⇧↓" : "Ctrl+Shift+↓", disabled: hovered.index >= editor.state.doc.childCount - 1, onSelect: () => run((at) => moveTopBlockIn(editor, at.index, at.index + 2)) },
     { id: "delete", label: "Delete", icon: <Trash2 size={15} />, danger: true, onSelect: () => run((at) => deleteTopBlock(editor.state, at.pos)) },
   ];
   const turnItems: EditorMenuItem[] = TURN_INTO.map((t) => ({
@@ -327,7 +460,20 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
     ...BLOCK_COLORS.map((c) => ({ id: c, label: colorLabel(c), checked: currentColor === c, icon: <span className="block-color-swatch" data-text-color={c}>A</span>, onSelect: () => run((at) => setTopBlockColor(editor.state, at.pos, c)) })),
     ...BLOCK_COLORS.map((c, i) => ({ id: `${c}_background`, section: i === 0 ? "Background" : undefined, label: `${colorLabel(c)} background`, checked: currentColor === `${c}_background`, icon: <span className="block-color-swatch" data-block-color={`${c}_background`} />, onSelect: () => run((at) => setTopBlockColor(editor.state, at.pos, `${c}_background` as BlockColorValue)) })),
   ];
-  const menuTop = Math.min(hovered.top + 28, window.innerHeight - 340);
+  const moveItems: EditorMenuItem[] = targets.slice(0, 200).map((n) => ({
+    id: n.id,
+    label: noteLinkTitle(n),
+    keywords: n.path ?? "",
+    icon: typeof n.metadata?.icon === "string" ? <span aria-hidden="true">{n.metadata.icon as string}</span> : <FileText size={15} />,
+    onSelect: () => moveTo(n),
+  }));
+  // Searching the main menu also finds the Turn into kinds and colours.
+  const searchPool: EditorMenuItem[] = [
+    ...mainItems.filter((it) => !it.submenu || it.id === "move"),
+    ...(canTurnInto(block) ? turnItems.map((it) => ({ ...it, id: `turn-${it.id}`, label: `Turn into ${it.label}`, checked: undefined })) : []),
+    ...(canColor(block) ? colorItems.map((it) => ({ ...it, id: `color-${it.id}`, label: it.id === "default" ? "Default color" : it.id.endsWith("_background") ? it.label : `${it.label} text`, checked: undefined })) : []),
+  ];
+  const menuTop = Math.min(hovered.top + 28, window.innerHeight - 380);
   const menuStyle: React.CSSProperties = { position: "fixed", top: Math.max(8, menuTop), left: Math.max(8, Math.min(gutterLeft, window.innerWidth - 248)), zIndex: 70 };
 
   return createPortal(
@@ -355,22 +501,30 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
           onClick={() => setMenu((m) => (m ? null : "main"))}
           onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); setMenu("main"); } }}
           onDragStart={(event) => {
-            dragFrom.current = hovered.ref;
+            // Inside a block selection the handle carries every selected block (NP-ED-01).
+            const range = blockSelectionRange(editor.state);
+            const many = range && range.count > 1 && hovered.index >= range.from && hovered.index <= range.to ? range : null;
+            const first = many ? blockRefAt(editor, topLevelBlocks(editor.state.doc)[many.from].pos) : hovered.ref;
+            dragFrom.current = first ?? hovered.ref;
+            dragCount.current = many && first ? many.count : 1;
             setMenu(null);
             event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("application/x-prism-block", String(hovered.index));
+            event.dataTransfer.setData("application/x-prism-block", String(many ? many.from : hovered.index));
             const dom = editor.view.nodeDOM(hovered.pos);
             if (dom instanceof HTMLElement) event.dataTransfer.setDragImage(dom, 0, 8);
           }}
-          onDragEnd={() => { dragFrom.current = null; setDrop(null); }}
+          onDragEnd={() => { dragFrom.current = null; dragCount.current = 1; setDrop(null); }}
         >
           <GripVertical size={16} aria-hidden="true" />
         </button>
       </div>
-      {drop && <div className="block-drop-indicator" style={{ top: drop.top, left: drop.left, width: drop.width }} aria-hidden="true" />}
-      {menu === "main" && <EditorMenu label="Block actions" items={mainItems} onClose={() => closeMenu()} style={menuStyle} />}
+      {drop?.kind === "line" && <div className="block-drop-indicator" data-drop="line" style={{ top: drop.top, left: drop.left, width: drop.width }} aria-hidden="true" />}
+      {drop?.kind === "side" && <div className="block-drop-indicator is-side" data-drop={drop.side} style={{ top: drop.top, left: drop.left, height: drop.height }} aria-hidden="true" />}
+      {menu === "main" && <EditorMenu label="Block actions" items={mainItems} searchable searchItems={searchPool} onClose={() => closeMenu()} style={{ ...menuStyle, maxHeight: Math.max(220, window.innerHeight - Math.max(8, menuTop) - 12), overflowY: "auto" }} />}
+      {menu === "move" && <EditorMenu label="Move to" items={moveItems} searchable searchLabel="Search pages" onClose={() => closeMenu()} onBack={() => setMenu("main")} style={{ ...menuStyle, maxHeight: 360, overflowY: "auto" }} />}
       {menu === "turn" && <EditorMenu label="Turn into" items={turnItems} onClose={() => closeMenu()} onBack={() => setMenu("main")} style={menuStyle} />}
       {menu === "color" && <EditorMenu label="Color" items={colorItems} onClose={() => closeMenu()} onBack={() => setMenu("main")} style={{ ...menuStyle, maxHeight: 360, overflowY: "auto" }} />}
+      {notice && <div className="block-notice" role="status">{notice}</div>}
     </>,
     document.body,
   );
