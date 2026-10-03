@@ -140,3 +140,38 @@ test("phone new page focuses title", async ({ page, context }) => {
   await expect(page.locator(".sync-state-phone")).toHaveAttribute("data-sync-state", "saved", { timeout: 15000 });
   expect(await page.evaluate(() => (window as any).prismShell.writes.filter((w: any) => w.method === "POST" && w.path === "/api/notes").length)).toBe(2);
 });
+
+/** NP-MB-03: the page sheet also carries Share, Find and Agent. */
+test("page sheet rows: Share, Find in page, Agent", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const open = async () => {
+    await page.getByRole("button", { name: "Page actions", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "A living workspace" });
+    await expect(sheet).toBeVisible();
+    return sheet;
+  };
+  let sheet = await open();
+  for (const name of ["Add to Favorites", "Share", "Copy link", "Move to…", "Lock page", "Version history", "Find in page", "Export as Markdown", "Move to Trash", "Agent"]) {
+    const item = sheet.getByRole("button", { name, exact: true });
+    await expect(item, name).toBeVisible();
+    expect(await item.evaluate((el) => el.getBoundingClientRect().height), `${name} row height`).toBeGreaterThanOrEqual(44);
+  }
+  // Find opens the page's own find bar.
+  await sheet.getByRole("button", { name: "Find in page", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: /find/i }).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Share opens the sharing dialog for this page.
+  sheet = await open();
+  await sheet.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: /share/i })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: /share/i })).toHaveCount(0);
+  // Agent opens the companion on the agent tab.
+  sheet = await open();
+  await sheet.getByRole("button", { name: "Agent", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => { const s = (window as any).prismShellUI.getState(); return [s.contextPanelOpen, s.contextPanelTab]; })).toEqual([true, "agent"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

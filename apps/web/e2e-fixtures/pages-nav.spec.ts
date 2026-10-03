@@ -168,8 +168,52 @@ test("integration-owned pages can't be moved or trashed from the page menu", asy
   await nav(page).getByRole("button", { name: "Page actions for Team room", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "Move to…" })).toBeDisabled();
   await expect(page.getByRole("menuitem", { name: "Move to Trash" })).toBeDisabled();
+  // …and each says why, in the menu itself (NP-PG-07).
+  const reason = await page.getByRole("menuitem", { name: "Move to…" }).locator(".page-menu-detail").innerText();
+  expect(reason.trim().length).toBeGreaterThan(10);
+  await expect(page.getByRole("menuitem", { name: "Move to Trash" }).locator(".page-menu-detail")).toHaveText(reason);
   await page.keyboard.press("Escape");
   await expect(nav(page).getByRole("button", { name: "Add a page inside Team room" })).toHaveCount(0);
+});
+
+// NP-SB-07
+test("tree row hover + and ⋯", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  const plan = row(page, "Plan");
+  await expect(plan).toBeVisible();
+  const add = nav(page).getByRole("button", { name: "Add a page inside Plan", exact: true });
+  const more = nav(page).getByRole("button", { name: "Page actions for Plan", exact: true });
+  // Quiet at rest, revealed on hover (and on keyboard focus).
+  const shown = (l: typeof add) => l.evaluate((el) => Number(getComputedStyle(el.closest(".page-tree-actions") ?? el).opacity) > 0.5);
+  await page.mouse.move(900, 500);
+  expect(await shown(add)).toBe(false);
+  expect(await shown(more)).toBe(false);
+  await plan.hover();
+  await expect.poll(() => shown(add)).toBe(true);
+  await expect.poll(() => shown(more)).toBe(true);
+  await more.click();
+  const menu = page.getByRole("menu");
+  for (const name of ["Add to Favorites", "Duplicate", "Copy link", "Rename", "Move to…", "Open in new tab", "Move to Trash"]) await expect(menu.getByRole("menuitem", { name, exact: true }), name).toBeVisible();
+  // Open in new tab: the page opens as a tab behind the one being read.
+  await menu.getByRole("menuitem", { name: "Open in new tab", exact: true }).click();
+  const tabs = page.getByRole("navigation", { name: "Open document tabs" });
+  await expect(tabs.getByRole("button", { name: "Open Plan", exact: true })).toBeVisible();
+  await expect(tabs.getByRole("button", { name: "Open A living workspace", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("status").filter({ hasText: "Opened “Plan” in a new tab" })).toBeVisible();
+  await page.getByRole("button", { name: "Go to tab", exact: true }).click();
+  await expect(tabs.getByRole("button", { name: "Open Plan", exact: true })).toHaveAttribute("aria-current", "page");
+});
+
+// NP-PG-07
+test("page ⋯ menu: Open in new tab opens the page's own address", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=prism"));
+  await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
+  const popup = page.waitForEvent("popup");
+  await page.getByRole("menuitem", { name: "Open in new tab", exact: true }).click();
+  expect((await popup).url()).toMatch(/\/page\/prism$/);
 });
 
 test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", async ({ page, context }) => {

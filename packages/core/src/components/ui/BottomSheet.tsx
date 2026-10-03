@@ -156,7 +156,9 @@ export function BottomSheet({
             <div className="prism-mobile-sheet-actions">
               {items.map((item, index) => (
                 <button
-                  key={`${item.label}-${index}`}
+                  // Keyed by label (+ occurrence), not position: a row arriving late (lock state
+                  // once the page loads) must not remount the rows after it under a finger.
+                  key={`${item.label}#${items.slice(0, index).filter((other) => other.label === item.label).length}`}
                   type="button"
                   onClick={item.onClick}
                   className={[
