@@ -44,11 +44,19 @@ test("collab offline → switch tab → reconnect: the edits are flagged, then s
     await page.keyboard.type(" Typed while disconnected.");
     await expect.poll(async () => ((await page.evaluate(() => (window as any).prismCollabFixture.unsynced())) as unknown[]).length, { timeout: 10000 }).toBe(1);
     expect(serverText).not.toContain("Typed while disconnected.");
+    // Leave only once the device really holds the edit. The local write is asynchronous
+    // (the badge reads "Saving…" until it lands); navigating a few ms after the last
+    // keystroke used to drop the IndexedDB transaction, and nothing was left to sync.
+    const localTexts = () => page.evaluate(() => (window as any).prismCollabFixture.localTexts()) as Promise<string[]>;
+    await expect.poll(async () => (await localTexts()).join("\n"), { timeout: 10000 }).toContain("Typed while disconnected.");
+    await expect.poll(() => page.evaluate(() => (window as any).prismCollabFixture.syncLabel())).toBe("Offline · changes saved on this device");
 
     // "Switch tab": the document is no longer open. The badge must not say Saved.
     await page.goto("/e2e-fixtures/collab-storage.html");
     await expect(page.getByText("Scoped collaborative storage fixture")).toBeVisible();
     await page.evaluate(() => (window as any).prismCollabFixture.checkAuth());
+    // The edit survived the reload on this device (a registry entry alone proves nothing).
+    expect((await localTexts()).join("\n")).toContain("Typed while disconnected.");
     await page.evaluate(() => (window as any).prismCollabFixture.startUnsynced());
     await expect.poll(() => page.evaluate(() => (window as any).prismCollabFixture.syncLabel())).toBe("Changes on this device — will sync");
     // While the server is still unreachable nothing is lost and nothing is cleared.
