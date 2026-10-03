@@ -261,3 +261,11 @@ export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
 export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";
 export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";
+// Wave 2A: @-mentions, notifications inbox, reminders, access requests.
+export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
+export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
+export * from "./lib/notifications/client";
+export * from "./lib/notifications/hooks";
+export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS } from "./lib/notifications/anchor";
+export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
+export { RequestAccessButton } from "./components/inbox/RequestAccessButton";

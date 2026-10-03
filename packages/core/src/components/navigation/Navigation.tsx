@@ -18,6 +18,9 @@ import type { ContentType } from "../../lib/types";
 import { useAgentAvailable } from "../../data/AgentClientContext";
 import { openAgentChat } from "../../lib/agent/chatStore";
 import { usePagesUI } from "../../lib/pages/store";
+import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
+import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
+import { useUnreadCount } from "../../lib/notifications/hooks";
 
 export function Navigation() {
   const preferences = useNavigationPreferences();
@@ -44,6 +47,8 @@ export function Navigation() {
   const openTabs = useUIStore((s) => s.openTabs);
   // Server agent sessions (WP3.2): owner-only, and only on shells with an AgentClient.
   const agentChat = useAgentAvailable();
+  // Notifications inbox (wave 2A): shown only when this server has the feature.
+  const inbox = useUnreadCount();
 
   const handleOpenMessages = () => {
     openTab("vault-messages", "Messages", "vault-messages" as ContentType);
@@ -149,6 +154,12 @@ export function Navigation() {
         <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }}>
           {/* Quick-access items */}
           <nav aria-label="Workspace destinations" style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
+            <NavItem icon={<HomeIcon size={15} />} label="Home" active={activeNoteId === "home"} onClick={() => openTab("home", "Home", "home" as ContentType)} />
+            {inbox.available && (
+              <NavItem icon={<InboxIcon size={15} />} label="Inbox" active={activeNoteId === "notifications"} onClick={openInbox}
+                ariaLabel={inbox.count > 0 ? `Inbox, ${inbox.count} unread` : "Inbox"}
+                trailing={<span className="flex items-center" style={{ paddingRight: 8 }}><InboxBadge /></span>} />
+            )}
             <NavItem
               icon={<MessageSquare size={15} />}
               label="Messages"
@@ -285,17 +296,18 @@ export function Navigation() {
 }
 
 /** Primary action and trailing actions are sibling buttons for keyboard access. */
-function NavItem({ icon, label, onClick, trailing, active = false }: {
+function NavItem({ icon, label, onClick, trailing, active = false, ariaLabel }: {
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
   trailing?: React.ReactNode;
   active?: boolean;
+  ariaLabel?: string;
 }) {
   return (
     <div data-active={active} className="workspace-nav-row group flex items-center"
       style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)", fontSize: "var(--text-base)", paddingRight: trailing ? 6 : 0 }}>
-      <button type="button" onClick={onClick} aria-current={active ? "page" : undefined}
+      <button type="button" onClick={onClick} aria-current={active ? "page" : undefined} aria-label={ariaLabel}
         className="interactive focus-ring flex flex-1 min-w-0 items-center gap-2.5 text-left"
         style={{ minHeight: "var(--workspace-control-height)", padding: "0 10px" }}>
         <span className="flex items-center justify-center flex-shrink-0" style={{ width: 16, color: "var(--text-muted)" }}>{icon}</span>

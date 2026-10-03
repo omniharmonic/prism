@@ -160,6 +160,17 @@ function ScopedCollabDoc({
   const [commentsOpen, setCommentsOpen] = useState(false); // closed by default; toggle in the header
   const [editor, setEditor] = useState<Editor | null>(null);
   const [focusedThread, setFocusedThread] = useState<string | null>(null);
+  // A notification deep link (inbox → comment) opens the sidebar on that thread.
+  useEffect(() => {
+    const open = (e: Event) => {
+      const d = (e as CustomEvent<{ noteId?: string; threadId?: string }>).detail;
+      if (!d?.threadId || (d.noteId && d.noteId !== noteId)) return;
+      setCommentsOpen(true);
+      setFocusedThread(d.threadId);
+    };
+    window.addEventListener("prism:open-comment-thread", open);
+    return () => window.removeEventListener("prism:open-comment-thread", open);
+  }, [noteId]);
   useAgentDocumentSnapshot(editor, noteId, title, null, synced && !denied && !checkingAccess && !connectionError);
 
   // Expose the reading-font control to the shell (bottom bar on desktop, More
@@ -579,6 +590,7 @@ function ScopedCollabDoc({
                 }}
                 onWikilinkNavigate={onWikilinkNavigate}
                 wikilinkNotes={wikilinkNotes}
+                noteId={noteId}
               />
             )}
           </div>

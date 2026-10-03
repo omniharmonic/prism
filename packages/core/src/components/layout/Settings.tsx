@@ -53,6 +53,7 @@ export function Settings({ open, onClose }: SettingsProps) {
     vaults, addVault, removeVault, setActiveVault, activeVaultUrl,
     defaultSyncDirection, setDefaultSyncDirection,
     sidebarLabel, setSidebarLabel,
+    startWithLastDocument, setStartWithLastDocument,
   } = useSettingsStore();
 
   const [newVaultName, setNewVaultName] = useState("");
@@ -557,6 +558,9 @@ export function Settings({ open, onClose }: SettingsProps) {
                     className="h-7 rounded-md px-2 text-xs outline-none w-32"
                     style={{ background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)" }}
                     placeholder="Projects" />
+                </Row>
+                <Row label="Start with last open document">
+                  <input type="checkbox" aria-label="Start with last open document" checked={startWithLastDocument} onChange={(e) => setStartWithLastDocument(e.target.checked)} className="h-4 w-4" />
                 </Row>
               </Section>
 

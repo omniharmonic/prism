@@ -116,6 +116,7 @@ import { getSecret, secretsConfigured } from "../secrets";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, copyFile } from "node:fs/promises";
+import { notifyShare } from "../notifications";
 const pexec = promisify(execFile);
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -656,6 +657,8 @@ acl.put("/notes/:id/people", async (c) => {
   const { invited, inviteUrl } = await grantAndInvite(recipient, lvl, scope, id, grantAuthor(c), vaultId, caps);
   // One grant per person per page: the other kind is replaced.
   removeGrantBySubjectResource("user", recipient, scope === "page" ? "note" : "page", id, vaultId);
+  // Wave 2A inbox: "shared a page with you" (ids only; view re-checked at delivery).
+  { const a = resolveActor(c); notifyShare({ vaultId: a.vaultId, noteId: id, recipient, actorEmail: a.kind === "user" ? a.email : null }); }
   return c.json({ ok: true, email: recipient, level: caps ? levelForCaps(caps) : lvl, caps, scope, invited, inviteUrl });
 });
 
