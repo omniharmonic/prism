@@ -99,7 +99,8 @@ export async function syncUnsyncedDocs(): Promise<void> {
   if (running || !navigator.onLine) return;
   running = true;
   try {
-    const context = await captureWriteContext(true);
+    // Each document is re-authorized by its own fresh read before anything is sent.
+    const context = await captureWriteContext("recent");
     const todo = Object.values(read(context.scope)).filter((entry) => !openHere.has(entry.name) && entry.blocked !== "update-required");
     if (!todo.length) return;
     // Yjs + the socket provider load only when there is a document to push.

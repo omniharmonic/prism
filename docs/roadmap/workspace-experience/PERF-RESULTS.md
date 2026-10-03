@@ -21,13 +21,13 @@ Group 3C, branch `feat/w5-a11y`, measured 2026-10-03. Budgets are the ones in
 | NP-PF-06 filter or sort | ≤ 500 ms | sort 41 / 49 ms · search filter 385 / 391 ms | pass |
 | NP-PF-06 scroll | 60 fps | 60 / 60 fps | pass (100 rows in the DOM) |
 | NP-PF-07 iOS memory | ≤ 300 MB, no growth | web proxy: 60.8 MB JS heap after 50 opens, flat | **device-only, not measured** |
-| NP-PF-08 initial JS | ≤ 600 KB gzip | **417.1 KB** (was 754.6 KB, 972.1 KB before that) | pass (branch `feat/w6-perf`) |
+| NP-PF-08 initial JS | ≤ 600 KB gzip | **417.5 KB** (was 754.6 KB, 972.1 KB before that) | pass (branch `feat/w6-perf`) |
 | NP-PF-09 idle clients | no polling storm | browser 12 req/min for 3 tabs; server → vault 92 calls/min | browser side fine; **vault side is not at baseline** |
 | NP-SB-13 new page | < 300 ms | **99 / 109 ms** (was 257 / 319) | pass (was a miss on the median) |
 
 What still misses, and why:
 
-1. ~~NP-PF-08~~ fixed on `feat/w6-perf` (fix 3 below): 417.1 KB gzip.
+1. ~~NP-PF-08~~ fixed on `feat/w6-perf` (fix 3 below): 417.5 KB gzip.
 2. **NP-PF-09, vault side.** The collab reconciler reads every open live document from the vault every 2 s. Design below; the fix is in `collab.ts`, which this group does not own.
 3. **NP-PF-01 iPhone and NP-PF-07** need a device (Safari Web Inspector, Xcode Instruments).
 
@@ -186,7 +186,7 @@ The heap is flat after the first ten opens (−0.19 MB per open over the second 
 | Initial JS, raw | 3,223 KB | 2,425 KB |
 | Budget | 600 KB | 600 KB — still a miss by 155 KB |
 
-After the editor split (`feat/w6-perf`, fix 3): **417.1 KB gzip / 1,332 KB raw** (PWA build), 416.7 KB (native build). Pass, 183 KB under.
+After the editor split (`feat/w6-perf`, fix 3): **417.5 KB gzip / 1,333 KB raw** (PWA build), 417.1 KB (native build). Pass, 182 KB under.
 
 Lazy chunks, as the row asks:
 
@@ -253,7 +253,7 @@ Initial JS: 972.1 → 754.6 KB gzip.
 
 ### 3. The block editor out of the initial chunk — `feat/w6-perf`
 
-Design A below, built. Initial JS **754.6 → 417.1 KB gzip** (2,425 → 1,332 KB raw). The static set went from 2,765 modules / 2,516 KB minified to 2,384 / 1,432 KB (`perf-static-graph.mjs`).
+Design A below, built. Initial JS **754.6 → 417.5 KB gzip** (2,425 → 1,333 KB raw). The static set went from 2,765 modules / 2,516 KB minified to 2,384 / 1,432 KB (`perf-static-graph.mjs`).
 
 What changed:
 
@@ -274,14 +274,14 @@ Timings on the new build (same harness, 5 samples, load 2.6–3.9):
 
 | Row | Before (best / median) | After | Samples after (ms) |
 |---|---|---|---|
-| NP-PF-01 empty cache | 455 / 493 ms | 448 / 496 ms | 448, 476, 496, 701, 739 |
-| NP-PF-01 warm cache | 419 / 427 ms | 371 / 525 ms | 371, 449, 525, 598, 614 |
-| NP-PF-01 iPhone proxy | 1,172 / 1,200 ms | 1,014 / 1,055 ms | 1,014, 1,017, 1,055, 1,103, 1,184 |
+| NP-PF-01 empty cache | 455 / 493 ms | 436 / 458 ms | 436, 445, 458, 472, 686 |
+| NP-PF-01 warm cache | 419 / 427 ms | 428 / 486 ms | 428, 433, 486, 507, 508 |
+| NP-PF-01 iPhone proxy | 1,172 / 1,200 ms | 969 / 1,002 ms | 969, 997, 1,002, 1,017, 1,089 |
 | NP-PF-02 uncached from ⌘K | 185 / 204 ms | 179 / 185 ms | |
 | NP-PF-02 cached from ⌘K | 65 / 80 ms | 76 / 78 ms | |
 | NP-PF-02 cached from the tree | 60 / 68 ms | 56 / 66 ms | |
 
-The warm-cache median is worse and noisy (371–614 ms); the best sample is better. Not explained; the machine was shared. Without the early download on a page link the same row was 504 / 858 ms, so that step matters.
+The NP-PF-01 lines are the last of three runs on this branch (it also has the `/auth/me` and web-font changes; API calls on the first load went from 23 to 20). The warm-cache row did not improve: 428 / 486 ms against 419 / 427, and an earlier run on the same code read 371 / 525. The spread between runs is larger than the difference, on a shared machine. Without the early download on a page link the same row was 504 / 858 ms, so that step matters.
 
 Not measured: a first document open from Home on a slow network before the idle download has finished. It shows "Opening document…" until the chunk arrives.
 
@@ -321,8 +321,8 @@ Not required by any budget today. The whole tree is 266 KB gzip and renders in a
 ### D. Smaller items
 
 - Compress static assets in `app.ts` (`hono/compress` on `/assets/*`), or confirm the production proxy does. One line; not done because it changes nothing on loopback and could not be verified here.
-- `GET /auth/me` eight times at boot and three times a minute per idle tab. Cache it for a few seconds in `fetchMe()`.
-- Self-host the web fonts, or load the stylesheet without blocking render.
+- `GET /auth/me` at boot — DONE in part on `feat/w6-perf`: `fetchMe({ maxAgeMs })` is an opt-in reuse of an identity confirmed in the last 3 s (or of the request already in flight). The outbox's row-selecting pass, the unsynced-document pass and the account menu use it. A plain `fetchMe()` still always asks, and the check before each queued write is still fresh. Not changed: the three calls a minute per idle tab (the outbox and unsynced-document timers). They are also how an expired session is noticed, so they stay.
+- Web fonts — DONE on `feat/w6-perf`: `index.html` only preloads the Google Fonts sheet and `bootstrap.ts` switches it to a stylesheet, so it no longer blocks the first paint (an inline `onload` would be refused by the `script-src` CSP). Text shows in the fallback stacks first; the sheet declares `font-display: swap`. Self-hosting is still open.
 
 ## Files
 

@@ -28,11 +28,19 @@ export function sameScope(
   return !!a && !!b && scopeKey(a) === scopeKey(b);
 }
 
+/** How old a confirmed identity may be for a `"recent"` capture (the boot second). */
+const RECENT_IDENTITY_MS = 3000;
+
+/**
+ * `refresh: true` asks the server who is signed in before answering (the check before a
+ * queued write is sent). `"recent"` accepts an identity confirmed within the last few
+ * seconds — for a pass that only SELECTS work and re-checks before each send.
+ */
 export async function captureWriteContext(
-  refresh = false,
+  refresh: boolean | "recent" = false,
 ): Promise<WriteContext> {
   const capability = getCapabilityToken();
-  if (refresh && !capability && !(await fetchMe()).authenticated) {
+  if (refresh && !capability && !(await fetchMe(refresh === "recent" ? { maxAgeMs: RECENT_IDENTITY_MS } : undefined)).authenticated) {
     throw new Error("Reconnect before sending saved changes.");
   }
   const headers = { ...contextHeaders(), ...capabilityHeader() };

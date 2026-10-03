@@ -19,6 +19,11 @@ function showStartupFailure(): void {
   root.replaceChildren(panel);
 }
 
+// The web-font sheet is preloaded by index.html (so it never blocks the first paint);
+// apply it now. Text is already readable in the fallback fonts.
+const fonts = document.getElementById("prism-web-fonts");
+if (fonts instanceof HTMLLinkElement && fonts.rel !== "stylesheet") { fonts.removeAttribute("as"); fonts.rel = "stylesheet"; }
+
 void import("./main").then(({ start }) => start()).catch((error: unknown) => {
   console.error("Prism startup failed", error);
   showStartupFailure();

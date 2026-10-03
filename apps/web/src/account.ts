@@ -41,7 +41,7 @@ export const webAccount: AccountClient = {
     return left;
   },
   async getProfile(): Promise<AccountProfile> {
-    const me = await fetchMe();
+    const me = await fetchMe({ maxAgeMs: 3000 });
     return {
       email: me.email ?? "",
       name: me.name ?? null,
