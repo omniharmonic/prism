@@ -27,6 +27,8 @@ import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
 import { TEMPLATE_TAG, pageTitle, templateCopy, withoutTrashed } from "../../lib/pages/model";
 import { inferContentType } from "../../lib/schemas/content-types";
+import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
+import { serverFetch } from "../../lib/transport/serverFetch";
 import { ComposeMessage } from "../comms/ComposeMessage";
 import {
   folderLabel,
@@ -270,7 +272,10 @@ function CreateContent({
         // Copy the template's body, properties and tags (minus `template` and system keys).
         const source = await client.getNote(template.id, { fresh: true });
         if (!alive.current || !current()) return;
-        const copy = templateCopy(source, input.title, selectedFolder);
+        // NP-TX-02: `@today`, `@now` and `@me` resolve now, for this creator.
+        const creator = await templateCreator(() => serverFetch("/auth/me"));
+        if (!alive.current || !current()) return;
+        const copy = applyTemplateVariables(templateCopy(source, input.title, selectedFolder), { now: new Date(), creator });
         params = copy;
         openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
       }

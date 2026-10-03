@@ -35,6 +35,8 @@ import { defaultConfig, newViewId, readDatabaseConfig, rowPath, VIEW_LABELS, VIE
 import { RowPeek } from "./RowPeek";
 import { BulkBar, UndoToast, type UndoAction } from "./BulkBar";
 import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateProps } from "./Templates";
+import { resolveTemplateContent, resolveTemplateMetadata, templateCreator } from "../../lib/pages/templates";
+import { serverFetch } from "../../lib/transport/serverFetch";
 import { allRows, CsvImportDialog, downloadText, rowsToCsv } from "./Csv";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
@@ -266,8 +268,10 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       // real template of THIS database (review M3).
       const tpl = await client.getNote(tid, { fresh: true });
       if (!isTemplateFor(tpl, note)) throw new Error("That template is not part of this database, so nothing was copied from it.");
-      content = tpl.content ?? "";
-      fromTemplate = templateProps(tpl);
+      // NP-TX-02: template variables resolve for this row, now.
+      const vars = { now: new Date(), creator: await templateCreator(() => serverFetch("/auth/me")) };
+      content = resolveTemplateContent(tpl.content ?? "", vars);
+      fromTemplate = resolveTemplateMetadata(templateProps(tpl), vars);
       // A private template's body stays private: the new row is private too.
       if (tpl.metadata?.prism_visibility === "private") privateTo = typeof tpl.metadata.prism_creator === "string" ? tpl.metadata.prism_creator : "";
     }
