@@ -9,6 +9,7 @@ import type {
   VaultInfo,
 } from "../lib/types";
 import type { MoveRequest, MoveResult, TrashListing, PreferencesSnapshot, PagePreferences } from "../lib/pages/model";
+import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema } from "../lib/database";
 
 /** Transport status for recoverable UI states, without parsing diagnostic text. */
 export class VaultRequestError extends Error {
@@ -107,6 +108,24 @@ export class HistoryConflictError extends Error {
   }
 }
 
+/**
+ * Thrown by `updateProperties` when a property the caller changed was changed
+ * elsewhere since they read it. `current` holds the values now stored.
+ */
+export class PropertyConflictError extends Error {
+  constructor(public readonly fields: string[], public readonly current: Record<string, unknown>) {
+    super("This property was changed somewhere else. Review the current value and try again.");
+    this.name = "PropertyConflictError";
+  }
+}
+
+/** Result of a property write: the note's new revision + full metadata. */
+export interface PropertyWriteResult {
+  id: string;
+  updatedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
 /** Map one raw vault version row (snake_case) onto {@link NoteVersion}. */
 export function toNoteVersion(raw: Record<string, unknown>): NoteVersion {
   return {
@@ -197,4 +216,15 @@ export interface VaultClient {
   /** Favorites / recents / sidebar state, synced per user × vault. */
   getPreferences?(): Promise<PreferencesSnapshot>;
   savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;
+  /** Tag schemas (vault types + Prism presentation hints), filtered to tags the
+   *  caller may know. Optional: shells without it use the bundled schemas. */
+  getSchemas?(tags?: string[]): Promise<{ schemas: SchemaMap; canEdit?: boolean }>;
+  /** Owner-only additive schema edit (the server holds the admin credential). */
+  updateSchema?(tag: string, patch: SchemaPatch): Promise<TagSchema>;
+  /** Lean, permission-filtered, paged rows for a database view. Optional: the
+   *  shared engine runs over `listNotes` when absent. */
+  queryNotes?(spec: QuerySpec): Promise<QueryPage>;
+  /** Metadata-only property write with per-field compare-and-set (`expect` = the
+   *  values the caller last saw). Throws {@link PropertyConflictError}. */
+  updateProperties?(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult>;
 }

@@ -18,6 +18,9 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import { hostServiceErrorText } from "../../lib/host/services";
 import { addSyncConfig, removeSyncConfig, syncStatusFromNote, SERVER_NOTE_SYNC_ADAPTERS } from "../../lib/host/vaultOps";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PropertyBar } from "../database/PropertyBar";
+import { useSchemas } from "../../lib/database/hooks";
+import { resolveProperties } from "../../lib/database/schema";
 
 interface MetadataPanelProps {
   note: Note;
@@ -212,12 +215,19 @@ function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|nu
     });
   }, [note, meta, updateNote, scope]);
 
+  // Fields a tag schema declares are edited by the typed property list above;
+  // everything else stays a free "property" row below.
+  const { data: schemaData } = useSchemas();
+  const schemaKeys = useMemo(
+    () => new Set(resolveProperties(noteTags, schemaData?.schemas ?? {}, meta).filter((p) => p.tag !== null).map((p) => p.key)),
+    [noteTags, schemaData, meta],
+  );
   // Separate this note's own metadata fields into "properties" (non-system, non-empty)
   const noteProperties = useMemo(() => {
     return Object.entries(meta)
-      .filter(([key, val]) => !SYSTEM_FIELDS.has(key) && val != null && val !== "")
+      .filter(([key, val]) => !SYSTEM_FIELDS.has(key) && !schemaKeys.has(key) && val != null && val !== "")
       .map(([key]) => key);
-  }, [meta]);
+  }, [meta, schemaKeys]);
 
   return (
     <section className="prism-context-metadata space-y-3" aria-label="Page properties">
@@ -248,6 +258,9 @@ function EditableMetadata({ note, scope }: MetadataPanelProps & {scope:string|nu
       <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
         {note.path || "\u2014"}
       </div>
+
+      {/* Typed properties from the page's tag schemas (same editor as under the title) */}
+      <PropertyBar note={note} layout="panel" schemaOnly showTags={false} />
 
       {/* Tags */}
       <TagEditor key={JSON.stringify([scope,note.id])} scope={scope} noteId={note.id} tags={noteTags} allTags={allTags?.map((t) => t.tag) || []} />

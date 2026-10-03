@@ -47,4 +47,8 @@ export const httpVaultClient: VaultClient = {
   deleteFromTrash: pages.deleteFromTrash,
   getPreferences: pages.getPreferences,
   savePreferences: pages.savePreferences,
+  getSchemas: rest.getSchemas,
+  updateSchema: rest.updateSchema,
+  queryNotes: rest.queryNotes,
+  updateProperties: rest.updateProperties,
 };

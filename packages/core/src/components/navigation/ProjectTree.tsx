@@ -61,6 +61,7 @@ const TYPE_ICONS: Record<ContentType, React.ElementType> = {
   "messages-dashboard": MessageSquare,
   network: Radio,
   "bioregion-entity": MapPin,
+  database: Table2,
 };
 
 /**

@@ -1,5 +1,8 @@
 # Frontend / backend agent coordination
 
+> **Update 2026-10-02 (evening): Codex has left the project.** All frontend, backend, native and release work is now owned by Claude (orchestrator) and the sub-agents it starts. Current workstreams, each in its own worktree from main: `ux-editor-blocks` (block editor), `ux-databases` (typed properties + database views + `/api/schemas`, `/api/query`), `ux-pages-nav` (nested pages, trash, page menu, templates, favorites/recents sync), `native-ios` (iOS app → first TestFlight build). Fixture e2e ports: 5195 / 5196 / 5197 (`E2E_PORT`); 5188 remains the default. The live server runs from the main checkout — integrate in an isolated worktree, test, then fast-forward main; restarts only with an active-turn check and backup. The sections below are historical.
+
+
 Updated 2026-10-02 when the owner started a separate backend agent. Both streams are authorized, but **separate worktrees and explicit boundary coordination are required**. Do not assume a shared working directory is private.
 
 ## Frontend stream (Codex)
