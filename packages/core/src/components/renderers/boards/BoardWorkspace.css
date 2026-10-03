@@ -38,3 +38,29 @@
   .board-viewbar > span { width: 100%; }
   .board-columns, .board-list { padding: 12px 12px 24px; }
 }
+
+/* NP-DB-24: per-column add, card menu, due chips, column overflow affordance. */
+.board-col-add { display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); min-height: 32px; margin: 0 8px 4px; padding: 0 8px; border-radius: 6px; color: var(--text-muted); font-size: 13px; text-align: left; }
+.board-col-add:hover:not(:disabled) { background: var(--glass-hover); color: var(--text-primary); }
+.board-card-menu { display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; opacity: .55; }
+.board-card:hover .board-card-menu, .board-card-menu:focus-visible, .board-card-menu[aria-expanded="true"] { opacity: 1; }
+.board-card-menu:hover { background: var(--glass-hover); }
+.board-due { display: inline-flex; align-items: center; border-radius: 5px; padding: 2px 6px; background: var(--glass-active); color: var(--text-secondary); }
+.board-due[data-due="today"], .board-due[data-due="soon"] { color: var(--text-primary); background: color-mix(in srgb, #c29a12 18%, var(--bg-surface)); }
+.board-due[data-due="overdue"] { color: var(--color-danger, #d64545); background: color-mix(in srgb, #d64545 14%, var(--bg-surface)); font-weight: 600; }
+.board-workspace .board-card select { width: auto; max-width: 100%; min-height: 28px; padding: 0 6px; border-radius: 999px; font-size: 12px; }
+.board-columns .board-group { width: min(272px, calc(100vw - 56px)); }
+.board-columns > .board-group:last-child { margin-right: 28px; }
+.board-scroll::before, .board-scroll::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40px; pointer-events: none; z-index: 2; opacity: 0; transition: opacity .15s; }
+.board-scroll::before { left: 0; background: linear-gradient(to right, var(--bg-base), transparent); }
+.board-scroll::after { right: 0; background: linear-gradient(to left, var(--bg-base), transparent); }
+.board-scroll[data-overflow-left]::before, .board-scroll[data-overflow-right]::after { opacity: 1; }
+.board-scroll-btn { position: absolute; top: 18px; z-index: 3; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg-elevated, var(--bg-surface)); color: var(--text-secondary); box-shadow: var(--glass-shadow); }
+.board-scroll-btn:hover { color: var(--text-primary); }
+.board-scroll-left { left: 8px; }
+.board-scroll-right { right: 8px; }
+@media (max-width: 767px), (pointer: coarse) {
+  .board-col-add { min-height: 44px; }
+  .board-card-menu { opacity: 1; min-height: 44px; width: 44px; }
+  .board-workspace .board-card select { min-height: 44px; }
+}

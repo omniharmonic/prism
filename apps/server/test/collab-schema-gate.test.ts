@@ -194,6 +194,12 @@ test("the non-owner route is gated the same way", async () => {
   assert.equal((await patch("r3", { content: "<p>x</p>" }, { "X-Prism-Editor-Schema": "2" }, EDITOR)).status, 409);
 });
 
+test("v3: a stored mention chip refuses a v2 editor's content write", async () => {
+  fv.put({ id: "m3", content: '<p>Hi <span data-type="mention" data-kind="person" data-id="p1" data-label="Ada">@Ada</span></p>', tags: [] });
+  assert.equal((await patch("m3", { content: "<p>Hi @Ada</p>" }, { "X-Prism-Editor-Schema": "2" })).status, 409);
+  assert.equal((await patch("m3", { content: "<p>Hi again</p>" }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) })).status, 200);
+});
+
 test("in-process MCP dispatches (agents) are exempt", async () => {
   ensureUser(EDITOR);
   grantUser(EDITOR, "tag", "team", "edit");

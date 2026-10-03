@@ -51,6 +51,9 @@ export type { QuerySpec, QueryPage, QueryRow, SchemaMap, SchemaPatch, TagSchema,
 export { PropertyBar } from "./components/database/PropertyBar";
 export { NotePropertyBar } from "./components/database/NotePropertyBar";
 export { createDatabaseNote } from "./components/database/createDatabase";
+// Inline + linked database blocks (the editor's `databaseView` atom renders these).
+export { DatabaseBlock, renderDatabaseBlock, databaseBlockHtml, parseDatabaseBlock, createInlineDatabase, addLinkedView } from "./components/database/DatabaseBlock";
+export type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "./lib/database";
 export { GraphCanvas } from "./components/layout/GraphCanvasLazy";
 export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphCanvas3D";
 
@@ -108,7 +111,7 @@ export type { ContentFont } from "./components/renderers/DocumentChrome";
 export { PageCover, CoverPicker } from "./components/renderers/PageCover";
 export { parseCover, coverPatch, coverForNote, gradientCss, COVER_GRADIENTS, safeMediaSrc, isOwnAttachment, attachmentKind, formatBytes, MAX_IMAGE_BYTES, MAX_FILE_BYTES } from "./lib/media/attachments";
 export type { PageCover as PageCoverValue, AttachmentKind } from "./lib/media/attachments";
-export { embedFor, isAllowedFrameSrc, safeWebUrl, EMBED_FRAME_ORIGINS, EMBED_SANDBOX } from "./lib/media/embeds";
+export { embedFor, isAllowedFrameSrc, safeWebUrl, EMBED_FRAME_ORIGINS, EMBED_FRAME_SOURCES, EMBED_SANDBOX } from "./lib/media/embeds";
 export type { EmbedTarget, EmbedProvider } from "./lib/media/embeds";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
@@ -251,3 +254,11 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
+// Wave 2A: @-mentions, notifications inbox, reminders, access requests.
+export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
+export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
+export * from "./lib/notifications/client";
+export * from "./lib/notifications/hooks";
+export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS } from "./lib/notifications/anchor";
+export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
+export { RequestAccessButton } from "./components/inbox/RequestAccessButton";

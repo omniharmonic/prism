@@ -271,6 +271,12 @@ export function installFakeVault(): FakeVault {
         let list = [...store.values()];
         if (tagFilters.length) list = list.filter((n) => tagFilters.every((t) => (n.tags ?? []).includes(t)));
         if (search) list = list.filter((n) => n.content.toLowerCase().includes(search.toLowerCase()));
+        // Like the vault: `include_metadata=a,b` returns ONLY those metadata keys.
+        const only = q.get("include_metadata");
+        if (only) {
+          const keep = only.split(",").filter(Boolean);
+          return json(list.map((n) => ({ ...n, metadata: n.metadata ? Object.fromEntries(keep.filter((k) => k in n.metadata!).map((k) => [k, n.metadata![k]])) : n.metadata })));
+        }
         return json(list);
       }
       if (method === "POST") {

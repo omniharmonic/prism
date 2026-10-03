@@ -18,6 +18,7 @@ import { startBillingProbe } from "./agent-billing";
 import { attachCollab } from "./collab";
 import { governanceIntegrityEnabled, reportGovernanceIntegrity } from "./governance-integrity";
 import { reportApns } from "./apns";
+import { startNotificationWorker } from "./notifications";
 
 assertConfig();
 
@@ -65,6 +66,8 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: config.bin
   // Phase 3: the Node worker (per-tenant ingesters). No-op unless SECRETS_KEY is
   // set and a vault has an integration secret; interval is unref'd.
   startWorker();
+  // Wave 2A: reminders (bounded, idempotent) + the unread-notification email digest.
+  startNotificationWorker();
   // GitHub folder auto-sync (Client parity B): attach the tree change feed for
   // vaults that have an auto-sync config. No config with auto_sync → nothing runs.
   refreshGitHubAutoSync();

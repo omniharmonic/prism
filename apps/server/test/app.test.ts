@@ -36,7 +36,10 @@ test("security headers are present on every response", async () => {
   assert.match(csp, /object-src 'none'/);
   // Frames: only ourselves (inline PDF preview) and the embed allowlist — never a wildcard.
   const frame = csp.split("; ").find((d) => d.startsWith("frame-src")) ?? "";
-  assert.equal(frame, "frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.figma.com https://embed.figma.com https://docs.google.com https://www.google.com https://open.spotify.com https://codepen.io https://platform.twitter.com");
+  assert.equal(frame, "frame-src 'self' https://www.youtube-nocookie.com/embed/ https://player.vimeo.com/video/ https://www.loom.com/embed/ https://www.figma.com/embed https://docs.google.com/document/ https://docs.google.com/spreadsheets/ https://docs.google.com/presentation/ https://www.google.com/maps/embed https://open.spotify.com/embed/ https://platform.twitter.com/embed/");
+  assert.ok(!/codepen|forms/.test(frame), "no CodePen, no Google Forms");
+  // Media: same-origin + blob: (link viewers and the native client play attachments from blob: URLs).
+  assert.equal(csp.split("; ").find((d) => d.startsWith("media-src")), "media-src 'self' blob:");
   // appOrigin is http in the test env → HSTS must NOT be set (https-only).
   assert.equal(r.headers.get("strict-transport-security"), null);
 });

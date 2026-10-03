@@ -11,7 +11,7 @@
  * Every frame is rendered with a strict `sandbox` (see `EMBED_SANDBOX`) and
  * `referrerpolicy="strict-origin-when-cross-origin"`.
  *
- * `EMBED_FRAME_ORIGINS` is the exact set the CSP `frame-src` must allow for
+ * `EMBED_FRAME_SOURCES` is the exact set the CSP `frame-src` must allow for
  * these to render (web: apps/server/src/app.ts; native: apps/client origin.rs —
  * see the security proposal in CLAUDE.md "Media, embeds and attachments").
  */
@@ -26,7 +26,6 @@ export type EmbedProvider =
   | "google-slides"
   | "google-maps"
   | "spotify"
-  | "codepen"
   | "twitter";
 
 export interface EmbedTarget {
@@ -41,27 +40,40 @@ export interface EmbedTarget {
   allow: string;
 }
 
-/** The ONLY origins an embed frame can ever load. Keep in sync with the CSP proposal. */
-export const EMBED_FRAME_ORIGINS = [
-  "https://www.youtube-nocookie.com",
-  "https://player.vimeo.com",
-  "https://www.loom.com",
-  "https://www.figma.com",
-  "https://embed.figma.com",
-  "https://docs.google.com",
-  "https://www.google.com",
-  "https://open.spotify.com",
-  "https://codepen.io",
-  "https://platform.twitter.com",
+/**
+ * The ONLY places an embed frame can ever load, as CSP source expressions —
+ * every one PATH-SCOPED to the provider's embed player (a trailing "/" is a
+ * prefix match, no trailing "/" is an exact path). So `docs.google.com` frames
+ * only documents/spreadsheets/presentations (never Google Forms), and
+ * `www.google.com` only `/maps/embed`. The web CSP `frame-src` is built from
+ * this list (apps/server/src/app.ts) and `isAllowedFrameSrc` enforces the same
+ * rule before a frame is created. CodePen was removed (arbitrary user script).
+ */
+export const EMBED_FRAME_SOURCES = [
+  "https://www.youtube-nocookie.com/embed/",
+  "https://player.vimeo.com/video/",
+  "https://www.loom.com/embed/",
+  "https://www.figma.com/embed",
+  "https://docs.google.com/document/",
+  "https://docs.google.com/spreadsheets/",
+  "https://docs.google.com/presentation/",
+  "https://www.google.com/maps/embed",
+  "https://open.spotify.com/embed/",
+  "https://platform.twitter.com/embed/",
 ] as const;
+/** @deprecated origins only; use EMBED_FRAME_SOURCES (path-scoped). */
+export const EMBED_FRAME_ORIGINS = [...new Set(EMBED_FRAME_SOURCES.map((s) => new URL(s).origin))];
 
 /**
- * Frame sandbox: providers need their own scripts + storage (same-origin is THEIR
- * origin, never ours — the frame is always cross-origin), popups to open "watch on
- * YouTube", and presentation for fullscreen players. No top-navigation, no forms,
- * no downloads, no modals.
+ * Frame sandbox. Providers need their own scripts + storage (same-origin is THEIR
+ * origin, never ours — the frame is always cross-origin) and presentation for
+ * fullscreen players. `allow-popups` lets "Watch on YouTube" open a tab, which
+ * stays sandboxed: `allow-popups-to-escape-sandbox` is deliberately NOT granted
+ * (no listed provider needs it — the block's own "Open in …" link is the
+ * unsandboxed way out). No top-navigation of any kind, no forms, no downloads,
+ * no modals.
  */
-export const EMBED_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation";
+export const EMBED_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-presentation";
 
 const MEDIA_ALLOW = "fullscreen; picture-in-picture; encrypted-media; clipboard-write";
 
@@ -143,12 +155,6 @@ export function embedFor(raw: string): EmbedTarget | null {
     if (!["track", "album", "playlist", "episode", "show", "artist"].includes(type ?? "") || !/^[A-Za-z0-9]{22}$/.test(id ?? "")) return null;
     return { provider: "spotify", label: "Spotify", src: `https://open.spotify.com/embed/${type}/${id}`, height: type === "track" || type === "episode" ? 152 : 352, allow: "encrypted-media; clipboard-write; fullscreen" };
   }
-  if (h === "codepen.io") {
-    const user = parts[0];
-    const id = (parts[1] === "pen" || parts[1] === "embed") ? parts[2] : null;
-    if (!user || !/^[A-Za-z0-9_-]{1,64}$/.test(user) || !id || !/^[A-Za-z0-9]{4,16}$/.test(id)) return null;
-    return { provider: "codepen", label: "CodePen", src: `https://codepen.io/${user}/embed/${id}?default-tab=result`, height: 400, allow: "fullscreen" };
-  }
   if (h === "twitter.com" || h === "x.com" || h === "mobile.twitter.com") {
     const at = parts.indexOf("status");
     const id = at > 0 ? parts[at + 1] : null;
@@ -166,10 +172,15 @@ function decodeSafe(s: string): string {
   }
 }
 
-/** A frame src is only ever trusted if it is on the allowlist (defence in depth). */
+/** A frame src is only ever trusted if it is on the path-scoped allowlist (defence in depth). */
 export function isAllowedFrameSrc(src: string): boolean {
   const u = parse(src);
-  return !!u && u.protocol === "https:" && (EMBED_FRAME_ORIGINS as readonly string[]).includes(u.origin);
+  if (!u || u.protocol !== "https:" || u.port) return false;
+  return EMBED_FRAME_SOURCES.some((source) => {
+    const s = new URL(source);
+    if (s.origin !== u.origin) return false;
+    return s.pathname.endsWith("/") ? u.pathname.startsWith(s.pathname) : u.pathname === s.pathname;
+  });
 }
 
 /** A plain http(s) URL a bookmark/link may carry (no javascript:, data:, credentials). */

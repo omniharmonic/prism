@@ -87,9 +87,11 @@ export const webPush: PushClient = {
   },
 
   async test() {
-    const r = await serverFetch("/api/push/test", { method: "POST" });
-    if (!r.ok) throw new Error("Couldn't send the test notification.");
-    const { sent } = (await r.json()) as { sent: number };
-    if (!sent) throw new Error("No active subscription got the notification — turn it off and on again.");
+    // JSON content type: the route is CSRF-guarded. Only the server owner gets
+    // per-endpoint counts back; everyone else gets {ok:true}.
+    const r = await serverFetch("/api/push/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (!r.ok) throw new Error(r.status === 429 ? "Too many test notifications — try again in a minute." : "Couldn't send the test notification.");
+    const { sent } = (await r.json()) as { sent?: number };
+    if (sent === 0) throw new Error("No active subscription got the notification — turn it off and on again.");
   },
 };

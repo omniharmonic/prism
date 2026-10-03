@@ -10,6 +10,7 @@ import { addGrant } from "../src/db";
 import type { Cap } from "../src/permissions";
 import { resetTreeForTests } from "../src/tree";
 import { resetDatabaseCachesForTests, setSchemaAdminMinter, setQueryCacheLimitsForTests } from "../src/routes/databases";
+import { writerIdFor } from "../src/writer-stamp";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -241,7 +242,9 @@ test("properties: an editor's write merges only the changed keys", async () => {
   assert.equal(n.metadata!.points, 3, "other properties are preserved");
   assert.equal(n.content, "BODY-ALPHA", "content is never written");
   const patch = fv.calls.find((call) => call.method === "PATCH")!;
-  assert.deepEqual((patch.body as any).metadata, { status: "done", due: null });
+  const { prism_last_write_at: stampedAt, ...sent } = (patch.body as any).metadata;
+  assert.equal(typeof stampedAt, "string");
+  assert.deepEqual(sent, { status: "done", due: null, prism_last_writer: writerIdFor("kai@test.local") }, "+ the (opaque) writer stamp");
   assert.equal((patch.body as any).if_updated_at, "2026-10-01T10:00:00.000Z", "CAS against the version just read");
   assert.equal((patch.body as any).content, undefined);
   const body = (await r.json()) as any;

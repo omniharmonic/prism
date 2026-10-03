@@ -1,8 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import type * as Y from "yjs";
 import type { Editor } from "@tiptap/react";
-import { MessageSquarePlus, Check, Trash2 } from "lucide-react";
-import { useThreads, addReply, setResolved, deleteThread, type Thread } from "../../editor/comments";
+import { MessageSquarePlus, Check, Trash2, Pencil } from "lucide-react";
+import { useThreads, addReply, setResolved, deleteThread, type Thread, type CommentItem } from "../../editor/comments";
+import { MentionText, useCommentMentionPicker } from "../../lib/tiptap/MentionText";
+
+/** Edit (text) or delete one comment of a thread; deleting the last one deletes the thread. */
+function changeComment(ydoc: Y.Doc, threadId: string, index: number, text: string | null, editor?: Editor | null): void {
+  const thread = ydoc.getMap<Y.Map<unknown>>("comments").get(threadId);
+  const items = thread?.get("comments") as Y.Array<CommentItem & { editedAt?: number }> | undefined;
+  const current = items?.get(index);
+  if (!items || !current) return;
+  if (text === null && items.length === 1) return deleteThread(ydoc, threadId, editor);
+  ydoc.transact(() => {
+    items.delete(index, 1);
+    if (text !== null) items.insert(index, [{ ...current, text, editedAt: Date.now() }]);
+  });
+}
 
 /**
  * Google-Docs-style comments sidebar: live thread list (Yjs `comments` map) with
@@ -113,6 +127,8 @@ function ThreadCard({
   focused?: boolean;
 }) {
   const [reply, setReply] = useState("");
+  const replyRef = useRef<HTMLInputElement>(null);
+  const replyMentions = useCommentMentionPicker(replyRef, reply, setReply);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -148,23 +164,28 @@ function ThreadCard({
         </div>
       )}
       {thread.comments.map((c, i) => (
-        <div key={i} style={{ marginBottom: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 16, height: 16, borderRadius: 999, background: c.color, color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              {c.author.charAt(0).toUpperCase()}
-            </span>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>{c.author}</span>
-          </div>
-          <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 2 }}>{c.text}</div>
-        </div>
+        <CommentRow
+          key={i}
+          item={c as CommentItem & { editedAt?: number; agent?: boolean }}
+          own={canComment && c.author === user.name && !(c as { agent?: boolean }).agent}
+          onSave={(text) => changeComment(ydoc, thread.id, i, text, editor)}
+          onDelete={() => changeComment(ydoc, thread.id, i, null, editor)}
+        />
       ))}
 
       {!thread.resolved && canComment && (
+        <>
         <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
           <input
+            ref={replyRef}
+            aria-label="Reply"
             value={reply}
             onChange={(e) => setReply(e.target.value)}
+            onSelect={replyMentions.onSelect}
+            onInput={replyMentions.onInput}
+            {...replyMentions.fieldProps}
             onKeyDown={(e) => {
+              if (replyMentions.onKeyDown(e)) return;
               if (e.key === "Enter" && reply.trim()) {
                 addReply(ydoc, thread.id, { author: user.name, color: user.color, text: reply.trim(), createdAt: Date.now() });
                 setReply("");
@@ -177,8 +198,10 @@ function ThreadCard({
           <button onClick={() => setResolved(ydoc, thread.id, true, editor)} title="Resolve" className="p-1 rounded" style={{ color: "#22c55e" }}>
             <Check size={14} />
           </button>
-          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} />
+          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} label="Delete thread" />
         </div>
+        {replyMentions.menu}
+        </>
       )}
 
       {thread.resolved && canComment && (
@@ -186,15 +209,81 @@ function ThreadCard({
           <button onClick={() => setResolved(ydoc, thread.id, false, editor)} className="text-xs" style={{ color: "var(--text-muted)" }}>
             Reopen
           </button>
-          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} />
+          <DeleteButton confirm={confirmDelete} setConfirm={setConfirmDelete} onDelete={() => deleteThread(ydoc, thread.id, editor)} label="Delete thread" />
         </div>
       )}
     </div>
   );
 }
 
+/** One comment: author, text (person mentions as chips), and edit / delete for your own. */
+function CommentRow({ item, own, onSave, onDelete }: {
+  item: CommentItem & { editedAt?: number };
+  own: boolean;
+  onSave: (text: string) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(item.text);
+  const [confirm, setConfirm] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const mentions = useCommentMentionPicker(ref, text, setText);
+  const save = () => {
+    if (!text.trim()) return;
+    onSave(text.trim());
+    setEditing(false);
+  };
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 16, height: 16, borderRadius: 999, background: item.color, color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {item.author.charAt(0).toUpperCase()}
+        </span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>{item.author}</span>
+        {item.editedAt && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(edited)</span>}
+        {own && !editing && (
+          <span style={{ marginLeft: "auto", display: "flex", gap: 2 }}>
+            <button onClick={() => { setText(item.text); setEditing(true); }} title="Edit comment" aria-label="Edit comment" className="p-1 rounded" style={{ color: "var(--text-muted)" }}>
+              <Pencil size={12} />
+            </button>
+            <DeleteButton confirm={confirm} setConfirm={setConfirm} onDelete={onDelete} label="Delete comment" />
+          </span>
+        )}
+      </div>
+      {editing ? (
+        <div style={{ marginTop: 4 }}>
+          <textarea
+            ref={ref}
+            aria-label="Edit comment"
+            autoFocus
+            rows={2}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onSelect={mentions.onSelect}
+            onInput={mentions.onInput}
+            {...mentions.fieldProps}
+            onKeyDown={(e) => {
+              if (mentions.onKeyDown(e)) return;
+              if (e.key === "Escape") setEditing(false);
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
+            }}
+            style={{ width: "100%", boxSizing: "border-box", fontSize: 16, padding: "5px 8px", borderRadius: 6, background: "var(--glass)", border: "1px solid var(--glass-border)", color: "var(--text-primary)", outline: "none", resize: "vertical" }}
+          />
+          {mentions.menu}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 4 }}>
+            <button className="text-xs" style={{ color: "var(--text-muted)", padding: "4px 6px" }} onClick={() => setEditing(false)}>Cancel</button>
+            <button className="text-xs" style={{ color: "var(--text-accent)", fontWeight: 600, padding: "4px 6px" }} disabled={!text.trim()} onClick={save}>Save</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 2, overflowWrap: "anywhere" }}><MentionText text={item.text} /></div>
+      )}
+    </div>
+  );
+}
+
 /** Trash icon that asks for one confirmation click before deleting. */
-function DeleteButton({ confirm, setConfirm, onDelete }: { confirm: boolean; setConfirm: (v: boolean) => void; onDelete: () => void }) {
+function DeleteButton({ confirm, setConfirm, onDelete, label = "Delete comment" }: { confirm: boolean; setConfirm: (v: boolean) => void; onDelete: () => void; label?: string }) {
   if (confirm) {
     return (
       <button
@@ -210,7 +299,7 @@ function DeleteButton({ confirm, setConfirm, onDelete }: { confirm: boolean; set
     );
   }
   return (
-    <button onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title="Delete comment" className="p-1 rounded" style={{ color: "var(--text-muted)" }}>
+    <button onClick={() => setConfirm(true)} onBlur={() => setConfirm(false)} title={label} aria-label={label} className="p-1 rounded" style={{ color: "var(--text-muted)" }}>
       <Trash2 size={13} />
     </button>
   );

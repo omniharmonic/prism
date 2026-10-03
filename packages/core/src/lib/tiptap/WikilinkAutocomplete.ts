@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 
 /**
- * TipTap extension that detects @ and [[ triggers for note autocomplete.
+ * TipTap extension that detects the [[ trigger for note autocomplete.
  * Uses a callback to notify the React layer instead of plugin state reading.
  */
 
@@ -73,25 +73,7 @@ export const WikilinkAutocomplete = Extension.create<WikilinkAutocompleteOptions
                 }
               }
 
-              // Check @ trigger
-              const lastAt = textBefore.lastIndexOf("@");
-              if (lastAt >= 0) {
-                const charBefore = lastAt > 0 ? textBefore[lastAt - 1] : " ";
-                if (charBefore === " " || charBefore === "\n" || lastAt === 0) {
-                  const query = textBefore.slice(lastAt + 1);
-                  if (query.length <= 60 && !query.includes(" ")) {
-                    lastActive = true;
-                    onStateChange({
-                      active: true,
-                      query,
-                      from: pos.start() + lastAt,
-                      to: pos.pos,
-                      trigger: "@",
-                    });
-                    return;
-                  }
-                }
-              }
+              // `@` is the mention menu now (MentionSuggest), not a wikilink trigger.
 
               // No trigger active
               if (lastActive) {

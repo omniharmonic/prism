@@ -30,6 +30,7 @@ import {
   saveApnsToken,
   liveApnsTokens,
   apnsTokenForDevice,
+  removeApnsTokenForDevice,
   agentTurnNotification,
   http2Transport,
   tokenRef,
@@ -334,13 +335,17 @@ test("a hung request times out (bounded) instead of hanging the fan-out", async 
 const post = (headers: Record<string, string>, body: unknown = { token: TOKEN, environment: "production" }) =>
   pushApi.request("/apns", { method: "POST", headers: { ...J, ...headers }, body: JSON.stringify(body) });
 
-test("register: the owner's DEVICE token only; session cookie, non-owner, link, anon refused", async () => {
+test("register: a signed-in user's DEVICE token only; session cookie, link, anon refused", async () => {
   // Owner browser session: an APNs token belongs to a device, not a browser.
   const cookie = await post({ cookie: sessionCookie(makeSession(config.ownerEmail)) });
   assert.equal(cookie.status, 403);
   assert.equal(((await cookie.json()) as { error: string }).error, "device_token_required");
-  // Non-owner with a valid device token → the router-wide owner gate.
-  assert.equal((await post(bearer(device("member@test.local").token))).status, 403);
+  // Wave 2A: a member's own device may register (mentions/replies notify members);
+  // the row is bound to THEIR email + device.
+  const md = device("member@test.local");
+  assert.equal((await post(bearer(md.token))).status, 200);
+  assert.equal(apnsTokenForDevice(md.id)!.owner_email, "member@test.local");
+  removeApnsTokenForDevice(md.id);
   assert.equal((await post({ authorization: `Capability ${makeCapability("note", "n1", "edit")}` })).status, 403);
   assert.equal((await post({})).status, 403);
   assert.equal((await post(bearer("pd_not-a-real-token"))).status, 403);

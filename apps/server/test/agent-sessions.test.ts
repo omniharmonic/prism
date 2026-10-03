@@ -983,7 +983,7 @@ test("push: a finished turn sends one ids-only push per subscription; a failing 
     },
   });
   try {
-    for (const n of [1, 2]) saveSubscription({ email: config.ownerEmail, endpoint: `https://push.test/${n}`, p256dh: "k", auth: "a" });
+    for (const n of [1, 2]) saveSubscription({ email: config.ownerEmail, endpoint: `https://fcm.googleapis.com/fcm/send/${n}`, p256dh: "k", auth: "a" });
     const sid = await newSession();
     const turnId = await runTurn(sid, "SECRET PROMPT TEXT", "agent-stream-turn1.jsonl");
     await sleep(5);

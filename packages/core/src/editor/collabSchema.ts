@@ -8,6 +8,7 @@ import type { Extensions } from "@tiptap/core";
 import { suggestionMarks } from "./suggestionMarks";
 import { commentMarks } from "./commentMark";
 import { blockSchemaExtensions } from "./blocks";
+import { mentionExtensions } from "../lib/tiptap/MentionNode";
 
 /**
  * Version of the shared document schema below, sent by every live editor as the
@@ -21,11 +22,12 @@ import { blockSchemaExtensions } from "./blocks";
  * this number (apps/server/test/collab-schema-version.test.ts pins the names).
  *   1 — StarterKit/Link/Highlight/Tasks + suggestion/comment marks (implicit)
  *   2 — + image, table, callout, toggle, columns, block/text colour
- *   3 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
- *       image align + caption; codeBlock is now the lowlight variant (same
- *       name + `language` attr, highlighting is decoration-only)
+ *   3 — + mention (person / page / date chips; lib/tiptap/MentionNode.ts)
+ *   4 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
+ *       databaseView (inline database), image align + caption; codeBlock is now the
+ *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
  */
-export const COLLAB_SCHEMA_VERSION = 3;
+export const COLLAB_SCHEMA_VERSION = 4;
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -53,6 +55,8 @@ export function collabExtensions(): Extensions {
     // callouts, toggles, columns and block/text colours —
     // shared with the plain renderer so a note round-trips through either.
     ...blockSchemaExtensions(),
+    // @-mentions: person / page / date chips (wave 2A).
+    ...mentionExtensions(),
     // Suggested-edit marks (insertion/deletion). Schema-only here so the server
     // can round-trip them through HTML; the suggest-mode behavior plugin is
     // added client-side in CollabEditor.
