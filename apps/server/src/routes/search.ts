@@ -15,7 +15,8 @@
  * all), trashed pages are excluded, the private-note rule applies through the
  * same caps. Filters run AFTER the view filter, so a filter can only narrow
  * what the caller can already read and no count/total is returned. One vault
- * call per request, bounded (≤200 rows); per-actor rate limit
+ * call per request (≤100 rows, identical in-flight queries coalesced); snippets
+ * read ≤20 KB per note through a linear scanner; per-actor rate limit
  * `SEARCH_RATE_PER_MINUTE` (owner 600, others 120).
  */
 import { Hono, type Context } from "hono";
@@ -45,6 +46,21 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
+const FETCH_MAX = 100;
+/** Identical in-flight searches (same vault, query, size) share ONE vault call — a
+ *  debounced keystroke from several tabs/devices must not queue N full-text scans.
+ *  Only the raw vault rows are shared; every caller is permission-filtered after. */
+const inFlight = new Map<string, Promise<Note[]>>();
+function sharedVaultSearch(vaultId: string, q: string, limit: number): Promise<Note[]> {
+  const key = JSON.stringify([vaultId, q, limit]);
+  let pending = inFlight.get(key);
+  if (!pending) {
+    pending = vaultClient(vaultId).search(q, [], limit).finally(() => inFlight.delete(key));
+    inFlight.set(key, pending);
+  }
+  return pending;
+}
+
 searchApi.get("/search", async (c: Context) => {
   const actor = resolveActor(c);
   const admin = roleAtLeast(actor.role, "admin");
@@ -68,11 +84,11 @@ searchApi.get("/search", async (c: Context) => {
   const lean = c.req.query("lean") === "1";
   const terms = queryTerms(q);
   // Filters and the view filter both narrow after the vault answers, so ask for
-  // more than we return (bounded) when either will discard rows.
-  const fetchLimit = Math.min(200, admin && !hasFilters(filters) ? limit : limit * 4);
+  // more than we return — but never more than 100 rows (the vault returns bodies).
+  const fetchLimit = Math.min(FETCH_MAX, admin && !hasFilters(filters) ? limit : limit * 4);
   let results: Note[];
   try {
-    results = await vaultClient(actor.vaultId).search(q, [], fetchLimit);
+    results = await sharedVaultSearch(actor.vaultId, q, fetchLimit);
   } catch (e) {
     if (e instanceof VaultError) return c.json({ error: "vault_error", status: e.status }, 502);
     return c.json({ error: "server_error" }, 500);

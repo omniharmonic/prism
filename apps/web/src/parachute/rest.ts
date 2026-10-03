@@ -266,7 +266,7 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
  *  Lean rows: no bodies, a server-built snippet instead. An older server that
  *  has no such route for this actor answers 404/405/501 → `null` (caller falls back). */
 export async function searchNotes(query: string, filters: SearchFilters = {}, limit = 50): Promise<Note[] | null> {
-  const sp = filtersToParams(filters, new URLSearchParams({ q: query, limit: String(limit), lean: "1" }));
+  const sp = filtersToParams(filters, new URLSearchParams({ q: query.slice(0, 200), limit: String(limit), lean: "1" }));
   try {
     return await (await req(`/search?${sp.toString()}`)).json();
   } catch (error) {

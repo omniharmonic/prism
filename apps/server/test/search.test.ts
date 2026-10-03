@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
-import { buildSnippet, findMatches, plainText, queryTerms } from "@prism/core/search";
+import { buildSnippet, findMatches, plainText, queryTerms, searchMatches } from "@prism/core/search";
 
 let fv: FakeVault;
 const OWNER = "owner@test.local";
@@ -94,7 +94,7 @@ test("bounds: empty query, long query, limit, lean rows, invalid filters ignored
   const bad = (await (await get("/search?q=workshop&after=not-a-date&type=%3Cscript%3E", cookie)).json()) as Array<any>;
   assert.equal(bad.length, 4, "unparseable filters are dropped, not applied");
   const calls = fv.calls.filter((c) => c.path.endsWith("/notes") && c.search.includes("search="));
-  assert.ok(calls.every((c) => Number(new URLSearchParams(c.search).get("limit")) <= 200));
+  assert.ok(calls.every((c) => Number(new URLSearchParams(c.search).get("limit")) <= 100));
 });
 
 test("rate limit per actor", async () => {
@@ -119,4 +119,68 @@ test("pure helpers: terms, merged offsets, plain text and snippets", () => {
   const { snippet, matches } = buildSnippet(long, ["needle"], 60);
   assert.ok(snippet.startsWith("…"));
   assert.equal(snippet.slice(matches[0]![0], matches[0]![1]), "needle");
+});
+
+// ── review H1/M1/M2 ──────────────────────────────────────────────────────────
+function timed<T>(fn: () => T): [T, number] {
+  const t0 = performance.now();
+  const out = fn();
+  return [out, performance.now() - t0];
+}
+
+test("H1: plainText/snippets stay linear on pathological note content", () => {
+  const cases: Record<string, string> = {
+    "unmatched [[": "[".repeat(200_000),
+    "[[ far from ]]": "[[".repeat(50_000) + "x]]",
+    "pipes in [[": "[[" + "a|".repeat(60_000),
+    "angle brackets": "<".repeat(200_000),
+    "open tags": "<a ".repeat(60_000),
+    "ampersands": "&".repeat(200_000),
+    "entity-ish": "&" + "a".repeat(199_000),
+    "numeric entity-ish": "&#" + "9".repeat(199_000),
+    "script openers": "<script".repeat(28_000),
+    "markdown runs": "#*_`>".repeat(40_000),
+    "whitespace": " \n\t".repeat(66_000) + "x",
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    const [, ms] = timed(() => searchMatches({ id: "n", path: "T", content: input + " needle" }, ["needle", "[", "a"]));
+    assert.ok(ms < 400, `${name}: ${Math.round(ms)} ms`);
+    const [, ms2] = timed(() => plainText(input));
+    assert.ok(ms2 < 400, `plainText ${name}: ${Math.round(ms2)} ms`);
+  }
+  const [, ms] = timed(() => findMatches("a".repeat(200_000), ["a".repeat(199) + "b", "aa"], 64));
+  assert.ok(ms < 400, `findMatches: ${Math.round(ms)} ms`);
+  // Behaviour is unchanged for well-formed wikilinks.
+  assert.equal(plainText("See [[Projects/Plan|the plan]] and [[Notes/Daily]] [[open"), "See the plan and Notes/Daily [[open");
+});
+
+test("M1: an out-of-range numeric entity never throws (and never 500s a search)", async () => {
+  assert.equal(plainText("needle &#99999999; &#55357; &#0; &#65; &#x41; &bogus; &amp;"), "needle A A &bogus; &");
+  fv.put({ id: "ent", path: "Notes/Entity", tags: ["note"], content: "<p>zebra &#99999999; &#1114112;</p>", metadata: {} });
+  const r = await get("/search?q=zebra", login(OWNER));
+  assert.equal(r.status, 200);
+  assert.deepEqual(ids((await r.json()) as Array<any>), ["ent"]);
+});
+
+test("M2: bounded vault fetch, bounded snippet work, identical in-flight queries share one vault call", async () => {
+  const big = "<p>" + "filler words ".repeat(25_000) + "</p><p>quokka sighting near the end</p>";
+  for (let i = 0; i < 30; i++) fv.put({ id: `big${i}`, path: `Big/${i}`, tags: ["note"], content: big, metadata: {} });
+  const before = fv.calls.length;
+  const t0 = performance.now();
+  const [a, b] = await Promise.all([get("/search?q=quokka&limit=100", login(OWNER)), get("/search?q=quokka&limit=100", login(OWNER))]);
+  const ms = performance.now() - t0;
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  const rows = (await a.json()) as Array<any>;
+  assert.equal(rows.length, 30);
+  assert.match(rows[0]._matches.snippet, /quokka sighting/, "the window follows the match, not the first bytes");
+  const calls = fv.calls.slice(before).filter((c) => c.search.includes("search="));
+  assert.equal(calls.length, 1, "coalesced");
+  assert.ok(Number(new URLSearchParams(calls[0]!.search).get("limit")) <= 100);
+  assert.ok(ms < 1500, `two 30×325 KB searches took ${Math.round(ms)} ms`);
+  // A different actor's identical query is still filtered for THAT actor.
+  grantUser(MEMBER, "tag", "project", "view");
+  const [o, m] = await Promise.all([get("/search?q=workshop", login(OWNER)), get("/search?q=workshop", login(MEMBER))]);
+  assert.equal(((await o.json()) as any[]).length, 4);
+  assert.deepEqual(ids((await m.json()) as any[]), ["w1"]);
 });

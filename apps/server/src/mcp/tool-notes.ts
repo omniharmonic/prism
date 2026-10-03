@@ -168,7 +168,8 @@ export const queryNotesTool = defineTool({
     } else {
       // The gateway returns everything the actor may view (no server-side filters) — narrow here.
       notes = args.search
-        ? await getJson<NoteOut[]>(ctx, `/api/search?${new URLSearchParams({ q: args.search, limit: String(Math.min(LIST_MAX, limit * 4)) })}`)
+        // /api/search (wave 2E) takes q ≤ 200 chars and returns ≤ 100 rows per call.
+        ? await getJson<NoteOut[]>(ctx, `/api/search?${new URLSearchParams({ q: args.search.slice(0, 200), limit: String(Math.min(100, limit * 4)) })}`)
         : await getJson<NoteOut[]>(ctx, `/api/notes?include_content=${includeContent}`);
       if (args.tag) notes = notes.filter((n) => hasTag(n, args.tag!));
       if (args.path_prefix) notes = notes.filter((n) => (n.path ?? "").startsWith(args.path_prefix!));

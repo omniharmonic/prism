@@ -77,40 +77,102 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 /** Drop <script>/<style>/<noscript> blocks with indexOf scans (linear, no regex backtracking). */
 function stripRawBlocks(input: string): string {
   const lower = input.toLowerCase();
-  let out = "";
+  const tags = ["script", "style", "noscript"] as const;
+  // Next opener per tag, recomputed only once the scan has passed it (linear overall).
+  const nextOpen = tags.map((tag) => lower.indexOf(`<${tag}`));
+  const parts: string[] = [];
   let at = 0;
   for (;;) {
-    let next = -1;
-    let name = "";
-    for (const tag of ["script", "style", "noscript"]) {
-      const i = lower.indexOf(`<${tag}`, at);
-      if (i !== -1 && (next === -1 || i < next)) { next = i; name = tag; }
+    let which = -1;
+    for (let t = 0; t < tags.length; t++) {
+      if (nextOpen[t]! !== -1 && nextOpen[t]! < at) nextOpen[t] = lower.indexOf(`<${tags[t]}`, at);
+      if (nextOpen[t]! !== -1 && (which === -1 || nextOpen[t]! < nextOpen[which]!)) which = t;
     }
-    if (next === -1) return out + input.slice(at);
-    out += input.slice(at, next);
-    const close = lower.indexOf(`</${name}`, next);
-    if (close === -1) return out;
+    if (which === -1) { parts.push(input.slice(at)); return parts.join(""); }
+    const open = nextOpen[which]!;
+    parts.push(input.slice(at, open));
+    const close = lower.indexOf(`</${tags[which]}`, open);
+    if (close === -1) return parts.join("");
     const end = lower.indexOf(">", close);
     at = end === -1 ? input.length : end + 1;
   }
 }
 
+function decodeEntity(name: string): string | null {
+  const named = ENTITIES[name];
+  if (named !== undefined) return named;
+  if (name[0] !== "#") return null;
+  const hex = name[1] === "x" || name[1] === "X";
+  const digits = name.slice(hex ? 2 : 1);
+  if (!digits || digits.length > 8 || !(hex ? /^[0-9a-fA-F]+$/ : /^\d+$/).test(digits)) return null;
+  const code = parseInt(digits, hex ? 16 : 10);
+  // Out of range, NUL and lone surrogates would throw or corrupt: a space instead.
+  if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) return " ";
+  return String.fromCodePoint(code);
+}
+
+/**
+ * Saved note HTML/Markdown → readable plain text. ONE linear pass, no regex over
+ * the input (note content is attacker-controlled: an unanchored pattern with an
+ * unbounded quantifier — the old `[[…]]` regex — went quadratic on `[[[[[…`).
+ * Tags are dropped, entities decoded (≤ 10 chars), `[[target|label]]` becomes its
+ * label, Markdown punctuation and whitespace runs collapse to one space.
+ */
 export function plainText(source: string, max = 200_000): string {
   const input = stripRawBlocks(source.length > max ? source.slice(0, max) : source);
-  let out = "";
-  let inTag = false;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (inTag) { if (ch === ">") { inTag = false; out += " "; } continue; }
-    if (ch === "<" && /[a-zA-Z/!]/.test(input[i + 1] ?? "")) { inTag = true; continue; }
-    out += ch;
+  const n = input.length;
+  const out: string[] = [];
+  let space = true; // collapses whitespace and trims the start
+  const push = (text: string) => {
+    for (let k = 0; k < text.length; k++) {
+      const c = text[k]!;
+      if (c === " " || c === "\n" || c === "\t" || c === "\r" || c === "\f" || c === "\u00a0" || c === "#" || c === "*" || c === "_" || c === "`" || c === ">") {
+        if (!space) { out.push(" "); space = true; }
+      } else { out.push(c); space = false; }
+    }
+  };
+  // Next "]]" at or after the scan point; recomputed only once passed (keeps "[[[[…" linear).
+  let close = -2;
+  let i = 0;
+  while (i < n) {
+    const ch = input[i]!;
+    if (ch === "<") {
+      const next = input.charCodeAt(i + 1);
+      const tagStart = (next >= 65 && next <= 90) || (next >= 97 && next <= 122) || next === 47 || next === 33; // A-Z a-z / !
+      if (tagStart) {
+        const end = input.indexOf(">", i + 1);
+        if (!space) { out.push(" "); space = true; }
+        if (end === -1) break; // an unterminated tag swallows the rest, as before
+        i = end + 1;
+        continue;
+      }
+    } else if (ch === "&") {
+      // An entity name is at most 10 chars: look no further (keeps "&&&&…" linear).
+      const rel = input.slice(i + 1, i + 12).indexOf(";");
+      if (rel > 0) {
+        const decoded = decodeEntity(input.slice(i + 1, i + 1 + rel));
+        if (decoded !== null) { push(decoded); i += rel + 2; continue; }
+      }
+    } else if (ch === "[" && input[i + 1] === "[") {
+      if (close !== -1 && close < i + 2) close = input.indexOf("]]", i + 2);
+      if (close !== -1 && close - i <= 402) {
+        const inner = input.slice(i + 2, close);
+        if (!inner.includes("\n") && !inner.includes("[[")) {
+          const bar = inner.indexOf("|");
+          push(bar === -1 ? inner : inner.slice(bar + 1));
+          i = close + 2;
+          continue;
+        }
+      }
+      out.push("[["); space = false;
+      i += 2;
+      continue;
+    }
+    push(ch);
+    i++;
   }
-  return out
-    .replace(/&(#?\w+);/g, (m, name: string) => ENTITIES[name] ?? (name.startsWith("#") && /^#\d+$/.test(name) ? String.fromCodePoint(Number(name.slice(1)) || 32) : m))
-    .replace(/\[\[([^\]|]*\|)?([^\]]*)\]\]/g, "$2")
-    .replace(/[#*_`>]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  if (space && out.length) out.pop();
+  return out.join("");
 }
 
 /** A window of `max` characters around the first match, with offsets inside it. */
@@ -135,9 +197,36 @@ export function noteTitle(note: NoteLike): string {
   return note.path?.split("/").pop() || note.id;
 }
 
+/** Bytes of raw note content a snippet may read (per note). */
+export const SNIPPET_SOURCE_MAX = 20_000;
+
+/**
+ * At most `max` chars of raw content, positioned around the first term hit (a
+ * plain case-insensitive indexOf — no regex over the whole body), so a snippet
+ * costs the same for a 2 KB and a 2 MB note.
+ */
+export function contentWindow(content: string, terms: string[], max = SNIPPET_SOURCE_MAX): string {
+  if (content.length <= max) return content;
+  let hit = -1;
+  if (terms.length) {
+    const lower = content.slice(0, 400_000).toLowerCase(); // bounded: a hit past 400 KB falls back to the prefix
+    for (const term of terms) {
+      const at = lower.indexOf(term);
+      if (at !== -1 && (hit === -1 || at < hit)) hit = at;
+    }
+  }
+  if (hit <= max / 4) return content.slice(0, max);
+  let start = hit - Math.floor(max / 4);
+  // Don't start inside a tag: skip to just after its ">" when one closes first.
+  const gt = content.indexOf(">", start);
+  const lt = content.indexOf("<", start);
+  if (gt !== -1 && gt - start < 400 && (lt === -1 || gt < lt)) start = gt + 1;
+  return content.slice(start, start + max);
+}
+
 export function searchMatches(note: NoteLike, terms: string[]): SearchMatches {
   const title = noteTitle(note);
-  const { snippet, matches } = buildSnippet(plainText(note.content ?? ""), terms);
+  const { snippet, matches } = buildSnippet(plainText(contentWindow(note.content ?? "", terms)), terms);
   return { title: findMatches(title, terms), snippet, snippetMatches: matches };
 }
 
