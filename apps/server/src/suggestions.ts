@@ -101,3 +101,30 @@ export function summarizeSuggestions(node: PmNode, author: string): string {
   if (del) parts.push(`−${del} chars`);
   return `Suggested edits by ${author}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
+
+/** One identified suggestion in a document: who made it (the opaque/legacy actor
+ *  id on its marks, if any) and its inserted / deleted text. */
+export interface IdentifiedSuggestion {
+  actorId: string | null;
+  ins: string;
+  del: string;
+}
+
+/** Suggestions that carry a `suggestionId`, keyed by it (wave 3: accepted /
+ *  rejected notifications). Legacy marks without an id are not listed. */
+export function identifiedSuggestions(node: PmNode, out = new Map<string, IdentifiedSuggestion>()): Map<string, IdentifiedSuggestion> {
+  if (typeof node.text === "string") {
+    for (const m of node.marks ?? []) {
+      if (m.type !== "insertion" && m.type !== "deletion") continue;
+      const id = typeof m.attrs?.suggestionId === "string" ? m.attrs.suggestionId : "";
+      if (!id) continue;
+      const e = out.get(id) ?? { actorId: null, ins: "", del: "" };
+      if (typeof m.attrs?.actorId === "string" && m.attrs.actorId) e.actorId = m.attrs.actorId;
+      if (m.type === "insertion") e.ins += node.text;
+      else e.del += node.text;
+      out.set(id, e);
+    }
+  }
+  for (const child of node.content ?? []) identifiedSuggestions(child, out);
+  return out;
+}

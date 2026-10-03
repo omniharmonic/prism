@@ -479,3 +479,54 @@ test("final L3: approving a request that raises an existing grant keeps who made
   assert.equal(g.level, "edit");
   assert.equal(g.created_by, "first-admin@test.local", "raised, not re-authored by the decider");
 });
+
+// ── suggestions accepted / declined (wave 3) ─────────────────────────────────
+import { suggestionsResolved } from "../src/notifications";
+const sug = (kind: "insert" | "delete", id: string, actor: string | null, text: string) =>
+  `<span data-suggestion="${kind}" data-user="Someone" data-color="#888" data-suggestion-id="${id}"${actor ? ` data-actor-id="${actor}"` : ""}>${text}</span>`;
+
+test("the suggester is told when an editor accepts or declines their suggestion — once, by account, view re-checked", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  const prev = `<p>hello ${sug("delete", "s1", ada, "world")}${sug("insert", "s1", ada, "there")} and ${sug("insert", "s2", ada, "extra")} and ${sug("delete", "s3", ada, "cut me")}</p>`;
+  // Bob accepts s1 (replacement applied), declines s2 (insert dropped), accepts s3 (deletion applied).
+  const next = "<p>hello there and  and </p>";
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 3);
+  const items = (await inbox(ADA)).items;
+  assert.deepEqual(items.map((i) => i.type).sort(), ["suggestion_accepted", "suggestion_accepted", "suggestion_rejected"]);
+  const declined = items.find((i) => i.type === "suggestion_rejected")!;
+  assert.equal(declined.preview, "extra");
+  assert.equal((declined.actor as { name?: string } | null)?.name, "Bob");
+  assert.equal(JSON.stringify(items).includes(BOB), false, "no account email in the inbox payload");
+  assert.equal((await inbox(ADA, "?type=comment")).items.length, 3, "listed under the comments filter");
+  // Idempotent: the same store again sends nothing.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 0);
+  assert.equal((await inbox(BOB)).items.length, 0);
+});
+
+test("no notification without a resolvable account, for one's own change, for a server-internal store, or without view", async () => {
+  const ada = documentActorId(`user:${ADA}`);
+  const eve = documentActorId(`user:${EVE}`); // Eve has an account but cannot view the page
+  const guest = documentActorId("capability:link-1");
+  const prev = `<p>${sug("insert", "g1", guest, "guest text")}${sug("insert", "n1", null, "typed live")}${sug("insert", "e1", eve, "eve text")}${sug("insert", "a1", ada, "ada text")}</p>`;
+  const next = "<p>guest text typed live eve text</p>";
+  // Ada changed the page herself (withdrew a1): nothing for her; guest/no-id/unviewable: nothing.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [ADA] }), 0);
+  // A reconcile/restore store has no editor: nobody decided anything.
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [] }), 0);
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next, editors: [BOB] }), 1, "only Ada's a1");
+  assert.equal((await inbox(EVE)).items.length, 0);
+  // Two editors in the batch: sent, but the decider is not named.
+  const prev2 = `<p>${sug("insert", "a2", ada, "more")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev: prev2, next: "<p>more</p>", editors: [BOB, OWNER] }), 1);
+  const latest = (await inbox(ADA)).items.find((i) => i.preview === "more")!;
+  assert.equal(latest.type, "suggestion_accepted");
+  assert.equal(latest.actor ?? null, null);
+  // A suggestion still pending is not "resolved".
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev: prev2, next: prev2, editors: [BOB] }), 0);
+});
+
+test("legacy agent suggestions (email as actor id) still reach the account", async () => {
+  const prev = `<p>${sug("insert", "m1", ADA, "agent text")}</p>`;
+  assert.equal(await suggestionsResolved({ vaultId: "primary", noteId: "doc", prev, next: "<p></p>", editors: [BOB] }), 1);
+  assert.equal((await inbox(ADA)).items[0]!.type, "suggestion_rejected");
+});

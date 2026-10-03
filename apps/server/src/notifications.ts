@@ -42,7 +42,7 @@ import { apnsEnabled, sendApnsToOwner, notificationAlert } from "./apns";
 import { sendEmail } from "./auth/email";
 import { documentActorId } from "./human-collab";
 import { onAccessChanged } from "./access-events";
-import { docNameFor, federationTarget, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
+import { docNameFor, federationTarget, identifiedSuggestionsInHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
 // ── schema ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -143,14 +143,14 @@ export const isNotificationType = (t: unknown): t is NotificationType => typeof 
 /** Filter groups the inbox offers (also accepts an exact type). */
 export const TYPE_GROUPS: Record<string, NotificationType[]> = {
   mention: ["mention", "comment_mention"],
-  comment: ["comment_reply", "comment_mention"],
+  comment: ["comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected"],
   reminder: ["reminder"],
   access: ["access_request", "access_granted", "access_denied", "share"],
 };
 
 export type Category = "mention" | "comment" | "reminder" | "access";
 const categoryOf = (t: NotificationType): Category =>
-  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" ? "comment" : t === "reminder" ? "reminder" : "access";
+  t === "mention" || t === "comment_mention" ? "mention" : t === "comment_reply" || t === "suggestion_accepted" || t === "suggestion_rejected" ? "comment" : t === "reminder" ? "reminder" : "access";
 
 export interface Anchor {
   mention?: string;
@@ -424,7 +424,7 @@ export interface NewNotification {
 // hourly budget only ever skips the PUSH, never the inbox item.
 const PER_SENDER_HOUR = Number(process.env.NOTIFY_PER_SENDER_HOUR ?? 20);
 const PER_SENDER_NOTE_HOUR = Number(process.env.NOTIFY_PER_SENDER_NOTE_HOUR ?? 8);
-const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention"]);
+const SPAMMABLE: ReadonlySet<NotificationType> = new Set(["mention", "comment_reply", "comment_mention", "suggestion_accepted", "suggestion_rejected"]);
 const budgets = new Map<string, { n: number; reset: number }>();
 function budgetLeft(key: string, max: number): boolean {
   const b = budgets.get(key);
@@ -859,6 +859,56 @@ export async function commentsStored(docName: string, vaultId: string, noteId: s
   return sent;
 }
 
+// ── suggestions resolved (wave 3) ────────────────────────────────────────────
+const SUGGESTION_NOTICES_PER_STORE = 20;
+const plainOf = (html: string) => html.replace(/<[^>]*>/g, "");
+/**
+ * "X accepted / declined your suggestion". Runs after a document is persisted
+ * (live store) or after the review queue applied a decision: a suggestion id
+ * present in the previous content and absent from the new one was resolved.
+ *
+ *  - the suggester is the ACCOUNT behind the suggestion's actor id (the opaque
+ *    `h_…` id the command endpoint and MCP write; the legacy email form is read
+ *    too). No resolvable account (a capability guest, a live-typed suggestion
+ *    with no actor id) → nothing is sent.
+ *  - accepted = the inserted text is still in the page (or, for a pure deletion,
+ *    the deleted text is gone); otherwise declined — the same rule the writer
+ *    stamp uses.
+ *  - the decider is the batch's single editor (several → unnamed); never sent
+ *    when the suggester is among the editors (they withdrew or changed it
+ *    themselves), and only to a suggester who can still VIEW the page.
+ *  - idempotent per (page, suggestion id); spends the per-sender budgets, because
+ *    an actor id on a mark is writable by any edit-level socket.
+ */
+export async function suggestionsResolved(o: { vaultId: string; noteId: string; prev: string | null; next: string; editors: string[] }): Promise<number> {
+  if (!o.prev || !o.prev.includes("data-suggestion-id")) return 0;
+  let before: ReturnType<typeof identifiedSuggestionsInHtml>;
+  let after: ReturnType<typeof identifiedSuggestionsInHtml>;
+  try {
+    before = identifiedSuggestionsInHtml(o.prev);
+    after = identifiedSuggestionsInHtml(o.next);
+  } catch {
+    return 0;
+  }
+  const gone = [...before].filter(([id]) => !after.has(id));
+  if (!gone.length) return 0;
+  const editors = new Set(o.editors.map((e) => e.toLowerCase()));
+  if (!editors.size) return 0; // a server-internal store (reconcile, restore): nobody decided anything
+  const info = await noteInfo(o.vaultId, o.noteId, { fresh: true });
+  if (!info || info.trashed) return 0;
+  const decider = editors.size === 1 ? [...editors][0]! : null;
+  const plain = plainOf(o.next);
+  let sent = 0;
+  for (const [id, s] of gone.slice(0, SUGGESTION_NOTICES_PER_STORE)) {
+    const suggester = s.actorId ? emailForActorId(s.actorId)?.toLowerCase() ?? null : null;
+    if (!suggester || editors.has(suggester) || !isAccount(suggester) || !userCanView(suggester, o.vaultId, info)) continue;
+    const accepted = s.ins ? plain.includes(s.ins) : !!s.del && !plain.includes(s.del);
+    const preview = (s.ins || s.del).replace(/\s+/g, " ").trim().slice(0, PREVIEW_MAX) || null;
+    if (createNotification({ vaultId: o.vaultId, recipient: suggester, type: accepted ? "suggestion_accepted" : "suggestion_rejected", noteId: o.noteId, actorEmail: decider, preview, dedupe: `suggestion:${o.noteId}:${id}` })) sent++;
+  }
+  return sent;
+}
+
 // ── collab wiring ────────────────────────────────────────────────────────────
 setDocumentStoreListener({
   loaded: (docName, doc) => {
@@ -870,6 +920,9 @@ setDocumentStoreListener({
     void noteContentStored({ vaultId: e.vaultId, noteId: e.noteId, prev: e.prevContent, next: e.content, authors: e.editors, updatedAt: e.updatedAt });
     void commentsStored(e.docName, e.vaultId, e.noteId, e.doc, e.editors).catch((err) =>
       console.error(`[notify] comment processing failed: ${(err as Error).message}`),
+    );
+    void suggestionsResolved({ vaultId: e.vaultId, noteId: e.noteId, prev: e.prevContent, next: e.content, editors: e.editors }).catch((err) =>
+      console.error(`[notify] suggestion processing failed: ${(err as Error).message}`),
     );
   },
 });
