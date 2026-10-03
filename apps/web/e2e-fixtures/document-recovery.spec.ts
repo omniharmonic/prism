@@ -66,7 +66,7 @@ test("a pending autosave stays in its original vault when the editor unmounts du
   await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.clock.install(); await page.clock.pauseAt(new Date(Date.now() + 5_000)); // ahead of now: the page clock runs while the call travels
   await editor.press("ControlOrMeta+End");
   await editor.pressSequentially(" ORIGINAL_VAULT_DRAFT");
   await page.evaluate(() => (window as any).prismFixtureSwitchVault("secondary"));
@@ -90,7 +90,7 @@ test("account-switch cleanup cannot submit the previous account's pending draft"
   await page.evaluate(() => (window as any).prismFixtureUI.getState().openTab("field-notes", "Field notes", "document"));
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.clock.install(); await page.clock.pauseAt(new Date(Date.now() + 5_000)); // ahead of now: the page clock runs while the call travels
   await editor.press("ControlOrMeta+End");
   await editor.pressSequentially(" ORIGINAL_ACCOUNT_DRAFT");
   await page.evaluate(() => (window as any).prismFixtureSwitchActor("second@example.test"));
