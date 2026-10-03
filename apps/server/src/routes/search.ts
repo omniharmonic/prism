@@ -1,0 +1,92 @@
+/**
+ * `GET /api/search` — full-text search with filters and match offsets
+ * (NP-SR-03 highlighting, NP-SR-04 filters). Mounted in `api.ts` BEFORE the
+ * owner short-circuit so owners and non-owners get the same shape; it replaces
+ * the old non-owner-only handler (same params, same `Note[]` body, plus
+ * `_matches` per row).
+ *
+ * Query: `q` (≤200 chars, required), `limit` (1–100, default 50), `title=1`
+ * (match titles only), `type=document,database` (inferContentType), `tag=a,b`
+ * (all required), `author=<email>` (prism_creator or prism_last_writer),
+ * `after`/`before` (YYYY-MM-DD or ISO, inclusive), `date=created` (default:
+ * updated), `lean=1` (drop `content` from rows; the snippet still comes back).
+ *
+ * Security: every row passes `effectiveCaps(...).has("view")` (owner/admin:
+ * all), trashed pages are excluded, the private-note rule applies through the
+ * same caps. Filters run AFTER the view filter, so a filter can only narrow
+ * what the caller can already read and no count/total is returned. One vault
+ * call per request, bounded (≤200 rows); per-actor rate limit
+ * `SEARCH_RATE_PER_MINUTE` (owner 600, others 120).
+ */
+import { Hono, type Context } from "hono";
+import { vaultClient, VaultError, type Note } from "../parachute";
+import { resolveActor, type Actor } from "../auth/actor";
+import { effectiveCaps, type Cap, type NoteRef } from "../permissions";
+import { roleAtLeast, roleFloor } from "../roles";
+import { consumeRateLimit } from "../middleware/ratelimit";
+import { isTrashed } from "@prism/core/pages";
+import { inferContentType } from "@prism/core/content-types";
+import { hasFilters, matchesFilters, MAX_QUERY_LENGTH, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
+
+export const searchApi = new Hono();
+
+const ref = (n: Note): NoteRef => ({
+  id: n.id,
+  tags: n.tags ?? [],
+  creator: (n.metadata?.prism_creator as string | undefined) ?? null,
+  visibility: n.metadata?.prism_visibility === "private" ? "private" : "workspace",
+});
+const actorSubject = (a: Actor): string | null => (a.kind === "user" ? a.email : a.kind === "link" ? a.capabilityId : null);
+const capsFor = (actor: Actor, note: NoteRef): Set<Cap> =>
+  effectiveCaps(actor.grants, note, roleFloor(actor.role), actorSubject(actor));
+
+function envInt(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+searchApi.get("/search", async (c: Context) => {
+  const actor = resolveActor(c);
+  const admin = roleAtLeast(actor.role, "admin");
+  const who = actor.kind === "user" ? `u:${actor.email}` : actor.kind === "link" ? `l:${actor.capabilityId}` : `anon:${c.req.header("x-forwarded-for") ?? "local"}`;
+  const wait = consumeRateLimit(`search:${who}`, envInt("SEARCH_RATE_PER_MINUTE", admin ? 600 : 120), 60_000);
+  if (wait !== null) {
+    c.header("Retry-After", String(wait));
+    return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+  }
+  const q = (c.req.query("q") ?? c.req.query("search") ?? "").trim();
+  if (q.length > MAX_QUERY_LENGTH) return c.json({ error: "bad_request", detail: "query_too_long" }, 400);
+  const limitRaw = Number(c.req.query("limit") ?? 50);
+  const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, Math.floor(limitRaw))) : 50;
+  if (!q) return c.json([]);
+  const filters = parseSearchFilters((name) => c.req.query(name));
+  const lean = c.req.query("lean") === "1";
+  const terms = queryTerms(q);
+  // Filters and the view filter both narrow after the vault answers, so ask for
+  // more than we return (bounded) when either will discard rows.
+  const fetchLimit = Math.min(200, admin && !hasFilters(filters) ? limit : limit * 4);
+  let results: Note[];
+  try {
+    results = await vaultClient(actor.vaultId).search(q, [], fetchLimit);
+  } catch (e) {
+    if (e instanceof VaultError) return c.json({ error: "vault_error", status: e.status }, 502);
+    return c.json({ error: "server_error" }, 500);
+  }
+  const stamp = actor.kind === "user" && !admin;
+  const out: Array<Record<string, unknown>> = [];
+  for (const n of results) {
+    if (out.length >= limit) break;
+    if (!n || typeof n.id !== "string" || isTrashed(n)) continue;
+    let caps: Set<Cap> | null = null;
+    if (!admin) {
+      caps = capsFor(actor, ref(n));
+      if (!caps.has("view")) continue;
+    }
+    if (!matchesFilters(n, filters, terms, (note) => inferContentType(note as Note))) continue;
+    const row: Record<string, unknown> = { ...n, _matches: searchMatches(n, terms) };
+    if (lean) delete row.content;
+    if (stamp && caps) row._caps = [...caps];
+    out.push(row);
+  }
+  return c.json(out);
+});

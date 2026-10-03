@@ -17,6 +17,7 @@
     "./collab-commands": "./src/lib/collab/commands.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",
     "./pages": "./src/lib/pages/model.ts",
+    "./search": "./src/lib/search/match.ts",
     "./styles/*": "./src/styles/*",
     "./messages": "./src/lib/matrix/types.ts"
   },

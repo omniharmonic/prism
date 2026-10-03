@@ -29,6 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { searchApi } from "./search";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
@@ -211,6 +212,7 @@ api.route("/", createPagesApi({ onWrite: () => readCache.clear() }));
 api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
+api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
@@ -793,19 +795,7 @@ api.delete("/notes/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-api.get("/search", async (c) => {
-  const actor = resolveActor(c);
-  const q = c.req.query("q") ?? c.req.query("search") ?? "";
-  const limit = Number(c.req.query("limit") ?? 50);
-  let results: Note[];
-  try {
-    results = await vaultClient(actor.vaultId).search(q, [], limit);
-  } catch (e) {
-    return vaultErr(c, e);
-  }
-  if (roleAtLeast(actor.role, "admin")) return c.json(results);
-  return c.json(annotate(actor, results));
-});
+// GET /search lives in ./search.ts (mounted above, before the owner short-circuit).
 
 api.get("/tags", async (c) => {
   const actor = resolveActor(c);
