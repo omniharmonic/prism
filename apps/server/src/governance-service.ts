@@ -18,6 +18,7 @@
  * in isolation and this file stays a thin, auditable choke point.
  */
 import { renderConstitution, renderPolicySentence, renderRoleSentence } from "@prism/core/governance-prose";
+import { isOwnerOnlyMeta, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
 import type { Note, VaultHelper } from "./parachute";
 import {
   canDelegateMembership,
@@ -579,6 +580,19 @@ export interface ContentPayload {
   rationale?: string;
 }
 
+/**
+ * Metadata a governed content change never carries: who created / can see a note,
+ * its trash state, the page lock, the sidebar order and the writer stamp. A proposal
+ * is written by a member and applied with the vault token, so these keys are dropped
+ * from the payload (at propose, apply and publish) — the same keys the gateway
+ * refuses from a non-owner create or PATCH.
+ */
+const reservedContentMeta = (k: string): boolean =>
+  isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY || k === "prism_last_writer" || k === "prism_last_write_at";
+export function stripReservedContentMeta(metadata: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(metadata).filter(([k]) => !reservedContentMeta(k)));
+}
+
 /** The governance actions that carry a ContentPayload (vs. governance amendments). */
 export const CONTENT_ACTIONS = ["edit_note", "new_entry"] as const;
 export const isContentAction = (a: string): boolean => (CONTENT_ACTIONS as readonly string[]).includes(a);
@@ -755,7 +769,8 @@ export async function publishRevision(
     const n = await vault.createNote({
       content: revNote.content,
       ...(p.path ? { path: p.path } : {}),
-      ...(p.metadata ? { metadata: p.metadata } : {}),
+      // A revision staged before payloads were sanitised may still hold reserved keys.
+      ...(p.metadata ? { metadata: stripReservedContentMeta(p.metadata) } : {}),
       tags: p.tags ?? [],
     });
     noteId = n.id;

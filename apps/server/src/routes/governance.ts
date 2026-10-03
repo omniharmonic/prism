@@ -39,6 +39,9 @@ import {
   type Role,
 } from "../governance";
 import { roleAtLeast } from "../roles";
+import { resolveVaultEntry } from "../db";
+import { placementRefusal } from "../pages";
+import { protectionReason, TRASH_TAG } from "@prism/core/pages";
 import { reconcileGovernanceGrants } from "../governance-grants";
 import { notifyVoters } from "../governance-notify";
 import { expandLevel, isCap, type Cap } from "../permissions";
@@ -58,6 +61,7 @@ import {
   setProposalState,
   proposalContext,
   applyContentProposal,
+  stripReservedContentMeta,
   revisionForProposal,
   publishRevision,
   rollbackNote,
@@ -412,6 +416,8 @@ governance.post("/content/propose", async (c) => {
   } catch (e) {
     return c.json({ error: "bad_request", detail: (e as Error).message }, 400);
   }
+  const refused = await contentPayloadRefusal(action, payload);
+  if (refused) return c.json({ error: "bad_request", detail: refused }, 400);
   const openedBy = email(c);
   const resolvedTarget = target || (payload.path ?? "");
   const { id } = await openProposal(vault, {
@@ -528,6 +534,10 @@ governance.post("/proposals/:id/apply", async (c) => {
     } catch (e) {
       return c.json({ error: "bad_payload", detail: (e as Error).message }, 400);
     }
+    // Re-checked at apply: the proposal may have been opened through the generic
+    // /proposals route (raw payload), or before these rules existed.
+    const refused = await contentPayloadRefusal(proposal.action, cp);
+    if (refused) return c.json({ error: "bad_payload", detail: refused }, 400);
     const result = await applyContentProposal(vault, proposal, cp, { author: me, autoPublish: ev.policy.autoPublish });
     await setProposalState(vault, proposal.id, result.published ? "applied" : "approved");
     await recordAudit(vault, {
@@ -559,6 +569,9 @@ governance.post("/proposals/:id/publish", async (c) => {
   const rev = await revisionForProposal(vault, proposal.id);
   if (!rev) return c.json({ error: "no_revision", detail: "no staged revision found for this proposal" }, 409);
   if (rev.published) return c.json({ error: "already_published" }, 409);
+  // A revision staged before the payload rules existed is re-checked before it goes live.
+  const refused = await contentPayloadRefusal(proposal.action, coerceContentPayload(payload));
+  if (refused) return c.json({ error: "bad_payload", detail: refused }, 400);
   const { noteId } = await publishRevision(vault, rev.id, me);
   await setProposalState(vault, proposal.id, "applied");
   return c.json({ ok: true, noteId, revisionId: rev.id });
@@ -643,11 +656,32 @@ function coerceContentPayload(obj: unknown): ContentPayload {
   const o = (obj ?? {}) as Record<string, unknown>;
   const out: ContentPayload = {};
   if (typeof o.content === "string") out.content = o.content;
-  if (o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)) out.metadata = o.metadata as Record<string, unknown>;
+  // Reserved keys (creator / visibility / trash / lock / order / writer stamp) are dropped.
+  if (o.metadata && typeof o.metadata === "object" && !Array.isArray(o.metadata)) out.metadata = stripReservedContentMeta(o.metadata as Record<string, unknown>);
   if (Array.isArray(o.tags)) out.tags = o.tags.map(String).filter(Boolean);
   if (typeof o.path === "string" && o.path) out.path = o.path;
   if (typeof o.rationale === "string" && o.rationale.trim()) out.rationale = o.rationale.trim().slice(0, 2000);
   return out;
+}
+
+/**
+ * Why a content payload may not be proposed / applied / published, or null. A member
+ * writes the payload and the vault token applies it, so a NEW ENTRY obeys what the
+ * gateway asks of a non-owner create: no trash tag, no system-owned tag (agent
+ * skills, governance records, people, message threads — whatever the integrity
+ * setting), and a path that passes the pages destination rules (`placementRefusal`:
+ * clean, not an integration's location, not an exported folder, not under the Trash).
+ * An `edit_note` applies only content + metadata, so its tags/path are never used.
+ */
+async function contentPayloadRefusal(action: string, payload: ContentPayload): Promise<string | null> {
+  if (action !== "new_entry") return null;
+  const tags = payload.tags ?? [];
+  if (tags.includes(TRASH_TAG) || tags.some((t) => protectionReason({ tags: [t] }) !== null)) return "a new entry cannot carry a system tag";
+  if (payload.path !== undefined) {
+    const placed = await placementRefusal(resolveVaultEntry(), payload.path);
+    if ("status" in placed) return placed.status === 409 ? "that location isn’t available — choose another path" : String(placed.body.reason ?? "that path is not allowed");
+  }
+  return null;
 }
 
 /** Validate an untrusted object into a GovChange (or null). */
