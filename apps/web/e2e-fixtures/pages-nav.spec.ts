@@ -225,6 +225,9 @@ test("favorites and recents sync through the server and migrate this device's sh
 
 test("⌘K lists recent pages first, and the palette opens the Trash and templates", async ({ page }) => {
   await page.goto(url(`?prefs=${encodeURIComponent(JSON.stringify({ recents: ["week1", "archive"] }))}`));
+  // The shortcut is handled by the mounted shell: pressing it before the app has
+  // rendered is lost (this flaked ~1 in 25 under load).
+  await expect(row(page, "Prism")).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search workspace" });
   const recent = search.getByRole("group", { name: "Recent pages" });

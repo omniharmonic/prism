@@ -24,7 +24,7 @@ export const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** "Available offline" pages have their own budget and never push out the tree/lists. */
 const PINNED_MAX_BYTES = 200 * 1024 * 1024;
 /** Device-local records that name pages or queries; dropped with the cache. */
-const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:recent-searches:"];
+const LOCAL_PREFIXES = ["prism:offline-pinned:", "prism:offline-recent:", "prism:offline-stamps:", "prism:offline-protected", "prism:recent-searches:"];
 
 interface IndexRow {
   key: string;
@@ -42,9 +42,23 @@ interface BodyRow {
 let dbp: Promise<IDBDatabase> | null = null;
 /** Keys the LRU never evicts: pages kept "Available offline" (NP-OF-04). */
 let protectedKeys = new Set<string>();
+/** Until the pinned set is known (right after a reload) the LRU must not run:
+ *  it would treat pinned pages as ordinary entries and could evict them. */
+let protectedReady = false;
+const PROTECTED_KEY = "prism:offline-protected";
+try {
+  const saved = JSON.parse(localStorage.getItem(PROTECTED_KEY) ?? "null") as unknown;
+  if (Array.isArray(saved)) { protectedKeys = new Set(saved.filter((k): k is string => typeof k === "string")); protectedReady = true; }
+} catch { /* private mode */ }
 export function setProtectedCacheKeys(keys: Iterable<string>): void {
   protectedKeys = new Set(keys);
+  protectedReady = true;
+  try { localStorage.setItem(PROTECTED_KEY, JSON.stringify([...protectedKeys])); } catch { /* in-memory only */ }
 }
+/** Capability-link viewers: a short-lived copy only (the link can be revoked at any time). */
+const LINK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const isLinkKey = (key: string) => key.includes('"capability:');
+const maxAge = (key: string) => (isLinkKey(key) ? LINK_MAX_AGE_MS : MAX_AGE_MS);
 
 function open(): Promise<IDBDatabase> {
   if (!dbp) {
@@ -86,7 +100,7 @@ export async function cacheGet(key: string): Promise<{ body: string; contentType
     const row = await result<BodyRow | undefined>(t.objectStore("bodies").get(key));
     if (!row) return null;
     const idx = await result<IndexRow | undefined>(t.objectStore("index").get(key));
-    if (!idx || Date.now() - (idx.stored ?? idx.at) > MAX_AGE_MS) {
+    if (!idx || Date.now() - (idx.stored ?? idx.at) > maxAge(key)) {
       // Too old to trust offline: it is re-validated on reconnect or gone.
       t.objectStore("bodies").delete(key);
       t.objectStore("index").delete(key);
@@ -128,7 +142,7 @@ export async function cacheDelete(key: string): Promise<void> {
 async function evict(db: IDBDatabase): Promise<void> {
   const rows = await result<IndexRow[]>(db.transaction("index").objectStore("index").getAll());
   const now = Date.now();
-  const expired = rows.filter((r) => now - (r.stored ?? r.at) > MAX_AGE_MS);
+  const expired = rows.filter((r) => now - (r.stored ?? r.at) > maxAge(r.key));
   const live = rows.filter((r) => !expired.includes(r)).sort((a, b) => a.at - b.at); // oldest first
   // Two budgets: pinned ("Available offline") pages count against their own hard
   // cap, everything else against the LRU — so pins never evict the tree or lists.
@@ -143,7 +157,8 @@ async function evict(db: IDBDatabase): Promise<void> {
       bytes -= r.size;
     }
   };
-  trim(live.filter((r) => !protectedKeys.has(r.key)), MAX_ENTRIES, MAX_BYTES);
+  // Only once the pinned set is known; expiry above never depends on it.
+  if (protectedReady) trim(live.filter((r) => !protectedKeys.has(r.key)), MAX_ENTRIES, MAX_BYTES);
   trim(live.filter((r) => protectedKeys.has(r.key)), Number.MAX_SAFE_INTEGER, PINNED_MAX_BYTES);
   if (!drop.length) return;
   const t = db.transaction(["bodies", "index"], "readwrite");
@@ -152,6 +167,21 @@ async function evict(db: IDBDatabase): Promise<void> {
     t.objectStore("index").delete(r.key);
   }
   await done(t);
+}
+
+/** Delete every cached entry of one audience (scope key). */
+export async function cacheDeleteScope(scope: string): Promise<void> {
+  try {
+    const db = await open();
+    const keys = (await result<IDBValidKey[]>(db.transaction("index").objectStore("index").getAllKeys())) as string[];
+    const hit = keys.filter((k) => k.startsWith(scope + "|"));
+    if (!hit.length) return;
+    const t = db.transaction(["bodies", "index"], "readwrite");
+    for (const k of hit) { t.objectStore("bodies").delete(k); t.objectStore("index").delete(k); }
+    await done(t);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Delete every cached entry whose key starts with `prefix` (e.g. one note, with any query). */
@@ -261,6 +291,8 @@ export async function readThrough(key: string, doFetch: () => Promise<Response>)
         return new Response(body, { status: resp.status, statusText: resp.statusText, headers: { "content-type": contentType } });
       }
       if (resp.status === 403 || resp.status === 404 || resp.status === 410) void cacheDelete(key);
+      // A share link that stopped working (revoked / expired) takes ALL of its cached pages with it.
+      if (isLinkKey(key) && [401, 403, 404, 410].includes(resp.status)) void cacheDeleteScope(key.slice(0, key.indexOf("|")));
       return resp;
     } catch (e) {
       if (!isNetworkError(e)) throw e;

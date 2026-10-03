@@ -138,3 +138,26 @@ test("relation picker and reverse property", async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as any).prismUI.getState().openTabs.map((t: any) => t.noteId))).toContain("t2");
   expect((await writes(page)).length).toBe(0);
 });
+
+test("a saved view change never shows the previous config again", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html");
+  await expect(page.getByRole("columnheader").first()).toBeVisible();
+  // Count every time the Email column disappears after it was shown: dropping the
+  // optimistic config before the note prop caught up reverted the view for a tick
+  // (checkboxes flickered back; a click in that tick undid the saved change).
+  await page.evaluate(() => {
+    const w = window as any; w.columnReverts = 0; let seen = false;
+    new MutationObserver(() => {
+      const has = [...document.querySelectorAll("[role=columnheader], th")].some((h) => /\bEmail\b/.test(h.textContent ?? ""));
+      if (seen && !has) w.columnReverts += 1;
+      seen = has;
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  await showColumns(page, ["Email"]);
+  await expect(page.getByRole("columnheader", { name: /Email/ })).toBeVisible();
+  await expect.poll(async () => ((await fx(page)).writes as any[]).filter((w: any) => w.metadata?.prism_database).length).toBe(1);
+  // Let the save settle: timers queued before this one (the query cache's notification) run first, then a frame.
+  await page.evaluate(() => new Promise<void>((done) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => done())), 0)));
+  await expect(page.getByRole("columnheader", { name: /Email/ })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).columnReverts)).toBe(0);
+});

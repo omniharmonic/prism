@@ -236,7 +236,12 @@ export async function requestMagicLink(email: string): Promise<{ emailDelivery: 
   return { emailDelivery: body?.emailDelivery !== false };
 }
 
-export async function logout(): Promise<void> {
+export async function logout(): Promise<boolean> {
+  // Unsent changes for this account would stay on the device (unencrypted and
+  // never sent from another account): the user decides first — stay, download
+  // and sign out, or discard and sign out. `false` = they chose to stay.
+  const { confirmLeaveWithUnsent } = await import("./offline/leave");
+  if (!(await confirmLeaveWithUnsent().catch(() => true))) return false;
   cachedMe = null;
   cachedMeContext = "";
   useAgentChatStore.getState().bindScope(null);
@@ -255,6 +260,7 @@ export async function logout(): Promise<void> {
   } finally {
     await clearReadCache();
   }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

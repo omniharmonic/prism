@@ -92,6 +92,15 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
   useEffect(() => {
     if (!pendingSaves.current) revision.current = note.updatedAt;
   }, [note.updatedAt]);
+  // The optimistic copy is dropped only once the note PROP shows the save. Dropping it
+  // when the request resolved showed the previous config for the tick before the query
+  // cache notified — checkboxes flickered back, and a click in that tick was computed
+  // from the stale config (it silently undid the change just saved).
+  const propAtSave = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!local || saveState !== "" || pendingSaves.current) return;
+    if (note.updatedAt !== propAtSave.current || JSON.stringify(stored) === JSON.stringify(local)) setLocal(null);
+  });
 
   const { data: schemaData } = useSchemas();
   const schemas = schemaData?.schemas ?? {};
@@ -161,6 +170,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     }
     const seq = ++saveSeq.current;
     setSaveState("saving");
+    if (!pendingSaves.current) propAtSave.current = note.updatedAt;
     pendingSaves.current += 1;
     const run = saving.current.catch(() => {}).then(async () => {
       const saved = await client.updateNote(note.id, { metadata: { prism_database: next }, ifUpdatedAt: revision.current ?? undefined });
@@ -171,8 +181,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
     try {
       await run;
       if (seq !== saveSeq.current) return;
-      setLocal(null);
-      setSaveState("");
+      setSaveState(""); // `local` stays until the prop catches up (effect above)
     } catch (e) {
       if (seq !== saveSeq.current) return;
       setSaveState(/\b409\b|conflict|changed/i.test(String((e as Error).message)) ? "conflict" : "error");

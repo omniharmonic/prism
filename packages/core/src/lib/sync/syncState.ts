@@ -16,7 +16,8 @@ import type { VaultClient } from "../../data/VaultClient";
  * - `failures`: editor saves that failed with a retry callback.
  * - `sources`: live documents (collab) that report their own state.
  */
-export type SyncSourceState = "saving" | "local" | "failed" | "idle";
+/** `device`: a live document NOT open right now still has edits only on this device. */
+export type SyncSourceState = "saving" | "local" | "device" | "failed" | "idle";
 
 export interface SyncFailure {
   message: string;
@@ -73,7 +74,7 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   if (s.attention > 0) return { kind: "review", label: "Needs review", footer: "Saved changes need review" };
   const local = s.pending > 0 || sources.includes("local");
   if (!s.online) {
-    return local || s.inFlight > 0 || Object.keys(s.dirty).length > 0
+    return local || sources.includes("device") || s.inFlight > 0 || Object.keys(s.dirty).length > 0
       ? { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" }
       : { kind: "offline", label: "Offline", footer: "Offline" };
   }
@@ -84,6 +85,8 @@ export function deriveSyncStatus(s: Pick<SyncStore, "online" | "inFlight" | "dir
   // is, for the user, offline: its edits are on this device only.
   if (sources.includes("local")) return { kind: "local", label: "Offline · changes saved on this device", footer: "Offline · saved on this device" };
   if (local) return { kind: "waiting", label: "Waiting for server", footer: "Waiting for server" };
+  // Never "Saved" while a live document's edits exist only here (re-review M1).
+  if (sources.includes("device")) return { kind: "waiting", label: "Changes on this device — will sync", footer: "Changes on this device — will sync" };
   return { kind: "saved", label: "Saved", footer: "Synced" };
 }
 

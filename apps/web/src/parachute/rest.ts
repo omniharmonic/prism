@@ -31,7 +31,7 @@ import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyW
 import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
-import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
+import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId, retrySafe, queuedCreates } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
 import { readThrough, reconcileCachedNotes } from "../offline/readCache";
@@ -103,53 +103,85 @@ export class OfflineRefusedError extends VaultRequestError {
   }
 }
 /** Refuse with a clear message and a toast (shown by OfflineIndicator). Nothing is queued. */
-function refuseOffline(action: string): never {
-  const message = `You’re offline. ${action} needs a connection — reconnect and try again.`;
+function refuse(message: string): never {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("prism:offline-refused", { detail: { message } }));
   throw new OfflineRefusedError(message);
 }
+const refuseOffline = (action: string): never => refuse(`You’re offline. ${action} needs a connection — reconnect and try again.`);
 
 /**
- * OFFLINE DESIGN (wave 2E review H2/H3) — what queues and what refuses:
- *  - queued, coalesced per note: content saves (one row, first base revision,
- *    latest content), metadata-only merges (`kind: "meta"`, replayed per key
- *    against the current note, never forced), tag deltas, link deltas, creates.
- *  - refused offline (nothing queued): rename/move (`path`), delete, and every
- *    pages route (move, trash, restore, lock, order, style) and history restore.
- *  - a stuck row holds back only its own note; writes to a note with rows
- *    waiting queue behind them, every other note goes straight to the server.
+ * WHAT QUEUES, WHAT RETRIES, WHAT REFUSES (wave 2E re-review):
+ *  - QUEUED offline and RETRIED automatically (backoff) when the server does not
+ *    answer or answers 5xx/429: content saves guarded by a base revision (one
+ *    row per note), metadata merges (`kind: "meta"`, per-key with the pre-edit
+ *    value), tag/link deltas, and creates (idempotent through
+ *    `metadata.prism_client_op`). A duplicate delivery of any of them is
+ *    recognised, never applied twice.
+ *  - QUEUED FOR REVIEW, never re-sent blindly: a content save with NO base
+ *    revision (the text is kept; nothing is overwritten).
+ *  - REFUSED (an error + toast, nothing queued, never an optimistic success):
+ *    rename/move, delete, and every other write — whether the browser is
+ *    offline or the server is unreachable / answering 5xx.
+ *  - A stuck row holds back only its own note; a write to a note with rows
+ *    waiting queues behind them.
  */
-async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string, expectedScope?: string, kind?: "meta"): Promise<T> {
+function queueable(method: string, path: string, body: unknown): boolean {
+  if (method === "POST" && path === "/notes") return true;
+  if (method !== "PATCH" || !/^\/notes\/[^/?]+$/.test(path)) return false;
+  const patch = (body ?? {}) as Record<string, unknown>;
+  if ("path" in patch) return false;
+  if ("content" in patch) return true; // text is never dropped: guarded → retried, unguarded → kept for review
+  if ("metadata" in patch) return typeof patch.if_updated_at === "string";
+  return true; // tag / link deltas
+}
+/** May a write the server did not acknowledge be sent again automatically? */
+function retryable(method: string, path: string, bodyStr: string): boolean {
+  return retrySafe({ method, path, body: bodyStr });
+}
+
+async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string, expectedScope?: string): Promise<T> {
   const assertAudience = () => { if (expectedScope !== undefined && agentScope() !== expectedScope) throw new VaultRequestError(403, "Workspace changed before this draft could be sent."); };
   assertAudience();
   const context = await captureWriteContext();
   assertAudience();
   const bodyStr = JSON.stringify(body);
-  if (isOffline() || path.includes("/offline-") || await hasPendingFor(context, noteKey({ method, path, temporaryId }))) {
-    await enqueue(method, path, bodyStr, context, { temporaryId, kind });
+  const canQueue = queueable(method, path, body);
+  if (!canQueue && isOffline()) refuseOffline("This change");
+  if (canQueue && (isOffline() || path.includes("/offline-") || await hasPendingFor(context, noteKey({ method, path, temporaryId })))) {
+    await enqueue(method, path, bodyStr, context, { temporaryId });
     if (!isOffline()) void flush();
     return optimistic();
   }
+  // The server did not answer, or answered 5xx/429: a retry-safe write waits in
+  // the outbox and is re-sent with backoff; an unguarded content save is kept
+  // for review; everything else FAILS — it is never reported as done.
+  const unanswered = async (status: number): Promise<T> => {
+    if (canQueue && retryable(method, path, bodyStr)) {
+      await enqueue(method, path, bodyStr, context, { temporaryId, retry: true });
+      return optimistic();
+    }
+    if (canQueue) {
+      await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
+      return optimistic();
+    }
+    throw new VaultRequestError(status, status ? `${method} ${path} failed: ${status}` : "The server could not be reached. Nothing was changed — try again in a moment.");
+  };
   let resp: Response;
   try {
     resp = await serverFetch(`${context.scope.api}${path}`, { method, headers: context.headers, body: bodyStr });
   } catch (error) {
     if (!(error instanceof TypeError)) throw error;
-    await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
-    return optimistic();
+    return unanswered(0);
   }
   if (!resp.ok) {
-    if (resp.status >= 500) {
-      await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
-      return optimistic();
-    }
+    if (resp.status >= 500 || resp.status === 429) return unanswered(resp.status);
     throw new VaultRequestError(resp.status, `${method} ${path} failed: ${resp.status} ${await resp.text().catch(() => "")}`);
   }
   try {
     const text = await resp.text();
     return text ? JSON.parse(text) as T : optimistic();
   } catch {
-    await enqueue(method, path, bodyStr, context, { unknown: true, temporaryId });
+    // The write landed; only its body was unreadable.
     return optimistic();
   }
 }
@@ -209,13 +241,21 @@ export async function listTree(): Promise<NoteTreeEntry[]> {
       treeStamps.rows = new Map(rows.map((r) => [r.id, r.updatedAt ?? ""]));
       void reconcileCachedNotes(treeStamps.scope, new Set(rows.map((r) => r.id)));
     }
-    return rows.map((r) => ({
+    const entries: NoteTreeEntry[] = rows.map((r) => ({
       id: r.id,
       path: r.path,
       tags: r.tags,
       // Only the two keys the tree's type/icon inference reads.
       metadata: r.type || r.prismType || r.order !== undefined ? { ...(r.type ? { type: r.type } : {}), ...(r.prismType ? { prism_type: r.prismType } : {}), ...(r.order !== undefined ? { prism_order: r.order } : {}) } : null,
     }));
+    // Pages created on this device and not yet confirmed are part of the tree:
+    // they show in the sidebar and their paths are taken (a second offline
+    // "New page" becomes "Untitled (2)", not a colliding create).
+    if (context) {
+      const known = new Set(entries.map((e) => e.path));
+      for (const draft of await queuedCreates(context.scope).catch(() => [])) if (!known.has(draft.path)) entries.push(draft);
+    }
+    return entries;
   } catch (e) {
     if (!/ failed: (404|403) /.test((e as Error).message)) throw e;
     return (await req(`/notes${qs({ limit: 50000, sort: "desc" })}`)).json();
@@ -237,10 +277,16 @@ export async function createNote(params: CreateNoteParams): Promise<Note> {
   const temporaryId = `offline-${crypto.randomUUID()}`;
   // Named fields only: the gateway refuses any other key on a non-owner create
   // (strict schema), and callers reach this through untyped shims (`vault_create_note`).
-  const body: CreateNoteParams = { content: params.content ?? "" };
+  // Every create carries a client operation id (a plain metadata key the server
+  // stores like any other). If the acknowledgement is lost, the outbox finds the
+  // page by path + this id and adopts it instead of creating a second one.
+  const body: CreateNoteParams = {
+    content: params.content ?? "",
+    metadata: { ...(params.metadata ?? {}), prism_client_op: crypto.randomUUID() },
+  };
   if (params.path != null) body.path = params.path;
   if (params.tags != null) body.tags = params.tags;
-  if (params.metadata != null) body.metadata = params.metadata;
+  params = body;
   return writeJson("POST", `/notes`, body, () => ({
     id: temporaryId,
     content: params.content,
@@ -260,7 +306,16 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
   if (params.path !== undefined) body.path = params.path;
   if (params.metadata !== undefined) body.metadata = params.metadata;
   if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
-  if (params.path !== undefined && isOffline()) refuseOffline("Renaming or moving a page");
+  if (params.path !== undefined) {
+    if (isOffline()) refuseOffline("Renaming or moving a page");
+    // Unsent changes for this page go first; a rename is never queued behind them
+    // and never answered optimistically.
+    const context = await captureWriteContext();
+    if (await hasPendingFor(context, id)) {
+      await flush();
+      if (await hasPendingFor(context, id)) refuse("This page has changes that haven’t reached the server yet. Rename or move it once they’re saved.");
+    }
+  }
   if (typeof body.if_updated_at === "string") {
     const context = await captureWriteContext().catch(() => null);
     if (context) body.if_updated_at = currentBase(context.scope, id, body.if_updated_at);
@@ -275,7 +330,7 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
     const context = await captureWriteContext();
     if (isOffline() || id.startsWith("offline-") || await hasPendingFor(context, id)) {
       if (options?.expectedScope !== undefined && agentScope() !== options.expectedScope) throw new VaultRequestError(403, "Workspace changed before this draft could be sent.");
-      await enqueue("PATCH", `/notes/${encodeURIComponent(id)}`, JSON.stringify({ metadata: params.metadata }), context, { kind: "meta" });
+      await queueMetadata(id, params.metadata!, context);
       if (!isOffline()) void flush();
       const local = await getNote(id).catch(() => null);
       return local ?? { id, content: "", path: null, metadata: params.metadata ?? null, tags: null, createdAt: nowISO(), updatedAt: nowISO() };
@@ -292,6 +347,21 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
   }), undefined, options?.expectedScope);
 }
 
+/**
+ * Queue a metadata merge with each key's PRE-EDIT value, so the replay is a
+ * per-key compare-and-set: a value someone changed meanwhile goes to review
+ * instead of being overwritten (review M3). A nested value (a database's views,
+ * a dashboard layout, a board's config) is one object to the vault — replaying
+ * an offline snapshot of it would replace other people's changes wholesale, so
+ * those edits need a connection.
+ */
+async function queueMetadata(id: string, set: Record<string, unknown>, context: Awaited<ReturnType<typeof captureWriteContext>>, expect?: Record<string, unknown>): Promise<void> {
+  if (Object.values(set).some((v) => v !== null && typeof v === "object" && !Array.isArray(v))) refuseOffline("Changing this view or layout");
+  const before = expect ? null : await getNote(id).catch(() => null);
+  const pre = expect ?? Object.fromEntries(Object.keys(set).map((k) => [k, before?.metadata?.[k] ?? null]));
+  await enqueue("PATCH", `/notes/${encodeURIComponent(id)}`, JSON.stringify({ metadata: set }), context, { kind: "meta", expect: before || expect ? pre : undefined });
+}
+
 export async function preserveDraft(id: string, content: string, audience: string, reason: "access" | "conflict" = "access"): Promise<void> {
   const value: unknown = JSON.parse(audience);
   if (!Array.isArray(value) || value.length !== 4 || !value.every(part => typeof part === "string" && part.length > 0 && part.length < 4096)) throw Error("Draft audience unavailable");
@@ -303,6 +373,7 @@ export async function preserveDraft(id: string, content: string, audience: strin
 
 export async function deleteNote(id: string): Promise<void> {
   // Never queue a delete: the tree would keep showing a page that is "gone".
+  // (An unreachable server or a 5xx is a failure too — writeJson never queues or fakes a DELETE.)
   if (isOffline()) refuseOffline("Deleting a page");
   await mutate("DELETE", `/notes/${encodeURIComponent(id)}`, undefined, () => {});
 }
@@ -551,9 +622,12 @@ export async function queryNotes(spec: QuerySpec): Promise<QueryPage> {
  * per-field CAS only applies online), never as a forced write.
  */
 export async function updateProperties(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult> {
-  if (isOffline()) {
-    const n = await updateNote(id, { metadata: set });
-    return { id: n.id, updatedAt: n.updatedAt, metadata: n.metadata ?? {} };
+  const context = await captureWriteContext();
+  if (isOffline() || await hasPendingFor(context, id)) {
+    await queueMetadata(id, set, context, expect);
+    if (!isOffline()) void flush();
+    const n = await getNote(id).catch(() => null);
+    return { id, updatedAt: n?.updatedAt ?? nowISO(), metadata: n?.metadata ?? set };
   }
   try {
     return (await (await req(`/properties/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ set, expect }), cache: "no-store" })).json()) as PropertyWriteResult;

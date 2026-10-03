@@ -3,16 +3,22 @@ import {
   allQueued,
   discard,
   flush,
+  otherScopeWrites,
+  renameQueuedCreate,
   resolveConflict,
+  retrySafe,
+  retryWrite,
   subscribe,
   visibleWrites,
   type QueuedWrite,
 } from "./outbox";
+import { LEAVE_EVENT, type LeaveChoice } from "./leave";
 import { captureWriteContext, sameScope } from "./writeScope";
 import { serverFetch } from "../transport";
 import { getMe } from "../config";
 import { reportPendingWrites, OPEN_SAVED_CHANGES_EVENT } from "@prism/core";
 import { startOfflineAvailability } from "./availableOffline";
+import { startUnsyncedDocs } from "../collab/unsynced";
 
 const stateLabels = {
   queued: "Saved on this device",
@@ -101,7 +107,41 @@ export function OfflineIndicator() {
       items.filter((i) => i.state !== "queued" && i.state !== "sending").length,
     );
   }, [items]);
-  useEffect(() => { startOfflineAvailability(); }, []);
+  useEffect(() => { startOfflineAvailability(); startUnsyncedDocs(); }, []);
+  // Changes kept for ANOTHER account / vault / workspace: never sent from here, shown so they aren't forgotten.
+  const [elsewhere, setElsewhere] = useState<{ count: number; expireSoon: number }>({ count: 0, expireSoon: 0 });
+  useEffect(() => {
+    const refresh = () => void otherScopeWrites().then(setElsewhere).catch(() => undefined);
+    refresh();
+    const stop = subscribe(refresh);
+    window.addEventListener("prism:vault-changed", refresh);
+    const timer = window.setInterval(refresh, 5000); // an account change has no event of its own
+    return () => { stop(); window.clearInterval(timer); window.removeEventListener("prism:vault-changed", refresh); };
+  }, []);
+  // IndexedDB refused a write: say so until it works again (never a passing toast).
+  const [storageBroken, setStorageBroken] = useState(false);
+  const [storageTight, setStorageTight] = useState(false);
+  useEffect(() => {
+    const broken = () => setStorageBroken(true);
+    window.addEventListener("prism:storage-failed", broken);
+    const stop = subscribe(() => setStorageBroken(false)); // a later write reached the device
+    void navigator.storage?.estimate?.().then((e) => setStorageTight(!!e.quota && !!e.usage && e.usage / e.quota > 0.9)).catch(() => undefined);
+    return () => { window.removeEventListener("prism:storage-failed", broken); stop(); };
+  }, []);
+  // Sign-out with unsent changes: stay, download them, or discard them.
+  const [leaving, setLeaving] = useState<{ count: number; resolve: (c: LeaveChoice) => void } | null>(null);
+  const leaveDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const ask = (event: Event) => {
+      const detail = (event as CustomEvent<{ count: number; take: () => void; resolve: (c: LeaveChoice) => void }>).detail;
+      detail.take();
+      setLeaving({ count: detail.count, resolve: detail.resolve });
+    };
+    window.addEventListener(LEAVE_EVENT, ask);
+    return () => window.removeEventListener(LEAVE_EVENT, ask);
+  }, []);
+  useEffect(() => { if (leaving) leaveDialog.current?.showModal(); }, [leaving]);
+  const answerLeave = (choice: LeaveChoice) => { leaving?.resolve(choice); leaveDialog.current?.close(); setLeaving(null); };
   // Writes Prism refuses to queue offline (rename, move, delete) say so plainly.
   const [refused, setRefused] = useState("");
   useEffect(() => {
@@ -176,7 +216,26 @@ export function OfflineIndicator() {
       {refused}
     </p>
   );
-  if (online && !items.length && !legacy && !error && !open) return toast || null;
+  const storageBanner = (storageBroken || storageTight) && (
+    <p role="alert" className="offline-storage-banner fixed left-1/2 top-2 z-[102] -translate-x-1/2 rounded-lg border border-[var(--color-danger)] bg-[var(--bg-elevated)] px-4 py-2 text-sm text-[var(--text-primary)] shadow-lg" style={{ maxWidth: "min(94vw, 34rem)" }}>
+      {storageBroken
+        ? "Changes are not being saved on this device. Keep this tab open and stay online, or copy your work somewhere safe."
+        : "This device is almost out of storage. Offline changes may not be saved — free some space."}
+    </p>
+  );
+  const leavePrompt = leaving && (
+    <dialog ref={leaveDialog} onCancel={(e) => { e.preventDefault(); answerLeave("stay"); }} aria-labelledby="leave-unsent-title"
+      className="m-auto w-[min(30rem,94vw)] rounded-2xl border border-[var(--glass-border)] bg-[var(--bg-base)] p-6 text-[var(--text-primary)] shadow-2xl backdrop:bg-black/50">
+      <h2 id="leave-unsent-title" className="text-lg font-semibold">{leaving.count} change{leaving.count === 1 ? " hasn’t" : "s haven’t"} reached the server</h2>
+      <p className="mt-2 text-sm text-[var(--text-secondary)]">They are saved only on this device and can’t be sent after you sign out. Stay signed in to let them sync, or choose what happens to them.</p>
+      <div className="mt-5 flex flex-wrap gap-3 text-sm">
+        <button type="button" autoFocus className="rounded-lg border px-3 py-2" onClick={() => answerLeave("stay")}>Stay signed in</button>
+        <button type="button" className="rounded-lg border px-3 py-2" onClick={() => answerLeave("download")}>Download and sign out</button>
+        <button type="button" className="rounded-lg border px-3 py-2 text-[var(--color-danger)]" onClick={() => answerLeave("discard")}>Discard and sign out</button>
+      </div>
+    </dialog>
+  );
+  if (online && !items.length && !legacy && !error && !open && !elsewhere.count) return <>{toast}{storageBanner}{leavePrompt}</>;
   const label = error
     ? "Save needs attention"
     : attention
@@ -185,10 +244,12 @@ export function OfflineIndicator() {
         ? `${items.length} change${items.length === 1 ? "" : "s"} saved on this device`
         : legacy
           ? "Older drafts available"
-          : "Offline";
+          : !online
+            ? "Offline"
+            : `${elsewhere.count} change${elsewhere.count === 1 ? "" : "s"} waiting in another workspace`;
   return (
     <>
-      {toast}
+      {toast}{storageBanner}{leavePrompt}
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -261,6 +322,11 @@ export function OfflineIndicator() {
             No pending changes for this account and workspace.
           </p>
         )}
+        {elsewhere.count > 0 && (
+          <p role="note" className="my-4 rounded-lg border p-3 text-sm">
+            {elsewhere.count} change{elsewhere.count === 1 ? " is" : "s are"} waiting in another workspace or account on this device. Switch back to send {elsewhere.count === 1 ? "it" : "them"}; unsent changes are kept for 30 days{elsewhere.expireSoon ? ` — ${elsewhere.expireSoon} will be removed within a week` : ""}.
+          </p>
+        )}
         <ul className="mt-4 space-y-3">
           {items.map((item) => (
             <li
@@ -292,6 +358,18 @@ export function OfflineIndicator() {
                       Review against current note
                     </button>
                   )}
+                {item.state !== "sending" && item.state !== "queued" && retrySafe(item) && (
+                  <button type="button" disabled={busy || !online} className="underline"
+                    onClick={() => { setError(""); void retryWrite(item.id!).catch((e: Error) => setError(e.message)); }}>
+                    Retry
+                  </button>
+                )}
+                {item.method === "POST" && item.path === "/notes" && item.state !== "sending" && item.state !== "queued" && (
+                  <button type="button" disabled={busy || !online} className="underline"
+                    onClick={() => { setError(""); void renameQueuedCreate(item.id!).catch((e: Error) => setError(e.message)); }}>
+                    Create under another name
+                  </button>
+                )}
                 <button
                   type="button"
                   className="underline"

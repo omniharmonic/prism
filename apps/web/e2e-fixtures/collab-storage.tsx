@@ -5,6 +5,8 @@ import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "../
 import { CollabDoc } from "../src/collab/CollabDoc";
 import { ReconnectScreen } from "../src/auth/ReconnectScreen";
 import { fetchMe } from "../src/config";
+import { unsyncedDocs, syncUnsyncedDocs, startUnsyncedDocs } from "../src/collab/unsynced";
+import { deriveSyncStatus, useSyncStore } from "@prism/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultClientProvider, PlatformProvider, type VaultClient } from "@prism/core";
 import type { WriteScope } from "../src/offline/writeScope";
@@ -27,6 +29,26 @@ Object.assign(window, { prismCollabFixture: {
   },
   close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
   async checkAuth() { return fetchMe(); },
+  // Wave 2E re-review M1: live documents with edits only on this device.
+  unsynced: () => unsyncedDocs(),
+  syncUnsynced: () => syncUnsyncedDocs(),
+  startUnsynced: () => startUnsyncedDocs(),
+  syncLabel: () => deriveSyncStatus(useSyncStore.getState()).label,
+  /** What the local store (IndexedDB) really holds for live documents — read-only, every stored document. */
+  async localTexts(): Promise<string[]> {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("prism-collab-v3", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("documents");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      const stored = await new Promise<Uint8Array[]>((resolve, reject) => {
+        const request = db.transaction("documents").objectStore("documents").getAll();
+        request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+      });
+      return stored.map((update) => { const doc = new Y.Doc(); Y.applyUpdate(doc, update); const text = doc.getXmlFragment("default").toString(); doc.destroy(); return text; });
+    } finally { db.close(); }
+  },
 }});
 const client = { listNotes: async () => [], getLinks: async () => [] } as unknown as VaultClient;
 const queries = new QueryClient();
