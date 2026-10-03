@@ -249,3 +249,7 @@ export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, ty
 export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
 export * from "./lib/notifications/client";
+export * from "./lib/notifications/hooks";
+export { openNotification, focusAnchor, anchorSelector, listenForInboxOpenRequests, setPendingNotification, ANCHOR_FLASH_CLASS } from "./lib/notifications/anchor";
+export { InboxBadge, InboxNavButton, openInbox } from "./components/inbox/InboxNavButton";
+export { RequestAccessButton } from "./components/inbox/RequestAccessButton";

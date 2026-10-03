@@ -4,7 +4,7 @@ import { httpTranscriptReviewClient } from "./transcript-review";
 import { PublicationPreviewProvider } from "@prism/core";
 const PresentationPreview = React.lazy(() => import("./publish/PresentationPreview"));
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, listenForInboxOpenRequests, setPendingNotification, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
@@ -198,9 +198,17 @@ export async function start() {
   // /page/<id> opens one page (the page menu's "Copy link"). A client route like /agent.
   const pageLink = path.match(/^\/page\/([^/?#]{1,256})\/?$/);
   const pageId = pageLink ? (() => { try { return decodeURIComponent(pageLink[1]!); } catch { return null; } })() : null;
+  // /inbox[/<notificationId>] and /home (wave 2A; the push deep link opens /inbox).
+  const inboxMatch = path.match(/^\/inbox(?:\/([A-Za-z0-9_-]{1,64}))?\/?$/);
+  const inboxLink = !!inboxMatch;
+  if (inboxMatch?.[1]) setPendingNotification(inboxMatch[1]);
   const initialTab: InitialTab | undefined =
     path === "/map" || path === "/bioregion"
       ? { id: "map", title: "Map", type: "map" }
+      : inboxLink
+        ? { id: "notifications", title: "Inbox", type: "notifications" }
+      : path === "/home" || path === "/home/"
+        ? { id: "home", title: "Home", type: "home" }
       : agentLink
         ? { id: AGENT_CHAT_TAB, title: "Agent chat", type: AGENT_CHAT_TAB }
         : pageId && !/[\u0000-\u001f:]/.test(pageId)
@@ -262,6 +270,7 @@ export async function start() {
   if (!capability && isNative) installExternalImageProxy({ fetch: serverFetch, apiOrigin: gatewayOrigin });
   if (!capability) {
     initAgentDeepLink(); // push notification → /agent/:id (WP3.3); cold start is handled by agentLink above
+    listenForInboxOpenRequests(); // notification push click while open → Inbox tab (wave 2A)
     // Warm start: the app is already open when a notification is tapped — the SW
     // posts the id, deeplink.ts re-dispatches it; switch the chat to it and open the tab.
     window.addEventListener("prism:open-agent-session", (e) => {

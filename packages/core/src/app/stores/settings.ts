@@ -31,6 +31,8 @@ interface SettingsStore {
 
   // Sidebar
   sidebarLabel: string;
+  /** Reopen the last open documents on launch (default). Off → start on Home. */
+  startWithLastDocument: boolean;
 
   // Sync defaults
   defaultSyncDirection: "push" | "pull" | "bidirectional";
@@ -56,6 +58,7 @@ interface SettingsStore {
   removeVault: (url: string) => void;
   setActiveVault: (url: string) => void;
   setSidebarLabel: (label: string) => void;
+  setStartWithLastDocument: (enabled: boolean) => void;
   setDefaultSyncDirection: (dir: "push" | "pull" | "bidirectional") => void;
   setAutoSyncOnSave: (enabled: boolean) => void;
   setOllamaUrl: (url: string) => void;
@@ -81,6 +84,7 @@ export const useSettingsStore = create<SettingsStore>()(
       activeVaultUrl: "http://localhost:1940",
 
       sidebarLabel: "Projects",
+      startWithLastDocument: true,
 
       defaultSyncDirection: "bidirectional",
       autoSyncOnSave: false,
@@ -129,6 +133,7 @@ export const useSettingsStore = create<SettingsStore>()(
         }));
       },
       setSidebarLabel: (label) => set({ sidebarLabel: label }),
+      setStartWithLastDocument: (enabled) => set({ startWithLastDocument: enabled }),
       setDefaultSyncDirection: (dir) => set({ defaultSyncDirection: dir }),
       setAutoSyncOnSave: (enabled) => set({ autoSyncOnSave: enabled }),
       setOllamaUrl: (url) => set({ ollamaUrl: url }),

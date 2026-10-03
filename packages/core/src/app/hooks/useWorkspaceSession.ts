@@ -6,6 +6,7 @@ import { inferContentType } from "../../lib/schemas/content-types";
 import { noteLinkTitle } from "../../lib/wikilinks";
 import type { ContentType, TabState } from "../../lib/types";
 import { useUIStore } from "../stores/ui";
+import { useSettingsStore } from "../stores/settings";
 
 const LIMIT = 20;
 const PREFIX = "prism:workspace-session:v1:";
@@ -13,6 +14,7 @@ const VIRTUAL: Record<string, string> = {
   "messages-dashboard": "Inbox", "calendar-dashboard": "Calendar",
   "vault-messages": "Messages", "agent-activity": "Agent",
   network: "Network", map: "Map", "agent-chat": "Agent chat", people: "People",
+  home: "Home", notifications: "Inbox",
 };
 type Panel = ReturnType<typeof useUIStore.getState>["contextPanelTab"];
 type Session = { version: 1; ids: string[]; active: string | null; panel: Panel; panelOpen: boolean };
@@ -121,6 +123,11 @@ export function useWorkspaceSession(): Restore {
       desired = read(scope);
       // Existing tabs on mount are an explicit host/deep-link selection.
       if (useUIStore.getState().openTabs.length) { ready = true; save(); }
+      else if (!useSettingsStore.getState().startWithLastDocument) {
+        // "Start with last open document" off → launch on Home (NP-SB-03).
+        desired = null; ready = true; show("idle");
+        useUIStore.getState().openTab("home", "Home", "home" as ContentType);
+      }
       else void reopen();
     };
     const unsubscribeUI = useUIStore.subscribe((state, previous) => {

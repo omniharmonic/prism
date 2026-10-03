@@ -25,6 +25,8 @@ const MapRenderer = lazy(() => import("./MapRenderer"));
 const PeopleRenderer = lazy(() => import("../people/PeopleWorkspace"));
 const AgentChatRenderer = lazy(() => import("../agent/AgentChat"));
 const DatabaseRenderer = lazy(() => import("../database/DatabaseRenderer"));
+const HomeRenderer = lazy(() => import("../home/Home"));
+const NotificationsRenderer = lazy(() => import("../inbox/NotificationsInbox"));
 
 const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<ComponentType<RendererProps>>>> = {
   document: DocumentRenderer,
@@ -55,6 +57,8 @@ const RENDERER_MAP: Partial<Record<ContentType, React.LazyExoticComponent<Compon
 (RENDERER_MAP as any)["map"] = MapRenderer;
 (RENDERER_MAP as any)["people"] = PeopleRenderer;
 (RENDERER_MAP as any)["agent-chat"] = AgentChatRenderer;
+(RENDERER_MAP as any)["home"] = HomeRenderer;
+(RENDERER_MAP as any)["notifications"] = NotificationsRenderer;
 
 export function getRenderer(type: ContentType): React.LazyExoticComponent<ComponentType<RendererProps>> {
   return RENDERER_MAP[type] || PlaceholderRenderer;
