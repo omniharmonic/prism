@@ -2,4 +2,5 @@
 export * from "./zip";
 export * from "./markdown";
 export * from "./plan";
+export * from "./sanitize";
 export * from "./wire";

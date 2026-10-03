@@ -132,11 +132,13 @@ export function createTransferServer(opts: TransferServerOptions) {
       summary: { pages: p.counts.pages, databases: p.counts.databases, rows: p.counts.rows, attachments: p.counts.assets, links: p.counts.links, create: count("create"), update: count("update"), unchanged: count("unchanged"), conflict: count("conflict"), ignored: p.counts.ignored },
       items: resolved.slice(0, 100).map((r) => ({ path: r.note.path, kind: r.note.kind, action: r.action, ...(r.reason ? { reason: r.reason } : {}) })),
       problems: [...up.refused, ...p.problems],
+      // The fixture's "vault/Archive" page is shared with two people (see pages-nav ?shared).
+      audience: { sharedPage: parent === "vault/Archive" || parent.startsWith("vault/Archive/"), people: parent.startsWith("vault/Archive") ? 2 : 0, links: 0, workspace: true },
     };
     return { p, resolved, preview };
   }
 
-  function write(planned: ReturnType<typeof plan>) {
+  function write(planned: ReturnType<typeof plan>, priv = false) {
     const result = { created: 0, updated: 0, unchanged: 0, conflicts: 0, attachments: 0, failed: [] as unknown[], problems: planned.preview.problems, firstId: null as string | null };
     for (const r of planned.resolved) {
       if (r.action === "unchanged") { result.unchanged++; continue; }
@@ -152,7 +154,7 @@ export function createTransferServer(opts: TransferServerOptions) {
         }
         content = content.split(`(${ASSET_TOKEN}${i})`).join(`(${file ? `/api/attachments/${id}` : a.original})`);
       }
-      const metadata = { ...r.note.metadata, prism_import: { v: 1, src: r.note.src, hash: r.note.hash } };
+      const metadata = { ...r.note.metadata, ...(priv ? { prism_visibility: "private", prism_creator: "owner@example.test" } : {}), prism_import: { v: 1, src: r.note.src, hash: r.note.hash } };
       if (r.action === "update" && r.holder) {
         Object.assign(r.holder, { content, metadata: { ...r.holder.metadata, ...metadata }, updatedAt: stamp() });
         result.updated++;
@@ -198,7 +200,8 @@ export function createTransferServer(opts: TransferServerOptions) {
       const bytes = raw instanceof Blob ? new Uint8Array(await raw.arrayBuffer()) : typeof raw === "string" ? enc.encode(raw) : new Uint8Array(raw as ArrayBuffer);
       const dryRun = !(url.searchParams.get("dryRun") === "0");
       const parent = url.searchParams.get("parent") ?? "vault/Imports";
-      requests.push({ import: { dryRun, parent, name: url.searchParams.get("name"), bytes: bytes.length } });
+      const priv = url.searchParams.get("private") === "1";
+      requests.push({ import: { dryRun, parent, name: url.searchParams.get("name"), bytes: bytes.length, private: priv, confirmShared: url.searchParams.get("confirmShared") === "1" } });
       let planned;
       try {
         planned = plan(bytes, url.searchParams.get("name") ?? "import", parent);
@@ -206,8 +209,9 @@ export function createTransferServer(opts: TransferServerOptions) {
         return json({ error: (e as { code?: string }).code ?? "bad_request", detail: (e as Error).message }, 400);
       }
       if (dryRun) return json(planned.preview);
+      if (planned.preview.audience.sharedPage && !priv && url.searchParams.get("confirmShared") !== "1") return json({ error: "confirm_shared" }, 409);
       const id = `import-job-${++seq}`.padEnd(22, "x").slice(0, 22);
-      importJobs.set(id, { polls: 0, total: planned.resolved.length, result: write(planned) });
+      importJobs.set(id, { polls: 0, total: planned.resolved.length, result: write(planned, priv) });
       return json({ jobId: id, preview: { ...planned.preview, dryRun: false } }, 202);
     }
     const im = path.match(/^\/api\/import\/([^/]+)$/);

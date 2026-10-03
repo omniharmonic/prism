@@ -197,17 +197,20 @@ export function applyTemplateVariables<T extends { content: string; metadata: Re
 }
 
 /**
- * Who is creating the page, for `@me`: the signed-in account's display name
- * (else its e-mail) from the Prism Server; null in shells without one (the
- * variable then stays as written).
+ * Who is creating the page, for `@me`: the signed-in account's DISPLAY NAME from
+ * the Prism Server, else the neutral "Me" — never the account's e-mail address
+ * (a page made from a template is usually shared). null in shells without a
+ * server (the variable then stays as written).
  */
 export async function templateCreator(fetchMe: () => Promise<Response>): Promise<string | null> {
   try {
     const res = await fetchMe();
     if (!res.ok) return null;
-    const me = (await res.json()) as { name?: unknown; email?: unknown };
-    if (typeof me.name === "string" && me.name.trim()) return me.name.trim().slice(0, 120);
-    return typeof me.email === "string" && me.email.trim() ? me.email.trim().slice(0, 200) : null;
+    const me = (await res.json()) as { name?: unknown; email?: unknown; authenticated?: unknown };
+    const name = typeof me.name === "string" ? me.name.trim() : "";
+    // An account whose "name" is its address has no display name.
+    if (name && !name.includes("@")) return name.slice(0, 120);
+    return me.authenticated === false ? null : "Me";
   } catch {
     return null;
   }

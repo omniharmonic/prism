@@ -25,7 +25,7 @@
  */
 import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { looksLikeZip, type ImportJob } from "@prism/core/import-export";
+import type { ImportJob } from "@prism/core/import-export";
 import type { VaultEntry } from "../config";
 import { resolveVaultEntry } from "../db";
 import { requestVia, type Actor } from "../auth/actor";
@@ -34,7 +34,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { BusyError, Semaphore } from "../media/limits";
 import { recordAction } from "../actions/store";
 import { activeJobs, createJob, envInt, findJob, type Job } from "../transfer/jobs";
-import { buildPlan, ImportError, importConfig, previewOf, readUpload, resolveActions, resolveRoot, runImport, type ImportProgress } from "../transfer/import";
+import { defaultParent, importAudience, ImportError, importConfig, planInWorker, previewOf, resolveActions, resolveRoot, runImport, type ImportProgress } from "../transfer/import";
 import { originRefusal, personOrRefusal } from "./export";
 
 const NOT_FOUND = { error: "not_found" };
@@ -64,7 +64,8 @@ async function importGate(c: Context, next: Next) {
     c.header("Retry-After", String(retry));
     return c.json({ error: "rate_limited", retryAfter: retry }, 429);
   }
-  if (!dry && activeJobs("import").length > 0) return c.json({ error: "busy", detail: "another import is still running" }, 409);
+  // A running import holds its upload's files in memory: no other upload (preview or write) is read meanwhile.
+  if (activeJobs("import").length > 0) return c.json({ error: "busy", detail: "another import is still running" }, 409);
   return next();
 }
 
@@ -115,30 +116,32 @@ export function createImportApi(opts: { onWrite?: () => void } = {}) {
         if (bytes.length === 0) return c.json({ error: "bad_request", detail: "the file is empty" }, 400);
         if (bytes.length > importConfig().maxBytes) return c.json({ error: "too_large", limit: importConfig().maxBytes }, 413);
         const entry = entryFor(c, actor);
-        let upload;
-        try {
-          upload = readUpload(bytes, fileName);
-        } catch (e) {
-          if (e instanceof ImportError) return c.json({ error: e.code, detail: e.message }, e.status);
-          throw e;
-        }
-        const single = !looksLikeZip(bytes);
-        const parent = c.req.query("parent") ?? (single ? "vault/Imports" : `vault/Imports/${upload.archiveName}`);
+        const makePrivate = c.req.query("private") === "1";
+        const parent = c.req.query("parent") ?? defaultParent(bytes, fileName);
         const placed = await resolveRoot(entry, parent);
         if ("status" in placed) return c.json(placed.body, placed.status);
         let plan;
         let resolved;
+        let audience;
         try {
-          plan = buildPlan(entry, upload.files, placed.root);
+          // Unzip + convert + plan run in a worker thread under a wall-clock budget:
+          // nothing about an upload can hold the event loop. (`bytes` is handed over.)
+          plan = await planInWorker(entry, bytes, fileName, placed.root);
           resolved = await resolveActions(entry, plan, placed.existing);
+          audience = await importAudience(entry, placed.root);
         } catch (e) {
           if (e instanceof ImportError) return c.json({ error: e.code, detail: e.message }, e.status);
           console.warn(`[import] planning failed: ${(e as Error).name}`);
           return c.json({ error: "bad_request", detail: "the file could not be read" }, 400);
         }
-        const preview = previewOf(plan, resolved, upload.refused);
+        const preview = previewOf(plan, resolved, audience);
         c.header("Cache-Control", "private, no-store");
         if (dryRun) return c.json(preview);
+        // Importing under a shared page shares every imported page with those people:
+        // that needs an explicit yes (or the pages are created private to the importer).
+        if (audience.sharedPage && !makePrivate && c.req.query("confirmShared") !== "1") {
+          return c.json({ error: "confirm_shared", detail: "the destination is shared with other people", audience }, 409);
+        }
         if (activeJobs("import").length > 0) return c.json({ error: "busy", detail: "another import is still running" }, 409);
         const via = requestVia(c);
         const job = createJob<ImportProgress>("import", actor.email, entry.id, {
@@ -151,7 +154,7 @@ export function createImportApi(opts: { onWrite?: () => void } = {}) {
           conflicts: 0,
           attachments: 0,
           failed: [],
-          problems: [...upload.refused, ...plan.problems].slice(0, 200),
+          problems: plan.problems.slice(0, 200),
           firstId: null,
         });
         void runImport(job, entry, { ...actor, vaultId: entry.id }, plan, resolved, {
@@ -164,11 +167,11 @@ export function createImportApi(opts: { onWrite?: () => void } = {}) {
               origin: "human",
               action: "admin.import",
               vaultId: entry.id,
-              target: { jobId: j.id, state: j.state, created: j.progress.created, updated: j.progress.updated, unchanged: j.progress.unchanged, conflicts: j.progress.conflicts, failed: j.progress.failed.length, attachments: j.progress.attachments },
+              target: { jobId: j.id, state: j.state, created: j.progress.created, updated: j.progress.updated, unchanged: j.progress.unchanged, conflicts: j.progress.conflicts, failed: j.progress.failed.length, attachments: j.progress.attachments, private: makePrivate, sharedPage: audience.sharedPage },
               status: j.state === "done" ? "ok" : "failed",
               error: j.error,
             }),
-        });
+        }, { private: makePrivate });
         return c.json({ jobId: job.id, preview: { ...preview, dryRun: false } }, 202);
       } finally {
         release();

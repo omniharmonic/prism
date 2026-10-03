@@ -2,7 +2,10 @@
  * Import routes + engine (routes/import.ts, transfer/import.ts) against the fake
  * vault: dry run, write, idempotent re-run, attachments, and every refusal.
  */
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach, after } from "node:test";
+import { stopImportWorker } from "../src/transfer/import";
+import { stopExportWorker } from "../src/transfer/export";
+after(async () => { await stopImportWorker(); await stopExportWorker(); });
 import assert from "node:assert/strict";
 import { deflateRawSync } from "node:zlib";
 import { api } from "../src/routes/api";
@@ -216,8 +219,12 @@ test("attachments: active content, oversize and non-image 'images' are not store
     const p = byPath("vault/Imports/Notion/P")!;
     assert.match(p.content, /^!\[svg\]\(a\.svg\) !\[big\]\(big\.png\) !\[fake\]\(fake\.png\) \[\[vault\/Imports\/Notion\/x\|script\]\] !\[ok\]\(\/api\/attachments\/a_[\w-]{22}\) \[up\]\(\.\.\/\.\.\/etc\/passwd\)$/);
     assert.equal(job.problems.filter((x: any) => x.reason.startsWith("not attached")).length, 3);
-    // The incomplete page is completed (not duplicated) by a later run.
-    assert.equal((p.metadata!.prism_import as any).hash, undefined);
+    // Files that can never be attached are settled: the page is complete and a later run changes nothing.
+    const stamp = p.metadata!.prism_import as { hash?: string; assets: Record<string, string> };
+    assert.equal(typeof stamp.hash, "string");
+    assert.deepEqual(Object.values(stamp.assets).filter((v) => v === "x").length, 3);
+    const again = await run(zip);
+    assert.deepEqual([again.unchanged, again.attachments], [2, 0]);
   } finally {
     delete process.env.ATTACHMENT_IMAGE_MAX_BYTES;
   }

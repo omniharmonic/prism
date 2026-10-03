@@ -61,8 +61,8 @@ export interface PlanOptions {
   /** Destination folder (a clean vault path, no trailing slash). */
   root: string;
   limits?: Partial<ImportLimits>;
-  /** HTML → Markdown (the server passes turndown; dangerous elements removed). */
-  htmlToMarkdown: (html: string) => string;
+  /** HTML → Markdown (the server passes turndown; dangerous elements removed). null = refused (too large / too complex): the page is skipped. */
+  htmlToMarkdown: (html: string) => string | null;
   /** Canonical tag, or null when this tag may not be applied by an import. */
   allowTag: (tag: string) => string | null;
   /** May an import set this metadata key? */
@@ -80,6 +80,8 @@ export interface PlannedAsset {
   token: string;
   /** What to restore when the asset cannot be attached. */
   original: string;
+  /** Digest of the file's bytes (attachments are reused across runs by it). */
+  hash: string;
 }
 
 export interface PlannedNote {
@@ -173,6 +175,16 @@ function slug(s: string): string {
   while (out.startsWith("-")) out = out.slice(1);
   while (out.endsWith("-")) out = out.slice(0, -1);
   return out || "database";
+}
+
+/** A link target with a scheme: kept only for http(s) / mailto; `/…`, `#…` and `//host` are not schemes. */
+function keepsScheme(target: string): boolean {
+  const t = target.trim();
+  if (t.startsWith("/") || t.startsWith("#") || t.startsWith("?")) return true;
+  let compact = "";
+  for (let i = 0; i < t.length && compact.length < 16; i++) if (t.charCodeAt(i) > 32) compact += t[i];
+  const scheme = compact.slice(0, Math.max(compact.indexOf(":"), 0)).toLowerCase();
+  return scheme === "http" || scheme === "https" || scheme === "mailto";
 }
 
 const cleanLabel = (s: string): string => s.split("[").join("").split("]").join("").split("|").join(" ").trim();
@@ -304,7 +316,11 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
   /** Markdown body of one source file: front matter split off, links + assets rewritten. */
   function bodyOf(s: Source, title: string, propertyLabels?: Set<string>) {
     let raw = text(s.file.read());
-    if (s.kind === "html") raw = opts.htmlToMarkdown(raw);
+    if (s.kind === "html") {
+      const md = opts.htmlToMarkdown(raw);
+      if (md === null) return null;
+      raw = md;
+    }
     const fm = s.kind === "md" ? parseFrontMatter(raw) : { data: {}, body: raw };
     let body = fm.body;
     const head = leadingHeading(body);
@@ -315,7 +331,10 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
     }
     const noteAssets: PlannedAsset[] = [];
     body = rewriteMarkdownLinks(body, (link) => {
-      if (!isRelativeTarget(link.target)) return null;
+      if (!isRelativeTarget(link.target)) {
+        // Only web and mail links survive an import; `javascript:`, `data:`, `file:`… become their text.
+        return keepsScheme(link.target) ? null : cleanLabel(link.text);
+      }
       const resolved = resolveRelative(s.file.name, safeDecode(link.target));
       if (resolved === null) return null;
       const page = pageDest.get(resolved);
@@ -333,7 +352,7 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
       }
       let asset = noteAssets.find((a) => a.file === file.name && a.image === link.image);
       if (!asset) {
-        asset = { file: file.name, image: link.image, token: `${ASSET_TOKEN}${noteAssets.length}`, original: link.target };
+        asset = { file: file.name, image: link.image, token: `${ASSET_TOKEN}${noteAssets.length}`, original: link.target, hash: hashOfAsset(file) };
         noteAssets.push(asset);
         assets.set(file.name, file);
       }
@@ -370,7 +389,7 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
   }
 
   const push = (note: Omit<PlannedNote, "hash" | "src">) => {
-    const assetHashes = note.assets.map((a) => `${a.image ? "i" : "f"}:${hashOfAsset(byName.get(a.file)!)}`);
+    const assetHashes = note.assets.map((a) => `${a.image ? "i" : "f"}:${a.hash}`);
     const hash = opts.hash(JSON.stringify([note.kind, note.content, note.tags, note.metadata, assetHashes]));
     notes.push({ ...note, src: opts.hash(`src:${note.entry}`).slice(0, 24), hash });
   };
@@ -479,9 +498,12 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
           if (child.file.size > limits.maxTextBytes) problem(child.file.name, "body not imported: the file is too large");
           else {
             const b = bodyOf(child, destSeg.get(childKey)!, labels);
-            content = b.body;
-            rowAssets = b.assets;
-            entry = child.file.name;
+            if (!b) problem(child.file.name, "body not imported: the HTML is too large or too complex");
+            else {
+              content = b.body;
+              rowAssets = b.assets;
+              entry = child.file.name;
+            }
           }
         }
         push({ entry, path: `${path}/${seg}`, title: seg, kind: "row", content, assets: rowAssets, tags: db.tag ? [db.tag] : [], metadata: { title: rowTitle, ...metadata } });
@@ -495,6 +517,10 @@ export function planImport(input: ImportFile[], opts: PlanOptions): ImportPlan {
       continue;
     }
     const b = bodyOf(s, title);
+    if (!b) {
+      problem(s.file.name, "skipped: the HTML is too large or too complex");
+      continue;
+    }
     const m = metaFrom(b.data, s.file.name);
     push({ entry: s.file.name, path, title, kind: "page", content: b.body, assets: b.assets, tags: m.tags, metadata: m.metadata });
     pages++;

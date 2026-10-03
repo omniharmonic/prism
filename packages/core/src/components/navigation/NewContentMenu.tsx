@@ -25,7 +25,7 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import type { ContentType } from "../../lib/types";
 import { TaskCreateDialog } from "../tasks/TaskCreateDialog";
-import { TEMPLATE_TAG, pageTitle, templateCopy, withoutTrashed } from "../../lib/pages/model";
+import { TEMPLATE_TAG, pageTitle, referencesAttachments, templateCopy, withoutTrashed } from "../../lib/pages/model";
 import { inferContentType } from "../../lib/schemas/content-types";
 import { applyTemplateVariables, templateCreator } from "../../lib/pages/templates";
 import { serverFetch } from "../../lib/transport/serverFetch";
@@ -280,6 +280,9 @@ function CreateContent({
         openType = inferContentType({ ...source, metadata: copy.metadata, tags: copy.tags });
       }
       const note = await client.createNote(params);
+      // A page made from a template gets its OWN copies of the template's files (its links
+      // otherwise name the template's attachments, which only the template's viewers load).
+      if (template && client.copyAttachments && referencesAttachments(params)) await client.copyAttachments(note.id).catch(() => null);
       if (!alive.current || !current()) return;
       void queryClient.invalidateQueries({ queryKey: ["vault"] });
       useUIStore.getState().openTab(note.id, input.title, openType);

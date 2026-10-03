@@ -5,7 +5,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { pageTitle } from "../../lib/pages/model";
 import { stripNotionId } from "../../lib/import-export/markdown";
 import { pollJob, transferApi, TransferError } from "../../lib/import-export/client";
-import type { ImportItem, ImportJob, ImportPreview } from "../../lib/import-export/wire";
+import type { ImportAudienceInfo, ImportItem, ImportJob, ImportPreview } from "../../lib/import-export/wire";
 import { plural, ProgressBar, TransferDialog } from "./TransferDialog";
 
 const ACCEPT = ".zip,.md,.markdown,.html,.htm,.csv";
@@ -14,6 +14,15 @@ const KIND_LABEL: Record<ImportItem["kind"], string> = { page: "", database: "Da
 
 const sizeText = (n: number): string => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 const isArchive = (name: string) => name.toLowerCase().endsWith(".zip");
+/** One honest sentence about who gets access when the pages are NOT imported as private. */
+export function audienceText(a: ImportAudienceInfo): string {
+  const parts: string[] = [];
+  if (a.people > 0) parts.push(a.people === 1 ? "1 person" : `${a.people.toLocaleString()} people`);
+  if (a.links > 0) parts.push(a.links === 1 ? "anyone with 1 share link" : `anyone with ${a.links.toLocaleString()} share links`);
+  if (a.sharedPage) return `This folder is inside a shared page: ${parts.join(" and ") || "the people it is shared with"} will be able to open every imported page, and so will workspace members.`;
+  return parts.length ? `Workspace members and ${parts.join(" and ")} with access to the whole workspace can open them.` : "Anyone in this workspace can open them, like any other page here.";
+}
+
 /** Where an upload lands by default: its own folder for an archive, the shared Imports folder for one file. */
 export function defaultImportFolder(fileName: string, base = "vault/Imports"): string {
   if (!isArchive(fileName)) return base;
@@ -43,6 +52,8 @@ export function ImportDialog({ parent, onClose }: { parent?: string; onClose: ()
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [job, setJob] = useState<ImportJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Who sees what is imported: private to me, or visible like any other page there.
+  const [visibility, setVisibility] = useState<"private" | "shared">("shared");
   const picker = useRef<HTMLInputElement>(null);
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
@@ -59,7 +70,10 @@ export function ImportDialog({ parent, onClose }: { parent?: string; onClose: ()
     setError(null);
     setPhase("checking");
     try {
-      setPreview(await transferApi.importPreview(file, folder.trim()));
+      const next = await transferApi.importPreview(file, folder.trim());
+      setPreview(next);
+      // Under a page somebody shares, the safe choice is the default.
+      setVisibility(next.audience?.sharedPage ? "private" : "shared");
       setPhase("preview");
     } catch (e) {
       setError(e instanceof TransferError ? e.message : "That file couldn’t be read. Try again.");
@@ -73,7 +87,7 @@ export function ImportDialog({ parent, onClose }: { parent?: string; onClose: ()
     const ctl = new AbortController();
     abort.current = ctl;
     try {
-      const started = await transferApi.importStart(file, preview.destination);
+      const started = await transferApi.importStart(file, preview.destination, visibility === "private" ? { private: true } : { confirmShared: !!preview.audience?.sharedPage });
       const total = started.preview.summary.create + started.preview.summary.update + started.preview.summary.unchanged + started.preview.summary.conflict;
       setJob({ id: started.jobId, state: "queued", destination: preview.destination, done: 0, total, created: 0, updated: 0, unchanged: 0, conflicts: 0, attachments: 0, failed: [], problems: [], firstId: null, error: null });
       const done = await pollJob(() => transferApi.importStatus(started.jobId), setJob, ctl.signal);
@@ -168,6 +182,25 @@ export function ImportDialog({ parent, onClose }: { parent?: string; onClose: ()
                 <summary>{plural(preview.problems.length, "note")} about this file</summary>
                 <div className="transfer-note"><ul>{preview.problems.slice(0, 30).map((p, i) => <li key={i}>{p.entry.split("/").pop()}: {p.reason}</li>)}</ul></div>
               </details>
+            )}
+            {preview.audience && (
+              <fieldset className="transfer-field transfer-audience" data-shared={preview.audience.sharedPage}>
+                <legend className="transfer-label">Who can see the imported pages</legend>
+                <label className="transfer-check">
+                  <input type="radio" name="import-visibility" checked={visibility === "shared"} onChange={() => setVisibility("shared")} />
+                  <span>
+                    {preview.audience.sharedPage ? "Everyone this folder is shared with" : "Workspace members"}
+                    <small>{audienceText(preview.audience)}</small>
+                  </span>
+                </label>
+                <label className="transfer-check">
+                  <input type="radio" name="import-visibility" checked={visibility === "private"} onChange={() => setVisibility("private")} />
+                  <span>
+                    Only me
+                    <small>Imported as private pages. You can share them later.</small>
+                  </span>
+                </label>
+              </fieldset>
             )}
             {error && <div className="transfer-note" data-tone="error" role="alert">{error}</div>}
           </div>

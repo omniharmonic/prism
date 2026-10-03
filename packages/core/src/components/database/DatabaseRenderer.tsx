@@ -276,6 +276,7 @@ export function DatabasePage({ note, readOnly, embedded }: RendererProps & {
       if (tpl.metadata?.prism_visibility === "private") privateTo = typeof tpl.metadata.prism_creator === "string" ? tpl.metadata.prism_creator : "";
     }
     const created = await client.createNote({ content, path: rowPath(note.path, titleText), tags: [...tags], metadata: { ...defaults, ...fromTemplate, ...(preset ?? {}), title: titleText, ...(privateTo !== null ? { prism_visibility: "private", ...(privateTo ? { prism_creator: privateTo } : {}) } : {}) } });
+    if (content && client.copyAttachments && content.includes("/api/attachments/")) await client.copyAttachments(created.id).catch(() => null);
     invalidateRows();
     return created;
   };

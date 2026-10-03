@@ -99,8 +99,25 @@ function rewriteLine(line: string, fn: (link: MarkdownLink) => string | null): s
         i++;
         continue;
       }
-      if (nextParen < closeText + 2) nextParen = line.indexOf(")", closeText + 2);
-      const closeTarget = nextParen;
+      // The target may hold balanced parentheses (`javascript:alert(1)`, `Page_(draft).md`):
+      // look a bounded distance ahead for the matching `)`, else take the first one.
+      let closeTarget = -1;
+      const limit = Math.min(line.length, closeText + 2 + 600);
+      for (let j = closeText + 2, depth = 0; j < limit; j++) {
+        const c = line.charCodeAt(j);
+        if (c === 40) depth++;
+        else if (c === 41) {
+          if (depth === 0) {
+            closeTarget = j;
+            break;
+          }
+          depth--;
+        }
+      }
+      if (closeTarget === -1) {
+        if (nextParen < closeText + 2) nextParen = line.indexOf(")", closeText + 2);
+        closeTarget = nextParen;
+      }
       if (closeTarget === -1) {
         noParen = true;
         i++;
@@ -201,6 +218,15 @@ function scalar(raw: string): unknown {
     }
   }
   if (v.length >= 2 && c === "'" && v[v.length - 1] === "'") return v.slice(1, -1).split("''").join("'");
+  // A YAML flow list of plain scalars: `[a, b, "c d"]` (what most front matter writes for tags).
+  if (c === "[" && v[v.length - 1] === "]") {
+    const inner = v.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(",").slice(0, 200).map((item) => {
+      const t = item.trim();
+      return t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1) : t;
+    });
+  }
   return v;
 }
 

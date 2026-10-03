@@ -114,6 +114,40 @@ test("a single Markdown file imports as one page; a damaged archive is refused w
   expect(note).toMatchObject({ content: "Agenda.\n", tags: ["notes"], metadata: { status: "draft" } });
 });
 
+test("importing into a shared page says who will see the pages and defaults to private", async ({ page }) => {
+  await page.goto(transferUrl());
+  await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
+  const dialog = page.getByRole("dialog", { name: "Import" });
+  const file = { name: "Plans.md", mimeType: "text/markdown", buffer: Buffer.from("Quarter plans.\n") };
+  await dialog.getByLabel("File to import").setInputFiles(file);
+  // An ordinary folder: visible like any other page, no extra step.
+  await dialog.getByRole("button", { name: "Preview import" }).click();
+  const who = dialog.getByRole("group", { name: "Who can see the imported pages" });
+  await expect(who.getByRole("radio", { name: /Workspace members/ })).toBeChecked();
+  await expect(who).toContainText("Anyone in this workspace can open them");
+  // Inside a page that is shared with other people: said plainly, and private by default.
+  await dialog.getByRole("button", { name: "Back" }).click();
+  await dialog.getByLabel("Import into").fill("vault/Archive/Inbox");
+  await dialog.getByRole("button", { name: "Preview import" }).click();
+  await expect(who).toContainText("This folder is inside a shared page: 2 people will be able to open every imported page");
+  await expect(who.getByRole("radio", { name: /Only me/ })).toBeChecked();
+  await shot(page, "import-shared-1440");
+  await dialog.getByRole("button", { name: "Import 1 page" }).click();
+  await expect(dialog.getByRole("heading", { name: "Import finished" })).toBeVisible();
+  expect((await transferRequests(page)).at(-1)!.import).toMatchObject({ dryRun: false, private: true, confirmShared: false });
+  expect((await fixtureNotes(page)).find((n) => n.path === "vault/Archive/Inbox/Plans")!.metadata).toMatchObject({ prism_visibility: "private" });
+  // Choosing to share is an explicit act, sent as an explicit confirmation.
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await runCommand(page, "Import… (Markdown, HTML, CSV, Notion)");
+  await dialog.getByLabel("File to import").setInputFiles({ ...file, name: "Shared plans.md" });
+  await dialog.getByLabel("Import into").fill("vault/Archive/Inbox");
+  await dialog.getByRole("button", { name: "Preview import" }).click();
+  await who.getByRole("radio", { name: /Everyone this folder is shared with/ }).check();
+  await dialog.getByRole("button", { name: "Import 1 page" }).click();
+  await expect(dialog.getByRole("heading", { name: "Import finished" })).toBeVisible();
+  expect((await transferRequests(page)).at(-1)!.import).toMatchObject({ dryRun: false, private: false, confirmShared: true });
+});
+
 test("phone: the import dialog is a full-height sheet with reachable controls", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(transferUrl());

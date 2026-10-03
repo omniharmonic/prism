@@ -32,7 +32,9 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { contentDisposition } from "../attachments";
 import { csrfRefusal } from "./actions";
 import { activeJobs, createJob, dropJob, envInt, findJob, type Job } from "../transfer/jobs";
-import { exportCandidates, exportConfig, runExport, type ExportProgress, type ExportSpec, type UserActor } from "../transfer/export";
+import { canView, exportCandidates, exportConfig, exportDiskBytes, freshActor, runExport, type ExportProgress, type ExportSpec, type UserActor } from "../transfer/export";
+import { ensureTree, rowRef, warmPageAnchors } from "../tree";
+import { TRASH_TAG } from "@prism/core/pages";
 
 export const exportApi = new Hono();
 
@@ -123,11 +125,30 @@ exportApi.post("/export", bodyLimit({ maxSize: 8 * 1024, onError: (c) => c.json(
   }
   if (!rows) return c.json(NOT_FOUND, 404);
   if (rows.length > exportConfig().maxNotes) return c.json({ error: "too_large", detail: "too many pages for one export" }, 413);
-  const job = createJob<ExportProgress>("export", who, entry.id, { scope, format, done: 0, total: rows.length, attachments: 0, skipped: 0, bytes: 0, fileName: null, filePath: null });
+  if (exportDiskBytes() >= exportConfig().diskBudgetBytes) {
+    c.header("Retry-After", "300");
+    return c.json({ error: "busy", detail: "export storage is full; try again in a few minutes" }, 503);
+  }
+  const job = createJob<ExportProgress>("export", who, entry.id, { scope, format, rootId, done: 0, total: rows.length, attachments: 0, skipped: 0, bytes: 0, fileName: null, filePath: null });
   void runExport(job, spec, rows);
   c.header("Cache-Control", "private, no-store");
   return c.json({ jobId: job.id, total: rows.length }, 202);
 });
+
+/** Does the account still hold what this export needed when it started? (Fresh role + grants, in the job's vault.) */
+async function stillAllowed(actor: UserActor, job: Job<ExportProgress>): Promise<boolean> {
+  const now = freshActor(actor, job.vaultId);
+  if (job.progress.scope === "vault") return isAdmin(now);
+  const rootId = job.progress.rootId;
+  if (!rootId) return false;
+  try {
+    await warmPageAnchors(now.grants);
+    const row = (await ensureTree(resolveVaultEntry(job.vaultId))).rows().find((r) => r.id === rootId);
+    return !!row && !row.tags.includes(TRASH_TAG) && canView(now, rowRef(row));
+  } catch {
+    return false;
+  }
+}
 
 function ownJob(c: Context): Job<ExportProgress> | Response {
   const actor = personOrRefusal(c);
@@ -147,9 +168,14 @@ exportApi.get("/export/:id", (c) => {
   return c.json(shape(job));
 });
 
-exportApi.get("/export/:id/download", (c) => {
+exportApi.get("/export/:id/download", async (c) => {
   const job = ownJob(c);
   if (job instanceof Response) return job;
+  // The archive was built from what the account could see THEN: hand it over only if
+  // the account still has the access the export was started with (role / view of the page).
+  const actor = personOrRefusal(c);
+  if (actor instanceof Response) return actor;
+  if (!(await stillAllowed(actor, job))) return c.json(NOT_FOUND, 404);
   const path = job.progress.filePath;
   if (job.state !== "done" || !path) return c.json({ error: "not_ready", state: job.state }, 409);
   let size: number;

@@ -14,6 +14,8 @@ export const INGEST_KEYS: ReadonlySet<string> = new Set([
   "source_id", "sourceId", "calendarEventId", "messageId", "threadId", "matrixRoomId",
   "skillName", "runner", "lastRun", "executionMode",
   "merged_into", "mergedInto", "superseded_by", "prism_merge_history", "prism_merged_from", "prism_merged_into_prev",
+  // The importer's stamp (transfer/import.ts): it decides which notes a re-import may overwrite.
+  "prism_import",
 ]);
 
 /** `metadata.source` values an ingester recognises its own notes by. */

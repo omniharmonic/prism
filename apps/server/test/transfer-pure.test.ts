@@ -292,10 +292,13 @@ test("template variables: body (HTML chips / Markdown text), properties, and wha
   assert.ok(Date.now() - t0 < 2000);
 });
 
-test("template creator: the account's name, else its e-mail, else nothing", async () => {
+test("template creator: the account's display name, else a neutral Me — never the e-mail", async () => {
   const res = (body: unknown, ok = true) => async () => ({ ok, json: async () => body }) as Response;
   assert.equal(await templateCreator(res({ name: " Ada ", email: "a@x.co" })), "Ada");
-  assert.equal(await templateCreator(res({ name: null, email: "a@x.co" })), "a@x.co");
+  // Never the account's address: a neutral "Me" when there is no display name.
+  assert.equal(await templateCreator(res({ name: null, email: "a@x.co" })), "Me");
+  assert.equal(await templateCreator(res({ name: "a@x.co", email: "a@x.co" })), "Me");
+  assert.equal(await templateCreator(res({ authenticated: false })), null);
   assert.equal(await templateCreator(res({}, false)), null);
   assert.equal(await templateCreator(async () => { throw new Error("offline"); }), null);
 });

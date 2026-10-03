@@ -63,3 +63,7 @@
   .transfer-btn { min-height: 44px; }
   .transfer-foot { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
 }
+.transfer-audience { border: 1px solid var(--glass-border); border-radius: var(--radius-md); padding: 8px 12px 6px; margin: 0; min-width: 0; }
+.transfer-audience[data-shared="true"] { border-color: var(--color-warning, #c98a00); }
+.transfer-audience legend { padding: 0 4px; }
+.transfer-audience input[type="radio"] { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--color-accent); flex: 0 0 auto; }

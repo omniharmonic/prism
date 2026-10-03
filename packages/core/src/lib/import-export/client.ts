@@ -24,6 +24,8 @@ export function setTransferContextHeaders(fn: () => Record<string, string>): voi
 export const transferAvailable = (): boolean => !isDesktop;
 
 const COPY: Record<string, string> = {
+  too_complex: "That file takes too long to read. Import it in smaller parts.",
+  confirm_shared: "That folder is shared with other people. Choose who should see the imported pages.",
   busy: "Another import or export is still running. Try again when it finishes.",
   rate_limited: "That’s a lot of imports and exports in a short time. Try again in a little while.",
   too_large: "That’s too large to handle in one go.",
@@ -68,9 +70,18 @@ async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
 const TYPES: Record<string, string> = { zip: "application/zip", md: "text/markdown", markdown: "text/markdown", html: "text/html", htm: "text/html", csv: "text/csv" };
 const typeFor = (name: string): string => TYPES[name.slice(name.lastIndexOf(".") + 1).toLowerCase()] ?? "application/octet-stream";
 
-function importUrl(file: File, parent: string, dryRun: boolean): string {
+export interface ImportWriteOptions {
+  /** Create the pages private to the importing account. */
+  private?: boolean;
+  /** "Yes, share them": required when the destination lies under a shared page (unless private). */
+  confirmShared?: boolean;
+}
+
+function importUrl(file: File, parent: string, dryRun: boolean, opts: ImportWriteOptions = {}): string {
   const q = new URLSearchParams({ name: file.name, parent });
   if (!dryRun) q.set("dryRun", "0");
+  if (opts.private) q.set("private", "1");
+  if (opts.confirmShared) q.set("confirmShared", "1");
   return `/api/import?${q.toString()}`;
 }
 
@@ -92,8 +103,8 @@ export const transferApi = {
   },
   importPreview: (file: File, parent: string) =>
     json<ImportPreview>(importUrl(file, parent, true), { method: "POST", headers: { "Content-Type": typeFor(file.name), "X-Prism-Import": "1" }, body: file }),
-  importStart: (file: File, parent: string) =>
-    json<{ jobId: string; preview: ImportPreview }>(importUrl(file, parent, false), { method: "POST", headers: { "Content-Type": typeFor(file.name), "X-Prism-Import": "1" }, body: file }),
+  importStart: (file: File, parent: string, opts: ImportWriteOptions = {}) =>
+    json<{ jobId: string; preview: ImportPreview }>(importUrl(file, parent, false, opts), { method: "POST", headers: { "Content-Type": typeFor(file.name), "X-Prism-Import": "1" }, body: file }),
   importStatus: (id: string) => json<ImportJob>(`/api/import/${encodeURIComponent(id)}`),
   cancelImport: (id: string) => json<{ ok: boolean }>(`/api/import/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };

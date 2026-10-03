@@ -90,6 +90,10 @@ export function sweepJobs(now = Date.now()): void {
   }
 }
 
+// Expired jobs (and their archives) go away on a timer, not only when someone next asks.
+const sweeper = setInterval(() => sweepJobs(), 60_000);
+sweeper.unref();
+
 /** Test helper: forget every job (and clean up its files). */
 export function resetJobsForTests(): void {
   for (const job of [...jobs.values()]) {

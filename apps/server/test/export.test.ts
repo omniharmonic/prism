@@ -2,7 +2,10 @@
  * Export routes + engine (routes/export.ts, transfer/export.ts) against the fake
  * vault: what a ZIP contains for whom, and every way the routes refuse.
  */
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach, after } from "node:test";
+import { stopImportWorker } from "../src/transfer/import";
+import { stopExportWorker } from "../src/transfer/export";
+after(async () => { await stopImportWorker(); await stopExportWorker(); });
 import assert from "node:assert/strict";
 import { inflateRawSync } from "node:zlib";
 import { existsSync } from "node:fs";
@@ -177,7 +180,7 @@ test("vault export: the whole tree with raw kinds, minus the Trash and other peo
     "vault/Projects/Prism/Plan.md",
     "vault/Projects/Prism/Plan/Week 1.md",
   ]);
-  assert.equal(files.get("vault/Data/Budget.csv"), "a,b\n1,2\n");
+  assert.equal(files.get("vault/Data/Budget.csv"), "a,b\r\n1,2\r\n");
   assert.match(job.fileName, /^default-export-\d{4}-\d\d-\d\d\.zip$/);
   assert.equal(job.total, 6);
   assert.equal(job.done, 6);

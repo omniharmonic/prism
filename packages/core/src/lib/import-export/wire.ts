@@ -60,6 +60,19 @@ export interface ImportPreview {
   /** The first items, parents first. */
   items: ImportItem[];
   problems: Array<{ entry: string; reason: string }>;
+  /** Who will be able to open what is imported (absent on an older server). */
+  audience?: ImportAudienceInfo;
+}
+
+export interface ImportAudienceInfo {
+  /** The destination is, or lies under, a page somebody shares: writing needs `confirmShared` (or `private`). */
+  sharedPage: boolean;
+  /** Accounts that get access through that share or a whole-workspace grant. */
+  people: number;
+  /** "Anyone with the link" / public grants that reach the destination. */
+  links: number;
+  /** Workspace members see new pages by default. */
+  workspace: true;
 }
 
 export interface ImportJob {
