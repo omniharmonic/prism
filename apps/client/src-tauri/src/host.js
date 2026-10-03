@@ -4,12 +4,23 @@
 // own IPC commands. Kept dependency-free and tiny on purpose; it is the only
 // JavaScript the shell adds to the page.
 //
-// The ORIGIN placeholder below is replaced (JSON-escaped) by host.rs at startup.
+// The ORIGIN and PLATFORM placeholders below are replaced (JSON-escaped) by
+// host.rs at startup. On iOS ORIGIN is "": the server can be set or cleared
+// without a process restart there, so the live origin is read from the page's
+// <meta name="prism-server-origin"> that the shell writes into every page it
+// serves (window.rs). The CSP is the shell's either way.
 (function () {
   "use strict";
   if (window.top !== window || window.__PRISM_HOST__) return;
 
   var ORIGIN = __PRISM_ORIGIN__;
+  var PLATFORM = __PRISM_PLATFORM__;
+  var IOS = PLATFORM === "ios";
+  function currentOrigin() {
+    if (!IOS) return ORIGIN;
+    var m = document.querySelector('meta[name="prism-server-origin"]');
+    return (m && m.getAttribute("content")) || "";
+  }
   // Capture the IPC entry point as early as possible (Tauri's own init
   // scripts run before this one), so a later page script can't swap it out
   // from under the host hook.
@@ -62,7 +73,9 @@
 
   // ---- the host contract ----------------------------------------------------
   var host = {
-    apiOrigin: ORIGIN,
+    get apiOrigin() {
+      return currentOrigin();
+    },
     getToken: function () {
       return ipc("get_token").catch(function () {
         return null;
@@ -75,7 +88,8 @@
     signIn: function () {
       // A second click restarts the flow (the shell cancels the previous one),
       // e.g. after the user closed the browser tab.
-      toast("Continue in your browser to sign in…");
+      // iOS shows the system sign-in sheet over the app; no hint needed.
+      if (!IOS) toast("Continue in your browser to sign in…");
       return ipc("sign_in").then(
         function () {
           // Re-boot so the auth gate re-checks /auth/me with the new token.
@@ -171,7 +185,7 @@
       "padding:9px 10px;border-radius:8px;border:1px solid #333;background:#0d0d10;color:#fff;font:inherit"
     );
     input.type = "url";
-    input.value = ORIGIN;
+    input.value = currentOrigin();
     input.spellcheck = false;
     input.setAttribute("autocapitalize", "off");
     card.appendChild(input);
@@ -255,13 +269,46 @@
     return ipc("export_note", { content: String(content), suggestedName: String(suggestedName), format: String(format) });
   }
 
+  // WP5 (iOS): narrow wrappers over the iOS commands (capabilities/mobile.json).
+  // Each is a fixed command with fixed, typed arguments; the shell validates
+  // everything again and owns every native prompt (confirmation, Face ID).
+  var ios = {
+    // First run only (the shell refuses once a server is set).
+    setServerOrigin: function (origin) {
+      return ipc("set_server_origin", { origin: String(origin) });
+    },
+    // Native confirmation, revoke, forget; resolves false on Cancel.
+    resetServer: function () {
+      return ipc("reset_server");
+    },
+    appSettings: function () {
+      return ipc("get_app_settings");
+    },
+    setAppLock: function (mode, minutes) {
+      return ipc("set_app_lock", { mode: String(mode), minutes: minutes == null ? null : Number(minutes) });
+    },
+    pushRegister: function () {
+      return ipc("push_register");
+    },
+    pushStatus: function () {
+      return ipc("push_status");
+    },
+    takeOpenedSession: function () {
+      return ipc("push_take_opened").catch(function () {
+        return null;
+      });
+    },
+  };
+
   Object.defineProperty(window, "__PRISM_SHELL__", {
     value: Object.freeze({
+      platform: PLATFORM,
       showServerSettings: showServerSettings,
       signOut: signOut,
       toast: toast,
       notify: notify,
       exportNote: exportNote,
+      ios: IOS ? Object.freeze(ios) : null,
     }),
     writable: false,
     configurable: false,

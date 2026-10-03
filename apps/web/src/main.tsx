@@ -4,7 +4,7 @@ import { httpTranscriptReviewClient } from "./transcript-review";
 import { PublicationPreviewProvider } from "@prism/core";
 const PresentationPreview = React.lazy(() => import("./publish/PresentationPreview"));
 import ReactDOM from "react-dom/client";
-import { App, PushProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
+import { App, PushProvider, ShellSettingsProvider, VaultClientProvider, CollabSharingProvider, CollabDocumentProvider, AccountProvider, PlatformProvider, AgentClientProvider, LiveActionsProvider, HostServicesProvider, InvalidationSourceProvider, initializeSettings, GovernancePanel, useAgentChatStore, useUIStore, AGENT_CHAT_TAB, openAgentChat, type InitialTab } from "@prism/core";
 import { webAccount } from "./account";
 import { httpVaultClient } from "./parachute/HttpVaultClient";
 import { httpAgentClient } from "./agent/HttpAgentClient";
@@ -33,6 +33,10 @@ import { webPush } from "./push/webPush";
 import { initAgentDeepLink } from "./push/deeplink";
 import { initNativeExtras } from "./native/extras";
 import { installExternalImageProxy } from "./native/externalImages";
+import { isIosApp } from "./native/ios";
+import { ServerSetupScreen } from "./native/ServerSetupScreen";
+import { apnsPush, initIosPush } from "./native/apnsPush";
+import { IosAppSettings } from "./native/IosAppSettings";
 
 // Native shell: no password/magic-link form — the host runs the device-token flow.
 const SignInScreen = isNative ? NativeSignInScreen : WebLoginScreen;
@@ -137,6 +141,12 @@ export async function start() {
   // The first Keychain read can wait for an OS prompt after a local rebuild.
   // Keep that wait distinct from the following network request; do not start
   // another sign-in or discard the existing credential while approval is pending.
+  // iOS first run (WP5): the app ships with no server; ask for one.
+  if (isNative && !capability && isIosApp() && !gatewayOrigin()) {
+    root.render(<ServerSetupScreen />);
+    return;
+  }
+
   if (isNative && !capability) {
     root.render(<NativeStartupScreen phase="credentials" />);
     await getDeviceToken();
@@ -264,9 +274,11 @@ export async function start() {
       if (!id) return;
       openAgentChat({ sessionId: id });
     });
+    // iOS (WP5): APNs re-registration + notification taps → the event above.
+    if (isNative && isIosApp()) initIosPush({ owner: isOwner() });
   }
-  // Web Push (WP3.3) is a PWA + server-owner feature; native (APNs) comes with WP5.3.
-  const pushClient = !capability && !isNative && isOwner() ? webPush : null;
+  // Web Push (WP3.3) is a PWA + server-owner feature; the iOS app uses APNs (WP5.3).
+  const pushClient = capability || !isOwner() ? null : !isNative ? webPush : isIosApp() ? apnsPush : null;
   root.render(
     <React.StrictMode>
       <PlatformProvider value="web">
@@ -277,6 +289,7 @@ export async function start() {
             <AccountProvider value={capability ? null : webAccount}>
               <CollabDocumentProvider value={{ useLiveCollab, CollabDocument }}>
                 <PushProvider value={pushClient}>
+                <ShellSettingsProvider value={!capability && isNative && isIosApp() ? IosAppSettings : null}>
                 {/* Server agent sessions (WP3.2). Owner-only server-side; the UI
                     probes and hides itself on 403. None for capability viewers. */}
                 <InvalidationSourceProvider source={httpInvalidationSource}>
@@ -294,6 +307,7 @@ export async function start() {
                 </InvalidationSourceProvider>
                 <OfflineIndicator />
                 {!isNative && <UpdatePrompt />}
+                </ShellSettingsProvider>
                 </PushProvider>
               </CollabDocumentProvider>
             </AccountProvider>

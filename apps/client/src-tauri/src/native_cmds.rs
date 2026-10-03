@@ -45,7 +45,7 @@ pub async fn quick_capture<R: Runtime>(
         .token()
         .await?
         .ok_or("You're signed out. Open Prism and sign in first.")?;
-    crate::capture::post(&state.origin, &token, &body).await?;
+    crate::capture::post(&state.require_origin()?, &token, &body).await?;
     let _ = window.close();
     Ok(true)
 }

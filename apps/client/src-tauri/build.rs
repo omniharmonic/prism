@@ -16,6 +16,13 @@ fn main() {
             "quick_capture",
             "notify",
             "export_note",
+            // WP5 (iOS only; capabilities/mobile.json)
+            "reset_server",
+            "get_app_settings",
+            "set_app_lock",
+            "push_register",
+            "push_status",
+            "push_take_opened",
         ]),
     ))
     .expect("failed to run tauri-build");

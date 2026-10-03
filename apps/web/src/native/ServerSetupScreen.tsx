@@ -1,0 +1,93 @@
+// iOS first run (WP5): "Enter your server". The app ships with no server
+// built in; the owner types the address of their Prism Server once. The shell
+// checks it answers like a Prism Server, saves it, and from then on the page
+// CSP and the bearer token are bound to exactly that origin. Changing it later
+// is Settings → Account → "Sign out & change server".
+import { PrismMark } from "@prism/core";
+import { useState, type FormEvent } from "react";
+import { iosShell, shellError } from "./ios";
+
+/** What a person types → what the shell is asked to save (it validates again). */
+export function normalizeServerInput(raw: string): string {
+  const t = raw.trim();
+  if (!t) return t;
+  // "prism.example.com" → https://prism.example.com ; keep an explicit scheme.
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`;
+}
+
+export function ServerSetupScreen() {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const shell = iosShell();
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!shell || busy) return;
+    const origin = normalizeServerInput(value);
+    if (!origin) {
+      setError("Enter the address of your Prism Server.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await shell.setServerOrigin(origin);
+      // The shell serves the next page load with this server's CSP + origin.
+      window.location.reload();
+    } catch (err) {
+      setError(shellError(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: "max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom))" }}>
+      <form
+        onSubmit={(e) => void submit(e)}
+        className="workspace-auth-card"
+        style={{ width: "100%", maxWidth: 400, padding: 28, borderRadius: 16, display: "flex", flexDirection: "column", gap: 14 }}
+      >
+        <PrismMark width={72} height={48} decorative />
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>Enter your server</h1>
+          <p style={{ margin: "6px 0 0", fontSize: 14, opacity: 0.7, lineHeight: 1.5 }}>
+            Prism connects to your own Prism Server. Type its address, then sign in.
+          </p>
+        </div>
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, fontWeight: 600 }}>
+          Server address
+          <input
+            type="url"
+            inputMode="url"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            autoComplete="url"
+            placeholder="https://prism.example.com"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={busy || !shell}
+            // 16px: iOS zooms into smaller inputs on focus.
+            style={{ fontSize: 16, padding: "11px 12px", borderRadius: 10, border: "1px solid var(--glass-border, #333)", background: "var(--surface-sunken, #0d0d10)", color: "inherit", fontWeight: 400 }}
+          />
+        </label>
+        {error && (
+          <p role="alert" style={{ margin: 0, fontSize: 13, color: "var(--danger, #ff8080)" }}>
+            {error}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={busy || !shell}
+          style={{ padding: "12px 12px", borderRadius: 10, border: "none", fontSize: 16, fontWeight: 600, background: "var(--action-bg)", color: "var(--action-fg)", opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "Checking…" : "Continue"}
+        </button>
+        <p style={{ margin: 0, fontSize: 12, opacity: 0.6, lineHeight: 1.5 }}>
+          Use the https:// address you open Prism with in a browser. The app talks only to this server.
+        </p>
+      </form>
+    </div>
+  );
+}

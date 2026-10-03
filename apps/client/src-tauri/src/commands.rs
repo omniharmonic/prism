@@ -1,6 +1,7 @@
 //! The shell's entire IPC surface. Every command here is declared in build.rs
 //! and granted in capabilities/default.json; nothing else is callable.
 
+#[cfg(desktop)]
 use std::time::Duration;
 
 use tauri::{AppHandle, Runtime, State};
@@ -36,9 +37,15 @@ pub async fn sign_out_inner(state: &AppState, revoke: bool) -> Result<(), String
     // 1. Revoke server-side with whatever token we know (memory, else
     //    keychain) BEFORE touching local storage, so a keychain failure can
     //    never skip the revoke.
-    if revoke {
+    if let (true, Some(origin)) = (revoke, state.origin()) {
         if let Some(token) = state.known_token().await {
-            if let Err(e) = auth::revoke(&state.origin, &token).await {
+            // iOS: drop this device's APNs registration first, while the bearer
+            // still works (revoking also deletes it server-side; belt and braces).
+            #[cfg(target_os = "ios")]
+            if let Err(e) = auth::delete_apns(&origin, &token).await {
+                log::warn!("{e}");
+            }
+            if let Err(e) = auth::revoke(&origin, &token).await {
                 // The token also dies on its own (idle expiry) and can be
                 // revoked in Account -> Signed-in devices.
                 log::warn!("{e}");
@@ -89,13 +96,25 @@ pub async fn open_external<R: Runtime>(app: AppHandle<R>, url: String) -> Result
     Ok(true)
 }
 
+/// The configured server, or "" while none is set (iOS first run).
 #[tauri::command]
 pub fn get_server_origin(state: State<'_, AppState>) -> String {
-    state.origin.as_str().to_string()
+    state
+        .origin()
+        .map(|o| o.as_str().to_string())
+        .unwrap_or_default()
 }
 
-/// Change the server. Two gates, because page script can alter what the
-/// in-page dialog submits:
+/// Change the server.
+///
+/// iOS: only the first-run "Enter your server" screen may call this, i.e. only
+/// while NO server is set (no token exists yet, so there is nothing to steal).
+/// The address must answer like a Prism Server (`GET /health`). It is saved and
+/// applied in place; the page reloads into the sign-in screen. Changing an
+/// existing server goes through `reset_server` (native confirmation + sign-out).
+///
+/// Desktop: two gates, because page script can alter what the in-page dialog
+/// submits:
 ///  1. the single-use `grant` the shell handed to the Server settings dialog
 ///     when the user chose it from the native menu (consumed by this call,
 ///     whatever happens next);
@@ -108,13 +127,44 @@ pub async fn set_server_origin<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     origin: String,
-    grant: String,
+    grant: Option<String>,
 ) -> Result<String, String> {
     let parsed = ServerOrigin::parse(&origin)?;
+    #[cfg(mobile)]
+    {
+        let _ = (&app, grant);
+        if state.origin().is_some() {
+            return Err("A server is already set. Use Settings → Sign out & change server.".into());
+        }
+        auth::probe_server(&parsed).await?;
+        let dir = state
+            .settings_dir
+            .clone()
+            .ok_or("no settings directory on this platform")?;
+        settings::update(&dir, |s| {
+            s.server_origin = Some(parsed.as_str().to_string())
+        })
+        .map_err(|e| format!("could not save settings: {e}"))?;
+        state.set_origin(Some(parsed.clone())).await;
+        Ok(parsed.as_str().to_string())
+    }
+    #[cfg(desktop)]
+    {
+        set_server_origin_desktop(app, &state, parsed, grant.unwrap_or_default()).await
+    }
+}
+
+#[cfg(desktop)]
+async fn set_server_origin_desktop<R: Runtime>(
+    app: AppHandle<R>,
+    state: &AppState,
+    parsed: ServerOrigin,
+    grant: String,
+) -> Result<String, String> {
     if !state.take_settings_grant(&grant) {
         return Err("Open Server Settings from the Prism menu to change the server.".into());
     }
-    if parsed == state.origin {
+    if Some(&parsed) == state.origin().as_ref() {
         return Ok(parsed.as_str().to_string());
     }
     let confirmed = confirm::ask(

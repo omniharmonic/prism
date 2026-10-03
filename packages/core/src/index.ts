@@ -50,6 +50,7 @@ export type { GraphNode, GraphLink, GraphData } from "./components/layout/GraphC
 export { CollabSharingProvider, useCollabSharing, useVaultChangeSignal } from "./data/CollabSharing";
 export { AccountProvider, useAccount } from "./data/Account";
 export { PushProvider, usePush } from "./data/PushNotifications";
+export { ShellSettingsProvider } from "./data/ShellSettings";
 export type { PushClient, PushState } from "./data/PushNotifications";
 export type { AccountClient, AccountProfile, SignedInDevice, AgentToken, AgentTokenList, CreatedAgentToken } from "./data/Account";
 export { PlatformProvider, usePlatform, useIsWeb, type Platform } from "./data/Platform";

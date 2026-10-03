@@ -8,7 +8,8 @@
 //! Layout (platform code kept separate so iOS can join in WP5):
 //!   shared   origin, pkce, auth, secure_store, settings, state, host, commands
 //!   desktop  loopback (RFC 8252 redirect), menu, window::geometry
-//!   mobile   signin.rs's `#[cfg(mobile)]` arm (WP5.2)
+//!   iOS      signin.rs's ASWebAuthenticationSession arm, ios.rs + mobile_cmds.rs
+//!            (server setup, app lock, APNs) over plugins/prism-ios (Swift)
 
 mod auth;
 mod capture;
@@ -19,10 +20,13 @@ mod confirm;
 mod dropfiles;
 mod export;
 mod host;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(desktop)]
 mod loopback;
 #[cfg(desktop)]
 mod menu;
+mod mobile_cmds;
 mod native_cmds;
 mod notify;
 mod origin;
@@ -40,7 +44,7 @@ mod window;
 use tauri::utils::config::Csp;
 use tauri::Manager;
 
-use crate::origin::{build_csp, ServerOrigin};
+use crate::origin::{build_csp_for, ServerOrigin};
 use crate::state::AppState;
 
 pub const MAIN_WINDOW: &str = "main";
@@ -50,10 +54,11 @@ pub fn run() {
     let mut context = tauri::generate_context!();
 
     // Resolve the server origin BEFORE building the app: the CSP is derived
-    // from it and is fixed for the life of the process.
+    // from it (desktop: fixed for the life of the process; iOS: re-applied to
+    // every page load, window.rs).
     let identifier = context.config().identifier.clone();
     let settings_dir = settings::settings_dir(&identifier);
-    let origin = settings_dir
+    let saved = settings_dir
         .as_deref()
         .map(settings::load)
         .and_then(|s| s.server_origin)
@@ -63,9 +68,14 @@ pub fn run() {
                 log::warn!("ignoring saved server origin: {e}");
                 None
             }
-        })
-        .unwrap_or_else(ServerOrigin::build_default);
-    context.config_mut().app.security.csp = Some(Csp::Policy(build_csp(&origin)));
+        });
+    // Desktop falls back to the built-in default; iOS asks on first run
+    // ("Enter your server") and never assumes one.
+    #[cfg(desktop)]
+    let origin = Some(saved.unwrap_or_else(ServerOrigin::build_default));
+    #[cfg(mobile)]
+    let origin = saved;
+    context.config_mut().app.security.csp = Some(Csp::Policy(build_csp_for(origin.as_ref())));
 
     let state = AppState::new(origin, identifier, settings_dir);
 
@@ -84,6 +94,12 @@ pub fn run() {
             native_cmds::quick_capture,
             native_cmds::notify,
             native_cmds::export_note,
+            mobile_cmds::reset_server,
+            mobile_cmds::get_app_settings,
+            mobile_cmds::set_app_lock,
+            mobile_cmds::push_register,
+            mobile_cmds::push_status,
+            mobile_cmds::push_take_opened,
         ])
         .setup(|app| {
             #[cfg(desktop)]
@@ -103,8 +119,36 @@ pub fn run() {
                 let dir = app.state::<AppState>().settings_dir.clone();
                 shortcut::register(app.handle(), dir.as_deref());
             }
+            // iOS: apply the saved app lock before the first frame (a cover
+            // view goes up and Face ID runs as soon as the app is active).
+            #[cfg(target_os = "ios")]
+            {
+                let lock = app
+                    .state::<AppState>()
+                    .settings_dir
+                    .as_deref()
+                    .map(settings::load)
+                    .and_then(|s| s.app_lock)
+                    .unwrap_or_default();
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(ios) = ios::plugin(&handle) {
+                        if let Err(e) = ios
+                            .configure_lock(lock.mode.as_str(), lock.minutes, true)
+                            .await
+                        {
+                            log::warn!("app lock: {e}");
+                        }
+                    }
+                });
+            }
             Ok(())
         });
+
+    #[cfg(target_os = "ios")]
+    {
+        builder = builder.plugin(tauri_plugin_prism_ios::init());
+    }
 
     #[cfg(desktop)]
     {
