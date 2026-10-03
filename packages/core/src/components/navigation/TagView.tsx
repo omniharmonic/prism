@@ -4,6 +4,7 @@ import { useUIStore } from "../../app/stores/ui";
 import { inferContentType, CONTENT_TYPE_LABELS } from "../../lib/schemas/content-types";
 import { Badge } from "../ui/Badge";
 import type { Note } from "../../lib/types";
+import { OpenAsDatabaseButton } from "../database/OpenAsDatabaseButton";
 
 interface TagViewProps {
   tag: string;
@@ -48,6 +49,7 @@ export function TagView({ tag }: TagViewProps) {
               {isLoading ? "Loading..." : `${notes?.length ?? 0} notes`}
             </p>
           </div>
+          <OpenAsDatabaseButton tag={tag} />
         </div>
 
         {/* Note list */}

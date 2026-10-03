@@ -47,7 +47,8 @@ export interface QuerySpec {
   limit?: number;
   /** Opaque, from a previous page's `next`; bound to this exact query. */
   cursor?: string | null;
-  /** Metadata keys to return per row (≤ 40). `title` is always returned. */
+  /** Metadata keys to return per row (≤ 40; `title` is always returned).
+   *  Omitted = each row's whole metadata (no content). */
   fields?: string[];
   /** Case-insensitive substring over the title. */
   search?: string;
@@ -171,8 +172,13 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
   return { ok: true, spec };
 }
 
-/** Every metadata key the engine must read to evaluate `spec` (for lean listings). */
-export function metadataKeysFor(spec: QuerySpec): string[] {
+/**
+ * Every metadata key the engine must read to evaluate `spec` (for lean listings),
+ * or null when `spec.fields` is omitted — then every row carries its whole
+ * metadata (still never content), for tags with no schema to name the keys.
+ */
+export function metadataKeysFor(spec: QuerySpec): string[] | null {
+  if (!spec.fields) return null;
   const keys = new Set<string>(["title"]);
   for (const k of spec.fields ?? []) keys.add(k);
   for (const c of spec.filter?.conditions ?? []) if (isFieldKey(c.key)) keys.add(c.key);
@@ -347,7 +353,7 @@ export function decodeCursor(spec: QuerySpec): number | null {
 export function projectRow(n: QueryInput, fields: string[] | undefined): QueryRow {
   const metadata: Record<string, unknown> = {};
   const src = n.metadata ?? {};
-  for (const k of ["title", ...(fields ?? [])]) {
+  for (const k of fields ? ["title", ...fields] : Object.keys(src)) {
     if (Object.prototype.hasOwnProperty.call(src, k)) metadata[k] = src[k];
   }
   return {

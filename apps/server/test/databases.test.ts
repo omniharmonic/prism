@@ -283,3 +283,17 @@ test("properties: access rules", async () => {
   assert.equal((await req("/properties/t1", { method: "POST", headers: J, body: JSON.stringify({ set: { a: 1 } }) })).status, 401);
   assert.equal(fv.calls.filter((call) => call.method === "PATCH").length, 0);
 });
+
+test("query: without `fields` rows carry whole metadata (never content); non-owners lose creator stamps", async () => {
+  seedTasks();
+  const owner = (await (await query({ tags: ["task"], search: "alpha" }, login(OWNER))).json()) as any;
+  assert.deepEqual(Object.keys(owner.rows[0].metadata).sort(), ["due", "points", "prism_creator", "status", "title"]);
+  const listing = fv.calls.find((call) => call.method === "GET" && call.path.endsWith("/notes"))!;
+  assert.doesNotMatch(listing.search, /include_metadata=/, "whole metadata");
+  assert.doesNotMatch(listing.search, /include_content=true/);
+  assert.equal(JSON.stringify(owner).includes("BODY-"), false);
+  grantUser("kai@test.local", "tag", "task", "view");
+  const member = (await (await query({ tags: ["task"], search: "alpha" }, login("kai@test.local"))).json()) as any;
+  assert.equal(member.rows[0].metadata.prism_creator, undefined);
+  assert.equal(member.rows[0].metadata.points, 3);
+});

@@ -285,11 +285,11 @@ const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
 const listCache = new Map<string, { expires: number; value: Promise<Note[]> }>();
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
 
-function leanList(entry: VaultEntry, tag: string, keys: string[]): Promise<Note[]> {
-  const k = `${entry.id}\u0000${tag}\u0000${[...keys].sort().join(",")}`;
+function leanList(entry: VaultEntry, tag: string, keys: string[] | null): Promise<Note[]> {
+  const k = `${entry.id}\u0000${tag}\u0000${keys ? [...keys].sort().join(",") : "*"}`;
   const hit = listCache.get(k);
   if (hit && hit.expires > Date.now()) return hit.value;
-  const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys, limit: SCAN_MAX + 1 });
+  const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys ?? undefined, limit: SCAN_MAX + 1 });
   listCache.set(k, { expires: Date.now() + LIST_TTL_MS, value });
   value.catch(() => listCache.delete(k));
   if (listCache.size > 100) for (const [key, v] of listCache) if (v.expires <= Date.now()) listCache.delete(key);
@@ -306,7 +306,8 @@ databasesApi.post("/query", async (c) => {
   const owner = isAdmin(actor);
   let notes: Note[];
   try {
-    notes = await leanList(entry, spec.tags[0]!, [...metadataKeysFor(spec), ...PERMISSION_KEYS]);
+    const keys = metadataKeysFor(spec);
+    notes = await leanList(entry, spec.tags[0]!, keys ? [...keys, ...PERMISSION_KEYS] : null);
   } catch (e) {
     return vaultFailure(c, e);
   }
@@ -325,7 +326,9 @@ databasesApi.post("/query", async (c) => {
   try {
     const page = runQuery(visible, spec, { limited: !owner, truncated });
     // Permission keys are read for the filter above, never returned unless asked for.
-    for (const r of page.rows) for (const k of PERMISSION_KEYS) if (!spec.fields?.includes(k)) delete r.metadata[k];
+    // (With `fields` omitted, the owner gets whole metadata as the passthrough would;
+    // a non-owner never gets another person's creator stamp from a listing.)
+    for (const r of page.rows) for (const k of PERMISSION_KEYS) if (spec.fields ? !spec.fields.includes(k) : !owner) delete r.metadata[k];
     c.header("Cache-Control", "private, no-store");
     return c.json(page);
   } catch (e) {

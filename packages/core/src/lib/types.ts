@@ -17,7 +17,8 @@ export type ContentType =
   | "dashboard"
   | "messages-dashboard"
   | "network"
-  | "bioregion-entity";
+  | "bioregion-entity"
+  | "database";
 
 // Parachute Note — the canonical data model
 export interface Note {
@@ -283,4 +284,6 @@ export const CONTENT_DEFAULTS: Record<ContentType, { content: string; metadata: 
   // Virtual surface — never created as a note; present only to satisfy the map.
   network: { content: "", metadata: { type: "network" } },
   "bioregion-entity": { content: "", metadata: { type: "bioregion-entity" } },
+  // A database page; it asks for its source tag on first open (DatabaseRenderer).
+  database: { content: "", metadata: { prism_type: "database" } },
 };
