@@ -1,84 +1,133 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 
-/** Wave 2B page cover (NP-PG-02). */
-const SHOTS = process.env.PRISM_EDITOR_SHOTS;
-const meta = (page: Page) => page.evaluate(() => (window as any).prismMediaMeta as Array<Record<string, unknown>>);
+/** Wave 2E · NP-PG-06: one quiet header row with save state and labelled actions. */
+test("header carries save state, Share, Agent, ⋯", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const saved = page.locator(".sync-state-header");
+  const share = page.getByRole("button", { name: "Share", exact: true });
+  const agent = page.getByRole("button", { name: "AI Agent", exact: true });
+  const more = page.getByRole("button", { name: "Page actions", exact: true });
+  const star = page.getByRole("button", { name: "Add to Favorites" });
+  await expect(saved).toHaveText("Saved");
+  await expect(share).toHaveText("Share");
+  await expect(agent).toHaveText("Agent");
+  await expect(more).toBeVisible();
+  await expect(star).toBeVisible();
+  const boxes = await Promise.all([saved, share, agent, more, star].map((l) => l.boundingBox()));
+  const centre = boxes[0]!.y + boxes[0]!.height / 2;
+  for (const b of boxes) expect(Math.abs(b!.y + b!.height / 2 - centre)).toBeLessThanOrEqual(3);
+  await agent.click();
+  await expect(page.getByLabel("Document companion")).toBeVisible();
+  await page.screenshot({ path: info.outputPath("header-desktop.png") });
+  await page.evaluate(() => { document.documentElement.classList.replace("light", "dark"); });
+  await page.screenshot({ path: info.outputPath("header-desktop-dark.png") });
 
-test.beforeEach(async ({ page }) => {
-  await page.route("**/api/attachments/*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
-});
-
-test("cover add, reposition, remove", async ({ page }) => {
-  await page.goto("/e2e-fixtures/notion-media.html");
-  await page.locator(".document-page-header").hover();
-  await page.getByRole("button", { name: "Add cover" }).click();
-  const cover = page.locator(".document-cover");
-  await expect(cover).toBeVisible();
-  await expect.poll(async () => String((await meta(page)).at(-1)?.cover ?? "")).toMatch(/^gradient:/);
-  await expect(page.getByRole("button", { name: "Add cover" })).toHaveCount(0);
-  // Change → Gallery preset.
-  await cover.hover();
-  await page.getByRole("button", { name: "Change cover" }).click();
-  const picker = page.getByRole("dialog", { name: "Page cover" });
-  await picker.getByRole("listitem", { name: "Lagoon gradient" }).click();
-  await expect.poll(async () => (await meta(page)).at(-1)).toEqual({ cover: "gradient:lagoon", coverY: 50 });
-  // Change → Upload.
-  await cover.hover();
-  await page.getByRole("button", { name: "Change cover" }).click();
-  await picker.getByRole("tab", { name: "Upload" }).click();
-  await picker.locator('input[type="file"]').setInputFiles("e2e-fixtures/media/cover.png");
-  await expect(cover.locator("img")).toHaveAttribute("src", "/api/attachments/a_img1");
-  expect((await page.evaluate(() => (window as any).prismMediaUploads)).at(-1)).toMatchObject({ name: "cover.png", kind: "image" });
-  // Reposition by drag, then Save.
-  await cover.hover();
-  await page.getByRole("button", { name: "Reposition" }).click();
-  await expect(cover).toHaveAttribute("data-repositioning", "true");
-  const b = (await cover.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 3, b.y + b.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(b.x + b.width / 3, b.y + b.height / 2 + b.height * 0.3, { steps: 8 });
-  await page.mouse.up();
-  await page.getByRole("button", { name: "Save position" }).click();
-  const saved = (await meta(page)).at(-1)!;
-  expect(saved.cover).toBe("/api/attachments/a_img1");
-  expect(Number(saved.coverY)).toBeLessThan(35);
-  await expect(cover.locator("img")).toHaveCSS("object-position", new RegExp(`50% ${saved.coverY}%`));
-  // Keyboard reposition is available too (↑/↓ then Enter).
-  await cover.hover();
-  await page.getByRole("button", { name: "Reposition" }).click();
-  await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("Enter");
-  expect(Number((await meta(page)).at(-1)!.coverY)).toBe(Number(saved.coverY) + 5);
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/cover-desktop.png` });
-  // Link tab refuses non-https.
-  await cover.hover();
-  await page.getByRole("button", { name: "Change cover" }).click();
-  await picker.getByRole("tab", { name: "Link" }).click();
-  await picker.getByRole("textbox", { name: "Image link" }).fill("javascript:alert(1)");
-  await picker.getByRole("button", { name: "Use link" }).click();
-  await expect(picker.getByRole("alert")).toHaveText("Paste an https:// image link.");
-  await page.keyboard.press("Escape");
-  // Remove.
-  await cover.hover();
-  await page.getByRole("button", { name: "Remove" }).click();
-  await expect(cover).toHaveCount(0);
-  expect((await meta(page)).at(-1)).toEqual({ cover: null, coverY: null });
-});
-
-test("cover renders cropped on phone and in dark mode; read-only has no controls", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/e2e-fixtures/notion-media.html?dark&cover=" + encodeURIComponent("/api/attachments/a_cover"));
-  const cover = page.locator(".document-cover");
-  await expect(cover.locator("img")).toBeVisible();
-  const box = (await cover.boundingBox())!;
-  expect(box.width).toBeGreaterThanOrEqual(388); // edge to edge
-  expect(box.height).toBe(132);
-  await expect(cover.locator("img")).toHaveCSS("object-fit", "cover");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await expect(page.getByRole("button", { name: "Change cover" })).toBeVisible(); // touch: controls always shown
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/cover-phone-dark.png` });
-  await page.goto("/e2e-fixtures/notion-media.html?readonly&cover=gradient:spectrum");
-  await expect(page.locator(".document-cover")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Change cover" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Add cover" })).toHaveCount(0);
+  await expect(page.locator(".sync-state-phone")).toHaveAttribute("data-sync-state", "saved");
+  await expect(page.locator(".sync-state-phone .sync-state-dot")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Page actions", exact: true })).toBeVisible();
+  await expect(page.getByText("A living workspace").first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("header-phone-dark.png") });
+});
+
+/** Wave 2E · NP-PG-08 */
+test("full width, small text, font persist per page", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor).toBeVisible();
+  const main = page.locator("#workspace-document");
+  const measure = () => page.locator(".prose-editor").first().evaluate((n) => n.getBoundingClientRect().width);
+  const narrow = await measure();
+  const menu = () => page.getByRole("button", { name: "Page actions", exact: true }).click();
+  await menu();
+  await page.getByRole("menuitem", { name: /Full width/ }).click();
+  await expect(main).toHaveAttribute("data-page-full", "true");
+  expect(await measure()).toBeGreaterThan(narrow + 40);
+  await menu();
+  await page.getByRole("menuitem", { name: /Small text/ }).click();
+  await expect(main).toHaveAttribute("data-page-small", "true");
+  await menu();
+  await page.getByRole("menuitem", { name: /Serif font/ }).click();
+  await expect(page.locator("[data-content-font=serif]").first()).toBeVisible();
+  // Style writes are metadata-only and never touch the body.
+  const writes = await page.evaluate(() => (window as any).prismShell.writes as Array<{ path: string; body: any }>);
+  expect(writes.filter((w) => w.path.endsWith("/meta")).every((w) => !("content" in w.body) && w.body.set.prism_page_style)).toBe(true);
+  expect(writes.some((w) => "content" in w.body)).toBe(false);
+  await page.screenshot({ path: info.outputPath("page-style-desktop.png") });
+  // Another device (a fresh page) honours the stored style.
+  await page.reload();
+  await expect(editor).toBeVisible();
+  await expect(main).toHaveAttribute("data-page-full", "true");
+  await expect(main).toHaveAttribute("data-page-small", "true");
+  await expect(page.locator("[data-content-font=serif]").first()).toBeVisible();
+  // Turning one flag off keeps the other.
+  await menu();
+  await page.getByRole("menuitem", { name: /Full width/ }).click();
+  await expect(main).not.toHaveAttribute("data-page-full", "true");
+  await expect(main).toHaveAttribute("data-page-small", "true");
+  // Other pages keep their own style.
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("agenda", "Workshop agenda", "document"));
+  await expect(page.getByText("Saturday: opening discussion", { exact: false })).toBeVisible();
+  await expect(main).not.toHaveAttribute("data-page-small", "true");
+});
+
+/** Wave 2E · NP-PG-10 */
+test("backlinks pill lists linking pages", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const pill = page.getByRole("button", { name: "2 backlinks" });
+  await expect(pill).toBeVisible(); // the hidden page is never counted
+  await pill.click();
+  const list = page.getByRole("region", { name: "Pages that link here" });
+  await expect(list.getByRole("button")).toHaveCount(2);
+  await expect(list).toContainText("Workshop agenda");
+  await expect(list).toContainText("See A living workspace for the plan.");
+  await expect(list).not.toContainText("hidden-page");
+  await page.screenshot({ path: info.outputPath("backlinks-desktop.png") });
+  await page.keyboard.press("Escape");
+  await expect(list).toHaveCount(0);
+  await expect(pill).toBeFocused();
+  await pill.click();
+  await list.getByRole("button", { name: /Field notes/ }).click();
+  await expect(page.getByText("Notes from the last conversation")).toBeVisible();
+  // A page nobody links to has no pill.
+  await expect(page.getByRole("button", { name: /backlinks?$/ })).toHaveCount(0);
+});
+
+/** Wave 2E · NP-PG-14 */
+test("empty page starters vanish on typing", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const starters = page.getByRole("group", { name: "Start this page" });
+  await expect(starters).toHaveCount(0); // a page with content never shows them
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("blank", "Untitled", "document"));
+  await expect(starters).toBeVisible();
+  for (const name of ["Empty page", "Template", "Import"]) await expect(starters.getByRole("button", { name })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("empty-starters.png") });
+  // Template fills this page (the editor then autosaves as usual).
+  await starters.getByRole("button", { name: "Template" }).click();
+  await page.getByRole("list", { name: "Templates" }).getByRole("button", { name: "Meeting notes" }).click();
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor.locator("h2")).toHaveText("Agenda");
+  await expect(starters).toHaveCount(0);
+  await expect.poll(async () => (await page.evaluate(() => (window as any).prismShell.writes)).some((w: any) => w.path.endsWith("/blank") && String(w.body.content).includes("Agenda")), { timeout: 8000 }).toBe(true);
+  // Undo back to empty brings them back; typing removes them again.
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(starters).toBeVisible();
+  await starters.getByRole("button", { name: "Empty page" }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.type("Hello");
+  await expect(starters).toHaveCount(0);
+  // Import a Markdown file into an empty page.
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.press("Backspace");
+  await expect(starters).toBeVisible();
+  const chooser = page.waitForEvent("filechooser");
+  await starters.getByRole("button", { name: "Import" }).click();
+  await (await chooser).setFiles({ name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# Imported\n\n- one\n- two\n<script>window.bad = 1</script>") });
+  await expect(editor.locator("h1")).toHaveText("Imported");
+  await expect(editor.locator("li")).toHaveCount(2);
+  expect(await page.evaluate(() => (window as any).bad)).toBeUndefined();
 });

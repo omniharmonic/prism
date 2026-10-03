@@ -47,6 +47,10 @@ import {
   TRASH_RETENTION_DAYS,
   LOCK_KEY,
   ORDER_KEY,
+  PAGE_STYLE_KEY,
+  parsePageStyle,
+  pageStyleOf,
+  isLocked,
   PREFERENCE_LIMITS,
   EMPTY_PREFERENCES,
   isTrashed,
@@ -449,9 +453,17 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     const body = await readBody(c);
     const set = body?.set && typeof body.set === "object" && !Array.isArray(body.set) ? (body.set as Record<string, unknown>) : null;
     const keys = set ? Object.keys(set) : [];
-    if (!set || !keys.length || keys.some((k) => k !== LOCK_KEY && k !== ORDER_KEY)) return c.json({ error: "bad_request", reason: `set ${LOCK_KEY} and/or ${ORDER_KEY}` }, 400);
+    if (!set || !keys.length || keys.some((k) => k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY)) return c.json({ error: "bad_request", reason: `set ${LOCK_KEY}, ${ORDER_KEY} and/or ${PAGE_STYLE_KEY}` }, 400);
     if (LOCK_KEY in set && typeof set[LOCK_KEY] !== "boolean") return c.json({ error: "bad_request" }, 400);
     if (ORDER_KEY in set && (typeof set[ORDER_KEY] !== "number" || !Number.isFinite(set[ORDER_KEY] as number))) return c.json({ error: "bad_request" }, 400);
+    // Per-page style (wave 2E, NP-PG-08): presentation only, needs `edit`; stored normalised.
+    let stylePatch: { small?: boolean; full?: boolean } | null = null;
+    if (PAGE_STYLE_KEY in set) {
+      const style = parsePageStyle(set[PAGE_STYLE_KEY]);
+      if (!style) return c.json({ error: "bad_request", reason: `${PAGE_STYLE_KEY} is {small?: boolean, full?: boolean}` }, 400);
+      stylePatch = style;
+    }
+    const needsOrganize = LOCK_KEY in set || ORDER_KEY in set;
     const entry = entryFor(c, actor);
     let note: Note;
     try {
@@ -460,7 +472,14 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       return vaultErr(c, e);
     }
     if (!canView(actor, noteRef(note))) return c.json({ error: "forbidden" }, 403);
-    if (!canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
+    if (needsOrganize && !canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
+    // Each key is checked on its own: style + lock/order in one request needs edit AND organize.
+    if (stylePatch && !(isAdmin(actor) || capsOf(actor, noteRef(note)).has("edit"))) return c.json({ error: "forbidden", reason: "Changing the page style needs edit access." }, 403);
+    if (stylePatch) {
+      const current = pageStyleOf(note);
+      set[PAGE_STYLE_KEY] = { small: stylePatch.small ?? current.small === true, full: stylePatch.full ?? current.full === true };
+    }
+    if (PAGE_STYLE_KEY in set && isLocked(note)) return c.json({ error: "locked", reason: "This page is locked." }, 423);
     if (typeof body!.if_updated_at !== "string") return c.json({ error: "precondition_required" }, 428);
     try {
       const updated = await casWrite(entry, note.id, null, body!.if_updated_at as string, { metadata: set }, true);
@@ -469,7 +488,7 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         const collab = await import("./collab").catch(() => null);
         collab?.setNoteLocked(entry.id, note.id, set[LOCK_KEY] === true);
       }
-      return c.json({ ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata: { [LOCK_KEY]: updated.metadata?.[LOCK_KEY] ?? null, [ORDER_KEY]: updated.metadata?.[ORDER_KEY] ?? null } });
+      return c.json({ ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata: { [LOCK_KEY]: updated.metadata?.[LOCK_KEY] ?? null, [ORDER_KEY]: updated.metadata?.[ORDER_KEY] ?? null, [PAGE_STYLE_KEY]: updated.metadata?.[PAGE_STYLE_KEY] ?? null } });
     } catch (e) {
       return vaultErr(c, e);
     }

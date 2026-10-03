@@ -138,6 +138,10 @@ export async function fetchMe(): Promise<Me> {
     cachedMe = me;
     cachedMeContext = context;
     useAgentChatStore.getState().bindScope(agentScope());
+    // The server says nobody is signed in (session expired/revoked, PWA 401):
+    // cached pages and device-local page lists of the previous account go now,
+    // not at the next sign-in (wave 2E review M4). Capability viewers keep theirs.
+    if (!me.authenticated && !getCapabilityToken()) await clearReadCache();
     await bindCacheUser(cachedMe.email);
     return cachedMe;
   } catch {

@@ -54,7 +54,12 @@ function App({ skipOnboarding, initialTab }: { skipOnboarding?: boolean; initial
   // A newly confirmed account/vault must not inherit in-memory query results.
   // The keyed provider recreates observers as well as their cache; persistent
   // drafts remain in the separately scoped host stores.
-  const queryClient = useMemo(() => new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1 } } }), [audience]);
+  // Offline (wave 2E, NP-OF-01/03/04): TanStack's default `networkMode: "online"`
+  // PAUSES queries and mutations while the browser is offline, so cached pages
+  // never reached the host's offline read cache and an offline save sat in
+  // memory (lost on reload) instead of the durable outbox. Queries run once
+  // (the transport serves its cache), mutations always reach the transport.
+  const queryClient = useMemo(() => new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1, networkMode: "offlineFirst" }, mutations: { networkMode: "always" } } }), [audience]);
   const [onboarded, setOnboarded] = useState(() => {
     try {
       return localStorage.getItem("prism:onboarded") === "true";

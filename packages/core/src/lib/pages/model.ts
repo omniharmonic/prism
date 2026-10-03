@@ -359,3 +359,30 @@ export function comparePages(a: { name: string; order: number | null }, b: { nam
  */
 export const OWNER_ONLY_META = ["prism_creator", "prism_visibility", TRASH_META.at, TRASH_META.by, TRASH_META.root, TRASH_META.path] as const;
 export const isOwnerOnlyMeta = (key: string): boolean => (OWNER_ONLY_META as readonly string[]).includes(key) || key.startsWith("prism_trashed_");
+
+// ── Per-page style (NP-PG-08, wave 2E) ──────────────────────────────────────
+/** Metadata: per-page presentation, `{ small?: true, full?: true }`. The page
+ *  font stays in `metadata.contentFont` (the existing per-document Sans/Serif/
+ *  Mono). Written only through the pages meta endpoint (CAS, live-doc safe). */
+export const PAGE_STYLE_KEY = "prism_page_style";
+export interface PageStyle { small?: boolean; full?: boolean }
+
+/** Strict: an object holding only boolean `small`/`full`; anything else → null.
+ *  Returns just the keys given (a PATCH). The server merges it onto the stored
+ *  style and writes BOTH keys as explicit booleans — the vault merges nested
+ *  metadata, so turning a flag off must be stored as `false`. */
+export function parsePageStyle(value: unknown): PageStyle | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const keys = Object.keys(v);
+  if (keys.some((k) => k !== "small" && k !== "full")) return null;
+  if (keys.some((k) => typeof v[k] !== "boolean")) return null;
+  const out: PageStyle = {};
+  if (typeof v.small === "boolean") out.small = v.small;
+  if (typeof v.full === "boolean") out.full = v.full;
+  return out;
+}
+
+export function pageStyleOf(note: { metadata?: Record<string, unknown> | null } | null | undefined): PageStyle {
+  return parsePageStyle(note?.metadata?.[PAGE_STYLE_KEY]) ?? {};
+}

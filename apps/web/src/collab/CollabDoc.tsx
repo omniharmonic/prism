@@ -19,6 +19,7 @@ function vaultDocName(noteId: string): string {
 }
 import { updateNote as restUpdateNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -137,6 +138,24 @@ function ScopedCollabDoc({
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+  // Wave 2E (NP-OF-01): live documents feed the shell's one sync state.
+  const [unsynced, setUnsynced] = useState(0);
+  useEffect(() => {
+    if (!provider) return;
+    const update = ({ number }: { number: number }) => setUnsynced(number);
+    provider.on("unsyncedChanges", update);
+    return () => { provider.off("unsyncedChanges", update); };
+  }, [provider]);
+  useEffect(() => {
+    const key = `collab:${noteId}`;
+    reportSyncSource(key, connected
+      ? (unsynced > 0 ? "saving" : "idle")
+      // Socket down with edits the server hasn't taken: never "Saved". They are on
+      // this device (local), still being written locally (saving), or at risk (failed).
+      : unsynced > 0 ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
+        : localSave === "unavailable" ? "failed" : "idle");
+    return () => reportSyncSource(key, null);
+  }, [noteId, connected, unsynced, localSave]);
   const [level, setLevel] = useState<string | null>(null);
   const [title, setTitle] = useState("Shared document");
   const [titleNotice, setTitleNotice] = useState("");
@@ -485,7 +504,7 @@ function ScopedCollabDoc({
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+      <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Cover band — same component and metadata as the non-collab view */}
         {isDocument && <div className="collab-cover-bleed"><PageCover
           cover={cover}
@@ -538,6 +557,7 @@ function ScopedCollabDoc({
 
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
         {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
+        {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
@@ -600,6 +620,10 @@ function ScopedCollabDoc({
                 hostPath={canReview && !getCapabilityToken() ? path : undefined}
                 noteId={noteId}
               />
+            )}
+            {/* Only once synced: a starter must never race the server's own content. */}
+            {embedded && isDocument && editor && editable && synced && !effectiveSuggesting && (
+              <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>
             )}
           </div>
           {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}

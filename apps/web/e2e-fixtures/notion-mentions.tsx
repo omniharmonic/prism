@@ -59,7 +59,7 @@ function links(id: string) {
   const out: Array<{ sourceId: string; targetId: string; relationship: string; createdAt: string }> = [];
   for (const n of notes) {
     for (const m of extractMentions(n.content)) {
-      if ((m.kind === "page" || m.kind === "person") && m.id && (n.id === id || m.id === id)) out.push({ sourceId: n.id, targetId: m.id, relationship: "mentions", createdAt: n.updatedAt });
+      if ((m.kind === "page" || m.kind === "person") && m.id && (n.id === id || m.id === id)) out.push({ sourceId: n.id, targetId: m.id, relationship: "mentions", createdAt: n.updatedAt ?? "" });
     }
   }
   return out;

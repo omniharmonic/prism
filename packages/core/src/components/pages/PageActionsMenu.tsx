@@ -14,13 +14,19 @@ import {
   Pencil,
   Star,
   Trash2,
+  CloudDownload,
+  CloudOff,
+  Check,
+  Type,
+  MoveHorizontal,
 } from "lucide-react";
+import { useOfflineAvailability } from "../../lib/offline/availability";
 import { useNote } from "../../app/hooks/useParachute";
 import { useUIStore } from "../../app/stores/ui";
 import { useIsMobile } from "../../app/hooks/useIsMobile";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { isVaultNoteId } from "../../lib/noteIdentity";
-import { isLocked, protectionReason } from "../../lib/pages/model";
+import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import type { Note } from "../../lib/types";
@@ -56,6 +62,13 @@ export function usePageMenuItems(
   const canEdit = !caps || caps.includes("edit");
   const protectedReason = protectionReason(subject);
   const isFav = favoriteIds.includes(page.id);
+  const offline = useOfflineAvailability(real ? page.id : null);
+  // Per-page style (NP-PG-08): font = the page's own contentFont (the open
+  // document registers its setter), small text / full width = prism_page_style.
+  const docFont = useUIStore((s) => s.docFont);
+  const docFontSetter = useUIStore((s) => s.docFontSetter);
+  const activeNoteId = useUIStore((s) => s.openTabs.find((t) => t.id === s.activeTabId)?.noteId);
+  const style = pageStyleOf(note);
   const run = (fn: () => void) => () => {
     opts.close();
     fn();
@@ -93,6 +106,31 @@ export function usePageMenuItems(
           icon: locked ? <LockOpen size={15} /> : <Lock size={15} />,
           onClick: run(() => void actions.toggleLock(note)),
         }]
+      : []),
+    ...(offline.supported
+      ? [{
+          id: "offline",
+          label: offline.available ? "Remove offline copy" : "Make available offline",
+          icon: offline.available ? <CloudOff size={15} /> : <CloudDownload size={15} />,
+          detail: offline.available ? "Available offline on this device" : undefined,
+          onClick: run(offline.toggle),
+        }]
+      : []),
+    ...(docFontSetter && activeNoteId === page.id
+      ? (["sans", "serif", "mono"] as const).map((font, i) => ({
+          id: `font-${font}`,
+          label: font === "sans" ? "Default font" : font === "serif" ? "Serif font" : "Mono font",
+          icon: docFont === font ? <Check size={15} /> : <Type size={15} />,
+          startsGroup: i === 0,
+          detail: docFont === font ? "Current" : undefined,
+          onClick: run(() => docFontSetter(font)),
+        }))
+      : []),
+    ...(canEdit && note && !locked && activeNoteId === page.id
+      ? [
+          { id: "small-text", label: "Small text", icon: style.small ? <Check size={15} /> : <Type size={13} />, detail: style.small ? "On" : undefined, startsGroup: !(docFontSetter && activeNoteId === page.id), onClick: run(() => void actions.setPageStyle(note, { small: !style.small })) },
+          { id: "full-width", label: "Full width", icon: style.full ? <Check size={15} /> : <MoveHorizontal size={15} />, detail: style.full ? "On" : undefined, onClick: run(() => void actions.setPageStyle(note, { full: !style.full })) },
+        ]
       : []),
     { id: "export-md", label: "Export as Markdown", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "markdown")) },
     { id: "export-html", label: "Export as HTML", icon: <FileDown size={15} />, onClick: run(() => void actions.exportPage(page, "html")) },

@@ -5,6 +5,7 @@ import "./styles/glass.css";
 import "./styles/typography.css";
 import "./styles/collab.css";
 import "./styles/workspace.css";
+import "./styles/shell.css";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
@@ -254,6 +255,15 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
+
+// Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
+export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";
+export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
+export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";
+export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
+export { isVaultNoteId } from "./lib/noteIdentity";
+export { BacklinksPill } from "./components/layout/BacklinksPill";
+export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
 // Wave 2A: @-mentions, notifications inbox, reminders, access requests.
 export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";
