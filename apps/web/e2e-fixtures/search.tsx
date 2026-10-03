@@ -16,7 +16,7 @@ const vault = {
     if (controls.semantic === "fail") throw new Error("Unavailable");
     return scope === "search-b" || q === "nothing" ? [] : params.has("many") ? [note, ...Array.from({length:10}, (_,i)=>({...note,id:`message-${i}`,path:`Messages/Design/Prism discussion ${i + 1}`,metadata:{type:"message-thread"},content:"A conversation about the new collaborative workspace."}))] : [{ ...note, _snippet: "A matching passage about connected ideas." }];
   },
-  search: async (q: string) => { controls.requests.push(`keyword:${q}`); if (controls.keyword === "fail") throw new Error("Denied"); return q === "nothing" ? [] : [note]; },
+  search: async (q: string) => { controls.requests.push(`keyword:${q}`); if (controls.keyword === "fail") throw new Error("Denied"); if (useAgentChatStore.getState().scope === "search-b") return []; if (controls.keyword === "extra") return [{ ...note, id: "exact-title", path: "Library/Ideas ledger", content: "<p>A plain keyword hit the ranked index has not seen yet.</p>" }, note, { ...note, id: "body-only", path: "Library/Minutes", content: "<p>Loose ideas were mentioned once.</p>" }]; return q === "nothing" ? [] : [note]; },
 } as unknown as VaultClient;
 const agent = { listSessions: async () => [] } as unknown as AgentClient;
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
