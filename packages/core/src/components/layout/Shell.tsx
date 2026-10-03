@@ -264,12 +264,14 @@ function useSidebarPeek(enabled: boolean) {
   const leave = useCallback(() => { clear(); timer.current = window.setTimeout(() => setOpen(false), 220); }, []);
   useEffect(() => { if (!enabled) { clear(); setOpen(false); } }, [enabled]);
   useEffect(() => { setOpen(false); }, [activeTabId]);
+  // Listen for the whole time the peek is possible (not only once it opened), so
+  // an Esc in the first frame after it appears is never missed.
   useEffect(() => {
-    if (!open) return;
+    if (!enabled) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { clear(); setOpen(false); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [enabled]);
   useEffect(() => clear, []);
   return { open: enabled && open, enter, leave };
 }
