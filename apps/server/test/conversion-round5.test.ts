@@ -38,6 +38,7 @@ import * as precheck from "../src/convert/precheck";
 import { vaultClient } from "../src/parachute";
 import { db } from "../src/db";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
+import { HTML_SHAPES, MD_SHAPES, table } from "./fixtures/conversion-shapes";
 
 const OWNER = "owner@test.local";
 const EDITOR = "editor@test.local";
@@ -262,70 +263,6 @@ const covers = (state: Uint8Array, base: Uint8Array): boolean => {
 // ── C-1 ─────────────────────────────────────────────────────────────────────
 
 const LOOP_BUDGET_MS = 200;
-/** `marked` pads every body row to the header's width: ~4C + 2R characters, C × R cells. */
-const table = (cols: number, rows: number, pipe = "|") => pipe + ("a" + pipe).repeat(cols) + "\n|" + "-|".repeat(cols) + "\n" + "x\n".repeat(rows);
-const lines = (n: number, line: (i: number) => string): string => {
-  let out = "";
-  for (let i = 0; out.length < n; i++) out += line(i);
-  return out;
-};
-/** Markdown shapes that are multiplicative, recursive or simply not what the old counters counted. `n` = bytes aimed for. */
-const MD_SHAPES: Array<[string, (n: number) => string]> = [
-  ["table (C × R cells)", (n) => table(Math.ceil(n / 6), Math.ceil(n / 6))],
-  ["table, no leading pipe", (n) => "a|".repeat(n / 6) + "\n" + "-|".repeat(n / 6) + "\n" + "x\n".repeat(n / 6)],
-  ["table, escaped-backslash pipes", (n) => "|" + "a\\\\|".repeat(n / 10) + "\n|" + "-|".repeat(n / 10) + "\n" + "x\n".repeat(n / 6)],
-  ["table, wide rows", (n) => lines(n, () => "|a|b|c|d|\n").replace("\n", "\n|-|-|-|-|\n")],
-  ["table inside a blockquote", (n) => "> |" + "a|".repeat(n / 8) + "\n> |" + "-|".repeat(n / 8) + "\n" + "> x\n".repeat(n / 16)],
-  ["raw HTML block of lone >", (n) => "<div>\n" + ">".repeat(n)],
-  ["raw HTML block of &", (n) => "<div>\n" + "&".repeat(n)],
-  ["raw HTML block of entities", (n) => "<div>\n" + "&amp;".repeat(n / 5)],
-  ["raw HTML, boolean attributes", (n) => "<div " + "a ".repeat(n / 2) + ">x</div>"],
-  ["raw HTML, attributes", (n) => "<div " + "a=1 ".repeat(n / 4) + ">x</div>"],
-  ["raw HTML comment tails", (n) => "<div>\n" + "-->".repeat(n / 3)],
-  ["< flood", (n) => "<".repeat(n)],
-  ["a < b", (n) => "a < b ".repeat(n / 6)],
-  ["unclosed tags", (n) => "<a ".repeat(n / 3)],
-  ["nested lists on one line", (n) => "- ".repeat(n / 2) + "x"],
-  ["nested ordered lists on one line", (n) => "1. ".repeat(n / 3) + "x"],
-  ["nested mixed containers on one line", (n) => "> - 1. ".repeat(n / 7) + "x"],
-  ["nested blockquotes on one line", (n) => "> ".repeat(n / 2) + "x"],
-  ["nested lists by indentation", (n) => lines(n, (i) => "  ".repeat(i) + "- x\n")],
-  ["nested emphasis", (n) => "*_".repeat(n / 4) + "x" + "_*".repeat(n / 4)],
-  ["one long * run", (n) => "a " + "*".repeat(n) + " b"],
-  ["one long _ run", (n) => "a" + "_".repeat(n) + "b"],
-  ["one long ~ run", (n) => "a " + "~".repeat(n) + " b"],
-  ["unmatched emphasis", (n) => "*a ".repeat(n / 3)],
-  ["link reference definitions", (n) => lines(n / 2, (i) => `[r${i}]: http://x.test/${i}\n`) + "\n" + lines(n / 2, (i) => `[r${i}] `)],
-  ["one long backtick run", (n) => "a " + "`".repeat(n) + " b"],
-  ["unmatched backticks", (n) => "`a ".repeat(n / 3)],
-  ["backtick runs of growing length", (n) => lines(n, (i) => "`".repeat((i % 40) + 1) + "a ")],
-  ["[ flood", (n) => "[".repeat(n)],
-  ["] flood", (n) => "]".repeat(n)],
-  ["footnote-like [^1]", (n) => "[^1]".repeat(n / 4)],
-  ["empty links []", (n) => "[]".repeat(n / 2)],
-  ["image openers ![", (n) => "![".repeat(n / 2)],
-  ["link openers [a](", (n) => "[a](".repeat(n / 4)],
-  ["( flood after a link", (n) => "[a](" + "(".repeat(n)],
-  ["delimiter soup on one line", (n) => "*_~`[]()!<>&|\\".repeat(n / 14)],
-  ["hard-wrapped delimiters, one line", (n) => "**a**_b_~~c~~`d`".repeat(n / 16)],
-  ["bare autolinks", (n) => "www.a.b ".repeat(n / 8)],
-  ["scheme autolinks", (n) => "http://a.b ".repeat(n / 11)],
-  ["e-mail autolinks", (n) => "a@b.cd ".repeat(n / 7)],
-  ["backslashes", (n) => "\\".repeat(n)],
-  ["# flood", (n) => "#".repeat(n)],
-  ["trailing blanks", (n) => "a" + " ".repeat(n) + "\nb"],
-  ["blank lines of spaces", (n) => lines(n, () => "    \n")],
-  ["tabs", (n) => "\t".repeat(n) + "x"],
-  ["setext underlines", (n) => "a\n===\n".repeat(n / 6)],
-];
-/** Stored-HTML shapes the round-4 counter did not know. */
-const HTML_SHAPES: Array<[string, (n: number) => string]> = [
-  ["boolean attributes", (n) => "<p " + "a ".repeat(n / 2) + ">x</p>"],
-  ["quoted attributes", (n) => "<p " + 'a="1" '.repeat(n / 6) + ">x</p>"],
-  ["one attribute, = flood", (n) => "<p a" + "=".repeat(n) + ">x</p>"],
-  ["table cells", (n) => "<table><tbody><tr>" + "<td><p>x</p></td>".repeat(n / 17) + "</tr></tbody></table>"],
-];
-
 test("C-1: a Markdown table's CELLS are counted (columns × rows), not its bytes — 6 KB of it is neither cheap nor attempted", async () => {
   const bomb = table(1000, 1000);
   assert.ok(bomb.length < 6200, `${bomb.length} bytes`);
@@ -353,7 +290,7 @@ test("C-1: a Markdown table's CELLS are counted (columns × rows), not its bytes
 });
 
 /** Shapes that are only bulk (blanks): harmless at any size the byte cap admits — measured below, not refused. */
-const INERT = new Set(["trailing blanks", "blank lines of spaces", "tabs"]);
+const INERT = new Set(["trailing blanks", "blank lines of spaces", "tabs", "table, a row of trailing blanks"]);
 
 test("C-1: none of the audited Markdown / HTML shapes is 'cheap' at 12 KB, 24 KB or 100 KB", () => {
   const cheapOnes: string[] = [];

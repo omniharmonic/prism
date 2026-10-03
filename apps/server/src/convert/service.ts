@@ -27,7 +27,7 @@
  */
 import { createHash } from "node:crypto";
 import { TaskWorker, WorkerFailedError, WorkerTimeoutError } from "../transfer/worker-pool";
-import { complexityOf, docJsonWeight, type Complexity } from "./precheck";
+import { complexityOf, docJsonWeight, normalizeLineBreaks, type Complexity } from "./precheck";
 import * as core from "./core";
 import type { DocJson } from "./core";
 
@@ -51,11 +51,20 @@ export interface ConvertOptions {
   actor?: string | null;
   /** `store`: rendering / folding for a store — a reserved thread (or the head of the queue), never behind opens and agent writes. */
   lane?: "store" | "default";
+  /**
+   * `false`: a timeout (or a killed worker) of THIS conversion is not held against
+   * `actor`. For conversions of content the actor did not write — opening a stored
+   * note: three slow notes someone else authored used to leave the person who
+   * merely opened them `busy` for everything. The actor's fairness lane and an
+   * existing penalty still apply; the content itself is remembered by hash.
+   */
+  charge?: boolean;
 }
 
 /** A conversion that was refused or did not finish in budget. Callers fall back. */
 export class ConversionError extends Error {
-  constructor(public readonly reason: ConversionFailure) {
+  /** `killedWorker` (with `failed`): the conversion thread DIED while running this input (out of memory, a crash in a parser). */
+  constructor(public readonly reason: ConversionFailure, public readonly killedWorker = false) {
     super(`conversion_${reason}`);
   }
 }
@@ -141,6 +150,8 @@ export const convertCfg = {
   idleMs: envInt("CONVERT_IDLE_MS", 5 * 60_000, 0),
   /** How long a failed input is remembered (by hash). */
   failureTtlMs: envInt("CONVERT_FAILURE_TTL_MS", 10 * 60_000, 0),
+  /** How long an input that KILLED a conversion thread is refused (by hash) — one death is enough. Only while `failureTtlMs` > 0. */
+  killerTtlMs: envInt("CONVERT_KILLER_TTL_MS", 6 * 3600_000, 0),
 };
 export type ConvertConfig = typeof convertCfg;
 /** Test helper: override limits; returns a restore function. */
@@ -152,7 +163,10 @@ export function configureConversion(patch: Partial<ConvertConfig>): () => void {
 
 // ── worker pool ─────────────────────────────────────────────────────────────
 
-let pool: TaskWorker[] = [];
+/** What the service needs of a conversion thread (tests substitute a fake: `setConversionWorkerFactory`). */
+export type ConversionWorker = Pick<TaskWorker, "pending" | "run" | "flush" | "stop">;
+let makeWorker: (() => ConversionWorker) | null = null;
+let pool: ConversionWorker[] = [];
 /**
  * The thread for a task. Saving must not wait behind opening: with ≥ 2 threads the
  * first one serves ONLY the `store` lane — and stores use ONLY it (H-2). A store
@@ -163,8 +177,8 @@ let pool: TaskWorker[] = [];
  * is saved ahead; `collab_unsaved`, the retry timer and the sweep write it later).
  * One thread: shared, and a store goes to the head of its queue.
  */
-function worker(lane: "store" | "default"): TaskWorker | null {
-  while (pool.length < convertCfg.threads) pool.push(new TaskWorker(convertCfg.heapMb, convertCfg.maxQueue, { preload: "doc" }));
+function worker(lane: "store" | "default"): ConversionWorker | null {
+  while (pool.length < convertCfg.threads) pool.push(makeWorker ? makeWorker() : new TaskWorker(convertCfg.heapMb, convertCfg.maxQueue, { preload: "doc" }));
   const candidates = (pool.length < 2 ? pool : lane === "store" ? pool.slice(0, 1) : pool.slice(1)).filter(breakerAdmits);
   let best = candidates[0] ?? null;
   for (const w of candidates) if (w.pending < best!.pending) best = w;
@@ -193,20 +207,20 @@ interface Breaker {
   /** Half-open: one trial task is in flight. */
   trial: boolean;
 }
-let breakers = new WeakMap<TaskWorker, Breaker>();
-const breakerOf = (w: TaskWorker): Breaker => {
+let breakers = new WeakMap<ConversionWorker, Breaker>();
+const breakerOf = (w: ConversionWorker): Breaker => {
   let b = breakers.get(w);
   if (!b) breakers.set(w, (b = { fails: 0, openUntil: 0, cooldownMs: 0, trial: false }));
   return b;
 };
-function breakerAdmits(w: TaskWorker): boolean {
+function breakerAdmits(w: ConversionWorker): boolean {
   if (convertCfg.breakerFailures <= 0) return true;
   const b = breakerOf(w);
   if (b.openUntil === 0) return true;
   return Date.now() >= b.openUntil && !b.trial;
 }
 /** `trial`: this task was the half-open trial (admitted while the breaker was open). */
-function breakerResult(w: TaskWorker, outcome: "ok" | "dead" | "neutral", trial: boolean): void {
+function breakerResult(w: ConversionWorker, outcome: "ok" | "dead" | "neutral", trial: boolean): void {
   if (convertCfg.breakerFailures <= 0) return;
   const b = breakerOf(w);
   if (trial) b.trial = false;
@@ -229,13 +243,17 @@ function breakerResult(w: TaskWorker, outcome: "ok" | "dead" | "neutral", trial:
   }
 }
 
-// ── per-actor penalty: TIMEOUTS ─────────────────────────────────────────────
-// `actorBreakerFailures` consecutive timeouts of ONE actor's conversions (an
+// ── per-actor penalty: TIMEOUTS and KILLED WORKERS ──────────────────────────
+// `actorBreakerFailures` consecutive strikes of ONE actor's conversions (an
 // account, a link, a document's own stores and folds — whatever key the caller
 // passes) and that actor is refused for a cool-down: `busy`, no thread used.
-// After it one trial; a success ends the penalty, another timeout doubles it.
-// Everyone else converts as before. (The same input twice is also remembered by
-// hash — "failure memory" below — whoever sends it.)
+// After it one trial; a success ends the penalty, another strike doubles it.
+// Everyone else converts as before. A strike is a timeout, or (round 6, S1) a
+// thread that DIED while running the actor's input — that used to cost the actor
+// nothing, so one member could be the failing trial of the shared breaker again
+// and again. Not a strike: a conversion marked `charge: false` (content the actor
+// did not write — S6). (The same input is also remembered by hash — "failure
+// memory" below — whoever sends it.)
 interface Penalty {
   fails: number;
   openUntil: number;
@@ -262,7 +280,7 @@ function actorAdmit(actor: string | null | undefined): { trial: boolean } | null
   p.trial = true;
   return { trial: true };
 }
-function actorResult(actor: string | null | undefined, outcome: "ok" | "timeout" | "neutral", trial: boolean): void {
+function actorResult(actor: string | null | undefined, outcome: "ok" | "strike" | "neutral", trial: boolean): void {
   if (!actor || convertCfg.actorBreakerFailures <= 0) return;
   let p = penalties.get(actor);
   if (trial && p) p.trial = false;
@@ -282,7 +300,7 @@ function actorResult(actor: string | null | undefined, outcome: "ok" | "timeout"
     p.cooldownMs = Math.min(convertCfg.actorCooldownMaxMs, p.cooldownMs ? p.cooldownMs * 2 : convertCfg.actorCooldownMs);
     p.openUntil = at + p.cooldownMs;
     conversionStats.actorPenalised++;
-    console.warn(`[convert] ${p.fails} conversions in a row timed out for one actor — its conversions are answered busy for ${Math.round(p.cooldownMs / 1000)} s (nobody else is affected)`);
+    console.warn(`[convert] ${p.fails} conversions in a row timed out (or killed their worker) for one actor — its conversions are answered busy for ${Math.round(p.cooldownMs / 1000)} s (nobody else is affected)`);
   }
 }
 
@@ -326,17 +344,25 @@ export async function stopConversionWorkers(): Promise<void> {
   pool = []; // new threads, new (closed) breakers
   await Promise.all(old.map((w) => w.stop()));
 }
+/** Test helper: conversion threads are made by `factory` (null = real ones). Stops the current ones. */
+export async function setConversionWorkerFactory(factory: (() => ConversionWorker) | null): Promise<void> {
+  makeWorker = factory;
+  await stopConversionWorkers();
+}
 
 // ── failure memory ──────────────────────────────────────────────────────────
 
 // Only what is (very likely) a property of the INPUT is remembered: an input
-// that timed out TWICE. Never `busy`, never a worker crash / out-of-memory / boot
-// timeout (`failed`) — those describe the server at that moment, and remembering
-// them would keep a good note unopenable for the whole TTL. Pre-check refusals
-// need no memory: the pre-check is linear and answers the same every time.
+// that timed out TWICE, or (round 6, S1) one that KILLED the thread running it —
+// once is enough, and for much longer (`killerTtlMs`): every death costs a
+// respawn and counts towards the breaker everyone shares. Never `busy`, never a
+// thread that did not come up (`failed` without `killedWorker`) — those describe
+// the server at that moment, and remembering them would keep a good note
+// unopenable for the whole TTL. Pre-check refusals need no memory: the pre-check
+// is linear and answers the same every time. (In memory only: a restart forgets.)
 const FAILURES_MAX = 500;
 const TIMEOUTS_TO_REMEMBER = 2;
-const failures = new Map<string, { timeouts: number; until: number }>();
+const failures = new Map<string, { timeouts: number; killed: boolean; until: number }>();
 function remembered(key: string): ConversionFailure | null {
   const hit = failures.get(key);
   if (!hit) return null;
@@ -344,13 +370,16 @@ function remembered(key: string): ConversionFailure | null {
     failures.delete(key);
     return null;
   }
-  return hit.timeouts >= TIMEOUTS_TO_REMEMBER ? "timeout" : null;
+  return hit.killed ? "failed" : hit.timeouts >= TIMEOUTS_TO_REMEMBER ? "timeout" : null;
 }
-function remember(key: string, reason: ConversionFailure): void {
-  if (convertCfg.failureTtlMs <= 0 || reason !== "timeout") return;
-  const timeouts = (failures.get(key)?.timeouts ?? 0) + 1;
+function remember(key: string, e: ConversionError): void {
+  if (convertCfg.failureTtlMs <= 0) return;
+  const killed = e.killedWorker && convertCfg.killerTtlMs > 0;
+  if (!killed && e.reason !== "timeout") return;
+  const prev = failures.get(key);
+  const until = Date.now() + (killed || prev?.killed ? Math.max(convertCfg.killerTtlMs, convertCfg.failureTtlMs) : convertCfg.failureTtlMs);
   failures.delete(key);
-  failures.set(key, { timeouts, until: Date.now() + convertCfg.failureTtlMs });
+  failures.set(key, { timeouts: (prev?.timeouts ?? 0) + (e.reason === "timeout" ? 1 : 0), killed: killed || !!prev?.killed, until });
   while (failures.size > FAILURES_MAX) failures.delete(failures.keys().next().value!);
 }
 export function forgetConversionFailures(): void {
@@ -370,11 +399,11 @@ const timeoutFor = (chars: number): number => Math.min(convertCfg.timeoutMaxMs, 
 
 function refusal(c: Complexity): ConversionFailure | null {
   if (c.chars > convertCfg.maxChars) return "too_large";
-  if (c.nodes > convertCfg.maxInputNodes) return "too_many_nodes";
+  if (c.parseNodes > convertCfg.maxInputNodes) return "too_many_nodes";
   if (c.delimiterRuns > convertCfg.maxDelimiters || c.quoteDepth > convertCfg.maxQuoteDepth) return "too_complex";
   return null;
 }
-function cheap(c: Complexity, _markdown: boolean): boolean {
+function cheap(c: Complexity): boolean {
   return (
     // Both kinds are held to a small size: the node count is what costs, but
     // counting is only as good as our knowledge of the parser (stored HTML was
@@ -392,11 +421,11 @@ function cheap(c: Complexity, _markdown: boolean): boolean {
 
 /** The pre-check verdict for a note body, without converting: null = a parser may try. */
 export function conversionRefusal(content: string, markdown: boolean): ConversionFailure | null {
-  return refusal(complexityOf(content, markdown));
+  return refusal(complexityOf(normalizeLineBreaks(content), markdown));
 }
 /** May this body be converted on the calling thread? (the synchronous helpers' guard) */
 export function isCheapContent(content: string, markdown: boolean): boolean {
-  return cheap(complexityOf(content, markdown), markdown);
+  return cheap(complexityOf(normalizeLineBreaks(content), markdown));
 }
 
 function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | undefined): Promise<T> {
@@ -416,7 +445,8 @@ function offThread<T>(message: unknown, chars: number, opts: ConvertOptions | un
       actorResult(actor, "ok", admitted.trial);
       return value;
     } catch (e) {
-      actorResult(actor, e instanceof ConversionError && e.reason === "timeout" ? "timeout" : "neutral", admitted.trial);
+      const strike = e instanceof ConversionError && (e.reason === "timeout" || e.killedWorker);
+      actorResult(actor, strike && opts?.charge !== false ? "strike" : "neutral", admitted.trial);
       throw e;
     }
   });
@@ -454,23 +484,30 @@ async function runInWorker<T>(message: unknown, chars: number, lane: "store" | "
     conversionStats.failed++;
     // `worker_failed` = the thread died or never came up; an ordinary error reply
     // (a parser threw on this input) leaves the thread alive and is no respawn.
-    breakerResult(w, e instanceof WorkerFailedError && e.code === "worker_failed" ? "dead" : "ok", trial);
-    throw new ConversionError("failed");
+    const dead = e instanceof WorkerFailedError && e.code === "worker_failed";
+    breakerResult(w, dead ? "dead" : "ok", trial);
+    // Died WHILE running this input: the input's doing, as far as anyone can tell (S1).
+    throw new ConversionError("failed", e instanceof WorkerFailedError && e.code === "worker_failed" && e.duringTask);
   }
 }
 
-/** One text-input conversion: pre-check → remembered failure → inline or worker. */
-async function convertText<T>(op: string, text: string, markdown: boolean, inline: () => T, message: unknown, opts?: ConvertOptions): Promise<T> {
-  const c = complexityOf(text, markdown);
+/**
+ * One text-input conversion: line breaks normalised → pre-check → remembered
+ * failure → inline or worker. `inline` and `message` are given the NORMALISED
+ * text: the pre-check and the parser (here or in the worker) read the same bytes.
+ */
+async function convertText<T>(op: string, raw: string, markdown: (text: string) => boolean, inline: (text: string) => T, message: (text: string) => unknown, opts?: ConvertOptions): Promise<T> {
+  const text = normalizeLineBreaks(raw);
+  const c = complexityOf(text, markdown(text));
   const refused = refusal(c);
   if (refused) {
     conversionStats.refused++;
     throw new ConversionError(refused);
   }
-  if (cheap(c, markdown)) {
+  if (cheap(c)) {
     conversionStats.inline++;
     try {
-      return inline();
+      return inline(text);
     } catch {
       conversionStats.failed++;
       throw new ConversionError("failed");
@@ -483,9 +520,9 @@ async function convertText<T>(op: string, text: string, markdown: boolean, inlin
     throw new ConversionError(known);
   }
   try {
-    return await offThread<T>(message, c.chars, opts);
+    return await offThread<T>(message(text), c.chars, opts);
   } catch (e) {
-    if (e instanceof ConversionError) remember(key, e.reason);
+    if (e instanceof ConversionError) remember(key, e);
     throw e;
   }
 }
@@ -493,37 +530,37 @@ async function convertText<T>(op: string, text: string, markdown: boolean, inlin
 // ── public API ──────────────────────────────────────────────────────────────
 
 const usesMarkdown = (content: string): boolean => !core.isStoredHtml(content);
+const yes = (): boolean => true;
+const no = (): boolean => false;
 
 /** Markdown → HTML (marked defaults; NOT sanitised — collab's seed input, never served as-is). */
 export function markdownToHtml(md: string, opts?: ConvertOptions): Promise<string> {
-  return convertText("md-html", md, true, () => core.markdownToHtmlSync(md), { op: "md-html", content: md }, opts);
+  return convertText("md-html", md, yes, core.markdownToHtmlSync, (content) => ({ op: "md-html", content }), opts);
 }
 
 /** HTML → Markdown (for an agent reading a document note). */
 export function htmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
-  return convertText("html-md", html, false, () => core.htmlToMarkdownSync(html), { op: "html-md", html }, opts);
+  return convertText("html-md", html, no, core.htmlToMarkdownSync, (text) => ({ op: "html-md", html: text }), opts);
 }
 
 /** HTML → Markdown for blocks appended to a Markdown page: Prism-only blocks stay as HTML blocks. */
 export function blocksHtmlToMarkdown(html: string, opts?: ConvertOptions): Promise<string> {
-  return convertText("html-md-blocks", html, false, () => core.blocksHtmlToMarkdownSync(html), { op: "html-md", html, flavor: "blocks" }, opts);
+  return convertText("html-md-blocks", html, no, core.blocksHtmlToMarkdownSync, (text) => ({ op: "html-md", html: text, flavor: "blocks" }), opts);
 }
 
 /** A note body (stored HTML or Markdown) → ProseMirror JSON of the shared schema. */
 export function contentToDocJson(content: string, opts?: ConvertOptions): Promise<DocJson> {
-  const src = content ?? "";
-  return convertText("doc-json", src, usesMarkdown(src), () => core.contentToDocJsonSync(src), { op: "doc-json", content: src, markdown: true }, opts);
+  return convertText("doc-json", content ?? "", usesMarkdown, core.contentToDocJsonSync, (text) => ({ op: "doc-json", content: text, markdown: true }), opts);
 }
 
 /** HTML → ProseMirror JSON with no Markdown step. */
 export function htmlToDocJson(html: string, opts?: ConvertOptions): Promise<DocJson> {
-  return convertText("html-json", html, false, () => core.htmlToDocJsonSync(html), { op: "doc-json", content: html, markdown: false }, opts);
+  return convertText("html-json", html, no, core.htmlToDocJsonSync, (text) => ({ op: "doc-json", content: text, markdown: false }), opts);
 }
 
 /** A note body → the encoded state of a fresh Y.Doc (the first-ever seed of a live document). */
 export function contentToSeed(content: string, opts?: ConvertOptions): Promise<Uint8Array> {
-  const src = content ?? "";
-  return convertText("doc-seed", src, usesMarkdown(src), () => core.contentToSeedSync(src), { op: "doc-seed", content: src }, opts);
+  return convertText("doc-seed", content ?? "", usesMarkdown, core.contentToSeedSync, (text) => ({ op: "doc-seed", content: text }), opts);
 }
 
 /**
@@ -564,22 +601,20 @@ export async function docJsonToHtml(json: unknown, opts?: ConvertOptions): Promi
 // pre-check, and throw ConversionError("too_large") otherwise — so they can never
 // stall the event loop, whatever they are handed.
 
-function assertCheapText(content: string, markdown: boolean): void {
-  if (!isCheapContent(content, markdown)) throw new ConversionError("too_large");
+/** The normalised text, if it passes the inline pre-check (what is checked is what is parsed). */
+function assertCheapText(content: string, markdown: (text: string) => boolean): string {
+  const text = normalizeLineBreaks(content);
+  if (!cheap(complexityOf(text, markdown(text)))) throw new ConversionError("too_large");
+  return text;
 }
 export function contentToDocJsonBounded(content: string): DocJson {
-  const src = content ?? "";
-  assertCheapText(src, usesMarkdown(src));
-  return core.contentToDocJsonSync(src);
+  return core.contentToDocJsonSync(assertCheapText(content ?? "", usesMarkdown));
 }
 export function htmlToDocJsonBounded(html: string): DocJson {
-  assertCheapText(html, false);
-  return core.htmlToDocJsonSync(html);
+  return core.htmlToDocJsonSync(assertCheapText(html, no));
 }
 export function contentToSeedBounded(content: string): Uint8Array {
-  const src = content ?? "";
-  assertCheapText(src, usesMarkdown(src));
-  return core.contentToSeedSync(src);
+  return core.contentToSeedSync(assertCheapText(content ?? "", usesMarkdown));
 }
 export function docJsonToHtmlBounded(json: unknown): string {
   if (!cheapDoc(docJsonWeight(json, inlineRenderNodes()))) throw new ConversionError("too_large");

@@ -18,7 +18,13 @@ export class WorkerTimeoutError extends Error {
   }
 }
 export class WorkerFailedError extends Error {
-  constructor(message: string, public readonly code?: string, public readonly status?: number) {
+  /**
+   * `duringTask` (with code `worker_failed`): the thread died while it was RUNNING
+   * this task — out of memory, a crash inside a parser: very likely this input's
+   * doing. False for a thread that never came up (nothing was handed over yet):
+   * that says something about the server, nothing about the input.
+   */
+  constructor(message: string, public readonly code?: string, public readonly status?: number, public readonly duringTask = false) {
     super(message);
   }
 }
@@ -91,7 +97,7 @@ export class TaskWorker {
       if (this.thread !== thread) return;
       this.thread = null;
       const task = this.settle();
-      if (task) task.reject(new WorkerFailedError("worker_failed", "worker_failed"));
+      if (task) task.reject(new WorkerFailedError("worker_failed", "worker_failed", undefined, task.sent));
       this.pump();
     };
     worker.on("error", died);

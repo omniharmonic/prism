@@ -21,6 +21,7 @@ import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
 import { collabExtensions } from "@prism/core/editor-schema";
 import { marked } from "marked";
 import TurndownService from "turndown";
+import { normalizeLineBreaks } from "./precheck";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
 // one. (These globals are read when the functions run, never at import.)
@@ -41,21 +42,26 @@ export type DocJson = { type: string; content?: unknown[]; [k: string]: unknown 
 /** Collab's rule: a body that starts with `<` is stored HTML, anything else is Markdown. */
 export const isStoredHtml = (content: string): boolean => content.trim().startsWith("<");
 
+// Every text entry point below normalises line breaks FIRST (`\r\n?` → `\n`, the
+// one function the pre-check uses too — idempotent, so the service's own call
+// costs nothing here): what a parser reads is byte for byte what was pre-checked,
+// in the worker as on the main thread.
+
 /** Markdown → HTML, exactly as collab seeds a document (marked defaults, unsanitised). */
 export function markdownToHtmlSync(md: string): string {
-  return marked.parse(md) as string;
+  return marked.parse(normalizeLineBreaks(md)) as string;
 }
 
 /** A note body (stored HTML, or Markdown) → ProseMirror JSON. */
 export function contentToDocJsonSync(content: string): DocJson {
-  const src = content ?? "";
+  const src = normalizeLineBreaks(content ?? "");
   const html = isStoredHtml(src) ? src : markdownToHtmlSync(src);
   return generateJSON(html || "<p></p>", exts) as DocJson;
 }
 
 /** HTML → ProseMirror JSON, with no Markdown step (the suggestion helpers' parse). */
 export function htmlToDocJsonSync(html: string): DocJson {
-  return generateJSON(html, exts) as DocJson;
+  return generateJSON(normalizeLineBreaks(html), exts) as DocJson;
 }
 
 /** ProseMirror JSON → the HTML a collab store writes. */
@@ -81,12 +87,12 @@ export function blocksHtmlToMarkdownSync(html: string): string {
     blocksTurndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
       (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
   }
-  return blocksTurndown.turndown(html);
+  return blocksTurndown.turndown(normalizeLineBreaks(html));
 }
 
 let plainTurndown: TurndownService | null = null;
 /** HTML → Markdown for an agent reading a document note (the MCP resource's flavour). */
 export function htmlToMarkdownSync(html: string): string {
   plainTurndown ??= new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
-  return plainTurndown.turndown(html);
+  return plainTurndown.turndown(normalizeLineBreaks(html));
 }
