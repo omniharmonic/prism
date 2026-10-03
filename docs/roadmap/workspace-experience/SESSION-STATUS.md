@@ -46,17 +46,23 @@ Per checklist §3: 3A import/export + templates, 3B native completion (universal
 
 Team `83Y42N33H8` (Individual). App ID `com.benjaminlife.prism.client`; APNs key `P2648BP7K4` (file still in `~/Downloads` — move it into the password manager); Developer ID Application + Apple Distribution certificates valid in the login keychain; App Store Connect app "Prism Workspace"; API key `AB84HRLBUA` at `~/.appstoreconnect/private_keys/`; provisioning profile "Prism Workspace App Store".
 
-## Update 2026-10-03 (later) — READ FIRST
+## Update 2026-10-03 (afternoon) — READ FIRST
 
-**Incident:** the test agents overloaded the production host (load ~40, 15 GB swap) and Prism returned Cloudflare 524 until all agents and test runs were stopped. Rule from now on: **at most 2 agents running browser/server suites at once on this machine, `--workers=2`, and check `uptime` + `curl 127.0.0.1:8787/health` before launching more.** No sub-agent may spawn its own sub-agents.
+**This Mac is the production host and memory is its limit.** Two outages today (Cloudflare 524): agents running suites in parallel, then one 2-worker browser run overlapping the hourly local-model run (7 GB). Rules now:
+- At most ONE agent runs tests at a time; agents run single spec/test files only (`--workers=1`, hard `alarm` timeout, `--test-force-exit`), behind a blocking gate: load < 6, memory free ≥ 30 %, `lms ps` not LOADING/PROCESSINGPROMPT/GENERATING, health 200 < 1 s. No agent spawns sub-agents.
+- Full suites are run by the orchestrator only, with the two scripts kept in the session scratchpad and copied here in spirit: server = every `test/*.test.ts` one file at a time with `.env.test`; browser = `--shard=k/8 --workers=2` behind the gate with a watchdog that kills the shard when free memory < 18 % or health fails or the model wakes, then retries.
+- A worktree needs `node_modules/@axe-core` + `axe-core` (copy from `.worktrees/w5-a11y/node_modules`).
 
-**On main (`a550aa7`, nothing deployed):** everything above plus wave 3 gaps, import/export/templates, wave 4 editor (schema v5), databases, shell/live updates. Last full runs: server 2137/2137, browser 899 passed.
+**On main (`d7a99cc`, nothing deployed, production not restarted):** everything in the table above plus wave 3 gaps, import/export/templates, wave 4 editor (schema v5), databases, shell/live updates, and today:
+- Accessibility pass 1 (axe sweep, serious/critical clean on swept surfaces; `A11Y-RESULTS.md`).
+- Performance (`PERF-RESULTS.md`): initial JS 417.8 KB gzip (editor chunk split, `@prism/core/shell`), tree carries title/aliases, ⌘K keeps results, live editor no longer lists the vault.
+- Server conversion off the main thread + durable unsaved live typing (`fix/collab-convert`, six review rounds, final verdict GO): see `CLAUDE.md` conversion section incl. residual risks. New tables/columns are additive (`collab_docs` base/attempt columns, `collab_unsaved`, `collab_set_aside`, `block_append_receipts.applied`).
+Last full runs at the tip: server 2271/2271 (163 files), browser 1154 passed / 1 skipped.
 
-**Stopped mid-work (resume, one or two at a time):**
-- `fix/collab-convert` (`.worktrees/collab-convert`): server Markdown/HTML conversion off the main thread. Two review rounds; round 3 fixes (persisted absorbed/attempted-write hash honoured at load/reconcile/store; true base for MCP merge; "not saved" notice; sweep rotation; M1–M4) were in progress — check `git status`/log there. Needs main merged, a third independent review, then merge. Until it lands, main still converts on the main thread (a 1 MB note stalls the server ~4 s on live open).
-- `feat/w5-verify` (`.worktrees/w3-verify`): second checklist verification pass; drafts for 61 rows, not integrated.
-- `feat/w5-a11y` (`.worktrees/w5-a11y`): axe + performance sweep, just started.
-- `feat/w5-webkit` (`.worktrees/w5-webkit`): WebKit green, baseline run only.
-- Not started: native group (universal links, ZIP save IPC on iOS; `feat/native-ios` must merge main).
+**In progress:** `feat/w7-a11y` (`.worktrees/w5-a11y`): keyboard-only journeys, 200 % reflow, touch targets, IME, skipped surfaces.
 
-**Owner decisions added:** editor shortcuts (⌘K link with selection else quick find; ⌘⇧H highlight; replace ⌘⌥F; ⌘/ shortcut sheet, block menu ⌘⇧/); DB-11 presentation-only property management; DB-12 computed reverse relations; CO-08 direct publish controls kept; conversion timeout/heap values for the mini.
+**Next, in order:** PF-09 reconciler gate (server re-reads every open live doc from the vault every 2 s; design in `PERF-RESULTS.md`) → second checklist verification pass (the earlier 61 row drafts were lost; redo against main, update `PARITY-EVIDENCE.md` + checklist Status) → WebKit pass (`feat/w5-webkit`, stale: recreate from main) → native group (universal links, iOS ZIP save; `feat/native-ios` at 446e0a4 must merge main) → checklist §4 acceptance → iOS build → TestFlight (owner-approved only).
+
+**Small backlog:** tree offline cache cap (the tree crosses the 4 MB read-cache limit at ~20–29k notes; give `/tree` its own limit); set-aside has no UI (owner API only); device-only perf rows (iPhone load, iOS memory).
+
+**Owner decisions added today:** conversion worker heap default 512 MB (`CONVERT_HEAP_MB`; Markdown past ~0.4 MB of dense markup opens as plain text) — keep or raise; run production with a low inline conversion limit at release; an iOS simulator has been booted since last night and holds memory — shut it down if not needed. Earlier ones still open: editor shortcuts, DB-11/DB-12/CO-08 deviations, and items 1–7 above.
