@@ -498,3 +498,18 @@ test("hosted suggest-only credential exposes suggestions but cannot directly mod
     assert.equal((await call(client, "prism_get_note", { id: "g1" })).ok, false, "a pending downgrade prevents new hosted calls");
   } finally { await client?.close(); delete process.env.AGENT_PRISM_PROFILES; }
 });
+
+// NP-PG-09: a locked page refuses an agent's content write for EVERY principal — the owner included
+// (the owner unlocks the page first; a metadata-only write is not a content write).
+test("locked page refuses agent writes", async () => {
+  fv.put({ id: "lk", tags: ["garden"], path: "garden/locked", content: "kept as it is", metadata: { prism_locked: true }, updatedAt: "2026-04-01T00:00:00.000Z" });
+  for (const who of [EDITOR, OWNER]) {
+    const cl = await connect(pat(who));
+    const r = await call(cl, "prism_update_note", { id: "lk", content: "agent edit", if_updated_at: "2026-04-01T00:00:00.000Z" });
+    assert.ok(!r.ok && r.error === "conflict", `${who}: ${JSON.stringify(r)}`);
+    assert.match(String((r as { message?: string }).message), /locked/);
+    assert.deepEqual((r as { detail?: unknown }).detail, { locked: true });
+    assert.equal(fv.notes.get("lk")!.content, "kept as it is", `${who}: nothing written`);
+  }
+  assert.equal(fv.calls.filter((c) => c.method === "PATCH" && c.path.endsWith("/notes/lk")).length, 0, "no write reached the vault");
+});
