@@ -21,14 +21,16 @@
  */
 import * as z from "zod/v4";
 import { ConversionError, htmlToMarkdown } from "../convert/service";
-import { CAPS, effectiveCaps, type Cap } from "../permissions";
+import { CAPS, atLeast, effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
 import { hasLiveState, isDocLive, noteKind, settleUnsaved, unsavedPermanentReason, unsavedReasonText, type CollabKind } from "../collab";
 import type { Note } from "../parachute";
 import { canView, hasCapAnywhere, isAdmin } from "./access";
 import { jsonOrToolError } from "./dispatch";
 import { ToolError, isStaleConflict } from "./errors";
-import { afterLiveMetaWrite, liveContentWrite } from "./tool-collab";
+import { afterLiveMetaWrite, collabAccess, liveContentWrite } from "./tool-collab";
+import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
+import { isTrashed } from "@prism/core/pages";
 import { defineTool, type PrismResource, type PrismTool, type ToolContext } from "./tools";
 
 // ── bounds ──────────────────────────────────────────────────────────────────
@@ -329,10 +331,24 @@ export const updateNoteTool = defineTool({
       // …and one whose live changes can never be written is not merged into either: the merge
       // would land in a document the stored note will never reflect (the agent would be told
       // "merged" and read back an unchanged note, forever).
-      const settled = isDocLive(vaultId, note.id) || !hasLiveState(vaultId, note.id) ? null : await settleUnsaved(vaultId, note.id);
-      const forGood = unsavedPermanentReason(vaultId, note.id);
+      // Settling LOADS the document and STORES it (a conversion, a vault write). Only someone
+      // who could make this write may set that off — `edit` on THIS note (the tool's own gate
+      // is "edit somewhere"; a viewer of this page gets the gateway's refusal below with
+      // nothing loaded and nothing said about its unsaved state) — and only within the same
+      // per-account bucket as the gateway's body writes (review M-1).
+      const mayEdit = atLeast(collabAccess(ctx.principal.actor, note).level, "edit") && !isTrashed(note);
+      let settled: Awaited<ReturnType<typeof settleUnsaved>> | null = null;
+      if (mayEdit && !isDocLive(vaultId, note.id) && hasLiveState(vaultId, note.id)) {
+        const forGoodAlready = unsavedPermanentReason(vaultId, note.id);
+        if (forGoodAlready) throw unsavedForGood(forGoodAlready);
+        if (takeUnsavedSettle(settleKeyForUser(ctx.principal.actor.email)) !== null) {
+          throw new ToolError("conflict", "this page has changes that are still being saved from the live editor — wait a minute, re-read the note and try again", { live: true, retry: true });
+        }
+        settled = await settleUnsaved(vaultId, note.id);
+      }
+      const forGood = mayEdit ? unsavedPermanentReason(vaultId, note.id) : null;
       if (forGood) throw unsavedForGood(forGood);
-      const viaLive = isDocLive(vaultId, note.id) || settled === "pending";
+      const viaLive = mayEdit && (isDocLive(vaultId, note.id) || settled === "pending");
       if (viaLive) {
         // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
         // The same goes for a note whose live changes have not reached the vault yet: its stored

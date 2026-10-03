@@ -515,3 +515,83 @@ test("H-2: stores stay on their reserved thread — a store lane that keeps dyin
   assert.equal(unsavedRow("h2"), null);
   assert.equal(getDocState("h2")!.ahead, false);
 });
+
+// ── M-1 / M-2 / lows ────────────────────────────────────────────────────────
+
+const header = (email: string) => ({ cookie: sessionCookie(makeSession(email)), ...J, "x-prism-editor-schema": String(COLLAB_SCHEMA_VERSION), "sec-fetch-site": "same-origin" });
+/** A page whose live typing could not reach the vault (every store of it fails while `during` runs). */
+async function withUnsaved(id: string, status: number, during: (attempts: () => number) => Promise<void>): Promise<void> {
+  fv.put({ id, tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  let attempts = 0;
+  const storeOfTyping = (method: string, path: string, body: string) => isPatch(id)(method, path) && body.includes("typed in the live editor");
+  await intercept(storeOfTyping, async () => (attempts++, new Response(JSON.stringify({ error: "boom" }), { status, headers: J })), async () => {
+    await typeAndLeave(id, "typed in the live editor");
+    assert.equal(isCollabUnsaved(id, "primary"), true);
+    await during(() => attempts);
+  });
+}
+
+test("M-1: prism_update_note sets off a load + store only for someone who may EDIT this note, and within the per-actor settle bucket", { timeout: 90_000 }, async () => {
+  const was = process.env.UNSAVED_SETTLES_PER_MINUTE;
+  process.env.UNSAVED_SETTLES_PER_MINUTE = "2";
+  restore.push(() => void (process.env.UNSAVED_SETTLES_PER_MINUTE = was));
+  // Passes the tool's "edit somewhere" gate and may VIEW the page — but cannot edit it.
+  const HALF = "half@test.local";
+  ensureUser(HALF);
+  addGrant({ subject_type: "user", subject: HALF, resource_type: "tag", resource: "garden", level: "view", caps: ["view"] as never, created_by: "test", vault_id: "primary" });
+  addGrant({ subject_type: "user", subject: HALF, resource_type: "tag", resource: "elsewhere", level: "edit", caps: ["view", "edit"] as never, created_by: "test", vault_id: "primary" });
+  const viewer = await connectMcp(HALF);
+  const editor = await connectMcp(EDITOR);
+  await withUnsaved("m1", 500, async (attempts) => {
+    const before = attempts();
+    const refused = await call(viewer, "prism_update_note", { id: "m1", content: "<p>mine</p>", if_updated_at: T0 });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(attempts(), before, "no store was set off for someone who cannot edit this note");
+    assert.equal(hocuspocus.documents.has("m1"), false, "no document was loaded");
+    assert.doesNotMatch(JSON.stringify(refused), /live|saved/i, "…and nothing about the page's unsaved state is said to them");
+    // An editor's write gives the snapshot its chance — twice (the bucket), then no more.
+    for (let i = 0; i < 2; i++) {
+      // (Merged into the live document, which is given its chance to be written — and still cannot be.)
+      await call(editor, "prism_update_note", { id: "m1", content: `<p>start</p><p>typed in the live editor</p><p>mine ${i}</p>`, if_updated_at: T0 });
+      await until("m1 unloads", () => !hocuspocus.documents.has("m1"));
+    }
+    const spent = attempts();
+    assert.ok(spent > before, "the editor's calls did try to save the page");
+    const third = await call(editor, "prism_update_note", { id: "m1", content: "<p>mine</p>", if_updated_at: T0 });
+    assert.equal(third.ok, false);
+    assert.equal((third as { error: string }).error, "conflict");
+    assert.match((third as { message?: string }).message ?? "", /still being saved|try again|wait/i);
+    assert.equal(attempts(), spent, "past the bucket: answered without another load + store");
+    assert.equal(hocuspocus.documents.has("m1"), false, "past the bucket: nothing loaded");
+    // One bucket for REST and MCP: the editor's REST write is past it too.
+    const rest = await app.request("/api/notes/m1", { method: "PATCH", headers: header(EDITOR), body: JSON.stringify({ content: "<p>mine</p>", if_updated_at: T0 }) });
+    assert.equal(rest.status, 409);
+    assert.ok(Number(rest.headers.get("retry-after")) > 0);
+    assert.equal(attempts(), spent);
+  });
+});
+
+test("M-2: a body write to a page that can NEVER be saved is answered `permanent` at once — nothing is loaded, read or stored", { timeout: 60_000 }, async () => {
+  await withUnsaved("m2", 413, async (attempts) => {
+    assert.equal(unsavedRow("m2")?.permanent, 1);
+    await until("m2 unloads", () => !hocuspocus.documents.has("m2"));
+    const before = attempts();
+    const calls = fv.calls.length;
+    assert.equal(await collab.settleUnsaved("primary", "m2"), "permanent");
+    assert.equal(fv.calls.length, calls, "no vault call");
+    assert.equal(attempts(), before, "no store");
+    assert.equal(hocuspocus.documents.has("m2"), false, "no load");
+    const res = await app.request("/api/notes/m2", { method: "PATCH", headers: ownerHeaders(), body: JSON.stringify({ content: "<p>rest</p>", if_updated_at: T0 }) });
+    assert.equal(((await res.json()) as Record<string, unknown>).error, "unsaved_permanent");
+    assert.equal(attempts(), before);
+  });
+});
+
+test("low: the owner's unsaved list filters by vault BEFORE its row limit", async () => {
+  const mark = dbm.markCollabUnsaved;
+  for (let i = 0; i < 230; i++) mark(`other-${i}`, "elsewhere", `elsewhere/other-${i}`, "busy", false);
+  await new Promise((r) => setTimeout(r, 5));
+  mark("mine", "primary", "mine", "busy", false);
+  const listed = (await (await app.request("/api/admin/collab/unsaved", { headers: ownerHeaders() })).json()) as { rows: Array<{ noteId: string }> };
+  assert.deepEqual(listed.rows.map((r) => r.noteId), ["mine"]);
+});

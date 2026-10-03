@@ -2018,6 +2018,7 @@ const getUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved WHERE vault_id =
 // Least recently attempted first (never-attempted rows lead), so no row can starve the others.
 const dueUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved WHERE permanent = 0 AND next_attempt <= ? ORDER BY COALESCE(last_attempt, 0), since LIMIT ?");
 const allUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved ORDER BY since LIMIT ?");
+const vaultUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved WHERE vault_id = ? ORDER BY since LIMIT ?");
 const attemptUnsavedStmt = db.prepare("UPDATE collab_unsaved SET attempts = attempts + 1, last_attempt = @at, next_attempt = @next WHERE vault_id = @vault_id AND name = @name");
 const statsUnsavedStmt = db.prepare("SELECT COUNT(*) AS total, COALESCE(SUM(permanent), 0) AS permanent, MIN(since) AS oldest FROM collab_unsaved");
 /** Remember that this note's live state (in collab_docs) has not reached the vault yet (`since` is kept across repeats). */
@@ -2037,8 +2038,9 @@ export function isCollabUnsaved(name: string, vaultId: string): boolean {
 export function dueCollabUnsaved(limit = 5, at = now()): CollabUnsavedRow[] {
   return dueUnsavedStmt.all(at, limit) as CollabUnsavedRow[];
 }
-export function listCollabUnsaved(limit = 50): CollabUnsavedRow[] {
-  return allUnsavedStmt.all(limit) as CollabUnsavedRow[];
+/** Oldest first. With `vaultId`, that vault's rows only — filtered BEFORE the limit. */
+export function listCollabUnsaved(limit = 50, vaultId?: string): CollabUnsavedRow[] {
+  return (vaultId === undefined ? allUnsavedStmt.all(limit) : vaultUnsavedStmt.all(vaultId, limit)) as CollabUnsavedRow[];
 }
 /** One retry was made: count it and push the next one out (exponential, 1 min → 6 h). */
 export function noteCollabUnsavedAttempt(name: string, vaultId: string, at = now()): void {

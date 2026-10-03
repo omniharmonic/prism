@@ -1622,6 +1622,10 @@ export type UnsavedSettlement = "clear" | "pending" | "permanent" | "unloadable"
 export async function settleUnsaved(vaultId: string, noteId: string): Promise<UnsavedSettlement> {
   const row = getCollabUnsaved(noteId, vaultId);
   if (!row) return "clear";
+  // A row that can never be written as it is: loading and storing it again changes
+  // nothing — and used to cost a load, a render and a refused vault write on EVERY
+  // body write to the page (M-2). (A loaded one is its own document's business.)
+  if (row.permanent && !hocuspocus.documents.has(row.doc_name)) return "permanent";
   if (!hocuspocus.documents.has(row.doc_name)) {
     try {
       const conn = await hocuspocus.openDirectConnection(row.doc_name, {});

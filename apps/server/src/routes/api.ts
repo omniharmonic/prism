@@ -31,6 +31,7 @@ import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
 import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
+import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
@@ -472,8 +473,6 @@ api.use("/notes/:id", async (c, next) => {
 // A page whose changes can NEVER be written as they are (a permanent row) is not
 // "still being saved": it answers `409 unsaved_permanent {retry:false}` (M2).
 const UNSAVED_CONFLICT = { error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Open the page, or try again in a moment." } as const;
-/** Read per call (tests change it). */
-const unsavedSettlesPerMinute = (): number => (Number(process.env.UNSAVED_SETTLES_PER_MINUTE) > 0 ? Number(process.env.UNSAVED_SETTLES_PER_MINUTE) : 6);
 async function unsavedRefusal(c: Context, id: string): Promise<Response | null> {
   const actor = resolveActor(c);
   if (actor.kind === "anon" || !id) return null; // the route answers 401/403/404
@@ -491,8 +490,8 @@ async function unsavedRefusal(c: Context, id: string): Promise<Response | null> 
     }
   }
   const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
-  const who = actor.kind === "user" ? `u:${actor.email.toLowerCase()}` : `c:${rateLimitClientKey(c)}`;
-  const wait = consumeRateLimit(`unsaved-settle:${who}`, unsavedSettlesPerMinute(), 60_000);
+  // One bucket per account, shared with the Prism MCP tools (unsaved-settle.ts).
+  const wait = takeUnsavedSettle(actor.kind === "user" ? settleKeyForUser(actor.email) : `c:${rateLimitClientKey(c)}`);
   if (wait !== null) {
     // No further load + store for this actor right now: the snapshot is still ahead as far as anyone knows.
     c.header("Retry-After", String(wait));

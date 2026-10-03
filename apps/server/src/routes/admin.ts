@@ -49,9 +49,7 @@ adminApi.get("/collab/unsaved", (c) => {
   const vaultId = ownerVault(c)!;
   c.header("Cache-Control", "no-store");
   return c.json({
-    rows: listCollabUnsaved(200)
-      .filter((r) => r.vault_id === vaultId)
-      .map((r) => ({ vaultId: r.vault_id, noteId: r.name, reason: r.reason, permanent: r.permanent === 1, since: r.since, attempts: r.attempts })),
+    rows: listCollabUnsaved(200, vaultId).map((r) => ({ vaultId: r.vault_id, noteId: r.name, reason: r.reason, permanent: r.permanent === 1, since: r.since, attempts: r.attempts })),
   });
 });
 adminApi.post("/collab/unsaved/:id/discard", async (c) => {
