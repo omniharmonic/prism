@@ -4,6 +4,7 @@ import { useVaultClient } from "../../data/VaultClientContext";
 import type { VaultClient } from "../../data/VaultClient";
 import type { Note, NoteTreeEntry } from "../types";
 import { useUIStore } from "../../app/stores/ui";
+import { queryKeys } from "../parachute/queries";
 import { newContentFolder, newContentParams } from "../../components/navigation/newContent";
 
 /**
@@ -21,6 +22,9 @@ export async function createUntitledPage(client: VaultClient, queryClient: Query
   const { title, params } = newContentParams("document", "", folder, tree);
   const note = await client.createNote(params);
   void queryClient.invalidateQueries({ queryKey: ["vault"] });
+  // The create's own response IS the page: seed it so the title is on screen (and
+  // focused) without waiting for a second round trip to read it back (< 300 ms).
+  if (note && typeof note.id === "string") queryClient.setQueryData(queryKeys.vault.note(note.id), note);
   useUIStore.getState().openTab(note.id, title, "document");
   focusPageTitle(title);
   return note;
