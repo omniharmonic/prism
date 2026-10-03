@@ -23,18 +23,26 @@ import type {
   PeerInfo,
   PublicationInfo,
   ShareLevel,
+  SharePerson,
 } from "../../data/CollabSharing";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { PersonAvatar } from "../sharing/PersonAvatar";
 
 type Props = { noteId: string; sharing: CollabSharing; onClose: () => void };
 type Section = "people" | "links" | "publish" | "sync";
 const LEVELS: ShareLevel[] = ["view", "comment", "suggest", "edit"];
-const LABEL: Record<ShareLevel, string> = {
+/** "full" = Full access: every capability (share, delete, organize, …). Admin-granted only. */
+type Choice = ShareLevel | "full";
+const FULL_CAPS = ["view", "comment", "suggest", "edit", "create", "organize", "delete", "share"];
+const LABEL: Record<Choice, string> = {
+  full: "Full access",
   view: "Can view",
   comment: "Can comment",
   suggest: "Can suggest",
   edit: "Can edit",
 };
+const isFull = (p: Pick<SharePerson, "caps">) => !!p.caps && FULL_CAPS.every((c) => p.caps!.includes(c));
+const personName = (p: { name?: string | null; email?: string | null }) => p.name?.trim() || p.email || "Someone";
 const SUGGEST_HELP =
   "Can suggest tracks edits and comments in Prism. Use it only with trusted collaborators: the server does not yet prevent direct document changes with this permission.";
 const HELP: Record<ShareLevel, string> = {
@@ -44,6 +52,7 @@ const HELP: Record<ShareLevel, string> = {
   suggest: SUGGEST_HELP,
   edit: "Edit this document directly and review suggested changes.",
 };
+const isPrivateNote = (a: NoteAccess | null) => a?.note.visibility === "private";
 const errorText = (e: unknown, fallback: string) =>
   e instanceof Error && /conflict|changed|Reconnect|409/i.test(e.message)
     ? "Access or the document changed. Reload sharing settings before trying again."
@@ -74,7 +83,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
   const [error, setError] = useState("");
   const [section, setSection] = useState<Section>("people");
   const [email, setEmail] = useState("");
-  const [level, setLevel] = useState<ShareLevel>("view");
+  const [level, setLevel] = useState<Choice>("view");
+  const [withSubpages, setWithSubpages] = useState(true);
   const [linkLevel, setLinkLevel] = useState<ShareLevel>("view");
   const [days, setDays] = useState(30);
   const [copied, setCopied] = useState("");
@@ -97,6 +107,15 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
   const [publishedCount, setPublishedCount] = useState<number | null>(null);
   const admin = !!access && access.canManageLinks !== false;
   const levels = access?.allowedLevels ?? LEVELS;
+  // Notion's ladder, strongest first; Full access only where the server lets this
+  // caller grant every capability (administrators).
+  const personChoices: Choice[] = [...(admin ? (["full"] as Choice[]) : []), ...[...levels].reverse()];
+  const pageScope = !isPrivateNote(access) && withSubpages ? "page" : "note";
+  const grant = (email: string, choice: Choice, scope: "page" | "note") =>
+    sharing.setPerson!(noteId, email, choice === "full" ? "edit" : choice, {
+      scope,
+      ...(choice === "full" ? { caps: FULL_CAPS } : {}),
+    });
   const isPrivate = access?.note.visibility === "private";
   const currentPub = publications?.find((p) => p.tag === tag);
   useEffect(() => {
@@ -125,7 +144,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
     if (!alive.current) return;
     setAccess(next);
     setLevel((current) =>
-      (next.allowedLevels ?? LEVELS).includes(current)
+      (current === "full" && next.canManageLinks !== false) ||
+      (current !== "full" && (next.allowedLevels ?? LEVELS).includes(current))
         ? current
         : (next.allowedLevels?.[0] ?? "view"),
     );
@@ -216,11 +236,11 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
     setNotice("");
     setManualCopy(null);
   }
-  const levelSelect = (
-    value: ShareLevel,
-    change: (value: ShareLevel) => void,
+  const levelSelect = <T extends Choice>(
+    value: T,
+    change: (value: T) => void,
     label: string,
-    options = LEVELS,
+    options: readonly T[] = LEVELS as unknown as T[],
     custom = false,
     disabled = false,
   ) => (
@@ -228,7 +248,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       aria-label={label}
       disabled={disabled}
       value={custom ? "custom" : value}
-      onChange={(e) => change(e.target.value as ShareLevel)}
+      onChange={(e) => change(e.target.value as T)}
     >
       {custom && (
         <option value="custom" disabled>
@@ -260,7 +280,7 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
   const tabs: Array<{ id: Section; label: string; icon: ReactNode }> = [
     { id: "people", label: "People", icon: <Users size={16} /> },
     ...(admin
-      ? [{ id: "links" as const, label: "Links", icon: <Link2 size={16} /> }]
+      ? [{ id: "links" as const, label: "Link access", icon: <Link2 size={16} /> }]
       : []),
     ...(admin && sharing.publishTag
       ? [
@@ -326,8 +346,27 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       .prism-share-dialog .share-card { padding:14px; border:1px solid var(--glass-border); border-radius:10px; }
       .prism-share-dialog .share-primary { background:var(--color-accent); color:white; border-color:transparent; }
       .prism-share-dialog h3 { font-size:13px; margin:0 0 8px; font-weight:600; }
-      .prism-share-dialog .share-person { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:8px; padding:8px 0; }
-      @media(max-width:480px) { .prism-share-dialog .share-person { grid-template-columns:minmax(0,1fr) auto; } .prism-share-dialog .share-person .share-email { grid-column:1/-1; } .prism-share-dialog nav button { flex-direction:column; padding:8px 4px; gap:4px; font-size:12px; } }
+      .prism-share-dialog .share-person { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:10px; padding:8px 0; }
+      .prism-share-dialog .share-person .share-who { min-width:0; display:grid; gap:1px; }
+      .prism-share-dialog .share-person .share-who strong { font-size:13.5px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .prism-share-dialog .share-person .share-who small { font-size:12px; color:var(--text-muted); overflow-wrap:anywhere; }
+      .prism-share-dialog .share-person .share-owner { font-size:12.5px; color:var(--text-muted); padding:0 4px; }
+      .prism-share-dialog .share-tabs { display:flex; gap:20px; padding:0 20px; border-bottom:1px solid var(--glass-border); overflow-x:auto; }
+      .prism-share-dialog .share-tabs button[role=tab] { border:0; border-radius:0; background:none; padding:10px 2px; min-height:44px; margin-bottom:-1px; color:var(--text-muted); border-bottom:2px solid transparent; font-weight:500; white-space:nowrap; }
+      .prism-share-dialog .share-tabs button[role=tab]:hover { color:var(--text-primary); }
+      .prism-share-dialog .share-tabs button[aria-selected=true] { color:var(--color-accent); border-bottom-color:var(--color-accent); font-weight:600; }
+      .prism-share-dialog .share-subtle { font-size:12px; color:var(--text-muted); }
+      .prism-share-dialog .share-check { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-secondary); }
+      .prism-share-dialog .share-check input { min-height:auto; width:16px; height:16px; padding:0; accent-color:var(--color-accent); }
+      .prism-share-dialog .share-invite { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }
+      @media(max-width:480px) {
+        .prism-share-dialog { width:100vw; max-width:100vw; margin:auto 0 0; border-radius:16px 16px 0 0; max-height:92dvh; border-bottom:0; }
+        .prism-share-dialog .share-invite { grid-template-columns:1fr auto; }
+        .prism-share-dialog .share-invite input { grid-column:1/-1; }
+        .prism-share-dialog .share-person { grid-template-columns:auto minmax(0,1fr) auto; }
+        .prism-share-dialog .share-person > button:last-child { grid-column:3; }
+        .prism-share-dialog .share-tabs { gap:14px; padding:0 16px; }
+      }
     `}</style>
       <header
         style={{
@@ -339,7 +378,8 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
       >
         <div style={{ flex: 1, minWidth: 0 }}>
           <h2 id={heading} style={{ margin: 0, fontSize: 20, fontWeight: 650 }}>
-            Share document
+            <span className="sr-only" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Share document</span>
+            <span aria-hidden>Share</span>
           </h2>
           <p style={{ overflowWrap: "anywhere", marginTop: 4 }}>
             {access?.note.title || "Manage collaboration and access"}
@@ -349,38 +389,36 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
           <X size={18} />
         </button>
       </header>
-      <nav
+      <div
+        role="tablist"
         aria-label="Sharing options"
-        className="share-row"
-        style={{
-          padding: "0 20px 16px",
-          borderBottom: "1px solid var(--glass-border)",
-          display: "grid",
-          gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))`,
-          gap: 6,
+        className="share-tabs"
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+          const i = tabs.findIndex((t) => t.id === section);
+          const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+          if (!next) return;
+          e.preventDefault();
+          choose(next.id);
+          e.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next.id}"]`)?.focus();
         }}
       >
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
-            aria-current={section === t.id ? "page" : undefined}
+            role="tab"
+            data-tab={t.id}
+            aria-selected={section === t.id}
+            tabIndex={section === t.id ? 0 : -1}
             disabled={busy}
             onClick={() => choose(t.id)}
-            style={
-              section === t.id
-                ? {
-                    background: "var(--surface-hover,var(--glass))",
-                    fontWeight: 600,
-                  }
-                : undefined
-            }
           >
             {t.icon}
             {t.label}
           </button>
         ))}
-      </nav>
+      </div>
       <div style={{ padding: 20 }} className="share-stack">
         {error && (
           <div role="alert" className="share-card">
@@ -419,6 +457,193 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
           >
             {section === "people" && (
               <div className="share-stack">
+                <form
+                  className="share-stack"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!sharing.setPerson || !email.trim()) return;
+                    void run(async () => {
+                      const target = email.trim().toLowerCase();
+                      const result = await grant(target, level, pageScope);
+                      if (!alive.current) return;
+                      if (result?.invited && result.inviteUrl)
+                        setInvite({ email: target, url: result.inviteUrl });
+                      setEmail("");
+                      await changed(async () => {});
+                    }, "Couldn't add this person. Your invitation details are still here.");
+                  }}
+                >
+                  <div>
+                    <h3>Invite people</h3>
+                    <p className="share-subtle">
+                      {isPrivate
+                        ? "Give people access to this private page only."
+                        : withSubpages
+                          ? "Give people access to this page and its sub-pages."
+                          : "Give people access to this page only."}
+                    </p>
+                  </div>
+                  <div className="share-invite">
+                    <input
+                      type="email"
+                      required
+                      aria-label="Invite people"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      autoComplete="email"
+                    />
+                    {levelSelect(
+                      level,
+                      setLevel,
+                      "Collaborator permission",
+                      personChoices,
+                    )}
+                    <button
+                      className="share-primary"
+                      disabled={
+                        !sharing.setPerson || !email.trim() || !levels.length
+                      }
+                    >
+                      Invite
+                    </button>
+                  </div>
+                  {!isPrivate && (
+                    <label className="share-check">
+                      <input
+                        type="checkbox"
+                        checked={withSubpages}
+                        onChange={(e) => setWithSubpages(e.target.checked)}
+                      />
+                      Include sub-pages
+                    </label>
+                  )}
+                  <p>
+                    {level === "full"
+                      ? "Full access: edit, share with others, move and delete this page."
+                      : HELP[level]}{" "}
+                    {admin
+                      ? "New collaborators receive an account invitation."
+                      : "You can share only with existing workspace accounts, within your own permissions."}
+                  </p>
+                </form>
+                {invite && (
+                  <div className="share-card share-stack">
+                    <h3>Invitation created</h3>
+                    <p>
+                      This link lets {invite.email} create their account. It
+                      expires in seven days.
+                    </p>
+                    <div className="share-row">
+                      {copyButton(invite.url, "invitation")}
+                      <button type="button" onClick={() => setInvite(null)}>
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <section aria-labelledby={`${heading}-people`}>
+                  <h3 id={`${heading}-people`}>People with access</h3>
+                  {!!access.people.length && levels.includes("suggest") && (
+                    <p>{SUGGEST_HELP}</p>
+                  )}
+                  {access.owner && (
+                    <div className="share-person" data-share-owner>
+                      <PersonAvatar name={personName(access.owner)} avatar={access.owner.avatar} seed={access.owner.email ?? access.owner.name} size={32} />
+                      <span className="share-who">
+                        <strong>{personName(access.owner)}</strong>
+                        {access.owner.email && <small>{access.owner.email}</small>}
+                      </span>
+                      <span className="share-owner">Owner</span>
+                    </div>
+                  )}
+                  {!access.people.length && (
+                    <p>
+                      Nobody else has been invited to this page directly.
+                    </p>
+                  )}
+                  {access.people.map((person) => (
+                    <div className="share-person" key={person.email}>
+                      <PersonAvatar name={personName(person)} avatar={person.avatar} seed={person.email} size={32} />
+                      <span className="share-who share-email">
+                        <strong>{personName(person)}</strong>
+                        <small>
+                          {person.name ? person.email : ""}
+                          {person.name && person.scope === "page" ? " · " : ""}
+                          {person.scope === "page" ? "Includes sub-pages" : person.scope === "note" && !isPrivate ? "This page only" : ""}
+                        </small>
+                        {person.customPermissions && !isFull(person) && (
+                          <small>
+                            Custom: {person.caps?.join(", ")}. Selecting a role
+                            replaces these permissions.
+                          </small>
+                        )}
+                      </span>
+                      {levelSelect<Choice>(
+                        isFull(person) ? "full" : person.level,
+                        (next) =>
+                          void run(
+                            () =>
+                              changed(() =>
+                                grant(person.email, next, person.scope ?? "note"),
+                              ),
+                            "Couldn't change this person's permission.",
+                          ),
+                        `Permission for ${person.email}`,
+                        personChoices,
+                        person.customPermissions && !isFull(person),
+                        !sharing.setPerson,
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Remove access for ${person.email}`}
+                        title="Remove access"
+                        disabled={!sharing.removePerson}
+                        onClick={() =>
+                          void run(
+                            () =>
+                              changed(() =>
+                                sharing.removePerson!(noteId, person.email),
+                              ),
+                            "Couldn't remove access.",
+                          )
+                        }
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+                {!!access.inherited?.length && (
+                  <section aria-labelledby={`${heading}-inherited`}>
+                    <h3 id={`${heading}-inherited`}>Inherited access</h3>
+                    <p className="share-subtle">
+                      These people can open this page because a page above it is shared with them. Change it for this page to restrict or expand their access here and below.
+                    </p>
+                    {access.inherited.map((person) => (
+                      <div className="share-person" key={`inherited-${person.email}`} data-inherited-from={person.from.id}>
+                        <PersonAvatar name={personName(person)} avatar={person.avatar} seed={person.email} size={32} />
+                        <span className="share-who">
+                          <strong>{personName(person)}</strong>
+                          <small>Inherited from {person.from.title}</small>
+                        </span>
+                        {levelSelect<Choice>(
+                          isFull(person) ? "full" : person.level,
+                          (next) =>
+                            void run(
+                              () => changed(() => grant(person.email, next, "page")),
+                              "Couldn't change this person's permission on this page.",
+                            ),
+                          `Permission for ${person.email} on this page`,
+                          personChoices,
+                          false,
+                          !sharing.setPerson,
+                        )}
+                        <span aria-hidden />
+                      </div>
+                    ))}
+                  </section>
+                )}
                 <div className="share-card share-stack">
                   <div className="share-row">
                     {isPrivate ? <Lock size={17} /> : <Users size={17} />}
@@ -448,140 +673,6 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                     </button>
                   )}
                 </div>
-                <form
-                  className="share-stack"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!sharing.setPerson || !email.trim()) return;
-                    void run(async () => {
-                      const target = email.trim().toLowerCase();
-                      const result = await sharing.setPerson!(
-                        noteId,
-                        target,
-                        level,
-                      );
-                      if (!alive.current) return;
-                      if (result?.invited && result.inviteUrl)
-                        setInvite({ email: target, url: result.inviteUrl });
-                      setEmail("");
-                      await changed(async () => {});
-                    }, "Couldn't add this person. Your invitation details are still here.");
-                  }}
-                >
-                  <label>
-                    Add a collaborator
-                    <input
-                      type="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@example.com"
-                      autoComplete="email"
-                    />
-                  </label>
-                  <div className="share-row">
-                    {levelSelect(
-                      level,
-                      setLevel,
-                      "Collaborator permission",
-                      levels,
-                    )}
-                    <button
-                      className="share-primary"
-                      disabled={
-                        !sharing.setPerson || !email.trim() || !levels.length
-                      }
-                    >
-                      Add person
-                    </button>
-                  </div>
-                  <p>
-                    {HELP[level]}{" "}
-                    {admin
-                      ? "New collaborators receive an account invitation."
-                      : "You can share only with existing workspace accounts, within your own permissions."}
-                  </p>
-                </form>
-                {invite && (
-                  <div className="share-card share-stack">
-                    <h3>Invitation for {invite.email}</h3>
-                    <p>
-                      This link lets them create their account. Expires in seven
-                      days.
-                    </p>
-                    <div className="share-row">
-                      {copyButton(invite.url, "invitation")}
-                      <button type="button" onClick={() => setInvite(null)}>
-                        Dismiss
-                      </button>
-                    </div>
-                  </div>
-                )}
-                <section>
-                  <h3>Direct document access</h3>
-                  {!!access.people.length && levels.includes("suggest") && (
-                    <p>{SUGGEST_HELP}</p>
-                  )}
-                  {!access.people.length && (
-                    <p>
-                      No people have direct grants. Other access paths are
-                      listed separately.
-                    </p>
-                  )}
-                  {access.people.map((person) => (
-                    <div className="share-person" key={person.email}>
-                      <span
-                        className="share-email"
-                        style={{ fontSize: 13, overflowWrap: "anywhere" }}
-                      >
-                        {person.email}
-                        {person.customPermissions && (
-                          <small
-                            style={{
-                              display: "block",
-                              color: "var(--text-secondary)",
-                              fontSize: 12,
-                            }}
-                          >
-                            Custom: {person.caps?.join(", ")}. Selecting a role
-                            replaces these permissions.
-                          </small>
-                        )}
-                      </span>
-                      {levelSelect(
-                        person.level,
-                        (next) =>
-                          void run(
-                            () =>
-                              changed(() =>
-                                sharing.setPerson!(noteId, person.email, next),
-                              ),
-                            "Couldn't change this person's permission.",
-                          ),
-                        `Permission for ${person.email}`,
-                        levels,
-                        person.customPermissions,
-                        !sharing.setPerson,
-                      )}
-                      <button
-                        type="button"
-                        aria-label={`Remove access for ${person.email}`}
-                        disabled={!sharing.removePerson}
-                        onClick={() =>
-                          void run(
-                            () =>
-                              changed(() =>
-                                sharing.removePerson!(noteId, person.email),
-                              ),
-                            "Couldn't remove access.",
-                          )
-                        }
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </section>
                 {!!access.tagAccess.length && (
                   <section>
                     <h3>
@@ -602,10 +693,11 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
             {section === "links" && admin && (
               <div className="share-stack">
                 <div>
-                  <h3>Anyone with a link</h3>
+                  <h3>Link access</h3>
                   <p>
-                    A link grants access to this document without an account.
-                    Each link has its own permission and expiry.
+                    {access.links.some((l) => l.expiresAt > Date.now())
+                      ? "Anyone with a link below can open this page without an account, at that link’s permission, until it expires or you revoke it."
+                      : "Restricted — only people with access can open this page. Create a link to let anyone who has it open the page without an account."}
                   </p>
                 </div>
                 <div className="share-row">

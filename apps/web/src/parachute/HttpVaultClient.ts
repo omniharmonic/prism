@@ -1,6 +1,7 @@
 import type { VaultClient } from "@prism/core";
 import * as rest from "./rest";
 import * as pages from "./pages";
+import * as sharing from "./sharing";
 import { agentScope } from "../config";
 
 /**
@@ -44,6 +45,10 @@ export const httpVaultClient: VaultClient = {
   setPageMeta: pages.setPageMeta,
   trashPage: pages.trashPage,
   listTrash: pages.listTrash,
+  listSharedWithMe: sharing.listSharedWithMe,
+  listComments: sharing.listComments,
+  getPageActivity: sharing.getPageActivity,
+  getAccessPreview: sharing.getAccessPreview,
   restoreFromTrash: pages.restoreFromTrash,
   deleteFromTrash: pages.deleteFromTrash,
   getPreferences: pages.getPreferences,

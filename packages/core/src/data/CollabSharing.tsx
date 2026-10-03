@@ -166,6 +166,15 @@ export interface SharePerson {
   level: ShareLevel;
   caps?: string[];
   customPermissions?: boolean;
+  /** Display name / small data: avatar (servers since wave 2D). */
+  name?: string | null;
+  avatar?: string | null;
+  /** "page" = shares the page AND its sub-pages; "note" = this page only. */
+  scope?: "page" | "note";
+}
+/** Access a person inherits from a shared ancestor page. */
+export interface InheritedPerson extends SharePerson {
+  from: { id: string; title: string; path?: string };
 }
 export interface TagAccess {
   tag: string;
@@ -174,7 +183,13 @@ export interface TagAccess {
   level: ShareLevel;
 }
 export interface NoteAccess {
-  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null };
+  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null; path?: string | null };
+  /** The page's owner row (creator, else workspace owner). `email` only for admins. */
+  owner?: { email: string | null; name: string | null; avatar: string | null };
+  /** Access inherited from shared ancestor pages (NP-CO-09). */
+  inherited?: InheritedPerson[];
+  /** The nearest existing parent page, if any. */
+  parent?: { id: string; title: string } | null;
   people: SharePerson[];
   links: ShareLink[];
   tagAccess: TagAccess[];
@@ -354,7 +369,9 @@ export interface CollabSharing {
 
   /** Full per-note access (people + links + tag-grants). Presence enables the rich dialog. */
   getAccess?(noteId: string): Promise<NoteAccess>;
-  setPerson?(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult>;
+  /** `options.scope` "page" shares the sub-pages too; `options.caps` sets explicit
+   *  capabilities (e.g. Full access). Older shells ignore the options. */
+  setPerson?(noteId: string, email: string, level: ShareLevel, options?: { scope?: "page" | "note"; caps?: string[] }): Promise<SetPersonResult>;
   removePerson?(noteId: string, email: string): Promise<void>;
   /** Private-to-creator (Phase 2.5): mark a note private (only the creator + people
    *  with an explicit per-note grant can see it) or back to workspace-visible. */

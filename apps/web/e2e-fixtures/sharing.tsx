@@ -49,6 +49,21 @@ const access: NoteAccess = {
   canManageLinks: !scoped,
   allowedLevels: scoped ? ["view"] : ["view", "comment", "suggest", "edit"],
 };
+// ?page — a workspace page inside a shared parent (NP-CO-05/09): named people,
+// an Owner row and access inherited from the parent page.
+if (new URLSearchParams(location.search).has("page")) {
+  access.note = { id: "private", title: "A calmer place to think", tags: ["prism"], visibility: "workspace", path: "Projects/Prism/A calmer place to think" };
+  access.owner = { email: "alex.rivera@prism.test", name: "Alex Rivera", avatar: null };
+  access.people = [
+    { email: "morgan.lee@prism.test", name: "Morgan Lee", level: "edit", scope: "page" },
+    { email: "sam.chen@example.test", name: "Sam Chen", level: "suggest", scope: "note" },
+  ];
+  access.inherited = [
+    { email: "jordan.diaz@prism.test", name: "Jordan Diaz", level: "view", scope: "page", from: { id: "prism", title: "Prism" } },
+  ];
+  access.parent = { id: "prism", title: "Prism" };
+  access.tagAccess = [];
+}
 if (new URLSearchParams(location.search).has("custom")) {
   access.people[0] = {
     email: "alex@example.test",
@@ -87,14 +102,21 @@ const sharing: CollabSharing = {
     await call("getAccess");
     return structuredClone(access);
   },
-  setPerson: async (id, email, level) => {
-    await call("setPerson", id, email, level);
+  setPerson: async (id, email, level, options) => {
+    await call("setPerson", id, email, level, ...(options ? [options] : []));
     const p = access.people.find((p) => p.email === email);
+    const caps = options?.caps;
     if (p) {
       p.level = level;
-      p.customPermissions = false;
-      delete p.caps;
-    } else access.people.push({ email, level });
+      p.customPermissions = !!caps;
+      if (caps) p.caps = caps;
+      else delete p.caps;
+      if (options?.scope) p.scope = options.scope;
+    } else {
+      // An inherited person changed on this page becomes a direct page grant here.
+      access.inherited = (access.inherited ?? []).filter((x) => x.email !== email);
+      access.people.push({ email, level, scope: options?.scope, ...(caps ? { caps, customPermissions: true } : {}) });
+    }
     return { invited: false };
   },
   removePerson: async (id, email) => {

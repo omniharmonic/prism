@@ -100,8 +100,10 @@ export type {
   IntegrationStatus,
 } from "./data/CollabSharing";
 export { ShareDialog } from "./components/layout/ShareDialog";
-export { CommentsSidebar } from "./components/renderers/CommentsSidebar";
-export { collabAffordances, type CollabAffordances } from "./lib/collab/access";
+export { CommentsSidebar, type CommentCommandActions } from "./components/renderers/CommentsSidebar";
+export { collabAffordances, type CollabAffordances, type CollabSocketScope } from "./lib/collab/access";
+export { HumanSuggestionComposer, humanFailureText, type HumanCommandChannel } from "./components/renderers/HumanSuggestionComposer";
+export { HumanCommandFailure, HUMAN_COMMAND_COPY } from "./lib/collab/human/failure";
 export { PageHeader, PageProperties, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
@@ -245,3 +247,13 @@ export { TranscriptReviewClientProvider, useTranscriptReviewClient, type Transcr
 export { eligiblePublicationNavigation, parsePublicationNavigation, type PublicationNavigation } from "./lib/publishing/navigation";
 // Pages: nested-page moves, Trash, synced preferences (lib/pages/model.ts).
 export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, type MoveResult, type TrashItem, type TrashListing, type PreferencesSnapshot, type PagePreferences } from "./lib/pages/model";
+
+// Sharing / review reads (wave 2D)
+export type { SharedItem, SharedWithMeListing, IndexedThread, IndexedComment, WriterInfo, PageActivity, AccessPreview } from "./lib/sharing/types";
+export type { InheritedPerson } from "./data/CollabSharing";
+export { PersonAvatar, toneFor } from "./components/sharing/PersonAvatar";
+export { SharedWithMe, useSharedWithMe } from "./components/sharing/SharedWithMe";
+export { PresenceAvatars, presentPeople, jumpToCaret, type PresentPerson, type PresenceAwareness } from "./components/sharing/PresenceAvatars";
+export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
+export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
+export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";

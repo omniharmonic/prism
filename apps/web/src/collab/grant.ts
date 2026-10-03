@@ -112,8 +112,11 @@ export const webCollabSharing: CollabSharing = {
   async getAccess(noteId: string): Promise<NoteAccess> {
     return (await acl(`/notes/${enc(noteId)}`)).json();
   },
-  async setPerson(noteId: string, email: string, level: ShareLevel): Promise<SetPersonResult> {
-    return (await acl(`/notes/${enc(noteId)}/people`, { method: "PUT", body: JSON.stringify({ email, level }) })).json();
+  async setPerson(noteId: string, email: string, level: ShareLevel, options?: { scope?: "page" | "note"; caps?: string[] }): Promise<SetPersonResult> {
+    const body: Record<string, unknown> = { email, level };
+    if (options?.scope) body.scope = options.scope;
+    if (options?.caps?.length) body.caps = options.caps;
+    return (await acl(`/notes/${enc(noteId)}/people`, { method: "PUT", body: JSON.stringify(body) })).json();
   },
   async removePerson(noteId: string, email: string): Promise<void> {
     await acl(`/notes/${enc(noteId)}/people/${enc(email)}`, { method: "DELETE" });

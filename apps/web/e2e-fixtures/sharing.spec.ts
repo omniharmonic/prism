@@ -48,21 +48,21 @@ test("failed changes retain drafts and grants; a pending operation cannot be dup
   page,
 }) => {
   await open(page);
-  await page.getByLabel("Add a collaborator").fill("new@example.test");
+  await page.getByLabel("Invite people", { exact: true }).fill("new@example.test");
   await page.evaluate(() => {
     (window as any).prismSharingFixture.failNext = true;
   });
-  await page.getByRole("button", { name: "Add person", exact: true }).click();
+  await page.getByRole("button", { name: "Invite", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Couldn't add");
-  await expect(page.getByLabel("Add a collaborator")).toHaveValue(
+  await expect(page.getByLabel("Invite people", { exact: true })).toHaveValue(
     "new@example.test",
   );
   await page.evaluate(() => {
     (window as any).prismSharingFixture.hold = true;
   });
-  await page.getByRole("button", { name: "Add person", exact: true }).click();
+  await page.getByRole("button", { name: "Invite", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Add person", exact: true }),
+    page.getByRole("button", { name: "Invite", exact: true }),
   ).toBeDisabled();
   await expect(page.getByLabel("Collaborator permission")).toBeDisabled();
   await page.evaluate(() => {
@@ -96,7 +96,7 @@ test("links use the selected expiry, clipboard failure stays explicit and failed
   page,
 }) => {
   await open(page);
-  await page.getByRole("button", { name: "Links", exact: true }).click();
+  await page.getByRole("tab", { name: "Link access", exact: true }).click();
   await page.getByLabel("Link permission").selectOption("suggest");
   await page.getByLabel("Link expires after").selectOption("7");
   await page.evaluate(() => {
@@ -137,20 +137,21 @@ test("scoped sharers see only their available roles and no link, publication, sy
   await expect(
     page.getByLabel("Collaborator permission").locator("option"),
   ).toHaveCount(1);
-  for (const name of ["Links", "Publish", "Sync", "Use workspace access"])
-    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
-      0,
-    );
+  for (const name of ["Link access", "Publish", "Sync"])
+    await expect(page.getByRole("tab", { name, exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Use workspace access", exact: true }),
+  ).toHaveCount(0);
 });
 test("changing audience closes the modal and ignores a delayed sharing result", async ({
   page,
 }) => {
   await open(page);
-  await page.getByLabel("Add a collaborator").fill("new@example.test");
+  await page.getByLabel("Invite people", { exact: true }).fill("new@example.test");
   await page.evaluate(() => {
     (window as any).prismSharingFixture.hold = true;
   });
-  await page.getByRole("button", { name: "Add person", exact: true }).click();
+  await page.getByRole("button", { name: "Invite", exact: true }).click();
   await page.evaluate(() => {
     (window as any).prismSharingFixture.switchScope();
   });
@@ -166,7 +167,7 @@ test("publishing and peer sync retain their independent controls and failure rec
   page,
 }) => {
   await open(page);
-  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByRole("tab", { name: "Publish", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Publish collection", exact: true }),
   ).toBeVisible();
@@ -181,7 +182,7 @@ test("publishing and peer sync retain their independent controls and failure rec
   await expect(
     page.getByRole("button", { name: "Publish collection", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await page.getByRole("tab", { name: "Sync", exact: true }).click();
   await page.getByLabel("Peer permission").selectOption("view");
   await page.getByRole("button", { name: "Start sync", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Sync started");
@@ -275,20 +276,20 @@ test("real workspace sharing keeps the dialog and invitation draft across respon
 }) => {
   await page.goto("/e2e-fixtures/sharing.html?toolbar");
   await page.getByRole("button", { name: "Share", exact: true }).click();
-  await page.getByLabel("Add a collaborator").fill("draft@example.test");
+  await page.getByLabel("Invite people", { exact: true }).fill("draft@example.test");
   await page.getByLabel("Collaborator permission").selectOption("suggest");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
     page.getByRole("dialog", { name: "Share document" }),
   ).toBeVisible();
-  await expect(page.getByLabel("Add a collaborator")).toHaveValue(
+  await expect(page.getByLabel("Invite people", { exact: true })).toHaveValue(
     "draft@example.test",
   );
   await expect(page.getByLabel("Collaborator permission")).toHaveValue(
     "suggest",
   );
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(page.getByLabel("Add a collaborator")).toHaveValue(
+  await expect(page.getByLabel("Invite people", { exact: true })).toHaveValue(
     "draft@example.test",
   );
   await page.keyboard.press("Escape");
@@ -296,11 +297,11 @@ test("real workspace sharing keeps the dialog and invitation draft across respon
     page.getByRole("button", { name: "Share", exact: true }),
   ).toBeFocused();
   await page.getByRole("button", { name: "Share", exact: true }).click();
-  await page.getByLabel("Add a collaborator").fill("old-audience@example.test");
+  await page.getByLabel("Invite people", { exact: true }).fill("old-audience@example.test");
   await page.evaluate(() => (window as any).prismSharingFixture.switchScope());
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("button", { name: "Share", exact: true }).click();
-  await expect(page.getByLabel("Add a collaborator")).toHaveValue("");
+  await expect(page.getByLabel("Invite people", { exact: true })).toHaveValue("");
 });
 
 test("suggest permissions disclose the trusted-collaborator limitation before granting access", async ({
@@ -313,16 +314,16 @@ test("suggest permissions disclose the trusted-collaborator limitation before gr
   // Existing grants can be changed immediately, so explain this beside that list too.
   await expect(
     page
-      .getByRole("heading", { name: "Direct document access" })
+      .getByRole("heading", { name: "People with access" })
       .locator("..")
       .getByText(limitation),
   ).toBeVisible();
   await page.getByLabel("Collaborator permission").selectOption("suggest");
   await expect(page.locator("form").getByText(limitation)).toBeVisible();
-  await page.getByRole("button", { name: "Links", exact: true }).click();
+  await page.getByRole("tab", { name: "Link access", exact: true }).click();
   await page.getByLabel("Link permission").selectOption("suggest");
   await expect(page.getByText(limitation)).toBeVisible();
-  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await page.getByRole("tab", { name: "Sync", exact: true }).click();
   await page.getByLabel("Peer permission").selectOption("suggest");
   await expect(page.getByText(limitation)).toBeVisible();
   expect(

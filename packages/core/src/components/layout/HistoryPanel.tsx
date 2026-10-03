@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, Clock, History, RotateCcw } from "lucide-react";
+import { Check, CheckCheck, Clock, History, RotateCcw, Sparkles } from "lucide-react";
 import type { Note } from "../../lib/types";
 import { useNoteVersions } from "../../app/hooks/useNoteHistory";
 import { useVaultClient } from "../../data/VaultClientContext";
@@ -9,6 +9,10 @@ import { ago, dayLabel, formatWhen, opLabel, savedAt, sizeDelta } from "../histo
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
+import { PageUpdates } from "../sharing/PageUpdates";
+import { PersonAvatar } from "../sharing/PersonAvatar";
+import { useViewerEmail } from "../sharing/useViewerEmail";
 import "./context-panels.css";
 
 interface HistoryPanelProps {
@@ -31,6 +35,8 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
 function ScopedHistory({ note }: HistoryPanelProps) {
   const client = useVaultClient();
   const history = useNoteVersions(note.id);
+  const viewer = useViewerEmail();
+  const [tab, setTab] = useState<"versions" | "updates">("versions");
   const [openIx, setOpenIx] = useState<number | null>(null);
   const [restoredFrom, setRestoredFrom] = useState<string | null | undefined>(undefined);
   // Owners, desktop, and anyone holding `edit` (reviewMode "none"); propose/read-only
@@ -52,9 +58,27 @@ function ScopedHistory({ note }: HistoryPanelProps) {
     ? sizeDelta(versions[0].contentLength, new TextEncoder().encode(note.content ?? "").length)
     : undefined;
 
+  const currentWriter = writerOf({ metadata: note.metadata }, viewer);
   return (
     <section className="prism-context-history space-y-3" aria-label="Page history">
       <header><h2>Version history</h2><p>Saved versions of this page</p></header>
+      <div role="tablist" aria-label="History view" className="prism-history-tabs" style={{ display: "flex", gap: 16, borderBottom: "1px solid var(--glass-border)" }}>
+        {(["versions", "updates"] as const).map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            style={{ border: 0, background: "none", padding: "6px 0 8px", marginBottom: -1, font: "inherit", fontSize: 13, cursor: "pointer", color: tab === id ? "var(--text-primary)" : "var(--text-muted)", fontWeight: tab === id ? 600 : 450, borderBottom: tab === id ? "2px solid var(--color-accent)" : "2px solid transparent" }}
+          >
+            {id === "versions" ? "Versions" : "Updates"}
+          </button>
+        ))}
+      </div>
+      {tab === "updates" ? (
+        <PageUpdates note={note} versions={versions} viewer={viewer} />
+      ) : (<>
       {restoredFrom !== undefined && (
         <div
           className="flex items-start gap-2 rounded-lg p-2.5 text-xs"
@@ -72,9 +96,10 @@ function ScopedHistory({ note }: HistoryPanelProps) {
       <TimelineRow
         active
         title="Current version"
+        writer={currentWriter}
         subtitle={
           note.updatedAt
-            ? `${producedByRestore ? "Restored" : "Saved"} ${formatWhen(note.updatedAt)} · ${ago(note.updatedAt)}`
+            ? `${writerLine(currentWriter)}${producedByRestore ? "Restored" : "Saved"} ${formatWhen(note.updatedAt)} · ${ago(note.updatedAt)}`
             : undefined
         }
         icon={producedByRestore ? <RotateCcw size={10} /> : <Check size={10} />}
@@ -104,6 +129,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
             // What THIS save changed: its size vs the version before it.
             const older = versions[i + 1];
             const delta = older ? sizeDelta(older.contentLength, v.contentLength) : undefined;
+            const writer = writerOf(v, viewer);
             return (
               <div key={v.versionIx}>
                 {day !== prevDay && (
@@ -113,10 +139,11 @@ function ScopedHistory({ note }: HistoryPanelProps) {
                 )}
                 <TimelineRow
                   onClick={() => setOpenIx(i)}
-                  title={when ? formatWhen(when) : "Oldest saved version"}
-                  subtitle={`then ${opLabel(v.op)} ${ago(v.supersededAt)}${v.actor ? ` · ${v.actor}` : ""}${v.via ? ` · via ${v.via}` : ""}`}
+                  title={writer.kind === "unknown" ? (when ? formatWhen(when) : "Oldest saved version") : writerTitle(writer)}
+                  writer={writer}
+                  subtitle={`${writerLine(writer)}${writer.kind === "unknown" ? "" : when ? `${formatWhen(when)} · ` : "Oldest saved version · "}then ${opLabel(v.op)} ${ago(v.supersededAt)}${v.actor ? ` · ${v.actor}` : ""}${v.via ? ` · via ${v.via}` : ""}`}
                   badge={delta && delta.sign !== 0 ? delta : undefined}
-                  icon={v.op === "restore" ? <RotateCcw size={10} /> : <Clock size={10} />}
+                  icon={v.op === "restore" ? <RotateCcw size={10} /> : writer.kind === "agent" ? <Sparkles size={10} /> : writer.kind === "accepted-suggestion" ? <CheckCheck size={10} /> : <Clock size={10} />}
                   last={i === versions.length - 1}
                 />
               </div>
@@ -140,6 +167,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
         {total > 0 ? `${total} saved version${total === 1 ? "" : "s"}. ` : ""}
         History availability and retention are managed by your vault.
       </div>
+      </>)}
 
       {openIx !== null && versions[openIx] && (
         <VersionViewer
@@ -159,9 +187,16 @@ function ScopedHistory({ note }: HistoryPanelProps) {
   );
 }
 
+/** "You · " / "Sam Chen · " before a row's time; nothing when unknown. */
+function writerLine(w: WriterInfo): string {
+  const who = writerName(w);
+  return who ? `${who} · ` : "";
+}
+
 function TimelineRow({
   title,
   subtitle,
+  writer,
   icon,
   badge,
   active,
@@ -170,6 +205,7 @@ function TimelineRow({
 }: {
   title: string;
   subtitle?: string;
+  writer?: WriterInfo;
   icon: ReactNode;
   badge?: { text: string; sign: -1 | 0 | 1 };
   active?: boolean;
@@ -214,8 +250,9 @@ function TimelineRow({
           )}
         </div>
         {subtitle && (
-          <div className="prism-context-history-detail text-xs" style={{ color: "var(--text-muted)" }}>
-            {subtitle}
+          <div className="prism-context-history-detail text-xs" data-writer-kind={writer?.kind} style={{ color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+            {writer && writerName(writer) && <PersonAvatar name={writerName(writer)} size={16} />}
+            <span>{subtitle}</span>
           </div>
         )}
       </div>

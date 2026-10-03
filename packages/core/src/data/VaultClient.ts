@@ -74,6 +74,8 @@ export interface NoteVersionSummary {
   /** Vault-side attribution — present for the owner only. */
   actor?: string | null;
   via?: string | null;
+  /** Server-derived writer of this state (non-owners; see lib/history/attribution). */
+  writer?: import("../lib/sharing/types").WriterInfo;
 }
 
 export interface NoteVersion extends NoteVersionSummary {
@@ -137,6 +139,7 @@ export function toNoteVersion(raw: Record<string, unknown>): NoteVersion {
     contentLength: (raw.content_len as number) ?? 0,
     actor: raw.actor as string | null | undefined,
     via: raw.via as string | null | undefined,
+    ...(raw.writer && typeof raw.writer === "object" ? { writer: raw.writer as import("../lib/sharing/types").WriterInfo } : {}),
     content: raw.content === undefined ? null : (raw.content as string | null),
   };
 }
@@ -243,4 +246,10 @@ export interface VaultClient {
    *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
    *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */
   uploadAttachment?(noteId: string, file: File): Promise<UploadedAttachment>;
+  /** Sharing reads (wave 2D, server routes/sharing.ts). Optional per shell: without
+   *  them the sidebar has no "Shared with me", history has no Updates feed. */
+  listSharedWithMe?(): Promise<import("../lib/sharing/types").SharedWithMeListing>;
+  listComments?(opts?: { noteId?: string; unresolved?: boolean; mine?: boolean; limit?: number }): Promise<import("../lib/sharing/types").IndexedThread[]>;
+  getPageActivity?(noteId: string): Promise<import("../lib/sharing/types").PageActivity>;
+  getAccessPreview?(noteId: string, parentPath: string): Promise<import("../lib/sharing/types").AccessPreview>;
 }
