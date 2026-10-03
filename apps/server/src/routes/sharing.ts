@@ -21,7 +21,7 @@ import { roleAtLeast, roleFloor } from "../roles";
 import { ensureTree, rowRef, type TreeRow } from "../tree";
 import { vaultClient, VaultError, type Note } from "../parachute";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { ancestorPages, displayNameOnly, inheritedPeople, personView, versionWriter } from "../sharing";
+import { ancestorPages, creatorNameFor, displayNameOnly, inheritedPeople, personView, versionWriter, viewableAncestors } from "../sharing";
 import { TRASH_TAG } from "@prism/core/pages";
 import type { VaultEntry } from "../config";
 import { WRITER_KEY, writerIdFor, writerNames } from "../writer-stamp";
@@ -288,10 +288,11 @@ sharingApi.get("/notes/:id/activity", async (c) => {
       }
       const entry = entryOf(a);
       if (entry && n.metadata?.prism_visibility !== "private") {
-        const ancestors = await ancestorPages(entry, n.path);
+        // Only ancestors the caller can view; emails for administrators only (review L-4).
+        const ancestors = isAdmin(a) ? await ancestorPages(entry, n.path) : await viewableAncestors(entry, n.path, (r) => canView(a, r));
         for (const p of await inheritedPeople(entry, n.id, n.path, ancestors)) {
           const g = grantsForResource("page", p.from.id, a.vaultId).find((x) => x.subject_type === "user" && x.subject === p.email);
-          shares.push({ name: p.name, avatar: p.avatar, email: p.email, level: p.level, at: g?.created_at ?? 0, by: displayNameOnly(g?.created_by), scope: "page", inheritedFrom: { id: p.from.id, title: p.from.title } });
+          shares.push({ name: isAdmin(a) ? p.name : (creatorNameFor(p.email) ?? "Someone"), avatar: p.avatar, ...(isAdmin(a) && p.email ? { email: p.email } : {}), level: p.level, at: g?.created_at ?? 0, by: displayNameOnly(g?.created_by), scope: "page", inheritedFrom: { id: p.from.id, title: p.from.title } });
         }
       }
       shares.sort((x, y) => y.at - x.at);
@@ -302,7 +303,7 @@ sharingApi.get("/notes/:id/activity", async (c) => {
     // the client resolves them with this map (never the whole account list).
     let writers: Record<string, string> | undefined;
     let myWriterId: string | undefined;
-    const names = viewer ? writerNames() : undefined;
+    const names = viewer ? writerNames(isAdmin(a)) : undefined;
     if (viewer && names) {
       myWriterId = writerIdFor(viewer);
       writers = {};
@@ -319,8 +320,7 @@ sharingApi.get("/notes/:id/activity", async (c) => {
       }
       for (const id of stamps) {
         const name = names.get(id);
-        // An account without a display name resolves to its email: only its owner sees that.
-        if (name && (id === myWriterId || !name.includes("@"))) writers[id] = name;
+        if (name) writers[id] = name;
       }
     }
     return c.json({
@@ -376,13 +376,14 @@ sharingApi.get("/notes/:id/access-preview", async (c) => {
     const before = await inheritedLevels(entry, n.id, n.path, undefined, a);
     const after = await inheritedLevels(entry, n.id, newPath, n.path, a);
     const people = new Set([...before.keys(), ...after.keys()]);
-    const changes: Array<{ email: string; name: string | null; avatar: string | null; from: string | null; to: string | null }> = [];
+    const changes: Array<{ email: string | null; name: string | null; avatar: string | null; from: string | null; to: string | null }> = [];
     for (const email of people) {
       const from = before.get(email) ?? null;
       const to = after.get(email) ?? null;
       if (from === to) continue;
       const p = personView(email);
-      changes.push({ email, name: p.name, avatar: p.avatar, from, to });
+      // Names for access managers; the email itself only for administrators (review L-4).
+      changes.push({ email: isAdmin(a) ? email : null, name: isAdmin(a) ? p.name : (creatorNameFor(email) ?? "Someone"), avatar: p.avatar, from, to });
     }
     const willChange = changes.length > 0;
     if (!canManageAccess(a, n)) return c.json({ willChange });

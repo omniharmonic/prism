@@ -12,10 +12,12 @@
  * Everywhere else (presence, comments, "shared by", history) people are named by
  * display name only, never by an email that sharing did not already reveal.
  */
-import { getUser, grantsForResource, type Grant } from "./db";
+import { getUser, getVaultRegistry, grantsForResource, type Grant } from "./db";
+import type { Actor } from "./auth/actor";
+import { roleFloor } from "./roles";
 import type { VaultEntry } from "./config";
-import { ensureTree, type TreeRow } from "./tree";
-import { expandLevel, type Cap, type Level } from "./permissions";
+import { ensureTree, rowRef, type TreeRow } from "./tree";
+import { effectiveCaps, expandLevel, type Cap, type Level, type NoteRef } from "./permissions";
 import { WRITER_KEY, WRITER_AT_KEY, resolveWriter, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
 import { TRASH_TAG } from "@prism/core/pages";
 
@@ -33,12 +35,18 @@ export function personView(email: string): PersonView {
   return { email, name: u?.name?.trim() || null, avatar };
 }
 
+/** A creator's display name for a NON-admin viewer: never an email (null when the account has no name). */
+export function creatorNameFor(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const name = getUser(email)?.name?.trim();
+  return name && !name.includes("@") ? name : null;
+}
+
 /** A name safe to show to someone who must NOT learn the email (falls back to "Someone"). */
 export function displayNameOnly(email: string | null | undefined): string {
   if (!email) return "Someone";
   if (email === "link") return "Guest (link)";
-  const u = getUser(email);
-  return u?.name?.trim() || "Someone";
+  return creatorNameFor(email) ?? "Someone";
 }
 
 const live = (r: TreeRow): boolean => !r.trashedAt && !r.tags.includes(TRASH_TAG);
@@ -76,7 +84,9 @@ export async function ancestorPages(entry: VaultEntry, path: string | null | und
   return out;
 }
 
-export interface InheritedPerson extends PersonView {
+export interface InheritedPerson extends Omit<PersonView, "email"> {
+  /** Null for a non-admin viewer. */
+  email: string | null;
   level: Level;
   caps: Cap[];
   customPermissions: boolean;
@@ -90,7 +100,13 @@ export interface InheritedPerson extends PersonView {
  * on the note ITSELF are excluded (their own grant is the nearest anchor; it is
  * listed with the page's people).
  */
-export async function inheritedPeople(entry: VaultEntry, noteId: string, path: string | null | undefined, ancestors?: AncestorPage[]): Promise<InheritedPerson[]> {
+export async function inheritedPeople(
+  entry: VaultEntry,
+  noteId: string,
+  path: string | null | undefined,
+  ancestors?: AncestorPage[],
+  opts: { emails?: boolean } = { emails: true },
+): Promise<InheritedPerson[]> {
   const chain = ancestors ?? (await ancestorPages(entry, path));
   const own = new Set(grantsForResource("page", noteId, entry.id).filter((g) => g.subject_type === "user").map((g) => g.subject));
   const seen = new Set<string>(own);
@@ -99,10 +115,19 @@ export async function inheritedPeople(entry: VaultEntry, noteId: string, path: s
     for (const g of grantsForResource("page", a.id, entry.id)) {
       if (g.subject_type !== "user" || seen.has(g.subject)) continue;
       seen.add(g.subject);
-      out.push({ ...personView(g.subject), level: g.level, caps: [...grantCapsList(g)], customPermissions: !!g.caps?.length, from: a });
+      const p = personView(g.subject);
+      // Emails are for admins; everyone else sees the display name (review L-4).
+      out.push({ email: opts.emails === false ? null : p.email, name: opts.emails === false ? (creatorNameFor(g.subject) ?? "Someone") : p.name, avatar: p.avatar, level: g.level, caps: [...grantCapsList(g)], customPermissions: !!g.caps?.length, from: a });
     }
   }
   return out;
+}
+
+/** The ancestors of `path` an actor can VIEW (others are not theirs to learn about). */
+export async function viewableAncestors(entry: VaultEntry, path: string | null | undefined, canView: (r: NoteRef) => boolean): Promise<AncestorPage[]> {
+  const tree = await ensureTree(entry);
+  const rows = new Map(tree.rows().map((r) => [r.id, r]));
+  return (await ancestorPages(entry, path)).filter((a) => rows.has(a.id) && canView(rowRef(rows.get(a.id)!)));
 }
 
 export const grantCapsList = (g: Grant): Cap[] => [...(g.caps?.length ? g.caps : expandLevel(g.level))];
@@ -181,10 +206,8 @@ export function versionWriter(
     if (Number.isFinite(at) && Number.isFinite(up) && up - at > 10_000) return { kind: "unknown", name: null, self: false };
   }
   const self = !!viewer && stamp !== "link" && stamp === writerIdFor(viewer);
-  // writerNames() falls back to the EMAIL for an account without a display name;
-  // history never shows an email to another viewer, so that reads as unnamed.
-  const named = map.get(stamp) ?? null;
-  const name = !viewer ? null : stamp === "link" ? "Guest (link)" : named && (self || !named.includes("@")) ? named : null;
+  // writerNames() never yields an email unless the caller asked for it (admins).
+  const name = !viewer ? null : stamp === "link" ? "Guest (link)" : (map.get(stamp) ?? null);
   const change = changeKindOf(metadata);
   if (change === "agent") return { kind: "agent", name, self };
   if (change === "accepted-suggestion") return { kind: "accepted-suggestion", name, self };
@@ -205,8 +228,38 @@ export function redactVersionForViewer<T extends { actor?: unknown; via?: unknow
   if (metadata) {
     const m: Record<string, unknown> = { ...stripWriterMeta(metadata) };
     delete m.prism_trashed_by;
+    delete m.prism_creator; // an email (review M-B)
     // A link guest gets no identity keys at all (writer-stamp.ts stripIdentity).
     metadata = viewer ? m : stripIdentity(m);
   }
   return { ...(rest as Omit<T, "actor" | "via">), ...(metadata !== undefined ? { metadata } : {}), writer } as Omit<T, "actor" | "via"> & { writer: VersionWriter };
+}
+
+/**
+ * The caps an actor would hold on a NEW note created at `path` (review L-2) — the
+ * create handler's rule: allow the create when this set has `create`.
+ *
+ *   const caps = await createCapsAt(actor, normalizedPath, body.tags ?? []);
+ *   if (!caps.has("create")) → 403
+ *
+ * It is `effectiveCaps` for a synthetic ref at that path (so a page share on any
+ * ancestor counts, nearest shared page winning, plus tag/vault grants and the
+ * role floor exactly as for an existing note) — and it is EMPTY when any ancestor
+ * page of `path` is in the Trash: nothing may be created under a trashed page,
+ * whose share would swallow it on restore (review H-A). The tree projection is
+ * loaded first, so the answer is right on the first request after boot.
+ */
+export async function createCapsAt(actor: Actor, path: string, tags: string[] = []): Promise<Set<Cap>> {
+  const entry = getVaultRegistry().find((v) => v.id === actor.vaultId);
+  if (!entry) return new Set<Cap>();
+  const tree = await ensureTree(entry);
+  const trashedPaths = new Set<string>();
+  for (const r of tree.rows()) if (r.path && !live(r)) trashedPaths.add(r.path);
+  let p = path;
+  while (p.includes("/")) {
+    p = p.slice(0, p.lastIndexOf("/"));
+    if (trashedPaths.has(p)) return new Set<Cap>();
+  }
+  const subject = actor.kind === "user" ? actor.email : actor.kind === "link" ? actor.capabilityId : null;
+  return effectiveCaps(actor.grants, { id: "<new>", tags, path }, roleFloor(actor.role), subject);
 }

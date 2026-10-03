@@ -31,12 +31,12 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { randomUUID } from "node:crypto";
-import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors, grantsForResource } from "./db";
+import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors, grantsForResource, listGrantsForVault, type Grant } from "./db";
 import { recordAction } from "./actions/store";
 import { listGitHubConfigs } from "./worker/sync-store";
 import { pathInPrefix } from "./paths";
 import { resolveActor, type Actor } from "./auth/actor";
-import { effectiveCaps, type Cap, type NoteRef } from "./permissions";
+import { effectiveCaps, levelRank, type Cap, type NoteRef } from "./permissions";
 import { roleAtLeast, roleFloor } from "./roles";
 import { vaultClient, VaultError, VaultConflictError, type Note } from "./parachute";
 import { ensureTree, treeUpsertNote, treeRemoveNote, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
@@ -223,9 +223,37 @@ function checkGroup(a: Actor, root: Note, rows: RowLike[], allowed: (a: Actor, r
   return null;
 }
 
+/** The page-inherited level (rank; -1 = none) a set of page grants gives a note, nearest anchor winning. */
+function pageRank(grants: Grant[], noteId: string, notePath: string | null, anchorPath: (id: string) => string | null): number {
+  let depth = -1;
+  let rank = -1;
+  for (const g of grants) {
+    let d = -1;
+    if (g.resource === noteId) d = Number.MAX_SAFE_INTEGER;
+    else {
+      const ap = anchorPath(g.resource);
+      if (ap && notePath && notePath.startsWith(`${ap}/`)) d = ap.length;
+    }
+    if (d < 0) continue;
+    if (d > depth) {
+      depth = d;
+      rank = levelRank(g.level);
+    } else if (d === depth) rank = Math.max(rank, levelRank(g.level));
+  }
+  return rank;
+}
+
 /**
- * Which notes a move would newly expose to page shares (see the move route), and
- * whether the actor may do that: `share` on each exposed note, else blocked.
+ * What a move would do to page shares (see the move route), and whether the
+ * actor may do it:
+ *  - `blocked`  it newly EXPOSES notes to a page share — existing notes under a
+ *               moved page that carries page grants, or the moved notes under a
+ *               destination ancestor's share (others', or the mover's own when it
+ *               would GROW the mover's caps on a note) — without `share` on them;
+ *  - `lowers`   it would LOWER another person's page-inherited access on a note
+ *               that still inherits afterwards (a nearer shared page wins) — an
+ *               administrator's decision, never a mover's;
+ *  - `trashed`  the destination lies under a page that is in the Trash.
  */
 async function shareExposure(
   entry: VaultEntry,
@@ -235,43 +263,120 @@ async function shareExposure(
   target: string,
   atTarget: Note[],
   group: Note[],
-): Promise<{ blocked: boolean; count: number }> {
+): Promise<{ blocked: boolean; lowers: boolean; trashed: boolean; count: number }> {
   const moving = new Set(plan.map((m) => m.id));
+  const me = actor.kind === "user" ? actor.email : "";
   const mayShare = (r: NoteRef) => isAdmin(actor) || capsOf(actor, r).has("share");
   let count = 0;
   let blocked = false;
   // (a) anchors inside the moved group, landing over existing notes.
+  const landedOn: Note[] = [];
   for (const m of plan) {
     if (!grantsForResource("page", m.id, entry.id).length) continue;
     for (const n of atTarget) {
       if (moving.has(n.id) || !n.path || isTrashed(n) || !isUnder(n.path, m.to)) continue;
+      landedOn.push(n);
       count++;
       if (!mayShare(noteRef(n))) blocked = true;
     }
   }
-  // (b) the destination's ancestors shared with others that do not already cover the group.
+  // (b) the destination's ancestors (live OR trashed) that do not already cover the group.
   const tree = await ensureTree(entry);
   const byPath = new Map<string, TreeRow>();
-  for (const r of tree.rows()) if (r.path && !r.trashedAt && !r.tags.includes(TRASH_TAG)) byPath.set(r.path, r);
-  const ancestorIds = (p: string): Set<string> => {
-    const out = new Set<string>();
+  const byId = new Map<string, TreeRow>();
+  for (const r of tree.rows()) {
+    byId.set(r.id, r);
+    if (r.path) byPath.set(r.path, r);
+  }
+  const isTrashedRow = (r: TreeRow) => !!r.trashedAt || r.tags.includes(TRASH_TAG);
+  const ancestors = (p: string): TreeRow[] => {
+    const out: TreeRow[] = [];
     let q = p;
     while (q.includes("/")) {
       q = q.slice(0, q.lastIndexOf("/"));
       const row = byPath.get(q);
-      if (row && !moving.has(row.id)) out.add(row.id);
+      if (row && !moving.has(row.id)) out.push(row);
     }
     return out;
   };
-  const before = ancestorIds(from);
-  const sharedWithOthers = (id: string) =>
-    grantsForResource("page", id, entry.id).some((g) => !(g.subject_type === "user" && g.subject === (actor.kind === "user" ? actor.email : "")));
-  const newAnchors = [...ancestorIds(target)].filter((id) => !before.has(id) && sharedWithOthers(id));
-  if (newAnchors.length) {
-    for (const r of group.map(noteRef)) {
+  const destAncestors = ancestors(target);
+  const trashed = destAncestors.some(isTrashedRow);
+  const before = new Set(ancestors(from).map((r) => r.id));
+  const fresh = destAncestors.filter((r) => !before.has(r.id) && grantsForResource("page", r.id, entry.id).length > 0);
+  const newPath = new Map(plan.map((m) => [m.id, m.to]));
+  if (fresh.length) {
+    const others = fresh.some((r) => grantsForResource("page", r.id, entry.id).some((g) => !(g.subject_type === "user" && g.subject === me)));
+    for (const n of group) {
+      const ref = noteRef(n);
+      // The mover's own share at the destination must not GROW their caps on a note they cannot share.
+      const now = capsOf(actor, ref);
+      const then = capsOf(actor, { ...ref, path: newPath.get(n.id) ?? ref.path });
+      const grows = [...then].some((cap) => !now.has(cap));
+      if (!others && !grows) continue;
       count++;
-      if (!mayShare(r)) blocked = true;
+      if (!isAdmin(actor) && !now.has("share")) blocked = true;
     }
+  }
+  // (c) would anyone ELSE keep page-inherited access to a note, but at a lower level?
+  let lowers = false;
+  const bySubject = new Map<string, Grant[]>();
+  for (const g of listGrantsForVault(entry.id)) {
+    if (g.resource_type !== "page") continue;
+    const key = `${g.subject_type}:${g.subject}`;
+    if (g.subject_type === "user" && g.subject === me) continue;
+    const list = bySubject.get(key);
+    if (list) list.push(g);
+    else bySubject.set(key, [g]);
+  }
+  if (bySubject.size) {
+    const pathNow = (id: string) => {
+      const r = byId.get(id);
+      return r && !isTrashedRow(r) ? r.path : null;
+    };
+    const pathThen = (id: string) => newPath.get(id) ?? pathNow(id);
+    const affected: Array<{ id: string; now: string | null; then: string | null }> = [
+      ...group.map((n) => ({ id: n.id, now: n.path ?? null, then: newPath.get(n.id) ?? n.path ?? null })),
+      ...landedOn.map((n) => ({ id: n.id, now: n.path ?? null, then: n.path ?? null })),
+    ];
+    outer: for (const grants of bySubject.values()) {
+      for (const a of affected) {
+        const was = pageRank(grants, a.id, a.now, pathNow);
+        const willBe = pageRank(grants, a.id, a.then, pathThen);
+        if (willBe >= 0 && willBe < was) {
+          lowers = true;
+          break outer;
+        }
+      }
+    }
+  }
+  return { blocked, lowers, trashed, count };
+}
+
+/**
+ * Restoring a page brings its page shares back to life over whatever now lives
+ * under its path. Live notes that are NOT part of the restored group would join
+ * those shares (review H-A): that needs `share` on each of them.
+ */
+async function restoreExposure(entry: VaultEntry, actor: Actor, restored: Note[]): Promise<{ blocked: boolean; count: number }> {
+  const ids = new Set(restored.map((n) => n.id));
+  const anchors = restored.filter((n) => n.path && grantsForResource("page", n.id, entry.id).length > 0);
+  if (!anchors.length) return { blocked: false, count: 0 };
+  let live: Note[];
+  const prefixes = anchors.map((a) => a.path!).sort((a, b) => a.length - b.length);
+  const outer = prefixes.filter((p, i) => !prefixes.slice(0, i).some((q) => p.startsWith(`${q}/`)));
+  live = [];
+  for (const p of outer) {
+    // FRESH from the vault (never the cached tree): what exists under the path right now.
+    for (const n of await vaultClient(entry.id).listNotes({ pathPrefix: p, includeMetadata: [...TREE_META_KEYS] })) live.push(n);
+  }
+  let count = 0;
+  let blocked = false;
+  const seen = new Set<string>();
+  for (const n of live) {
+    if (ids.has(n.id) || seen.has(n.id) || isTrashed(n) || !n.path || !anchors.some((a) => isUnder(n.path, a.path!))) continue;
+    seen.add(n.id);
+    count++;
+    if (!isAdmin(actor) && !capsOf(actor, noteRef(n)).has("share")) blocked = true;
   }
   return { blocked, count };
 }
@@ -446,9 +551,12 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     // Either needs `share` on every note that becomes exposed (admins bypass, audited).
     // The refusal names no note and gives no count.
     const exposure = await shareExposure(entry, actor, plan, from, target, atTarget, [root, ...descendants]);
-    if (exposure.blocked) {
-      if (!admin) return c.json({ error: "forbidden", reason: "Moving here would share pages with people who don’t have them now. You need permission to share these pages." }, 403);
-      recordAction({ actorEmail: actor.email, via: "session", origin: "human", action: "pages.move-share-bypass", vaultId: entry.id, target: { rootId: root.id, exposed: exposure.count }, idempotencyKey: null, status: "ok", error: null });
+    if (!admin) {
+      if (exposure.trashed) return c.json({ error: "forbidden", reason: "That location is inside a page that is in the Trash." }, 403);
+      if (exposure.blocked) return c.json({ error: "forbidden", reason: "Moving here would share pages with people who don’t have them now. You need permission to share these pages." }, 403);
+      if (exposure.lowers) return c.json({ error: "forbidden", reason: "Moving here would reduce access someone already has to these pages. Ask an administrator." }, 403);
+    } else if (exposure.blocked || exposure.lowers || exposure.count) {
+      recordAction({ actorEmail: actor.email, via: "session", origin: "human", action: "pages.move-share-bypass", vaultId: entry.id, target: { rootId: root.id, exposed: exposure.count, lowers: exposure.lowers }, idempotencyKey: null, status: "ok", error: null });
     }
 
     const outcome = await exclusive(entry.id, [from, target], async () => {
@@ -653,6 +761,17 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       return c.json({ error: "vault_unreachable" }, 502);
     }
     if ([noteRef(root), ...group.map(noteRef)].some((x) => !canDelete(actor, x))) return c.json({ error: "forbidden", reason: "You can’t restore every page in this group." }, 403);
+    // Review H-A: restored page shares must not swallow notes that appeared under the path meanwhile.
+    let exposure: { blocked: boolean; count: number };
+    try {
+      exposure = await restoreExposure(entry, actor, [root, ...group]);
+    } catch {
+      return c.json({ error: "vault_unreachable" }, 502);
+    }
+    if (exposure.blocked) return c.json({ error: "forbidden", reason: "Other pages now live where this page was. Restoring it would share them; ask an administrator, or move them first." }, 403);
+    if (exposure.count && isAdmin(actor)) {
+      recordAction({ actorEmail: actor.email, via: "session", origin: "human", action: "pages.restore-share-bypass", vaultId: entry.id, target: { rootId: root.id, exposed: exposure.count }, idempotencyKey: null, status: "ok", error: null });
+    }
     const clear = { [TRASH_META.at]: null, [TRASH_META.by]: null, [TRASH_META.root]: null, [TRASH_META.path]: null };
     const outcome = await exclusive(entry.id, [root.path ?? root.id], async () => {
       const done: string[] = [];

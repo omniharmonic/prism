@@ -40,6 +40,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { mintEphemeralAdminToken } from "../mcp-token";
 import { csrfRefusal } from "./actions";
 import { resolveWriter, stampMetadata, stripIdentity, WRITER_AT_KEY, WRITER_KEY, writerNames } from "../writer-stamp";
+import { CHANGE_KEY, creatorNameFor, stripWriterMeta } from "../sharing";
 import {
   safeTitleLeaf,
   unwrapLink,
@@ -455,15 +456,27 @@ databasesApi.post("/query", async (c) => {
   // Who edited a row (writer-stamp.ts): a signed-in viewer sees a display name
   // (resolved BEFORE the engine, so it sorts/filters/searches by name); a
   // capability link sees no identity key at all — not even through a filter.
-  const names = actor.kind === "user" ? writerNames() : null;
+  // Emails are for owners/admins only (review M-A/M-B): everyone else gets a display
+  // name or nothing — for the writer AND the creator — and never the raw change kind.
+  const names = actor.kind === "user" ? writerNames(owner) : null;
   const present = (n: Note): Note => {
     const meta = n.metadata;
     if (!meta) return n;
-    if (!names) return { ...n, metadata: stripIdentity(meta) };
-    if (!(WRITER_KEY in meta) && !(WRITER_AT_KEY in meta)) return n;
+    if (!names) return { ...n, metadata: stripIdentity(stripWriterMeta(meta)) };
+    if (!owner && !(WRITER_KEY in meta) && !(WRITER_AT_KEY in meta) && !("prism_creator" in meta) && !(CHANGE_KEY in meta)) return n;
+    if (owner && !(WRITER_KEY in meta) && !(WRITER_AT_KEY in meta)) return n;
     const { [WRITER_AT_KEY]: _at, [WRITER_KEY]: _w, ...rest } = meta;
     const who = resolveWriter(meta, n.updatedAt, names);
-    return { ...n, metadata: who ? { ...rest, [WRITER_KEY]: who } : rest };
+    const out: Record<string, unknown> = who ? { ...rest, [WRITER_KEY]: who } : rest;
+    if (!owner) {
+      delete out[CHANGE_KEY];
+      if (typeof out.prism_creator === "string") {
+        const creator = creatorNameFor(out.prism_creator);
+        if (creator) out.prism_creator = creator;
+        else delete out.prism_creator;
+      }
+    }
+    return { ...n, metadata: out };
   };
   for (const n of notes) {
     if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;

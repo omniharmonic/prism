@@ -75,5 +75,6 @@ export interface AccessPreview {
   willChange: boolean;
   losing?: number;
   gaining?: number;
-  changes?: Array<{ email: string; name: string | null; avatar: string | null; from: string | null; to: string | null }>;
+  /** `email` only for administrators. */
+  changes?: Array<{ email: string | null; name: string | null; avatar: string | null; from: string | null; to: string | null }>;
 }

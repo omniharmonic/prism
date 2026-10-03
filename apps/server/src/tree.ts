@@ -442,8 +442,9 @@ setPageAnchorResolver((vaultId, anchorId) => {
     return null;
   }
   const row = st.rows.get(anchorId);
-  if (!row || row.trashedAt || row.tags.includes(TRASH_TAG)) return null;
-  return { path: row.path };
+  if (!row) return null;
+  // A trashed anchor still resolves (flagged): its share reaches only its own trashed group.
+  return row.trashedAt || row.tags.includes(TRASH_TAG) ? { path: row.path, trashed: true } : { path: row.path };
 });
 
 /**

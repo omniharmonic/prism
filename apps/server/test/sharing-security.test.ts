@@ -163,9 +163,12 @@ test("M1: access-preview needs a viewable destination page the caller can add to
   grantCaps(CAROL, "note", "q", ["view"]);
   assert.equal((await req(api, "/notes/draft/access-preview?parent=vault/Shared", { cookie: as(CAROL) })).status, 404);
   grantCaps(CAROL, "note", "q", ["view", "create"]);
-  const ok = (await (await req(api, "/notes/draft/access-preview?parent=vault/Shared", { cookie: as(CAROL) })).json()) as { willChange: boolean; changes?: Array<{ email: string }> };
+  const ok = (await (await req(api, "/notes/draft/access-preview?parent=vault/Shared", { cookie: as(CAROL) })).json()) as { willChange: boolean; changes?: Array<{ email: string | null }> };
   assert.equal(ok.willChange, true);
-  assert.deepEqual(ok.changes?.map((c) => c.email), [DAVE]);
+  // A share-holder sees WHO by display name only; the email is for administrators (review L-4).
+  assert.deepEqual(ok.changes?.map((c) => c.email), [null]);
+  const admin = (await (await req(api, "/notes/draft/access-preview?parent=vault/Shared", { cookie: as(OWNER) })).json()) as { changes?: Array<{ email: string }> };
+  assert.deepEqual(admin.changes?.map((c) => c.email), [DAVE]);
 });
 
 // ── M2 ───────────────────────────────────────────────────────────────────────
@@ -248,4 +251,191 @@ test("LOW: a moved shared page's sub-pages are reachable at once (anchors resolv
   assert.equal(await status(BOB, "p1"), 200);
   fv.put({ id: "ghost", path: "vault/Team/Plan/Ghost", content: "<p>at the old path</p>" });
   assert.equal(await status(BOB, "ghost"), 403);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Re-review (round 2)
+// ════════════════════════════════════════════════════════════════════════════
+
+const postJ = (who: string, path: string, body: unknown = {}) => req(api, path, { method: "POST", cookie: as(who), headers: J, body: JSON.stringify(body) });
+const leaf = (who: string) => as(who);
+void leaf;
+
+test("H-A: restoring a trashed shared page over notes that appeared under its path needs `share` on them", async () => {
+  grantCaps(DAVE, "page", "p", ["view"]);
+  grantCaps(BOB, "page", "p", ["view", "edit", "organize", "delete"]);
+  assert.equal((await postJ(BOB, "/notes/p/trash")).status, 200);
+  // While P is in the Trash, a note appears under its old path (created by the owner or any other path).
+  fv.put({ id: "late", path: "vault/Team/Plan/Late", content: "<p>not for sharing</p>" });
+  resetTreeForTests();
+  assert.equal(await status(DAVE, "late"), 403, "a trashed page shares nothing");
+  assert.equal(await status(BOB, "late"), 403);
+  const r = await postJ(BOB, "/trash/p/restore");
+  assert.equal(r.status, 403);
+  assert.ok(!JSON.stringify(await r.json()).toLowerCase().includes("late"));
+  assert.equal(await status(DAVE, "late"), 403);
+  // The owner may restore (audited); from then on the page shares what is under it.
+  assert.equal((await postJ(OWNER, "/trash/p/restore")).status, 200);
+});
+
+test("H-A: a non-owner cannot move a page under a trashed page's path", async () => {
+  grantCaps(BOB, "page", "p", ["view", "edit", "organize", "delete"]);
+  grantCaps(CAROL, "note", "draft", ["view", "edit", "organize", "share"]);
+  fv.put({ id: "live", path: "vault/Team/Plan/Live", content: "<p>live page under the trashed one</p>" });
+  grantCaps(CAROL, "note", "live", ["view", "create"]);
+  assert.equal((await postJ(BOB, "/notes/p/trash")).status, 200);
+  fv.notes.get("live")!.tags = [];
+  fv.notes.get("live")!.metadata = null;
+  resetTreeForTests();
+  const r = await move(CAROL, "draft", { newParentPath: "vault/Team/Plan/Live" });
+  assert.equal(r.status, 403);
+  assert.equal(fv.notes.get("draft")!.path, "vault/Carol/Draft");
+});
+
+test("H-B: moving a note under your OWN page share must not grow your caps on it without `share`", async () => {
+  grantCaps(CAROL, "note", "draft", ["view", "edit", "organize"]);
+  grantCaps(CAROL, "page", "q", ["view", "edit", "create", "share", "delete"]);
+  const r = await move(CAROL, "draft", { newParentPath: "vault/Shared" });
+  assert.equal(r.status, 403, "organize + share-on-your-own-page must not become share on the note");
+  assert.equal(fv.notes.get("draft")!.path, "vault/Carol/Draft");
+  // No growth → allowed: a note she already fully controls.
+  grantCaps(CAROL, "note", "carol", ["view", "edit", "organize", "create", "share", "delete"]);
+  assert.equal((await move(CAROL, "carol", { newParentPath: "vault/Shared" })).status, 403, "the sub-page `draft` would still grow");
+  grantCaps(CAROL, "note", "draft", ["view", "edit", "organize", "create", "share", "delete"]);
+  assert.equal((await move(CAROL, "carol", { newParentPath: "vault/Shared" })).status, 200);
+});
+
+test("M-C: a tag sharer cannot lower or remove an admin-made tag grant, but manages grants they made (L-5)", async () => {
+  fv.notes.get("p")!.tags = ["team"];
+  addGrant({ subject_type: "user", subject: CAROL, resource_type: "tag", resource: "team", level: "view", caps: ["view", "comment", "suggest", "edit", "share"], created_by: OWNER });
+  addGrant({ subject_type: "user", subject: DAVE, resource_type: "tag", resource: "team", level: "edit", created_by: OWNER });
+  const carol = as(CAROL);
+  const put = (email: string, level: string) => req(acl, "/tags/team/people", { method: "PUT", cookie: carol, headers: J, body: JSON.stringify({ email, level }) });
+  assert.equal((await put(DAVE, "view")).status, 403);
+  assert.equal((await req(acl, `/tags/team/people/${encodeURIComponent(DAVE)}`, { method: "DELETE", cookie: carol })).status, 403);
+  assert.equal(grantsForResource("tag", "team").find((g) => g.subject === DAVE)!.level, "edit");
+  assert.equal((await put(BOB, "suggest")).status, 200);
+  assert.equal((await put(BOB, "view")).status, 200, "her own grant: lowering is hers to do");
+  assert.equal((await req(acl, `/tags/team/people/${encodeURIComponent(BOB)}`, { method: "DELETE", cookie: carol })).status, 200);
+  // Same on a page: a grant she made may be lowered by her.
+  grantCaps(CAROL, "page", "p", ["view", "comment", "suggest", "edit", "share"]);
+  const page = (level: string) => req(acl, "/notes/p/people", { method: "PUT", cookie: carol, headers: J, body: JSON.stringify({ email: BOB, level, scope: "page" }) });
+  assert.equal((await page("suggest")).status, 200);
+  assert.equal((await page("view")).status, 200);
+});
+
+test("M-C: a move that would LOWER someone's access on existing notes (nearest shared page wins) needs an admin", async () => {
+  grantCaps(DAVE, "page", "p", ["view", "comment", "suggest", "edit"]); // admin-made: edit on everything under Plan
+  fv.put({ id: "doc", path: "vault/Team/Plan/Sub/Doc", content: "<p>dave edits this</p>" });
+  fv.put({ id: "a", path: "vault/Carol/Anchor", content: "<p>carol's page</p>" });
+  grantCaps(CAROL, "page", "p", ["view", "edit", "create", "organize", "share"]);
+  grantCaps(CAROL, "note", "a", ["view", "edit", "organize", "share"]);
+  addGrant({ subject_type: "user", subject: DAVE, resource_type: "page", resource: "a", level: "view", created_by: CAROL });
+  const r = await move(CAROL, "a", { newPath: "vault/Team/Plan/Sub" });
+  assert.equal(r.status, 403);
+  assert.equal(fv.notes.get("a")!.path, "vault/Carol/Anchor");
+  const patch = await req(api, "/notes/doc", { method: "PATCH", cookie: as(DAVE), headers: J, body: JSON.stringify({ content: "<p>still mine to edit</p>", if_updated_at: fv.notes.get("doc")!.updatedAt }) });
+  assert.equal(patch.status, 200);
+});
+
+test("M-D: a page-grant holder who trashed a page can see it in the Trash and restore it", async () => {
+  grantCaps(BOB, "page", "p", ["view", "edit", "organize", "delete"]);
+  assert.equal((await postJ(BOB, "/notes/p/trash")).status, 200);
+  const trash = (await (await req(api, "/trash", { cookie: as(BOB) })).json()) as { items?: Array<{ id: string }> } | Array<{ id: string }>;
+  assert.ok(JSON.stringify(trash).includes('"p"'));
+  const r = await postJ(BOB, "/trash/p/restore");
+  assert.equal(r.status, 200);
+  assert.equal(await status(BOB, "p1"), 200);
+});
+
+test("M-A: /api/query never shows an email for a writer without a display name, nor the raw change kind", async () => {
+  const { writerIdFor } = await import("../src/writer-stamp");
+  const { ensureUser } = await import("../src/db");
+  ensureUser("noname@test.local");
+  fv.notes.get("p")!.tags = ["task"];
+  const at = new Date().toISOString();
+  fv.notes.get("p")!.metadata = { title: "T", prism_last_writer: writerIdFor("noname@test.local"), prism_last_write_at: at, prism_last_change: `agent@${at}` };
+  fv.notes.get("p")!.updatedAt = at;
+  grantCaps(BOB, "page", "p", ["view"]);
+  addGrant({ subject_type: "user", subject: BOB, resource_type: "tag", resource: "task", level: "view", created_by: OWNER });
+  const q = await postJ(BOB, "/query", { tags: ["task"] });
+  assert.equal(q.status, 200);
+  const text = JSON.stringify(await q.json());
+  assert.ok(!text.includes("noname@test.local"), "no email fallback for a non-admin viewer");
+  assert.ok(!text.includes("prism_last_change"));
+  assert.ok(text.includes('"p"'));
+});
+
+test("M-B: a non-admin never receives prism_creator (an email); they get `_creator {me, name}` instead", async () => {
+  const { setUserProfile } = await import("../src/db");
+  setUserProfile(CAROL, { name: "Carol C" });
+  fv.notes.get("p")!.metadata = { prism_creator: CAROL };
+  fv.notes.get("p1")!.metadata = { prism_creator: BOB };
+  fv.notes.get("p1")!.content = "<p>plan notes</p>";
+  grantCaps(BOB, "page", "p", ["view", "edit", "share"]);
+  const one = (await (await req(api, "/notes/p", { cookie: as(BOB) })).json()) as { metadata: Record<string, unknown>; _creator: unknown };
+  assert.equal(one.metadata.prism_creator, undefined);
+  assert.deepEqual(one._creator, { me: false, name: "Carol C" });
+  const mine = (await (await req(api, "/notes/p1", { cookie: as(BOB) })).json()) as { _creator: { me: boolean } };
+  assert.equal(mine._creator.me, true);
+  for (const path of ["/notes", "/search?q=plan"]) {
+    const body = JSON.stringify(await (await req(api, path, { cookie: as(BOB) })).json());
+    assert.ok(!body.includes("prism_creator") && !body.includes(CAROL), path);
+  }
+  const aclNote = (await (await req(acl, "/notes/p", { cookie: as(BOB) })).json()) as { note: { creator?: unknown; createdByMe?: boolean } };
+  assert.equal(aclNote.note.creator ?? null, null);
+  assert.equal(aclNote.note.createdByMe, false);
+  // The owner is unchanged.
+  const owner = (await (await req(acl, "/notes/p", { cookie: as(OWNER) })).json()) as { note: { creator?: unknown } };
+  assert.equal(owner.note.creator, CAROL);
+  // A round-trip PATCH (metadata without the creator) still works for an editor.
+  const patch = await req(api, "/notes/p", { method: "PATCH", cookie: as(BOB), headers: J, body: JSON.stringify({ metadata: { ...one.metadata, title: "x" }, if_updated_at: fv.notes.get("p")!.updatedAt }) });
+  assert.equal(patch.status, 200);
+  assert.equal(fv.notes.get("p")!.metadata!.prism_creator, CAROL);
+});
+
+test("L-2: createCapsAt gives a page-share holder with `create` the right to add a sub-page (and nothing under a trashed page)", async () => {
+  const { createCapsAt } = await import("../src/sharing");
+  const { grantsForUser } = await import("../src/db");
+  grantCaps(BOB, "page", "p", ["view", "create"]);
+  const bob = { kind: "user" as const, email: BOB, role: "guest" as const, vaultId: "primary", grants: grantsForUser(BOB) };
+  assert.ok((await createCapsAt(bob, "vault/Team/Plan/New page")).has("create"));
+  assert.ok((await createCapsAt(bob, "vault/Team/Plan/Notes/Deeper")).has("create"));
+  assert.equal((await createCapsAt(bob, "vault/Team/Other")).has("create"), false);
+  assert.equal((await createCapsAt(bob, "vault/Team/Planning")).has("create"), false);
+  assert.equal((await postJ(OWNER, "/notes/p/trash")).status, 200);
+  assert.equal((await createCapsAt(bob, "vault/Team/Plan/New page")).size, 0, "nothing can be created under a trashed page");
+});
+
+test("L-3: a page grantee's truncated /api/notes listing says so and can be paged", async () => {
+  for (let i = 0; i < 27; i++) {
+    fv.put({ id: `s${i}`, path: `vault/Many/S${String(i).padStart(2, "0")}`, content: "x" });
+    fv.put({ id: `s${i}c`, path: `vault/Many/S${String(i).padStart(2, "0")}/Child`, content: "x" });
+    grantCaps(DAVE, "page", `s${i}`, ["view"]);
+  }
+  const first = await req(api, "/notes", { cookie: as(DAVE) });
+  assert.equal(first.headers.get("x-prism-truncated"), "shared-pages");
+  assert.equal(first.headers.get("x-prism-shared-pages-next"), "25");
+  const second = await req(api, "/notes?shared_pages_offset=25", { cookie: as(DAVE) });
+  assert.equal(second.headers.get("x-prism-truncated"), null);
+});
+
+test("L-4: inherited access lists only ancestors the caller can view, with emails for admins only", async () => {
+  fv.put({ id: "deep", path: "vault/Team/Plan/Notes/Deep", content: "x" });
+  grantCaps(DAVE, "page", "p", ["view"]); // on the grandparent
+  const { setUserProfile } = await import("../src/db");
+  setUserProfile(DAVE, { name: "Dave D" });
+  // Carol can share `deep` but cannot view its ancestors.
+  grantCaps(CAROL, "note", "deep", ["view", "share"]);
+  const carol = (await (await req(acl, "/notes/deep", { cookie: as(CAROL) })).json()) as { inherited: unknown[]; parent: unknown };
+  assert.deepEqual(carol.inherited, []);
+  assert.equal(carol.parent, null);
+  // With view on the ancestors she sees the inherited person by NAME, no email.
+  grantCaps(CAROL, "page", "p", ["view", "share"]);
+  const seen = (await (await req(acl, "/notes/deep", { cookie: as(CAROL) })).json()) as { inherited: Array<{ name: string; email: string | null }> };
+  assert.ok(seen.inherited.some((i) => i.name === "Dave D"));
+  assert.ok(seen.inherited.every((i) => i.email === null), "no emails for a non-admin");
+  assert.ok(!JSON.stringify(seen.inherited).includes("@test.local"));
+  const owner = (await (await req(acl, "/notes/deep", { cookie: as(OWNER) })).json()) as { inherited: Array<{ email: string }> };
+  assert.ok(owner.inherited.some((i) => i.email === DAVE));
 });

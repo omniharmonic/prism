@@ -27,7 +27,7 @@ export function moveAccessSummary(p: AccessPreview): string | null {
   const losing = p.changes.filter((c) => !c.to);
   const gaining = p.changes.filter((c) => !c.from);
   const changing = p.changes.filter((c) => c.from && c.to);
-  const name = (c: { name: string | null; email: string }) => c.name ?? c.email;
+  const name = (c: { name: string | null; email: string | null }) => c.name ?? c.email ?? "Someone";
   const parts: string[] = [];
   if (losing.length) parts.push(`${losing.slice(0, 3).map(name).join(", ")}${losing.length > 3 ? ` and ${losing.length - 3} more` : ""} will lose access`);
   if (gaining.length) parts.push(`${gaining.slice(0, 3).map(name).join(", ")}${gaining.length > 3 ? ` and ${gaining.length - 3} more` : ""} will gain access`);

@@ -108,7 +108,7 @@ import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
 import { noteKind, resolveSuggestionsInHtml } from "../collab";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
-import { ancestorPages, descendantRows, grantCapsList, inheritedPeople, personView } from "../sharing";
+import { ancestorPages, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
 import { rowRef } from "../tree";
 import { hashPassword } from "../auth/password";
 import { createInvite } from "../auth/invite";
@@ -587,8 +587,17 @@ acl.get("/notes/:id", async (c) => {
         .map((g) => ({ ...personView(g.subject), level: g.level, caps: [...(g.caps ?? expandLevel(g.level))], customPermissions: !!g.caps?.length, scope: "note" as const })),
     ];
     const entry = getVaultRegistry().find((v) => v.id === vaultId);
-    const ancestors = entry && note.metadata?.prism_visibility !== "private" ? await ancestorPages(entry, note.path) : [];
-    const inherited = entry && ancestors.length ? await inheritedPeople(entry, id, note.path, ancestors) : [];
+    // Only ancestors the CALLER can view count (admins: all); emails only for admins (review L-4).
+    const viewer = resolveActor(c);
+    const isAdminViewer = roleAtLeast(viewer.role, "admin");
+    const viewerSubject = viewer.kind === "user" ? viewer.email : null;
+    const ancestors =
+      !entry || note.metadata?.prism_visibility === "private"
+        ? []
+        : isAdminViewer
+          ? await ancestorPages(entry, note.path)
+          : await viewableAncestors(entry, note.path, (r) => effectiveCaps(viewer.grants, r, roleFloor(viewer.role), viewerSubject).has("view"));
+    const inherited = entry && ancestors.length ? await inheritedPeople(entry, id, note.path, ancestors, { emails: isAdminViewer }) : [];
     const linkIds = new Set(grants.filter((g) => g.subject_type === "link").map((g) => g.subject));
     // A bearer URL IS a credential. Scoped sharers may manage people grants,
     // but must not receive existing links that can confer powers they lack.
@@ -621,7 +630,10 @@ acl.get("/notes/:id", async (c) => {
     // is shown to admins only; a scoped sharer sees the name/avatar.
     const owner = canManageLinks ? ownerView : { email: null, name: ownerView.name, avatar: ownerView.avatar };
     const parent = ancestors[0] ? { id: ancestors[0].id, title: ancestors[0].title } : null;
-    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
+    const me = resolveActor(c);
+    const createdByMe = me.kind === "user" && !!creator && creator === me.email;
+    // The creator's EMAIL is for admins; a scoped sharer learns only whether it is them (review M-B).
+    return c.json({ note: { id, tags, title: (typeof note.metadata?.title === "string" && note.metadata.title.trim()) || note.path?.split("/").pop() || deriveTitle(note.content), visibility, creator: canManageLinks ? creator : null, createdByMe, path: note.path ?? null }, owner, people, inherited, parent, links, tagAccess, canManageLinks, allowedLevels });
   } catch (e) {
     if (e instanceof VaultError && e.status === 404) return c.json({ error: "not_found" }, 404);
     return c.json({ error: "vault_error" }, 502);
@@ -648,7 +660,7 @@ acl.put("/notes/:id/people", async (c) => {
   // (so a level change from an older caller never forks a page share in two).
   const hasPageGrant = grantsForResource("page", id, vaultId).some((g) => g.subject_type === "user" && g.subject === recipient);
   const scope: "note" | "page" = rawScope === "note" || rawScope === "page" ? rawScope : hasPageGrant ? "page" : "note";
-  const narrowing = await scopedSharerRefusal(c, id, recipient, { scope, level: lvl, caps: caps ?? null });
+  const narrowing = await scopedSharerRefusal(c, { kind: "note", id }, recipient, { scope, level: lvl, caps: caps ?? null });
   if (narrowing) return narrowing;
   if (scope === "page") {
     const refused = await pageShareRefusal(c, id, caps ?? expandLevel(lvl));
@@ -668,7 +680,7 @@ acl.put("/notes/:id/people", async (c) => {
 // only ever reduce access, so there is nothing to escalate.)
 acl.delete("/notes/:id/people/:email", async (c) => {
   const who = normEmail(decodeURIComponent(c.req.param("email")));
-  const refused = await scopedSharerRefusal(c, c.req.param("id"), who, null);
+  const refused = await scopedSharerRefusal(c, { kind: "note", id: c.req.param("id") }, who, null);
   if (refused) return refused;
   // Both kinds: a per-note grant and a page-subtree grant anchored on this page.
   removeGrantBySubjectResource("user", who, "note", c.req.param("id"), resolveActor(c).vaultId);
@@ -685,36 +697,41 @@ function adminAuthored(g: Grant, vaultId: string): boolean {
 
 /**
  * Scoped (non-admin) sharers manage access; they never take it away from under an
- * administrator (security review M2). Refused, for a non-admin:
+ * administrator (security review M2 / M-C). Refused, for a non-admin:
  *  - changing or removing a grant an admin/owner/governance made;
  *  - replacing (other kind) a grant someone else made;
- *  - a new/changed grant that LOWERS the person's current access to this page or,
- *    for a page share, to any current sub-page (nearest-anchor restriction).
+ *  - a new/changed grant that leaves the person with LESS than they would have
+ *    without the sharer's own grants on this resource (so a sharer may freely
+ *    lower or remove what THEY gave — L-5 — but can never cut into access that
+ *    comes from elsewhere, e.g. by a nearer page share on a sub-page).
  * `next` null = a removal. Answers carry no other person's grants.
  */
 async function scopedSharerRefusal(
   c: Context,
-  id: string,
+  target: { kind: "note"; id: string } | { kind: "tag"; tag: string },
   recipient: string,
-  next: { scope: "note" | "page"; level: Level; caps: Cap[] | null } | null,
+  next: { scope: "note" | "page" | "tag"; level: Level; caps: Cap[] | null } | null,
 ): Promise<Response | null> {
   const actor = resolveActor(c);
   if (roleAtLeast(actor.role, "admin")) return null;
   const vaultId = actor.vaultId;
   const mine = actor.kind === "user" ? actor.email : "";
-  const existing = (["note", "page"] as const).flatMap((t) => grantsForResource(t, id, vaultId).filter((g) => g.subject_type === "user" && g.subject === recipient));
+  const resource = target.kind === "note" ? target.id : target.tag;
+  const kinds = target.kind === "note" ? (["note", "page"] as const) : (["tag"] as const);
+  const existing = kinds.flatMap((t) => grantsForResource(t, resource, vaultId).filter((g) => g.subject_type === "user" && g.subject === recipient));
   const forbid = (reason: string) => c.json({ error: "forbidden", reason }, 403);
   if (existing.some((g) => adminAuthored(g, vaultId))) return forbid("This person’s access here was set by an administrator. Ask an administrator to change it.");
-  if (!next) return null;
-  if (existing.some((g) => g.resource_type !== next.scope && g.created_by !== mine)) return forbid("This person’s access here was set by someone else. Ask them or an administrator to change it.");
-  // Would this lower what the person can do here (or below, for a page share)?
+  if (existing.some((g) => g.created_by !== mine)) return forbid("This person’s access here was set by someone else. Ask them or an administrator to change it.");
+  if (!next) return null; // removing only what the sharer gave
+  if (target.kind === "tag") return null; // a tag grant only adds (max over grants): raising/lowering one's own grant cuts nothing else
+  // Would the new grant leave the person with less than they have WITHOUT the sharer's grants here?
   let note;
   try {
-    note = await vaultClient(vaultId).getNote(id);
+    note = await vaultClient(vaultId).getNote(target.id);
   } catch {
     return forbid("This page is not available.");
   }
-  if (note.id !== id) return c.json({ error: "not_found" }, 404);
+  if (note.id !== target.id) return c.json({ error: "not_found" }, 404);
   const ref = (n: { id: string; tags?: string[] | null; path?: string | null; metadata?: Record<string, unknown> | null }): NoteRef => ({
     id: n.id,
     tags: n.tags ?? [],
@@ -728,16 +745,16 @@ async function scopedSharerRefusal(
     for (const r of await descendantRows(entry, note.path)) refs.push(rowRef(r));
   }
   const floor = roleFloor(workspaceRole(recipient, vaultId));
-  const now = grantsForUser(recipient, vaultId);
   const replaced = new Set(existing.map((g) => g.id));
+  const baseline = grantsForUser(recipient, vaultId).filter((g) => !replaced.has(g.id));
   const after: Grant[] = [
-    ...now.filter((g) => !replaced.has(g.id)),
-    { id: "<next>", vault_id: vaultId, subject_type: "user", subject: recipient, resource_type: next.scope, resource: id, level: next.caps ? levelForCaps(next.caps) : next.level, created_by: mine, created_at: 0, expires_at: null, caps: next.caps },
+    ...baseline,
+    { id: "<next>", vault_id: vaultId, subject_type: "user", subject: recipient, resource_type: next.scope, resource: target.id, level: next.caps ? levelForCaps(next.caps) : next.level, created_by: mine, created_at: 0, expires_at: null, caps: next.caps },
   ];
   for (const r of refs) {
-    const before = effectiveCaps(now, r, floor, recipient);
+    const before = effectiveCaps(baseline, r, floor, recipient);
     const later = effectiveCaps(after, r, floor, recipient);
-    for (const cap of before) if (!later.has(cap)) return forbid("That would reduce this person’s current access. Only an administrator can do that.");
+    for (const cap of before) if (!later.has(cap)) return forbid("That would reduce access this person has from elsewhere. Only an administrator can do that.");
   }
   return null;
 }
@@ -870,6 +887,9 @@ acl.put("/tags/:tag/people", async (c) => {
   if (!isEmail(email) || lvl === null) return c.json({ error: "bad_request" }, 400);
   const denied = await denyEscalation(c, { kind: "tag", resource: tag }, normEmail(email), caps ?? expandLevel(lvl));
   if (denied) return denied;
+  // M-C: a tag sharer never changes a tag grant an admin (or anyone else) made.
+  const narrowing = await scopedSharerRefusal(c, { kind: "tag", tag }, normEmail(email), { scope: "tag", level: lvl, caps: caps ?? null });
+  if (narrowing) return narrowing;
   const { invited, inviteUrl } = await grantAndInvite(normEmail(email), lvl, "tag", tag, grantAuthor(c), resolveActor(c).vaultId, caps);
   return c.json({ ok: true, email: normEmail(email), level: caps ? levelForCaps(caps) : lvl, caps, invited, inviteUrl });
 });
@@ -890,7 +910,9 @@ acl.get("/tags/:tag/access", (c) => {
 
 // Same as the note revoke: reaching this handler as a non-admin already required
 // `share` on this tag, and a revoke can only narrow access.
-acl.delete("/tags/:tag/people/:email", (c) => {
+acl.delete("/tags/:tag/people/:email", async (c) => {
+  const refused = await scopedSharerRefusal(c, { kind: "tag", tag: decodeURIComponent(c.req.param("tag")) }, normEmail(decodeURIComponent(c.req.param("email"))), null);
+  if (refused) return refused;
   removeGrantBySubjectResource(
     "user",
     normEmail(decodeURIComponent(c.req.param("email"))),

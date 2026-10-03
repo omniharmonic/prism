@@ -157,7 +157,13 @@ test("moving a page INTO a shared page grants it; private and trashed are never 
   assert.equal(await status("/notes/priv", BOB), 403, "a private page inside a shared page stays private");
   const trash = await req(api, "/notes/p/trash", { method: "POST", cookie: as(OWNER), headers: J, body: "{}" });
   assert.equal(trash.status, 200);
-  assert.equal(await status("/notes/c1", BOB), 403, "a trashed page shares nothing");
+  // A trashed page shares nothing with LIVE notes under its old path (its own trashed
+  // group stays reachable for whoever may restore it — review M-D).
+  fv.put({ id: "after", path: "vault/Projects/Prism/After", content: "<p>created while the page is in the Trash</p>" });
+  resetTreeForTests();
+  assert.equal(await status("/notes/after", BOB), 403, "a trashed page shares nothing");
+  const tree = (await (await get("/tree", BOB)).json()) as Array<{ id: string }>;
+  assert.deepEqual(tree.map((n) => n.id), [], "nothing trashed is listed");
 });
 
 test("nearest ancestor wins through the gateway: restrict a child to view, expand another to edit", async () => {

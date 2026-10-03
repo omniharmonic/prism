@@ -96,12 +96,21 @@ export function stampJsonBody(text: string, actor: Actor | null | undefined): st
   return JSON.stringify(b);
 }
 
-/** Display names for every known account, keyed by subject id (for one request). */
-export function writerNames(): Map<string, string> {
+/**
+ * Display names for every known account, keyed by subject id (for one request).
+ * `allowEmail` (owners/admins ONLY) falls back to the email for an account with
+ * no display name; for everyone else such an account is simply absent — a
+ * non-admin viewer never learns an email from a writer stamp (review M-A).
+ */
+export function writerNames(allowEmail = false): Map<string, string> {
   const out = new Map<string, string>();
   const rows = db.prepare("SELECT email, name FROM users").all() as Array<{ email: string; name: string | null }>;
-  for (const r of rows) out.set(writerIdFor(r.email), (r.name ?? "").trim() || r.email);
-  if (config.ownerEmail && !out.has(writerIdFor(config.ownerEmail))) out.set(writerIdFor(config.ownerEmail), config.ownerEmail);
+  for (const r of rows) {
+    const name = (r.name ?? "").trim();
+    if (name && (allowEmail || name.toLowerCase() !== r.email.toLowerCase())) out.set(writerIdFor(r.email), name);
+    else if (allowEmail) out.set(writerIdFor(r.email), r.email);
+  }
+  if (allowEmail && config.ownerEmail && !out.has(writerIdFor(config.ownerEmail))) out.set(writerIdFor(config.ownerEmail), config.ownerEmail);
   return out;
 }
 

@@ -22,6 +22,9 @@ export type ContentType =
 
 // Parachute Note — the canonical data model
 export interface Note {
+  /** GATEWAY-ONLY, non-admin viewers: who created the note, without an email
+   *  (`metadata.prism_creator` is withheld from them). */
+  _creator?: { me: boolean; name: string | null };
   id: string;
   content: string;
   path: string | null;

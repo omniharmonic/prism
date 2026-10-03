@@ -31,7 +31,7 @@ import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { redactVersionForViewer, stripWriterMeta, changeValue, CHANGE_KEY, WRITER_META_KEYS } from "../sharing";
+import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
@@ -77,8 +77,18 @@ function stampChangeJson(text: string, kind: "edit" | "agent"): string {
   }
 }
 /** What a non-owner receives: no attribution keys (review M3); a link gets no identity keys at all. */
-const forViewer = <T extends { metadata?: Record<string, unknown> | null }>(actor: Actor, note: T): T =>
-  ({ ...note, metadata: actor.kind === "link" ? stripIdentity(stripWriterMeta(note.metadata)) : stripWriterMeta(note.metadata) });
+const forViewer = <T extends { metadata?: Record<string, unknown> | null }>(actor: Actor, note: T): T => {
+  if (actor.kind !== "user") return { ...note, metadata: stripIdentity(stripWriterMeta(note.metadata)) };
+  // `prism_creator` is an email (review M-B): a signed-in non-admin gets "is it
+  // me" and a display name instead. Admins never reach this (owner passthrough).
+  const creator = note.metadata?.prism_creator;
+  let metadata = stripWriterMeta(note.metadata);
+  if (metadata && "prism_creator" in metadata) {
+    const { prism_creator: _c, ...rest } = metadata;
+    metadata = rest;
+  }
+  return { ...note, metadata, ...(typeof creator === "string" ? { _creator: { me: creator === actor.email, name: creatorNameFor(creator) } } : {}) };
+};
 
 const ref = (n: Note): NoteRef => ({
   id: n.id,
@@ -432,7 +442,7 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
     const caps = capsFor(actor, ref(n));
     // Capability links never learn who created/edited a note (writer-stamp.ts).
     // Attribution keys never reach a non-owner (review M3); a link gets no identity keys at all.
-    if (caps.has("view")) out.push(stamp ? { ...n, metadata: stripWriterMeta(n.metadata), _caps: [...caps] } : actor.kind === "link" ? { ...n, metadata: stripIdentity(n.metadata) } : { ...n, metadata: stripWriterMeta(n.metadata) });
+    if (caps.has("view")) out.push(stamp ? { ...forViewer(actor, n), _caps: [...caps] } : forViewer(actor, n));
   }
   return out;
 }
@@ -446,7 +456,7 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
 const PAGE_GRANT_LISTINGS = Number(process.env.PAGE_GRANT_LISTINGS ?? 25);
 const PAGE_GRANT_LIST_PER_MINUTE = Number(process.env.PAGE_GRANT_LIST_PER_MINUTE ?? 30);
 
-async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note[]> {
+async function visibleNotes(actor: Actor, includeContent: boolean, sharedPagesOffset = 0): Promise<{ notes: Note[]; next: number | null }> {
   const vc = vaultClient(actor.vaultId); // read from the actor's OWN vault, not the primary
   // A `vault` grant matches every note (see effectiveCaps), so tag-bounded
   // enumeration would return an empty list for its holder — a global governance
@@ -458,7 +468,7 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
   );
   if (vaultWide) {
     const all = await vc.listNotes({ includeContent });
-    return annotate(actor, all);
+    return { notes: annotate(actor, all), next: null };
   }
   const collected = new Map<string, Note>();
   for (const tag of grantedTags(actor.grants)) {
@@ -469,33 +479,48 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
   // Page-subtree grants (NP-CO-09): the anchor page plus everything under its
   // current path (one lean path_prefix listing each). Membership is still decided
   // by the caps filter in annotate(); this only bounds what is fetched.
-  // Bounded: at most PAGE_GRANT_LISTINGS shared pages are expanded per request, the
-  // outermost first (a page inside an already-listed page adds nothing).
-  const anchors = actor.grants
-    .filter((x) => x.resource_type === "page")
-    .map((g) => resolvePageAnchor(g.vault_id ?? actor.vaultId, g.resource)?.path)
-    .filter((p): p is string => !!p)
-    .sort((a, b) => a.length - b.length);
-  const listed: string[] = [];
-  for (const path of anchors) {
-    if (listed.some((p) => path.startsWith(`${p}/`))) continue;
-    if (listed.length >= PAGE_GRANT_LISTINGS) break;
-    listed.push(path);
+  // Bounded AND paged (review L-3): the outermost shared pages (a page inside an
+  // already-listed page adds nothing) in a stable path order, PAGE_GRANT_LISTINGS
+  // per request from `sharedPagesOffset`; `next` tells the caller there are more.
+  const anchorOf = new Map<string, string>(); // path → anchor note id
+  for (const g of actor.grants) {
+    if (g.resource_type !== "page") continue;
+    const a = resolvePageAnchor(g.vault_id ?? actor.vaultId, g.resource);
+    if (a && !a.trashed && a.path) anchorOf.set(a.path, g.resource);
+    else if (!a) anchorOf.set(`\u0000${g.resource}`, g.resource); // unresolved: the page itself only
+  }
+  const paths = [...anchorOf.keys()].sort();
+  const outermost = paths.filter((path) => path.startsWith("\u0000") || !paths.some((q) => !q.startsWith("\u0000") && path.startsWith(`${q}/`)));
+  const window = outermost.slice(sharedPagesOffset, sharedPagesOffset + PAGE_GRANT_LISTINGS);
+  const next = sharedPagesOffset + PAGE_GRANT_LISTINGS < outermost.length ? sharedPagesOffset + PAGE_GRANT_LISTINGS : null;
+  for (const path of window) {
+    if (!path.startsWith("\u0000")) {
+      try {
+        for (const n of await vc.listNotes({ pathPrefix: `${path}/`, includeContent })) collected.set(n.id, n);
+      } catch {
+        /* listing failed — the anchor itself is still fetched below */
+      }
+    }
+    const id = anchorOf.get(path)!;
+    if (collected.has(id)) continue;
     try {
-      for (const n of await vc.listNotes({ pathPrefix: `${path}/`, includeContent })) collected.set(n.id, n);
+      collected.set(id, await vc.getNote(id));
     } catch {
-      /* listing failed — the anchor itself is still fetched below */
+      /* the shared page may have been deleted — skip */
     }
   }
-  for (const g of actor.grants.filter((x) => x.resource_type === "note" || x.resource_type === "page")) {
-    if (collected.has(g.resource)) continue;
-    try {
-      collected.set(g.resource, await vc.getNote(g.resource));
-    } catch {
-      /* granted note may have been deleted — skip */
+  // Per-note grants ride on the first page only.
+  if (sharedPagesOffset === 0) {
+    for (const g of actor.grants.filter((x) => x.resource_type === "note")) {
+      if (collected.has(g.resource)) continue;
+      try {
+        collected.set(g.resource, await vc.getNote(g.resource));
+      } catch {
+        /* granted note may have been deleted — skip */
+      }
     }
   }
-  return annotate(actor, [...collected.values()]);
+  return { notes: annotate(actor, [...collected.values()]), next };
 }
 
 api.get("/health", async (c) => c.json({ vault: await vault.health() }));
@@ -523,7 +548,15 @@ api.get("/notes", async (c) => {
   // Filter permission-visible rows BEFORE paging: hidden notes must neither
   // consume page positions nor cause unrelated note types to enter an Inbox.
   const tags = c.req.queries("tag") ?? [];
-  let notes = await visibleNotes(actor, includeContent);
+  const sharedPagesOffset = Number(c.req.query("shared_pages_offset") ?? 0);
+  if (!Number.isSafeInteger(sharedPagesOffset) || sharedPagesOffset < 0 || sharedPagesOffset > 100_000) return c.json({ error: "bad_request", detail: "shared_pages_offset must be a nonnegative integer" }, 400);
+  const listing = await visibleNotes(actor, includeContent, sharedPagesOffset);
+  let notes = listing.notes;
+  // More shared pages than one request expands: say so, and where to continue (review L-3).
+  if (listing.next !== null) {
+    c.header("X-Prism-Truncated", "shared-pages");
+    c.header("X-Prism-Shared-Pages-Next", String(listing.next));
+  }
   if (tags.length) notes = notes.filter((note) => tags.every((tag) => note.tags?.includes(tag)));
   const sort = c.req.query("sort");
   if (sort === "asc" || sort === "desc") {

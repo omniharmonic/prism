@@ -622,26 +622,31 @@ function SharingDocument({ noteId, sharing, onClose }: Props) {
                   <section aria-labelledby={`${heading}-inherited`}>
                     <h3 id={`${heading}-inherited`}>Inherited access</h3>
                     <p className="share-subtle">
-                      These people can open this page because a page above it is shared with them. Change it for this page to restrict or expand their access here and below.
+                      These people can open this page because a page above it is shared with them. The nearest shared page decides: setting a permission here replaces what they inherit, for this page and everything inside it — it can restrict as well as expand. Access through tags, links or a workspace role is not affected.
                     </p>
                     {access.inherited.map((person) => (
-                      <div className="share-person" key={`inherited-${person.email}`} data-inherited-from={person.from.id}>
-                        <PersonAvatar name={personName(person)} avatar={person.avatar} seed={person.email} size={32} />
+                      <div className="share-person" key={`inherited-${person.email ?? person.name}-${person.from.id}`} data-inherited-from={person.from.id}>
+                        <PersonAvatar name={personName(person)} avatar={person.avatar} seed={person.email ?? person.name} size={32} />
                         <span className="share-who">
                           <strong>{personName(person)}</strong>
                           <small>Inherited from {person.from.title}</small>
                         </span>
-                        {levelSelect<Choice>(
-                          isFull(person) ? "full" : person.level,
-                          (next) =>
-                            void run(
-                              () => changed(() => grant(person.email, next, "page")),
-                              "Couldn't change this person's permission on this page.",
-                            ),
-                          `Permission for ${person.email} on this page`,
-                          personChoices,
-                          false,
-                          !sharing.setPerson,
+                        {person.email ? (
+                          levelSelect<Choice>(
+                            isFull(person) ? "full" : person.level,
+                            (next) =>
+                              void run(
+                                () => changed(() => grant(person.email!, next, "page")),
+                                "Couldn't change this person's permission on this page.",
+                              ),
+                            `Permission for ${person.email} on this page`,
+                            personChoices,
+                            false,
+                            !sharing.setPerson,
+                          )
+                        ) : (
+                          // Only an administrator changes access that comes from a page above.
+                          <span className="share-owner">{isFull(person) ? LABEL.full : LABEL[person.level]}</span>
                         )}
                         <span aria-hidden />
                       </div>

@@ -64,7 +64,8 @@ export interface NoteRef {
 //   - a page later created at the anchor's OLD path never inherits anything.
 // The anchor's current path comes from a resolver the tree projection registers
 // (an in-memory, synchronous lookup). Unknown anchor (tree not loaded yet, anchor
-// deleted or trashed) → the grant matches the anchor id ONLY (fail closed).
+// deleted) → the grant matches the anchor id ONLY (fail closed). A TRASHED anchor
+// reaches only notes that are in the Trash too (see PageAnchor.trashed).
 //
 // NEAREST ANCHOR WINS among page grants: when page grants are anchored on several
 // ancestors of a note, only those on the CLOSEST ancestor (longest anchor path)
@@ -77,7 +78,15 @@ export interface NoteRef {
 export interface PageAnchor {
   /** The anchor page's current path, or null when it has none. */
   path: string | null;
+  /**
+   * The anchor is in the Trash. Its share then reaches ONLY notes that are in the
+   * Trash themselves (the group trashed with it — so whoever trashed it can still
+   * see and restore it); a LIVE note under its path inherits nothing.
+   */
+  trashed?: boolean;
 }
+/** The soft-delete tag (`@prism/core/pages` TRASH_TAG; duplicated to keep this module pure). */
+const TRASHED_TAG = "prism-trashed";
 type PageAnchorResolver = (vaultId: string, anchorId: string) => PageAnchor | null;
 let pageAnchorResolver: PageAnchorResolver = () => null;
 /** Registered once by `tree.ts` (the in-memory projection). Tests may override;
@@ -104,6 +113,7 @@ export function pageGrantDepth(g: Pick<Grant, "resource_type" | "resource" | "va
   if (g.resource === note.id) return Number.MAX_SAFE_INTEGER;
   const anchor = resolvePageAnchor(g.vault_id ?? "primary", g.resource);
   if (!anchor?.path || !pathUnder(note.path, anchor.path)) return -1;
+  if (anchor.trashed && !note.tags.includes(TRASHED_TAG)) return -1;
   return anchor.path.length;
 }
 

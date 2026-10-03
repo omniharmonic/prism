@@ -172,8 +172,10 @@ export interface SharePerson {
   /** "page" = shares the page AND its sub-pages; "note" = this page only. */
   scope?: "page" | "note";
 }
-/** Access a person inherits from a shared ancestor page. */
-export interface InheritedPerson extends SharePerson {
+/** Access a person inherits from a shared ancestor page. `email` is null for a
+ *  non-admin viewer (they see the name; only an administrator can change it). */
+export interface InheritedPerson extends Omit<SharePerson, "email"> {
+  email: string | null;
   from: { id: string; title: string; path?: string };
 }
 export interface TagAccess {
@@ -183,7 +185,7 @@ export interface TagAccess {
   level: ShareLevel;
 }
 export interface NoteAccess {
-  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null; path?: string | null };
+  note: { id: string; tags: string[]; title: string; visibility?: "private" | "workspace"; creator?: string | null; createdByMe?: boolean; path?: string | null };
   /** The page's owner row (creator, else workspace owner). `email` only for admins. */
   owner?: { email: string | null; name: string | null; avatar: string | null };
   /** Access inherited from shared ancestor pages (NP-CO-09). */
