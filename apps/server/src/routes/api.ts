@@ -27,6 +27,7 @@ import { threadsApi } from "./threads";
 import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
+import { databasesApi } from "./databases";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
 
@@ -194,6 +195,11 @@ api.use("/transcripts/*", async (c, next) => {
   if (c.req.method !== "GET") readCache.clear();
 });
 api.route("/transcripts", transcriptsApi);
+// Typed properties + database views (schemas, lean query, property writes).
+// Their writes bypass the owner proxy: drop cached owner reads afterwards.
+api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); });
+api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
+api.route("/", databasesApi);
 
 api.get("/graph/neighborhood", async (c) => {
   const actor = resolveActor(c);
