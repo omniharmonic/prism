@@ -5,6 +5,7 @@ import { useArchive, useMarkRead, useNotifications, useOnline, isNotificationsUn
 import { openNotification, takePendingNotification, clearPendingNotification } from "../../lib/notifications/anchor";
 import { notificationsApi, type AccessLevel, type NotificationItem, type NotificationType } from "../../lib/notifications/client";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
 import "./inbox.css";
 
 type Filter = "all" | "mentions" | "replies" | "reminders" | "requests";
@@ -146,7 +147,7 @@ export default function NotificationsInbox(_props: RendererProps) {
           groups.map((g) => (
             <section key={g.label} className="prism-inbox-group" aria-label={g.label}>
               <h2>{g.label}</h2>
-              <ul className="list-none p-0 m-0">
+              <ul className="list-none p-0 m-0" style={{ overflowX: "clip" }}>
                 {g.items.map((n) => (
                   <NotificationRow key={n.id} n={n} box={box} onOpen={() => open(n)}
                     onRead={() => markRead.mutate({ ids: [n.id] })}
@@ -178,8 +179,15 @@ function NotificationRow({ n, box, onOpen, onRead, onArchive }: {
 }) {
   const s = sentence(n);
   const canOpen = !!n.noteId;
+  // Phone (touch): swipe left to archive / restore, right to mark read. The row's
+  // buttons below do the same for keyboard, mouse and screen readers.
+  const swipe = useSwipeActions<HTMLLIElement>({
+    left: { label: box === "inbox" ? "Archive" : "Move to Inbox", run: onArchive },
+    right: n.readAt ? null : { label: "Mark as read", run: onRead, tone: "accent" },
+  });
   return (
-    <li className="prism-inbox-row" data-unread={!n.readAt} data-testid="notification-row" data-type={n.type}>
+    <li ref={swipe.ref} className="prism-inbox-row prism-swipe-row" data-unread={!n.readAt} data-testid="notification-row" data-type={n.type}>
+      {swipe.hint}
       <span className="prism-inbox-avatar" aria-hidden>{n.type === "reminder" ? <Bell size={14} /> : initials(s.who)}</span>
       <div className="flex-1 min-w-0">
         <button type="button" className="prism-inbox-open focus-ring" onClick={onOpen} disabled={!canOpen}
