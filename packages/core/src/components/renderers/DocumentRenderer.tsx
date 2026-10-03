@@ -16,14 +16,15 @@ import { WikilinkAutocomplete, type WikilinkAutocompleteState } from "../../lib/
 import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashCommand";
 import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
+import { blockSchemaExtensions } from "../../editor/blocks";
+import { BlockKeymap } from "../../lib/tiptap/blockCommands";
+import { BlockHandles } from "./BlockHandles";
+import { TableControls } from "./TableControls";
+import { ImageUpload } from "../../lib/tiptap/ImageUpload";
+import { useVaultClient } from "../../data/VaultClientContext";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import Image from "@tiptap/extension-image";
-import { Table } from "@tiptap/extension-table";
-import TableRow from "@tiptap/extension-table-row";
-import TableCell from "@tiptap/extension-table-cell";
-import TableHeader from "@tiptap/extension-table-header";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
@@ -42,6 +43,7 @@ import { PropertyBar } from "../database/PropertyBar";
 import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
+import "./editor-blocks.css";
 
 const lowlightInstance = createLowlight(common);
 
@@ -107,12 +109,26 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   // Wikilink navigation (shared with the collaborative editors).
   const handleWikilinkNavigate = useWikilinkNavigate();
 
+  // Image paste/drop/pick: only when the host can store attachments.
+  const vaultClient = useVaultClient();
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Hidden for read-only and governed (propose-only) surfaces: an attachment
+  // is a write the reviewer never sees.
+  const canUpload = !!vaultClient.uploadAttachment && !readOnly && !governed;
+  const uploadRef = useRef<(file: File) => Promise<{ src: string; alt?: string }>>(async () => { throw new Error("unavailable"); });
+  uploadRef.current = async (file: File) => {
+    setUploadError(null);
+    const attachment = await vaultClient.uploadAttachment!(note.id, file);
+    return { src: attachment.url, alt: attachment.name.replace(/\.[^.]+$/, "") };
+  };
+  const upload = useMemo(() => (canUpload ? (file: File) => uploadRef.current(file) : undefined), [canUpload]);
+
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
     Placeholder.configure({ placeholder: "Start writing, or press / for commands..." }),
-    Image,
-    Table.configure({ resizable: true }),
-    TableRow, TableCell, TableHeader,
+    // Images, tables, callouts, toggles, columns, colours: the SAME list the
+    // live editor and the server use, so a note round-trips through either.
+    ...blockSchemaExtensions(),
     TaskList,
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),
@@ -123,7 +139,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
     SlashCommand.configure({ onStateChange: setSlashState }),
     SearchHighlight,
-  ], [handleWikilinkNavigate]);
+    BlockKeymap,
+    ImageUpload.configure({ upload, onError: setUploadError }),
+  ], [handleWikilinkNavigate, upload]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -372,6 +390,9 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
           />
           <EditorContent editor={editor} />
         </div>
+        {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
+        {editor && <BlockHandles editor={editor} enabled={!notEditable} />}
+        {editor && !notEditable && <TableControls editor={editor} />}
         {/* Wikilink / @mention autocomplete dropdown */}
         {editor && autocompleteState?.active && (
           <WikilinkDropdown editor={editor} notes={allNotes || []} autocomplete={autocompleteState} />
@@ -393,6 +414,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         style={{ color: "var(--text-muted)", borderTop: "1px solid var(--glass-border)" }}
       >
         <div className="flex items-center gap-3">
+          {uploadError && <span role="alert">{uploadError} <button type="button" onClick={() => setUploadError(null)} className="underline">Dismiss</button></span>}
           {saveError && <span role="alert">{saveError} <button type="button" onClick={saveNow} className="underline">Retry save</button></span>}
           {isSaving && <span>Saving...</span>}
           {lastSaved && !isSaving && !saveError && (

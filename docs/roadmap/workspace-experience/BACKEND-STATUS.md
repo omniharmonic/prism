@@ -17,6 +17,10 @@ This closes the server half of `BACKEND-HANDOFF.md` §1. The client half is not 
 
 Files: `apps/server/src/{human-collab.ts, routes/human-collab.ts, collab.ts, collab-ops.ts, config.ts, db.ts, routes/api.ts}`, `apps/server/.env.example`, tests `apps/server/test/{suggest-enforcement, human-collab, comment-level, collab}.test.ts` and `test/helpers.ts`. Outside `apps/server`: the new file `packages/core/src/lib/collab/commands.ts`, one export line in `packages/core/package.json`, and this document. No existing file under `packages/core/src` or `apps/web/src` was touched; `apps/server/src/app.ts` was not touched; no dependency or lockfile change.
 
+## Release order — editor schema v2 (block editor)
+
+Server with the schema gate first (`pm2 restart prism-server`), then the PWA build, then rebuild and reinstall Prism Client; the legacy desktop must not be used for editing afterwards. Details and the gate contract: `docs/client-app.md` § Editor schema handshake.
+
 ## Release order (important)
 
 The shipped web client still lets a suggest user type into the editor. With enforcement on, that typing is refused by the server and never saved (see "What old clients experience"). So:

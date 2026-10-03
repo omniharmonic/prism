@@ -19,15 +19,29 @@ export interface SlashCommandOptions {
   onStateChange: (state: SlashCommandState) => void;
 }
 
-export const SlashCommand = Extension.create<SlashCommandOptions>({
+/**
+ * Close the menu for the `/` at `from` until that trigger goes away (Escape):
+ * typing on, or moving the caret, must not bring it back — Notion behaviour.
+ */
+export function dismissSlashCommand(editor: { storage: unknown }, from: number): void {
+  const storage = (editor.storage as Record<string, { dismissedFrom: number | null } | undefined>).slashCommand;
+  if (storage) storage.dismissedFrom = from;
+}
+
+export const SlashCommand = Extension.create<SlashCommandOptions, { dismissedFrom: number | null }>({
   name: "slashCommand",
 
   addOptions() {
     return { onStateChange: () => {} };
   },
 
+  addStorage() {
+    return { dismissedFrom: null };
+  },
+
   addProseMirrorPlugins() {
     const onStateChange = this.options.onStateChange;
+    const storage = this.storage;
     let lastActive = false;
 
     const clear = () => {
@@ -53,16 +67,19 @@ export const SlashCommand = Extension.create<SlashCommandOptions>({
                 const atStartOrSpace = slashIdx === 0 || charBefore === " " || charBefore === "\n";
                 const query = textBefore.slice(slashIdx + 1);
                 if (atStartOrSpace && !query.includes(" ") && query.length <= 30) {
+                  const from = $from.start() + slashIdx;
+                  if (storage.dismissedFrom === from) return clear();
                   lastActive = true;
                   onStateChange({
                     active: true,
                     query,
-                    from: $from.start() + slashIdx,
+                    from,
                     to: $from.pos,
                   });
                   return;
                 }
               }
+              storage.dismissedFrom = null; // the dismissed trigger is gone
               clear();
             },
           };

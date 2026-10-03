@@ -40,7 +40,7 @@ import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
 import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
 import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
-import { collabExtensions } from "@prism/core/editor-schema";
+import { collabExtensions, COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { inferContentType } from "@prism/core/content-types";
 import { marked } from "marked";
 import { config } from "./config";
@@ -885,6 +885,44 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
   saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten ? rendered : []);
 }
 
+/**
+ * Schema handshake (C1). y-prosemirror DELETES every node/mark its schema cannot
+ * represent, so a client built before the current document schema would destroy
+ * newer content for everyone the moment it syncs. Live editors send their schema
+ * version as `?schema=<n>` on the socket URL; a DOCUMENT-kind socket without it,
+ * or with an older one, is refused outright (not read-only — a read-only socket
+ * still renders the damage locally and the user would type into the void).
+ * Code/sheet/canvas keep their own structures and stay ungated. Direct
+ * connections (MCP tools, human commands, the federation applier) never pass
+ * through onAuthenticate and are unaffected.
+ */
+export const UPDATE_REQUIRED_REASON = "update_required: Prism was updated. Reload or update the app to keep editing.";
+export function clientSchemaVersion(params: URLSearchParams | null | undefined): number {
+  const raw = params?.get("schema");
+  const v = raw && /^\d{1,6}$/.test(raw) ? Number(raw) : 0;
+  return v;
+}
+async function documentKindOf(documentName: string): Promise<CollabKind> {
+  const target = federationTarget(documentName);
+  if (target.kind) return target.kind;
+  const cached = kindCache.get(documentName);
+  if (cached) return cached;
+  try {
+    const n = await vaultClient(target.vaultId).getNote(target.noteId);
+    const kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
+    kindCache.set(documentName, kind);
+    return kind;
+  } catch {
+    return "document"; // unknown → fail closed (only a stale client can hit this)
+  }
+}
+/** Throws (reason `update_required: …`) for a stale client opening a document. */
+export async function assertEditorSchema(documentName: string, params: URLSearchParams | null | undefined): Promise<void> {
+  if (clientSchemaVersion(params) >= COLLAB_SCHEMA_VERSION) return;
+  if ((await documentKindOf(documentName)) !== "document") return;
+  throw Object.assign(new Error(UPDATE_REQUIRED_REASON), { reason: UPDATE_REQUIRED_REASON });
+}
+
 interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean }
 
 /** Recheck incoming updates against current grants, credentials and note privacy. */
@@ -918,6 +956,8 @@ export const hocuspocus = new Hocuspocus({
     // Only local connections may use the owner-token path (see resolveLevel).
     const isLocal = isLocalRequest((k) => headerGet(data.requestHeaders, k));
     const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig, isLocal);
+    // After authorization, so the refusal is no oracle about a note's kind.
+    await assertEditorSchema(data.documentName, data.requestParameters);
     // Credentials stay only in the connection's server-side context.
     return { level, token: data.token, cookie, isLocal } satisfies LiveAccess;
   },

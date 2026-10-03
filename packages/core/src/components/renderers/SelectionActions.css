@@ -8,3 +8,23 @@
 
 .cd-bubble:has([aria-label="Ask agent about selection"]) { flex-wrap: wrap; max-width: calc(100vw - 24px); }
 .cd-bubble button[aria-pressed=true] { background: var(--glass-active); }
+
+/* Notion-like selection toolbar: groups separated by hairlines. */
+.document-selection-actions, .cd-bubble { flex-wrap: nowrap; }
+.document-selection-actions .selection-divider, .cd-bubble .selection-divider { align-self: stretch; width: 1px; margin: 4px 2px; background: var(--glass-border); flex-shrink: 0; }
+.document-selection-actions .selection-ask, .cd-bubble .selection-ask { color: var(--color-accent); font-weight: 500; }
+.selection-dropdown { position: relative; display: inline-flex; }
+.selection-dropdown > button { white-space: nowrap; }
+.selection-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 75; }
+.selection-link-form { display: flex; align-items: center; gap: 6px; padding: 0 2px 0 6px; color: var(--text-secondary); flex-wrap: wrap; }
+.selection-link-form input {
+  width: min(260px, calc(100vw - 150px)); min-height: 30px; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--glass-border-strong); background: var(--bg-base); color: var(--text-primary); font-size: 13px;
+}
+.selection-link-form input[aria-invalid="true"] { border-color: var(--color-danger); }
+.selection-link-form .selection-link-apply { color: var(--color-accent); font-weight: 600; }
+.selection-link-error { flex-basis: 100%; padding: 0 0 4px; font-size: 12px; color: var(--color-danger); }
+@media (max-width: 767px) {
+  .document-selection-actions, .cd-bubble { flex-wrap: wrap; }
+  .selection-link-form input { font-size: 16px; }
+}

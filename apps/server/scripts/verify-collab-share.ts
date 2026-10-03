@@ -82,7 +82,7 @@ async function main() {
     const id = (c as any)._id as string;
     const doc = new Y.Doc();
     const provider = new HocuspocusProvider({
-      url: BASE.replace(/^http/, "ws") + "/collab",
+      url: BASE.replace(/^http/, "ws") + "/collab?schema=2",
       name: id,
       token: config.collabToken || config.parachuteToken || "",
       document: doc,

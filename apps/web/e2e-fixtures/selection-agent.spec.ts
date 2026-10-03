@@ -97,7 +97,7 @@ test('keyboard and slash entries reuse the same unsent conversation flow', async
   await editor.fill('A document to discuss');
   await editor.press('End'); await editor.press('Enter'); await editor.press('ControlOrMeta+Alt+0');
   await editor.pressSequentially('/ask');
-  await page.getByRole('button', { name: 'Ask agent Discuss this page in your conversation' }).click();
+  await page.getByRole('option', { name: 'Ask agent Discuss this page in your conversation' }).click();
   await expect(page.getByRole('button', { name: 'Document snapshot', exact: true })).toHaveCount(1);
   await expect(editor).not.toContainText('/ask');
   await noSend(page);
@@ -145,7 +145,7 @@ test('actual collaborative host hands off selected text and view-only selection 
   await server.listen();
   const sockets: WebSocket[] = [];
   try {
-    await page.routeWebSocket(/\/collab$/, route => {
+    await page.routeWebSocket(/\/collab(\?|$)/, route => {
       const socket = new WebSocket(server.webSocketURL); sockets.push(socket);
       const pending: (string | Buffer)[] = [];
       route.onMessage(message => socket.readyState === WebSocket.OPEN ? socket.send(message) : pending.push(message));
