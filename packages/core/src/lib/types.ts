@@ -45,6 +45,9 @@ export interface Note {
    */
   _level?: string;
   _caps?: string[];
+  /** Set by the gateway when the caller's suggest/create standing on this note comes
+   *  from a governance role (→ propose-for-review, see lib/governance/review.ts). */
+  _review?: "governance";
 }
 
 // Lean note shape for tree/index views — matches the Rust `NoteTreeEntry`

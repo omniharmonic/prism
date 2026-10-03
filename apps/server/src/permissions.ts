@@ -271,6 +271,41 @@ export const grantCaps = (g: Grant): Iterable<Cap> =>
   g.caps && g.caps.length ? g.caps : expandLevel(g.level);
 
 /**
+ * Does GOVERNANCE review apply to this actor on this note (wave 3)?
+ *
+ * True when the actor may not `edit` the note and at least one grant that
+ * matches it and confers `suggest` or `create` was compiled by governance
+ * (`created_by` starts `governance:` — a role's capabilities, see
+ * governance-grants.ts). The client then offers the propose-for-review draft.
+ * A PLAIN suggest grant (someone shared the page "can suggest") is false: that
+ * person gets the live suggest-only editor. Presentation hint only — it never
+ * widens access; `effectiveCaps` stays the guard. Same matching (and private-note
+ * rule) as `effectiveCaps`.
+ */
+export function governedReview(grants: Grant[], note: NoteRef, floor: Level | null, subject?: string | null): boolean {
+  if (effectiveCaps(grants, note, floor, subject).has("edit")) return false;
+  const governed = (g: Grant) => {
+    if (!g.created_by?.startsWith("governance:")) return false;
+    for (const cap of grantCaps(g)) if (cap === "suggest" || cap === "create") return true;
+    return false;
+  };
+  if (note.visibility === "private") {
+    return grants.some((g) => (g.resource_type === "note" || g.resource_type === "page") && g.resource === note.id && governed(g));
+  }
+  const tagSet = new Set(note.tags);
+  const spaceSet = new Set(note.spaceIds ?? []);
+  for (const g of grants) {
+    const matches =
+      (g.resource_type === "note" && g.resource === note.id) ||
+      (g.resource_type === "tag" && tagSet.has(g.resource)) ||
+      (g.resource_type === "space" && spaceSet.has(g.resource)) ||
+      g.resource_type === "vault";
+    if (matches && governed(g)) return true;
+  }
+  return nearestPageGrants(grants, note).some(governed);
+}
+
+/**
  * The caps analogue of `effectiveLevel`: the UNION of the caps every matching
  * grant confers, plus the caps the role floor confers. Matching and the
  * private-note semantics are identical to `effectiveLevel` — for a private note

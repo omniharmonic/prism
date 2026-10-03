@@ -5,7 +5,7 @@
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
+import { App, CollabDocumentProvider, CollabSharingProvider, PlatformProvider, VaultClientProvider, useUIStore, type Note } from "@prism/core";
 import { filtersToParams, matchesFilters, parseSearchFilters, queryTerms, searchMatches } from "@prism/core/search";
 import { inferContentType } from "../../../packages/core/src/lib/schemas/content-types";
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
@@ -182,9 +182,9 @@ window.fetch = async (input, init) => {
         { sourceId: "hidden-page", targetId: "workspace", relationship: "wikilink" },
         { sourceId: "workspace", targetId: "agenda", relationship: "wikilink" },
       ] : [];
-      return Response.json({ ...note, links });
+      return Response.json({ ...viewerNote(note), links });
     }
-    return Response.json(note);
+    return Response.json(viewerNote(note));
   }
   if (params.has("inbox") && path === "/api/notifications/unread") return Response.json({ unread: 3 });
   if (params.has("inbox") && path === "/api/notifications") return Response.json({ items: [], next: null, unread: 3 });
@@ -196,6 +196,16 @@ window.fetch = async (input, init) => {
   return nativeFetch(input, init);
 };
 setActiveVault("primary");
+/** `?as=suggest|governed|creator`: the gateway's non-owner annotation (wave 3 gaps #1). */
+function viewerNote(note: Note): Note {
+  const as = params.get("as");
+  if (!as) return note;
+  const caps = as === "creator" ? ["view", "create"] : ["view", "comment", "suggest"];
+  return { ...note, _level: as === "creator" ? "view" : "suggest", _caps: caps, ...(as === "governed" ? { _review: "governance" as const } : {}) };
+}
+/** A stand-in for the web shell's live editor: proves WHICH editor Canvas routes to. */
+const liveStub = { useLiveCollab: (id: string) => !!id, CollabDocument: ({ noteId }: { noteId: string }) => <div data-testid="live-collab-doc" data-note={noteId}>Live collaborative document</div> };
+const Live = ({ children }: { children: React.ReactNode }) => params.has("as") ? <CollabDocumentProvider value={liveStub}>{children}</CollabDocumentProvider> : <>{children}</>;
 await fetchMe();
 startOutboxSync();
 useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 240, sidebarOpen: !params.has("collapsed") });
@@ -205,7 +215,7 @@ createRoot(document.getElementById("root")!).render(
       getActiveVault: () => "primary",
       setActiveVault: (id: string) => { (controls as unknown as { switchedVault?: string }).switchedVault = id; },
     } : {}), createShareLink: async () => "", getAccess: async () => ({ note: { id: "workspace", title: "A living workspace", tags: [], visibility: "private" }, people: [], links: [], tagAccess: [], canManageLinks: true, allowedLevels: ["view", "comment", "suggest", "edit"] }) }}>
-    <App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} />
+    <Live><App skipOnboarding initialTab={{ id: "workspace", title: "A living workspace", type: "document" }} /></Live>
     <OfflineIndicator />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );
