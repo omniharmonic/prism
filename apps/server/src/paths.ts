@@ -36,8 +36,10 @@ export function pathInPrefix(notePath: string | null | undefined, prefix: string
 
 /** A published folder never overrides a note's explicit private visibility. */
 export function pathPublicationIncludes(
-  note: { path?: string | null; metadata?: Record<string, unknown> | null },
+  note: { path?: string | null; tags?: string[] | null; metadata?: Record<string, unknown> | null },
   prefix: string,
 ): boolean {
+  // A trashed page leaves its folder publication too (review H1).
+  if ((note.tags ?? []).includes("prism-trashed")) return false;
   return note.metadata?.prism_visibility !== "private" && pathInPrefix(note.path, prefix);
 }

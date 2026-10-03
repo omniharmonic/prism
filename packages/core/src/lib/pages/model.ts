@@ -270,15 +270,15 @@ export interface MoveRequest {
   newPath?: string;
   /** The page's `updatedAt` the user saw (required unless resuming). */
   ifUpdatedAt?: string;
-  /** Resume a partial move: the page's original location. */
-  fromPath?: string;
+  /** Resume a journaled partial move (with the page's current `ifUpdatedAt`). */
+  moveId?: string;
 }
 export interface MoveResult {
   ok: boolean;
   path: string;
   moved: Array<{ id: string; from: string; to: string }>;
   /** Present when only part of the subtree moved; call again with `resume` to finish. */
-  partial?: { failed: { id: string; from: string; to: string; reason: string }; resume: { fromPath: string; newPath: string }; remaining: number };
+  partial?: { failed: { id: string; from: string; to: string; reason: string }; resume: { moveId: string; newPath: string }; remaining: number };
 }
 export interface TrashItem {
   id: string;
@@ -350,3 +350,12 @@ export function comparePages(a: { name: string; order: number | null }, b: { nam
   if (b.order !== null) return 1;
   return a.name.localeCompare(b.name);
 }
+
+/**
+ * Metadata keys only the owner/admin (or the server's own pages routes) may write:
+ * who can see a note, who created it, and its Trash state. A non-owner metadata
+ * write naming one is refused. `prism_locked` is separate: it needs `organize`
+ * and a reviewed `if_updated_at` (see the gateway PATCH).
+ */
+export const OWNER_ONLY_META = ["prism_creator", "prism_visibility", TRASH_META.at, TRASH_META.by, TRASH_META.root, TRASH_META.path] as const;
+export const isOwnerOnlyMeta = (key: string): boolean => (OWNER_ONLY_META as readonly string[]).includes(key) || key.startsWith("prism_trashed_");

@@ -174,6 +174,8 @@ export const queryNotesTool = defineTool({
       if (args.path_prefix) notes = notes.filter((n) => (n.path ?? "").startsWith(args.path_prefix!));
       if (!args.search) notes.sort(byUpdatedDesc);
     }
+    // Trashed pages are hidden unless the caller asks for the trash tag explicitly.
+    if (args.tag !== "prism-trashed") notes = notes.filter((n) => !(n.tags ?? []).includes("prism-trashed"));
     const total = notes.length;
     const page = notes.slice(0, limit);
     return {
@@ -300,6 +302,8 @@ export const updateNoteTool = defineTool({
     if (a.content !== undefined) {
       const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(a.id)}`); // view gate first: liveness is never an oracle
       noteId = note.id;
+      // A locked page refuses content for EVERY principal (owners unlock it first).
+      if (note.metadata?.prism_locked === true) throw new ToolError("conflict", "this page is locked — unlock it before editing its content", { locked: true });
       if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
         // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
         const r = await liveContentWrite(ctx, note.id, a.content, a.if_updated_at);

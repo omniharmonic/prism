@@ -29,17 +29,23 @@
  * the H1-title fallback are left alone (the latter still resolve by title).
  */
 import { Hono, type Context } from "hono";
-import { db, resolveVaultEntry, getVaultRegistry } from "./db";
+import { bodyLimit } from "hono/body-limit";
+import { randomUUID } from "node:crypto";
+import { db, resolveVaultEntry, getVaultRegistry, listPublications, listVaultMirrors } from "./db";
+import { listGitHubConfigs } from "./worker/sync-store";
+import { pathInPrefix } from "./paths";
 import { resolveActor, type Actor } from "./auth/actor";
 import { effectiveCaps, type Cap, type NoteRef } from "./permissions";
 import { roleAtLeast, roleFloor } from "./roles";
 import { vaultClient, VaultError, VaultConflictError, type Note } from "./parachute";
-import { ensureTree, treeUpsertNote, treeRemoveNote, rowRef, type TreeRow } from "./tree";
+import { ensureTree, treeUpsertNote, treeRemoveNote, rowRef, TREE_META_KEYS, type TreeRow } from "./tree";
 import type { VaultEntry } from "./config";
 import {
   TRASH_TAG,
   TRASH_META,
   TRASH_RETENTION_DAYS,
+  LOCK_KEY,
+  ORDER_KEY,
   PREFERENCE_LIMITS,
   EMPTY_PREFERENCES,
   isTrashed,
@@ -48,6 +54,7 @@ import {
   movedPath,
   normalizePagePath,
   pageTitle,
+  parentOf,
   planSubtreeMove,
   protectionReason,
   sanitizePreferences,
@@ -105,16 +112,21 @@ async function readBody(c: Context): Promise<Record<string, unknown> | null> {
   }
 }
 
-// One structural operation per vault at a time: two concurrent subtree moves (or a
-// move racing a trash of the same pages) would plan against each other's half-done state.
-const busy = new Set<string>();
-async function exclusive<T>(vaultId: string, fn: () => Promise<T>): Promise<T | "busy"> {
-  if (busy.has(vaultId)) return "busy";
-  busy.add(vaultId);
+// One structural operation per SUBTREE at a time: two concurrent operations on
+// overlapping subtrees (a move racing a trash of a child) would plan against each
+// other's half-done state. Disjoint subtrees in the same vault run in parallel.
+const busy = new Map<string, Set<string>>();
+const overlaps = (a: string, b: string) => a === b || isUnder(a, b) || isUnder(b, a);
+async function exclusive<T>(vaultId: string, paths: string[], fn: () => Promise<T>): Promise<T | "busy"> {
+  const held = busy.get(vaultId) ?? new Set<string>();
+  const want = paths.map((p) => p.toLowerCase());
+  if ([...held].some((h) => want.some((w) => overlaps(h, w)))) return "busy";
+  for (const w of want) held.add(w);
+  busy.set(vaultId, held);
   try {
     return await fn();
   } finally {
-    busy.delete(vaultId);
+    for (const w of want) held.delete(w);
   }
 }
 
@@ -173,24 +185,81 @@ async function casWrite(
   return updated;
 }
 
-/** The page and every note trashed together with it (or under it, for a fresh trash). */
-function groupRows(rows: TreeRow[], root: Note, mode: "trash" | "trashed"): TreeRow[] {
-  if (mode === "trashed") return rows.filter((r) => r.id !== root.id && r.tags.includes(TRASH_TAG) && r.trashedRoot === root.id);
-  return root.path ? rows.filter((r) => r.id !== root.id && isUnder(r.path, root.path!) && !r.tags.includes(TRASH_TAG)) : [];
+/** Anything with the permission-relevant note fields (a vault Note or a tree row). */
+type RowLike = { id: string; path: string | null; tags: string[] | null; updatedAt?: string | null; metadata?: Record<string, unknown> | null; creator?: string | null; visibility?: "workspace" | "private" };
+const refOf = (r: RowLike): NoteRef =>
+  "creator" in r && r.creator !== undefined
+    ? rowRef(r as TreeRow)
+    : { id: r.id, tags: r.tags ?? [], creator: (r.metadata?.prism_creator as string | undefined) ?? null, visibility: r.metadata?.prism_visibility === "private" ? "private" : "workspace" };
+
+/**
+ * The notes under `path` read FRESH from the vault (one lean `path_prefix` listing),
+ * never the cached tree projection: a move or trash must see every descendant that
+ * exists now (review M5). Filtered to strict descendants (the vault's prefix is a
+ * string prefix — `A` would also match `AB/x`).
+ */
+async function freshSubtree(entry: VaultEntry, path: string): Promise<Note[]> {
+  const notes = await vaultClient(entry.id).listNotes({ pathPrefix: path, includeMetadata: [...TREE_META_KEYS] });
+  return notes.filter((n) => isUnder(n.path, path));
 }
 
-/** Refusal for a group the actor can't act on: count only, never ids of notes they can't see. */
-function checkGroup(a: Actor, root: Note, rows: TreeRow[], allowed: (a: Actor, r: NoteRef) => boolean) {
+/**
+ * Refusal for a group the actor can't act on. Non-admins get no counts and no ids
+ * of notes they can't see (no existence/size oracle); admins get the counts.
+ */
+function checkGroup(a: Actor, root: Note, rows: RowLike[], allowed: (a: Actor, r: NoteRef) => boolean) {
   const rootReason = protectionReason(root);
   if (rootReason) return { status: 403 as const, body: { error: "protected", reason: rootReason } };
+  const admin = isAdmin(a);
   const protectedRows = rows.filter((r) => protectionReason(r));
   if (protectedRows.length) {
-    return { status: 403 as const, body: { error: "protected", reason: "Some pages inside are kept in sync by an integration or the system.", count: protectedRows.length } };
+    return { status: 403 as const, body: { error: "protected", reason: "Some pages inside are kept in sync by an integration or the system.", ...(admin ? { count: protectedRows.length } : {}) } };
   }
-  const blocked = [noteRef(root), ...rows.map(rowRef)].filter((r) => !allowed(a, r)).length;
-  if (blocked) return { status: 403 as const, body: { error: "forbidden", reason: "You can’t change every page in this group.", blocked } };
+  const blocked = [noteRef(root), ...rows.map(refOf)].filter((r) => !allowed(a, r)).length;
+  if (blocked) return { status: 403 as const, body: { error: "forbidden", reason: "You can’t change every page in this group." } };
   if (rows.length + 1 > MAX_GROUP) return { status: 413 as const, body: { error: "too_many", limit: MAX_GROUP } };
   return null;
+}
+
+/**
+ * Why `path` is an EXPORTED location (a folder publication, a GitHub folder sync,
+ * a vault-mirror source) in this vault, or null. Moving a page there publishes or
+ * exports it, so only the owner/admin may (review H2).
+ */
+export function exportedLocation(vaultId: string, path: string): string | null {
+  for (const p of listPublications()) {
+    if (p.resource_type === "path" && (p.vault_id ?? "primary") === vaultId && pathInPrefix(path, p.resource)) return "That folder is published publicly.";
+  }
+  for (const g of listGitHubConfigs(vaultId)) {
+    const prefix = g.vaultPath.replace(/\/+$/, "");
+    if (prefix && pathInPrefix(path, prefix)) return "That folder is synced to GitHub.";
+  }
+  for (const m of listVaultMirrors()) {
+    if (m.src_vault === vaultId && pathInPrefix(path, m.src_prefix)) return "That folder is mirrored to another vault.";
+  }
+  return null;
+}
+
+/** Live docs that LINK INTO the moved notes: store them before the path writes (review M2). */
+async function flushLinkersLive(entry: VaultEntry, ids: string[]): Promise<void> {
+  let collab: typeof import("./collab");
+  try {
+    collab = await import("./collab");
+  } catch {
+    return;
+  }
+  if (!collab.hocuspocus.documents.size) return;
+  const moving = new Set(ids);
+  const sources = new Set<string>();
+  for (const id of ids.slice(0, MAX_GROUP)) {
+    try {
+      const n = await vaultClient(entry.id).getNote(id, { includeLinks: true });
+      for (const l of n.links ?? []) if (l.targetId === id && !moving.has(l.sourceId)) sources.add(l.sourceId);
+    } catch {
+      /* unreadable: nothing to flush for it */
+    }
+  }
+  for (const src of sources) if (collab.isDocLive(entry.id, src)) await collab.flushLiveDoc(entry.id, src);
 }
 
 export interface PagesApiOptions {
@@ -208,52 +277,116 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     if (actor.kind !== "user") return c.json({ error: actor.kind === "anon" ? "unauthorized" : "forbidden" }, actor.kind === "anon" ? 401 : 403);
     const body = await readBody(c);
     if (!body) return c.json({ error: "bad_request" }, 400);
+    const admin = isAdmin(actor);
     const entry = entryFor(c, actor);
+    const vc = vaultClient(entry.id);
     let root: Note;
     try {
-      root = await vaultClient(entry.id).getNote(c.req.param("id"));
+      root = await vc.getNote(c.req.param("id"));
     } catch (e) {
       return vaultErr(c, e);
     }
     if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
     if (!root.path) return c.json({ error: "bad_request", reason: "This page has no location to move." }, 400);
+    if (isTrashed(root)) return c.json({ error: "in_trash", reason: "Restore this page from the Trash before moving it." }, 409);
+    if (body.fromPath !== undefined) return c.json({ error: "bad_request", reason: "Resume a move with its moveId." }, 400);
 
-    let target: string | null = null;
-    if (body.newPath !== undefined) target = normalizePagePath(body.newPath);
-    else if (body.newParentPath !== undefined) {
-      const parent = body.newParentPath === "" ? "" : normalizePagePath(body.newParentPath);
-      target = parent === null ? null : movedPath(root.path, parent);
+    // Resume (review M5/LOW): bound to a journaled partial move of THIS page, by the
+    // same account (or an admin), CAS against the page as it stands after its own move.
+    let from: string;
+    let target: string;
+    let journalId: string;
+    const resumeId = typeof body.moveId === "string" ? body.moveId : null;
+    if (resumeId) {
+      const j = getMove(resumeId);
+      if (!j || j.vault_id !== entry.id || j.root_id !== root.id || (!admin && j.created_by !== actor.email)) return c.json({ error: "not_found" }, 404);
+      if (j.status !== "partial") return c.json({ error: "conflict", reason: "That move is not waiting to be finished." }, 409);
+      if (root.path !== j.to_path || body.if_updated_at !== root.updatedAt) return c.json({ error: "conflict", reason: "This page changed since the move stopped. Reload and try again." }, 409);
+      from = j.from_path;
+      target = j.to_path;
+      journalId = j.id;
+    } else {
+      let t: string | null = null;
+      if (body.newPath !== undefined) t = normalizePagePath(body.newPath);
+      else if (body.newParentPath !== undefined) {
+        const parent = body.newParentPath === "" ? "" : normalizePagePath(body.newParentPath);
+        t = parent === null ? null : movedPath(root.path, parent);
+      }
+      if (!t) return c.json({ error: "bad_request", reason: "A valid newPath or newParentPath is required." }, 400);
+      if (t === root.path) return c.json({ error: "no_change" }, 400);
+      if (typeof body.if_updated_at !== "string") return c.json({ error: "precondition_required", reason: "if_updated_at is required" }, 428);
+      from = root.path;
+      target = t;
+      journalId = randomUUID();
     }
-    if (!target) return c.json({ error: "bad_request", reason: "A valid newPath or newParentPath is required." }, 400);
-    // Resume a partial move: the root already sits at the target; finish the
-    // descendants still under the original location.
-    const fromPath = body.fromPath !== undefined ? normalizePagePath(body.fromPath) : null;
-    const resuming = root.path === target && !!fromPath && fromPath !== target;
-    const from = resuming ? fromPath! : root.path;
-    if (from === target) return c.json({ error: "no_change" }, 400);
     if (isUnder(target, from)) return c.json({ error: "into_own_subtree", reason: "A page can’t move inside itself." }, 400);
     if (isProtectedPath(target)) return c.json({ error: "protected", reason: "That location is kept in sync by an integration." }, 403);
-    if (!resuming && typeof body.if_updated_at !== "string") return c.json({ error: "precondition_required", reason: "if_updated_at is required" }, 428);
 
-    let rows: TreeRow[];
+    // Plan from FRESH vault listings (review M5): the subtree being moved, and what
+    // already lives at the destination.
+    let below: Note[];
+    let atTarget: Note[];
     try {
-      rows = (await ensureTree(entry)).rows();
+      [below, atTarget] = await Promise.all([freshSubtree(entry, from), vc.listNotes({ pathPrefix: target, includeMetadata: [...TREE_META_KEYS] })]);
     } catch {
       return c.json({ error: "vault_unreachable" }, 502);
     }
-    const others = rows.filter((x) => x.id !== root.id);
-    const plan = planSubtreeMove([{ id: root.id, path: root.path, updatedAt: root.updatedAt }, ...others], from, target, root.id);
-    const byId = new Map(rows.map((x) => [x.id, x]));
-    const descendants = plan.filter((m) => m.id !== root.id).map((m) => byId.get(m.id)!).filter(Boolean);
+    const plan = planSubtreeMove(
+      [{ id: root.id, path: resumeId ? null : root.path, updatedAt: root.updatedAt }, ...below.map((n) => ({ id: n.id, path: n.path, updatedAt: n.updatedAt }))],
+      from,
+      target,
+      root.id,
+    );
+    const descendants = below.filter((n) => plan.some((m) => m.id === n.id));
     const refusal = checkGroup(actor, root, descendants, canOrganize);
     if (refusal) return c.json(refusal.body, refusal.status);
+
+    // DESTINATION (review H2). Exported folders are owner/admin only; otherwise a
+    // non-admin needs create/organize on the destination's parent PAGE (admin when
+    // the destination has no parent page, e.g. top level or a plain folder).
+    if (!admin) {
+      for (const m of plan) {
+        const why = exportedLocation(entry.id, m.to);
+        if (why) return c.json({ error: "forbidden", reason: `${why} Only the workspace owner can move pages there.` }, 403);
+      }
+      const parent = parentOf(target);
+      let parentPage: Note | null = null;
+      if (parent && parent !== "vault") {
+        try {
+          const p = await vc.getNote(parent);
+          if (p.path === parent) parentPage = p;
+        } catch {
+          parentPage = null;
+        }
+      }
+      if (!parentPage) return c.json({ error: "forbidden", reason: "Only the workspace owner can move pages to the top level or into a plain folder." }, 403);
+      const caps = capsOf(actor, noteRef(parentPage));
+      if (!(caps.has("create") || caps.has("organize")) || isTrashed(parentPage)) {
+        return c.json({ error: "forbidden", reason: "You can’t add pages inside that page." }, 403);
+      }
+    }
+
     // Every destination must be free (case-insensitively, like the vault's path index).
     const moving = new Set(plan.map((m) => m.id));
-    const occupied = new Set(rows.filter((x) => x.path && !moving.has(x.id)).map((x) => x.path!.toLowerCase()));
-    const clash = plan.find((m) => occupied.has(m.to.toLowerCase()));
-    if (clash) return c.json({ error: "path_conflict", path: clash.to, reason: `A page already exists at ${clash.to}.` }, 409);
+    const holders = new Map(atTarget.filter((n) => n.path && !moving.has(n.id)).map((n) => [n.path!.toLowerCase(), n]));
+    const clash = plan.find((m) => holders.has(m.to.toLowerCase()));
+    if (clash) {
+      const holder = holders.get(clash.to.toLowerCase())!;
+      // No existence oracle: a note the caller can't see is a generic conflict.
+      if (!canView(actor, noteRef(holder))) return c.json({ error: "conflict", reason: "That location isn’t available. Choose another place." }, 409);
+      return c.json(
+        isTrashed(holder)
+          ? { error: "path_conflict", path: clash.to, reason: `A page in the Trash is still using ${pageTitle(clash.to)} there. Restore or delete it first.` }
+          : { error: "path_conflict", path: clash.to, reason: `A page already exists at ${clash.to}.` },
+        409,
+      );
+    }
 
-    const outcome = await exclusive(entry.id, async () => {
+    const outcome = await exclusive(entry.id, [from, target], async () => {
+      // A live doc linking into the subtree is stored first, so the vault's
+      // link-rewrite cascade folds into the editor cleanly (review M2).
+      await flushLinkersLive(entry, plan.map((m) => m.id));
+      recordMove({ id: journalId, vault_id: entry.id, root_id: root.id, from_path: from, to_path: target, status: "running", moved: 0, remaining: plan.length, created_by: actor.email });
       const moved: Array<{ id: string; from: string; to: string }> = [];
       for (const m of plan) {
         const isRoot = m.id === root.id;
@@ -266,27 +399,81 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       }
       return { moved, failed: null, error: null };
     });
-    if (outcome === "busy") return c.json({ error: "busy", reason: "Another page move is in progress. Try again in a moment." }, 409);
+    if (outcome === "busy") return c.json({ error: "busy", reason: "Another change to these pages is in progress. Try again in a moment." }, 409);
     if (outcome.moved.length) wrote();
-    if (!outcome.failed) return c.json({ ok: true, path: target, moved: outcome.moved, wikilinks: "vault_cascade" });
-    if (!outcome.moved.length && !resuming) {
+    if (!outcome.failed) {
+      finishMove(journalId, "done", outcome.moved.length, 0);
+      return c.json({ ok: true, path: target, moved: outcome.moved, wikilinks: "vault_cascade" });
+    }
+    if (!outcome.moved.length && !resumeId) {
+      finishMove(journalId, "failed", 0, plan.length);
       // Nothing changed: report the root's own failure plainly (stale page → reload and retry).
       return outcome.failed.reason === "conflict"
         ? c.json({ error: "conflict", reason: "This page changed since you opened it. Reload and try again." }, 409)
         : vaultErr(c, outcome.error);
     }
+    finishMove(journalId, "partial", outcome.moved.length, plan.length - outcome.moved.length);
     return c.json(
       {
         error: "partial_move",
         reason: "Some pages moved and some did not. Retry to finish the move.",
+        moveId: journalId,
         moved: outcome.moved,
         failed: outcome.failed,
         remaining: plan.length - outcome.moved.length,
-        resume: { fromPath: from, newPath: target },
+        resume: { moveId: journalId, newPath: target },
       },
       207,
     );
   });
+
+  /** Recent page moves (partial ones can be finished from here); own moves only for non-admins. */
+  r.get("/moves", (c) => {
+    const actor = resolveActor(c);
+    if (actor.kind !== "user") return c.json({ error: "unauthorized" }, 401);
+    const entry = entryFor(c, actor);
+    const rows = db
+      .prepare(`SELECT id, root_id, from_path, to_path, status, moved, remaining, created_by, created_at, updated_at FROM page_moves WHERE vault_id = ? ${isAdmin(actor) ? "" : "AND created_by = ?"} ORDER BY updated_at DESC LIMIT 20`)
+      .all(...(isAdmin(actor) ? [entry.id] : [entry.id, actor.email])) as Array<Record<string, unknown>>;
+    c.header("Cache-Control", "private, no-store");
+    return c.json({ moves: rows.map((m) => ({ id: m.id, rootId: m.root_id, from: m.from_path, to: m.to_path, status: m.status, moved: m.moved, remaining: m.remaining, updatedAt: m.updated_at })) });
+  });
+
+  // ── page metadata (lock, sidebar order) ───────────────────────────────────
+  // Metadata-only page writes, CAS + reconcile-live (review M3). Lock toggling needs
+  // `organize` (owner/admin always); order needs `organize` too.
+  r.post("/notes/:id/meta", async (c) => {
+    const actor = resolveActor(c);
+    if (actor.kind !== "user") return c.json({ error: actor.kind === "anon" ? "unauthorized" : "forbidden" }, actor.kind === "anon" ? 401 : 403);
+    const body = await readBody(c);
+    const set = body?.set && typeof body.set === "object" && !Array.isArray(body.set) ? (body.set as Record<string, unknown>) : null;
+    const keys = set ? Object.keys(set) : [];
+    if (!set || !keys.length || keys.some((k) => k !== LOCK_KEY && k !== ORDER_KEY)) return c.json({ error: "bad_request", reason: `set ${LOCK_KEY} and/or ${ORDER_KEY}` }, 400);
+    if (LOCK_KEY in set && typeof set[LOCK_KEY] !== "boolean") return c.json({ error: "bad_request" }, 400);
+    if (ORDER_KEY in set && (typeof set[ORDER_KEY] !== "number" || !Number.isFinite(set[ORDER_KEY] as number))) return c.json({ error: "bad_request" }, 400);
+    const entry = entryFor(c, actor);
+    let note: Note;
+    try {
+      note = await vaultClient(entry.id).getNote(c.req.param("id"));
+    } catch (e) {
+      return vaultErr(c, e);
+    }
+    if (!canView(actor, noteRef(note))) return c.json({ error: "forbidden" }, 403);
+    if (!canOrganize(actor, noteRef(note))) return c.json({ error: "forbidden", reason: "Changing this needs organize access to the page." }, 403);
+    if (typeof body!.if_updated_at !== "string") return c.json({ error: "precondition_required" }, 428);
+    try {
+      const updated = await casWrite(entry, note.id, null, body!.if_updated_at as string, { metadata: set }, true);
+      wrote();
+      if (LOCK_KEY in set) {
+        const collab = await import("./collab").catch(() => null);
+        collab?.setNoteLocked(entry.id, note.id, set[LOCK_KEY] === true);
+      }
+      return c.json({ ok: true, id: updated.id, updatedAt: updated.updatedAt, metadata: { [LOCK_KEY]: updated.metadata?.[LOCK_KEY] ?? null, [ORDER_KEY]: updated.metadata?.[ORDER_KEY] ?? null } });
+    } catch (e) {
+      return vaultErr(c, e);
+    }
+  });
+
 
   // ── trash ─────────────────────────────────────────────────────────────────
   r.post("/notes/:id/trash", async (c) => {
@@ -302,18 +489,17 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     }
     if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
     if (isTrashed(root)) return c.json({ ok: true, rootId: root.id, trashed: [], already: true });
-    let rows: TreeRow[];
+    let group: Note[];
     try {
-      rows = (await ensureTree(entry)).rows();
+      group = root.path ? (await freshSubtree(entry, root.path)).filter((n) => !isTrashed(n)) : [];
     } catch {
       return c.json({ error: "vault_unreachable" }, 502);
     }
-    const group = groupRows(rows, root, "trash");
     const refusal = checkGroup(actor, root, group, canDelete);
     if (refusal) return c.json(refusal.body, refusal.status);
     const at = new Date().toISOString();
     const by = actor.email;
-    const outcome = await exclusive(entry.id, async () => {
+    const outcome = await exclusive(entry.id, [root.path ?? root.id], async () => {
       const done: string[] = [];
       const items = [{ id: root.id, path: root.path, stamp: (typeof body.if_updated_at === "string" ? body.if_updated_at : root.updatedAt) as string | null }, ...group.map((g) => ({ id: g.id, path: g.path, stamp: g.updatedAt }))];
       for (const it of items) {
@@ -322,6 +508,8 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
             metadata: { [TRASH_META.at]: at, [TRASH_META.by]: by, [TRASH_META.root]: root.id, [TRASH_META.path]: it.path },
             tags: { add: [TRASH_TAG] },
           });
+          // The ledger is the ONLY thing the purge worker trusts (review M1).
+          ledgerPut(entry.id, it.id, root.id, at, by);
           done.push(it.id);
         } catch (e) {
           return { done, failed: { id: it.id, reason: failReason(e) } };
@@ -369,8 +557,12 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         canRestore: canDelete(actor, rowRef(x)),
         canDelete: canDelete(actor, rowRef(x)),
       }));
+    // Gardener view (admins): tagged as trashed but not trashed through Prism — hidden
+    // everywhere, never auto-purged; restore or delete them deliberately.
+    const tracked = new Set(trashLedger(entry.id).map((l) => l.note_id));
+    const untracked = admin ? visible.filter((x) => !tracked.has(x.id)).slice(0, 200).map((x) => ({ id: x.id, path: x.path, title: pageTitle(x.path) })) : undefined;
     c.header("Cache-Control", "private, no-store");
-    return c.json({ items, total: items.length, retentionDays: retentionDays(), autoPurge: purgeEnabled() });
+    return c.json({ items, total: items.length, retentionDays: retentionDays(), autoPurge: purgeEnabled(), ...(untracked ? { untracked } : {}) });
   });
 
   r.post("/trash/:id/restore", async (c) => {
@@ -385,21 +577,20 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     }
     if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
     if (!isTrashed(root)) return c.json({ ok: true, restored: [], already: true });
-    let rows: TreeRow[];
+    let group: Note[];
     try {
-      rows = (await ensureTree(entry)).rows();
+      group = await trashedGroup(entry, root);
     } catch {
       return c.json({ error: "vault_unreachable" }, 502);
     }
-    const group = groupRows(rows, root, "trashed");
-    const blocked = [noteRef(root), ...group.map(rowRef)].filter((x) => !canDelete(actor, x)).length;
-    if (blocked) return c.json({ error: "forbidden", reason: "You can’t restore every page in this group.", blocked }, 403);
+    if ([noteRef(root), ...group.map(noteRef)].some((x) => !canDelete(actor, x))) return c.json({ error: "forbidden", reason: "You can’t restore every page in this group." }, 403);
     const clear = { [TRASH_META.at]: null, [TRASH_META.by]: null, [TRASH_META.root]: null, [TRASH_META.path]: null };
-    const outcome = await exclusive(entry.id, async () => {
+    const outcome = await exclusive(entry.id, [root.path ?? root.id], async () => {
       const done: string[] = [];
       for (const it of [{ id: root.id, path: root.path, stamp: root.updatedAt }, ...group.map((g) => ({ id: g.id, path: g.path, stamp: g.updatedAt }))]) {
         try {
           await casWrite(entry, it.id, it.path, it.stamp, { metadata: clear, tags: { remove: [TRASH_TAG] } });
+          ledgerDelete(entry.id, it.id);
           done.push(it.id);
         } catch (e) {
           return { done, failed: { id: it.id, reason: failReason(e) } };
@@ -426,16 +617,14 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     if (!canView(actor, noteRef(root))) return c.json({ error: "forbidden" }, 403);
     // Two deliberate steps: only something already in the Trash can be deleted for good.
     if (!isTrashed(root)) return c.json({ error: "not_in_trash", reason: "Move the page to Trash first." }, 409);
-    let rows: TreeRow[];
+    let group: Note[];
     try {
-      rows = (await ensureTree(entry)).rows();
+      group = await trashedGroup(entry, root);
     } catch {
       return c.json({ error: "vault_unreachable" }, 502);
     }
-    const group = groupRows(rows, root, "trashed");
-    const blocked = [noteRef(root), ...group.map(rowRef)].filter((x) => !canDelete(actor, x)).length;
-    if (blocked) return c.json({ error: "forbidden", reason: "You can’t delete every page in this group.", blocked }, 403);
-    const outcome = await exclusive(entry.id, async () => {
+    if ([noteRef(root), ...group.map(noteRef)].some((x) => !canDelete(actor, x))) return c.json({ error: "forbidden", reason: "You can’t delete every page in this group." }, 403);
+    const outcome = await exclusive(entry.id, [root.path ?? root.id], async () => {
       const done: string[] = [];
       // Deepest first, so a failure never leaves a child without its page.
       const order = [...group].sort((a, b) => (b.path ?? "").split("/").length - (a.path ?? "").split("/").length).map((g) => g.id);
@@ -443,10 +632,12 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
         try {
           await vaultClient(entry.id).deleteNote(id);
           treeRemoveNote(entry, id);
+          ledgerDelete(entry.id, id);
           done.push(id);
         } catch (e) {
           if (e instanceof VaultError && e.status === 404) {
             treeRemoveNote(entry, id);
+            ledgerDelete(entry.id, id);
             done.push(id);
             continue;
           }
@@ -470,11 +661,11 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     return servePreferences(c, actor, entry, stored.preferences, stored.revision);
   });
 
-  r.put("/me/preferences", async (c) => {
+  // Byte cap enforced while the body streams, before anything is parsed (review M4).
+  r.put("/me/preferences", bodyLimit({ maxSize: PREFERENCE_LIMITS.bytes, onError: (c) => c.json({ error: "too_large", limit: PREFERENCE_LIMITS.bytes }, 413) }), async (c) => {
     const actor = resolveActor(c);
     if (actor.kind !== "user") return c.json({ error: "unauthorized" }, 401);
     const text = await c.req.text();
-    if (text.length > PREFERENCE_LIMITS.bytes) return c.json({ error: "too_large", limit: PREFERENCE_LIMITS.bytes }, 413);
     let body: { preferences?: unknown; ifRevision?: unknown };
     try {
       body = JSON.parse(text);
@@ -486,7 +677,19 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
     }
     if (body.ifRevision !== undefined && !Number.isSafeInteger(body.ifRevision)) return c.json({ error: "bad_request", reason: "ifRevision must be an integer" }, 400);
     const entry = entryFor(c, actor);
-    const next = sanitizePreferences(body.preferences);
+    // The caller only ever saw the ids they can view NOW; ids stored earlier that are
+    // hidden from them right now (access removed, page trashed) are kept, not erased
+    // by this PUT (review M4) — appended after the caller's own order.
+    let visibleNow: (id: string) => boolean;
+    try {
+      visibleNow = await viewableIds(actor, entry);
+    } catch {
+      return c.json({ error: "vault_unreachable" }, 503);
+    }
+    const stored = readPreferences(actor.email, entry.id).preferences;
+    const sent = sanitizePreferences(body.preferences);
+    const keep = (mine: string[], before: string[]) => [...mine, ...before.filter((id) => !visibleNow(id) && !mine.includes(id))];
+    const next = sanitizePreferences({ ...sent, favorites: keep(sent.favorites, stored.favorites), recents: keep(sent.recents, stored.recents) });
     const result = writePreferences(actor.email, entry.id, next, body.ifRevision as number | undefined);
     if (!result.ok) return c.json({ error: "conflict", revision: result.revision }, 409);
     return servePreferences(c, actor, entry, next, result.revision);
@@ -509,6 +712,81 @@ db.exec(`
     PRIMARY KEY (email, vault_id)
   );
 `);
+
+// Trash ledger (review M1): one row per note trashed THROUGH the trash route. The
+// purge worker deletes only ledger rows whose note still carries the same trash
+// stamp; a note tagged trashed any other way is hidden, never auto-deleted.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS page_trash_ledger (
+    vault_id TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    root_id TEXT NOT NULL,
+    trashed_at TEXT NOT NULL,
+    trashed_by TEXT NOT NULL,
+    PRIMARY KEY (vault_id, note_id)
+  );
+`);
+// Move journal (review M5): a partial subtree move is resumable (by id + CAS) and visible.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS page_moves (
+    id TEXT PRIMARY KEY,
+    vault_id TEXT NOT NULL,
+    root_id TEXT NOT NULL,
+    from_path TEXT NOT NULL,
+    to_path TEXT NOT NULL,
+    status TEXT NOT NULL,
+    moved INTEGER NOT NULL DEFAULT 0,
+    remaining INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+
+export interface TrashLedgerRow { vault_id: string; note_id: string; root_id: string; trashed_at: string; trashed_by: string }
+export function trashLedger(vaultId?: string): TrashLedgerRow[] {
+  return (vaultId
+    ? db.prepare("SELECT * FROM page_trash_ledger WHERE vault_id = ? ORDER BY trashed_at, note_id").all(vaultId)
+    : db.prepare("SELECT * FROM page_trash_ledger ORDER BY trashed_at, note_id").all()) as TrashLedgerRow[];
+}
+function ledgerPut(vaultId: string, noteId: string, rootId: string, at: string, by: string): void {
+  db.prepare("INSERT OR REPLACE INTO page_trash_ledger (vault_id, note_id, root_id, trashed_at, trashed_by) VALUES (?, ?, ?, ?, ?)").run(vaultId, noteId, rootId, at, by);
+}
+function ledgerDelete(vaultId: string, noteId: string): void {
+  db.prepare("DELETE FROM page_trash_ledger WHERE vault_id = ? AND note_id = ?").run(vaultId, noteId);
+}
+
+interface MoveRow { id: string; vault_id: string; root_id: string; from_path: string; to_path: string; status: string; moved: number; remaining: number; created_by: string }
+function getMove(id: string): MoveRow | null {
+  return (db.prepare("SELECT * FROM page_moves WHERE id = ?").get(id) as MoveRow | undefined) ?? null;
+}
+function recordMove(m: MoveRow): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO page_moves (id, vault_id, root_id, from_path, to_path, status, moved, remaining, created_by, created_at, updated_at)
+     VALUES (@id, @vault_id, @root_id, @from_path, @to_path, @status, @moved, @remaining, @created_by, @now, @now)
+     ON CONFLICT(id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`,
+  ).run({ ...m, now });
+}
+function finishMove(id: string, status: "done" | "partial" | "failed", moved: number, remaining: number): void {
+  db.prepare("UPDATE page_moves SET status = ?, moved = moved + ?, remaining = ?, updated_at = ? WHERE id = ?").run(status, moved, remaining, Date.now(), id);
+}
+
+/** The notes trashed together with `root` (fresh: one lean listing of trashed notes + the ledger). */
+async function trashedGroup(entry: VaultEntry, root: Note): Promise<Note[]> {
+  const trashed = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [...TREE_META_KEYS] });
+  const ledger = new Set(trashLedger(entry.id).filter((l) => l.root_id === root.id).map((l) => l.note_id));
+  return trashed.filter((n) => n.id !== root.id && isTrashed(n) && (n.metadata?.[TRASH_META.root] === root.id || ledger.has(n.id)));
+}
+
+/** Which ids the actor can view right now (exists, not trashed, view cap) — from the tree. */
+async function viewableIds(actor: Actor, entry: VaultEntry): Promise<(id: string) => boolean> {
+  const byId = new Map((await ensureTree(entry)).rows().map((x) => [x.id, x]));
+  return (id) => {
+    const row = byId.get(id);
+    return !!row && !row.tags.includes(TRASH_TAG) && canView(actor, rowRef(row));
+  };
+}
 
 function readPreferences(email: string, vaultId: string): { preferences: PagePreferences; revision: number } {
   const row = db.prepare("SELECT data, revision FROM page_preferences WHERE email = ? AND vault_id = ?").get(email.toLowerCase(), vaultId) as { data: string; revision: number } | undefined;
@@ -560,7 +838,7 @@ async function servePreferences(c: Context, actor: Actor, entry: VaultEntry, pre
 
 /** Test seam: wipe stored preferences. */
 export function resetPagesForTests(): void {
-  db.exec("DELETE FROM page_preferences;");
+  db.exec("DELETE FROM page_preferences; DELETE FROM page_trash_ledger; DELETE FROM page_moves;");
   busy.clear();
 }
 
@@ -584,30 +862,44 @@ export async function runTrashPurgeOnce(now = Date.now()): Promise<{ purged: num
   if (!purgeEnabled()) return out;
   const cutoff = now - retentionDays() * 86_400_000;
   let budget = Number(process.env.TRASH_PURGE_MAX_PER_PASS ?? 200);
-  for (const entry of getVaultRegistry()) {
+  // ONLY ledger entries (review M1): a note tagged trashed outside the trash route is
+  // hidden but never auto-deleted. Each candidate is re-read and must still carry the
+  // SAME trash stamp, must not be protected, and must still be tagged.
+  for (const row of trashLedger()) {
     if (budget <= 0) break;
-    let notes: Note[];
-    try {
-      notes = await vaultClient(entry.id).listNotes({ tags: [TRASH_TAG], includeMetadata: [TRASH_META.at] });
-    } catch (e) {
-      console.warn(`[trash] vault=${entry.id} list failed: ${(e as Error).message}`);
+    const at = Date.parse(row.trashed_at);
+    if (!Number.isFinite(at) || at > cutoff) {
+      out.skipped++;
       continue;
     }
-    for (const n of notes) {
-      if (budget <= 0) break;
-      const at = Date.parse(String(n.metadata?.[TRASH_META.at] ?? ""));
-      if (!isTrashed(n) || !Number.isFinite(at) || at > cutoff) {
-        out.skipped++;
-        continue;
-      }
-      budget--;
-      try {
-        await vaultClient(entry.id).deleteNote(n.id);
-        treeRemoveNote(entry, n.id);
-        out.purged++;
-      } catch {
-        out.failed++;
-      }
+    const registered = getVaultRegistry().some((e) => e.id === row.vault_id);
+    if (!registered) {
+      out.skipped++;
+      continue;
+    }
+    const entry = resolveVaultEntry(row.vault_id);
+    let note: Note;
+    try {
+      note = await vaultClient(entry.id).getNote(row.note_id);
+    } catch (e) {
+      if (e instanceof VaultError && e.status === 404) ledgerDelete(row.vault_id, row.note_id);
+      else out.failed++;
+      continue;
+    }
+    if (note.id !== row.note_id || !isTrashed(note) || note.metadata?.[TRASH_META.at] !== row.trashed_at || protectionReason(note)) {
+      // Restored by hand, re-trashed differently, or a protected note: never purge on this row.
+      if (!isTrashed(note)) ledgerDelete(row.vault_id, row.note_id);
+      out.skipped++;
+      continue;
+    }
+    budget--;
+    try {
+      await vaultClient(entry.id).deleteNote(note.id);
+      treeRemoveNote(entry, note.id);
+      ledgerDelete(row.vault_id, row.note_id);
+      out.purged++;
+    } catch {
+      out.failed++;
     }
   }
   if (out.purged || out.failed) console.log(`[trash] purge: ${out.purged} deleted, ${out.failed} failed (older than ${retentionDays()} days)`);

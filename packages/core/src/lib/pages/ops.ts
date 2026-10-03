@@ -30,7 +30,7 @@ export async function movePage(client: VaultClient, id: string, request: MoveReq
   const reason = protectionReason(root);
   if (reason) throw new PagesRequestError(403, "protected", reason);
   const target = request.newPath ?? movedPath(root.path, request.newParentPath ?? "");
-  const from = request.fromPath && root.path === target ? request.fromPath : root.path;
+  const from = root.path;
   if (from === target) throw new PagesRequestError(400, "no_change", "The page is already there.");
   if (isUnder(target, from)) throw new PagesRequestError(400, "into_own_subtree", "A page can’t move inside itself.");
   if (isProtectedPath(target)) throw new PagesRequestError(403, "protected", "That location is kept in sync by an integration.");
@@ -47,7 +47,7 @@ export async function movePage(client: VaultClient, id: string, request: MoveReq
       moved.push({ id: m.id, from: m.from, to: m.to });
     } catch (e) {
       if (!moved.length) throw e;
-      return { ok: false, path: target, moved, partial: { failed: { id: m.id, from: m.from, to: m.to, reason: "failed" }, resume: { fromPath: from, newPath: target }, remaining: plan.length - moved.length } };
+      return { ok: false, path: target, moved, partial: { failed: { id: m.id, from: m.from, to: m.to, reason: "failed" }, resume: { moveId: "", newPath: target }, remaining: plan.length - moved.length } };
     }
   }
   return { ok: true, path: target, moved };
@@ -120,6 +120,16 @@ export async function deleteFromTrash(client: VaultClient, id: string): Promise<
   const group = [...trashedGroup(trashed, id).map((r) => r.id), id];
   for (const g of group) await client.deleteNote(g);
   return { deleted: group };
+}
+
+/** Lock / order: through the server's reconciling route when available, else a plain metadata write. */
+export async function setPageMeta(client: VaultClient, id: string, set: { prism_locked?: boolean; prism_order?: number }): Promise<void> {
+  const fresh = await client.getNote(id, { fresh: true });
+  if (client.setPageMeta) {
+    await client.setPageMeta(id, set, fresh.updatedAt ?? fresh.createdAt);
+    return;
+  }
+  await client.updateNote(id, { metadata: set, ...(fresh.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}) });
 }
 
 /** A human message for any page-operation failure. */

@@ -75,7 +75,7 @@ test("drag and drop reparents a page and reorders siblings", async ({ page }) =>
   const target = row(page, "A living workspace");
   const box = (await target.boundingBox())!;
   await row(page, "Plan").dragTo(target, { targetPosition: { x: 20, y: 2 } });
-  await expect.poll(async () => (await writes(page)).filter((w) => (w.metadata as any)?.prism_order !== undefined).length).toBeGreaterThan(0);
+  await expect.poll(async () => (await writes(page)).filter((w) => (w.set as any)?.prism_order !== undefined).length).toBeGreaterThan(0);
   const order = await nav(page).locator(".page-tree-open").allTextContents();
   expect(order.indexOf("Plan")).toBeLessThan(order.indexOf("A living workspace"));
   expect(box.height).toBeGreaterThan(0);
@@ -94,7 +94,7 @@ test("a partial move reports what moved and finishes on retry", async ({ page })
   expect(await notePath(page, "week1")).toBe("vault/Projects/Prism/Plan/Week 1");
   await alert.getByRole("button", { name: "Finish move" }).click();
   await expect.poll(() => notePath(page, "week1")).toBe("vault/Archive/Plan/Week 1");
-  expect((await writes(page)).filter((w) => w.move).at(-1)).toMatchObject({ fromPath: "vault/Projects/Prism/Plan", newPath: "vault/Archive/Plan" });
+  expect((await writes(page)).filter((w) => w.move).at(-1)).toMatchObject({ moveId: "move-1" });
 });
 
 test("Trash: delete moves to Trash with Undo; the Trash restores and deletes permanently", async ({ page }) => {
@@ -167,7 +167,7 @@ test("page ⋯ menu: favorite, duplicate, copy link, lock, export and history", 
   await expect(page.locator(".tiptap")).toHaveAttribute("contenteditable", "false");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
-  expect((await writes(page)).filter((w) => w.patch === "prism").map((w) => (w.metadata as any)?.prism_locked)).toEqual([true, false]);
+  expect((await writes(page)).filter((w) => w.meta === "prism").map((w) => (w.set as any)?.prism_locked)).toEqual([true, false]);
 
   await open();
   const download = page.waitForEvent("download");

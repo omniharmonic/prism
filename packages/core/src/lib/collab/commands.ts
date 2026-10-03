@@ -119,6 +119,7 @@ export type HumanCollabErrorCode =
   | "vault_mismatch" // 403 — the request's workspace is not the document's
   | "not_author" // 403 — delete-comment on someone else's thread
   | "not_found" // 404 — no such note id (a path or title is NOT an id)
+  | "locked" // 423 — the page is locked: suggestions paused (comments still allowed)
   | "stale_revision" // 409 — document or comments changed; draft must be re-anchored
   | "quote_changed" // 409 — the selected passage changed
   | "suggestion_overlap" // 409 — the passage already carries a suggestion

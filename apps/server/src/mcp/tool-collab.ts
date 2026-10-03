@@ -129,10 +129,12 @@ interface Target {
 }
 
 /** Gateway view gate first (uniform forbidden/not_found), then the explicit socket-level check. */
-async function target(ctx: ToolContext, id: string, need: Need): Promise<Target> {
+async function target(ctx: ToolContext, id: string, need: Need, contentChange = need === "edit"): Promise<Target> {
   const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`);
   const access = collabAccess(ctx.principal.actor, note);
   if (!atLeast(access.level, need)) throw new ToolError("forbidden", NEED_MESSAGE[need]);
+  // A locked page: comments stay open, content changes (cells, suggested edits) do not.
+  if (contentChange && note.metadata?.prism_locked === true) throw new ToolError("conflict", "this page is locked — unlock it before changing its content", { locked: true });
   const kind = noteKind({ path: note.path ?? null, tags: note.tags ?? null, metadata: note.metadata ?? null, content: note.content });
   return { note, kind, docName: docNameFor(ctx.principal.actor.vaultId, note.id), access };
 }
@@ -357,7 +359,7 @@ export const suggestEditTool = defineTool({
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   access: canWriteShared,
   async handler({ id, find, replace }, ctx) {
-    const t = await target(ctx, id, "suggest");
+    const t = await target(ctx, id, "suggest", true);
     requireDocument(t);
     const who = authorOf(ctx);
     let suggestionId: string | undefined;

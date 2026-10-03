@@ -58,11 +58,11 @@ export async function movePage(noteId: string, request: MoveRequest): Promise<Mo
   const body = {
     ...(request.newPath !== undefined ? { newPath: request.newPath } : { newParentPath: request.newParentPath ?? "" }),
     ...(request.ifUpdatedAt ? { if_updated_at: request.ifUpdatedAt } : {}),
-    ...(request.fromPath ? { fromPath: request.fromPath } : {}),
+    ...(request.moveId ? { moveId: request.moveId } : {}),
   };
   const { status, data } = await call<Record<string, unknown>>("POST", `/notes/${id(noteId)}/move`, body);
   if (status === 207) {
-    const resume = data.resume as { fromPath: string; newPath: string };
+    const resume = data.resume as { moveId: string; newPath: string };
     return {
       ok: false,
       path: resume.newPath,
@@ -71,6 +71,11 @@ export async function movePage(noteId: string, request: MoveRequest): Promise<Mo
     };
   }
   return { ok: true, path: String(data.path), moved: (data.moved as MoveResult["moved"]) ?? [] };
+}
+
+export async function setPageMeta(noteId: string, set: { prism_locked?: boolean; prism_order?: number }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }> {
+  const { data } = await call<{ updatedAt: string | null }>("POST", `/notes/${id(noteId)}/meta`, { set, if_updated_at: ifUpdatedAt });
+  return { updatedAt: data.updatedAt ?? null };
 }
 
 export async function trashPage(noteId: string): Promise<{ rootId: string; trashed: string[] }> {

@@ -55,6 +55,7 @@ const kept = JSON.parse(sessionStorage.getItem("fixture-prefs") ?? "null") as { 
 let prefs: PagePreferences = kept?.prefs ?? (params.has("prefs") ? sanitizePreferences(JSON.parse(params.get("prefs")!)) : EMPTY_PREFERENCES);
 let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
+const moves = new Map<string, { from: string; to: string }>();
 Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixturePrefs: () => ({ prefs, revision }) });
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -122,6 +123,15 @@ window.fetch = async (input, init) => {
     for (const n of group) notes.splice(notes.indexOf(n), 1);
     return json({ ok: true, deleted: group.map((n) => n.id) });
   }
+  const meta = path.match(/^\/api\/notes\/([^/]+)\/meta$/);
+  if (meta && method === "POST") {
+    const n = byId(decodeURIComponent(meta[1]!));
+    if (!n) return json({ error: "not_found" }, 404);
+    writes.push({ meta: n.id, ...body });
+    if (body.if_updated_at !== n.updatedAt) return json({ error: "conflict" }, 409);
+    patch(n, { metadata: body.set });
+    return json({ ok: true, id: n.id, updatedAt: n.updatedAt, metadata: body.set });
+  }
   const op = path.match(/^\/api\/notes\/([^/]+)\/(move|trash)$/);
   if (op) {
     const root = byId(decodeURIComponent(op[1]!));
@@ -135,10 +145,12 @@ window.fetch = async (input, init) => {
       for (const n of group) patch(n, { metadata: { [TRASH_META.at]: at, [TRASH_META.by]: "owner@example.test", [TRASH_META.root]: root.id, [TRASH_META.path]: n.path }, tags: { add: [TRASH_TAG] } });
       return json({ ok: true, rootId: root.id, trashed: group.map((n) => n.id) });
     }
-    const target = body.newPath !== undefined ? normalizePagePath(body.newPath) : movedPath(root.path!, body.newParentPath === "" ? "" : normalizePagePath(body.newParentPath) ?? "");
+    const journal = body.moveId ? moves.get(body.moveId) : undefined;
+    if (body.moveId && (!journal || body.if_updated_at !== root.updatedAt)) return json({ error: "conflict" }, 409);
+    const target = journal ? journal.to : body.newPath !== undefined ? normalizePagePath(body.newPath) : movedPath(root.path!, body.newParentPath === "" ? "" : normalizePagePath(body.newParentPath) ?? "");
     if (!target) return json({ error: "bad_request" }, 400);
-    const resuming = root.path === target && !!body.fromPath;
-    const from = resuming ? body.fromPath : root.path!;
+    const resuming = !!journal;
+    const from = journal ? journal.from : root.path!;
     if (reason || isProtectedPath(target)) return json({ error: "protected", reason: reason ?? "That location is kept in sync by an integration." }, 403);
     if (isUnder(target, from)) return json({ error: "into_own_subtree", reason: "A page can’t move inside itself." }, 400);
     if (!resuming && body.if_updated_at !== root.updatedAt) return json({ error: "conflict", reason: "This page changed since you opened it. Reload and try again." }, 409);
@@ -148,7 +160,11 @@ window.fetch = async (input, init) => {
     if (clash) return json({ error: "path_conflict", path: clash.to, reason: `A page already exists at ${clash.to}.` }, 409);
     const moved = [];
     for (const m of plan) {
-      if (failOnce.delete(m.id)) return json({ error: "partial_move", moved, failed: { ...m, reason: "vault_500" }, remaining: plan.length - moved.length, resume: { fromPath: from, newPath: target } }, 207);
+      if (failOnce.delete(m.id)) {
+        const moveId = `move-${moves.size + 1}`;
+        moves.set(moveId, { from, to: target });
+        return json({ error: "partial_move", moveId, moved, failed: { ...m, reason: "vault_500" }, remaining: plan.length - moved.length, resume: { moveId, newPath: target } }, 207);
+      }
       patch(byId(m.id)!, { path: m.to });
       moved.push({ id: m.id, from: m.from, to: m.to });
     }

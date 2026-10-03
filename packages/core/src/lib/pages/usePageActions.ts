@@ -17,8 +17,12 @@ import { usePagesUI, type PageRef } from "./store";
 const HTMLISH = /^\s*<(p|h[1-6]|ul|ol|div|blockquote|pre|table|section|article|figure|hr)\b/i;
 
 /** The shareable in-app address of a page (a client route: `/page/<id>`). */
-export const pageLink = (id: string): string =>
-  `${typeof location !== "undefined" ? location.origin : ""}/page/${encodeURIComponent(id)}`;
+export const pageLink = (id: string): string => {
+  // Prism Client: the app origin is the Tauri shell; a shareable link names the SERVER.
+  const host = typeof window !== "undefined" ? (window as unknown as { __PRISM_HOST__?: { apiOrigin?: string } }).__PRISM_HOST__ : undefined;
+  const origin = host?.apiOrigin && /^https?:\/\//.test(host.apiOrigin) ? host.apiOrigin.replace(/\/+$/, "") : typeof location !== "undefined" ? location.origin : "";
+  return `${origin}/page/${encodeURIComponent(id)}`;
+};
 
 function download(name: string, body: string, type: string) {
   const url = URL.createObjectURL(new Blob([body], { type }));
@@ -62,20 +66,21 @@ export function usePageActions() {
     const resume = result.partial!.resume;
     toast(`Part of “${page.title}” moved. ${result.partial!.remaining} page${result.partial!.remaining === 1 ? "" : "s"} still need moving.`, {
       tone: "error",
-      action: { label: "Finish move", run: () => void move(page, { newPath: resume.newPath, fromPath: resume.fromPath }) },
+      action: { label: "Finish move", run: () => void move(page, { moveId: resume.moveId }) },
     });
     return "partial";
   };
 
-  const move = async (page: PageRef, to: { parent?: string; newPath?: string; fromPath?: string }): Promise<"moved" | "partial" | false> => {
+  const move = async (page: PageRef, to: { parent?: string; newPath?: string; moveId?: string }): Promise<"moved" | "partial" | false> => {
     try {
       // The page's own write is CAS against what the server has NOW (a stale tab
       // must not move a page someone just renamed); descendants are CAS server-side.
-      const fresh = to.fromPath ? null : await client.getNote(page.id, { fresh: true });
+      // Resume too: the server binds it to the page as it stands NOW (CAS).
+      const fresh = await client.getNote(page.id, { fresh: true });
       const result = await ops.movePage(client, page.id, {
         ...(to.newPath !== undefined ? { newPath: to.newPath } : { newParentPath: to.parent ?? "" }),
         ...(fresh?.updatedAt ? { ifUpdatedAt: fresh.updatedAt } : {}),
-        ...(to.fromPath ? { fromPath: to.fromPath } : {}),
+        ...(to.moveId ? { moveId: to.moveId } : {}),
       });
       if (result.ok) {
         const leaf = result.path.split("/").pop();
@@ -123,7 +128,7 @@ export function usePageActions() {
     /** Persist a sidebar position (fractional order key) for one page. */
     reorder: async (page: PageRef, order: number) => {
       try {
-        await client.updateNote(page.id, { metadata: { [ORDER_KEY]: order } });
+        await ops.setPageMeta(client, page.id, { [ORDER_KEY]: order });
         await refresh();
       } catch (e) {
         fail(e, "Couldn’t save the new order.");
@@ -146,7 +151,7 @@ export function usePageActions() {
     toggleLock: async (note: Pick<Note, "id" | "metadata" | "path">) => {
       const locked = isLocked(note);
       try {
-        await client.updateNote(note.id, { metadata: { [LOCK_KEY]: !locked } });
+        await ops.setPageMeta(client, note.id, { [LOCK_KEY]: !locked });
         await queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) });
         toast(locked ? "Page unlocked — anyone with edit access can change it." : "Page locked — editing is off until it’s unlocked.");
       } catch (e) {

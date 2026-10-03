@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { resetTreeForTests } from "../src/tree";
 import { runTrashPurgeOnce, resetPagesForTests } from "../src/pages";
+import { db } from "../src/db";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 import { TRASH_TAG } from "@prism/core/pages";
 
@@ -126,15 +127,15 @@ test("a stale page is refused whole; a later descendant failure is partial and r
   }) as typeof fetch;
   const partial = await post("/notes/p/move", { newParentPath: "vault/Archive", if_updated_at: fv.notes.get("p")!.updatedAt }, cookie);
   assert.equal(partial.status, 207);
-  const body = (await partial.json()) as { error: string; moved: Array<{ id: string }>; failed: { id: string }; resume: { fromPath: string; newPath: string } };
+  const body = (await partial.json()) as { error: string; moveId: string; moved: Array<{ id: string }>; failed: { id: string }; resume: { moveId: string; newPath: string } };
   assert.equal(body.error, "partial_move");
   assert.deepEqual(body.moved.map((m) => m.id), ["p", "c1"]);
   assert.equal(body.failed.id, "c2");
-  assert.deepEqual(body.resume, { fromPath: "vault/Projects/Prism", newPath: "vault/Archive/Prism" });
+  assert.deepEqual(body.resume, { moveId: body.moveId, newPath: "vault/Archive/Prism" });
   assert.equal(path("c2"), "vault/Projects/Prism/Plan/Week 1");
 
   failing = false;
-  const resumed = await post("/notes/p/move", { newPath: body.resume.newPath, fromPath: body.resume.fromPath }, cookie);
+  const resumed = await post("/notes/p/move", { moveId: body.moveId, if_updated_at: fv.notes.get("p")!.updatedAt }, cookie);
   assert.equal(resumed.status, 200);
   assert.equal(path("c2"), "vault/Archive/Prism/Plan/Week 1");
   globalThis.fetch = inner;
@@ -153,7 +154,7 @@ test("non-owners need organize on every moved note; links and anon cannot move",
   const blocked = await post("/notes/p/move", { newParentPath: "vault/Archive", if_updated_at: fv.notes.get("p")!.updatedAt }, as("org@test.local"));
   assert.equal(blocked.status, 403);
   const b = (await blocked.json()) as Record<string, unknown>;
-  assert.equal(b.blocked, 1, "a count, never the hidden note's id");
+  assert.ok(!("blocked" in b), "no count of notes they can't see");
   assert.ok(!JSON.stringify(b).includes("hidden") && !JSON.stringify(b).includes("Secret"));
 
   const cap = makeCapability("tag", "team", "own");
@@ -238,6 +239,8 @@ test("auto-purge is off by default and deletes only pages past the retention win
   const fresh = new Date(Date.now() - 2 * 86_400_000).toISOString();
   fv.put({ id: "old", path: "Old", content: "x", tags: [TRASH_TAG], metadata: { prism_trashed_at: old } });
   fv.put({ id: "new", path: "New", content: "x", tags: [TRASH_TAG], metadata: { prism_trashed_at: fresh } });
+  // Only notes trashed through the trash route (the ledger) are ever purged.
+  for (const [id, at] of [["old", old], ["new", fresh], ["live", old]] as const) db.prepare("INSERT INTO page_trash_ledger (vault_id, note_id, root_id, trashed_at, trashed_by) VALUES ('primary', ?, ?, ?, 'x')").run(id, id, at);
   fv.put({ id: "nostamp", path: "NoStamp", content: "x", tags: [TRASH_TAG], metadata: {} });
   fv.put({ id: "live", path: "Live", content: "x", tags: [], metadata: { prism_trashed_at: old } });
   assert.deepEqual(await runTrashPurgeOnce(), { purged: 0, failed: 0, skipped: 0 });

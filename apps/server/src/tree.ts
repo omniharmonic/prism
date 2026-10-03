@@ -29,7 +29,7 @@ import { createHash } from "node:crypto";
 import type { VaultEntry } from "./config";
 import { vaultClient } from "./parachute";
 import type { NoteRef } from "./permissions";
-import { TRASH_TAG, TRASH_META, ORDER_KEY } from "@prism/core/pages";
+import { TRASH_TAG, TRASH_META, ORDER_KEY, LOCK_KEY } from "@prism/core/pages";
 
 /** Metadata keys the projection reads — the ONLY ones requested from the vault. */
 export const TREE_META_KEYS = [
@@ -43,6 +43,7 @@ export const TREE_META_KEYS = [
   TRASH_META.at,
   TRASH_META.by,
   TRASH_META.root,
+  LOCK_KEY,
 ] as const;
 
 /** What the client receives. `type`/`prismType` are the two metadata keys the tree's
@@ -66,6 +67,8 @@ export interface TreeRow extends TreeEntry {
   trashedAt?: string;
   trashedBy?: string;
   trashedRoot?: string;
+  /** `metadata.prism_locked` (internal: lock-bypass audit on the owner passthrough). */
+  locked?: boolean;
 }
 
 /** The subset of the WebSocket API the projection uses (injectable for tests). */
@@ -182,6 +185,7 @@ function rowFromNote(n: unknown): TreeRow | null {
   if (typeof m[TRASH_META.at] === "string") row.trashedAt = m[TRASH_META.at] as string;
   if (typeof m[TRASH_META.by] === "string") row.trashedBy = m[TRASH_META.by] as string;
   if (typeof m[TRASH_META.root] === "string") row.trashedRoot = m[TRASH_META.root] as string;
+  if (m[LOCK_KEY] === true) row.locked = true;
   return row;
 }
 
@@ -556,4 +560,9 @@ export function resetTreeForTests(): void {
 export function treeStatus(vaultId: string): { loaded: boolean; wsLive: boolean; rows: number; version: number } | null {
   const st = states.get(vaultId);
   return st ? { loaded: st.loaded, wsLive: st.wsLive, rows: st.rows.size, version: st.version } : null;
+}
+
+/** Is this note locked, per the projection (best effort; false when unknown). */
+export function treeRowLocked(entry: VaultEntry, id: string): boolean {
+  return states.get(entry.id)?.rows.get(id)?.locked === true;
 }
