@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
@@ -18,6 +19,35 @@ export function useMoveAccessPreview(noteId: string | null, parentPath: string |
     staleTime: 10_000,
     retry: false,
   });
+}
+
+/**
+ * Ask once, before a move: does it change who can open the page? Resolves the
+ * sentence to confirm, or null (no change, unsupported shell, or the read failed —
+ * the server's own move rules still apply). Shares the notice's query cache.
+ */
+export function useMoveAccessCheck(): (noteId: string, parentPath: string) => Promise<string | null> {
+  const client = useVaultClient();
+  const queries = useQueryClient();
+  const audience = useAgentChatStore((s) => s.scope);
+  const scope = client.scope?.() ?? audience;
+  return useCallback(
+    async (noteId, parentPath) => {
+      if (!client.getAccessPreview) return null;
+      try {
+        const preview = await queries.fetchQuery({
+          queryKey: ["move-access-preview", scope, noteId, parentPath],
+          queryFn: () => client.getAccessPreview!(noteId, parentPath),
+          staleTime: 10_000,
+          retry: false,
+        });
+        return moveAccessSummary(preview);
+      } catch {
+        return null;
+      }
+    },
+    [client, queries, scope],
+  );
 }
 
 /** The sentence for a preview (pure). */

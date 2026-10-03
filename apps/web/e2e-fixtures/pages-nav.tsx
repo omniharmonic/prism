@@ -6,7 +6,8 @@
  *
  * Query flags: ?open=<id> initial page · ?prefs=<json> server preferences ·
  * ?legacy (no preferences route → per-device shortcuts) · ?fail-move=<id> (that
- * note's path writes fail once, for partial-move recovery).
+ * note's path writes fail once, for partial-move recovery) · ?shared (pages shared
+ * with the viewer + a move that changes access) · ?guest[=empty] (a guest account).
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -193,6 +194,30 @@ window.fetch = async (input, init) => {
     return json(note);
   }
   if (path.match(/^\/api\/notes\/[^/]+\/versions$/)) return json({ versions: [], total: 0 });
+  // Wave 2D reads (sharing): ?shared = somebody shared "Archive" with sub-pages and
+  // "Weekly review" alone; moving a page INTO Archive then changes who can open it.
+  if (path === "/api/shared-with-me") {
+    if (!params.has("shared") && !params.has("guest")) return json({ items: [], tags: [] });
+    if (params.get("guest") === "empty") return json({ items: [], tags: [] });
+    return json({ items: [
+      { id: "archive", title: "Archive", path: "vault/Archive", scope: "page", level: "edit", sharedAt: clock, sharedBy: { name: "Ada Park" } },
+      { id: "weekly", title: "Weekly review", path: "vault/Journal/Weekly review", scope: "note", level: "view", sharedAt: clock, sharedBy: { name: "Ada Park" } },
+    ], tags: [] });
+  }
+  const activity = path.match(/^\/api\/notes\/([^/]+)\/activity$/);
+  if (activity) {
+    const n = byId(decodeURIComponent(activity[1]!));
+    if (!n) return json({ error: "not_found" }, 404);
+    return json({ comments: [], shares: [], sharesVisible: false, lastEditor: { kind: "person", name: "Ada Park", self: false }, createdAt: n.createdAt, updatedAt: n.updatedAt });
+  }
+  const preview = path.match(/^\/api\/notes\/([^/]+)\/access-preview$/);
+  if (preview) {
+    if (!params.has("shared") || url.searchParams.get("parent") !== "vault/Archive") return json({ willChange: false });
+    return json({ willChange: true, gaining: 2, changes: [
+      { email: null, name: "Ada Park", avatar: null, from: null, to: "edit" },
+      { email: null, name: "Grace Lin", avatar: null, from: null, to: "view" },
+    ] });
+  }
   if (path === "/api/tags") return json([{ name: "page", count: 7 }, { name: "template", count: 3 }]);
   if (path === "/api/vault" || path === "/api/vault/info") return json({ name: "Personal vault", description: "", stats: { totalNotes: notes.length, totalTags: 2, totalLinks: 0 } });
   if (path === "/api/vault/stats" || path === "/api/stats") return json({ totalNotes: notes.length, totalTags: 2, totalLinks: 0 });
@@ -205,7 +230,7 @@ await fetchMe();
 useUIStore.setState({ contextPanelOpen: false, sidebarWidth: 260, sidebarOpen: true });
 const open = byId(params.get("open") ?? "living");
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "" }}>
+  <React.StrictMode><PlatformProvider value="web"><VaultClientProvider client={httpVaultClient}><CollabSharingProvider value={{ createShareLink: async () => "", ...(params.has("guest") ? { getViewer: async () => ({ email: "guest@example.test", role: "guest" as const, isServerOwner: false, vaultId: "primary" }) } : {}) }}>
     <App skipOnboarding initialTab={open ? { id: open.id, title: pageTitle(open.path), type: "document" } : undefined} />
   </CollabSharingProvider></VaultClientProvider></PlatformProvider></React.StrictMode>,
 );

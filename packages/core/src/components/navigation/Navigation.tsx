@@ -23,6 +23,7 @@ import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
 import { SyncStateBadge } from "../layout/SyncStateBadge";
 import { useQuickCreatePage } from "../../lib/pages/quickCreate";
 import { useUnreadCount } from "../../lib/notifications/hooks";
+import { SharedWithMe, useViewerIsGuest } from "../sharing/SharedWithMe";
 
 export function Navigation() {
   const preferences = useNavigationPreferences();
@@ -53,6 +54,9 @@ export function Navigation() {
   const agentChat = useAgentAvailable();
   // Notifications inbox (wave 2A): shown only when this server has the feature.
   const inbox = useUnreadCount();
+  // NP-SB-09: a guest (no workspace role) sees what was shared with them and none
+  // of the workspace's own sections.
+  const guest = useViewerIsGuest();
 
   const handleOpenMessages = () => {
     openTab("vault-messages", "Messages", "vault-messages" as ContentType);
@@ -164,7 +168,7 @@ export function Navigation() {
                 ariaLabel={inbox.count > 0 ? `Inbox, ${inbox.count} unread` : "Inbox"}
                 trailing={<span className="flex items-center" style={{ paddingRight: 8 }}><InboxBadge /></span>} />
             )}
-            <NavItem
+            {!guest && <NavItem
               icon={<MessageSquare size={15} />}
               label="Messages"
               active={openTabs.find((t) => t.id === activeTabId)?.noteId === "vault-messages"}
@@ -176,9 +180,9 @@ export function Navigation() {
                   icon={<PenSquare size={13} />}
                 />
               }
-            />
-            {agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Agent conversations" onClick={() => openAgentChat()} />}
-            {toolRows("pinned")}
+            />}
+            {!guest && agentChat && <NavItem icon={<Sparkles size={15} />} active={openTabs.find((t) => t.id === activeTabId)?.noteId === "agent-chat"} label="Agent conversations" onClick={() => openAgentChat()} />}
+            {!guest && toolRows("pinned")}
           </nav>
 
           {shortcuts.recoverable && <div className="mx-3 my-3 rounded-lg border border-[var(--border-subtle)] p-3 text-xs text-[var(--text-secondary)]">
@@ -223,14 +227,16 @@ export function Navigation() {
             </NavSection>
           )}
 
+          <SharedWithMe guest={guest} activeId={activeNoteId} onOpen={(item) => openTab(item.id, item.title, "document")} />
+
           {/* Projects / vault notes */}
-          <NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} {...sectionProps("pages", true)} action={<div className="flex items-center"><NavActionButton title="New page from template" icon={<LayoutTemplate size={14} />} onClick={() => usePagesUI.getState().openCreate({ template: true })} /><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
+          {!guest && <><NavSection label={sidebarLabel === "Projects" ? "Pages" : sidebarLabel} {...sectionProps("pages", true)} action={<div className="flex items-center"><NavActionButton title="New page from template" icon={<LayoutTemplate size={14} />} onClick={() => usePagesUI.getState().openCreate({ template: true })} /><NavActionButton title="New folder" icon={<FolderPlus size={14} />} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }} /><NavActionButton title="Collapse all" icon={<ChevronsDownUp size={14} />} onClick={collapseNav} /><RefreshNavButton /></div>}>
             <ProjectTree />
           </NavSection>
           <NavSection label="Tools" action={<NavActionButton title="Customize sidebar" icon={<Settings2 size={14} />} onClick={() => setPreferencesOpen(true)} />}>
             {toolRows("tools")}
             <button type="button" className="focus-ring min-h-9 w-full rounded-md px-3 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--glass-hover)]" onClick={() => setPreferencesOpen(true)}>Customize sidebar…</button>
-          </NavSection>
+          </NavSection></>}
         </div>
       )}
 
@@ -285,7 +291,7 @@ export function Navigation() {
         {newFolderOpen && folderError && <p role="alert" className="text-xs text-[var(--color-danger)]">{folderError}</p>}
         {/* NP-SB-13: one action → an "Untitled" page with its title focused. The
             caret keeps the type/location chooser one click away. */}
-        <div className="workspace-new-page-row">
+        {!guest && <div className="workspace-new-page-row">
           <button type="button" className="workspace-new-page focus-ring" aria-label="New page" aria-busy={quickCreate.pending || undefined}
             onClick={event => { event.currentTarget.focus(); quickCreate.create(); }}>
             <Plus size={18} /><span>New page</span>
@@ -294,8 +300,8 @@ export function Navigation() {
             onClick={event => { event.currentTarget.focus(); setShowNewMenu(true); }}>
             <ChevronDown size={16} aria-hidden />
           </button>
-        </div>
-        <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />
+        </div>}
+        {!guest && <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />}
         {/* NP-SB-15: the one truthful sync state, in the sidebar footer. */}
         <SyncStateBadge variant="footer" />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />

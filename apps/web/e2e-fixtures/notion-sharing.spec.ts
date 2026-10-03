@@ -135,7 +135,7 @@ test.describe("against the real server", () => {
     expect((await read("/api/comments")).status).toBe(200);
     // Unshared pages are indistinguishable from missing ones.
     for (const id of ["secret", "rich"]) {
-      expect((await read(`/api/notes/${id}`)).status).toBe(403);
+      expect((await read(`/api/notes/${id}`)).status).toBe(404);
       expect((await read(`/api/comments?note=${id}`)).status).toBe(404);
       expect((await read(`/api/notes/${id}/activity`)).status).toBe(404);
     }

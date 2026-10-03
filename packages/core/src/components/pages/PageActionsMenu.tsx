@@ -30,6 +30,7 @@ import { isLocked, pageStyleOf, protectionReason } from "../../lib/pages/model";
 import { usePagesUI, type PageRef } from "../../lib/pages/store";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import type { Note } from "../../lib/types";
+import { PageInfo } from "../sharing/PageInfo";
 import "./pages.css";
 
 export interface PageMenuItem {
@@ -274,7 +275,13 @@ function PageActionsTrigger({ page, size = 16 }: { page: PageRef; size?: number 
       >
         <MoreHorizontal size={size} />
       </button>
-      {anchor && <PageMenuPopover label={`Actions for ${page.title}`} items={items} anchor={anchor} onClose={close} />}
+      {anchor && <PageMenuPopover label={`Actions for ${page.title}`} items={items} anchor={anchor} onClose={close} footer={<PageInfoFooter page={page} />} />}
     </>
   );
+}
+
+/** NP-PG-17: word count, created / last edited and who edited it, under the page's own ⋯ menu. */
+function PageInfoFooter({ page }: { page: PageRef }) {
+  const { data: note } = useNote(isVaultNoteId(page.id) ? page.id : null);
+  return note ? <PageInfo note={note} /> : null;
 }

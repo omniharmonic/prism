@@ -183,3 +183,146 @@ test("comments, replies and resolve go through commands for a suggest-only perso
   await page.getByRole("button", { name: /Resolved/ }).click();
   await expect(page.getByText("Is gamma right?")).toBeVisible();
 });
+
+// ── the merged editor (waves 2A/2B/2C/2E) gives a suggest-only person no raw-write path ──
+const WRITE_OK = /^\/api\/(collab\/[^/]+\/commands|notifications\/|me\/preferences|push\/)/;
+function watchWrites(page: Page): string[] {
+  const writes: string[] = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (r.method() === "GET" || r.method() === "HEAD" || !/^\/(api|acl)(\/|$)/.test(u.pathname) || WRITE_OK.test(u.pathname)) return;
+    writes.push(`${r.method()} ${u.pathname}`);
+  });
+  return writes;
+}
+const dropFile = (page: Page, type: string) =>
+  page.evaluate((type) => {
+    const target = document.querySelector(".tiptap")!;
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "drop.png", { type: "image/png" }));
+    const box = target.getBoundingClientRect();
+    target.dispatchEvent(new DragEvent(type === "paste" ? "dragover" : type, { bubbles: true, cancelable: true, dataTransfer: data, clientX: box.left + 20, clientY: box.top + 10 }));
+    if (type === "paste") target.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data }));
+  }, type);
+
+test("the merged editor offers a suggest-only person nothing that writes the document directly", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const writes = watchWrites(page);
+  await open(page, "sam", "plan");
+  const stored = (await server.note("plan"))!;
+  const before = await editor(page).innerText();
+
+  // Title, icon, cover (2B) and the property bar (2C) are display-only.
+  await expect(page.getByRole("heading", { name: /^Rename / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /cover/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /icon/i })).toHaveCount(0);
+  const props = page.getByRole("group", { name: "Page properties" });
+  // (Property values are written over REST with their own `edit` check; here: no editing controls.)
+  await expect(props.getByRole("button", { name: /add (a )?property/i })).toHaveCount(0);
+  await expect(props.locator("input:not([disabled]):not([type=hidden]), select:not([disabled]), [contenteditable=true]")).toHaveCount(0);
+
+  // `@` mentions and the `/` menu (2A, incl. inline database insert) need an editable body.
+  await editor(page).click();
+  for (const key of ["@", "/"]) {
+    await page.keyboard.type(key);
+    await page.waitForTimeout(150);
+    await expect(page.getByRole("listbox")).toHaveCount(0);
+  }
+
+  // Block handles (2E): hovering a block shows no gutter.
+  await editor(page).locator("p").first().hover();
+  await expect(page.getByRole("button", { name: "Insert block below" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /block actions/i })).toHaveCount(0);
+
+  // Find / replace (2E): Replace is never offered. (A read-only body takes no focus,
+  // so ⌘F does not even open the in-note bar there; if it does, it is find-only.)
+  await editor(page).click();
+  await page.keyboard.press("ControlOrMeta+f");
+  await page.keyboard.press("ControlOrMeta+Shift+h");
+  await page.waitForTimeout(200);
+  await expect(page.getByLabel("Replace with")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^(Show replace|Replace|Replace all)$/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // Files: a dropped or pasted image is neither uploaded nor inserted.
+  await dropFile(page, "drop");
+  await dropFile(page, "paste");
+  await expect(editor(page).locator("img, .prism-attachment")).toHaveCount(0);
+
+  // The suggestion path is still there, and nothing above wrote anything.
+  await selectWord(page, "gamma");
+  await expect(page.getByRole("button", { name: "Suggest an edit to the selection" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Bold selection" })).toHaveCount(0);
+  await page.waitForTimeout(2500); // past the server's store debounce
+  expect(await editor(page).innerText()).toBe(before);
+  expect(writes).toEqual([]);
+  const after = (await server.note("plan"))!;
+  expect(after.content).toBe(stored.content);
+  expect(after.metadata).toEqual(stored.metadata);
+});
+
+test("a suggest-only person gets no empty-page starters and no phone editing toolbar", async ({ browser }) => {
+  // Empty page: the starters (2E: templates, import, "Ask AI to draft") would write the body.
+  const desk = await browser.newContext();
+  const page = await desk.newPage();
+  const writes = watchWrites(page);
+  await connect(page, desk, server, "sam");
+  await page.goto("/e2e-fixtures/collab-route.html?target=blank");
+  await expect(page.getByText("Live · Suggesting")).toBeVisible();
+  await expect(editor(page)).toHaveAttribute("contenteditable", "false");
+  await expect(page.getByRole("group", { name: "Start this page" })).toHaveCount(0);
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+  await desk.close();
+
+  // Phone: a touch device shows the keyboard toolbar only for an editable body.
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const mobile = await phone.newPage();
+  const phoneWrites = watchWrites(mobile);
+  await connect(mobile, phone, server, "sam");
+  await mobile.goto("/e2e-fixtures/collab-route.html?target=plan");
+  await expect(mobile.getByText(/Suggesting/)).toBeVisible();
+  await editor(mobile).tap();
+  await expect(mobile.getByRole("toolbar", { name: "Editing toolbar" })).toHaveCount(0);
+  await expect(mobile.getByRole("button", { name: /block actions/i })).toHaveCount(0);
+  await expect(editor(mobile)).toHaveAttribute("contenteditable", "false");
+  await mobile.waitForTimeout(500);
+  expect([...writes, ...phoneWrites]).toEqual([]);
+  await phone.close();
+});
+
+test("in the workspace itself: Shared with me opens the page as a propose-for-review draft; nothing typed reaches the server", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const writes = watchWrites(page);
+  await connect(page, page.context(), server, "sam");
+  await page.goto("/e2e-fixtures/collab-route.html?app");
+  const shared = page.getByRole("region", { name: "Shared with me" });
+  await expect(shared.getByRole("button", { name: /Plan/ })).toBeVisible();
+  // A guest (no workspace role): none of the workspace's own sections.
+  await expect(page.getByRole("region", { name: "Pages", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New page", exact: true })).toHaveCount(0);
+  await shared.getByRole("button", { name: /Plan/ }).click();
+  await expect(editor(page)).toContainText("Alpha beta gamma");
+  // Inside the workspace a person without `edit` is routed AWAY from the live
+  // session (Canvas `reviewMode` = "propose", governance P4): the body is a LOCAL
+  // draft that is only ever sent as a proposal — never autosaved, never on the socket.
+  const sockets: string[] = [];
+  page.on("websocket", (ws) => sockets.push(ws.url()));
+  await editor(page).click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" RAW TYPING");
+  await expect(page.getByRole("heading", { name: /^Rename / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /cover/i })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Start this page" })).toHaveCount(0);
+  const actions = page.getByRole("button", { name: "Page actions", exact: true });
+  if (await actions.count()) {
+    await actions.click();
+    await expect(page.getByRole("menu").locator("dl.prism-page-info")).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
+  await page.waitForTimeout(3000); // past autosave and the server's store debounce
+  expect(writes).toEqual([]);
+  expect(sockets.filter((u) => u.includes("/collab"))).toEqual([]);
+  expect((await server.note("plan"))!.content).not.toContain("RAW");
+  await page.screenshot({ path: "/private/tmp/claude-501/-Users-benjaminlife-dev-prism/94600911-66b9-4b8d-b802-fc8f8fe9305f/scratchpad/w2-sharing/suggest-only-workspace.png" });
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});

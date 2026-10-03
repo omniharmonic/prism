@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Hash, Users } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
+import { useCollabSharing } from "../../data/CollabSharing";
 import { useAgentChatStore } from "../../lib/agent/chatStore";
 import type { SharedItem } from "../../lib/sharing/types";
 
@@ -25,6 +26,27 @@ export function useSharedWithMe(enabled = true) {
     staleTime: 60_000,
     retry: 1,
   });
+}
+
+/**
+ * Is the signed-in viewer a GUEST of the active workspace (an account with no
+ * workspace role — everything they see was shared with them)? False while unknown,
+ * on a failed read, and in shells with no viewer read (the desktop is the owner):
+ * a transient error must never hide the workspace from a member.
+ */
+export function useViewerIsGuest(): boolean {
+  const sharing = useCollabSharing();
+  const client = useVaultClient();
+  const audience = useAgentChatStore((s) => s.scope);
+  const scope = client.scope?.() ?? audience;
+  const query = useQuery({
+    queryKey: ["viewer-role", scope],
+    enabled: !!sharing?.getViewer,
+    queryFn: () => sharing!.getViewer!(),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+  return query.data?.role === "guest";
 }
 
 /**
@@ -58,7 +80,8 @@ export function SharedWithMe({
     <section className="prism-shared-with-me" aria-labelledby="prism-shared-with-me-heading">
       <style>{`
         .prism-shared-with-me { padding: 4px 0 8px; }
-        .prism-shared-with-me h3 { margin: 0; padding: 6px 10px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); letter-spacing: .01em; }
+        .prism-shared-with-me { margin-top: 18px; }
+        .prism-shared-with-me h3 { display: flex; align-items: center; gap: 6px; margin: 0; padding: 6px 10px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); letter-spacing: .01em; }
         .prism-shared-with-me ul { list-style: none; margin: 0; padding: 0; }
         .prism-shared-with-me button.prism-shared-row { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
         .prism-shared-with-me button.prism-shared-row:hover { background: var(--glass-hover, var(--surface-hover)); }
@@ -70,7 +93,7 @@ export function SharedWithMe({
         @media (max-width: 820px) { .prism-shared-with-me button.prism-shared-row { min-height: 44px; font-size: 15px; } }
       `}</style>
       <h3 id="prism-shared-with-me-heading">
-        <Users size={12} style={{ verticalAlign: "-1px", marginRight: 6 }} aria-hidden />
+        <Users size={12} aria-hidden style={{ flexShrink: 0 }} />
         Shared with me
       </h3>
       {query.isLoading ? (

@@ -4,6 +4,7 @@ import { useVaultTree } from "../../app/hooks/useParachute";
 import { isProtectedPath, isUnder, leafName, pageTitle, parentOf } from "../../lib/pages/model";
 import { usePageActions } from "../../lib/pages/usePageActions";
 import type { PageRef } from "../../lib/pages/store";
+import { MoveAccessNotice, useMoveAccessCheck } from "../sharing/MoveAccessNotice";
 import "./pages.css";
 
 interface Destination {
@@ -60,9 +61,17 @@ export function MovePageDialog({ page, onClose }: { page: PageRef; onClose: () =
   const all = useMemo(() => moveDestinations(tree ?? [], located), [tree, located]);
   const q = query.trim().toLowerCase();
   const visible = (q ? all.filter((d) => d.path.toLowerCase().includes(q) || d.label.toLowerCase().includes(q)) : all).slice(0, 60);
-  const choose = async (d: Destination) => {
+  // NP-CO-09: a move that changes who can open the page is confirmed first.
+  const accessCheck = useMoveAccessCheck();
+  const [confirm, setConfirm] = useState<Destination | null>(null);
+  const choose = async (d: Destination, confirmed = false) => {
     if (pending) return;
     setPending(true);
+    if (!confirmed && (await accessCheck(located.id, d.path))) {
+      setPending(false);
+      setConfirm(d);
+      return;
+    }
     const outcome = await actions.move(located, { parent: d.path });
     setPending(false);
     // A partial move closes too: the toast reports it and offers "Finish move".
@@ -105,6 +114,7 @@ export function MovePageDialog({ page, onClose }: { page: PageRef; onClose: () =
             disabled={pending}
             onChange={(e) => {
               setQuery(e.target.value);
+              setConfirm(null);
               setActive(0);
             }}
             onKeyDown={(e) => {
@@ -147,6 +157,19 @@ export function MovePageDialog({ page, onClose }: { page: PageRef; onClose: () =
             </button>
           ))}
         </div>
+        {confirm && !pending && (
+          <div className="page-dialog-foot page-move-confirm" style={{ display: "grid", gap: 8 }}>
+            <MoveAccessNotice noteId={located.id} parentPath={confirm.path} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button type="button" className="focus-ring" style={{ minHeight: 36, padding: "0 12px", borderRadius: 8, border: "1px solid var(--glass-border)", background: "transparent", color: "var(--text-primary)", font: "inherit", cursor: "pointer" }} onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button type="button" className="focus-ring" style={{ minHeight: 36, padding: "0 12px", borderRadius: 8, border: "1px solid var(--color-accent)", background: "var(--color-accent)", color: "#fff", font: "inherit", fontWeight: 600, cursor: "pointer" }} onClick={() => void choose(confirm, true)}>
+                Move to {confirm.label} anyway
+              </button>
+            </div>
+          </div>
+        )}
         {pending && <div className="page-dialog-foot" role="status">Moving…</div>}
       </div>
     </dialog>

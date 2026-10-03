@@ -293,3 +293,82 @@ test("phone: the drawer tree offers page actions in a sheet and the header ⋯ w
   await page.getByRole("button", { name: "Page actions", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "A living workspace" }).getByRole("button", { name: "Move to…" })).toBeVisible();
 });
+
+
+// ── wave 2D mounts (sharing) ─────────────────────────────────────────────────
+test("sidebar: Shared with me lists shared pages for a member and opens them", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?shared"));
+  const shared = nav(page).getByRole("region", { name: "Shared with me" });
+  await expect(shared.getByRole("button", { name: /Archive/ })).toBeVisible();
+  await expect(shared.getByRole("button", { name: /Archive/ })).toContainText("with sub-pages");
+  await expect(tree(page)).toBeVisible(); // a member keeps the workspace sections
+  await shared.getByRole("button", { name: /Weekly review/ }).click();
+  await expect(page.getByRole("heading", { name: "Rename Weekly review", exact: true })).toBeVisible();
+  await expect(shared.getByRole("button", { name: /Weekly review/ })).toHaveAttribute("aria-current", "page");
+  await shot(page, "shared-with-me-1440");
+  // Nothing shared → no section at all for a member.
+  await page.goto(url());
+  await expect(tree(page)).toBeVisible();
+  await expect(nav(page).getByRole("region", { name: "Shared with me" })).toHaveCount(0);
+});
+
+test("sidebar: a guest sees Shared with me and none of the workspace sections", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?guest"));
+  const shared = nav(page).getByRole("region", { name: "Shared with me" });
+  await expect(shared.getByRole("button", { name: /Archive/ })).toBeVisible();
+  await expect(nav(page).getByRole("region", { name: "Pages", exact: true })).toHaveCount(0);
+  await expect(nav(page).getByRole("region", { name: "Tools", exact: true })).toHaveCount(0);
+  for (const name of ["Messages", "New page", "Trash"]) await expect(nav(page).getByRole("button", { name, exact: true })).toHaveCount(0);
+  await expect(nav(page).getByRole("button", { name: "Home", exact: true })).toBeVisible();
+  await shot(page, "shared-with-me-guest-1440");
+  // A guest with nothing shared gets the explicit empty state, still no workspace.
+  await page.goto(url("?guest=empty"));
+  await expect(nav(page).getByRole("region", { name: "Shared with me" })).toContainText("Nothing has been shared with you yet");
+  await expect(nav(page).getByRole("region", { name: "Pages", exact: true })).toHaveCount(0);
+});
+
+test("page ⋯ menu ends with the page info footer", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?open=living"));
+  await expect(page.getByRole("heading", { name: "Rename A living workspace", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
+  const info = page.getByRole("menu").locator("dl.prism-page-info");
+  await expect(info).toBeVisible();
+  const value = (label: string) => info.locator("div", { has: page.locator("dt", { hasText: new RegExp(`^${label}$`) }) }).locator("dd");
+  // "Purpose" + "A shared place to think, write, and build with the same context."
+  await expect(value("Word count")).toHaveText("13");
+  await expect(value("Last edited by")).toHaveText("Ada Park");
+  await expect(value("Created")).not.toHaveText("");
+  await shot(page, "page-menu-info-1440");
+});
+
+test("Move to… confirms first when the move changes who can open the page", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url("?shared"));
+  await expand(page, "Prism");
+  await nav(page).getByRole("button", { name: "Page actions for Plan", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Move to…" }).click();
+  const dialog = page.getByRole("dialog", { name: /Move/ });
+  await dialog.getByRole("combobox").fill("Archive");
+  await dialog.getByRole("option", { name: /Archive/ }).click();
+  // Nothing moved yet: the notice names who gains access and asks.
+  const notice = dialog.getByRole("alert");
+  await expect(notice).toContainText("Ada Park, Grace Lin will gain access");
+  expect(await notePath(page, "plan")).toBe("vault/Projects/Prism/Plan");
+  await shot(page, "move-access-notice-1440");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  expect(await notePath(page, "plan")).toBe("vault/Projects/Prism/Plan");
+  await dialog.getByRole("option", { name: /Archive/ }).click();
+  await dialog.getByRole("button", { name: "Move to Archive anyway" }).click();
+  await expect.poll(() => notePath(page, "plan")).toBe("vault/Archive/Plan");
+  // A move that changes nobody's access goes straight through (no extra step).
+  await nav(page).getByRole("button", { name: "Page actions for A living workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Move to…" }).click();
+  const again = page.getByRole("dialog", { name: /Move/ });
+  await again.getByRole("combobox").fill("Journal");
+  await again.getByRole("option", { name: /Journal/ }).first().click();
+  await expect.poll(() => notePath(page, "living")).toBe("vault/Journal/A living workspace");
+});

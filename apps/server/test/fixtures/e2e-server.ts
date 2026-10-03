@@ -45,6 +45,7 @@ const RICH =
 fv.put({ id: "plan", path: "vault/Shared/Plan", content: "<p>Alpha beta gamma</p><p>Second paragraph here.</p>", metadata: { prism_creator: OWNER }, tags: ["team"] });
 fv.put({ id: "notes", path: "vault/Shared/Plan/Notes", content: "<p>Child notes about the plan.</p>", tags: ["team"] });
 fv.put({ id: "rich", path: "vault/Shared/Rich", content: RICH, tags: ["team"] });
+fv.put({ id: "blank", path: "vault/Shared/Blank", content: "" }); // an empty page: sam = suggest (note share)
 fv.put({ id: "secret", path: "vault/Private/Budget", content: "<p>Fictional budget for the plan.</p>", tags: ["team"] });
 
 for (const [email, name] of [[SAM, "Sam Chen"], [EVE, "Eve Editor"], [GINA, "Gina Guest"]] as const) {
@@ -56,6 +57,7 @@ const grant = (subject: string, resource_type: "page" | "note", resource: string
   addGrant({ subject_type: "user", subject, resource_type, resource, level, created_by: OWNER });
 grant(SAM, "page", "plan", "suggest");
 grant(SAM, "note", "rich", "suggest");
+grant(SAM, "note", "blank", "suggest");
 grant(EVE, "page", "plan", "edit");
 grant(EVE, "note", "rich", "edit");
 grant(GINA, "page", "plan", "view");

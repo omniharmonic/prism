@@ -552,13 +552,13 @@ function ScopedCollabDoc({
           icon={icon}
           onIconChange={canReview ? handleIconChange : undefined}
           onAddCover={canReview && isDocument && !cover ? () => handleCoverChange({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)]!.name, y: 50 }) : undefined}
+          presence={<PresenceAvatars awareness={provider.awareness as never} editor={editor} compact={narrow} />}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
                 <span style={{ width: 7, height: 7, borderRadius: 999, background: connected ? "#22c55e" : online ? "#eab308" : "#ef4444" }} />
                 {connected ? "Live · " : ""}{statusText}
               </span>
-              <PresenceAvatars awareness={provider.awareness as never} editor={editor} compact={narrow} />
               {showComments && (
                 <button
                   onClick={() => setCommentsOpen((o) => !o)}

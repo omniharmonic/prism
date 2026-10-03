@@ -262,7 +262,7 @@ export { PagesRequestError, TRASH_TAG, sanitizePreferences, type MoveRequest, ty
 export type { SharedItem, SharedWithMeListing, IndexedThread, IndexedComment, WriterInfo, PageActivity, AccessPreview } from "./lib/sharing/types";
 export type { InheritedPerson } from "./data/CollabSharing";
 export { PersonAvatar, toneFor } from "./components/sharing/PersonAvatar";
-export { SharedWithMe, useSharedWithMe } from "./components/sharing/SharedWithMe";
+export { SharedWithMe, useSharedWithMe, useViewerIsGuest } from "./components/sharing/SharedWithMe";
 export { PresenceAvatars, presentPeople, jumpToCaret, type PresentPerson, type PresenceAwareness } from "./components/sharing/PresenceAvatars";
 export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";

@@ -26,7 +26,8 @@ test("header avatars and jump to cursor", async ({ page, browser }) => {
   await open(eve, "eve");
   // Eve puts her caret in the second paragraph.
   await eve.getByText("Second paragraph here.").click();
-  const presence = page.getByRole("group", { name: /on this page/ });
+  // Mounted through PageHeader's `presence` slot (the page's top line), not the status row.
+  const presence = page.locator('.document-page-header [data-slot="presence"]').getByRole("group", { name: /on this page/ });
   const avatar = presence.getByRole("button", { name: "Eve Editor: jump to their cursor" });
   await expect(avatar).toBeVisible();
   await expect(avatar).toContainText("EE");
