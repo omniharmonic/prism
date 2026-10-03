@@ -200,3 +200,30 @@ test('⌘J and slash attach to the existing session without starting another', a
   await expect(page.getByRole('textbox', { name: 'Message the agent', exact: true })).toHaveCount(1); // one conversation, not two
   await noSend(page);
 });
+
+// NP-AI-01: "Ask agent" in the block menu attaches THAT block's text to the same document-bound session.
+test('block menu Ask agent attaches the block to the existing session', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/e2e-fixtures/agent.html?context&snapshots&selection&history');
+  const message = page.getByRole('textbox', { name: 'Message the agent', exact: true });
+  await message.fill('Draft that must survive');
+  const state = () => page.evaluate(() => { const s = (window as any).prismAgentStore.getState(); return { id: s.activeSessionId as string }; });
+  const original = await state();
+  const editor = page.getByRole('region', { name: 'Working document' }).locator('.tiptap');
+  await editor.fill('First block stays out');
+  await editor.press('End'); await editor.press('Enter');
+  await editor.pressSequentially('Only this block is context');
+  await page.getByText('Only this block is context', { exact: true }).hover();
+  await page.locator('.block-gutter').getByRole('button', { name: /Drag to move/ }).click();
+  await page.getByRole('menuitem', { name: 'Ask agent' }).click();
+  await expect(page.getByRole('button', { name: 'Selected passage', exact: true })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Selected passage', exact: true }).click();
+  const captured = page.getByRole('dialog', { name: 'Captured context' });
+  await expect(captured).toContainText('Only this block is context');
+  await expect(captured).not.toContainText('First block stays out');
+  await captured.press('Escape');
+  expect(await state()).toEqual(original); // the same session — never a second chat
+  await expect(message).toHaveValue('Draft that must survive');
+  await expect(page.getByRole('textbox', { name: 'Message the agent', exact: true })).toHaveCount(1);
+  await noSend(page);
+});

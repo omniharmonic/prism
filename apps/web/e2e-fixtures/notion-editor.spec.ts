@@ -552,5 +552,234 @@ test("find in page counts and steps", async ({ page }) => {
   await expect(page.locator(".prism-search-match")).toHaveCount(0);
 });
 
-// PRODUCT GAP (NP-ED-22): on a phone the find bar has no entry in the page ⋯ sheet (keyboard only).
-test.fixme("find in page: phone reaches it from ⋯", async () => {});
+// NP-ED-22: on a phone (no ⌘F) the page ⋯ sheet opens the same find bar.
+test("find in page: phone reaches it from ⋯", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
+  await page.getByRole("button", { name: "Find in page" }).or(page.getByRole("menuitem", { name: "Find in page" })).click();
+  const bar = page.getByRole("search", { name: "Find in note" });
+  const field = bar.getByRole("textbox", { name: "Find in note" });
+  await expect(field).toBeFocused();
+  await field.fill("workshop");
+  await expect(bar).toContainText(/1 \/ \d+/);
+  await expect(page.locator(".prism-search-match").first()).toBeVisible();
+  const box = (await bar.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await bar.getByRole("button", { name: "Close find" }).click();
+  await expect(bar).toHaveCount(0);
+  // Desktop: the same entry sits in the ⋯ menu, and ⌘K with no selection is still quick find (NP-SB-02).
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByRole("button", { name: "Page actions", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Find in page" }).click();
+  await expect(page.getByRole("search", { name: "Find in note" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.locator(".tiptap[contenteditable=true]").click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByRole("textbox", { name: "Link address" })).toHaveCount(0);
+  await expect(page.getByRole("dialog").first()).toBeVisible(); // the command bar / quick find
+  // Help → Keyboard shortcuts lives there too (NP-ED-07).
+  await page.keyboard.type("Keyboard Shortcuts");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
+});
+
+// NP-ED-25: placeholders on the focused empty block, per block type; nothing when unfocused or read-only.
+test("placeholders: empty document, empty line, headings and list items", async ({ page }) => {
+  const hint = (selector: string) => page.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const before = getComputedStyle(el, "::before");
+    return { text: el.getAttribute("data-placeholder"), shown: before.content !== "none" && before.content !== "normal" && Number(before.opacity) > 0.1 };
+  }, selector);
+  await open(page, `?content=${enc("<p></p>")}`);
+  // An empty document shows its hint before it is focused.
+  await expect.poll(() => hint(".tiptap p.is-editor-empty")).toEqual({ text: "Start writing, or press / for commands...", shown: true });
+  await open(page);
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => hint(".tiptap p.is-empty")).toEqual({ text: "Type '/' for commands", shown: true });
+  await page.keyboard.type("## ");
+  await expect.poll(() => hint(".tiptap h2.is-empty")).toEqual({ text: "Heading 2", shown: true });
+  await page.keyboard.press("ControlOrMeta+Alt+0");
+  await page.keyboard.type("- ");
+  await expect.poll(() => hint(".tiptap li p.is-empty")).toEqual({ text: "List", shown: true });
+  await page.keyboard.press("Enter"); // leaves the list
+  await page.keyboard.type("[] ");
+  await expect.poll(() => hint('.tiptap li[data-checked] p.is-empty')).toEqual({ text: "To-do", shown: true });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type(">> ");
+  await expect.poll(() => hint(".tiptap summary.is-empty")).toEqual({ text: "Toggle", shown: true });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/placeholders-light.png` });
+  // Only the block holding the caret is hinted, the hint is never stored, and blur hides it.
+  expect(await page.locator(".tiptap .is-empty").count()).toBe(1);
+  expect(await html(page)).not.toMatch(/placeholder|is-empty/);
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+  await expect.poll(async () => (await hint(".tiptap summary.is-empty"))?.shown).toBe(false);
+  // Typing removes it; a focused editor draws no box around the document.
+  await page.locator(".tiptap summary").click();
+  await page.keyboard.type("x");
+  await expect(page.locator(".tiptap .is-empty")).toHaveCount(0);
+  expect(await page.locator(".tiptap").evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("none");
+  // Read-only: no hints.
+  await open(page, `?readonly&content=${enc("<p>one</p><p></p>")}`);
+  await expect(page.locator(".tiptap")).toBeVisible();
+  expect(await page.evaluate(() => [...document.querySelectorAll(".tiptap *")].some((el) => { const b = getComputedStyle(el, "::before"); return el.hasAttribute("data-placeholder") && b.content !== "none" && Number(b.opacity) > 0.1; }))).toBe(false);
+});
+
+// NP-PG-15: slash /page creates the sub-page in place and shows it as a link row; the row stores the id only.
+test("child page block appears in parent body", async ({ page }) => {
+  await open(page);
+  await clickInto(page, "Alpha paragraph about the river.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/page");
+  await page.getByRole("option", { name: /^Page Add a sub-page/ }).click();
+  const row = page.getByRole("button", { name: "Open sub-page: Untitled" });
+  await expect(row).toBeVisible();
+  // Created INSIDE this page, once.
+  expect(await page.evaluate(() => (window as any).prismMediaCreates.map((c: any) => c.path))).toEqual(["Projects/Prism/Field guide/Untitled"]);
+  // The stored block is the id and nothing else: no title, no path.
+  const stored = await html(page);
+  expect(stored).toContain('<p>Alpha paragraph about the river.</p><div data-page-id="new1" data-type="child-page"></div>');
+  expect(stored).not.toMatch(/Untitled/);
+  // The title follows the page (resolved live), like a page mention.
+  await page.evaluate(() => { const n = (window as any).prismMediaVault.find((x: any) => x.id === "new1"); n.path = "Projects/Prism/Field guide/Trip plan"; n.metadata = { ...n.metadata, title: "Trip plan", icon: "🧭" }; });
+  await open(page, `?content=${enc('<p>Top</p><div data-type="child-page" data-page-id="db1"></div><div data-type="child-page" data-page-id="ghost"></div><div data-type="child-page" data-page-id="../x"></div>')}`);
+  await expect(page.getByRole("button", { name: "Open sub-page: Reading list" })).toBeVisible();
+  // A page the reader cannot see names nothing; an invalid id is never a block.
+  const ghost = page.locator('.tiptap .prism-child-page[data-state="missing"]');
+  await expect(ghost).toHaveText("No access");
+  await expect(page.locator(".tiptap .prism-child-page")).toHaveCount(2);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/child-page-rows.png` });
+  // Deleting a row offers to move that page to Trash (it names no page); Keep leaves it alone.
+  const removeRow = (id: string) => page.evaluate((id) => {
+    const editor = (document.querySelector(".tiptap") as any).editor;
+    let at = -1;
+    editor.state.doc.descendants((n: any, pos: number) => { if (n.type.name === "childPage" && n.attrs.pageId === id) at = pos; });
+    editor.chain().focus().setNodeSelection(at).run();
+  }, id);
+  await removeRow("db1");
+  await page.keyboard.press("Backspace");
+  const offer = page.getByRole("alertdialog", { name: "Sub-page link removed" });
+  await expect(offer).toBeVisible();
+  await expect(offer).not.toContainText("Reading list");
+  await offer.getByRole("button", { name: "Keep page" }).click();
+  await expect(offer).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual([]);
+  // Undo brings the row back; deleting again and choosing Trash moves the page.
+  await page.locator(".tiptap").focus();
+  await expect(page.locator(".tiptap")).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(page.getByRole("button", { name: "Open sub-page: Reading list" })).toBeVisible();
+  await removeRow("db1");
+  await page.keyboard.press("Backspace");
+  await page.getByRole("alertdialog", { name: "Sub-page link removed" }).getByRole("button", { name: "Move to Trash" }).click();
+  await expect(page.getByText("Moved to Trash.")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).prismMediaTrashed)).toEqual(["db1"]);
+  // A page created inside this one elsewhere (tree +, "Add a page inside") gets its row too — once.
+  await page.locator(".tiptap").getByText("Top").click();
+  await page.evaluate(() => {
+    const detail = { id: "b1", parentPath: "Projects/Prism/Field guide" };
+    window.dispatchEvent(new CustomEvent("prism:page-created", { detail }));
+    window.dispatchEvent(new CustomEvent("prism:page-created", { detail }));
+    window.dispatchEvent(new CustomEvent("prism:page-created", { detail: { id: "db1", parentPath: "Somewhere/Else" } }));
+  });
+  await expect.poll(async () => ((await html(page)).match(/data-page-id="b1"/g) ?? []).length).toBe(1);
+  expect(await html(page)).not.toContain('data-page-id="db1"');
+  // Read-only pages show the row as a link and offer no /page.
+  await open(page, `?readonly&content=${enc('<div data-type="child-page" data-page-id="b1"></div>')}`);
+  await expect(page.getByRole("button", { name: "Open sub-page: Braiding Sweetgrass" })).toBeVisible();
+});
+
+// NP-RF-01: `[[` rows carry an icon and the path; "Create page '<query>'" makes the page and links it.
+test("[[ create page from query", async ({ page }) => {
+  await open(page);
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.type(" [[Read");
+  const list = page.getByRole("listbox", { name: "Link to a document" });
+  await expect(list.getByRole("option").first()).toContainText("Reading list");
+  await expect(list.getByRole("option").first()).toContainText("Projects/Prism/Reading list");
+  await expect(list.getByRole("option").first().locator("[data-wikilink-icon]")).toBeVisible();
+  // An exact title offers no duplicate "create".
+  await page.keyboard.type("ing list");
+  await expect(list.getByRole("option", { name: /Create page/ })).toHaveCount(0);
+  for (let i = 0; i < "Reading list".length; i++) await page.keyboard.press("Backspace");
+  await page.keyboard.type("Heron census 2026");
+  const create = list.getByRole("option", { name: "Create page “Heron census 2026” A new page inside this one" });
+  await expect(create).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => html(page)).toContain("[[new1|Heron census 2026]]");
+  expect(await page.evaluate(() => (window as any).prismMediaCreates.map((c: any) => [c.path, c.metadata?.title]))).toEqual([["Projects/Prism/Field guide/Heron census 2026", "Heron census 2026"]]);
+  await expect(list).toHaveCount(0);
+  // A path-like query is a typed link, not a title to create.
+  await page.keyboard.type("[[Projects/Nowhere");
+  await expect(page.getByRole("option", { name: /Create page/ })).toHaveCount(0);
+  // A refused create keeps what was typed and says so.
+  await open(page, "?nocreate");
+  await clickInto(page, "Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.type(" [[Private plan");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("alert").filter({ hasText: "Couldn’t create that page" })).toBeVisible();
+  expect(await html(page)).toContain("[[Private plan");
+  // Read-only pages offer no create.
+});
+
+// NP-ED-18: a URL pasted over selected text links that text (it does not replace it).
+test("paste URL over selection links the text", async ({ page }) => {
+  await open(page);
+  await page.getByText("Closing heron note.", { exact: true }).selectText();
+  await expect.poll(() => page.evaluate(() => { const e = (document.querySelector(".tiptap") as any).editor; return e.state.doc.textBetween(e.state.selection.from, e.state.selection.to); })).toBe("Closing heron note.");
+  await pasteClipboard(page, { "text/plain": "https://example.test/herons" });
+  await expect.poll(() => html(page)).toMatch(/<a [^>]*href="https:\/\/example\.test\/herons"[^>]*>Closing heron note\.<\/a>/);
+  await expect(page.getByRole("menu", { name: /Paste as/i })).toHaveCount(0);
+  // A script URL is never a link.
+  await page.getByText("Heron and heron again.", { exact: true }).selectText();
+  await pasteClipboard(page, { "text/plain": "javascript:alert(1)" });
+  expect(await html(page)).not.toMatch(/href="javascript/i);
+});
+
+// NP-ED-01 / NP-ED-06 in a LIVE document: a block selection moves as a group, reaches the other client,
+// undoes as one step, and ⌘Z after a Markdown conversion restores the typed characters there too.
+test("live document: block selection moves as a group; markdown undo restores the literal", async ({ page }) => {
+  await open(page, "?live");
+  const a = page.getByRole("region", { name: "Client A" });
+  const b = page.getByRole("region", { name: "Client B" });
+  const blocks = (i: number) => page.evaluate((i) => {
+    const out: string[] = [];
+    (document.querySelectorAll(".tiptap")[i] as any).editor.state.doc.forEach((n: any) => out.push(`${n.type.name}:${n.textContent}`));
+    return out;
+  }, i);
+  await expect(b.locator(".tiptap")).toContainText("Closing heron note.");
+  const start = await blocks(0);
+  const clickA = async (text: string) => {
+    await a.getByText(text, { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.textContent)).toBe(text);
+  };
+  await clickA("Alpha paragraph about the river.");
+  await page.keyboard.press("Escape");
+  await expect(a.locator(".tiptap > .ProseMirror-selectednode")).toHaveCount(1);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(a.locator(".tiptap > .prism-block-selected")).toHaveCount(2);
+  await page.keyboard.press("ControlOrMeta+Shift+ArrowDown");
+  const moved = [start[0], start[3], start[1], start[2], ...start.slice(4)];
+  await expect.poll(() => blocks(0)).toEqual(moved);
+  await expect.poll(() => blocks(1)).toEqual(moved); // the collaborator sees the same order
+  await expect(a.locator(".tiptap > .prism-block-selected")).toHaveCount(2); // still selected where they landed
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => blocks(1)).toEqual(start);
+  // Markdown undo in the shared document.
+  await clickA("Closing heron note.");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("## ");
+  await expect.poll(() => blocks(0)).toContain("heading:");
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(async () => (await blocks(0)).map((t) => t.trimEnd())).toContain("paragraph:##");
+  await expect.poll(async () => (await blocks(1)).map((t) => t.trimEnd())).toContain("paragraph:##");
+});

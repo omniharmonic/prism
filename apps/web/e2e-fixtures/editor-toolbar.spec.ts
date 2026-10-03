@@ -88,6 +88,18 @@ test.describe("plain editor selection toolbar", () => {
     await expect(page.getByRole("textbox", { name: "Replace with" })).toBeVisible();
   });
 
+  // NP-ED-17: Mention in the selection toolbar opens the @ menu right after the selection.
+  test("the Mention button opens the @ menu after the selection", async ({ page }) => {
+    const bubble = await select(page, "Bravo paragraph");
+    await bubble.getByRole("button", { name: "Mention a person, page or date" }).click();
+    await expect(page.getByRole("listbox", { name: "Mention a person, page or date" })).toBeVisible();
+    await expect.poll(() => html(page)).toContain("<p>Bravo paragraph @</p>");
+    await expect(page.locator(".tiptap")).toBeFocused();
+    await page.keyboard.type("Road");
+    await page.getByRole("option", { name: /Roadmap/ }).first().click();
+    await expect.poll(() => html(page)).toMatch(/<p>Bravo paragraph <span[^>]*data-type="mention"[^>]*data-kind="page"[^>]*data-id="roadmap"/);
+  });
+
   test("links are typed inline, validated, applied and removable", async ({ page }) => {
     let bubble = await select(page, "Bravo paragraph");
     await bubble.getByRole("button", { name: "Link", exact: true }).click();
@@ -180,12 +192,21 @@ test("live editor: the toolbar carries Comment, which anchors a thread on the se
     const editor = page.locator(".tiptap[contenteditable=true]");
     await editor.click();
     await page.keyboard.type("Shared sentence to discuss");
+    // NP-ED-02: the block menu's Comment opens the same composer on the whole block.
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("A second block to comment on");
+    await page.getByText("A second block to comment on", { exact: true }).hover();
+    await page.locator(".block-gutter").getByRole("button", { name: /Drag to move/ }).click();
+    await page.getByRole("menuitem", { name: "Comment" }).click();
+    await page.getByPlaceholder(/Add a comment/).fill("Whole block");
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => html(page)).toMatch(/<span[^>]*data-comment[^>]*>A second block to comment on<\/span>/);
     const bubble = await select(page, "Shared sentence to discuss");
     await expect(bubble.getByRole("button", { name: "Bold selection" })).toBeVisible();
     await bubble.getByRole("button", { name: "Comment on selection" }).click();
     await page.getByPlaceholder(/Add a comment/).fill("Can we tighten this?");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
-    await expect.poll(() => html(page)).toMatch(/data-comment/);
+    await expect.poll(async () => ((await html(page)).match(/<span[^>]*data-comment/g) ?? []).length).toBe(2);
     // While suggesting, untracked decorations (link, colour) are not offered.
     await page.getByRole("button", { name: "Editing", exact: true }).click();
     await expect(page.getByRole("button", { name: "Suggesting", exact: true })).toBeVisible();

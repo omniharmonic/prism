@@ -8,7 +8,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import * as Y from "yjs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { PlatformProvider, VaultClientProvider, CollabEditor, type Note, type VaultClient } from "@prism/core";
+import { PlatformProvider, VaultClientProvider, CollabEditor, VaultRequestError, type Note, type VaultClient } from "@prism/core";
 import DocumentRenderer from "../../../packages/core/src/components/renderers/DocumentRenderer";
 
 const params = new URLSearchParams(location.search);
@@ -31,7 +31,7 @@ const creates: Array<Record<string, unknown>> = [];
 const trashed: string[] = [];
 if (params.has("nocreate")) creates.length = 0;
 const client = {
-  getNote: async (id: string) => { const n = vault.find((x) => x.id === id); if (!n) throw new Error("GET /notes failed: 404"); return structuredClone(n); },
+  getNote: async (id: string) => { const n = vault.find((x) => x.id === id); if (!n) throw new VaultRequestError(404, "GET /notes failed: 404"); return structuredClone(n); },
   listNotes: async (f?: { tag?: string }) => structuredClone(vault.filter((n) => !f?.tag || n.tags?.includes(f.tag))),
   listTree: async () => vault.map((n) => ({ id: n.id, path: n.path, tags: n.tags, metadata: n.metadata, updatedAt: n.updatedAt })),
   createNote: async (params: { path?: string; content?: string; tags?: string[]; metadata?: Record<string, unknown> }) => {

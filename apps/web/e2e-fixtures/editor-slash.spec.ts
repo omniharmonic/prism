@@ -173,6 +173,7 @@ test("toggle headings", async ({ page }) => {
   await expect(toggle.locator("ul")).toBeHidden();
   expect(await editorHtml(page)).toBe(before);
   await toggle.locator("summary").click();
+  await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.type.name)).toBe("toggleSummary"); // selectionchange is async
   await page.keyboard.press("ControlOrMeta+Enter");
   await expect(toggle.locator("ul")).toBeVisible();
   await page.keyboard.press("ControlOrMeta+Enter");
