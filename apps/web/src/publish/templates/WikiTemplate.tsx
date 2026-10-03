@@ -25,7 +25,7 @@ import {
 // The article's own map, mirroring the in-app geo-note editor: a note carrying
 // real GeoJSON (or a geo centroid) shows it drawn above the prose. Lazy, like
 // WikiMap, so text-only readers never pay for MapLibre.
-const ArticleCommonsMap = lazy(() => import("@prism/core").then((m) => ({ default: m.CommonsMap })));
+const ArticleCommonsMap = lazy(() => import("@prism/core/map").then((m) => ({ default: m.CommonsMap })));
 
 const GEO_KINDS = ["ecological-entity", "species", "watershed", "place", "signal", "organization", "event", "resource"];
 

@@ -12,7 +12,7 @@ import { Suspense, lazy, useMemo, useState } from "react";
 import type { MapFeature } from "@prism/core";
 import type { PubMapFeature } from "./types";
 
-const CommonsMap = lazy(() => import("@prism/core").then((m) => ({ default: m.CommonsMap })));
+const CommonsMap = lazy(() => import("@prism/core/map").then((m) => ({ default: m.CommonsMap })));
 
 export function WikiMap({
   features,
