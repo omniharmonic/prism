@@ -6,9 +6,9 @@ async function targets(page: Page) {
   const fresh = row.getByRole("button", { name: "New", exact: true });
   await expect(fresh).toBeVisible();
   for (const control of [fresh, row.getByRole("button", { name: "Open in Agent tab" })]) {
-    const bounds = await control.boundingBox();
-    expect(bounds!.height).toBeGreaterThanOrEqual(44);
-    expect(bounds!.width).toBeGreaterThanOrEqual(44);
+    // Crossing a breakpoint re-lays the companion out (rail ↔ overlay ↔ phone sheet) a frame
+    // after the resize: measure the control once it is on screen in the NEW layout, never mid-switch.
+    await expect.poll(async () => { const b = await control.boundingBox(); return b ? Math.min(b.height, b.width) : 0; }).toBeGreaterThanOrEqual(44);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
