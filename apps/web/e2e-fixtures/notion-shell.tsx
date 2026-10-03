@@ -11,7 +11,8 @@ import { inferContentType } from "../../../packages/core/src/lib/schemas/content
 import { httpVaultClient } from "../src/parachute/HttpVaultClient";
 import { fetchMe, setActiveVault } from "../src/config";
 import { OfflineIndicator } from "../src/offline/OfflineIndicator";
-import { startOutboxSync } from "../src/offline/outbox";
+import { startOutboxSync, setStaleSendingMsForTests } from "../src/offline/outbox";
+import { logout } from "../src/config";
 
 void filtersToParams;
 const params = new URLSearchParams(location.search);
@@ -39,6 +40,15 @@ const controls = {
   revision: 1,
   reads: [] as string[],
   actor: "owner@example.test",
+  /** Slow responses: a write to one of these note ids (or "POST" for creates) waits for releaseHeld(). */
+  holdIds: [] as string[],
+  held: {} as Record<string, Array<() => void>>,
+  releaseHeld: (id: string) => { controls.holdIds = controls.holdIds.filter((x) => x !== id); (controls.held[id] ?? []).splice(0).forEach((r) => r()); },
+  /** Failure rules, consumed in order: `status` = HTTP status, "network" = the request never
+   *  arrives, "lost" = the server APPLIES the write and the response is lost. */
+  failures: [] as Array<{ method: string; match: string; mode: number | "network" | "lost"; times: number }>,
+  /** navigator.onLine stays true but nothing answers (pm2 restart, tunnel down). */
+  unreachable: false,
   signedOut: false,
   /** Pages this account can no longer see (absent from the tree, 403 on read). */
   hidden: [] as string[],
@@ -46,12 +56,15 @@ const controls = {
   /** Another device/agent changed the page on the server. */
   serverEdit: (id: string, content: string) => { const n = notes.find((x) => x.id === id)!; n.content = content; n.updatedAt = bump(); },
   note: (id: string) => notes.find((x) => x.id === id),
+  all: () => notes,
+  serverCreate: (path: string, content: string) => { notes.push({ id: `foreign-${++createdSeq}`, path, content, tags: [], metadata: { type: "document" }, createdAt: bump(), updatedAt: bump() }); },
   switchActor: async (email: string) => { controls.actor = email; await fetchMe(); },
 };
 let seq = 0;
 let createdSeq = 0;
 const bump = () => `2026-10-02T00:${String(Math.floor(++seq / 60)).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}.000Z`;
-Object.assign(window, { prismShell: controls, prismShellUI: useUIStore, prismShellClient: httpVaultClient });
+if (params.has("stale")) setStaleSendingMsForTests(Number(params.get("stale")));
+Object.assign(window, { prismShellLogout: logout, prismShell: controls, prismShellUI: useUIStore, prismShellClient: httpVaultClient });
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -59,6 +72,22 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const method = init?.method ?? "GET";
   if (!navigator.onLine && (path.startsWith("/api/") || path.startsWith("/auth/"))) throw new TypeError("Failed to fetch");
+  if (controls.unreachable && (path.startsWith("/api/") || path.startsWith("/auth/"))) throw new TypeError("Failed to fetch");
+  // Slow / failing writes.
+  let lost = false;
+  if (method !== "GET") {
+    const key = method === "POST" && path === "/api/notes" ? "POST" : decodeURIComponent(path.split("/")[3] ?? "");
+    if (controls.holdIds.includes(key)) await new Promise<void>((resolve) => (controls.held[key] ??= []).push(resolve));
+    const rule = controls.failures.find((f) => f.times > 0 && f.method === method && path.includes(f.match));
+    if (rule) {
+      rule.times--;
+      controls.writes.push({ method, path, body: { failed: rule.mode } });
+      if (rule.mode === "network") throw new TypeError("Failed to fetch");
+      if (typeof rule.mode === "number") return Response.json({ error: "fixture_failure" }, { status: rule.mode });
+      lost = true;
+    }
+  }
+  const respond = (body: unknown, init2?: ResponseInit) => { if (lost) throw new TypeError("Failed to fetch"); return Response.json(body, init2); };
   if (path === "/auth/me" && controls.signedOut) return Response.json({ authenticated: false });
   if (path === "/auth/me") return Response.json({ authenticated: true, email: controls.actor, name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
   if (path === "/api/me/preferences") {
@@ -82,7 +111,10 @@ window.fetch = async (input, init) => {
     return Response.json(hits);
   }
   if (path === "/api/search/semantic") return Response.json({ error: "semantic_index_primary_only" }, { status: 409 });
-  if (path === "/api/notes" && method === "GET") return Response.json(notes.filter((n) => !url.searchParams.has("search") || (n.content ?? "").includes(url.searchParams.get("search")!)));
+  if (path === "/api/notes" && method === "GET") return Response.json(notes
+    .filter((n) => !controls.hidden.includes(n.id))
+    .filter((n) => !url.searchParams.has("path") || n.path === url.searchParams.get("path"))
+    .filter((n) => !url.searchParams.has("search") || (n.content ?? "").includes(url.searchParams.get("search")!)));
   const metaId = path.match(/^\/api\/notes\/([^/]+)\/meta$/)?.[1];
   if (metaId && method === "POST") {
     const note = notes.find((n) => n.id === decodeURIComponent(metaId));
@@ -101,17 +133,22 @@ window.fetch = async (input, init) => {
     if (!note) return Response.json({ error: "not_found" }, { status: 404 });
     const body = JSON.parse(String(init?.body));
     controls.writes.push({ method, path, body });
+    // Per-field CAS, like the server: a field whose current value differs from `expect` → 409.
+    const stale = Object.keys(body.expect ?? {}).filter((k) => JSON.stringify(note.metadata?.[k] ?? null) !== JSON.stringify(body.expect[k] ?? null));
+    if (stale.length) return Response.json({ error: "conflict", fields: stale, current: Object.fromEntries(stale.map((k) => [k, note.metadata?.[k] ?? null])) }, { status: 409 });
     note.metadata = { ...note.metadata, ...body.set };
     note.updatedAt = bump();
     persistMeta(note);
-    return Response.json({ id: note.id, updatedAt: note.updatedAt, metadata: note.metadata });
+    return respond({ id: note.id, updatedAt: note.updatedAt, metadata: note.metadata });
   }
   if (path === "/api/notes" && method === "POST") {
     const body = JSON.parse(String(init?.body));
     controls.writes.push({ method, path, body });
+    // The server's create is fail-if-exists.
+    if (notes.some((n) => n.path === body.path)) return Response.json({ error: "conflict", error_type: "path_conflict" }, { status: 409 });
     const created: Note = { id: `created-${++createdSeq}`, content: " ", metadata: {}, tags: [], ...body, createdAt: bump(), updatedAt: bump() };
     notes.push(created);
-    return Response.json(created);
+    return respond(created);
   }
   const noteId = path.match(/^\/api\/notes\/([^/]+)$/)?.[1];
   if (noteId) {
@@ -129,9 +166,13 @@ window.fetch = async (input, init) => {
       const guarded = ["content", "metadata", "path"].some((k) => k in body);
       if (guarded && !body.force && !body.if_updated_at) return Response.json({ error: "precondition_required" }, { status: 428 });
       if (body.if_updated_at && body.if_updated_at !== note.updatedAt) return Response.json({ error: "conflict", current: { updatedAt: note.updatedAt } }, { status: 409 });
-      const { if_updated_at: _base, force: _force, ...fields } = body;
-      Object.assign(note, fields, { metadata: { ...note.metadata, ...body.metadata }, updatedAt: bump() });
+      const { if_updated_at: _base, force: _force, tags: tagDelta, ...fields } = body;
+      const tags = new Set(note.tags ?? []);
+      for (const t of tagDelta?.add ?? []) tags.add(t);
+      for (const t of tagDelta?.remove ?? []) tags.delete(t);
+      Object.assign(note, fields, { tags: [...tags], metadata: { ...note.metadata, ...body.metadata }, updatedAt: bump() });
       if (body.metadata) persistMeta(note);
+      if (lost) throw new TypeError("Failed to fetch");
     }
     if (url.searchParams.get("include_links") === "true") {
       // Two visible pages and one the viewer can't see (absent from /api/tree) link here.

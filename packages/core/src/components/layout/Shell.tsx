@@ -19,6 +19,8 @@ import { PagesHost } from "../pages/PagesHost";
 import { VaultClientProvider, useOptionalVaultClient } from "../../data/VaultClientContext";
 import { trackVaultWrites } from "../../lib/sync/syncState";
 import { applyReduceMotion } from "../../lib/motion";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "../../lib/parachute/queries";
 
 /** Every write made inside the shell moves the one truthful sync state (NP-OF-01). */
 function TrackedVaultWrites({ children }: { children: React.ReactNode }) {
@@ -57,6 +59,18 @@ function ShellLayout() {
 
   useKeyboardShortcuts();
   useEffect(() => { applyReduceMotion(); }, []);
+  // The host's outbox confirmed one of OUR queued writes (this tab or another):
+  // re-read that page so the cached revision is the server's, without waiting
+  // for the events channel.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const confirmed = (event: Event) => {
+      const id = (event as CustomEvent<{ noteId?: string }>).detail?.noteId;
+      if (id) void queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(id) });
+    };
+    window.addEventListener("prism:note-confirmed", confirmed);
+    return () => window.removeEventListener("prism:note-confirmed", confirmed);
+  }, [queryClient]);
   const peek = useSidebarPeek(!isMobile && !sidebarOpen);
   const swipe = useEdgeSwipe(isMobile && !sidebarOpen);
   const restore = useWorkspaceSession();

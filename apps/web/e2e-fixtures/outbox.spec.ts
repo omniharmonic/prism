@@ -72,8 +72,10 @@ test("offline write stays with its original vault and preserves the revision", a
     headers: Record<string, string>;
     body: Record<string, unknown>;
   }> = [];
+  // Writes only: the outbox also READS the note (to learn its revision, or to
+  // tell a lost acknowledgement from a real conflict) — reads change nothing.
   await page.route("**/api/notes/**", (route) => {
-    requests.push({
+    if (route.request().method() !== "GET") requests.push({
       headers: route.request().headers(),
       body: route.request().postDataJSON(),
     });
@@ -131,7 +133,10 @@ for (const [status, state] of [
   [404, "missing"],
   [410, "missing"],
   [403, "blocked"],
-  [502, "unknown"],
+  // A guarded save is safe to send again (a duplicate would 409 and be recognised),
+  // so a 5xx no longer strands it for review: it stays queued and is retried with
+  // backoff — never immediately (wave 2E re-review H5).
+  [502, "queued"],
 ] as const) {
   test(`${status} retains the draft and never forces or blindly retries`, async ({
     page,
@@ -139,7 +144,7 @@ for (const [status, state] of [
     await setup(page);
     let writes = 0;
     await page.route("**/api/notes/**", (route) => {
-      writes++;
+      if (route.request().method() !== "GET") writes++;
       return route.fulfill({ status, json: { error: "fixture" } });
     });
     await queue(page);
@@ -156,20 +161,28 @@ for (const [status, state] of [
   });
 }
 
-test("connection loss after dispatch becomes unknown, not an automatic second write", async ({
+test("connection loss after dispatch: a guarded save waits and retries with backoff; an unguarded one is never re-sent", async ({
   page,
 }) => {
   await setup(page);
   let writes = 0;
   await page.route("**/api/notes/**", (route) => {
-    writes++;
+    if (route.request().method() !== "GET") writes++;
     return route.abort("failed");
   });
   await queue(page);
   await flush(page);
   await flush(page);
+  expect(writes).toBe(1); // no immediate second write
+  const [guarded] = await rows(page);
+  expect(guarded.state).toBe("queued");
+  expect((guarded as unknown as { attempts: number; nextAttemptAt: number }).attempts).toBe(1);
+  expect((guarded as unknown as { nextAttemptAt: number }).nextAttemptAt).toBeGreaterThan(Date.now());
+  // A content write with no base revision is not safe to repeat: review, never sent.
+  await queue(page, "PATCH", "/notes/n2", { content: "no base", force: true } as never);
+  await flush(page);
   expect(writes).toBe(1);
-  expect((await rows(page))[0].state).toBe("unknown");
+  expect((await rows(page)).map((r) => r.state)).toEqual(["queued", "conflict"]);
 });
 
 test("legacy unscoped records are quarantined without replay", async ({
@@ -214,6 +227,7 @@ test("a reviewed conflict uses the reviewed revision instead of force", async ({
   let calls = 0;
   let applied: unknown;
   await page.route("**/api/notes/**", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { id: "n1", content: "someone else's text", updatedAt: "reviewed-revision" } });
     calls++;
     applied = route.request().postDataJSON();
     return route.fulfill({
@@ -250,7 +264,7 @@ test("two tabs cannot both claim a queued operation", async ({
   await setup(second);
   let writes = 0;
   await context.route("**/api/notes/**", (route) => {
-    writes++;
+    if (route.request().method() !== "GET") writes++;
     return route.fulfill({ json: { id: "n1" } });
   });
   await queue(page);
