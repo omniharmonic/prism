@@ -119,6 +119,8 @@ const DATABASE_ITEMS: SlashItem[] = [
   { id: "db-gallery", group: "Database", title: "Gallery", subtitle: "A new database as cards", icon: <ImageIcon size={16} />, keywords: ["database", "gallery view", "cards", "inline"], run: (e) => requestDatabaseInsert(e, "new", "gallery") },
   { id: "db-list", group: "Database", title: "List", subtitle: "A new database as a list", icon: <List size={16} />, keywords: ["database", "list view", "inline"], run: (e) => requestDatabaseInsert(e, "new", "list") },
   { id: "db-calendar", group: "Database", title: "Calendar", subtitle: "A new database on a calendar", icon: <ListChecks size={16} />, keywords: ["database", "calendar view", "dates", "inline"], run: (e) => requestDatabaseInsert(e, "new", "calendar") },
+  // NP-DB-01 "Database – full page": a new database as a sub-page, opened in its own tab.
+  { id: "db-page", group: "Database", title: "Full-page database", subtitle: "Database – full page: a new database as a sub-page", icon: <TableIcon size={16} />, keywords: ["database - full page", "full page", "database page", "page database"], run: (e) => requestDatabaseInsert(e, "page", "table") },
   { id: "db-linked", group: "Database", title: "Linked view of database", subtitle: "Show an existing database here", icon: <Link2 size={16} />, keywords: ["linked", "database", "view", "existing", "embed database"], run: (e) => requestDatabaseInsert(e, "linked", "table") },
 ];
 

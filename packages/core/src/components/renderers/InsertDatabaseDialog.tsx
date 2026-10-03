@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useVaultTree } from "../../app/hooks/useParachute";
+import { useUIStore } from "../../app/stores/ui";
 import { addLinkedView, createInlineDatabase } from "../database/DatabaseBlock";
 import { readDatabaseConfig, VIEW_LABELS } from "../database/config";
 import { insertDatabaseBlock, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
@@ -51,7 +52,19 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
     if (!TAG.test(tag)) { setError("Use a tag name: letters, numbers, - or _ (for example “task”)."); return; }
     setBusy(true); setError("");
     try {
-      finish(await createInlineDatabase(client, { path: hostPath ?? null }, { tag, type: request.type }));
+      const made = await createInlineDatabase(client, { path: hostPath ?? null }, { tag, type: request.type });
+      if (request.mode === "page") {
+        // Full-page database (NP-DB-01): leave a link to the sub-page here and open it.
+        if (made.path && !editor.isDestroyed) {
+          const at = Math.max(0, Math.min(request.pos, editor.state.doc.content.size));
+          const node = editor.state.doc.nodeAt(at);
+          const link = { type: "paragraph", content: [{ type: "text", text: `[[${made.path}]]` }] };
+          if (node && node.isTextblock && node.content.size === 0) editor.chain().insertContentAt({ from: at, to: at + node.nodeSize }, link).run();
+          else editor.chain().insertContentAt(node ? at + node.nodeSize : editor.state.doc.content.size, link).run();
+        }
+        useUIStore.getState().openTab(made.noteId, made.title, "database");
+        onClose();
+      } else finish(made);
     } catch {
       setError("Couldn't create the database. Nothing was added.");
     } finally { setBusy(false); }
@@ -77,9 +90,9 @@ export function InsertDatabaseDialog({ editor, request, hostPath, onClose }: { e
   return createPortal(
     <>
       <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.25)" }} onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label={request.mode === "new" ? `New ${label.toLowerCase()} database` : "Link a database"} className="prism-db-insert glass-elevated">
-        <h2>{request.mode === "new" ? `New ${label.toLowerCase()}` : `Linked ${label.toLowerCase()} of a database`}</h2>
-        {request.mode === "new" ? (
+      <div role="dialog" aria-modal="true" aria-label={request.mode === "page" ? "New full-page database" : request.mode === "new" ? `New ${label.toLowerCase()} database` : "Link a database"} className="prism-db-insert glass-elevated">
+        <h2>{request.mode === "page" ? "New full-page database" : request.mode === "new" ? `New ${label.toLowerCase()}` : `Linked ${label.toLowerCase()} of a database`}</h2>
+        {request.mode !== "linked" ? (
           <form onSubmit={(e) => { e.preventDefault(); void createNew(); }}>
             <label htmlFor="prism-db-insert-tag">Rows are pages tagged</label>
             <input id="prism-db-insert-tag" ref={inputRef} value={value} onChange={(e) => setValue(e.target.value)} placeholder="task" autoComplete="off" spellCheck={false} disabled={busy} />

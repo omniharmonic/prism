@@ -429,4 +429,38 @@ test("column reorder and cell keyboard nav", async ({ page }) => {
   await expect.poll(async () => (await configWrites(page)).at(-1)?.metadata.prism_database.views[0].visible.slice(0, 2)).toEqual(["priority", "status"]);
 });
 
+// NP-DB-01 — a database is created from the New page menu, or from a tag; either way it starts as a Table over that tag.
+test("create database from New page and from tag", async ({ page }) => {
+  await page.goto("/e2e-fixtures/databases.html?create&open=page");
+  await page.getByRole("button", { name: "New page", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Database", exact: true }).click();
+  await dialog.getByRole("textbox").first().fill("Roadmap");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  const created = (await fx(page)).creates.at(-1);
+  expect(created.path).toBe("Projects/Roadmap");
+  expect(created.metadata.prism_type).toBe("database");
+  expect(created.tags ?? []).toEqual([]);
+  // The new page asks which pages it shows, then opens as a Table view over that tag.
+  await expect(page.getByRole("heading", { name: "Which pages should this database show?" })).toBeVisible();
+  await page.getByLabel("Source tag").fill("task");
+  await page.getByRole("button", { name: "Create database" }).click();
+  await expect(page.getByRole("tab", { name: "Table" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("table", { name: "Table" }).getByRole("button", { name: "Write release notes", exact: true })).toBeVisible();
+  expect((await configWrites(page)).at(-1).metadata.prism_database).toEqual({ version: 1, source: { tags: ["task"] }, views: [{ id: "table", name: "Table", type: "table" }] });
+
+  // From a tag: "Open as database" creates Databases/<tag> once, then reopens it.
+  await page.getByRole("button", { name: "Open as database" }).click();
+  await expect.poll(async () => (await fx(page)).creates.at(-1)?.path).toBe("Databases/task");
+  const fromTag = (await fx(page)).creates.at(-1);
+  expect(fromTag.metadata.prism_database).toEqual({ version: 1, source: { tags: ["task"] }, views: [{ id: "table", name: "Table", type: "table" }] });
+  await expect(page.getByRole("heading", { name: "task", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Table" }).getByRole("button", { name: "Write release notes", exact: true })).toBeVisible();
+  const count = (await fx(page)).creates.length;
+  await page.getByRole("button", { name: "Open as database" }).click();
+  await expect(page.getByRole("table", { name: "Table" })).toBeVisible();
+  expect((await fx(page)).creates.length).toBe(count);
+});
+
 test.fixme("saved views: duplicate and reorder tabs (PRODUCT GAP NP-DB-16 — no control exists)", async () => {});

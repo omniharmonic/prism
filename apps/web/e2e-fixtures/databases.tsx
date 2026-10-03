@@ -10,6 +10,7 @@
  *   ?dark        dark theme
  *   ?block       a page holding inline/linked database blocks (renderDatabaseBlock)
  *   ?templates   the database starts with a "Bug report" template
+ *   ?create      a shell with the "New page" menu and a tag's "Open as database" (NP-DB-01)
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -17,6 +18,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VaultClientProvider, CollabDocumentProvider, PlatformProvider, useUIStore, useAgentChatStore, PropertyConflictError, VaultRequestError, renderDatabaseBlock, parseDatabaseBlock, databaseBlockHtml, type VaultClient, type Note } from "@prism/core";
 import { Canvas } from "../../../packages/core/src/components/layout/Canvas";
 import { applyTheme } from "../../../packages/core/src/app/stores/settings";
+import { NewContentMenu } from "../../../packages/core/src/components/navigation/NewContentMenu";
+import { OpenAsDatabaseButton } from "../../../packages/core/src/components/database/OpenAsDatabaseButton";
 import { coerceCsvValue, mergeSchemaFields, parseCsv, runQuery, type CsvImportRequest, type CsvImportResponse, type CsvImportRow, type PropertyBatchResult, type QuerySpec, type SchemaMap, type SchemaPatch } from "@prism/core/database";
 
 const params = new URLSearchParams(location.search);
@@ -294,6 +297,22 @@ if (!legacy) {
   };
 }
 
+/** NP-DB-01: the two ways to make a database — the New page menu and a tag's "Open as database". */
+function CreateShell() {
+  const [menu, setMenu] = React.useState(false);
+  return (
+    <main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
+      <header style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 16px" }}>
+        <button type="button" onClick={() => setMenu(true)}>New page</button>
+        <span>#task</span>
+        <OpenAsDatabaseButton tag="task" />
+      </header>
+      <Canvas />
+      {menu && <NewContentMenu initialFolder="Projects" onClose={() => setMenu(false)} />}
+    </main>
+  );
+}
+
 const open = params.get("open") ?? "db";
 const target = find(open)!;
 useUIStore.getState().openTab(target.id, target.metadata?.title as string, target.id === "db" ? "database" : "task");
@@ -321,7 +340,7 @@ createRoot(document.getElementById("root")!).render(
                   {renderDatabaseBlock("nope-404")}
                 </article>
               </main>
-            ) : (
+            ) : params.has("create") ? <CreateShell /> : (
               <main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}><Canvas /></main>
             )}
           </CollabDocumentProvider>
