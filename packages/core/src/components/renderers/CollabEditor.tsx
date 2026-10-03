@@ -227,13 +227,30 @@ export function CollabEditor({
       const active = document.activeElement;
       let inside = false;
       // Only THIS editor (or its own find bar): several live editors may share a page.
-      try { inside = !!active && (editor.view.dom.contains(active) || !!findRef.current?.contains(active)); } catch { inside = false; }
+      try {
+        inside = !!active && (editor.view.dom.contains(active) || !!findRef.current?.contains(active));
+        // A read-only / suggest-only body is not focusable, so focus never lands in it.
+        // It still owns ⌘F when the reader last clicked or selected inside it, or when
+        // nothing else has focus and no other editor claimed the key (find only — the
+        // bar hides Replace when edits are not allowed).
+        if (!inside && !editor.isEditable && !e.defaultPrevented) {
+          const anchor = window.getSelection()?.anchorNode ?? null;
+          const idle = !active || active === document.body;
+          const typing = !!active && active !== document.body && (active as HTMLElement).matches?.("input, textarea, select, [contenteditable=true]");
+          inside = !typing && (pointerInside || (!!anchor && editor.view.dom.contains(anchor)) || idle);
+        }
+      } catch { inside = false; }
       if (!inside) return;
       e.preventDefault();
-      setFind({ replace: isReplace });
+      setFind({ replace: isReplace && editor.isEditable });
+    };
+    let pointerInside = false;
+    const onPointer = (e: PointerEvent) => {
+      try { pointerInside = editor.view.dom.contains(e.target as Node) || !!findRef.current?.contains(e.target as Node); } catch { pointerInside = false; }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("pointerdown", onPointer, true); };
   }, [editor]);
 
   // Reflect editable changes (e.g. level resolved after connect) onto the editor.

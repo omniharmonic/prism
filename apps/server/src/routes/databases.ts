@@ -69,6 +69,8 @@ import {
   type TagSchema,
 } from "@prism/core/database";
 
+import { assignedToMe, myIdentity, resetMyTasksForTests, type MyIdentity } from "../my-tasks";
+
 export const databasesApi = new Hono();
 
 // ── shared helpers ───────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ async function vaultSchemas(entry: VaultEntry): Promise<Map<string, TagSchema>> 
 
 /** Test-only: forget cached vault schemas + listings. */
 export function resetDatabaseCachesForTests(): void {
+  resetMyTasksForTests();
   schemaCache.clear();
   listCache.clear();
   listRows = 0;
@@ -539,7 +542,8 @@ async function canonicalListing(entry: VaultEntry, tag: string): Promise<Note[]>
   if (hit) evictListing(k);
   const schema = (await vaultSchemas(entry)).get(tag);
   const schemaKeys = Object.keys(schema?.fields ?? {});
-  const keys = schemaKeys.length ? [...new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS])] : undefined;
+  // + the assignee spellings "assigned to me" reads (my-tasks.ts); `assigned` is in the task schema.
+  const keys = schemaKeys.length ? [...new Set([...schemaKeys, ...ROW_META, ...PERMISSION_KEYS, "assigned", "assignee", "assigneeEmail", "assignee_email"])] : undefined;
   const value = vaultClient(entry.id).listNotes({ tags: [tag], includeContent: false, includeMetadata: keys, orderBy: "updated_at", limit: RAW_MAX });
   const e: ListEntry = { expires: Date.now() + LIST_TTL_MS, value, rows: 0 };
   listCache.set(k, e);
@@ -595,6 +599,17 @@ databasesApi.post("/query", async (c) => {
   } catch (e) {
     return vaultFailure(c, e);
   }
+  // "Assigned to me" (wave 3): the caller's own identity narrows the rows. A link
+  // has no account, so it has no tasks. Only ever removes rows the caller could see.
+  let mine: MyIdentity | null = null;
+  let ownerUnset = false;
+  if (spec.assignedToMe) {
+    if (actor.kind !== "user") return empty();
+    mine = await myIdentity(actor, entry);
+    // The server owner with no owner identity set (review low 6): the previous
+    // behaviour — every task — and `identity: "unset"` so the UI can say why.
+    if (mine.ownerUnset) { ownerUnset = true; mine = null; }
+  }
   const cap = scanMax();
   const stamp = actor.kind === "user" && !owner;
   const visible: QueryInput[] = [];
@@ -627,6 +642,7 @@ databasesApi.post("/query", async (c) => {
   };
   for (const n of notes) {
     if (!wantsTrash && (n.tags ?? []).includes("prism-trashed")) continue;
+    if (mine && !assignedToMe(n.metadata, mine)) continue;
     if (owner) {
       visible.push({ ...present(n), canEdit: true });
       continue;
@@ -640,6 +656,9 @@ databasesApi.post("/query", async (c) => {
   const truncated = visible.length > cap || (owner && notes.length >= RAW_MAX);
   try {
     const page = runQuery(visible.slice(0, cap), spec, { limited: !owner, truncated });
+    // Whether a person page stands for the caller (else only their address matched).
+    if (mine) page.identity = mine.person ? "person" : "account";
+    else if (ownerUnset) page.identity = "unset";
     // Permission keys are read for the filter above, never returned unless asked for.
     for (const r of page.rows) for (const k of PERMISSION_KEYS) if (actor.kind === "link" || (spec.fields ? !spec.fields.includes(k) : !owner)) delete r.metadata[k];
     c.header("Cache-Control", "private, no-store");

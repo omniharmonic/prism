@@ -68,6 +68,11 @@ export interface QuerySpec {
   /** The caller's `Date#getTimezoneOffset()` (minutes, −840…840): `@today` and
    *  date-vs-datetime comparisons use the caller's local day. Default 0 (UTC). */
   tzOffset?: number;
+  /** Only rows assigned to the CALLER (wave 3, Home → My tasks): the server
+   *  resolves who the caller is (their person note / addresses) and keeps rows
+   *  whose `assigned`/`assignee` value names them. Signed-in users only; ignored
+   *  by the pure engine (the server narrows its input). */
+  assignedToMe?: boolean;
 }
 
 /** The lean note shape the engine evaluates (no content). */
@@ -95,6 +100,10 @@ export interface QueryRow {
   canEdit?: boolean;
 }
 export interface QueryPage {
+  /** `assignedToMe` queries only: "person" when a person page stands for the
+   *  caller, "account" when only their sign-in address could be matched, "unset"
+   *  when the server owner has no owner identity configured (rows are NOT narrowed). */
+  identity?: "person" | "account" | "unset";
   rows: QueryRow[];
   /** Cursor for the next page, or null at the end. */
   next: string | null;
@@ -193,6 +202,10 @@ export function validateQuerySpec(raw: unknown): { ok: true; spec: QuerySpec } |
   if (raw.tzOffset !== undefined) {
     if (typeof raw.tzOffset !== "number" || !Number.isInteger(raw.tzOffset) || Math.abs(raw.tzOffset) > 840) return { ok: false, error: "tzOffset must be minutes in −840…840" };
     spec.tzOffset = raw.tzOffset;
+  }
+  if (raw.assignedToMe !== undefined) {
+    if (typeof raw.assignedToMe !== "boolean") return { ok: false, error: "assignedToMe must be a boolean" };
+    if (raw.assignedToMe) spec.assignedToMe = true;
   }
   if (raw.search !== undefined && raw.search !== "") {
     if (typeof raw.search !== "string" || raw.search.length > 200) return { ok: false, error: "search must be ≤200 chars" };

@@ -116,7 +116,7 @@ import { getSecret, secretsConfigured } from "../secrets";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, copyFile } from "node:fs/promises";
-import { notifyShare } from "../notifications";
+import { notifyShare, suggestionsResolved } from "../notifications";
 const pexec = promisify(execFile);
 
 /** Grant a person access to a resource, inviting them if they have no account
@@ -1842,6 +1842,9 @@ async function resolveSuggestion(c: Context, action: "accept" | "reject") {
       if (next !== note.content) {
         await vault.updateNote(s.note_id, { content: next });
         applied = true;
+        // Tell the suggester (wave 3): only suggestions that carry an account's actor id.
+        const decider = resolveActor(c);
+        void suggestionsResolved({ vaultId: "primary", noteId: s.note_id, prev: note.content, next, editors: decider.kind === "user" ? [decider.email] : [] }).catch(() => {});
       }
     } catch (e) {
       return c.json({ error: "apply_failed", detail: (e as Error).message }, 500);

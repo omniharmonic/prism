@@ -1,6 +1,7 @@
 import { PrismMark } from "@prism/core";
 import { useState } from "react";
 import { login, requestMagicLink, postLoginTarget } from "../config";
+import { takeSignOutNotice } from "../config";
 
 /**
  * Sign-in screen. Prism is invite-only: people log in with the email + password
@@ -8,6 +9,9 @@ import { login, requestMagicLink, postLoginTarget } from "../config";
  * link (bootstrap / recovery). No self-signup — entering an unknown email does
  * nothing.
  */
+/** Read once per page load: the previous sign-out never reached the server (review low 9). */
+const signedOutUnreached = takeSignOutNotice();
+
 export function LoginScreen({ notice }: { notice?: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -66,6 +70,7 @@ export function LoginScreen({ notice }: { notice?: string }) {
         </div>
 
         {notice && <div style={{ fontSize: 13, color: "var(--text-muted, #888)" }}>{notice}</div>}
+        {signedOutUnreached && <div role="status" data-testid="signout-unreached" style={{ fontSize: 13, color: "var(--text-muted, #888)" }}>Signed out on this device. The server could not be reached, so this session may still be listed there until it expires — sign in and check Settings → Account when you are back online.</div>}
 
         {status === "linksent" ? (
           <div style={{ fontSize: 14, lineHeight: 1.5 }}>

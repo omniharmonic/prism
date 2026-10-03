@@ -60,6 +60,7 @@ export const httpVaultClient: VaultClient = {
   queryNotes: rest.queryNotes,
   updateProperties: rest.updateProperties,
   uploadAttachment: rest.uploadAttachment,
+  copyAttachments: rest.copyAttachments,
   unfurl: rest.unfurl,
   updatePropertiesBatch: rest.updatePropertiesBatch,
   importCsv: rest.importCsv,

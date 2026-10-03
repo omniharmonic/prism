@@ -72,7 +72,7 @@ import { bodyLimit } from "hono/body-limit";
 import { config } from "../config";
 import { grantsForUser, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
-import { vaultClient, VaultError, type Note } from "../parachute";
+import { vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { effectiveCaps, type Cap, type NoteRef } from "../permissions";
 import { warmPageAnchors } from "../tree";
@@ -80,7 +80,7 @@ import { roleAtLeast, roleFloor, workspaceRole } from "../roles";
 import { csrfRefusal } from "./actions";
 import { BusyError, Semaphore } from "../media/limits";
 import { mediaPolicy, withMediaSlot } from "./media";
-import { isNoteId } from "../collab";
+import { isNoteId, isDocLive } from "../collab";
 import { consumeRateLimit } from "../middleware/ratelimit";
 import { isLocked, isTrashed, systemNoteReason } from "@prism/core/pages";
 import {
@@ -98,6 +98,7 @@ import {
   vaultStorageFetch,
   vaultUpload,
   VaultIoError,
+  type AttachmentRow,
 } from "../attachments";
 import { ATTACHMENT_EXT, hasBlockedExtension, IMAGE_TYPES, isInlineType, looksActive, sniffAttachment, type AttachmentType } from "../media/sniff-file";
 import { FetchError, guardedFetch, type Transport } from "../media/fetcher";
@@ -122,6 +123,9 @@ export interface AttachmentsConfig {
   vaultQuotaBytes: number;
   maxConcurrentUploads: number;
   uploadWaitMs: number;
+  /** Attachment copy (duplicate a page): bytes and wall-clock per call. */
+  copyMaxBytes: number;
+  copyMaxMs: number;
   readsPerMinute: number;
   unfurlPerMinute: number;
   unfurlMaxBytes: number;
@@ -141,6 +145,8 @@ function envConfig(): AttachmentsConfig {
     vaultQuotaBytes: envNum("ATTACHMENT_VAULT_QUOTA_BYTES", 5 * 1024 * 1024 * 1024),
     maxConcurrentUploads: Math.max(1, envNum("ATTACHMENT_MAX_CONCURRENT_UPLOADS", 2)),
     uploadWaitMs: envNum("ATTACHMENT_UPLOAD_WAIT_MS", 10_000),
+    copyMaxBytes: envNum("ATTACHMENT_COPY_MAX_BYTES", 100 * 1024 * 1024),
+    copyMaxMs: envNum("ATTACHMENT_COPY_MAX_MS", 40_000),
     readsPerMinute: envNum("ATTACHMENT_READS_PER_MINUTE", 1200),
     unfurlPerMinute: envNum("UNFURL_PER_MINUTE", 60),
     unfurlMaxBytes: envNum("UNFURL_MAX_BYTES", 1024 * 1024),
@@ -386,6 +392,181 @@ attachmentsApi.post(
   },
 );
 
+// ── POST /notes/:id/attachments/copy ────────────────────────────────────────
+
+const ATTACHMENT_REF = /\/api\/attachments\/(a_[A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])/g;
+const COPY_MAX = 50;
+/** References classified per call (a 2 MB body holds far fewer). */
+const COPY_SCAN_MAX = 2000;
+
+/**
+ * Give a COPIED page its own attachments (wave 3). A duplicate starts with the
+ * original's body, so its `/api/attachments/<id>` URLs name rows owned by the
+ * ORIGINAL page — readable only by people who can view the original. This route
+ * re-uploads each such file under the copy (a new row, new id, the copy's quota)
+ * and rewrites the copy's body + metadata to the new ids, in ONE CAS write.
+ *
+ *  - caller: a signed-in person with `edit` on the copy (`:id`; strict id, no
+ *    alias; unviewable/trashed → 404; system note → 403; locked → 409); JSON +
+ *    the CSRF guard; the upload rate limit; MCP refused like uploads.
+ *  - a referenced file is copied only if its row lives in the same vault, belongs
+ *    to ANOTHER note, and the caller can VIEW that owning note (not trashed).
+ *    Anything else (unknown id, another vault, unviewable owner) is left exactly
+ *    as it is and counted `skipped` — one count, no reason, so nothing is learned
+ *    about notes the caller cannot see.
+ *  - quota (per note / per vault), size cap or a vault failure → that reference is
+ *    rewritten to a fresh id with NO row (it loads nothing) and counted `failed`:
+ *    the copy never keeps pointing at the original's file.
+ *  - at most 50 files per call (`more: true` → call again); the body is refused
+ *    while the page is open live (409 `live`) — callers copy before opening it.
+ */
+attachmentsApi.post("/notes/:id/attachments/copy", bodyLimit({ maxSize: 1024, onError: (c) => c.json({ error: "too_large" }, 413) }), async (c) => {
+  const via = requestVia(c);
+  if (via === "mcp") return c.json({ error: "forbidden", detail: "agents cannot upload attachments" }, 403);
+  const actor = resolveActor(c);
+  if (actor.kind !== "user") return c.json({ error: "unauthorized" }, 401);
+  const csrf = csrfRefusal(c, via);
+  if (csrf) return csrf;
+  const limited = rateLimited(c, `attach-copy:${actorKey(actor)}`, Math.max(1, Math.floor(cfg.uploadsPerMinute / 3)));
+  if (limited) return limited;
+  const id = c.req.param("id");
+  if (!id || !isNoteId(id)) return c.json(NOT_FOUND, 404);
+  const entry = entryFor(c, actor);
+  const client = vaultClient(entry.id, { timeoutMs: 15_000 });
+  let note: Note;
+  try {
+    note = await client.getNote(id);
+  } catch (e) {
+    if (e instanceof VaultError && e.status === 404) return c.json(NOT_FOUND, 404);
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+  if (note.id !== id) return c.json(NOT_FOUND, 404);
+  const admin = isAdmin(actor);
+  if (!admin) {
+    await warmPageAnchors(actor.grants);
+    const caps = capsFor(actor, ref(note));
+    if (!caps.has("view") || isTrashed(note)) return c.json(NOT_FOUND, 404);
+    if (!caps.has("edit")) return c.json({ error: "forbidden", detail: "edit access required" }, 403);
+    if (systemNoteReason(note)) return c.json({ error: "protected", detail: "this is a system note" }, 403);
+    if (isLocked(note)) return c.json({ error: "locked", detail: "this page is locked" }, 409);
+  } else if (isTrashed(note)) return c.json(NOT_FOUND, 404);
+  // Every write below is a compare-and-set on this revision — never forced.
+  if (!note.updatedAt) return c.json({ error: "conflict" }, 409);
+  if (isDocLive(entry.id, note.id)) return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
+
+  const metaJson = JSON.stringify(note.metadata ?? {});
+  const referenced = [...new Set([...(note.content ?? "").matchAll(ATTACHMENT_REF), ...metaJson.matchAll(ATTACHMENT_REF)].map((m) => m[1]!))];
+  const replace = new Map<string, string>();
+  let copied = 0, failed = 0, skipped = 0, errors = 0;
+  const owners = new Map<string, boolean>();
+  const canViewOwner = async (noteId: string): Promise<boolean> => {
+    if (owners.has(noteId)) return owners.get(noteId)!;
+    let ok = false;
+    try {
+      const owner = await owningNote(entry.id, noteId);
+      ok = !!owner && !isTrashed(owner) && (admin || capsFor(actor, ref(owner)).has("view"));
+    } catch { ok = false; }
+    owners.set(noteId, ok);
+    return ok;
+  };
+  // Classify EVERY reference first (review M1): the copy's own files and the ones
+  // that cannot be copied never take one of the round's 50 places, so a later
+  // round always starts on work that is still to do.
+  const candidates: AttachmentRow[] = [];
+  for (const attId of referenced.slice(0, COPY_SCAN_MAX)) {
+    const row = getAttachment(attId);
+    if (row && row.vault_id === entry.id && row.note_id === note.id) continue; // already the copy's own file
+    if (!row || row.vault_id !== entry.id || !STORAGE_PATH.test(row.storage_path) || row.storage_path.includes("..") || !(await canViewOwner(row.note_id))) { skipped++; continue; }
+    candidates.push(row);
+  }
+  let done = 0;
+  let bytes = 0;
+  const started = Date.now();
+  let busy = false;
+  for (const row of candidates.slice(0, COPY_MAX)) {
+    // Per-call budgets (review low 1): the caller simply calls again (`more`).
+    if (done > 0 && (bytes + row.size > cfg.copyMaxBytes || Date.now() - started > cfg.copyMaxMs)) break;
+    // Quota / size: this file will never fit — the copy must not keep pointing at
+    // the original's file, so the reference is rewritten to an id with no row.
+    if (row.size > cfg.maxBytes || usedBytes(entry.id, note.id) + row.size > cfg.noteQuotaBytes || usedBytes(entry.id) + row.size > cfg.vaultQuotaBytes) {
+      replace.set(row.id, newAttachmentId());
+      failed++;
+      done++;
+      continue;
+    }
+    // One upload slot PER FILE, released between files, so a long copy never
+    // starves ordinary uploads.
+    let release: () => void;
+    try {
+      release = await uploadSlots.acquire(cfg.uploadWaitMs);
+    } catch (e) {
+      if (e instanceof BusyError) { busy = true; break; }
+      throw e;
+    }
+    try {
+      const mime = row.mime as AttachmentType;
+      const fresh = { id: newAttachmentId(), vault_id: entry.id, note_id: note.id, storage_path: "", mime, size: row.size, name: row.name, created_by: actorKey(actor), created_at: new Date().toISOString() };
+      // A vault error or timeout is TRANSIENT (review low 2): the original reference
+      // stays, the file is reported (`errors`) and a later call retries it.
+      let blob: Blob;
+      try {
+        const upstream = await vaultStorageFetch(entry.id, row.storage_path, null);
+        if (upstream.status !== 200) { await upstream.body?.cancel().catch(() => {}); errors++; done++; continue; }
+        blob = await upstream.blob();
+      } catch { errors++; done++; continue; }
+      if (blob.size > cfg.maxBytes) { replace.set(row.id, newAttachmentId()); failed++; done++; continue; }
+      try {
+        fresh.size = blob.size;
+        fresh.storage_path = (await vaultUpload(entry.id, blob, `upload.${ATTACHMENT_EXT[mime] ?? "bin"}`)).path;
+      } catch { errors++; done++; continue; }
+      try {
+        const attached = await vaultAttach(entry.id, note.id, fresh.storage_path, mime);
+        insertAttachment({ ...fresh, vault_attachment_id: attached.id || null });
+      } catch {
+        try { recordOrphan(fresh); } catch { /* best-effort */ }
+        errors++;
+        done++;
+        continue;
+      }
+      replace.set(row.id, fresh.id);
+      copied++;
+      done++;
+      bytes += blob.size;
+    } finally {
+      release();
+    }
+  }
+  if (busy && done === 0) { c.header("Retry-After", "5"); return c.json({ error: "busy" }, 503); }
+  // Anything still to do: files past this round, past the scan cap, or that hit a transient error.
+  const more = candidates.length > done || errors > 0 || referenced.length > COPY_SCAN_MAX;
+  if (replace.size === 0) return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: note.updatedAt });
+  // The page may have been opened while files were copied (review low 3): a body
+  // write under a live document would be folded over what is being typed.
+  if (isDocLive(entry.id, note.id)) return c.json({ error: "live", detail: "close the page before copying its files" }, 409);
+  const swap = (text: string) => text.replace(ATTACHMENT_REF, (m, old: string) => (replace.has(old) ? `/api/attachments/${replace.get(old)}` : m));
+  const content = swap(note.content ?? "");
+  const changedMeta: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(note.metadata ?? {})) {
+    const before = JSON.stringify(v);
+    const after = swap(before);
+    if (after !== before) changedMeta[k] = JSON.parse(after);
+  }
+  try {
+    const saved = await client.updateNote(note.id, {
+      ...(content !== (note.content ?? "") ? { content } : {}),
+      ...(Object.keys(changedMeta).length ? { metadata: changedMeta } : {}),
+      ifUpdatedAt: note.updatedAt,
+    });
+    noteCache.delete(`${entry.id}\u0000${note.id}`);
+    return c.json({ ok: true, copied, failed, skipped, errors, more, updatedAt: saved.updatedAt });
+  } catch (e) {
+    // The page changed under us (or the vault refused): the new rows exist but nothing
+    // references them yet — the owner's sweep flags them. The caller may simply retry.
+    if (e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409)) return c.json({ error: "conflict" }, 409);
+    return c.json({ error: "vault_unreachable" }, 502);
+  }
+});
+
 // ── GET /attachments/:id ────────────────────────────────────────────────────
 
 const STORAGE_PATH = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -413,7 +594,25 @@ attachmentsApi.get("/attachments/:id", async (c) => {
     if (!capsFor(here, ref(note)).has("view")) return c.json(NOT_FOUND, 404);
     if (isTrashed(note)) return c.json(NOT_FOUND, 404);
   }
+  return serveAttachment(c, row);
+});
 
+/** The owning note of an attachment row (≤ 5 s cache; null = gone or an alias). */
+export const attachmentOwningNote = (row: AttachmentRow): Promise<Note | null> => owningNote(row.vault_id, row.note_id);
+
+/** A servable row with a sane storage path, or null. */
+export function servableAttachment(id: string): AttachmentRow | null {
+  const row = getAttachment(id);
+  return row && STORAGE_PATH.test(row.storage_path) && !row.storage_path.includes("..") ? row : null;
+}
+
+/**
+ * Stream one attachment with the rebuilt, hardened response (sniffed type, nosniff,
+ * CORP same-origin, private no-cache + ETag, sandbox CSP, download on a top-level
+ * navigation). AUTHORIZATION IS THE CALLER'S JOB — the signed-in route above and
+ * the publication route (`/api/p/:slug/attachments/:id`) both decide first.
+ */
+export async function serveAttachment(c: Context, row: AttachmentRow): Promise<Response> {
   // Immutable content per id → a strong ETag; revalidation still runs every check above.
   const etag = `"${row.id}"`;
   const dest = (c.req.header("sec-fetch-dest") ?? "").toLowerCase();
@@ -466,7 +665,7 @@ attachmentsApi.get("/attachments/:id", async (c) => {
     return new Response(null, { status: 416, headers });
   }
   return new Response(upstream.body, { status: upstream.status, headers });
-});
+}
 
 // ── GET /unfurl ─────────────────────────────────────────────────────────────
 

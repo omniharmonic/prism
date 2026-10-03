@@ -31,7 +31,8 @@ export type NotificationType =
   | "access_granted"
   | "access_denied"
   | "suggestion_accepted"
-  | "suggestion_rejected";
+  | "suggestion_rejected"
+  | "suggestion_resolved";
 
 export interface NotificationItem {
   id: string;
@@ -132,6 +133,10 @@ export const notificationsApi = {
     call<{ ok: true; unread: number }>("/api/notifications/read", { method: "POST", body: JSON.stringify(o) }),
   archive: (ids: string[], archived = true) =>
     call<{ ok: true; unread: number }>("/api/notifications/archive", { method: "POST", body: JSON.stringify({ ids, archived }) }),
+  /** Workspace members the caller may @-mention by account (opaque id + name; never an email).
+   *  Empty on any failure (older server, desktop, guest). */
+  mentionMembers: (q: string) =>
+    call<{ members: Array<{ id: string; name: string }> }>(`/api/mentions/members${qs({ q })}`).then((r) => r.members ?? [], () => [] as Array<{ id: string; name: string }>),
   getSettings: () => call<NotificationSettingsResponse>("/api/notifications/settings"),
   putSettings: (settings: NotificationSettings) =>
     call<NotificationSettingsResponse>("/api/notifications/settings", { method: "PUT", body: JSON.stringify({ settings }) }),

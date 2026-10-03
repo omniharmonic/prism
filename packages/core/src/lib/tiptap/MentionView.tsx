@@ -6,6 +6,7 @@ import { Bell, CalendarDays, FileText, Lock, Trash2, User } from "lucide-react";
 import { setMentionNodeView, type MentionAttrs } from "./MentionNode";
 import { formatChipDate, formatChipDateLong, isDateOnly, chipDate, ymd, localIso } from "./MentionDates";
 import { mentionNoteId } from "./MentionContext";
+import { isAccountMentionId } from "./MentionParse";
 import { mentionToast } from "./MentionToast";
 import { queryKeys } from "../parachute/queries";
 import { useUIStore } from "../../app/stores/ui";
@@ -155,6 +156,19 @@ function PageChip({ id, chip }: { id: string | null; chip: React.RefObject<HTMLS
 }
 
 function PersonChip({ id, label, chip }: { id: string | null; label: string; chip: React.RefObject<HTMLSpanElement | null> }) {
+  // A member mentioned by account has no person page: a plain chip (no profile, no email).
+  if (isAccountMentionId(id)) {
+    return (
+      <span ref={chip} className="prism-mention-chip" data-state="ready" data-account="true" aria-label={`Member: ${label}`}>
+        <span className="prism-mention-at" aria-hidden="true">@</span>
+        <span className="prism-mention-text">{label}</span>
+      </span>
+    );
+  }
+  return <PersonPageChip id={id} label={label} chip={chip} />;
+}
+
+function PersonPageChip({ id, label, chip }: { id: string | null; label: string; chip: React.RefObject<HTMLSpanElement | null> }) {
   const client = useOptionalVaultClient();
   const openTab = useUIStore((s) => s.openTab);
   const hover = useHover();

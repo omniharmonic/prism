@@ -1,10 +1,10 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import * as Y from "yjs";
-import { persistLocalDocument, localDocumentKey, type LocalSaveState } from "../src/collab/localDocument";
+import { persistLocalDocument, localDocumentKey, pendingStorageKey, type LocalSaveState } from "../src/collab/localDocument";
 import { CollabDoc } from "../src/collab/CollabDoc";
 import { ReconnectScreen } from "../src/auth/ReconnectScreen";
-import { fetchMe } from "../src/config";
+import { fetchMe, logout } from "../src/config";
 import { unsyncedDocs, syncUnsyncedDocs, startUnsyncedDocs } from "../src/collab/unsynced";
 import { deriveSyncStatus, useSyncStore } from "@prism/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,11 +29,52 @@ Object.assign(window, { prismCollabFixture: {
   },
   close(label: string) { const entry = opened.get(label)!; entry.persistence.close(); entry.doc.destroy(); opened.delete(label); },
   async checkAuth() { return fetchMe(); },
+  /** Sign out through the real path (review M3). `answer` = what the person picks in the leave prompt. */
+  async logout(answer: "stay" | "download" | "discard" = "discard") {
+    const asked: number[] = [];
+    const onAsk = (event: Event) => { const d = (event as CustomEvent<{ count: number; take: () => void; resolve: (c: string) => void }>).detail; d.take(); asked.push(d.count); d.resolve(answer); };
+    window.addEventListener("prism:leave-with-unsent", onAsk);
+    try { return { left: await logout(), asked }; } finally { window.removeEventListener("prism:leave-with-unsent", onAsk); }
+  },
+  /** IndexedDB live-document keys and rescue keys currently on this device. */
+  async stored(): Promise<{ rows: string[]; rescue: string[]; registry: string[] }> {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("prism-collab-v3", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("documents");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      const rows = await new Promise<string[]>((resolve, reject) => { const r = db.transaction("documents").objectStore("documents").getAllKeys(); r.onsuccess = () => resolve(r.result.map(String)); r.onerror = () => reject(r.error); });
+      const keys = Object.keys(localStorage);
+      return { rows, rescue: keys.filter((k) => k.startsWith("prism:collab-pending:")), registry: keys.filter((k) => k.startsWith("prism:collab-unsynced:")) };
+    } finally { db.close(); }
+  },
   // Wave 2E re-review M1: live documents with edits only on this device.
   unsynced: () => unsyncedDocs(),
   syncUnsynced: () => syncUnsyncedDocs(),
   startUnsynced: () => startUnsyncedDocs(),
   syncLabel: () => deriveSyncStatus(useSyncStore.getState()).label,
+  /** Unload-rescue entries (localStorage) — wave 3 unload guard. A rescue is a DIFF on
+   *  top of the IndexedDB row, so it only reads as text once merged with that row. */
+  rescued: (): number => Object.keys(localStorage).filter((k) => k.startsWith("prism:collab-pending:")).length,
+  /** Everything this device holds per document: the IndexedDB row + its rescue entry. */
+  async deviceTexts(): Promise<string[]> {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("prism-collab-v3", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("documents");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      const store = db.transaction("documents").objectStore("documents");
+      const [keys, rows] = await Promise.all([store.getAllKeys(), store.getAll()].map((request) => new Promise<unknown[]>((resolve, reject) => { request.onsuccess = () => resolve(request.result as unknown[]); request.onerror = () => reject(request.error); })));
+      return keys!.map((key, i) => {
+        const doc = new Y.Doc(); Y.applyUpdate(doc, rows![i] as Uint8Array);
+        const raw = localStorage.getItem(pendingStorageKey(String(key)));
+        if (raw) Y.applyUpdate(doc, Uint8Array.from(atob(raw), (c) => c.charCodeAt(0)));
+        const text = doc.getXmlFragment("default").toString(); doc.destroy(); return text;
+      });
+    } finally { db.close(); }
+  },
   /** What the local store (IndexedDB) really holds for live documents — read-only, every stored document. */
   async localTexts(): Promise<string[]> {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
