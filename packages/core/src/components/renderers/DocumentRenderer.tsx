@@ -17,6 +17,7 @@ import { SlashCommand, type SlashCommandState } from "../../lib/tiptap/SlashComm
 import { SlashMenu } from "./SlashMenu";
 import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
 import { blockSchemaExtensions } from "../../editor/blocks";
+import { mentionExtensions } from "../../lib/tiptap/MentionNode";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
@@ -129,6 +130,8 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     // Images, tables, callouts, toggles, columns, colours: the SAME list the
     // live editor and the server use, so a note round-trips through either.
     ...blockSchemaExtensions(),
+    // @-mention chips: part of the shared schema (COLLAB_SCHEMA_VERSION 3).
+    ...mentionExtensions(),
     TaskList,
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),

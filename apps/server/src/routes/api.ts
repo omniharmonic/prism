@@ -305,7 +305,7 @@ api.get("/events", async (c) => {
  * short-circuit, so it covers the owner passthrough too.
  */
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
-const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column)"|<details[\s>]|data-block-color=|data-text-color=/;
+const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column|mention)"|<details[\s>]|data-block-color=|data-text-color=/;
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
   return SCHEMA_V2_MARKERS.test(storedContent ?? "");
 }
