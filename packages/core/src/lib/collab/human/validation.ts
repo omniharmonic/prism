@@ -273,6 +273,13 @@ export async function captureHumanSelection(
   if (insertionProblem) throw Error(insertionProblem);
   const quote = doc.textBetween(from, to, "\n", "\ufffc");
   const { body, parity } = humanRevisionBody(doc, ydoc);
+  // The range and quote were read from the EDITOR's document. If that is not
+  // exactly what the server projects from the shared fragment, the same positions
+  // could address different text (repeated words) — refuse rather than guess.
+  if (parity !== "match")
+    throw Error(
+      "This page shows content this version of Prism can’t place a suggestion in. Reload, then try again.",
+    );
   const comments = ydoc.getMap("comments").toJSON();
   return {
     action,
@@ -304,6 +311,12 @@ function serverSchema(): Schema {
 export function humanRevisionBody(doc: ProseNode, ydoc: Y.Doc): { body: unknown; parity: "match" | "fragment" } {
   const editorJson = doc.toJSON();
   const fragment = ydoc.getXmlFragment("default");
+  // A never-written fragment under an editor showing its one empty paragraph: the
+  // server normalises a blank note to that same paragraph, and position 1 of an
+  // empty paragraph cannot address other text — hash the editor's document.
+  if (fragment.length === 0 && doc.childCount === 1 && !!doc.firstChild?.isTextblock && doc.firstChild.content.size === 0) {
+    return { body: editorJson, parity: "match" };
+  }
   let projected: unknown = editorJson;
   try {
     projected = initProseMirrorDoc(fragment, serverSchema()).doc.toJSON();

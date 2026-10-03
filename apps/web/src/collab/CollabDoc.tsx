@@ -218,6 +218,7 @@ function ScopedCollabDoc({
   const useCommands = commands && kind === "document";
   const effectiveSuggesting = useCommands ? false : isSuggestLevel ? true : suggesting;
   const send = useMemo(() => sendHumanCommand(noteId, getCapabilityToken()), [noteId]);
+  const pendingThreadCommands = useRef(new Map<string, Parameters<typeof send>[0]>());
   const humanChannel: HumanCommandChannel | undefined = useCommands ? { send, ready: connected && synced } : undefined;
   const commentActions: CommentCommandActions | undefined = useMemo(() => {
     if (!useCommands || !ydoc) return undefined;
@@ -228,17 +229,24 @@ function ScopedCollabDoc({
       return humanCollabRevision(body, ydoc.getMap("comments").toJSON());
     };
     const base = async () => ({ requestId: crypto.randomUUID(), createdAt: Date.now(), revision: await revision() });
-    const run = async (make: () => Promise<Parameters<typeof send>[0]>) => {
+    // One immutable pending command per (action, thread, payload): after an
+    // outcome-unknown failure the next attempt resends the SAME request (same
+    // requestId and body — the server applies it at most once), like the composer.
+    const run = async (key: string, make: () => Promise<Parameters<typeof send>[0]>) => {
       try {
-        await send(await make());
+        const command = pendingThreadCommands.current.get(key) ?? (await make());
+        pendingThreadCommands.current.set(key, command);
+        await send(command);
+        pendingThreadCommands.current.delete(key);
       } catch (e) {
+        if (!(e instanceof HumanCommandFailure && e.retrySame)) pendingThreadCommands.current.delete(key);
         throw new Error(humanFailureText(e));
       }
     };
     return {
-      reply: (threadId, text) => run(async () => ({ ...(await base()), kind: "reply", threadId, text })),
-      resolve: (threadId, resolved) => run(async () => ({ ...(await base()), kind: "resolve", threadId, resolved })),
-      remove: (threadId) => run(async () => ({ ...(await base()), kind: "delete-comment", threadId })),
+      reply: (threadId, text) => run(`reply:${threadId}:${text}`, async () => ({ ...(await base()), kind: "reply", threadId, text })),
+      resolve: (threadId, resolved) => run(`resolve:${threadId}:${resolved}`, async () => ({ ...(await base()), kind: "resolve", threadId, resolved })),
+      remove: (threadId) => run(`delete:${threadId}`, async () => ({ ...(await base()), kind: "delete-comment", threadId })),
       // The server decides (only threads whose every comment is yours); hide it elsewhere.
       canDelete: (thread) => thread.comments.length > 0 && thread.comments.every((c) => c.author === user.name),
     };

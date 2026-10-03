@@ -24,6 +24,8 @@ import { resetPagesForTests } from "../src/pages";
 import { issuePat } from "../src/auth/pat";
 import { addGrant, setAccount, grantsForResource } from "../src/db";
 import type { Cap } from "../src/permissions";
+import { changeKindOf } from "../src/sharing";
+import { writerIdFor } from "../src/writer-stamp";
 import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -193,17 +195,28 @@ test("M2: a scoped sharer cannot replace, narrow or delete access an admin grant
 test("M3: non-owners cannot write the writer stamp and never receive it", async () => {
   grantCaps(BOB, "page", "p", ["view", "edit"]);
   fv.notes.get("p")!.metadata = { prism_last_writer: CAROL, prism_last_change: "edit", prism_last_write_at: "2026-01-01T00:00:00.000Z" };
+  // A client value for any attribution key is dropped; the server's own stamp is stored.
   for (const key of ["prism_last_writer", "prism_last_change", "prism_last_write_at"]) {
     const r = await req(api, "/notes/p", { method: "PATCH", cookie: as(BOB), headers: J, body: JSON.stringify({ metadata: { [key]: "forged" }, if_updated_at: fv.notes.get("p")!.updatedAt }) });
-    assert.equal(r.status, 403, key);
+    assert.equal(r.status, 200, key);
+    const meta = fv.notes.get("p")!.metadata!;
+    assert.ok(!JSON.stringify(meta).includes("forged"), key);
+    assert.equal(meta.prism_last_writer, writerIdFor(BOB));
+    assert.equal(changeKindOf(meta), "edit");
   }
+  // /api/properties refuses the keys outright.
+  for (const key of ["prism_last_writer", "prism_last_change", "prism_last_write_at"]) {
+    const r = await req(api, "/properties/p", { method: "POST", cookie: as(BOB), headers: J, body: JSON.stringify({ set: { [key]: "forged" } }) });
+    assert.equal(r.status, 400, key);
+  }
+  fv.notes.get("p")!.metadata = { prism_last_writer: writerIdFor(CAROL), prism_last_change: "edit@2026-01-01T00:00:00.000Z", prism_last_write_at: "2026-01-01T00:00:00.000Z" };
   const created = await req(api, "/notes", { method: "POST", cookie: as(BOB), headers: J, body: JSON.stringify({ content: "x", path: "vault/Team/Plan/New", metadata: { prism_last_writer: "forged", prism_last_change: "agent" } }) });
   if (created.status === 200) {
     const n = (await created.json()) as { id: string };
     assert.notEqual(fv.notes.get(n.id)!.metadata?.prism_last_writer, "forged");
     assert.notEqual(fv.notes.get(n.id)!.metadata?.prism_last_change, "agent");
   }
-  const leaks = (o: unknown) => /prism_last_(writer|change|write_at)|carol@test/.test(JSON.stringify(o));
+  const leaks = (o: unknown) => /prism_last_(writer|change|write_at)|carol@test|u_[0-9a-f]{16}/.test(JSON.stringify(o));
   assert.equal(leaks(await (await req(api, "/notes/p", { cookie: as(BOB) })).json()), false, "GET");
   assert.equal(leaks(await (await req(api, "/notes", { cookie: as(BOB) })).json()), false, "list");
   const patched = await req(api, "/notes/p", { method: "PATCH", cookie: as(BOB), headers: J, body: JSON.stringify({ content: "<p>v2</p>", if_updated_at: fv.notes.get("p")!.updatedAt }) });
@@ -213,4 +226,26 @@ test("M3: non-owners cannot write the writer stamp and never receive it", async 
   fv.notes.get("p")!.metadata = { ...fv.notes.get("p")!.metadata, prism_trashed_by: OWNER };
   await req(api, "/notes/p", { method: "PATCH", cookie: as(BOB), headers: J, body: JSON.stringify({ content: "<p>v3</p>", if_updated_at: fv.notes.get("p")!.updatedAt }) });
   assert.ok(!JSON.stringify(await (await req(api, "/notes/p/versions", { cookie: as(BOB) })).json()).includes("prism_trashed_by"), "version rows drop prism_trashed_by");
+});
+
+// ── LOW ──────────────────────────────────────────────────────────────────────
+
+test("LOW: a page grantee's /api/notes listing is budgeted per caller", async () => {
+  grantCaps(BOB, "page", "p", ["view"]);
+  let last = 200;
+  for (let i = 0; i < 31; i++) last = (await req(api, "/notes", { cookie: as(BOB) })).status;
+  assert.equal(last, 429);
+  // Someone without page shares is not budgeted by this limiter.
+  grantCaps(CAROL, "note", "q", ["view"]);
+  for (let i = 0; i < 35; i++) last = (await req(api, "/notes", { cookie: as(CAROL) })).status;
+  assert.equal(last, 200);
+});
+
+test("LOW: a moved shared page's sub-pages are reachable at once (anchors resolve from the live tree write-through)", async () => {
+  grantCaps(BOB, "page", "p", ["view"]);
+  assert.equal(await status(BOB, "p1"), 200);
+  assert.equal((await move(OWNER, "p", { newParentPath: "vault/Carol" })).status, 200);
+  assert.equal(await status(BOB, "p1"), 200);
+  fv.put({ id: "ghost", path: "vault/Team/Plan/Ghost", content: "<p>at the old path</p>" });
+  assert.equal(await status(BOB, "ghost"), 403);
 });

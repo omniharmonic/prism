@@ -28,24 +28,25 @@ const dark = params.has("dark");
 applyTheme(dark ? "dark" : "light");
 useSettingsStore.setState({ theme: dark ? "dark" : "light" });
 useAgentChatStore.setState({ scope: "fixture-2d" });
-const ME = "jordan@prism.test";
+const ME = "u_00000000000000a1"; // opaque writer stamp ids (never emails)
+const stamp = (who: string, kind: string, when: string) => ({ prism_last_writer: who, prism_last_write_at: when, prism_last_change: `${kind}@${when}` });
 const at = (h: number) => new Date(Date.UTC(2026, 9, 2, h, 0)).toISOString();
 
 const note: Note = {
   id: "handbook",
   path: "Research/Research handbook",
   content: "<h1>Research handbook</h1><p>A shared workspace where you and your agent work with connected context.</p><p>Prism brings notes, tasks and sources together.</p>",
-  metadata: { prism_last_writer: ME, prism_last_change: "edit" },
+  metadata: stamp(ME, "edit", at(11)),
   tags: ["research"],
   createdAt: "2026-09-01T09:00:00Z",
   updatedAt: at(11),
 };
 // Newest first. A row is the state BEFORE a change; its metadata says who wrote that state.
 const versions: NoteVersion[] = [
-  { versionIx: 4, op: "update", supersededAt: at(11), path: note.path, metadata: { prism_last_writer: ME, prism_last_change: "accepted-suggestion" }, contentLength: 120, content: null },
-  { versionIx: 3, op: "update", supersededAt: at(10), path: note.path, metadata: { prism_last_writer: `agent:${ME}`, prism_last_change: "agent" }, contentLength: 110, content: null },
+  { versionIx: 4, op: "update", supersededAt: at(11), path: note.path, metadata: stamp(ME, "accepted-suggestion", at(10)), contentLength: 120, content: null },
+  { versionIx: 3, op: "update", supersededAt: at(10), path: note.path, metadata: stamp(ME, "agent", at(9)), contentLength: 110, content: null },
   { versionIx: 2, op: "update", supersededAt: at(9), path: note.path, metadata: null, contentLength: 90, content: null, writer: { kind: "person", name: "Sam Chen", self: false } },
-  { versionIx: 1, op: "update", supersededAt: at(8), path: note.path, metadata: { prism_last_writer: "link" }, contentLength: 80, content: null },
+  { versionIx: 1, op: "update", supersededAt: at(8), path: note.path, metadata: stamp("link", "edit", at(7)), contentLength: 80, content: null },
   { versionIx: 0, op: "update", supersededAt: at(7), path: note.path, metadata: null, contentLength: 60, content: null },
 ];
 const activity: PageActivity = {
@@ -68,6 +69,8 @@ const activity: PageActivity = {
   lastEditor: { kind: "person", name: "Jordan Diaz", self: true },
   createdAt: note.createdAt,
   updatedAt: note.updatedAt,
+  writers: { [ME]: "Jordan Diaz" },
+  me: ME,
 };
 const shared: SharedItem[] = params.has("empty")
   ? []
@@ -98,7 +101,7 @@ const client = {
     };
   },
 } as unknown as VaultClient;
-const sharing = { createShareLink: async () => "", getViewer: async () => ({ email: ME, role: "member", isServerOwner: false, vaultId: "primary" }) } as unknown as CollabSharing;
+const sharing = { createShareLink: async () => "", getViewer: async () => ({ email: "jordan@prism.test", role: "member", isServerOwner: false, vaultId: "primary" }) } as unknown as CollabSharing;
 
 function Panel() {
   const [active, setActive] = useState<string | null>(null);

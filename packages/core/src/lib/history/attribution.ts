@@ -5,10 +5,11 @@
  * Sources, best first:
  *  - `version.writer` — the server's derivation for non-owners (name only, never
  *    an email; apps/server/src/sharing.ts `versionWriter`);
- *  - the writer stamp in the state's metadata: `prism_last_writer` (an account
- *    email, "link" for a link guest, or `agent:<email>`) and `prism_last_change`
- *    ("edit" | "suggestion" | "agent" | "accepted-suggestion"), written by the
- *    gateway and by collab stores — the owner passthrough sees these raw;
+ *  - the writer stamp in the state's metadata: `prism_last_writer` (an OPAQUE
+ *    subject id, or "link"), `prism_last_write_at`, and `prism_last_change`
+ *    (`<kind>@<write time>`, kind = edit | suggestion | agent | accepted-suggestion),
+ *    written by the gateway and by collab stores — only the owner passthrough
+ *    sees these raw, and resolves ids with the page's activity directory;
  *  - the vault's own channel (`via: "mcp"` = an agent tool), owner only.
  * Missing everything (older states, a vault without stamps) → "unknown", which
  * the UI words neutrally ("Saved"), never as somebody.
@@ -26,21 +27,41 @@ export interface AttributionInput {
   via?: string | null;
 }
 
-/** Derive the writer of a stored state (pure). `viewer` = the signed-in email, if known. */
-export function writerOf(input: AttributionInput, viewer?: string | null, nameOf?: (email: string) => string | null): WriterInfo {
+/** Who the opaque stamps of a page belong to (GET /api/notes/:id/activity: `writers`, `me`). */
+export interface WriterDirectory {
+  /** stamp id → display name, for the stamps of THIS page only. */
+  names?: Record<string, string> | null;
+  /** The viewer's own stamp id. */
+  me?: string | null;
+}
+
+/** The kind recorded with a stamp: `<kind>@<prism_last_write_at>` (ignored when it belongs to an older stamp). */
+function changeKind(meta: Record<string, unknown> | null): string | null {
+  const v = meta?.prism_last_change;
+  const at = meta?.prism_last_write_at;
+  if (typeof v !== "string" || typeof at !== "string") return null;
+  const i = v.indexOf("@");
+  return i > 0 && v.slice(i + 1) === at ? v.slice(0, i) : null;
+}
+
+/**
+ * Derive the writer of a stored state (pure). The stamp is an OPAQUE subject id
+ * (never an email); `directory` — from the page's activity read — says which id
+ * is the viewer and what the others are called. Without it a person is unnamed.
+ */
+export function writerOf(input: AttributionInput, directory?: WriterDirectory | null): WriterInfo {
   if (input.writer && typeof input.writer === "object" && typeof input.writer.kind === "string") return input.writer;
   const meta = input.metadata ?? null;
   const stamp = typeof meta?.prism_last_writer === "string" ? meta.prism_last_writer : null;
-  const change = typeof meta?.prism_last_change === "string" ? meta.prism_last_change : null;
-  const email = stamp && stamp !== "link" ? stamp.replace(/^agent:/, "") : null;
-  const self = !!email && !!viewer && email.toLowerCase() === viewer.toLowerCase();
-  const name = stamp === "link" ? "Guest (link)" : email ? (nameOf?.(email) ?? email) : null;
-  if (change === "agent" || stamp?.startsWith("agent:") || (!stamp && input.via === "mcp")) return { kind: "agent", name, self };
+  if (!stamp) return input.via === "mcp" ? { kind: "agent", name: null, self: false } : { kind: "unknown", name: null, self: false };
+  const self = stamp !== "link" && !!directory?.me && stamp === directory.me;
+  const name = stamp === "link" ? "Guest (link)" : (directory?.names?.[stamp] ?? null);
+  const change = changeKind(meta);
+  if (change === "agent") return { kind: "agent", name, self };
   if (change === "accepted-suggestion") return { kind: "accepted-suggestion", name, self };
   if (change === "suggestion") return { kind: "suggestion", name, self };
   if (stamp === "link") return { kind: "guest", name, self: false };
-  if (email) return { kind: "person", name, self };
-  return { kind: "unknown", name: null, self: false };
+  return { kind: "person", name, self };
 }
 
 /** The timeline title for a state ("Agent revision", "Accepted suggestion", …). */

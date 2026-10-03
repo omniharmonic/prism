@@ -24,6 +24,7 @@ import { consumeRateLimit } from "../middleware/ratelimit";
 import { ancestorPages, displayNameOnly, inheritedPeople, personView, versionWriter } from "../sharing";
 import { TRASH_TAG } from "@prism/core/pages";
 import type { VaultEntry } from "../config";
+import { WRITER_KEY, writerIdFor, writerNames } from "../writer-stamp";
 
 export const sharingApi = new Hono();
 
@@ -296,7 +297,41 @@ sharingApi.get("/notes/:id/activity", async (c) => {
       shares.sort((x, y) => y.at - x.at);
     }
     const viewer = a.kind === "user" ? a.email : null;
-    return c.json({ comments, shares, sharesVisible: manage, lastEditor: versionWriter(n.metadata ?? null, null, viewer), createdAt: n.createdAt ?? null, updatedAt: n.updatedAt ?? null });
+    // Names behind the opaque writer stamps of THIS page (current + its versions),
+    // for signed-in viewers only — the owner passthrough serves raw stamps, and
+    // the client resolves them with this map (never the whole account list).
+    let writers: Record<string, string> | undefined;
+    let myWriterId: string | undefined;
+    const names = viewer ? writerNames() : undefined;
+    if (viewer && names) {
+      myWriterId = writerIdFor(viewer);
+      writers = {};
+      const stamps = new Set<string>();
+      const add = (m: Record<string, unknown> | null | undefined) => {
+        const v = m?.[WRITER_KEY];
+        if (typeof v === "string") stamps.add(v);
+      };
+      add(n.metadata);
+      try {
+        for (const v of (await vaultClient(a.vaultId).listVersions(n.id, 100, 0)).versions) add(v.metadata);
+      } catch {
+        /* history unavailable: the current stamp is still named */
+      }
+      for (const id of stamps) {
+        const name = names.get(id);
+        // An account without a display name resolves to its email: only its owner sees that.
+        if (name && (id === myWriterId || !name.includes("@"))) writers[id] = name;
+      }
+    }
+    return c.json({
+      comments,
+      shares,
+      sharesVisible: manage,
+      lastEditor: versionWriter(n.metadata ?? null, null, viewer, names, n.updatedAt ?? null),
+      createdAt: n.createdAt ?? null,
+      updatedAt: n.updatedAt ?? null,
+      ...(writers ? { writers, me: myWriterId } : {}),
+    });
   } catch {
     return c.json({ error: "vault_unavailable" }, 502);
   }

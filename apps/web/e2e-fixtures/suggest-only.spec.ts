@@ -102,7 +102,8 @@ test("a suggestion goes through the command endpoint with a matching revision an
   expect(Object.keys(sent).sort()).toEqual(["createdAt", "from", "kind", "quote", "requestId", "revision", "text", "to"]);
   expect(sent).toMatchObject({ kind: "suggest", quote: "beta", text: "delta" });
   await expect.poll(async () => (await server.note("plan"))!.content).toContain('data-suggestion="insert"');
-  expect((await server.note("plan"))!.metadata?.prism_last_change).toBe("suggestion");
+  expect(String((await server.note("plan"))!.metadata?.prism_last_change)).toMatch(/^suggestion@/);
+  expect(String((await server.note("plan"))!.metadata?.prism_last_writer)).toMatch(/^u_[0-9a-f]{16}$/);
   // An editor sees it live and can accept it.
   const editorPage = await browser.newPage();
   await open(editorPage, "eve", "plan");

@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/react";
-import { useVaultClient } from "../../data/VaultClientContext";
-import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { usePageActivity } from "./usePageActivity";
 import { lastEditedBy, writerOf } from "../../lib/history/attribution";
 import { formatWhen } from "../history/labels";
 import type { Note } from "../../lib/types";
@@ -35,9 +33,6 @@ export function countText(text: string): { words: number; characters: number } {
  * counts follow unsaved typing).
  */
 export function PageInfo({ note, editor }: { note: Note; editor?: Editor | null }) {
-  const client = useVaultClient();
-  const audience = useAgentChatStore((s) => s.scope);
-  const scope = client.scope?.() ?? audience;
   const [liveText, setLiveText] = useState<string | null>(null);
   useEffect(() => {
     if (!editor || editor.isDestroyed) return setLiveText(null);
@@ -48,16 +43,10 @@ export function PageInfo({ note, editor }: { note: Note; editor?: Editor | null 
       editor.off("update", read);
     };
   }, [editor]);
-  // The server names the last editor without an email (non-owners); owners read the stamp.
-  const activity = useQuery({
-    queryKey: ["page-activity", scope, note.id, note.updatedAt],
-    enabled: !!client.getPageActivity,
-    queryFn: () => client.getPageActivity!(note.id),
-    staleTime: 30_000,
-    retry: false,
-  });
+  // The server names the last editor (never an email); the owner path resolves the raw stamp.
+  const activity = usePageActivity(note);
   const counts = countText(liveText ?? plainText(note.content));
-  const writer = activity.data?.lastEditor ?? writerOf({ metadata: note.metadata });
+  const writer = activity.data?.lastEditor ?? writerOf({ metadata: note.metadata }, activity.directory);
   const by = lastEditedBy(writer);
   const row = (label: string, value: string) => (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>

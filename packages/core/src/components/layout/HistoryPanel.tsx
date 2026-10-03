@@ -12,7 +12,7 @@ import { useAgentChatStore } from "../../lib/agent/chatStore";
 import { writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
 import { PageUpdates } from "../sharing/PageUpdates";
 import { PersonAvatar } from "../sharing/PersonAvatar";
-import { useViewerEmail } from "../sharing/useViewerEmail";
+import { usePageActivity } from "../sharing/usePageActivity";
 import "./context-panels.css";
 
 interface HistoryPanelProps {
@@ -35,7 +35,7 @@ export function HistoryPanel({ note }: HistoryPanelProps) {
 function ScopedHistory({ note }: HistoryPanelProps) {
   const client = useVaultClient();
   const history = useNoteVersions(note.id);
-  const viewer = useViewerEmail();
+  const { directory, data: activity } = usePageActivity(note);
   const [tab, setTab] = useState<"versions" | "updates">("versions");
   const [openIx, setOpenIx] = useState<number | null>(null);
   const [restoredFrom, setRestoredFrom] = useState<string | null | undefined>(undefined);
@@ -58,7 +58,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
     ? sizeDelta(versions[0].contentLength, new TextEncoder().encode(note.content ?? "").length)
     : undefined;
 
-  const currentWriter = writerOf({ metadata: note.metadata }, viewer);
+  const currentWriter = activity?.lastEditor ?? writerOf({ metadata: note.metadata }, directory);
   return (
     <section className="prism-context-history space-y-3" aria-label="Page history">
       <header><h2>Version history</h2><p>Saved versions of this page</p></header>
@@ -77,7 +77,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
         ))}
       </div>
       {tab === "updates" ? (
-        <PageUpdates note={note} versions={versions} viewer={viewer} />
+        <PageUpdates note={note} versions={versions} />
       ) : (<>
       {restoredFrom !== undefined && (
         <div
@@ -129,7 +129,7 @@ function ScopedHistory({ note }: HistoryPanelProps) {
             // What THIS save changed: its size vs the version before it.
             const older = versions[i + 1];
             const delta = older ? sizeDelta(older.contentLength, v.contentLength) : undefined;
-            const writer = writerOf(v, viewer);
+            const writer = writerOf(v, directory);
             return (
               <div key={v.versionIx}>
                 {day !== prevDay && (

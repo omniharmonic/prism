@@ -65,6 +65,9 @@ export interface PageActivity {
   lastEditor: WriterInfo;
   createdAt: string | null;
   updatedAt: string | null;
+  /** Signed-in viewers: display names of this page's writer stamps, and the viewer's own stamp id. */
+  writers?: Record<string, string>;
+  me?: string;
 }
 
 /** GET /api/notes/:id/access-preview?parent= */

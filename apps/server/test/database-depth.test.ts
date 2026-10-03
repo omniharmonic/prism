@@ -133,7 +133,10 @@ test("writer stamp: property writes, non-owner edits/creates and the owner passt
   assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, writerIdFor("kai@test.local"));
   const created = await post("/notes", { content: "", tags: ["task"], metadata: { title: "New", prism_last_writer: "ceo@test.local" } }, login("kai@test.local"));
   assert.equal(created.status, 200);
-  assert.equal(((await created.json()) as any).metadata.prism_last_writer, writerIdFor("kai@test.local"));
+  // Stored server-side; never echoed to a non-owner (wave 2D review M3).
+  const createdNote = (await created.json()) as any;
+  assert.equal(createdNote.metadata.prism_last_writer, undefined);
+  assert.equal(fv.notes.get(createdNote.id)!.metadata!.prism_last_writer, writerIdFor("kai@test.local"));
   // Owner passthrough: the forwarded JSON body is stamped (PATCH and single create).
   assert.equal((await req("/notes/t2", { method: "PATCH", cookie: login(OWNER), headers: J, body: JSON.stringify({ content: "<p>x</p>" }) })).status, 200);
   assert.equal(fv.notes.get("t2")!.metadata!.prism_last_writer, writerIdFor(OWNER));

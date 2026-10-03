@@ -158,7 +158,12 @@ test("M4: tag-only/path-only owner PATCHes are not stamped; unsafe integers are 
 test("M4: a non-owner path/tag-only write is not stamped", async () => {
   seed();
   addGrant({ subject_type: "user", subject: "org@test.local", resource_type: "tag", resource: "task", level: "edit", caps: ["view", "edit", "organize"], created_by: "test" });
-  const r = await req("/notes/t2", { method: "PATCH", cookie: login("org@test.local"), headers: J, body: JSON.stringify({ path: "Tasks/Beta2" }) });
+  // A path change is a move now (wave 2D review C1: PATCH → 403 move_required, nothing written)…
+  const moved = await req("/notes/t2", { method: "PATCH", cookie: login("org@test.local"), headers: J, body: JSON.stringify({ path: "Tasks/Beta2" }) });
+  assert.equal(moved.status, 403);
+  assert.equal(fv.notes.get("t2")!.metadata![WRITER_KEY], undefined);
+  // …and a tag-only write is still not stamped.
+  const r = await req("/notes/t2", { method: "PATCH", cookie: login("org@test.local"), headers: J, body: JSON.stringify({ add_tags: ["task"] }) });
   assert.equal(r.status, 200);
   assert.equal(fv.notes.get("t2")!.metadata![WRITER_KEY], undefined);
 });

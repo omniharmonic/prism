@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { CheckCheck, MessageSquare, PenLine, Sparkles, UserPlus } from "lucide-react";
 import type { ReactNode } from "react";
 import type { NoteVersionSummary } from "../../data/VaultClient";
-import { useVaultClient } from "../../data/VaultClientContext";
-import { useAgentChatStore } from "../../lib/agent/chatStore";
+import { usePageActivity } from "./usePageActivity";
 import { writerName, writerOf, writerTitle, type WriterInfo } from "../../lib/history/attribution";
 import type { PageActivity } from "../../lib/sharing/types";
 import type { Note } from "../../lib/types";
@@ -33,17 +31,18 @@ function editItem(key: string, w: WriterInfo, at: number): UpdateItem {
  * latter only when the caller may see who has access. Pure, so the fixtures and
  * the panel agree.
  */
-export function buildUpdates(input: { note: Pick<Note, "updatedAt" | "metadata">; versions: NoteVersionSummary[]; activity?: PageActivity | null; viewer?: string | null }): UpdateItem[] {
+export function buildUpdates(input: { note: Pick<Note, "updatedAt" | "metadata">; versions: NoteVersionSummary[]; activity?: PageActivity | null }): UpdateItem[] {
+  const directory = { names: input.activity?.writers ?? null, me: input.activity?.me ?? null };
   const items: UpdateItem[] = [];
   const t = (iso: string | null | undefined) => (iso ? Date.parse(iso) || 0 : 0);
   if (input.note.updatedAt) {
-    const current = input.activity?.lastEditor ?? writerOf({ metadata: input.note.metadata }, input.viewer);
+    const current = input.activity?.lastEditor ?? writerOf({ metadata: input.note.metadata }, directory);
     items.push(editItem("current", current, t(input.note.updatedAt)));
   }
   input.versions.forEach((v, i) => {
     const when = savedAt(input.versions, i);
     if (!when) return;
-    items.push(editItem(`v${v.versionIx}`, writerOf(v, input.viewer), t(when)));
+    items.push(editItem(`v${v.versionIx}`, writerOf(v, directory), t(when)));
   });
   for (const thread of input.activity?.comments ?? []) {
     thread.comments.forEach((c, i) => {
@@ -82,18 +81,9 @@ const ICON: Record<UpdateItem["kind"], ReactNode> = {
 };
 
 /** The Updates tab of the history panel. */
-export function PageUpdates({ note, versions, viewer }: { note: Note; versions: NoteVersionSummary[]; viewer?: string | null }) {
-  const client = useVaultClient();
-  const audience = useAgentChatStore((s) => s.scope);
-  const scope = client.scope?.() ?? audience;
-  const activity = useQuery({
-    queryKey: ["page-activity", scope, note.id, note.updatedAt],
-    enabled: !!client.getPageActivity,
-    queryFn: () => client.getPageActivity!(note.id),
-    staleTime: 15_000,
-    retry: 1,
-  });
-  const items = buildUpdates({ note, versions, activity: activity.data ?? null, viewer });
+export function PageUpdates({ note, versions }: { note: Note; versions: NoteVersionSummary[] }) {
+  const activity = usePageActivity(note);
+  const items = buildUpdates({ note, versions, activity: activity.data ?? null });
   return (
     <div className="prism-page-updates" aria-label="Page updates">
       {activity.isError && (

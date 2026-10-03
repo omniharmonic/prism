@@ -16,6 +16,7 @@ import { getUser, grantsForResource, type Grant } from "./db";
 import type { VaultEntry } from "./config";
 import { ensureTree, type TreeRow } from "./tree";
 import { expandLevel, type Cap, type Level } from "./permissions";
+import { WRITER_KEY, WRITER_AT_KEY, resolveWriter, stripIdentity, writerIdFor, writerNames } from "./writer-stamp";
 import { TRASH_TAG } from "@prism/core/pages";
 
 export interface PersonView {
@@ -43,11 +44,15 @@ export function displayNameOnly(email: string | null | undefined): string {
 const live = (r: TreeRow): boolean => !r.trashedAt && !r.tags.includes(TRASH_TAG);
 const leaf = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 
-/** Path → live row index for one vault (rebuilt per call; the tree is in memory). */
+/** Path → live row index for one vault, cached per projection version (rebuilt only when the tree changed). */
+const pathIndexCache = new Map<string, { version: number; byPath: Map<string, TreeRow> }>();
 async function pathIndex(entry: VaultEntry): Promise<Map<string, TreeRow>> {
   const tree = await ensureTree(entry);
+  const hit = pathIndexCache.get(entry.id);
+  if (hit && hit.version === tree.version) return hit.byPath;
   const byPath = new Map<string, TreeRow>();
   for (const r of tree.rows()) if (r.path && live(r)) byPath.set(r.path, r);
+  pathIndexCache.set(entry.id, { version: tree.version, byPath });
   return byPath;
 }
 
@@ -111,36 +116,97 @@ export async function descendantRows(entry: VaultEntry, path: string): Promise<T
 /** What history shows for one stored state: who produced it, by kind. */
 export interface VersionWriter {
   kind: "person" | "guest" | "agent" | "suggestion" | "accepted-suggestion" | "unknown";
-  /** Display name only (never an email); null when unknown. */
+  /** Display name — only for signed-in viewers; null when unknown. */
   name: string | null;
   /** The viewer produced it. */
   self: boolean;
 }
 
+/** Server-owned attribution keys: never accepted from, never served to, a non-owner. */
+export const CHANGE_KEY = "prism_last_change";
+export const WRITER_META_KEYS = [WRITER_KEY, WRITER_AT_KEY, CHANGE_KEY] as const;
+export type ChangeKind = "edit" | "suggestion" | "agent" | "accepted-suggestion";
+
 /**
- * Derive the writer of a stored state from its writer stamp
- * (`prism_last_writer` / `prism_last_change`, see collab.ts and the gateway stamp)
- * and, when the vault reports it, the write channel (`via: "mcp"` = an agent).
+ * The KIND of the stamped write, stored as `<kind>@<prism_last_write_at>`. Binding
+ * it to the stamp's own time means a later stamp by a path that does not record a
+ * kind (property writes, imports) never inherits a stale "agent"/"suggestion".
  */
-export function versionWriter(metadata: Record<string, unknown> | null | undefined, via: unknown, viewer: string | null): VersionWriter {
-  const stamp = typeof metadata?.prism_last_writer === "string" ? metadata.prism_last_writer : null;
-  const change = typeof metadata?.prism_last_change === "string" ? metadata.prism_last_change : null;
-  const email = stamp && stamp !== "link" ? stamp.replace(/^agent:/, "") : null;
-  const self = !!email && !!viewer && email === viewer;
-  const name = stamp === "link" ? "Guest (link)" : email ? displayNameOnly(email) : null;
-  if (change === "agent" || stamp?.startsWith("agent:") || (!stamp && via === "mcp")) return { kind: "agent", name, self };
+export const changeValue = (kind: ChangeKind, at: string): string => `${kind}@${at}`;
+export function changeKindOf(metadata: Record<string, unknown> | null | undefined): ChangeKind | null {
+  const v = metadata?.[CHANGE_KEY];
+  const at = metadata?.[WRITER_AT_KEY];
+  if (typeof v !== "string" || typeof at !== "string") return null;
+  const i = v.indexOf("@");
+  if (i < 0 || v.slice(i + 1) !== at) return null;
+  const k = v.slice(0, i);
+  return k === "edit" || k === "suggestion" || k === "agent" || k === "accepted-suggestion" ? k : null;
+}
+
+/** A complete server stamp for `email` ("link" for a capability guest) and a change kind. */
+export function writerStamp(writer: string, kind: ChangeKind): Record<string, string> {
+  const at = new Date().toISOString();
+  return { [WRITER_KEY]: writer === "link" ? "link" : writerIdFor(writer), [WRITER_AT_KEY]: at, [CHANGE_KEY]: changeValue(kind, at) };
+}
+
+/** `metadata` without the attribution keys (same object when none present). */
+export function stripWriterMeta<T extends Record<string, unknown> | null | undefined>(metadata: T): T {
+  if (!metadata || typeof metadata !== "object" || !WRITER_META_KEYS.some((k) => k in metadata)) return metadata;
+  const out: Record<string, unknown> = { ...metadata };
+  for (const k of WRITER_META_KEYS) delete out[k];
+  return out as T;
+}
+
+/**
+ * Derive the writer of a stored state from its writer stamp (writer-stamp.ts: an
+ * OPAQUE subject id, never an email) and, when the vault reports it, the write
+ * channel (`via: "mcp"` = an agent). Names are resolved only for a signed-in
+ * `viewer`; `names` = `writerNames()` for the request. `updatedAt` (the CURRENT
+ * note only) lets a stale stamp — something else wrote later — read as unknown.
+ */
+export function versionWriter(
+  metadata: Record<string, unknown> | null | undefined,
+  via: unknown,
+  viewer: string | null,
+  names?: Map<string, string>,
+  updatedAt?: string | null,
+): VersionWriter {
+  const stamp = typeof metadata?.[WRITER_KEY] === "string" ? (metadata[WRITER_KEY] as string) : null;
+  if (!stamp) return via === "mcp" ? { kind: "agent", name: null, self: false } : { kind: "unknown", name: null, self: false };
+  const map = names ?? writerNames();
+  if (updatedAt !== undefined && resolveWriter(metadata, updatedAt, map) === null && stamp !== "link") {
+    // Stale (written again without a stamp) or an unknown account.
+    const at = Date.parse(String(metadata?.[WRITER_AT_KEY] ?? ""));
+    const up = Date.parse(updatedAt ?? "");
+    if (Number.isFinite(at) && Number.isFinite(up) && up - at > 10_000) return { kind: "unknown", name: null, self: false };
+  }
+  const self = !!viewer && stamp !== "link" && stamp === writerIdFor(viewer);
+  // writerNames() falls back to the EMAIL for an account without a display name;
+  // history never shows an email to another viewer, so that reads as unnamed.
+  const named = map.get(stamp) ?? null;
+  const name = !viewer ? null : stamp === "link" ? "Guest (link)" : named && (self || !named.includes("@")) ? named : null;
+  const change = changeKindOf(metadata);
+  if (change === "agent") return { kind: "agent", name, self };
   if (change === "accepted-suggestion") return { kind: "accepted-suggestion", name, self };
   if (change === "suggestion") return { kind: "suggestion", name, self };
   if (stamp === "link") return { kind: "guest", name, self: false };
-  if (email) return { kind: "person", name, self };
-  return { kind: "unknown", name: null, self: false };
+  return { kind: "person", name, self };
 }
 
-/** A version row as a non-owner may see it: no vault provenance, no writer email. */
-export function redactVersionForViewer<T extends { actor?: unknown; via?: unknown; metadata?: Record<string, unknown> | null }>(row: T, viewer: string | null): Omit<T, "actor" | "via"> & { writer: VersionWriter } {
+/** A version row as a non-owner may see it: no vault provenance, no identity or attribution keys. */
+export function redactVersionForViewer<T extends { actor?: unknown; via?: unknown; metadata?: Record<string, unknown> | null }>(
+  row: T,
+  viewer: string | null,
+  names?: Map<string, string>,
+): Omit<T, "actor" | "via"> & { writer: VersionWriter } {
   const { actor: _a, via, ...rest } = row;
-  const writer = versionWriter(row.metadata ?? null, via, viewer);
-  const metadata = row.metadata ? { ...row.metadata } : row.metadata;
-  if (metadata) delete metadata.prism_last_writer;
+  const writer = versionWriter(row.metadata ?? null, via, viewer, names);
+  let metadata = row.metadata;
+  if (metadata) {
+    const m: Record<string, unknown> = { ...stripWriterMeta(metadata) };
+    delete m.prism_trashed_by;
+    // A link guest gets no identity keys at all (writer-stamp.ts stripIdentity).
+    metadata = viewer ? m : stripIdentity(m);
+  }
   return { ...(rest as Omit<T, "actor" | "via">), ...(metadata !== undefined ? { metadata } : {}), writer } as Omit<T, "actor" | "via"> & { writer: VersionWriter };
 }

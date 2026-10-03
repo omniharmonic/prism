@@ -67,6 +67,7 @@ import {
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
 import { warmPageAnchors } from "./tree";
+import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
@@ -814,9 +815,9 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
 // ── Writer attribution for collab stores (NP-PG-13 / NP-PG-17) ──────────────
 // A collab store writes the note on behalf of whoever changed the live doc since
 // the last store. We stamp the MOST RECENT writer as `metadata.prism_last_writer`
-// (the same key and value form as the gateway's writer stamp: an account email,
-// or "link" for a capability guest) plus `metadata.prism_last_change`, the KIND
-// of that change: "edit" (typed in the live editor), "suggestion" (a human
+// (the gateway's writer stamp, writer-stamp.ts: an OPAQUE subject id, or "link"
+// for a capability guest, with `prism_last_write_at`) plus
+// `metadata.prism_last_change` = `<kind>@<write time>`, the KIND of that change: "edit" (typed in the live editor), "suggestion" (a human
 // command), "agent" (a Prism MCP tool) or "accepted-suggestion" (an edit that
 // resolved suggestion marks by accepting them). History and page info read these
 // to say who changed what. Server-internal writes (reconciler folds, restores,
@@ -889,7 +890,8 @@ function takeWriterStamp(documentName: string, doc: Y.Doc, kind: string): Record
   }
   if (!writers?.size) return null;
   const [writer, change] = [...writers.entries()].pop()!;
-  return { prism_last_writer: writer, prism_last_change: accepted && change === "edit" ? "accepted-suggestion" : change };
+  // The opaque subject id + time + kind (writer-stamp.ts / sharing.ts) — never an email.
+  return writerStamp(writer, accepted && change === "edit" ? "accepted-suggestion" : change);
 }
 
 /**

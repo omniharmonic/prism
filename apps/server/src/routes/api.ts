@@ -30,7 +30,9 @@ import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
-import { redactVersionForViewer } from "../sharing";
+import { consumeRateLimit } from "../middleware/ratelimit";
+import { redactVersionForViewer, stripWriterMeta, changeValue, CHANGE_KEY, WRITER_META_KEYS } from "../sharing";
+import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
@@ -56,6 +58,27 @@ api.use("*", async (c, next) => {
   await warmPageAnchors(resolveActor(c).grants);
   await next();
 });
+
+/** Add the change KIND to a body the writer stamp was just applied to (history: "Agent revision"). */
+function stampChange(metadata: Record<string, unknown> | undefined, kind: "edit" | "agent"): Record<string, unknown> | undefined {
+  const at = metadata?.[WRITER_AT_KEY];
+  return metadata && typeof at === "string" ? { ...metadata, [CHANGE_KEY]: changeValue(kind, at) } : metadata;
+}
+function stampChangeJson(text: string, kind: "edit" | "agent"): string {
+  if (!text.includes(WRITER_AT_KEY)) return text;
+  try {
+    const b = JSON.parse(text) as { metadata?: Record<string, unknown> };
+    if (!b || typeof b !== "object" || Array.isArray(b) || !b.metadata || typeof b.metadata[WRITER_AT_KEY] !== "string") return text;
+    // Only when stampJsonBody stamped THIS request (it re-serialises; an unstamped body passes through byte-for-byte).
+    b.metadata = stampChange(b.metadata, kind);
+    return JSON.stringify(b);
+  } catch {
+    return text;
+  }
+}
+/** What a non-owner receives: no attribution keys (review M3); a link gets no identity keys at all. */
+const forViewer = <T extends { metadata?: Record<string, unknown> | null }>(actor: Actor, note: T): T =>
+  ({ ...note, metadata: actor.kind === "link" ? stripIdentity(stripWriterMeta(note.metadata)) : stripWriterMeta(note.metadata) });
 
 const ref = (n: Note): NoteRef => ({
   id: n.id,
@@ -100,7 +123,7 @@ async function proxyToVault(c: Context) {
     headers["Content-Type"] = "application/json";
     init.body = await c.req.text();
     // Writer stamp (`prism_last_writer`, ../writer-stamp.ts) on single-note creates/edits.
-    if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampJsonBody(init.body as string, resolveActor(c));
+    if ((method === "POST" && path === "/notes") || (method === "PATCH" && /^\/notes\/[^/]+$/.test(path))) init.body = stampChangeJson(stampJsonBody(init.body as string, resolveActor(c)), requestVia(c) === "mcp" ? "agent" : "edit");
     // Any write may change what a cached read would return.
     readCache.clear();
     // Owner/admin bypass of a page lock is allowed but audited (one line, no content).
@@ -408,7 +431,8 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
     if (isTrashed(n)) continue;
     const caps = capsFor(actor, ref(n));
     // Capability links never learn who created/edited a note (writer-stamp.ts).
-    if (caps.has("view")) out.push(stamp ? { ...n, _caps: [...caps] } : actor.kind === "link" ? { ...n, metadata: stripIdentity(n.metadata) } : n);
+    // Attribution keys never reach a non-owner (review M3); a link gets no identity keys at all.
+    if (caps.has("view")) out.push(stamp ? { ...n, metadata: stripWriterMeta(n.metadata), _caps: [...caps] } : actor.kind === "link" ? { ...n, metadata: stripIdentity(n.metadata) } : { ...n, metadata: stripWriterMeta(n.metadata) });
   }
   return out;
 }
@@ -419,6 +443,9 @@ function annotate(actor: Actor, notes: Note[]): Array<Note & { _caps?: Cap[] }> 
  * Per-tag queries (not a single multi-tag query) avoid AND/OR ambiguity in the
  * vault's tag filter.
  */
+const PAGE_GRANT_LISTINGS = Number(process.env.PAGE_GRANT_LISTINGS ?? 25);
+const PAGE_GRANT_LIST_PER_MINUTE = Number(process.env.PAGE_GRANT_LIST_PER_MINUTE ?? 30);
+
 async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note[]> {
   const vc = vaultClient(actor.vaultId); // read from the actor's OWN vault, not the primary
   // A `vault` grant matches every note (see effectiveCaps), so tag-bounded
@@ -442,11 +469,20 @@ async function visibleNotes(actor: Actor, includeContent: boolean): Promise<Note
   // Page-subtree grants (NP-CO-09): the anchor page plus everything under its
   // current path (one lean path_prefix listing each). Membership is still decided
   // by the caps filter in annotate(); this only bounds what is fetched.
-  for (const g of actor.grants.filter((x) => x.resource_type === "page")) {
-    const anchor = resolvePageAnchor(g.vault_id ?? actor.vaultId, g.resource);
-    if (!anchor?.path) continue;
+  // Bounded: at most PAGE_GRANT_LISTINGS shared pages are expanded per request, the
+  // outermost first (a page inside an already-listed page adds nothing).
+  const anchors = actor.grants
+    .filter((x) => x.resource_type === "page")
+    .map((g) => resolvePageAnchor(g.vault_id ?? actor.vaultId, g.resource)?.path)
+    .filter((p): p is string => !!p)
+    .sort((a, b) => a.length - b.length);
+  const listed: string[] = [];
+  for (const path of anchors) {
+    if (listed.some((p) => path.startsWith(`${p}/`))) continue;
+    if (listed.length >= PAGE_GRANT_LISTINGS) break;
+    listed.push(path);
     try {
-      for (const n of await vc.listNotes({ pathPrefix: `${anchor.path}/`, includeContent })) collected.set(n.id, n);
+      for (const n of await vc.listNotes({ pathPrefix: `${path}/`, includeContent })) collected.set(n.id, n);
     } catch {
       /* listing failed — the anchor itself is still fetched below */
     }
@@ -475,6 +511,14 @@ api.get("/notes", async (c) => {
   const offset = Number(c.req.query("offset") ?? 0);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50000 || !Number.isSafeInteger(offset) || offset < 0) {
     return c.json({ error: "bad_request", detail: "limit must be 1–50000 and offset must be a nonnegative integer" }, 400);
+  }
+  // A page share is enumerated with one vault listing per shared page: budget it per caller.
+  if (actor.grants.some((g) => g.resource_type === "page")) {
+    const wait = consumeRateLimit(`notes-page-list:${actor.vaultId}:${actorSubject(actor) ?? "anon"}`, PAGE_GRANT_LIST_PER_MINUTE, 60_000);
+    if (wait !== null) {
+      c.header("Retry-After", String(wait));
+      return c.json({ error: "rate_limited", retryAfter: wait }, 429);
+    }
   }
   // Filter permission-visible rows BEFORE paging: hidden notes must neither
   // consume page positions nor cause unrelated note types to enter an Inbox.
@@ -515,7 +559,7 @@ api.get("/notes/:id", async (c) => {
     const { [TRASH_META.by]: _by, ...rest } = note.metadata;
     note = { ...note, metadata: rest };
   }
-  if (actor.kind === "link") note = { ...note, metadata: stripIdentity(note.metadata) };
+  note = forViewer(actor, note);
   return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
@@ -545,14 +589,15 @@ api.post("/notes", async (c) => {
   // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
   // accepted from a non-owner create (review H3/M1).
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
-  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY)));
+  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && !(WRITER_META_KEYS as readonly string[]).includes(k))));
   if (subject) metadata.prism_creator = subject;
-  Object.assign(metadata, stampMetadata(undefined, actor));
+  // The writer stamp is server-owned: client values were dropped above, ours is applied here.
+  Object.assign(metadata, stampChange(stampMetadata(undefined, actor), requestVia(c) === "mcp" ? "agent" : "edit"));
   body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
   try {
     const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
     treeUpsertNote(resolveVaultEntry(actor.vaultId), created);
-    return c.json(created);
+    return c.json(forViewer(actor, created));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -586,6 +631,11 @@ api.patch("/notes/:id", async (c) => {
   const removeTags = strings(body.remove_tags);
   // H3/M1/LOCK: a non-owner never writes who-can-see / who-created / trash state, the
   // page lock or the sidebar order through this route, and never toggles the trash tag.
+  // The writer stamp is server-owned (review M3): whatever a client sends for it is
+  // dropped (never stored), and the server's own stamp is applied on the write below.
+  if (body.metadata && typeof body.metadata === "object" && (WRITER_META_KEYS as readonly string[]).some((k) => k in body.metadata!)) {
+    body.metadata = Object.fromEntries(Object.entries(body.metadata).filter(([k]) => !(WRITER_META_KEYS as readonly string[]).includes(k)));
+  }
   const meta = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
   const subjectNow = actorSubject(actor);
   const forbiddenKey = (k: string): boolean => {
@@ -684,7 +734,7 @@ api.patch("/notes/:id", async (c) => {
       updated = await vc.updateNote(id, {
         content: body.content,
         // Only a content/metadata write is stamped (a path-only move is not an edit).
-        metadata: wantsContent ? stampMetadata(body.metadata, actor) : body.metadata,
+        metadata: wantsContent ? stampChange(stampMetadata(body.metadata, actor), requestVia(c) === "mcp" ? "agent" : "edit") : body.metadata,
         path: canPath ? body.path : undefined,
         ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
       });
@@ -700,7 +750,7 @@ api.patch("/notes/:id", async (c) => {
     // A write without content to a LIVE doc: keep the reconciler from folding the
     // content-stale vault copy over unsaved typing (review M3).
     if (body.content === undefined) void reconcileMetaWrite(actor.vaultId, id, note.updatedAt, updated.updatedAt);
-    return c.json(updated);
+    return c.json(forViewer(actor, updated));
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -751,7 +801,8 @@ api.get("/notes/:id/versions", async (c) => {
   try {
     const page = await vaultClient(resolveActor(c).vaultId).listVersions(gate.note.id, limit, offset);
     const viewer = resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : null;
-    return c.json({ versions: page.versions.map((v) => redactVersionForViewer(v, viewer)), total: page.total });
+    const names = viewer ? writerNames() : undefined;
+    return c.json({ versions: page.versions.map((v) => redactVersionForViewer(v, viewer, names)), total: page.total });
   } catch (e) {
     return vaultErr(c, e);
   }
@@ -798,7 +849,7 @@ api.post("/notes/:id/restore", async (c) => {
     }
     const restored = await vc.restoreVersion(gate.note.id, ix, body.if_updated_at);
     treeUpsertNote(resolveVaultEntry(resolveActor(c).vaultId), restored);
-    return c.json(restored);
+    return c.json(forViewer(resolveActor(c), restored));
   } catch (e) {
     return vaultErr(c, e);
   }

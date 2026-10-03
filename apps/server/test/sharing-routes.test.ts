@@ -19,7 +19,8 @@ import { resetPagesForTests } from "../src/pages";
 import { addGrant, saveDocState, setAccount, setUserProfile, ensureUser } from "../src/db";
 import { documentActorId } from "../src/human-collab";
 import { noteCollabWriter, storeDocumentState } from "../src/collab";
-import { versionWriter } from "../src/sharing";
+import { versionWriter, changeValue, changeKindOf } from "../src/sharing";
+import { writerIdFor } from "../src/writer-stamp";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, makeCapability, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -164,37 +165,58 @@ test("access preview: moving a sub-page out of a shared page warns who loses acc
 
 // ── history attribution ──────────────────────────────────────────────────────
 
-test("versionWriter classifies by stamp and channel", () => {
-  assert.deepEqual(versionWriter({ prism_last_writer: BOB, prism_last_change: "edit" }, null, BOB), { kind: "person", name: "Bob Builder", self: true });
-  assert.equal(versionWriter({ prism_last_writer: BOB, prism_last_change: "agent" }, null, null).kind, "agent");
-  assert.equal(versionWriter({ prism_last_writer: BOB, prism_last_change: "accepted-suggestion" }, null, null).kind, "accepted-suggestion");
-  assert.equal(versionWriter({ prism_last_writer: "link" }, null, null).kind, "guest");
-  assert.equal(versionWriter(null, "mcp", null).kind, "agent");
-  assert.deepEqual(versionWriter(null, null, null), { kind: "unknown", name: null, self: false });
+const stamped = (email: string, kind: "edit" | "agent" | "suggestion" | "accepted-suggestion", at = "2026-01-02T00:00:00.000Z") => ({
+  prism_last_writer: email === "link" ? "link" : writerIdFor(email),
+  prism_last_write_at: at,
+  prism_last_change: changeValue(kind, at),
 });
 
-test("non-owner version history names the writer by kind and name, never by email", async () => {
+test("versionWriter classifies by stamp and channel; names only for signed-in viewers", () => {
+  assert.deepEqual(versionWriter(stamped(BOB, "edit"), null, BOB), { kind: "person", name: "Bob Builder", self: true });
+  assert.deepEqual(versionWriter(stamped(BOB, "edit"), null, null), { kind: "person", name: null, self: false }, "a link guest gets no name");
+  assert.equal(versionWriter(stamped(BOB, "agent"), null, CAROL).kind, "agent");
+  assert.equal(versionWriter(stamped(BOB, "accepted-suggestion"), null, CAROL).kind, "accepted-suggestion");
+  assert.equal(versionWriter(stamped("link", "edit"), null, CAROL).kind, "guest");
+  assert.equal(versionWriter(null, "mcp", null).kind, "agent");
+  assert.deepEqual(versionWriter(null, null, null), { kind: "unknown", name: null, self: false });
+  // A kind recorded for an OLDER stamp is ignored once a later stamp replaced the writer.
+  const later = { ...stamped(BOB, "agent"), prism_last_write_at: "2026-01-03T00:00:00.000Z" };
+  assert.equal(versionWriter(later, null, CAROL).kind, "person");
+  // The CURRENT note: written again long after its stamp → unknown, never a wrong name.
+  assert.equal(versionWriter(stamped(BOB, "edit"), null, CAROL, undefined, "2026-02-01T00:00:00.000Z").kind, "unknown");
+});
+
+test("non-owner version history names the writer by kind and name, never by email or stamp", async () => {
   pageGrant(BOB, "p", "edit");
-  fv.notes.get("c1")!.metadata = { prism_last_writer: OWNER, prism_last_change: "edit" };
+  fv.notes.get("c1")!.metadata = stamped(OWNER, "edit");
   const patch = await api.request("/notes/c1", { method: "PATCH", headers: { cookie: as(BOB), "content-type": "application/json" }, body: JSON.stringify({ content: "<p>v2</p>", if_updated_at: fv.notes.get("c1")!.updatedAt }) });
   assert.equal(patch.status, 200);
   const r = await json(await get("/notes/c1/versions", as(BOB)));
   assert.ok(r.versions.length >= 1);
-  const v = r.versions[0];
-  assert.deepEqual(v.writer, { kind: "person", name: "Olive Owner", self: false });
-  assert.ok(!JSON.stringify(r).includes(OWNER), "no writer email in history for a non-owner");
+  assert.deepEqual(r.versions[0].writer, { kind: "person", name: "Olive Owner", self: false });
+  assert.ok(!JSON.stringify(r).includes(OWNER) && !JSON.stringify(r).includes("prism_last_"), "no email, no stamp keys");
+  // The activity read names the stamps of THIS page for a signed-in viewer (the owner path resolves raw stamps with it).
+  const act = await json(await get("/notes/c1/activity", as(BOB)));
+  assert.equal(act.me, writerIdFor(BOB));
+  assert.equal(act.writers[writerIdFor(OWNER)], "Olive Owner");
+  assert.equal(act.writers[writerIdFor(BOB)], "Bob Builder");
+  assert.deepEqual(act.lastEditor, { kind: "person", name: "Bob Builder", self: true });
 });
 
-test("a collab store stamps the most recent writer and the kind of change", async () => {
+test("a collab store stamps the most recent writer (opaque id) and the kind of change", async () => {
   const doc = new Y.Doc();
   doc.getXmlFragment("default").insert(0, [new Y.XmlElement("paragraph")]);
   (doc.getXmlFragment("default").get(0) as Y.XmlElement).insert(0, [new Y.XmlText("hello")]);
   noteCollabWriter("solo", BOB, "edit");
   noteCollabWriter("solo", CAROL, "suggestion");
   await storeDocumentState("solo", doc);
-  assert.deepEqual({ w: fv.notes.get("solo")!.metadata?.prism_last_writer, k: fv.notes.get("solo")!.metadata?.prism_last_change }, { w: CAROL, k: "suggestion" });
+  const meta = fv.notes.get("solo")!.metadata!;
+  assert.equal(meta.prism_last_writer, writerIdFor(CAROL));
+  assert.ok(!JSON.stringify(meta).includes("@test.local"), "no email is stored");
+  assert.equal(changeKindOf(meta), "suggestion");
+  assert.equal(typeof meta.prism_last_write_at, "string");
   // No recorded writer (a server-internal store) leaves the stamp alone.
   (doc.getXmlFragment("default").get(0) as Y.XmlElement).insert(0, [new Y.XmlText("x")]);
   await storeDocumentState("solo", doc);
-  assert.equal(fv.notes.get("solo")!.metadata?.prism_last_writer, CAROL);
+  assert.equal(fv.notes.get("solo")!.metadata?.prism_last_writer, writerIdFor(CAROL));
 });
