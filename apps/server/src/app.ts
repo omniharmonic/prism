@@ -31,6 +31,7 @@ import { pats } from "./routes/pats";
 import { mountPrismMcp } from "./mcp/router";
 import { media, map as mapProxy } from "./routes/media";
 import { rateLimit } from "./middleware/ratelimit";
+import { EMBED_FRAME_SOURCES } from "@prism/core/media-embeds";
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -57,6 +58,13 @@ export function createApp(): Hono {
     "img-src 'self' data: blob: https:",
     "worker-src 'self' blob:",
     "connect-src 'self' ws: wss: https:",
+    // Attachment audio/video: same-origin for signed-in users, blob: for link viewers and the
+    // native client (fetched with their credential header, never a token in a URL).
+    "media-src 'self' blob:",
+    // Embed blocks (wave 2B): ONLY the allowlisted, PATH-SCOPED players (packages/core/src/lib/media/embeds.ts),
+    // each framed with a strict sandbox; 'self' for the inline PDF preview of an attachment.
+    // Frames are always cross-origin to us and never get our cookies or DOM.
+    `frame-src 'self' ${EMBED_FRAME_SOURCES.join(" ")}`,
   ].join("; ");
 
   app.use("*", async (c, next) => {
@@ -66,7 +74,8 @@ export function createApp(): Hono {
     if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    c.header("X-Frame-Options", "DENY");
+    // A route may allow same-origin framing of its own response (PDF attachment preview).
+    if (!c.res.headers.has("X-Frame-Options")) c.header("X-Frame-Options", "DENY");
     c.header("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
     if (config.appOrigin.startsWith("https")) {
       c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");

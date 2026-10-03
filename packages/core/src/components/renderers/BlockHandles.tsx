@@ -124,7 +124,10 @@ export function BlockHandles({ editor, enabled }: { editor: Editor; enabled: boo
       if (menuRef.current || dragFrom.current !== null) return;
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        if (!viewReady(editor)) return;
+        // Re-check when the frame runs: a menu may have opened (or a drag begun) since the
+        // move was queued, and an edit above can have shifted another block under the old
+        // pointer position — the open menu must keep acting on ITS block.
+        if (!viewReady(editor) || menuRef.current || dragFrom.current !== null) return;
         const er = editor.view.dom.getBoundingClientRect();
         const inside = event.clientX >= er.left - 72 && event.clientX <= er.right + 8 && event.clientY >= er.top - 4 && event.clientY <= er.bottom + 4;
         // A text range selection owns the selection toolbar; keep the gutter out of its way.

@@ -24,7 +24,14 @@ import "./editor-blocks.css";
 import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
-import { ImageUpload, type ImageUploader } from "../../lib/tiptap/ImageUpload";
+import { ImageUpload, type ImageUploader, type FileUploader } from "../../lib/tiptap/ImageUpload";
+import "../../lib/tiptap/mediaViews";
+import { SearchHighlight } from "../../lib/tiptap/SearchHighlight";
+import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
+import { EditorFindBar } from "./EditorFindBar";
+import { PasteUrlMenu } from "./PasteUrlMenu";
+import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
 import "../../lib/tiptap/MentionView";
 import { MentionSuggest, type MentionSuggestState } from "../../lib/tiptap/MentionSuggest";
 import { MentionContext, setMentionNoteId } from "../../lib/tiptap/MentionContext";
@@ -70,6 +77,9 @@ export function CollabEditor({
   onWikilinkNavigate,
   wikilinkNotes,
   uploadImage,
+  uploadFile,
+  unfurl,
+  hostPath,
   onUploadError,
   noteId,
 }: {
@@ -112,6 +122,12 @@ export function CollabEditor({
   /** Store a pasted/dropped/picked image and return its URL. Omitted → upload
    *  is hidden and only "Image from URL" is offered. Read at mount. */
   uploadImage?: ImageUploader;
+  /** Store a pasted/dropped/picked non-image file (PDF, audio, video, other). Omitted → no file blocks. Read at mount. */
+  uploadFile?: FileUploader;
+  /** Link previews for bookmark blocks. Read at mount. */
+  unfurl?: Unfurler;
+  /** This page's path: enables the inline-database slash items (a new database becomes its sub-page). Omitted → hidden. Read at mount. */
+  hostPath?: string | null;
   /** User-facing upload failure message. */
   onUploadError?: (message: string) => void;
   /** The note this editor shows (date-chip reminders are created for it). */
@@ -144,6 +160,16 @@ export function CollabEditor({
 
   const uploadRef = useRef(uploadImage);
   useEffect(() => { uploadRef.current = uploadImage; }, [uploadImage]);
+  const uploadFileRef = useRef(uploadFile);
+  useEffect(() => { uploadFileRef.current = uploadFile; }, [uploadFile]);
+  const unfurlRef = useRef(unfurl);
+  useEffect(() => { unfurlRef.current = unfurl; }, [unfurl]);
+  const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
+  const [find, setFind] = useState<null | { replace: boolean }>(null);
+  const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
+  const hostPathRef = useRef(hostPath);
+  useEffect(() => { hostPathRef.current = hostPath; }, [hostPath]);
+  const findRef = useRef<HTMLDivElement>(null);
   const uploadErrorRef = useRef(onUploadError);
   useEffect(() => { uploadErrorRef.current = onUploadError; }, [onUploadError]);
 
@@ -162,8 +188,12 @@ export function CollabEditor({
       BlockKeymap,
       ImageUpload.configure({
         upload: uploadImage ? (file) => uploadRef.current!(file) : undefined,
+        uploadFile: uploadFile ? (file) => uploadFileRef.current!(file) : undefined,
         onError: (message) => uploadErrorRef.current?.(message),
       }),
+      UrlPaste.configure({ onStateChange: setPasteState, unfurl: unfurl ? (url) => unfurlRef.current!(url) : undefined }),
+      SearchHighlight,
+      DatabaseInsert.configure({ onRequest: hostPath !== undefined ? setDbInsert : undefined }),
       SuggestionMode.configure({ user }),
       CommentOnly.configure({ active: !!commentOnly }),
       CommentInteraction.configure({ onActivate: (id) => commentActivateRef.current?.(id) }),
@@ -176,6 +206,26 @@ export function CollabEditor({
     editorProps: { attributes: { class: "prose-editor outline-none min-h-[300px]" } },
     onUpdate: handleUpdate,
   });
+
+  // ⌘F find / ⌘⇧H find + replace, while focus is in this editor (or its find bar).
+  useEffect(() => {
+    if (!editor) return;
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
+      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      if (!isFind && !isReplace) return;
+      const active = document.activeElement;
+      let inside = false;
+      // Only THIS editor (or its own find bar): several live editors may share a page.
+      try { inside = !!active && (editor.view.dom.contains(active) || !!findRef.current?.contains(active)); } catch { inside = false; }
+      if (!inside) return;
+      e.preventDefault();
+      setFind({ replace: isReplace });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editor]);
 
   // Reflect editable changes (e.g. level resolved after connect) onto the editor.
   useEffect(() => {
@@ -307,6 +357,19 @@ export function CollabEditor({
         <SlashMenu editor={editor} state={slash} onClose={() => setSlash(null)} />
       )}
 
+      {/* "Paste as" menu after a bare URL paste */}
+      {editor && pasteState && editable && !commentOnly && !suggesting && (
+        <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl ? (url) => unfurlRef.current!(url) : undefined} onClose={() => setPasteState(null)} />
+      )}
+
+      {editor && dbInsert && editable && !commentOnly && !suggesting && (
+        <InsertDatabaseDialog editor={editor} request={dbInsert} hostPath={hostPathRef.current} onClose={() => setDbInsert(null)} />
+      )}
+
+      {/* In-note find / replace (works on the live shared document: one transaction per replace) */}
+      {editor && find && (
+        <div ref={findRef}><EditorFindBar editor={editor} replaceOpen={find.replace} onClose={() => { setFind(null); editor.commands.focus(); }} /></div>
+      )}
       {/* `@` mention menu: people, pages, dates, reminders */}
       {editor && mention?.active && <MentionMenu editor={editor} state={mention} notes={wikilinkNotes || []} />}
 

@@ -101,3 +101,8 @@ span[data-suggestion="delete"] {
 .cd-bubble button:hover {
   background: var(--glass-hover);
 }
+
+/* Page cover inside the live-document host (contained band; the plain renderer bleeds edge to edge). */
+.collab-cover-bleed .document-cover { margin: -8px 0 28px; border-radius: var(--radius-lg); }
+.collab-cover-bleed .document-cover-controls { right: 14px; }
+@media (max-width: 767px) { .collab-cover-bleed .document-cover { margin: -4px -14px 20px; border-radius: 0; } }

@@ -478,3 +478,35 @@ map.get("/ofm/*", async (c) => {
     return errorResponse(c, e);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Shared with other SSRF-guarded fetchers (routes/attachments.ts → /api/unfurl)
+// ---------------------------------------------------------------------------
+
+/** The image proxy's target policy (what `/api/media/proxy?u=` would accept). */
+export function mediaPolicy(): TargetPolicy {
+  return { httpHosts: cfg.httpHosts, extraPorts: cfg.extraPorts, forbiddenHosts: forbiddenHosts() };
+}
+
+/**
+ * Run `fn` while holding one slot of the IMAGE pool — the same global and
+ * per-user in-flight caps and bounded wait as the image proxy, so link previews
+ * can't add upstream concurrency beyond it. Throws BusyError past the wait.
+ */
+export async function withMediaSlot<T>(user: string, fn: () => Promise<T>): Promise<T> {
+  const p = pools.media;
+  const releaseUser = await p.perUser.acquire(user, cfg.queueWaitMs);
+  let releaseGlobal: () => void;
+  try {
+    releaseGlobal = await p.global.acquire(cfg.queueWaitMs);
+  } catch (e) {
+    releaseUser();
+    throw e;
+  }
+  try {
+    return await fn();
+  } finally {
+    releaseGlobal();
+    releaseUser();
+  }
+}

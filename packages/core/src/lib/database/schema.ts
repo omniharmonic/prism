@@ -15,11 +15,14 @@
  *
  * Value encoding per kind: text/url/select/status/date → string; number → number;
  * checkbox → boolean; multi_select → string[]; person/relation → `[[note path]]`
- * (a string, or string[] when the vault type is `array`).
+ * (a string, or string[] when the vault type is `array`); files → string[] of
+ * `[name](/api/attachments/<id>)` links (lib/media/attachments.ts `fileRef`).
  */
 
+import { fileRef, parseFileRef, parseFileRefs } from "../media/attachments";
+
 export const PROPERTY_KINDS = [
-  "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url", "email", "phone",
+  "text", "number", "select", "multi_select", "status", "date", "person", "relation", "checkbox", "url", "email", "phone", "files",
 ] as const;
 export type PropertyKind = (typeof PROPERTY_KINDS)[number];
 
@@ -32,13 +35,13 @@ export type OptionColor = (typeof OPTION_COLORS)[number];
 
 export const PROPERTY_KIND_LABELS: Record<PropertyKind, string> = {
   text: "Text", number: "Number", select: "Select", multi_select: "Multi-select", status: "Status",
-  date: "Date", person: "Person", relation: "Relation", checkbox: "Checkbox", url: "URL", email: "Email", phone: "Phone",
+  date: "Date", person: "Person", relation: "Relation", checkbox: "Checkbox", url: "URL", email: "Email", phone: "Phone", files: "Files & media",
 };
 
 /** The vault type a new property of `kind` is created with. */
 export const VAULT_TYPE_FOR_KIND: Record<PropertyKind, VaultFieldType> = {
   text: "string", number: "number", select: "string", multi_select: "array", status: "string",
-  date: "string", person: "string", relation: "string", checkbox: "boolean", url: "string", email: "string", phone: "string",
+  date: "string", person: "string", relation: "string", checkbox: "boolean", url: "string", email: "string", phone: "string", files: "array",
 };
 
 /** One field as `GET /api/schemas` returns it: vault def + Prism hints. */
@@ -120,7 +123,7 @@ export function propertyValue(n: { createdAt?: string | null; updatedAt?: string
 
 // Metadata keys that are system state, never shown as properties.
 export const SYSTEM_KEYS = new Set([
-  "type", "prism_type", "sync", "title", "icon", "cover", "layout", "content_font",
+  "type", "prism_type", "sync", "title", "icon", "cover", "coverY", "layout", "content_font",
 ]);
 export const isSystemKey = (k: string): boolean =>
   SYSTEM_KEYS.has(k) || k.startsWith("prism_") || k.startsWith("gov_") || k.startsWith("_");
@@ -132,6 +135,7 @@ const DATE_KEYS = /^(date|due|deadline|start|end|scheduled|completed|completed_a
 const STATUS_KEYS = /^(status|state|stage|event_status)$/i;
 const EMAIL_KEYS = /^(email|e-mail|mail|email_address)$/i;
 const PHONE_KEYS = /^(phone|telephone|mobile|cell|phone_number)$/i;
+const FILES_KEYS = /^(files?|attachments?|media|documents?)$/i;
 
 /** Kind for a schema field (hints win, then vault type, then the key name). */
 export function inferKind(key: string, f: SchemaField | undefined, sample?: unknown): PropertyKind {
@@ -142,6 +146,7 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
   if (t === "date") return "date";
   if (t === "reference") return "relation";
   if (t === "array") {
+    if (FILES_KEYS.test(key) || (Array.isArray(sample) && sample.some((x) => parseFileRef(x)))) return "files";
     if (PERSON_KEYS.test(key)) return "person";
     if (RELATION_KEYS.test(key)) return "relation";
     return "multi_select";
@@ -152,6 +157,7 @@ export function inferKind(key: string, f: SchemaField | undefined, sample?: unkn
     // never change its format (e.g. plain "Alex Chen" never becomes [[Alex Chen]]).
     if (typeof sample === "boolean") return "checkbox";
     if (typeof sample === "number") return "number";
+    if (Array.isArray(sample) && sample.some((x) => parseFileRef(x))) return "files";
     if (Array.isArray(sample)) return sample.some((x) => typeof x === "string" && x.startsWith("[[")) ? (PERSON_KEYS.test(key) ? "person" : "relation") : "multi_select";
     if (typeof sample === "string") {
       if (sample.startsWith("[[")) return PERSON_KEYS.test(key) ? "person" : "relation";
@@ -273,6 +279,7 @@ export function formatValue(def: Pick<PropertyDef, "kind">, v: unknown): string 
   if (Array.isArray(v)) return v.map((x) => formatValue(def, x)).filter(Boolean).join(", ");
   if (def.kind === "person" || def.kind === "relation") return typeof v === "string" ? linkLabel(v) : String(v);
   if (def.kind === "date" && typeof v === "string") return formatDate(v);
+  if (def.kind === "files") return parseFileRefs(v).map((f) => f.name).join(", ");
   if (def.kind === "phone" && typeof v === "string") return v.trim();
   if (def.kind === "number" && typeof v === "number") return v.toLocaleString();
   return String(v);
@@ -321,6 +328,11 @@ export function coerceValue(def: Pick<PropertyDef, "kind" | "multiple">, raw: un
     case "multi_select": {
       const list = (Array.isArray(raw) ? raw : [raw]).map((x) => String(x).trim()).filter(Boolean);
       return list.length ? [...new Set(list)] : null;
+    }
+    case "files": {
+      // Only links to OUR attachments are file values; anything else is dropped, never stored.
+      const list = parseFileRefs(raw).map((f) => fileRef(f.name, f.url));
+      return list.length ? [...new Set(list)].slice(0, 50) : null;
     }
     case "person":
     case "relation": {

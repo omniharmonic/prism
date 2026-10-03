@@ -29,6 +29,7 @@ import { peopleApi } from "./people";
 import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
+import { attachmentsApi } from "./attachments";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
@@ -216,6 +217,8 @@ api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); }
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
+// Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
+api.route("/", attachmentsApi);
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
 
@@ -312,9 +315,10 @@ api.get("/events", async (c) => {
  * short-circuit, so it covers the owner passthrough too.
  */
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
-const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column|mention)"|<details[\s>]|data-block-color=|data-text-color=/;
+// v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption).
+const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|mention|attachment|embed|bookmark|toc)"|data-prism-database=|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=/;
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
-  return SCHEMA_V2_MARKERS.test(storedContent ?? "");
+  return SCHEMA_MARKERS.test(storedContent ?? "");
 }
 api.use("/notes/:id", async (c, next) => {
   const method = c.req.method;

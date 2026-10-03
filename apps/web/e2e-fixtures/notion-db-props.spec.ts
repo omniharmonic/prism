@@ -13,11 +13,10 @@ async function showColumns(page: Page, labels: string[]) {
   await page.keyboard.press("Escape");
 }
 
-// Files & media (the rest of NP-DB-09) need attachments (NP-PG-02, group 2B): this
-// journey covers email + phone; the files property joins it with that endpoint.
 test("email, phone, files properties", async ({ page }) => {
+  await page.route("**/api/attachments/*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
   await page.goto("/e2e-fixtures/databases.html");
-  await showColumns(page, ["Email", "Phone"]);
+  await showColumns(page, ["Email", "Phone", "Files"]);
   const r = row(page, "Refine onboarding copy");
 
   await r.getByRole("button", { name: "Email: Empty" }).click();
@@ -39,6 +38,29 @@ test("email, phone, files properties", async ({ page }) => {
   await phone.press("Enter");
   await expect(r.getByRole("link", { name: "+1 (555) 010-2030" })).toHaveAttribute("href", "tel:+15550102030");
   expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { phone: "+1 (555) 010-2030" }, expect: { phone: null } });
+
+  // Files & media: upload attaches to the ROW's page; the value is a list of named links to our attachments.
+  await r.getByRole("button", { name: "Files: Empty" }).click();
+  const files = page.getByRole("dialog", { name: "Files files" });
+  await expect(files).toContainText("No files yet.");
+  await files.locator('input[type="file"]').setInputFiles([
+    { name: "brief.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") },
+    { name: "mock [v2].png", mimeType: "image/png", buffer: Buffer.from("png") },
+  ]);
+  await expect(files.getByRole("listitem")).toHaveCount(2);
+  expect(await page.evaluate(() => (window as any).dbUploads)).toEqual([{ noteId: "t3", name: "brief.pdf", kind: "file" }, { noteId: "t3", name: "mock [v2].png", kind: "file" }]);
+  expect((await writes(page)).at(-1)).toEqual({ id: "t3", set: { files: ["[brief.pdf](/api/attachments/a_up1)", "[mock  v2 .png](/api/attachments/a_up2)"] }, expect: { files: null } });
+  // Image files preview as a thumbnail; any file downloads on click.
+  await expect(files.locator("img.db-file-thumb")).toHaveAttribute("src", "/api/attachments/a_up2");
+  const download = page.waitForEvent("download");
+  await files.getByRole("button", { name: "brief.pdf", exact: true }).click();
+  expect((await download).suggestedFilename()).toBe("brief.pdf");
+  // Remove one.
+  await files.getByRole("button", { name: "Remove brief.pdf" }).click();
+  await expect(files.getByRole("listitem")).toHaveCount(1);
+  expect((await writes(page)).at(-1).set).toEqual({ files: ["[mock  v2 .png](/api/attachments/a_up2)"] });
+  await page.keyboard.press("Escape");
+  await expect(r.locator(".db-file")).toHaveCount(1);
 
   // Both filter like text.
   await page.getByRole("button", { name: "Filter", exact: true }).click();
