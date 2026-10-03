@@ -181,13 +181,17 @@ test("pre-check: counts what makes the parsers super-linear, and refuses the hop
   assert.equal(conversionRefusal("*a ".repeat(40_000), true), "too_complex");
   assert.equal(conversionRefusal("x".repeat(3_000_000), true), "too_large");
   assert.equal(conversionRefusal(RICH_MD, true), null);
-  // Ordinary content is never refused — only sent to the worker when large.
+  // Ordinary content is never refused — only sent to the worker when large. (How large a body is
+  // parsed at all follows the worker heap since round 4: 1.2 MB of prose needs the 2 GB setting.)
+  restore.push(configureConversion({ maxInputNodes: 200_000 }));
   const prose = "Some *normal* text with **bold** and a [link](https://x.y).\n\n".repeat(20_000);
   assert.equal(conversionRefusal(prose, true), null);
   assert.equal(isCheapContent(prose, true), false);
   assert.equal(isCheapContent(RICH_MD, true), true);
-  // Stored HTML is judged by its node count, not its size: megabytes of text in a few nodes are cheap.
-  assert.equal(isCheapContent(`<p>${"word ".repeat(300_000)}</p><p>tail</p>`, false), true);
+  // Stored HTML has the same inline byte cap as Markdown (round 4, C1): "megabytes of text in a few
+  // nodes" used to be inline by node count — and the count missed what the DOM parser really builds.
+  assert.equal(isCheapContent(`<p>${"word ".repeat(300_000)}</p><p>tail</p>`, false), false);
+  assert.equal(isCheapContent(`<p>${"word ".repeat(2_000)}</p><p>tail</p>`, false), true);
   assert.equal(isCheapContent("<p>x</p>".repeat(5000), false), false);
   assert.equal(isCheapContent(DEEP_DIVS(200), false), false);
   assert.deepEqual(docJsonWeight({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "abc", marks: [{ type: "bold" }] }] }] }), { nodes: 4, chars: 3, depth: 3, complete: true });
@@ -333,7 +337,11 @@ test("byte identity, schema v5 blocks and suggestion-mark order: the worker seed
 });
 
 test("M1: 2 MB of ordinary Markdown opens (the worker heap is sized for it); a body that would build too many nodes is refused up front, by name", { timeout: 300_000 }, async () => {
-  assert.ok(convertCfg.heapMb >= 2048, "the worker heap default covers a 2 MB note");
+  // The DEFAULT heap ceiling is 512 MB since round 4 (M4: a shared 16 GB host) and the node caps
+  // follow it; a 2 MB note needs the larger ceiling an operator can configure — as this test does.
+  await stopConversionWorkers();
+  restore.push(configureConversion({ heapMb: 2048, maxInputNodes: 200_000, maxNodes: 400_000 }));
+  restore.push(() => void stopConversionWorkers());
   const rep = (p: string, bytes: number) => p.repeat(Math.ceil(bytes / p.length)).slice(0, bytes);
   // Dense short paragraphs: the DOM + ProseMirror trees of 2 MB of these do not fit any sane heap.
   const dense = rep("A note with **bold** and *em* text.\n\n", 2_000_000);

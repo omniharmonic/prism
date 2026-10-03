@@ -19,6 +19,7 @@
  *    reseeded the document, after a crash before the store, and after a failed
  *    vault write — never a second mutation, never a result for a lost change.
  */
+import { contentToSeedSync } from "../src/convert/core";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -242,7 +243,8 @@ const clientRevision = (doc: Y.Doc) => humanCollabRevision(pm(doc).toJSON(), doc
 function offlineDoc(id: string): Y.Doc {
   const d = new Y.Doc();
   const snap = getDocState(id);
-  Y.applyUpdate(d, snap ? snap.state : contentToYUpdate(fv.notes.get(id)!.content));
+  // The unbounded core form: a TEST seeding a note of any size (the server's bounded form refuses stored HTML past the inline cap).
+  Y.applyUpdate(d, snap ? snap.state : contentToSeedSync(fv.notes.get(id)!.content));
   return d;
 }
 const select = (doc: Y.Doc, needle: string) => {
