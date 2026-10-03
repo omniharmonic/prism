@@ -336,7 +336,10 @@ test("byte identity, schema v5 blocks and suggestion-mark order: the worker seed
   assert.ok(conversionStats.worker - before >= 5);
 });
 
-test("M1: 2 MB of ordinary Markdown opens (the worker heap is sized for it); a body that would build too many nodes is refused up front, by name", { timeout: 300_000 }, async () => {
+// HEAVY: spawns a worker with a 2 GB heap ceiling and converts 2 MB in it. Not part of `npm test` on a shared /
+// production host — run it deliberately with PRISM_HEAVY_TESTS=1.
+const HEAVY = process.env.PRISM_HEAVY_TESTS === "1" ? {} : { skip: "heavy (2 GB worker heap): set PRISM_HEAVY_TESTS=1 to run" };
+test("M1: 2 MB of ordinary Markdown opens (the worker heap is sized for it); a body that would build too many nodes is refused up front, by name", { timeout: 300_000, ...HEAVY }, async () => {
   // The DEFAULT heap ceiling is 512 MB since round 4 (M4: a shared 16 GB host) and the node caps
   // follow it; a 2 MB note needs the larger ceiling an operator can configure — as this test does.
   await stopConversionWorkers();
