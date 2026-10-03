@@ -107,8 +107,8 @@ test("pure: the nearest shared ancestor wins among page grants; other grant kind
 test("sharing a page shares its sub-pages (read, list, tree) but not siblings", async () => {
   pageGrant(BOB, "p", "view");
   for (const id of ["p", "c1", "c2"]) assert.equal(await status(`/notes/${id}`, BOB), 200, id);
-  assert.equal(await status("/notes/sib", BOB), 403);
-  assert.equal(await status("/notes/dest", BOB), 403);
+  assert.equal(await status("/notes/sib", BOB), 404);
+  assert.equal(await status("/notes/dest", BOB), 404);
   const list = (await (await get("/notes", BOB)).json()) as Array<{ id: string }>;
   assert.deepEqual(list.map((n) => n.id).sort(), ["c1", "c2", "p"]);
   const tree = (await (await get("/tree", BOB)).json()) as Array<{ id: string }>;
@@ -130,8 +130,8 @@ test("moving a sub-page OUT via the pages API drops inherited access; moving it 
   assert.equal(await status("/notes/c1", BOB), 200);
   assert.equal((await move("c1", "vault/Archive")).status, 200);
   assert.equal(fv.notes.get("c1")!.path, "vault/Archive/Plan");
-  assert.equal(await status("/notes/c1", BOB), 403, "moved out → no longer inherited");
-  assert.equal(await status("/notes/c2", BOB), 403, "its own sub-pages went with it");
+  assert.equal(await status("/notes/c1", BOB), 404, "moved out → no longer inherited");
+  assert.equal(await status("/notes/c2", BOB), 404, "its own sub-pages went with it");
   const tree = (await (await get("/tree", BOB)).json()) as Array<{ id: string }>;
   assert.deepEqual(tree.map((n) => n.id), ["p"]);
   assert.equal((await move("c1", "vault/Projects/Prism")).status, 200);
@@ -145,23 +145,23 @@ test("moving the SHARED page keeps its subtree shared; a new page at the old pat
   assert.equal(fv.notes.get("c2")!.path, "vault/Archive/Prism/Plan/Week 1");
   for (const id of ["p", "c1", "c2"]) assert.equal(await status(`/notes/${id}`, BOB), 200, id);
   fv.put({ id: "imposter", path: "vault/Projects/Prism/Secret", content: "<p>new</p>" });
-  assert.equal(await status("/notes/imposter", BOB), 403, "the grant followed the page id, not its old path");
+  assert.equal(await status("/notes/imposter", BOB), 404, "the grant followed the page id, not its old path");
 });
 
 test("moving a page INTO a shared page grants it; private and trashed are never inherited", async () => {
   pageGrant(BOB, "p", "view");
-  assert.equal(await status("/notes/sib", BOB), 403);
+  assert.equal(await status("/notes/sib", BOB), 404);
   assert.equal((await move("sib", "vault/Projects/Prism")).status, 200);
   assert.equal(await status("/notes/sib", BOB), 200);
   fv.put({ id: "priv", path: "vault/Projects/Prism/Mine", content: "<p>x</p>", metadata: { prism_creator: OWNER, prism_visibility: "private" } });
-  assert.equal(await status("/notes/priv", BOB), 403, "a private page inside a shared page stays private");
+  assert.equal(await status("/notes/priv", BOB), 404, "a private page inside a shared page stays private");
   const trash = await req(api, "/notes/p/trash", { method: "POST", cookie: as(OWNER), headers: J, body: "{}" });
   assert.equal(trash.status, 200);
   // A trashed page shares nothing with LIVE notes under its old path (its own trashed
   // group stays reachable for whoever may restore it — review M-D).
   fv.put({ id: "after", path: "vault/Projects/Prism/After", content: "<p>created while the page is in the Trash</p>" });
   resetTreeForTests();
-  assert.equal(await status("/notes/after", BOB), 403, "a trashed page shares nothing");
+  assert.equal(await status("/notes/after", BOB), 404, "a trashed page shares nothing");
   const tree = (await (await get("/tree", BOB)).json()) as Array<{ id: string }>;
   assert.deepEqual(tree.map((n) => n.id), [], "nothing trashed is listed");
 });
@@ -182,10 +182,10 @@ test("nearest ancestor wins through the gateway: restrict a child to view, expan
 test("note and tag grants are untouched by page grants", async () => {
   grantUser(BOB, "note", "c1", "view");
   assert.equal(await status("/notes/c1", BOB), 200);
-  assert.equal(await status("/notes/c2", BOB), 403, "a per-NOTE grant never reaches sub-pages");
+  assert.equal(await status("/notes/c2", BOB), 404, "a per-NOTE grant never reaches sub-pages");
   grantUser(CAROL, "tag", "team", "view");
   assert.equal(await status("/notes/p", CAROL), 200);
-  assert.equal(await status("/notes/c1", CAROL), 403, "a tag grant reaches only tagged notes");
+  assert.equal(await status("/notes/c1", CAROL), 404, "a tag grant reaches only tagged notes");
 });
 
 test("collab socket authorization honours page grants (and stops at a moved-out page)", async () => {

@@ -24,6 +24,7 @@ export const httpVaultClient: VaultClient = {
   preserveDraft: rest.preserveDraft,
   deleteNote: rest.deleteNote,
   search: rest.search,
+  searchNotes: rest.searchNotes,
   semanticSearch: rest.semanticSearch,
   getTags: rest.getTags,
   addTags: rest.addTags,
@@ -57,6 +58,8 @@ export const httpVaultClient: VaultClient = {
   updateSchema: rest.updateSchema,
   queryNotes: rest.queryNotes,
   updateProperties: rest.updateProperties,
+  uploadAttachment: rest.uploadAttachment,
+  unfurl: rest.unfurl,
   updatePropertiesBatch: rest.updatePropertiesBatch,
   importCsv: rest.importCsv,
 };

@@ -302,3 +302,22 @@ test("AND/OR filter groups", async ({ page }) => {
   // The server engine evaluated the same grammar (the fixture runs it on every query).
   expect((await page.evaluate(() => (window as any).dbFixture.queries.at(-1).filter))).toEqual(saved);
 });
+
+test("gallery card size and cover", async ({ page }) => {
+  // Covers (wave 2B, NP-DB-05): the page cover image (with its focal point), a brand gradient, else the icon/initial.
+  await page.route("**/api/attachments/*", (r) => r.fulfill({ path: "e2e-fixtures/media/cover.png" }));
+  await page.goto("/e2e-fixtures/databases.html");
+  await page.getByRole("tab", { name: "Gallery" }).click();
+  const gallery = page.getByRole("list", { name: "Gallery gallery" });
+  const card = (name: string) => gallery.getByRole("listitem", { name });
+  const img = card("Review workspace navigation").locator(".db-cover img");
+  await expect(img).toHaveAttribute("src", "/api/attachments/a_cover1");
+  await expect(img).toHaveCSS("object-position", /50% 20%/);
+  await expect(img).toHaveCSS("object-fit", "cover");
+  const gradient = card("Write release notes").locator(".db-cover-gradient");
+  await expect(gradient).toBeVisible();
+  expect(await gradient.evaluate((el) => getComputedStyle(el).backgroundImage)).toContain("linear-gradient");
+  await expect(card("Refine onboarding copy").locator(".db-cover img, .db-cover-gradient")).toHaveCount(0);
+  // A cover that is not ours / https never becomes an <img> (no javascript:, no arbitrary same-origin path).
+  expect(await gallery.locator('.db-cover img:not([src^="/api/attachments/"]):not([src^="https://"])').count()).toBe(0);
+});

@@ -16,8 +16,10 @@
     "./collab-access": "./src/lib/collab/access.ts",
     "./collab-commands": "./src/lib/collab/commands.ts",
     "./wikilinks": "./src/lib/wikilinks.ts",
+    "./media-embeds": "./src/lib/media/embeds.ts",
     "./mentions": "./src/lib/tiptap/MentionParse.ts",
     "./pages": "./src/lib/pages/model.ts",
+    "./search": "./src/lib/search/match.ts",
     "./styles/*": "./src/styles/*",
     "./messages": "./src/lib/matrix/types.ts"
   },

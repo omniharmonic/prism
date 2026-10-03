@@ -97,9 +97,9 @@ function resolveCaller(c: Context): Caller | null {
 const noteRef = (note: Note) => ({
   id: note.id,
   tags: note.tags ?? [],
+  path: note.path ?? null,
   creator: typeof note.metadata?.prism_creator === "string" ? note.metadata.prism_creator : null,
   visibility: (note.metadata?.prism_visibility === "private" ? "private" : "workspace") as "private" | "workspace",
-  path: note.path ?? null,
 });
 const levelOf = (who: Caller, note: Note): Level | null => collabLevelFor(who.grants, noteRef(note), who.role, who.email);
 const kindOf = (note: Note) => noteKind({ path: note.path ?? null, tags: note.tags ?? null, metadata: note.metadata ?? null, content: note.content });

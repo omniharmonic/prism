@@ -33,7 +33,7 @@ import {
   settleNotifications,
   type NotifySender,
 } from "../src/governance-notify";
-import { installFakeVault, resetDb, makeSession, sessionCookie, type FakeVault } from "./helpers";
+import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 // ── fixtures (mirrors governance.test.ts) ────────────────────────────────────
 
@@ -198,6 +198,7 @@ async function seedCommons(): Promise<void> {
     eligibleRole: "gardener",
   });
   for (const g of ["g1@test.local", "g2@test.local", OWNER]) {
+    if (g !== OWNER) grantUser(g, "tag", "medicine", "view"); // proposing an edit needs VIEW on the target
     await jreq("/memberships", owner, "POST", { subject: g, role: "gardener" });
   }
 }

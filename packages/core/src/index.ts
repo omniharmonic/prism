@@ -5,6 +5,7 @@ import "./styles/glass.css";
 import "./styles/typography.css";
 import "./styles/collab.css";
 import "./styles/workspace.css";
+import "./styles/shell.css";
 
 export { PrismMark, PrismAppIcon } from "./components/brand/PrismMark";
 
@@ -109,6 +110,12 @@ export { HumanSuggestionComposer, humanFailureText, type HumanCommandChannel } f
 export { HumanCommandFailure, HUMAN_COMMAND_COPY } from "./lib/collab/human/failure";
 export { PageHeader, PageProperties, FontSwitch, renamePath } from "./components/renderers/DocumentChrome";
 export type { ContentFont } from "./components/renderers/DocumentChrome";
+// Media, embeds, covers (wave 2B): page cover, attachment/cover helpers, embed allowlist.
+export { PageCover, CoverPicker } from "./components/renderers/PageCover";
+export { parseCover, coverPatch, coverForNote, gradientCss, COVER_GRADIENTS, safeMediaSrc, isOwnAttachment, attachmentKind, formatBytes, MAX_IMAGE_BYTES, MAX_FILE_BYTES } from "./lib/media/attachments";
+export type { PageCover as PageCoverValue, AttachmentKind } from "./lib/media/attachments";
+export { embedFor, isAllowedFrameSrc, safeWebUrl, EMBED_FRAME_ORIGINS, EMBED_FRAME_SOURCES, EMBED_SANDBOX } from "./lib/media/embeds";
+export type { EmbedTarget, EmbedProvider } from "./lib/media/embeds";
 export { useUpdateNote, useNotes } from "./app/hooks/useParachute";
 export { useUIStore } from "./app/stores/ui";
 export { useWikilinkNavigate } from "./app/hooks/useWikilinkNavigate";
@@ -261,6 +268,14 @@ export { PageInfo, countText, plainText } from "./components/sharing/PageInfo";
 export { PageUpdates, buildUpdates, type UpdateItem } from "./components/sharing/PageUpdates";
 export { writerOf, writerTitle, writerName, lastEditedBy } from "./lib/history/attribution";
 export { MoveAccessNotice, moveAccessSummary, useMoveAccessPreview } from "./components/sharing/MoveAccessNotice";
+// Shell sync state + motion (wave 2E: NP-OF-01, NP-SB-15, NP-PG-06, NP-AX-06)
+export { SyncStateBadge, OPEN_SAVED_CHANGES_EVENT } from "./components/layout/SyncStateBadge";
+export { useSyncStore, useSyncStatus, deriveSyncStatus, markDirty, reportSaveFailure, reportSyncSource, reportPendingWrites, trackVaultWrites, type SyncStatus, type SyncKind } from "./lib/sync/syncState";
+export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMotion } from "./lib/motion";
+export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
+export { isVaultNoteId } from "./lib/noteIdentity";
+export { BacklinksPill } from "./components/layout/BacklinksPill";
+export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
 // Wave 2A: @-mentions, notifications inbox, reminders, access requests.
 export { MentionNode, mentionExtensions, setMentionNodeView, newMentionUid, mentionFallbackText, MENTION_KINDS, type MentionKind, type MentionAttrs } from "./lib/tiptap/MentionNode";
 export { extractMentions, newMentions, extractCommentMentions, splitCommentMentions, commentMentionToken, type ParsedMention } from "./lib/tiptap/MentionParse";

@@ -178,11 +178,14 @@ export interface VaultClient {
   createNote(params: CreateNoteParams): Promise<Note>;
   updateNote(id: string, params: UpdateNoteParams, options?: { expectedScope?: string }): Promise<Note>;
   /** Preserve an unsent editor draft locally in its original audience; never send it. */
-  preserveDraft?(id: string, content: string, audience: string): Promise<void>;
+  preserveDraft?(id: string, content: string, audience: string, reason?: "access" | "conflict"): Promise<void>;
   /** True while this audience has deferred or uncertain writes awaiting sync/review. */
   hasPendingWrites?(): Promise<boolean>;
   deleteNote(id: string): Promise<void>;
   search(query: string, tags?: string[], limit?: number): Promise<Note[]>;
+  /** Filtered full-text search with `_matches` offsets (wave 2E). Optional;
+   *  `null` = this server can't, use {@link search} + client-side filters. */
+  searchNotes?(query: string, filters?: import("../lib/search/match").SearchFilters, limit?: number): Promise<Note[] | null>;
   /** Hybrid semantic search (dense vectors + full-text), when the host provides
    *  it. Optional: shells without a RAG backend omit it, and callers fall back
    *  to {@link search}. Results are relevance-ranked with score + snippet. */
@@ -227,7 +230,7 @@ export interface VaultClient {
   /** Real delete of a page already in the Trash (and what was trashed with it). */
   deleteFromTrash?(noteId: string): Promise<{ deleted: string[] }>;
   /** Page lock / sidebar order: metadata-only, CAS, reconciled with a live editor. */
-  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
+  setPageMeta?(noteId: string, set: { prism_locked?: boolean; prism_order?: number; prism_page_style?: { small: boolean; full: boolean } }, ifUpdatedAt: string): Promise<{ updatedAt: string | null }>;
   /** Favorites / recents / sidebar state, synced per user × vault. */
   getPreferences?(): Promise<PreferencesSnapshot>;
   savePreferences?(preferences: PagePreferences, ifRevision?: number): Promise<PreferencesSnapshot>;
@@ -250,7 +253,10 @@ export interface VaultClient {
   /** Store an image/file as an attachment of `noteId` and return a URL to embed.
    *  Optional: when absent, the editor hides upload (paste/drop/pick) and offers
    *  only "Image from URL". Rejects on refusal; the editor inserts nothing. */
-  uploadAttachment?(noteId: string, file: File): Promise<UploadedAttachment>;
+  uploadAttachment?(noteId: string, file: File, opts?: { kind?: "image" | "file" }): Promise<UploadedAttachment>;
+  /** Link preview for a bookmark block (title, description, site, image, favicon).
+   *  Optional: without it a bookmark shows its URL only. */
+  unfurl?(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }>;
   /** Sharing reads (wave 2D, server routes/sharing.ts). Optional per shell: without
    *  them the sidebar has no "Shared with me", history has no Updates feed. */
   listSharedWithMe?(): Promise<import("../lib/sharing/types").SharedWithMeListing>;

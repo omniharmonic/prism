@@ -28,12 +28,13 @@ import type {
 } from "@prism/core";
 import { VaultRequestError, HistoryUnavailableError, HistoryConflictError, PropertyConflictError, toNoteVersion } from "@prism/core";
 import type { QueryPage, QuerySpec, SchemaMap, SchemaPatch, TagSchema, PropertyWriteResult } from "@prism/core";
+import { filtersToParams, type SearchFilters } from "@prism/core/search";
 import type { PropertyBatchItem, PropertyBatchResult, CsvImportRequest, CsvImportResponse } from "@prism/core/database";
 import { agentScope, apiBase, DEFAULT_VAULT_NAME, capabilityHeader, contextHeaders } from "../config";
-import { retainDraft, enqueue, hasPending, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
+import { retainDraft, enqueue, hasPending, hasPendingFor, noteKey, currentBase, flush, localNote, resolveLocalNoteId } from "../offline/outbox";
 import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { serverFetch } from "../transport";
-import { readThrough } from "../offline/readCache";
+import { readThrough, reconcileCachedNotes } from "../offline/readCache";
 
 // Auth rides the httpOnly session cookie (PWA) or a device bearer token (native
 // build) via serverFetch (../transport); the browser
@@ -94,14 +95,38 @@ export async function hasPendingWrites(): Promise<boolean> {
  * an optimistic copy so the editor proceeds; it replays on reconnect. HTTP
  * errors (4xx/5xx) still throw.
  */
-async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string, expectedScope?: string): Promise<T> {
+/** A write Prism will not queue: it needs the server's answer (rename, move, delete). */
+export class OfflineRefusedError extends VaultRequestError {
+  constructor(message: string) {
+    super(0, message);
+    this.name = "OfflineRefusedError";
+  }
+}
+/** Refuse with a clear message and a toast (shown by OfflineIndicator). Nothing is queued. */
+function refuseOffline(action: string): never {
+  const message = `You’re offline. ${action} needs a connection — reconnect and try again.`;
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("prism:offline-refused", { detail: { message } }));
+  throw new OfflineRefusedError(message);
+}
+
+/**
+ * OFFLINE DESIGN (wave 2E review H2/H3) — what queues and what refuses:
+ *  - queued, coalesced per note: content saves (one row, first base revision,
+ *    latest content), metadata-only merges (`kind: "meta"`, replayed per key
+ *    against the current note, never forced), tag deltas, link deltas, creates.
+ *  - refused offline (nothing queued): rename/move (`path`), delete, and every
+ *    pages route (move, trash, restore, lock, order, style) and history restore.
+ *  - a stuck row holds back only its own note; writes to a note with rows
+ *    waiting queue behind them, every other note goes straight to the server.
+ */
+async function writeJson<T>(method: string, path: string, body: unknown, optimistic: () => T, temporaryId?: string, expectedScope?: string, kind?: "meta"): Promise<T> {
   const assertAudience = () => { if (expectedScope !== undefined && agentScope() !== expectedScope) throw new VaultRequestError(403, "Workspace changed before this draft could be sent."); };
   assertAudience();
   const context = await captureWriteContext();
   assertAudience();
   const bodyStr = JSON.stringify(body);
-  if (isOffline() || path.includes("/offline-") || await hasPending(context)) {
-    await enqueue(method, path, bodyStr, context, { temporaryId });
+  if (isOffline() || path.includes("/offline-") || await hasPendingFor(context, noteKey({ method, path, temporaryId }))) {
+    await enqueue(method, path, bodyStr, context, { temporaryId, kind });
     if (!isOffline()) void flush();
     return optimistic();
   }
@@ -168,9 +193,22 @@ interface TreeRow {
  * full-vault list. Falls back to the legacy list against an older server that
  * predates the endpoint (404 via the vault, or 403 from the old catch-all).
  */
+/** Last fresh tree for the offline prefetcher: note id → server `updatedAt`. */
+export const treeStamps: { scope: string | null; rows: Map<string, string> } = { scope: null, rows: new Map() };
+
 export async function listTree(): Promise<NoteTreeEntry[]> {
   try {
-    const rows = (await (await req(`/tree`)).json()) as TreeRow[];
+    const context = await captureWriteContext().catch(() => null);
+    const resp = await req(`/tree`);
+    const rows = (await resp.json()) as TreeRow[];
+    // A FRESH tree is the server's current statement of what this account can
+    // see: evict cached pages it no longer lists (review M4) and remember each
+    // page's revision so the offline prefetcher only re-reads what changed.
+    if (context && resp.headers.get("x-prism-cache") !== "hit") {
+      treeStamps.scope = scopeKey(context.scope);
+      treeStamps.rows = new Map(rows.map((r) => [r.id, r.updatedAt ?? ""]));
+      void reconcileCachedNotes(treeStamps.scope, new Set(rows.map((r) => r.id)));
+    }
     return rows.map((r) => ({
       id: r.id,
       path: r.path,
@@ -197,7 +235,13 @@ export async function getNote(id: string, options?: { fresh?: boolean }): Promis
 
 export async function createNote(params: CreateNoteParams): Promise<Note> {
   const temporaryId = `offline-${crypto.randomUUID()}`;
-  return writeJson("POST", `/notes`, params, () => ({
+  // Named fields only: the gateway refuses any other key on a non-owner create
+  // (strict schema), and callers reach this through untyped shims (`vault_create_note`).
+  const body: CreateNoteParams = { content: params.content ?? "" };
+  if (params.path != null) body.path = params.path;
+  if (params.tags != null) body.tags = params.tags;
+  if (params.metadata != null) body.metadata = params.metadata;
+  return writeJson("POST", `/notes`, body, () => ({
     id: temporaryId,
     content: params.content,
     path: params.path ?? null,
@@ -216,7 +260,27 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
   if (params.path !== undefined) body.path = params.path;
   if (params.metadata !== undefined) body.metadata = params.metadata;
   if (params.ifUpdatedAt !== undefined) body.if_updated_at = params.ifUpdatedAt;
+  if (params.path !== undefined && isOffline()) refuseOffline("Renaming or moving a page");
+  if (typeof body.if_updated_at === "string") {
+    const context = await captureWriteContext().catch(() => null);
+    if (context) body.if_updated_at = currentBase(context.scope, id, body.if_updated_at);
+  }
+  // A metadata-only write with no base revision is a per-key MERGE. Online it
+  // goes out as before; offline (or behind queued rows for this note) it is
+  // queued as a mergeable row — never as `force`, which used to park it as a
+  // conflict and block the queue (review H3).
+  const metaMerge = body.if_updated_at === undefined && params.metadata !== undefined && params.content === undefined && params.path === undefined;
   if (body.if_updated_at === undefined) body.force = true;
+  if (metaMerge) {
+    const context = await captureWriteContext();
+    if (isOffline() || id.startsWith("offline-") || await hasPendingFor(context, id)) {
+      if (options?.expectedScope !== undefined && agentScope() !== options.expectedScope) throw new VaultRequestError(403, "Workspace changed before this draft could be sent.");
+      await enqueue("PATCH", `/notes/${encodeURIComponent(id)}`, JSON.stringify({ metadata: params.metadata }), context, { kind: "meta" });
+      if (!isOffline()) void flush();
+      const local = await getNote(id).catch(() => null);
+      return local ?? { id, content: "", path: null, metadata: params.metadata ?? null, tags: null, createdAt: nowISO(), updatedAt: nowISO() };
+    }
+  }
   return writeJson("PATCH", `/notes/${encodeURIComponent(id)}`, body, () => ({
     id,
     content: params.content ?? "",
@@ -228,16 +292,18 @@ export async function updateNote(id: string, params: UpdateNoteParams, options?:
   }), undefined, options?.expectedScope);
 }
 
-export async function preserveDraft(id: string, content: string, audience: string): Promise<void> {
+export async function preserveDraft(id: string, content: string, audience: string, reason: "access" | "conflict" = "access"): Promise<void> {
   const value: unknown = JSON.parse(audience);
   if (!Array.isArray(value) || value.length !== 4 || !value.every(part => typeof part === "string" && part.length > 0 && part.length < 4096)) throw Error("Draft audience unavailable");
   const [api, workspace, vault, email] = value as string[];
   const url = new URL(api);
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw Error("Draft server unavailable");
-  await retainDraft(id, content, { api, workspace, vault, actor: `user:${email}` });
+  await retainDraft(id, content, { api, workspace, vault, actor: `user:${email}` }, reason);
 }
 
 export async function deleteNote(id: string): Promise<void> {
+  // Never queue a delete: the tree would keep showing a page that is "gone".
+  if (isOffline()) refuseOffline("Deleting a page");
   await mutate("DELETE", `/notes/${encodeURIComponent(id)}`, undefined, () => {});
 }
 
@@ -259,6 +325,22 @@ export async function search(query: string, tags?: string[], limit = 50): Promis
   const sp = new URLSearchParams({ search: query, limit: String(limit), include_content: "true" });
   for (const t of tags ?? []) sp.append("tag", t);
   return (await req(`/notes?${sp.toString()}`)).json();
+}
+
+/** Filtered full-text search with match offsets (`GET /api/search`, wave 2E).
+ *  Lean rows: no bodies, a server-built snippet instead. An older server that
+ *  has no such route for this actor answers 404/405/501 → `null` (caller falls back). */
+export async function searchNotes(query: string, filters: SearchFilters = {}, limit = 50): Promise<Note[] | null> {
+  const sp = filtersToParams(filters, new URLSearchParams({ q: query.slice(0, 200), limit: String(limit), lean: "1" }));
+  try {
+    // Vault scope (NP-SR-04): another vault is named by header; the server
+    // re-resolves the caller's role and grants for THAT vault. Never cached.
+    const rows = (await (await req(`/search?${sp.toString()}`, filters.vault ? { headers: { "X-Prism-Vault": filters.vault }, cache: "no-store" } : undefined)).json()) as Note[];
+    return filters.vault ? rows.map((n) => ({ ...n, _vault: filters.vault })) : rows;
+  } catch (error) {
+    if (error instanceof VaultRequestError && [404, 405, 501].includes(error.status)) return null;
+    throw error;
+  }
 }
 
 /** Hybrid semantic search via the server's RAG service (dense + full-text,
@@ -331,7 +413,8 @@ export async function removeTags(id: string, tags: string[]): Promise<void> {
 export async function getLinks(noteId?: string, relationship?: string): Promise<VaultLink[]> {
   if (!noteId) return [];
   const note = await (
-    await req(`/notes/${encodeURIComponent(noteId)}${qs({ include_links: true })}`)
+    // Lean: the links, not a second copy of the body (an older vault ignores the flag).
+    await req(`/notes/${encodeURIComponent(noteId)}${qs({ include_links: true, include_content: false })}`)
   ).json();
   const links: VaultLink[] = Array.isArray(note?.links) ? note.links : [];
   return relationship ? links.filter((l) => l.relationship === relationship) : links;
@@ -462,9 +545,10 @@ export async function queryNotes(spec: QuerySpec): Promise<QueryPage> {
 }
 
 /**
- * Metadata-only property write with per-field compare-and-set. Offline, the
- * write is queued through the outbox as a plain metadata merge (it replays on
- * reconnect) — the same path every other offline edit takes.
+ * Metadata-only property write with per-field compare-and-set. Offline, it is
+ * queued as a mergeable metadata row (`kind: "meta"`): on reconnect the outbox
+ * replays it through this same route as a per-key merge WITHOUT `expect` (the
+ * per-field CAS only applies online), never as a forced write.
  */
 export async function updateProperties(id: string, set: Record<string, unknown>, expect?: Record<string, unknown>): Promise<PropertyWriteResult> {
   if (isOffline()) {
@@ -489,6 +573,44 @@ export async function updateProperties(id: string, set: Record<string, unknown>,
     }
     throw e;
   }
+}
+
+// ---- attachments + link previews (routes/attachments.ts) --------------------
+
+/** Server refusals → a short reason the editor can show ("too large", "not supported"). */
+function uploadReason(status: number, body: string): string | undefined {
+  if (status === 413) return "the file is too large";
+  if (status === 415) return /svg|active|blocked/i.test(body) ? "web pages, scripts and SVG files aren't allowed" : "that file type isn't supported here";
+  if (status === 403) return "you can't add files to this page";
+  if (status === 409) return /locked/.test(body) ? "this page is locked" : undefined;
+  if (status === 429) return "too many uploads — try again in a minute";
+  return undefined;
+}
+
+/**
+ * Store a file as an attachment of `noteId` (multipart, POST /api/notes/:id/attachments).
+ * Never queued offline: the editor inserts the block only after the server answers.
+ * `X-Prism-Upload` forces a CORS preflight (the server's CSRF guard for multipart).
+ */
+export async function uploadAttachment(noteId: string, file: File, opts?: { kind?: "image" | "file" }): Promise<import("@prism/core").UploadedAttachment> {
+  if (isOffline()) throw Object.assign(new Error("offline"), { userMessage: "you're offline" });
+  const context = await captureWriteContext().catch(() => null);
+  const url = `${context?.scope.api ?? apiBase()}/notes/${encodeURIComponent(noteId)}/attachments${qs({ kind: opts?.kind })}`;
+  const headers: Record<string, string> = { ...(context?.headers ?? jsonHeaders()), "X-Prism-Upload": "1" };
+  for (const k of Object.keys(headers)) if (k.toLowerCase() === "content-type") delete headers[k]; // the browser sets the multipart boundary
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const resp = await serverFetch(url, { method: "POST", body: form, headers, cache: "no-store" });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw Object.assign(new VaultRequestError(resp.status, `upload failed: ${resp.status} ${body.slice(0, 200)}`), { userMessage: uploadReason(resp.status, body) });
+  }
+  return (await resp.json()) as import("@prism/core").UploadedAttachment;
+}
+
+/** Link preview for a bookmark (GET /api/unfurl, signed-in only, SSRF-guarded server-side). */
+export async function unfurl(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }> {
+  return (await req(`/unfurl${qs({ u: url })}`, { cache: "no-store" })).json();
 }
 
 /** Bulk property writes: one CAS result per row (200 all written, 207 partial). Never queued offline. */

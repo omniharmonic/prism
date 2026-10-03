@@ -1,0 +1,26 @@
+.sync-state-region { display: inline-flex; min-width: 0; }
+.sync-state {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 12px; line-height: 1; white-space: nowrap; color: var(--text-muted);
+  border-radius: 6px; background: transparent;
+}
+.sync-state-header { height: 30px; padding: 0 8px; }
+.sync-state-phone { height: 30px; padding: 0 4px; font-size: 11px; }
+.sync-state-footer { min-height: 32px; padding: 0 8px; font-size: 12px; }
+button.sync-state { cursor: pointer; }
+button.sync-state:hover { background: var(--glass-hover); color: var(--text-secondary); }
+button.sync-state:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.sync-state-text { overflow: hidden; text-overflow: ellipsis; }
+.sync-state-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; background: var(--color-success); }
+.sync-state[data-sync-state="saving"] .sync-state-dot { background: var(--text-muted); }
+.sync-state[data-sync-state="local"] .sync-state-dot,
+.sync-state[data-sync-state="waiting"] .sync-state-dot,
+.sync-state[data-sync-state="offline"] .sync-state-dot { background: var(--color-warning); }
+.sync-state[data-sync-state="failed"],
+.sync-state[data-sync-state="review"] { color: var(--color-danger); }
+.sync-state[data-sync-state="failed"] .sync-state-dot,
+.sync-state[data-sync-state="review"] .sync-state-dot { background: var(--color-danger); }
+.sync-state-spin { animation: sync-state-spin 900ms linear infinite; }
+@keyframes sync-state-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sync-state-spin { animation: none; } }
+:root.reduce-motion .sync-state-spin { animation: none; }

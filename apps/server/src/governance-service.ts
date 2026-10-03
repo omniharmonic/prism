@@ -18,6 +18,7 @@
  * in isolation and this file stays a thin, auditable choke point.
  */
 import { renderConstitution, renderPolicySentence, renderRoleSentence } from "@prism/core/governance-prose";
+import { isOwnerOnlyMeta, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
 import type { Note, VaultHelper } from "./parachute";
 import {
   canDelegateMembership,
@@ -579,6 +580,19 @@ export interface ContentPayload {
   rationale?: string;
 }
 
+/**
+ * Metadata a governed content change never carries: who created / can see a note,
+ * its trash state, the page lock, the sidebar order and the writer stamp. A proposal
+ * is written by a member and applied with the vault token, so these keys are dropped
+ * from the payload (at propose, apply and publish) — the same keys the gateway
+ * refuses from a non-owner create or PATCH.
+ */
+const reservedContentMeta = (k: string): boolean =>
+  isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY || k === "prism_last_writer" || k === "prism_last_write_at";
+export function stripReservedContentMeta(metadata: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(metadata).filter(([k]) => !reservedContentMeta(k)));
+}
+
 /** The governance actions that carry a ContentPayload (vs. governance amendments). */
 export const CONTENT_ACTIONS = ["edit_note", "new_entry"] as const;
 export const isContentAction = (a: string): boolean => (CONTENT_ACTIONS as readonly string[]).includes(a);
@@ -755,7 +769,8 @@ export async function publishRevision(
     const n = await vault.createNote({
       content: revNote.content,
       ...(p.path ? { path: p.path } : {}),
-      ...(p.metadata ? { metadata: p.metadata } : {}),
+      // A revision staged before payloads were sanitised may still hold reserved keys.
+      ...(p.metadata ? { metadata: stripReservedContentMeta(p.metadata) } : {}),
       tags: p.tags ?? [],
     });
     noteId = n.id;
@@ -811,25 +826,37 @@ export async function rollbackNote(
 // merge converges to mirrors via the existing CRDT bridge — the hub whose
 // governance gates the merge IS the canonical hub.
 
-/** Fork a note: copy content+tags+metadata, stamp ancestry, audit. */
+/**
+ * Fork a note: copy content+tags+metadata, stamp ancestry, audit. The fork is
+ * PRIVATE TO THE FORKER (`prism_creator` = them, `prism_visibility: "private"`): it
+ * is a personal working copy whose only way back is a merge proposal, so it must not
+ * appear in the origin's shared folder (it keeps the tags) for people who never asked
+ * for it — and forking must not be a way to create inside a tag without `create`.
+ * The origin's reserved metadata (creator, lock, trash, order, writer stamp) is not
+ * inherited. The caller (the route) has already checked the forker may VIEW the
+ * origin; `keepPath: false` drops the path (an exported/protected location).
+ */
 export async function forkNote(
   vault: ServiceVault,
   noteId: string,
   by: string,
+  opts: { keepPath?: boolean } = {},
 ): Promise<{ id: string; forkedFrom: string }> {
   const origin = await vault.getNote(noteId);
   // A fork is a new note: it never inherits the origin's governance signature
   // (which is bound to the origin's id anyway and would not verify).
   const { [GOV_SIG_FIELD]: _sig, ...originMeta } = origin.metadata ?? {};
   const metadata: Record<string, unknown> = {
-    ...originMeta,
+    ...stripReservedContentMeta(originMeta),
     forked_from: origin.id,
     forked_at: nowIso(),
     forked_by: by,
+    prism_creator: by,
+    prism_visibility: "private",
   };
   const fork = await vault.createNote({
     content: origin.content,
-    ...(origin.path ? { path: `${origin.path}-fork-${Date.now().toString(36)}` } : {}),
+    ...(origin.path && opts.keepPath !== false ? { path: `${origin.path}-fork-${Date.now().toString(36)}` } : {}),
     metadata,
     tags: origin.tags ?? [],
   });

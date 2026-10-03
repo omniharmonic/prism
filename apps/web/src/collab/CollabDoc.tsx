@@ -6,6 +6,7 @@ import { captureWriteContext, scopeKey } from "../offline/writeScope";
 import { humanCollabRevision } from "@prism/core/collab-commands";
 import { sendHumanCommand } from "./humanCommands";
 import { humanRevisionBody } from "../../../../packages/core/src/lib/collab/human/validation";
+import { PageCover, parseCover, coverPatch, COVER_GRADIENTS, type PageCoverValue } from "@prism/core";
 import { COLLAB_SCHEMA_VERSION, useAgentDocumentSnapshot, CollabEditor, CommentsSidebar, collabAffordances, humanFailureText, HumanCommandFailure, PresenceAvatars, type CollabSocketScope, type CommentCommandActions, type HumanCommandChannel, CollabCodeEditor, CollabSpreadsheet, CollabCanvas, detectCodeLanguage, inferContentType, PageHeader, NotePropertyBar, PageProperties, renamePath, useUIStore, useAgentChatStore, type ContentFont, type Note, type Editor } from "@prism/core";
 import { MessageSquare, X, Lock } from "lucide-react";
 import { serverFetch, collabWsUrl, collabToken } from "../transport";
@@ -19,8 +20,9 @@ function vaultDocName(noteId: string): string {
   const v = getActiveVault();
   return v && v !== "primary" ? `${v}::${noteId}` : noteId;
 }
-import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
+import { updateNote as restUpdateNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -139,6 +141,24 @@ function ScopedCollabDoc({
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+  // Wave 2E (NP-OF-01): live documents feed the shell's one sync state.
+  const [unsynced, setUnsynced] = useState(0);
+  useEffect(() => {
+    if (!provider) return;
+    const update = ({ number }: { number: number }) => setUnsynced(number);
+    provider.on("unsyncedChanges", update);
+    return () => { provider.off("unsyncedChanges", update); };
+  }, [provider]);
+  useEffect(() => {
+    const key = `collab:${noteId}`;
+    reportSyncSource(key, connected
+      ? (unsynced > 0 ? "saving" : "idle")
+      // Socket down with edits the server hasn't taken: never "Saved". They are on
+      // this device (local), still being written locally (saving), or at risk (failed).
+      : unsynced > 0 ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
+        : localSave === "unavailable" ? "failed" : "idle");
+    return () => reportSyncSource(key, null);
+  }, [noteId, connected, unsynced, localSave]);
   const [level, setLevel] = useState<string | null>(null);
   // The local collaborator identity (cursor + comment/suggestion authorship),
   // seeded from the cached session and confirmed via fetchMe() before the editor mounts.
@@ -152,6 +172,8 @@ function ScopedCollabDoc({
   const [path, setPath] = useState<string | null>(null);
   const [contentFont, setContentFont] = useState<ContentFont>("sans");
   const [icon, setIcon] = useState<string | null>(null);
+  const [cover, setCover] = useState<PageCoverValue | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [kind, setKind] = useState<CollabKind>("document");
   const [language, setLanguage] = useState("plaintext");
   const [suggesting, setSuggesting] = useState(false);
@@ -206,6 +228,22 @@ function ScopedCollabDoc({
   const handleIconChange = (emoji: string | null) => {
     setIcon(emoji);
     void restUpdateNote(noteId, { metadata: { icon: emoji } }).catch(() => {});
+  };
+  // Page cover (metadata-only write, like the icon; the server reconciles it with the live doc).
+  const handleCoverChange = (next: PageCoverValue | null) => {
+    setCover(next);
+    void restUpdateNote(noteId, { metadata: coverPatch(next) }).catch(() => {});
+  };
+  // Files/images go to the note's attachments (edit cap on the server); the block is inserted after the 201.
+  const uploadImage = async (file: File) => {
+    setUploadNotice(null);
+    const a = await uploadAttachment(noteId, file, { kind: "image" });
+    return { src: a.url, alt: a.name.replace(/\.[^.]+$/, "") };
+  };
+  const uploadFile = async (file: File) => {
+    setUploadNotice(null);
+    const a = await uploadAttachment(noteId, file, { kind: "file" });
+    return { src: a.url, name: a.name, size: a.size, mimeType: a.mimeType };
   };
 
   const isSuggestLevel = level === "suggest";
@@ -303,6 +341,7 @@ function ScopedCollabDoc({
         setPath(note.path ?? null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
         setIcon(typeof note.metadata?.icon === "string" ? note.metadata.icon : null);
+        setCover(parseCover(note.metadata ?? null));
         const k = detectKind(note);
         setKind(k);
         if (k === "code") setLanguage(detectCodeLanguage(note.path ?? null, note.metadata ?? null));
@@ -497,7 +536,13 @@ function ScopedCollabDoc({
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+      <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
+        {/* Cover band — same component and metadata as the non-collab view */}
+        {isDocument && <div className="collab-cover-bleed"><PageCover
+          cover={cover}
+          onChange={canReview ? handleCoverChange : undefined}
+          onUpload={canReview && !getCapabilityToken() ? async (file) => (await uploadAttachment(noteId, file, { kind: "image" })).url : undefined}
+        /></div>}
         {/* Header — shared page chrome, identical to the non-collab document view */}
         <PageHeader
           path={path}
@@ -506,6 +551,7 @@ function ScopedCollabDoc({
           onRename={canReview ? handleRename : undefined}
           icon={icon}
           onIconChange={canReview ? handleIconChange : undefined}
+          onAddCover={canReview && isDocument && !cover ? () => handleCoverChange({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)]!.name, y: 50 }) : undefined}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
               <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
@@ -542,6 +588,8 @@ function ScopedCollabDoc({
         />
 
         {titleNotice && <p role="status" className="mb-4 text-xs text-[var(--text-secondary)]">{titleNotice}</p>}
+        {uploadNotice && <p role="alert" className="mb-4 text-xs text-[var(--text-secondary)]">{uploadNotice} <button type="button" className="underline" onClick={() => setUploadNotice(null)}>Dismiss</button></p>}
+        {embedded && isDocument && <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><BacklinksPill noteId={noteId} title={title} /></div>}
 
         {/* Doc + (desktop) inline comments */}
         <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
@@ -598,8 +646,17 @@ function ScopedCollabDoc({
                 }}
                 onWikilinkNavigate={onWikilinkNavigate}
                 wikilinkNotes={wikilinkNotes}
+                uploadImage={canReview ? uploadImage : undefined}
+                uploadFile={canReview ? uploadFile : undefined}
+                unfurl={getCapabilityToken() ? undefined : restUnfurl}
+                onUploadError={setUploadNotice}
+                hostPath={canReview && !getCapabilityToken() ? path : undefined}
                 noteId={noteId}
               />
+            )}
+            {/* Only once synced: a starter must never race the server's own content. */}
+            {embedded && isDocument && editor && editable && synced && !effectiveSuggesting && (
+              <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>
             )}
           </div>
           {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}

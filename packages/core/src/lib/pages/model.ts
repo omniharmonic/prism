@@ -84,7 +84,31 @@ export function isProtectedPath(path: string | null | undefined): boolean {
   return PROTECTED_PATH_PREFIXES.some((root) => p === root || p.startsWith(`${root}/`));
 }
 
-/** Why this note may not be moved or trashed from the page UI, or null. */
+/**
+ * TRUE system notes: what the agent runner executes or records (`agent-*`, anything
+ * under `vault/agent`), alerts, and every `governance-*` record. Unlike the wider
+ * `protectionReason` set below (which also covers INGEST notes — meetings, ClickUp
+ * tasks, people, message threads, the inbox — that collaborators legitimately edit
+ * in place), these are read-only for every non-owner whatever their grants: a skill
+ * note runs with the vault token, a governance note carries authority.
+ */
+export const SYSTEM_NOTE_TAGS = ["agent-skill", "agent-dispatch", "agent-session", "alert"] as const;
+export const SYSTEM_NOTE_PATH_PREFIX = "vault/agent";
+export function systemNoteReason(n: PageLike): string | null {
+  const tags = n.tags ?? [];
+  if (tags.some((t) => t.startsWith("governance-"))) return "Governance records can only change through governance.";
+  const p = (n.path ?? "").toLowerCase();
+  if (tags.some((t) => (SYSTEM_NOTE_TAGS as readonly string[]).includes(t)) || p === SYSTEM_NOTE_PATH_PREFIX || p.startsWith(`${SYSTEM_NOTE_PATH_PREFIX}/`)) {
+    return "This is a system note, so it can’t be changed here.";
+  }
+  return null;
+}
+
+/**
+ * Why this note may not be MOVED or TRASHED (or have its path / system tags changed)
+ * from the page UI, or null — the PLACEMENT notion: system notes AND ingest-owned
+ * ones. It says nothing about editing the note in place; that is `systemNoteReason`.
+ */
 export function protectionReason(n: PageLike): string | null {
   if (isProtectedPath(n.path)) return "This page is kept in sync by an integration, so it can’t be moved or deleted here.";
   const tags = n.tags ?? [];
@@ -93,10 +117,18 @@ export function protectionReason(n: PageLike): string | null {
   return null;
 }
 
-/** A clean vault path, or null: no empty / `.` / `..` segments, no leading slash, no control chars. */
+/**
+ * A clean vault path, or null: no empty / `.` / `..` segments, no leading slash, no
+ * control chars. Canonical the way the vault will STORE it, so every check runs on
+ * the real destination: the vault's `normalizePath` strips a trailing `.md`
+ * (case-insensitive) — `vault/agent.md` IS `vault/agent` — so it is stripped here
+ * first (repeatedly: what is sent must not be stripped again); and the result is
+ * Unicode-NFC, so one spelling of a name is what gets compared and stored.
+ */
 export function normalizePagePath(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
-  const value = raw.trim();
+  let value = raw.trim().normalize("NFC");
+  while (/\.md$/i.test(value)) value = value.replace(/\.md$/i, "");
   if (!value || value.length > 1024 || /[\\\u0000-\u001f\u007f]/.test(value)) return null;
   const parts = value.split("/");
   if (parts.some((part) => !part.trim() || part === "." || part === ".." || part !== part.trim())) return null;
@@ -359,3 +391,30 @@ export function comparePages(a: { name: string; order: number | null }, b: { nam
  */
 export const OWNER_ONLY_META = ["prism_creator", "prism_visibility", TRASH_META.at, TRASH_META.by, TRASH_META.root, TRASH_META.path] as const;
 export const isOwnerOnlyMeta = (key: string): boolean => (OWNER_ONLY_META as readonly string[]).includes(key) || key.startsWith("prism_trashed_");
+
+// ── Per-page style (NP-PG-08, wave 2E) ──────────────────────────────────────
+/** Metadata: per-page presentation, `{ small?: true, full?: true }`. The page
+ *  font stays in `metadata.contentFont` (the existing per-document Sans/Serif/
+ *  Mono). Written only through the pages meta endpoint (CAS, live-doc safe). */
+export const PAGE_STYLE_KEY = "prism_page_style";
+export interface PageStyle { small?: boolean; full?: boolean }
+
+/** Strict: an object holding only boolean `small`/`full`; anything else → null.
+ *  Returns just the keys given (a PATCH). The server merges it onto the stored
+ *  style and writes BOTH keys as explicit booleans — the vault merges nested
+ *  metadata, so turning a flag off must be stored as `false`. */
+export function parsePageStyle(value: unknown): PageStyle | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const keys = Object.keys(v);
+  if (keys.some((k) => k !== "small" && k !== "full")) return null;
+  if (keys.some((k) => typeof v[k] !== "boolean")) return null;
+  const out: PageStyle = {};
+  if (typeof v.small === "boolean") out.small = v.small;
+  if (typeof v.full === "boolean") out.full = v.full;
+  return out;
+}
+
+export function pageStyleOf(note: { metadata?: Record<string, unknown> | null } | null | undefined): PageStyle {
+  return parsePageStyle(note?.metadata?.[PAGE_STYLE_KEY]) ?? {};
+}

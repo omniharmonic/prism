@@ -27,6 +27,8 @@
  * and live in the server's settings table per (vault, tag).
  */
 import { Hono, type Context } from "hono";
+import { canonicalTag } from "../tags";
+import { systemNoteReason } from "@prism/core/pages";
 import { bodyLimit } from "hono/body-limit";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
@@ -269,7 +271,7 @@ databasesApi.put("/schemas/:tag", async (c) => {
   if (actor.kind !== "user" || actor.role !== "owner") return c.json({ error: "forbidden", reason: "changing a schema is owner-only" }, 403);
   const csrf = csrfRefusal(c, requestVia(c));
   if (csrf) return csrf;
-  const tag = c.req.param("tag");
+  const tag = canonicalTag(c.req.param("tag") ?? "");
   if (!tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
   const parsed = validateSchemaPatch(await c.req.json().catch(() => null));
   if (!parsed.ok) return c.json({ error: "bad_request", detail: parsed.error }, 400);
@@ -358,7 +360,7 @@ const scanMax = () => envInt("QUERY_SCAN_MAX", 20_000);
 const RAW_MAX = 50_000;
 const LIST_TTL_MS = Number(process.env.QUERY_LIST_TTL_MS ?? 4_000);
 const PERMISSION_KEYS = ["prism_creator", "prism_visibility"];
-const ROW_META = ["title", "type", "prism_type", "icon", "cover", WRITER_KEY, WRITER_AT_KEY];
+const ROW_META = ["title", "type", "prism_type", "icon", "cover", "coverY", WRITER_KEY, WRITER_AT_KEY];
 
 /**
  * Listing cache (review H1): ONE canonical listing per (vault, tag) — the tag's
@@ -559,6 +561,9 @@ async function writeProperties(actor: Actor, entry: VaultEntry, id: string, entr
       if (!caps.has("view")) return { ok: false, id, status: 404, error: "not_found" };
       if (!caps.has("edit")) return { ok: false, id, status: 403, error: "forbidden", reason: "editing properties requires edit access" };
       if (entries.some(([k]) => ACCESS_KEYS.has(k))) return { ok: false, id, status: 403, error: "forbidden" };
+      // True system notes (agent, alert, governance) are read-only for non-owners;
+      // ingest notes (a ClickUp task's status, a meeting's fields) stay editable.
+      if (systemNoteReason(note)) return { ok: false, id, status: 403, error: "forbidden", reason: "this is a system note" };
       // A locked page's properties are read-only too (pages lock, owner/admin bypass).
       if (note.metadata?.prism_locked === true) return { ok: false, id, status: 423, error: "locked", reason: "This page is locked." };
     }
@@ -743,7 +748,9 @@ databasesApi.post("/databases/import/csv", bodyLimit({ maxSize: IMPORT_MAX_BYTES
   if (csrf) return csrf;
   const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return c.json({ error: "bad_request", detail: "body must be JSON" }, 400);
-  const { tag, csv, mapping, keyColumn, pathPrefix } = body;
+  const { csv, mapping, keyColumn, pathPrefix } = body;
+  // Canonical (`../tags.ts`): `#agent-skill` must not slip past the managed-tag check.
+  const tag = typeof body.tag === "string" ? canonicalTag(body.tag) : body.tag;
   const dryRun = body.dryRun !== false;
   if (typeof tag !== "string" || !tag || tag.length > 128 || /[\u0000-\u001f]/.test(tag)) return c.json({ error: "bad_request", detail: "invalid tag" }, 400);
   if (LOCKED_TAG(tag) || tag === "prism-trashed") return c.json({ error: "forbidden", reason: "this tag is managed by Prism" }, 403);

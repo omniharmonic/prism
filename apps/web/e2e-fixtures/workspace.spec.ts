@@ -93,11 +93,13 @@ test("document autosave waits through unrelated workspace rerenders", async ({ p
   await expect(page.getByText(/^Saved /)).toBeVisible();
 });
 
+// A 409 is NOT retryable (wave 2E review): it goes to conflict review — see
+// notion-sync-state.spec.ts. Any other refusal keeps the draft and offers Retry.
 test("failed document saves remain retryable without losing the typed content", async ({ page }) => {
   await page.goto("/e2e-fixtures/workspace.html");
   const editor = page.locator(".tiptap[contenteditable=true]");
   await expect(editor).toBeVisible();
-  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean; rejectWriteStatus: number } }).prismFixtureControls.rejectWriteStatus = 409; (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = true; });
+  await page.evaluate(() => { (window as unknown as { prismFixtureControls: { rejectWrite: boolean; rejectWriteStatus: number } }).prismFixtureControls.rejectWriteStatus = 422; (window as unknown as { prismFixtureControls: { rejectWrite: boolean } }).prismFixtureControls.rejectWrite = true; });
   await editor.click();
   await editor.pressSequentially("Keep this draft. ");
   await editor.press("ControlOrMeta+s");

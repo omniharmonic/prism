@@ -34,6 +34,7 @@
  */
 import { Window } from "happy-dom";
 import { accessRevision, onAccessChanged } from "./access-events";
+import { systemNoteReason } from "@prism/core/pages";
 import { Hocuspocus, type Connection } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
@@ -71,7 +72,7 @@ import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, type PmNode } from "./suggestions";
-import { roleFloor, workspaceRole, type Role } from "./roles";
+import { roleFloor, roleAtLeast, workspaceRole, type Role } from "./roles";
 
 // TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
 // one. (These globals are read when the hooks run, never at import.)
@@ -615,24 +616,24 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
     if (claims) grants = grants.concat(grantsForCapability(claims.id).filter((g) => g.vault_id === vaultId));
   }
   let tags: string[] = [];
+  let path: string | null = null;
   let creator: string | null = null;
   let visibility: "private" | "workspace" = "workspace";
-  let notePath: string | null = null;
   await warmPageAnchors(grants); // page-subtree grants need the tree (NP-CO-09)
   try {
     const note = await vaultClient(vaultId).getNote(noteId);
     if (note.id !== noteId) return null; // resolved through a path/title alias
     lockedDocs.set(documentName, note.metadata?.prism_locked === true);
     tags = note.tags ?? [];
+    path = note.path ?? null;
     // Private-to-creator also gates LIVE editing: a private note is editable only
     // by its creator (or an explicit per-note grant), never via a tag/role floor.
     creator = (note.metadata?.prism_creator as string | undefined) ?? null;
     visibility = note.metadata?.prism_visibility === "private" ? "private" : "workspace";
-    notePath = note.path ?? null;
   } catch {
     if (role !== "owner") return null; // Never infer public visibility from a failed read.
   }
-  return collabLevelFor(grants, { id: noteId, tags, creator, visibility, path: notePath }, role, email ?? null);
+  return collabLevelFor(grants, { id: noteId, tags, path, creator, visibility }, role, email ?? null);
 }
 
 /**
@@ -653,13 +654,19 @@ export async function resolveLevel(documentName: string, token: string, cookieHe
  */
 export function collabLevelFor(
   grants: Grant[],
-  noteRef: { id: string; tags: string[]; creator: string | null; visibility: "private" | "workspace"; path?: string | null },
+  noteRef: { id: string; tags: string[]; path?: string | null; creator: string | null; visibility: "private" | "workspace" },
   role: Role,
   email: string | null,
 ): Level | null {
   const lvl = effectiveLevel(grants, noteRef, roleFloor(role), email);
-  if (lvl === "own") return "own";
   const caps = effectiveCaps(grants, noteRef, roleFloor(role), email);
+  // A TRUE system note (`systemNoteReason`: agent-*/alert tags, `vault/agent`, any
+  // governance record — NOT ingest notes like meetings, tasks, people or threads,
+  // which collaborators edit) is READ-ONLY for everyone below workspace admin, whatever
+  // their grants (an `own` grant on its tag included): the same rule as the gateway's
+  // PATCH. "view" = a read-only socket, and no commands.
+  if (!roleAtLeast(role, "admin") && systemNoteReason({ path: noteRef.path ?? null, tags: noteRef.tags })) return caps.has("view") ? "view" : null;
+  if (lvl === "own") return "own";
   if (!caps.has("view")) return null;
   if (caps.has("edit")) return maxLevel(lvl, "edit");
   if (caps.has("suggest")) return maxLevel(lvl, "suggest");

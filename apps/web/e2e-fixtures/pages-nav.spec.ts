@@ -29,13 +29,15 @@ test("a page with sub-pages is one node: it opens, discloses its children, and a
   await expect(page.getByRole("heading", { name: "Rename Prism", exact: true })).toBeVisible();
   await shot(page, "tree-nested-1440");
 
+  // "+" on a row creates the sub-page at once, title focused (NP-SB-13): type the name, Enter.
   await nav(page).getByRole("button", { name: "Add a page inside Prism", exact: true }).click();
-  const create = page.getByRole("dialog", { name: "New page", exact: true });
-  await expect(create.getByRole("button", { name: "Location: Projects / Prism" })).toBeVisible();
-  await create.getByLabel("Page title").fill("Roadmap");
-  await create.getByRole("button", { name: "Create page", exact: true }).click();
+  const title = page.getByRole("textbox", { name: "Document title" });
+  await expect(title).toBeFocused();
+  await expect(title).toHaveValue("Untitled");
+  expect((await writes(page)).find((w) => w.create)).toMatchObject({ create: { path: "vault/Projects/Prism/Untitled" } });
+  await title.fill("Roadmap");
+  await title.press("Enter");
   await expect(page.getByRole("heading", { name: "Rename Roadmap", exact: true })).toBeVisible();
-  expect((await writes(page)).find((w) => w.create)).toMatchObject({ create: { path: "vault/Projects/Prism/Roadmap" } });
   await expect(row(page, "Roadmap")).toBeVisible();
 });
 

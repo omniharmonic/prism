@@ -1,7 +1,7 @@
 import { NavigationPreferences, useNavigationPreferences, TOOL_NAMES, type NavigationTool } from "./NavigationPreferences";
 import { useNoteShortcuts } from "./NoteShortcuts";
-import { useRef, useState } from "react";
-import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate, ChevronDown } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
@@ -20,6 +20,8 @@ import { openAgentChat } from "../../lib/agent/chatStore";
 import { usePagesUI } from "../../lib/pages/store";
 import { Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import { InboxBadge, openInbox } from "../inbox/InboxNavButton";
+import { SyncStateBadge } from "../layout/SyncStateBadge";
+import { useQuickCreatePage } from "../../lib/pages/quickCreate";
 import { useUnreadCount } from "../../lib/notifications/hooks";
 
 export function Navigation() {
@@ -28,6 +30,8 @@ export function Navigation() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery] = useDebounce(searchQuery, 200);
   const [showNewMenu, setShowNewMenu] = useState(false);
+  const openNewMenu = useCallback(() => setShowNewMenu(true), []);
+  const quickCreate = useQuickCreatePage(openNewMenu);
   const [showCompose, setShowCompose] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -279,10 +283,21 @@ export function Navigation() {
         )}
 
         {newFolderOpen && folderError && <p role="alert" className="text-xs text-[var(--color-danger)]">{folderError}</p>}
-        <button type="button" className="workspace-new-page focus-ring" aria-label="New page" onClick={event => { event.currentTarget.focus(); setShowNewMenu(true); }}>
-          <Plus size={18} /><span>New page</span>
-        </button>
+        {/* NP-SB-13: one action → an "Untitled" page with its title focused. The
+            caret keeps the type/location chooser one click away. */}
+        <div className="workspace-new-page-row">
+          <button type="button" className="workspace-new-page focus-ring" aria-label="New page" aria-busy={quickCreate.pending || undefined}
+            onClick={event => { event.currentTarget.focus(); quickCreate.create(); }}>
+            <Plus size={18} /><span>New page</span>
+          </button>
+          <button type="button" className="workspace-new-page-more focus-ring" aria-label="Choose page type" title="Choose page type and location"
+            onClick={event => { event.currentTarget.focus(); setShowNewMenu(true); }}>
+            <ChevronDown size={16} aria-hidden />
+          </button>
+        </div>
         <NavItem icon={<Trash2 size={16} />} label="Trash" active={false} onClick={() => usePagesUI.getState().openTrash(true)} />
+        {/* NP-SB-15: the one truthful sync state, in the sidebar footer. */}
+        <SyncStateBadge variant="footer" />
         <NavItem icon={<Settings2 size={16} />} label="Workspace settings" active={openTabs.find(t => t.id === activeTabId)?.noteId === "network"} onClick={handleOpenNetwork} />
         {showNewMenu && <NewContentMenu onClose={() => setShowNewMenu(false)} />}
 

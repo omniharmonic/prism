@@ -361,7 +361,7 @@ test("dashboard_query: bad inputs are refused; a non-dashboard note is not runna
   const viewer = await connect(pat(VIEWER));
   assert.equal(((await call(viewer, "prism_dashboard_query", {})) as any).error, "invalid_request");
   assert.equal(((await call(viewer, "prism_dashboard_query", { dashboard_id: "g1n" })) as any).error, "invalid_request");
-  assert.equal(((await call(viewer, "prism_dashboard_query", { dashboard_id: "s1" })) as any).error, "forbidden");
+  assert.equal(((await call(viewer, "prism_dashboard_query", { dashboard_id: "s1" })) as any).error, "not_found");
   const owner = await connect(pat(OWNER, "read"));
   const r = must(await call(owner, "prism_dashboard_query", { source: { tags: ["secret"] }, aggregate: { type: "count" } }));
   assert.equal(r.widgets[0].value, 1);

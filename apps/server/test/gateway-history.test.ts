@@ -65,7 +65,7 @@ test("a viewer lists and reads versions, without vault attribution", async () =>
 test("no grant → 403 on history; a malformed index → 400", async () => {
   await noteWithHistory();
   const stranger = login("nobody@test.local");
-  assert.equal((await req("/notes/n1/versions", { cookie: stranger })).status, 403);
+  assert.equal((await req("/notes/n1/versions", { cookie: stranger })).status, 404);
   grantUser("viv@test.local", "tag", "team", "view");
   assert.equal((await req("/notes/n1/versions/abc", { cookie: login("viv@test.local") })).status, 400);
 });

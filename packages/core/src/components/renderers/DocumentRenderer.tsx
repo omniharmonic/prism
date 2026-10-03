@@ -26,6 +26,13 @@ import { BlockKeymap } from "../../lib/tiptap/blockCommands";
 import { BlockHandles } from "./BlockHandles";
 import { TableControls } from "./TableControls";
 import { ImageUpload } from "../../lib/tiptap/ImageUpload";
+import "../../lib/tiptap/mediaViews";
+import { UrlPaste, type UrlPasteState, type Unfurler } from "../../lib/tiptap/UrlPaste";
+import { PasteUrlMenu } from "./PasteUrlMenu";
+import { DatabaseInsert, type DatabaseInsertRequest } from "../../lib/tiptap/databaseView";
+import { InsertDatabaseDialog } from "./InsertDatabaseDialog";
+import { PageCover } from "./PageCover";
+import { COVER_GRADIENTS, coverPatch, parseCover, type PageCover as Cover } from "../../lib/media/attachments";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { EditorFindBar } from "./EditorFindBar";
 import StarterKit from "@tiptap/starter-kit";
@@ -34,23 +41,22 @@ import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Highlight from "@tiptap/extension-highlight";
 import Link from "@tiptap/extension-link";
-import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Typography from "@tiptap/extension-typography";
-import { common, createLowlight } from "lowlight";
 import type { RendererProps } from "./RendererProps";
 import { useAutoSave } from "../../app/hooks/useAutoSave";
 import { useWikilinkNavigate } from "../../app/hooks/useWikilinkNavigate";
 import { convertApi } from "../../lib/parachute/client";
 import { DocumentOutline } from "./DocumentOutline";
 import { EditorToolbar } from "./EditorToolbar";
+import { KeyboardToolbar } from "./KeyboardToolbar";
+import { BacklinksPill } from "../layout/BacklinksPill";
+import { EmptyPageStarters } from "./EmptyPageStarters";
 import { PageHeader, PageProperties, renamePath, type ContentFont } from "./DocumentChrome";
 import { PropertyBar } from "../database/PropertyBar";
 import { useUpdateNote } from "../../app/hooks/useParachute";
 import { reviewMode } from "../../lib/governance/review";
 import { ReviewBanner } from "./ReviewBanner";
 import "./editor-blocks.css";
-
-const lowlightInstance = createLowlight(common);
 
 export default function DocumentRenderer({ note, onMetadataChange, readOnly }: RendererProps) {
   // ── P4 governed-editing gate (WEB, NON-OWNER ONLY) ────────────────────────
@@ -100,6 +106,16 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     return () => registerDocFont(null, null);
   }, [contentFont, changeFont, registerDocFont]);
 
+  const vaultClient = useVaultClient();
+  // Page cover (NP-PG-02): metadata `cover` + `coverY`, optimistic locally.
+  const [cover, setCover] = useState<Cover | null>(() => parseCover(note.metadata));
+  useEffect(() => { setCover(parseCover(note.metadata)); }, [note.id, note.metadata?.cover, note.metadata?.coverY]); // eslint-disable-line react-hooks/exhaustive-deps
+  const changeCover = useCallback((next: Cover | null) => {
+    setCover(next);
+    persistMetadata?.(coverPatch(next));
+  }, [persistMetadata]);
+  const uploadCover = useCallback(async (file: File) => (await vaultClient.uploadAttachment!(note.id, file, { kind: "image" })).url, [vaultClient, note.id]);
+
   // Rename the note by editing the title in the page header (preserves folder +
   // extension; updates the open tab's label).
   const updateNote = useUpdateNote();
@@ -116,7 +132,6 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const handleWikilinkNavigate = useWikilinkNavigate();
 
   // Image paste/drop/pick: only when the host can store attachments.
-  const vaultClient = useVaultClient();
   const [uploadError, setUploadError] = useState<string | null>(null);
   // Hidden for read-only and governed (propose-only) surfaces: an attachment
   // is a write the reviewer never sees.
@@ -124,10 +139,23 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
   const uploadRef = useRef<(file: File) => Promise<{ src: string; alt?: string }>>(async () => { throw new Error("unavailable"); });
   uploadRef.current = async (file: File) => {
     setUploadError(null);
-    const attachment = await vaultClient.uploadAttachment!(note.id, file);
+    const attachment = await vaultClient.uploadAttachment!(note.id, file, { kind: "image" });
     return { src: attachment.url, alt: attachment.name.replace(/\.[^.]+$/, "") };
   };
   const upload = useMemo(() => (canUpload ? (file: File) => uploadRef.current(file) : undefined), [canUpload]);
+  const fileUploadRef = useRef<(file: File) => Promise<{ src: string; name: string; size: number; mimeType: string }>>(async () => { throw new Error("unavailable"); });
+  fileUploadRef.current = async (file: File) => {
+    setUploadError(null);
+    const a = await vaultClient.uploadAttachment!(note.id, file, { kind: "file" });
+    return { src: a.url, name: a.name, size: a.size, mimeType: a.mimeType };
+  };
+  const uploadFile = useMemo(() => (canUpload ? (file: File) => fileUploadRef.current(file) : undefined), [canUpload]);
+  // Link previews for bookmark blocks (GET /api/unfurl through the host).
+  const unfurlRef = useRef<Unfurler | undefined>(undefined);
+  unfurlRef.current = vaultClient.unfurl ? (url) => vaultClient.unfurl!(url) : undefined;
+  const unfurl = useMemo<Unfurler | undefined>(() => (vaultClient.unfurl ? (url) => unfurlRef.current!(url) : undefined), [!!vaultClient.unfurl]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [pasteState, setPasteState] = useState<UrlPasteState | null>(null);
+  const [dbInsert, setDbInsert] = useState<DatabaseInsertRequest | null>(null);
 
   const extensions = useMemo(() => [
     StarterKit.configure({ codeBlock: false, link: false }),
@@ -141,7 +169,6 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     TaskItem.configure({ nested: true }),
     Highlight.configure({ multicolor: true }),
     Link.configure({ openOnClick: false, autolink: true }),
-    CodeBlockLowlight.configure({ lowlight: lowlightInstance }),
     Typography,
     WikilinkExtension.configure({ onNavigate: handleWikilinkNavigate }),
     WikilinkAutocomplete.configure({ onStateChange: setAutocompleteState }),
@@ -150,8 +177,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     MentionContext.configure({ noteId: note.id }),
     SearchHighlight,
     BlockKeymap,
-    ImageUpload.configure({ upload, onError: setUploadError }),
-  ], [handleWikilinkNavigate, upload]);
+    ImageUpload.configure({ upload, uploadFile, onError: setUploadError }),
+    UrlPaste.configure({ onStateChange: setPasteState, unfurl }),
+    // Inline/linked databases: only where the page itself may be written.
+    DatabaseInsert.configure({ onRequest: readOnly || governed ? undefined : setDbInsert }),
+  ], [handleWikilinkNavigate, upload, uploadFile, unfurl, readOnly, governed]);
   const [initialHtml, setInitialHtml] = useState<string | null>(null);
   const contentRef = useRef<string>(note.content);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
@@ -291,6 +321,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
   // In-note find bar state
   const [findOpen, setFindOpen] = useState(false);
+  const [findReplace, setFindReplace] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Inline prompt state
@@ -336,7 +367,10 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
     if (!container) return;
 
     const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "f") return;
+      const k = e.key.toLowerCase();
+      const isFind = (e.metaKey || e.ctrlKey) && !e.shiftKey && k === "f";
+      const isReplace = (e.metaKey || e.ctrlKey) && e.shiftKey && k === "h";
+      if (!isFind && !isReplace) return;
       // Only activate if focus (or the event target) is inside this container.
       const active = document.activeElement;
       const target = e.target as Node | null;
@@ -345,6 +379,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         (target && container.contains(target));
       if (!insideContainer) return;
       e.preventDefault();
+      setFindReplace(isReplace);
       setFindOpen(true);
     };
 
@@ -371,6 +406,7 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
       </BubbleMenu>}
       {/* Toolbar (hidden on read-only surfaces — no editing affordances) */}
       {editor && !notEditable && <EditorToolbar editor={editor} />}
+      {editor && !notEditable && <KeyboardToolbar editor={editor} />}
       {editor && notEditable && <div className="document-outline-readonly"><DocumentOutline editor={editor} /></div>}
 
       {/* Governed note (web, non-owner): the propose-for-review affordance, plus
@@ -387,6 +423,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
 
       {/* Editor */}
       <div className="document-writing-scroll flex-1 overflow-auto relative">
+        <PageCover
+          cover={cover}
+          onChange={persistMetadata ? changeCover : undefined}
+          onUpload={canUpload ? uploadCover : undefined}
+        />
         <div className="document-writing-measure">
           <PageHeader
             path={note.path}
@@ -398,8 +439,11 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
             onRename={readOnly || governed ? undefined : handleRename}
             icon={note.metadata?.icon as string | undefined}
             onIconChange={persistMetadata ? (emoji) => persistMetadata({ icon: emoji }) : undefined}
+            onAddCover={persistMetadata && !cover ? () => changeCover({ kind: "gradient", value: COVER_GRADIENTS[Math.floor(Math.random() * COVER_GRADIENTS.length)].name, y: 50 }) : undefined}
           />
+          {!readOnly && <BacklinksPill noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
           <EditorContent editor={editor} />
+          {editor && !notEditable && <EmptyPageStarters editor={editor} noteId={note.id} title={note.path?.split("/").pop() ?? ""} />}
         </div>
         {/* Block gutter: ⋮⋮ drag / block menu and + insert (tap menu on phones) */}
         {editor && <BlockHandles editor={editor} enabled={!notEditable} />}
@@ -412,11 +456,16 @@ export default function DocumentRenderer({ note, onMetadataChange, readOnly }: R
         {editor && slashState?.active && (
           <SlashMenu editor={editor} state={slashState} onClose={() => setSlashState(null)} />
         )}
+        {/* "Paste as" menu after a bare URL paste */}
+        {editor && pasteState && !notEditable && (
+          <PasteUrlMenu editor={editor} state={pasteState} unfurl={unfurl} onClose={() => setPasteState(null)} />
+        )}
         {/* `@` mention menu: people, pages, dates, reminders */}
         {editor && mentionState?.active && <MentionMenu editor={editor} state={mentionState} notes={allNotes || []} />}
+        {editor && dbInsert && <InsertDatabaseDialog editor={editor} request={dbInsert} hostPath={note.path} onClose={() => setDbInsert(null)} />}
         {/* In-note find bar (Cmd+F / Ctrl+F) */}
         {editor && findOpen && (
-          <EditorFindBar editor={editor} onClose={() => setFindOpen(false)} />
+          <EditorFindBar editor={editor} replaceOpen={findReplace} onClose={() => { setFindOpen(false); setFindReplace(false); editor.commands.focus(); }} />
         )}
       </div>
 

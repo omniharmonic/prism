@@ -16,8 +16,22 @@ import { NotionDbSyncHost } from "./NotionDbSyncHost";
 import { GraphFullscreen } from "./GraphFullscreen";
 import { MobileActionBar } from "./MobileActionBar";
 import { PagesHost } from "../pages/PagesHost";
+import { VaultClientProvider, useOptionalVaultClient } from "../../data/VaultClientContext";
+import { trackVaultWrites } from "../../lib/sync/syncState";
+import { applyReduceMotion } from "../../lib/motion";
+
+/** Every write made inside the shell moves the one truthful sync state (NP-OF-01). */
+function TrackedVaultWrites({ children }: { children: React.ReactNode }) {
+  const client = useOptionalVaultClient();
+  if (!client) return <>{children}</>;
+  return <VaultClientProvider client={trackVaultWrites(client)}>{children}</VaultClientProvider>;
+}
 
 export function Shell() {
+  return <TrackedVaultWrites><ShellLayout /></TrackedVaultWrites>;
+}
+
+function ShellLayout() {
   const {
     sidebarOpen,
     sidebarWidth,
@@ -42,6 +56,9 @@ export function Shell() {
   const companionOverlay = isMobile || layoutWidth - (sidebarOpen ? sidebarWidth + 4 : 0) - contextPanelWidth - 4 < 480;
 
   useKeyboardShortcuts();
+  useEffect(() => { applyReduceMotion(); }, []);
+  const peek = useSidebarPeek(!isMobile && !sidebarOpen);
+  const swipe = useEdgeSwipe(isMobile && !sidebarOpen);
   const restore = useWorkspaceSession();
   const restoreNotice = restore.state !== "idle" ? (
     <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-base)] px-4 py-2 text-xs text-[var(--text-secondary)]">
@@ -94,6 +111,24 @@ export function Shell() {
             <ResizeHandle onResize={setSidebarWidth} initialSize={sidebarWidth} side="left" />
           </>
         )}
+
+        {/* The pinned sidebar and the peek are mutually exclusive, so there is only
+            ever ONE <Navigation/> mounted on desktop. Keyboard: the first tab stop
+            after the skip link opens the peek and moves focus into it. */}
+        {!isMobile && !sidebarOpen && (
+          <div key="sidebar-peek-zone" className="sidebar-peek-zone" data-testid="sidebar-peek-zone" onMouseEnter={peek.enter} onMouseLeave={peek.leave}>
+            <button ref={peek.trigger} type="button" className="sidebar-peek-trigger" aria-expanded={peek.open} aria-controls="sidebar-peek" onClick={peek.toggle}>
+              {peek.open ? "Hide sidebar preview" : "Show sidebar preview"}
+            </button>
+          </div>
+        )}
+        {!isMobile && !sidebarOpen && peek.open && (
+          <div key="sidebar-peek" id="sidebar-peek" ref={peek.panel} className="sidebar-peek" role="complementary" aria-label="Sidebar preview" tabIndex={-1}
+            onMouseEnter={peek.enter} onMouseLeave={peek.leave} onBlur={peek.blur}>
+            <Navigation />
+          </div>
+        )}
+        {isMobile && <div key="edge-swipe" className="edge-swipe-hint" data-active={swipe ? "true" : "false"} aria-hidden />}
 
         {/* Keep this parent and Canvas mounted across breakpoints. Responsive
             navigation must not recreate an editor, socket, thread or draft. */}
@@ -156,7 +191,7 @@ function MobileDrawer({
     };
   }, []);
   return (
-    <dialog ref={dialogRef} className="workspace-mobile-drawer" aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
+    <dialog ref={dialogRef} className="workspace-mobile-drawer" data-side={side} aria-label={side === "left" ? "Workspace navigation" : "Document panel"}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{ left: side === "left" ? 0 : "auto", right: side === "right" ? 0 : "auto", width: side === "right" ? (compact ? "min(420px, 100vw)" : "100%") : "min(88vw, 360px)" }}>
@@ -220,4 +255,121 @@ function ResizeHandle({
       style={{ background: "var(--glass-border)" }}
     />
   );
+}
+
+/**
+ * NP-SB-12: with the sidebar collapsed, resting the pointer on the left edge
+ * reveals it as a floating overlay. Small enter/leave delays stop accidental
+ * flicker; Esc, opening a page, or leaving the overlay dismisses it.
+ */
+function useSidebarPeek(enabled: boolean) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  /** Opened from the keyboard: stays until Esc / focus leaves (mouse-out doesn't close it). */
+  const pinned = useRef(false);
+  const activeTabId = useUIStore((s) => s.activeTabId);
+  const clear = () => { if (timer.current !== undefined) window.clearTimeout(timer.current); timer.current = undefined; };
+  const close = useCallback((refocus: boolean) => {
+    clear();
+    const hadFocus = !!panel.current?.contains(document.activeElement);
+    pinned.current = false;
+    setOpen(false);
+    if (refocus && hadFocus) trigger.current?.focus();
+  }, []);
+  const enter = useCallback(() => { clear(); timer.current = window.setTimeout(() => setOpen(true), 80); }, []);
+  const leave = useCallback(() => { clear(); if (!pinned.current) timer.current = window.setTimeout(() => setOpen(false), 220); }, []);
+  const toggle = useCallback(() => {
+    clear();
+    if (pinned.current) { close(true); return; }
+    pinned.current = true;
+    setOpen(true);
+  }, [close]);
+  const blur = useCallback((event: React.FocusEvent) => {
+    const next = event.relatedTarget as Node | null;
+    if (pinned.current && next && !panel.current?.contains(next) && next !== trigger.current) close(false);
+  }, [close]);
+  // Keyboard open: move focus into the preview once it exists.
+  useEffect(() => {
+    if (open && pinned.current) (panel.current?.querySelector<HTMLElement>("button, [href], input, [tabindex]:not([tabindex='-1'])") ?? panel.current)?.focus();
+  }, [open]);
+  useEffect(() => { if (!enabled) { clear(); pinned.current = false; setOpen(false); } }, [enabled]);
+  useEffect(() => { pinned.current = false; setOpen(false); }, [activeTabId]);
+  // Listen for the whole time the peek is possible (not only once it opened), so
+  // an Esc in the first frame after it appears is never missed.
+  useEffect(() => {
+    if (!enabled) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(true); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [enabled, close]);
+  useEffect(() => clear, []);
+  return { open: enabled && open, enter, leave, toggle, blur, trigger, panel };
+}
+
+/**
+ * NP-MB-06: on phones a swipe that STARTS within 20 px of the left edge goes
+ * back (when there is somewhere to go) or opens the Browse drawer. It never
+ * starts mid-screen, so it doesn't fight text selection, horizontal scrollers
+ * or the editor; visible Back and Browse buttons remain the alternatives.
+ */
+const EDGE_PX = 20;
+const SWIPE_PX = 64;
+function useEdgeSwipe(enabled: boolean): boolean {
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    if (!enabled) { setActive(false); return; }
+    let start: { x: number; y: number } | null = null;
+    let tracking = false;
+    const onStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (e.touches.length !== 1 || !t || t.clientX > EDGE_PX) { start = null; return; }
+      const target = e.target as Element | null;
+      if (target?.closest?.("dialog[open], [role=dialog], [data-no-edge-swipe]")) { start = null; return; }
+      // A table, board, code block or any other sideways scroller owns its own
+      // horizontal drag — even when it starts at the screen edge.
+      for (let node: Element | null = target; node && node !== document.body; node = node.parentElement) {
+        if (node.scrollWidth > node.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(node).overflowX)) { start = null; return; }
+      }
+      start = { x: t.clientX, y: t.clientY };
+      tracking = true;
+      setActive(true);
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!start || !tracking) return;
+      const t = e.touches[0];
+      if (!t) return;
+      if (Math.abs(t.clientY - start.y) > 48 && Math.abs(t.clientY - start.y) > (t.clientX - start.x)) { tracking = false; setActive(false); }
+    };
+    const onEnd = (e: TouchEvent) => {
+      const t = e.changedTouches[0];
+      const began = start;
+      start = null;
+      setActive(false);
+      if (!began || !tracking || !t) return;
+      tracking = false;
+      const dx = t.clientX - began.x;
+      const dy = Math.abs(t.clientY - began.y);
+      if (dx < SWIPE_PX || dy > dx * 0.6) return;
+      if (window.getSelection()?.toString()) return;
+      const ui = useUIStore.getState();
+      const open = new Set(ui.openTabs.map((tab) => tab.id));
+      const canBack = ui.navHistory.slice(0, Math.max(0, ui.navIndex)).some((id) => open.has(id));
+      if (canBack) ui.navBack();
+      else useUIStore.setState({ sidebarOpen: true });
+    };
+    const cancel = () => { start = null; tracking = false; setActive(false); };
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: true });
+    document.addEventListener("touchend", onEnd, { passive: true });
+    document.addEventListener("touchcancel", cancel, { passive: true });
+    return () => {
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", cancel);
+    };
+  }, [enabled]);
+  return active;
 }

@@ -263,3 +263,18 @@ export async function createCapsAt(actor: Actor, path: string, tags: string[] = 
   const subject = actor.kind === "user" ? actor.email : actor.kind === "link" ? actor.capabilityId : null;
   return effectiveCaps(actor.grants, { id: "<new>", tags, path }, roleFloor(actor.role), subject);
 }
+
+/** What a non-owner receives: no attribution keys (review M3); a link gets no identity keys at all. */
+export const forViewer = <T extends { metadata?: Record<string, unknown> | null }>(actor: Actor, note: T): T => {
+  if (actor.kind !== "user") return { ...note, metadata: stripIdentity(stripWriterMeta(note.metadata)) };
+  // `prism_creator` is an email (review M-B): a signed-in non-admin gets "is it
+  // me" and a display name instead. Admins never reach this (owner passthrough).
+  const creator = note.metadata?.prism_creator;
+  let metadata = stripWriterMeta(note.metadata);
+  // (Their OWN address is no disclosure and stays, so "my note" checks keep working.)
+  if (metadata && "prism_creator" in metadata && creator !== actor.email) {
+    const { prism_creator: _c, ...rest } = metadata;
+    metadata = rest;
+  }
+  return { ...note, metadata, ...(typeof creator === "string" ? { _creator: { me: creator === actor.email, name: creatorNameFor(creator) } } : {}) };
+};

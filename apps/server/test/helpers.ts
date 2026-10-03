@@ -67,6 +67,14 @@ export interface FakeVault {
    *  last. Set `historySupported = false` to emulate a 0.6.x vault (404s). */
   versions: Map<string, FakeVersion[]>;
   historySupported: boolean;
+  /** Vault attachment storage (`/storage/upload` → `/storage/<date>/<file>`), keyed by path. */
+  storage: Map<string, Buffer>;
+  /** Attachment rows linked via `POST /notes/:id/attachments`. */
+  attachments: Array<{ id: string; noteId: string; path: string; mimeType: string; body: unknown }>;
+  /** Make the next `POST /notes/:id/attachments` fail (upload succeeded, attach did not). */
+  failNextAttach?: boolean;
+  /** Make the next `DELETE /notes/:id` fail with a 500 (a vault that could not delete the note). */
+  failNextNoteDelete?: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
   /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
    *  store (multi-vault tests). The primary store (`notes`) keeps serving
@@ -116,6 +124,19 @@ function mergeMetadata(target: unknown, patch: Record<string, unknown>): Record<
   return out;
 }
 
+/** The vault's tag canonicalisation (`stripTagHash`, core/src/tag-hierarchy.ts): any
+ *  leading run of `#`/whitespace is stripped and the tail trimmed; empties are dropped.
+ *  Case is preserved — vault tags are case-sensitive. */
+const vaultTag = (t: string): string => t.replace(/^[#\s]+/, "").trim();
+const vaultTags = (tags: unknown): string[] => (Array.isArray(tags) ? [...new Set(tags.filter((t): t is string => typeof t === "string").map(vaultTag).filter((t) => t !== ""))] : []);
+/** The vault's `normalizePath` (core/src/paths.ts): NUL stripped, trimmed, `\` → `/`,
+ *  ONE trailing `.md` stripped, slashes collapsed, no leading/trailing slash. */
+function vaultPath(path: unknown): string | null {
+  if (typeof path !== "string") return null;
+  const p = path.replace(/\0/g, "").trim().replace(/\\/g, "/").replace(/\.md$/i, "").replace(/\/+/g, "/").replace(/^\//, "").replace(/\/$/, "");
+  return p === "" ? null : p;
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -141,6 +162,8 @@ export function installFakeVault(): FakeVault {
     conflictOnNextWrite: false,
     versions: new Map(),
     historySupported: true,
+    storage: new Map(),
+    attachments: [],
     put(note) {
       const n = fakeNote(note);
       fv.notes.set(n.id, n);
@@ -213,6 +236,53 @@ export function installFakeVault(): FakeVault {
     if (!store) return new Response("not found", { status: 404 }); // unregistered vault → unreachable
     const sub = apiMatch[2]!; // "/notes", "/notes/:id", "/tags", ...
 
+    // Attachment storage (vault 0.7.9 REST): upload, link to a note, ranged read.
+    if (sub === "/storage/upload" && method === "POST") {
+      const form = init?.body as FormData | undefined;
+      const file = form && typeof (form as FormData).get === "function" ? (form as FormData).get("file") : null;
+      if (!file || typeof file === "string") return json({ error: "file is required" }, 400);
+      const name = (file as File).name ?? "upload.bin";
+      const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+      const path = `2026-10-02/${Date.now()}-${++seq}${ext}`;
+      const bytes = Buffer.from(await (file as Blob).arrayBuffer());
+      fv.storage.set(path, bytes);
+      return json({ path, size: bytes.length, mimeType: "application/octet-stream" }, 201);
+    }
+    const st = sub.match(/^\/storage\/(.+)$/);
+    if (st && method === "GET") {
+      const path = decodeURIComponent(st[1]!);
+      const bytes = fv.storage.get(path);
+      if (!bytes) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const range = headers["Range"] ?? headers["range"];
+      const rm = range?.match(/^bytes=(\d*)-(\d*)$/);
+      if (rm) {
+        const start = rm[1] ? Number(rm[1]) : Math.max(0, bytes.length - Number(rm[2]));
+        const end = rm[1] && rm[2] ? Math.min(Number(rm[2]), bytes.length - 1) : bytes.length - 1;
+        if (start >= bytes.length || start > end) return new Response(null, { status: 416, headers: { "content-range": `bytes */${bytes.length}` } });
+        const part = bytes.subarray(start, end + 1);
+        return new Response(new Uint8Array(part), { status: 206, headers: { "content-type": "application/octet-stream", "content-length": String(part.length), "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+      }
+      return new Response(new Uint8Array(bytes), { status: 200, headers: { "content-type": "application/octet-stream", "content-length": String(bytes.length) } });
+    }
+    const attDel = sub.match(/^\/notes\/([^/]+)\/attachments\/([^/]+)$/);
+    if (attDel && method === "DELETE") {
+      const i = fv.attachments.findIndex((x) => x.noteId === decodeURIComponent(attDel[1]!) && x.id === decodeURIComponent(attDel[2]!));
+      if (i < 0) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const [gone] = fv.attachments.splice(i, 1);
+      if (!fv.attachments.some((x) => x.path === gone!.path)) fv.storage.delete(gone!.path);
+      return new Response(null, { status: 204 });
+    }
+    const att = sub.match(/^\/notes\/([^/]+)\/attachments$/);
+    if (att && method === "POST") {
+      if (fv.failNextAttach) { fv.failNextAttach = false; return json({ error: "boom" }, 500); }
+      const noteId = decodeURIComponent(att[1]!);
+      if (!store.get(noteId)) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const b = (body ?? {}) as { path?: string; mimeType?: string };
+      const row = { id: `att-${++seq}`, noteId, path: b.path ?? "", mimeType: b.mimeType ?? "", body };
+      fv.attachments.push(row);
+      return json({ id: row.id, noteId, path: row.path, mimeType: row.mimeType, createdAt: new Date().toISOString() }, 201);
+    }
+
     // GET /tags
     if (sub === "/tags" && method === "GET") {
       return json(fv.tags);
@@ -225,7 +295,10 @@ export function installFakeVault(): FakeVault {
         const tagFilters = q.getAll("tag");
         const search = q.get("search");
         let list = [...store.values()];
-        if (tagFilters.length) list = list.filter((n) => tagFilters.every((t) => (n.tags ?? []).includes(t)));
+        if (tagFilters.length) list = list.filter((n) => tagFilters.map(vaultTag).every((t) => (n.tags ?? []).includes(t)));
+        const prefix = q.get("path_prefix");
+        // LIKE prefix (case-insensitive, like SQLite's LIKE for ASCII).
+        if (prefix) list = list.filter((n) => !!n.path && n.path.toLowerCase().startsWith(prefix.toLowerCase()));
         if (search) list = list.filter((n) => n.content.toLowerCase().includes(search.toLowerCase()));
         // Like the vault: `include_metadata=a,b` returns ONLY those metadata keys.
         const only = q.get("include_metadata");
@@ -236,11 +309,62 @@ export function installFakeVault(): FakeVault {
         return json(list);
       }
       if (method === "POST") {
-        const b = (body ?? {}) as Partial<FakeNote>;
-        const id = `new-${++seq}`;
-        const n = fakeNote({ id, content: b.content ?? "", path: b.path ?? null, metadata: b.metadata ?? null, tags: b.tags ?? [] });
-        store.set(n.id, n);
-        return json(n);
+        // Like vault 0.7.9 (`routes.ts` POST /notes): a body is ONE note or a batch
+        // (`notes: [...]`); each item may choose its `id`, carry `links` and
+        // `created_at`, and say what happens when its path is taken — `if_exists`
+        // "error" (default → 409 path_conflict, whole batch rolled back), "ignore",
+        // "update" (merge) or "replace" (overwrite). Tags of an existing note are
+        // unioned. A gateway that forwards a raw body inherits all of it.
+        const b = (body ?? {}) as Record<string, unknown>;
+        if (b.notes !== undefined && !Array.isArray(b.notes)) return json({ error: "notes must be an array", error_type: "invalid_request" }, 400);
+        const items = (b.notes ?? [b]) as Array<Record<string, unknown>>;
+        // Uniqueness is BINARY (the unique index on path), lookups are NOCASE
+        // (`getNoteByPath`): an upsert finds a holder case-insensitively, but a plain
+        // create only collides with the exact same string — `projects/plan` can be
+        // created beside `Projects/Plan`.
+        const holderOf = (item: Record<string, unknown>) => {
+          const p = vaultPath(item.path);
+          return p ? [...store.values()].find((n) => !!n.path && n.path.toLowerCase() === p.toLowerCase()) : undefined;
+        };
+        for (const item of items) {
+          const p = vaultPath(item.path);
+          const exact = p ? [...store.values()].find((n) => n.path === p) : undefined;
+          if (exact && (item.if_exists ?? "error") === "error") {
+            return json({ error_type: "path_conflict", error: "path_conflict", path: exact.path, message: "a note already exists at this path" }, 409);
+          }
+        }
+        const out: Array<FakeNote & { existed?: boolean }> = [];
+        for (const item of items) {
+          const tags = vaultTags(item.tags);
+          const meta = item.metadata && typeof item.metadata === "object" ? (item.metadata as Record<string, unknown>) : undefined;
+          const links = Array.isArray(item.links) ? (item.links as Array<{ target: string; relationship: string }>) : undefined;
+          const mode = item.if_exists ?? "error";
+          const holder = mode === "error" ? undefined : holderOf(item);
+          if (holder) {
+            if (item.if_exists !== "ignore") {
+              captureVersion(holder, "update");
+              if (item.if_exists === "replace") {
+                holder.content = typeof item.content === "string" ? item.content : "";
+                holder.metadata = meta ?? {};
+              } else {
+                if (typeof item.content === "string") holder.content = item.content;
+                if (meta) holder.metadata = mergeMetadata(holder.metadata, meta);
+              }
+              holder.tags = [...new Set([...(holder.tags ?? []), ...tags])];
+              if (links) holder.links = [...(holder.links ?? []), ...links.map((l) => ({ sourceId: holder.id, targetId: l.target, relationship: l.relationship }))];
+              holder.updatedAt = new Date(2026, 5, 1, 0, 0, seq++).toISOString();
+            }
+            out.push({ ...holder, existed: true });
+            continue;
+          }
+          const id = typeof item.id === "string" && item.id ? item.id : `new-${++seq}`;
+          const createdAt = (item.created_at ?? item.createdAt) as string | undefined;
+          const n = fakeNote({ id, content: typeof item.content === "string" ? item.content : "", path: vaultPath(item.path), metadata: meta ?? null, tags, ...(createdAt ? { createdAt } : {}) });
+          if (links) n.links = links.map((l) => ({ sourceId: id, targetId: l.target, relationship: l.relationship }));
+          store.set(n.id, n);
+          out.push(item.if_exists !== undefined && item.if_exists !== "error" ? { ...n, existed: false } : n);
+        }
+        return json(b.notes ? out : out[0]);
       }
     }
 
@@ -280,7 +404,10 @@ export function installFakeVault(): FakeVault {
       const asked = decodeURIComponent(m[1]!);
       // Like the real vault: by id, then by (case-insensitive) path, then by a UNIQUE title.
       const titled = [...store.values()].filter((n) => typeof n.metadata?.title === "string" && (n.metadata.title as string).toLowerCase() === asked.toLowerCase());
-      const existing = store.get(asked) ?? [...store.values()].find((n) => !!n.path && n.path.toLowerCase() === asked.toLowerCase()) ?? (titled.length === 1 ? titled[0] : undefined);
+      const byPath = [...store.values()].filter((n) => !!n.path && n.path.toLowerCase() === (vaultPath(asked) ?? "").toLowerCase());
+      // Two notes whose paths differ only by case: the vault's AmbiguousPathError → 409.
+      if (!store.has(asked) && byPath.length > 1) return json({ error_type: "ambiguous_path", error: "ambiguous_path" }, 409);
+      const existing = store.get(asked) ?? byPath[0] ?? (titled.length === 1 ? titled[0] : undefined);
       const id = existing?.id ?? asked;
       if (method === "GET") {
         return existing ? json(existing) : new Response("not found", { status: 404 });
@@ -293,6 +420,11 @@ export function installFakeVault(): FakeVault {
         }
         const b = (body ?? {}) as Record<string, unknown>;
         if (b.if_updated_at !== undefined && b.if_updated_at !== existing.updatedAt) return json({error:"conflict"},409);
+        // Like the vault (UNIQUE(path), vault#126): a rename onto a held path is a 409 path_conflict.
+        if (typeof b.path === "string") {
+          const holder = [...store.values()].find((n) => n.id !== id && !!n.path && n.path === vaultPath(b.path));
+          if (holder) return json({ error_type: "path_conflict", error: "path_conflict", path: holder.path, message: "a note already exists at this path" }, 409);
+        }
         captureVersion(existing, "update");
         const linkOps = b.links as {add?: Array<{target:string;relationship:string}>;remove?: Array<{target:string;relationship:string}>} | undefined;
         if (linkOps) {
@@ -310,19 +442,22 @@ export function installFakeVault(): FakeVault {
         const tagsOp = b.tags as { add?: string[]; remove?: string[] } | undefined;
         if (tagsOp) {
           const set = new Set(existing.tags ?? []);
-          for (const t of tagsOp.add ?? []) set.add(t);
-          for (const t of tagsOp.remove ?? []) set.delete(t);
+          for (const t of vaultTags(tagsOp.add)) set.add(t);
+          for (const t of vaultTags(tagsOp.remove)) set.delete(t);
           existing.tags = [...set];
         }
         if (typeof b.content === "string") existing.content = b.content;
         if (b.metadata && typeof b.metadata === "object") existing.metadata = mergeMetadata(existing.metadata, b.metadata as Record<string, unknown>);
-        if (typeof b.path === "string") existing.path = b.path;
+        if (typeof b.path === "string") existing.path = vaultPath(b.path);
         existing.updatedAt = new Date(2026, 5, 1, 0, 0, seq++).toISOString();
         return json(existing);
       }
       if (method === "DELETE") {
         if (!existing) return new Response("not found", { status: 404 });
+        if (fv.failNextNoteDelete) { fv.failNextNoteDelete = false; return json({ error: "boom" }, 500); }
         store.delete(id);
+        // Like the real vault: attachment ROWS cascade with the note; stored files stay on disk.
+        fv.attachments = fv.attachments.filter((a) => a.noteId !== id);
         return json({ ok: true });
       }
     }

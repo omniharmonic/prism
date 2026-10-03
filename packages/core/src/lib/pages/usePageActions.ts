@@ -10,7 +10,7 @@ import { queryKeys } from "../parachute/queries";
 import { convertApi } from "../parachute/client";
 import { inferContentType } from "../schemas/content-types";
 import type { Note } from "../types";
-import { LOCK_KEY, ORDER_KEY, duplicateCopy, isLocked, pageTitle, type MoveResult } from "./model";
+import { LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, duplicateCopy, isLocked, pageStyleOf, pageTitle, type MoveResult } from "./model";
 import * as ops from "./ops";
 import { usePagesUI, type PageRef } from "./store";
 
@@ -156,6 +156,18 @@ export function usePageActions() {
         toast(locked ? "Page unlocked — anyone with edit access can change it." : "Page locked — editing is off until it’s unlocked.");
       } catch (e) {
         fail(e, locked ? "Couldn’t unlock this page." : "Couldn’t lock this page.");
+      }
+    },
+
+    /** NP-PG-08: small text / full width, stored on the page (CAS, live-doc safe). */
+    setPageStyle: async (note: Pick<Note, "id" | "metadata">, patch: { small?: boolean; full?: boolean }) => {
+      const current = pageStyleOf(note);
+      const next = { small: patch.small ?? current.small === true, full: patch.full ?? current.full === true };
+      try {
+        await ops.setPageMeta(client, note.id, { [PAGE_STYLE_KEY]: next });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.vault.note(note.id) });
+      } catch (e) {
+        fail(e, "Couldn’t change this page’s style.");
       }
     },
 

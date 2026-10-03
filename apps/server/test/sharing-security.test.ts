@@ -87,13 +87,13 @@ test("C1: a non-owner cannot change a note's path through PATCH (moves go throug
 test("C1: moving a shared page over existing notes needs `share` on them (and they stay hidden)", async () => {
   grantCaps(BOB, "page", "p", ["view", "edit", "organize"]);
   grantCaps(BOB, "note", "inbox", ["view", "create"]);
-  assert.equal(await status(BOB, "mail"), 403);
+  assert.equal(await status(BOB, "mail"), 404);
   const r = await move(BOB, "p", { newPath: "vault/Inbox/Secret" });
   assert.equal(r.status, 403);
   const body = JSON.stringify(await r.json());
   assert.ok(!body.includes("mail") && !body.includes("Mail"), "the refusal names no hidden note");
   assert.equal(fv.notes.get("p")!.path, "vault/Team/Plan");
-  assert.equal(await status(BOB, "mail"), 403);
+  assert.equal(await status(BOB, "mail"), 404);
   // An admin may (audited); the owner's move is not refused.
   const owner = await move(OWNER, "p", { newPath: "vault/Inbox/Secret" });
   assert.equal(owner.status, 200);
@@ -137,7 +137,7 @@ test("H1: moving a note into a page shared with others needs `share` on it; insi
   const r = await move(CAROL, "draft", { newParentPath: "vault/Shared" });
   assert.equal(r.status, 403);
   assert.equal(fv.notes.get("draft")!.path, "vault/Carol/Draft");
-  assert.equal(await status(DAVE, "draft"), 403);
+  assert.equal(await status(DAVE, "draft"), 404);
   // With share on the moved note, allowed.
   grantCaps(CAROL, "note", "draft", ["view", "edit", "organize", "share"]);
   assert.equal((await move(CAROL, "draft", { newParentPath: "vault/Shared" })).status, 200);
@@ -250,7 +250,7 @@ test("LOW: a moved shared page's sub-pages are reachable at once (anchors resolv
   assert.equal((await move(OWNER, "p", { newParentPath: "vault/Carol" })).status, 200);
   assert.equal(await status(BOB, "p1"), 200);
   fv.put({ id: "ghost", path: "vault/Team/Plan/Ghost", content: "<p>at the old path</p>" });
-  assert.equal(await status(BOB, "ghost"), 403);
+  assert.equal(await status(BOB, "ghost"), 404);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -268,12 +268,12 @@ test("H-A: restoring a trashed shared page over notes that appeared under its pa
   // While P is in the Trash, a note appears under its old path (created by the owner or any other path).
   fv.put({ id: "late", path: "vault/Team/Plan/Late", content: "<p>not for sharing</p>" });
   resetTreeForTests();
-  assert.equal(await status(DAVE, "late"), 403, "a trashed page shares nothing");
-  assert.equal(await status(BOB, "late"), 403);
+  assert.equal(await status(DAVE, "late"), 404, "a trashed page shares nothing");
+  assert.equal(await status(BOB, "late"), 404);
   const r = await postJ(BOB, "/trash/p/restore");
   assert.equal(r.status, 403);
   assert.ok(!JSON.stringify(await r.json()).toLowerCase().includes("late"));
-  assert.equal(await status(DAVE, "late"), 403);
+  assert.equal(await status(DAVE, "late"), 404);
   // The owner may restore (audited); from then on the page shares what is under it.
   assert.equal((await postJ(OWNER, "/trash/p/restore")).status, 200);
 });
@@ -380,7 +380,7 @@ test("M-B: a non-admin never receives prism_creator (an email); they get `_creat
   assert.equal(mine._creator.me, true);
   for (const path of ["/notes", "/search?q=plan"]) {
     const body = JSON.stringify(await (await req(api, path, { cookie: as(BOB) })).json());
-    assert.ok(!body.includes("prism_creator") && !body.includes(CAROL), path);
+    assert.ok(!body.includes(CAROL), path); // (the caller's OWN address may stay on their own notes)
   }
   const aclNote = (await (await req(acl, "/notes/p", { cookie: as(BOB) })).json()) as { note: { creator?: unknown; createdByMe?: boolean } };
   assert.equal(aclNote.note.creator ?? null, null);
@@ -438,4 +438,48 @@ test("L-4: inherited access lists only ancestors the caller can view, with email
   assert.ok(!JSON.stringify(seen.inherited).includes("@test.local"));
   const owner = (await (await req(acl, "/notes/deep", { cookie: as(OWNER) })).json()) as { inherited: Array<{ email: string }> };
   assert.ok(owner.inherited.some((i) => i.email === DAVE));
+});
+
+// ── integration with the create allowlist (main 632abe9) ─────────────────────
+test("create: a page-share holder with `create` adds a sub-page through POST /notes; view-only cannot", async () => {
+  grantCaps(BOB, "page", "p", ["view", "create"]);
+  grantCaps(DAVE, "page", "p", ["view"]);
+  const ok = await postJ(BOB, "/notes", { path: "vault/Team/Plan/Bob's page", content: "<p>hi</p>" });
+  assert.ok(ok.status === 200 || ok.status === 201, `created (${ok.status})`);
+  const made = (await ok.json()) as { id: string };
+  assert.equal(await status(DAVE, made.id), 200, "the new sub-page inherits the page share");
+  // Deeper, under a sub-page of the shared page.
+  assert.equal((await postJ(BOB, "/notes", { path: "vault/Team/Plan/Notes/Deeper", content: "x" })).status, 200);
+  // View-only on the page: refused, nothing written.
+  const before = fv.notes.size;
+  assert.equal((await postJ(DAVE, "/notes", { path: "vault/Team/Plan/Dave's page", content: "x" })).status, 403);
+  // Outside the shared page Bob has no standing.
+  assert.equal((await postJ(BOB, "/notes", { path: "vault/Team/Other", content: "x" })).status, 403);
+  assert.equal((await postJ(BOB, "/notes", { path: "vault/Team/Planning", content: "x" })).status, 403);
+  assert.equal(fv.notes.size, before);
+});
+
+test("create: a plain folder under a page shared with others needs `create` there (no drop-in by tag standing)", async () => {
+  const { addGrant: grant } = await import("../src/db");
+  grantCaps(DAVE, "page", "q", ["view"]);
+  // Carol may create in tag `team`, but has no standing in the shared page.
+  grant({ subject_type: "user", subject: CAROL, resource_type: "tag", resource: "team", level: "edit", created_by: OWNER });
+  const before = fv.notes.size;
+  const r = await postJ(CAROL, "/notes", { path: "vault/Shared/Folder/Dropped", tags: ["team"], content: "x" });
+  assert.equal(r.status, 404, "an unviewable shared ancestor answers like a missing place");
+  assert.equal(fv.notes.size, before);
+  // With `create` on the shared page it works, folder or not.
+  grantCaps(CAROL, "page", "q", ["view", "create"]);
+  assert.equal((await postJ(CAROL, "/notes", { path: "vault/Shared/Folder/Dropped", tags: ["team"], content: "x" })).status, 200);
+  // A plain folder nobody shares stays free for a tag member.
+  assert.equal((await postJ(CAROL, "/notes", { path: "vault/Loose/Folder/Mine", tags: ["team"], content: "x" })).status, 200);
+});
+
+test("create: nothing is created under a trashed shared page", async () => {
+  grantCaps(BOB, "page", "p", ["view", "create"]);
+  assert.equal((await postJ(OWNER, "/notes/p/trash")).status, 200);
+  const before = fv.notes.size;
+  const r = await postJ(BOB, "/notes", { path: "vault/Team/Plan/Late", content: "x" });
+  assert.ok(r.status === 409 || r.status === 403 || r.status === 404, `refused (${r.status})`);
+  assert.equal(fv.notes.size, before);
 });

@@ -28,7 +28,7 @@ test.beforeEach(async ({ page }) => {
 test("the slash menu is grouped, shows shortcut hints and is a keyboard-driven listbox", async ({ page }) => {
   await newLine(page);
   const menu = await slash(page, "");
-  await expect(menu.locator(".editor-menu-section")).toHaveText(["Basic blocks", "Media", "Advanced"]);
+  await expect(menu.locator(".editor-menu-section")).toHaveText(["Basic blocks", "Media", "Database", "Advanced"]);
   const options = menu.getByRole("option");
   for (const name of ["Text", "Heading 1", "Heading 2", "Heading 3", "Bulleted list", "Numbered list", "To-do list", "Toggle", "Quote", "Callout", "Divider", "Image", "Code", "Table", "Link to page", "2 columns", "3 columns"]) {
     expect(await options.filter({ hasText: new RegExp(`^${name}`) }).count(), name).toBeGreaterThan(0);

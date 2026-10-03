@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry } from "../db";
+import { resolveVaultEntry, grantsForResource } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -31,14 +31,17 @@ import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS } from "../sharing";
+import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
+import { attachmentsApi } from "./attachments";
+import { searchApi } from "./search";
 import { stampJsonBody, stampMetadata, stripIdentity } from "../writer-stamp";
 import { graphNeighborhood } from "../graph";
 import { buildWikilinkIndex, resolveWikilink, noteLinkTitle } from "@prism/core/wikilinks";
-import { isTrashed, isLocked, isOwnerOnlyMeta, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY } from "@prism/core/pages";
-import { createPagesApi } from "../pages";
+import { isTrashed, isLocked, isOwnerOnlyMeta, protectionReason, systemNoteReason, TRASH_TAG, TRASH_META, LOCK_KEY, ORDER_KEY, PAGE_STYLE_KEY, normalizePagePath } from "@prism/core/pages";
+import { createPagesApi, placementRefusal, pathUnavailable, publishedTag } from "../pages";
 import { notificationsRoutes, restMentionHook } from "./notifications";
+import { canonicalTag, canonicalTags, canonicalTagsStrict } from "../tags";
 
 export const api = new Hono();
 
@@ -76,20 +79,6 @@ function stampChangeJson(text: string, kind: "edit" | "agent"): string {
     return text;
   }
 }
-/** What a non-owner receives: no attribution keys (review M3); a link gets no identity keys at all. */
-const forViewer = <T extends { metadata?: Record<string, unknown> | null }>(actor: Actor, note: T): T => {
-  if (actor.kind !== "user") return { ...note, metadata: stripIdentity(stripWriterMeta(note.metadata)) };
-  // `prism_creator` is an email (review M-B): a signed-in non-admin gets "is it
-  // me" and a display name instead. Admins never reach this (owner passthrough).
-  const creator = note.metadata?.prism_creator;
-  let metadata = stripWriterMeta(note.metadata);
-  if (metadata && "prism_creator" in metadata) {
-    const { prism_creator: _c, ...rest } = metadata;
-    metadata = rest;
-  }
-  return { ...note, metadata, ...(typeof creator === "string" ? { _creator: { me: creator === actor.email, name: creatorNameFor(creator) } } : {}) };
-};
-
 const ref = (n: Note): NoteRef => ({
   id: n.id,
   tags: n.tags ?? [],
@@ -256,6 +245,9 @@ api.use("/properties/*", async (c, next) => { await next(); readCache.clear(); }
 api.use("/schemas/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.use("/databases/*", async (c, next) => { await next(); if (c.req.method !== "GET") readCache.clear(); });
 api.route("/", databasesApi);
+// Attachments (upload/serve via vault storage) + link previews; before the owner passthrough.
+api.route("/", attachmentsApi);
+api.route("/", searchApi); // GET /search (all actors; filters + match offsets, wave 2E) — before the owner short-circuit
 // Notifications inbox, reminders, access requests (wave 2A): before the owner passthrough.
 api.route("/", notificationsRoutes);
 
@@ -352,9 +344,10 @@ api.get("/events", async (c) => {
  * short-circuit, so it covers the owner passthrough too.
  */
 export const EDITOR_SCHEMA_HEADER = "x-prism-editor-schema";
-const SCHEMA_V2_MARKERS = /data-type="(?:callout|toggle|columns|column|mention)"|<details[\s>]|data-block-color=|data-text-color=/;
+// v2 (callout/toggle/columns/colours), v3 (mention), v4 (attachment/embed/bookmark/toc/database blocks, image align/caption).
+const SCHEMA_MARKERS = /data-type="(?:callout|toggle|columns|column|mention|attachment|embed|bookmark|toc)"|data-prism-database=|<details[\s>]|data-block-color=|data-text-color=|data-align=|data-caption=/;
 export function needsEditorUpdate(storedContent: string | null | undefined): boolean {
-  return SCHEMA_V2_MARKERS.test(storedContent ?? "");
+  return SCHEMA_MARKERS.test(storedContent ?? "");
 }
 api.use("/notes/:id", async (c, next) => {
   const method = c.req.method;
@@ -367,9 +360,12 @@ api.use("/notes/:id", async (c, next) => {
   if (!body || typeof body !== "object" || typeof (body as { content?: unknown }).content !== "string") return next();
   const actor = resolveActor(c);
   if (actor.kind === "anon") return next(); // the route answers 401/403
-  let stored: string;
-  try { stored = (await vaultClient(actor.vaultId).getNote(c.req.param("id"))).content ?? ""; } catch { return next(); }
-  if (!needsEditorUpdate(stored)) return next();
+  let storedNote: Note;
+  try { storedNote = await vaultClient(actor.vaultId).getNote(c.req.param("id")); } catch { return next(); }
+  // Never answer for a note the caller cannot view: the 409 would reveal that it
+  // exists and what blocks it holds. The route answers 404 for them (review M3).
+  if (!roleAtLeast(actor.role, "admin") && !capsFor(actor, ref(storedNote)).has("view")) return next();
+  if (!needsEditorUpdate(storedNote.content ?? "")) return next();
   return c.json({ error: "editor_update_required", message: "Prism was updated. Reload or update the app to keep editing." }, 409);
 });
 
@@ -395,6 +391,12 @@ function vaultReason(message: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The vault's 409 for a path that is already held (as opposed to a stale `if_updated_at`). */
+function isPathConflict(body: unknown): boolean {
+  const b = (body && typeof body === "object" ? body : {}) as { error_type?: unknown; error?: unknown };
+  return b.error_type === "path_conflict" || b.error === "path_conflict";
 }
 
 function vaultErr(c: Context, e: unknown) {
@@ -581,7 +583,8 @@ api.get("/notes/:id", async (c) => {
   // Read gate on the `view` CAP: for a level-only grant this is exactly
   // atLeast(level, "view"); a caps grant that omits `view` (e.g. ["create"])
   // correctly reads nothing even though its ladder projection floors at "view".
-  if (!caps.has("view")) return c.json({ error: "forbidden" }, 403);
+  // 404, not 403: "exists but not yours" would let anyone probe paths and titles.
+  if (!caps.has("view")) return notFound(c);
   // `_caps` (P4) travels beside `_level` so a client can render the RIGHT
   // affordance instead of discovering a 403 by attempting a write: an actor with
   // `suggest` but not `edit` gets "propose this change for review" rather than a
@@ -596,42 +599,157 @@ api.get("/notes/:id", async (c) => {
   return c.json(annotated(actor) ? { ...note, _level: level, _caps: [...caps] } : { ...note, _level: level });
 });
 
+/**
+ * NON-OWNER WRITES ARE BUILT FROM ALLOWLISTS — never forward a request body.
+ *
+ * The vault's `POST /notes` honours far more than a single note: `notes: [...]`
+ * (batch), per-item `if_exists: "replace" | "update"` (overwrite whatever holds the
+ * path), `id`, `links`, `created_at`, `extension`. Checking the top-level fields and
+ * then spreading the body handed all of that to anyone with `create` on one tag:
+ * overwrite or retag any note in the vault, forge creator/visibility/lock/trash
+ * keys, choose ids. So every non-owner write names the fields it sends, one by one,
+ * and a create refuses any key it does not know (strict schema). Owners/admins never
+ * reach these handlers (passthrough) and keep the vault's full dialect, batch included.
+ */
+const CREATE_KEYS = new Set(["content", "path", "tags", "metadata"]);
+/**
+ * Metadata an INTEGRATION or the system finds, dedupes or schedules a note by. A
+ * non-owner never sets, changes or clears one through create / PATCH (dropped
+ * silently, so an autosave restating the current value still works): a forged
+ * `calendarEventId` or `source_id` would make the ingest adopt — or stop updating —
+ * the wrong note; `merged_into` turns a person into a tombstone; the skill keys are
+ * what the scheduler reads. Deliberately NOT here (generic names people use as
+ * ordinary properties, inert without the protected path/tag): `source`, `account`,
+ * `mailbox`, `uid`, `provider`, `model`, `structured`; and the people identity fields
+ * (`email`, `channels`, …), which an editor may change through the identity route.
+ */
+const INGEST_KEYS = new Set([
+  "source_id", "calendarEventId", "messageId", "threadId", "matrixRoomId",
+  "skillName", "runner", "lastRun", "executionMode",
+  "merged_into", "mergedInto", "superseded_by", "prism_merge_history", "prism_merged_from", "prism_merged_into_prev",
+]);
+const isPlainObject = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
+const invalid = (c: Context, reason: string) => c.json({ error: "invalid_request", reason }, 400);
+/** The system-owned tags (`protectionReason`): a non-owner never puts a note INTO one. */
+const systemTags = (tags: string[]): string[] => tags.filter((t) => protectionReason({ tags: [t] }) !== null);
+
+/**
+ * TRUE SYSTEM NOTES — `systemNoteReason`: `agent-skill` / `agent-dispatch` /
+ * `agent-session` / `alert`, anything under `vault/agent`, every `governance-*`
+ * record. A non-owner may READ one their grants reach, but never write it through
+ * the general routes — PATCH, restore, delete, properties, attachments, the collab
+ * socket and commands — whatever their grants say: a skill note is run with the
+ * vault token, a governance note carries authority (it changes only through the
+ * governance service). INGEST notes (meetings, ClickUp tasks, people, threads, the
+ * inbox) are NOT in this set: they stay editable per the caller's grants and are
+ * protected only from move / trash / path and system-tag changes (`protectionReason`).
+ */
+const systemNoteRefusal = (c: Context, note: Note) => {
+  const why = systemNoteReason(note);
+  return why ? c.json({ error: "protected", reason: why }, 403) : null;
+};
+/** One answer for "no such note" and "a note you cannot view" (no existence oracle). */
+const notFound = (c: Context) => c.json({ error: "not_found" }, 404);
+
+/**
+ * May the actor put a note into tag `t` — the PATCH `add_tags` anti-escalation rule,
+ * shared with create: they hold `create` or `organize` in that tag itself (via a tag
+ * or vault grant, evaluated against a synthetic ref carrying just that tag).
+ */
+const canAddTag = (actor: Actor, t: string): boolean => {
+  const slice = capsFor(actor, { id: "<retag>", tags: [t] });
+  return slice.has("create") || slice.has("organize");
+};
+/** A tag somebody's access hangs on: any grant (person, link, anyone, governance role) names it. */
+const tagGoverned = (vaultId: string, t: string): boolean => grantsForResource("tag", t, vaultId).length > 0 || publishedTag(vaultId, t);
+
 api.post("/notes", async (c) => {
   const actor = resolveActor(c);
   // Owners/admins are short-circuited to the passthrough upstream; this handler
   // runs for members/guests/links. A signed-in MEMBER may create — but only
   // inside a tag/folder they can already EDIT, so a create can't smuggle a note
   // into an area they lack access to. Guests/links/anon cannot create.
-  const body = await c.req.json<{
-    content: string;
-    path?: string;
-    metadata?: Record<string, unknown>;
-    tags?: string[];
-  }>();
+  const body: unknown = await c.req.json().catch(() => null);
+  const raw = isPlainObject(body) ? body : {};
+  // CANONICAL tags first (`../tags.ts`): the vault stores `#agent-skill` as
+  // `agent-skill`, so every check below — and what is sent — uses the stored form.
+  // A tag that canonicalises to nothing is a 400, not a silent drop.
+  const stringTags = canonicalTagsStrict(raw.tags);
   const subject = actorSubject(actor);
-  const slice: NoteRef = { id: "<new>", tags: body.tags ?? [] };
+  // (For the cap check a malformed entry is simply ignored; it is refused 400 below.)
+  const slice: NoteRef = { id: "<new>", tags: stringTags ?? (Array.isArray(raw.tags) ? canonicalTags(raw.tags.filter((t): t is string => typeof t === "string")) : []) };
   // The `create` CAP on the target tag slice. `edit` expands to include create,
   // so every pre-caps edit grant still creates exactly as before; a caps grant can
   // now say "may add notes here" WITHOUT conferring edit on what is already there.
-  const canCreate = actor.kind === "user" && capsFor(actor, slice).has("create");
+  // …or, for a page-share holder, `create` AT THE PLACE: a page grant on an ancestor
+  // of the requested path (`createCapsAt`; empty under a trashed page). The placement
+  // rules below (`placementRefusal` → `destinationParentRefusal`) still decide where.
+  let canCreate = actor.kind === "user" && capsFor(actor, slice).has("create");
+  if (!canCreate && actor.kind === "user" && typeof raw.path === "string") {
+    const at = normalizePagePath(raw.path);
+    if (at) canCreate = (await createCapsAt(actor, at, slice.tags)).has("create");
+  }
   if (!canCreate) {
     return c.json({ error: "forbidden", reason: "create requires the create capability on the target tag/folder" }, 403);
   }
+  // Strict schema: one note, four fields. Refusals name keys' roles, never values.
+  if (!isPlainObject(body)) return invalid(c, "The body must be one note object.");
+  if (Object.keys(body).some((k) => !CREATE_KEYS.has(k))) return invalid(c, "Only content, path, tags and metadata can be set when creating a note.");
+  if (body.content !== undefined && typeof body.content !== "string") return invalid(c, "content must be text.");
+  if (body.tags !== undefined && (!stringTags || stringTags.length > 100)) return invalid(c, "tags must be a list of tag names.");
+  if (body.metadata !== undefined && body.metadata !== null && !isPlainObject(body.metadata)) return invalid(c, "metadata must be an object.");
+  if (body.path !== undefined && body.path !== null && typeof body.path !== "string") return invalid(c, "path is not a valid page location.");
+
+  // TAGS. The trash tag is never set here; a system-owned tag (agent skills run with
+  // the vault token, governance records carry authority, …) is never entered by a
+  // non-owner; and a PUBLISHED tag puts the note on a public site, so it needs create
+  // standing in that tag itself — not merely in another tag on the same note.
+  const tags = [...new Set((stringTags ?? []).filter((t) => t !== TRASH_TAG))];
+  if (systemTags(tags).length) return c.json({ error: "protected", reason: "Notes with a system tag are created by Prism, not by hand." }, 403);
+  // EVERY tag, not just one: the `create` cap above may come from any tag on the note,
+  // so each OTHER tag must be one the actor could add with PATCH `add_tags`
+  // (`canAddTag`) — or a plain organisational tag nobody's access hangs on (no grant
+  // names it, nothing is published from it). Otherwise `create` in one folder would
+  // drop notes into every other shared folder and onto public sites.
+  const vaultKey = resolveVaultEntry(actor.vaultId).id;
+  const outside = tags.filter((t) => tagGoverned(vaultKey, t) && !canAddTag(actor, t));
+  if (outside.length) return c.json({ error: "forbidden", reason: "You can only add tags you can create or organize in." }, 403);
+
+  // PATH: the pages API's destination rules — protected / exported / under the Trash —
+  // and, when the destination sits inside somebody's PAGE, `create` or `organize` on
+  // that page. A plain folder or the top level needs no more than the tag rules above.
+  let path: string | undefined;
+  if (typeof body.path === "string") {
+    const placed = await placementRefusal(resolveVaultEntry(actor.vaultId), body.path, { actor, tags });
+    if ("status" in placed) return c.json(placed.body, placed.status);
+    path = placed.path;
+  }
+
   // Stamp the creator (private-to-creator + audit). A member can't forge it — we
   // overwrite any client-supplied prism_creator with the authenticated subject.
   // Owner-only keys (creator/visibility/trash state, lock) and the trash tag are never
   // accepted from a non-owner create (review H3/M1).
   // Narrowing is safe: a non-owner may create a note as private (e.g. a private task).
-  const metadata = Object.fromEntries(Object.entries(body.metadata ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && !(WRITER_META_KEYS as readonly string[]).includes(k))));
+  const metadata = Object.fromEntries(Object.entries((body.metadata as Record<string, unknown> | null | undefined) ?? {}).filter(([k, v]) => (k === "prism_visibility" ? v === "private" : !isOwnerOnlyMeta(k) && k !== LOCK_KEY && k !== ORDER_KEY && k !== PAGE_STYLE_KEY && !INGEST_KEYS.has(k) && !(WRITER_META_KEYS as readonly string[]).includes(k))));
   if (subject) metadata.prism_creator = subject;
   // The writer stamp is server-owned: client values were dropped above, ours is applied here.
   Object.assign(metadata, stampChange(stampMetadata(undefined, actor), requestVia(c) === "mcp" ? "agent" : "edit"));
-  body.tags = (body.tags ?? []).filter((t) => t !== TRASH_TAG);
   try {
-    const created = await vaultClient(actor.vaultId).createNote({ ...body, metadata });
+    // `ifExists: "error"` is the vault's default; said out loud so a non-owner create
+    // can never become an overwrite if that default moves.
+    const created = await vaultClient(actor.vaultId).createNote({
+      content: (body.content as string | undefined) ?? "",
+      ...(path !== undefined ? { path } : {}),
+      tags,
+      metadata,
+      ifExists: "error",
+    });
     treeUpsertNote(resolveVaultEntry(actor.vaultId), created);
     return c.json(forViewer(actor, created));
   } catch (e) {
+    // A taken path: one generic answer, whether or not the caller could view what is
+    // there (the vault's own body names the holder's path and is never passed on).
+    if (e instanceof VaultConflictError && e.status === 409) return c.json(pathUnavailable(path ?? ""), 409);
     return vaultErr(c, e);
   }
 });
@@ -648,26 +766,41 @@ api.patch("/notes/:id", async (c) => {
   }
   const noteRef = ref(note);
   const caps = capsFor(actor, noteRef);
+  if (!caps.has("view")) return notFound(c);
+  const system = systemNoteRefusal(c, note);
+  if (system) return system;
 
-  const body = await c.req.json<{
-    content?: string;
-    metadata?: Record<string, unknown>;
-    path?: string;
-    add_tags?: string[];
-    remove_tags?: string[];
-    if_updated_at?: string;
-  }>();
+  // Only these six fields are ever read, and each is sent to the vault by name
+  // (never the body): `links`, `tags: {add, remove}`, `force`, `if_exists`, `append`,
+  // `created_at` and anything else a client adds are ignored, as before — the owner
+  // dialect's tag/link PATCHes (`rest.addTags`) stay a harmless no-op for a member.
+  const parsed: unknown = await c.req.json().catch(() => null);
+  if (!isPlainObject(parsed)) return invalid(c, "The body must be an object.");
+  if (parsed.content !== undefined && typeof parsed.content !== "string") return invalid(c, "content must be text.");
+  if (parsed.metadata !== undefined && !isPlainObject(parsed.metadata)) return invalid(c, "metadata must be an object.");
+  if (parsed.path !== undefined && typeof parsed.path !== "string") return invalid(c, "path is not a valid page location.");
+  if (parsed.if_updated_at !== undefined && parsed.if_updated_at !== null && typeof parsed.if_updated_at !== "string") return invalid(c, "if_updated_at must be the note's updatedAt.");
+  const body = {
+    content: parsed.content as string | undefined,
+    metadata: parsed.metadata as Record<string, unknown> | undefined,
+    path: parsed.path as string | undefined,
+    add_tags: parsed.add_tags,
+    remove_tags: parsed.remove_tags,
+    if_updated_at: (parsed.if_updated_at ?? undefined) as string | undefined,
+  };
 
+  // Canonical (`../tags.ts`) before every check: `#agent-skill` is `agent-skill`.
   const strings = (x: unknown): string[] =>
-    Array.isArray(x) ? [...new Set(x.filter((t): t is string => typeof t === "string" && t.length > 0))] : [];
+    Array.isArray(x) ? [...new Set(x.filter((t): t is string => typeof t === "string").map(canonicalTag).filter((t) => t.length > 0))] : [];
   const addTags = strings(body.add_tags);
   const removeTags = strings(body.remove_tags);
   // H3/M1/LOCK: a non-owner never writes who-can-see / who-created / trash state, the
   // page lock or the sidebar order through this route, and never toggles the trash tag.
+  // Ingest / system keys: a changed (or cleared) value is dropped, an unchanged one passes.
   // The writer stamp is server-owned (review M3): whatever a client sends for it is
   // dropped (never stored), and the server's own stamp is applied on the write below.
-  if (body.metadata && typeof body.metadata === "object" && (WRITER_META_KEYS as readonly string[]).some((k) => k in body.metadata!)) {
-    body.metadata = Object.fromEntries(Object.entries(body.metadata).filter(([k]) => !(WRITER_META_KEYS as readonly string[]).includes(k)));
+  if (body.metadata) {
+    body.metadata = Object.fromEntries(Object.entries(body.metadata).filter(([k, v]) => !(WRITER_META_KEYS as readonly string[]).includes(k) && (!INGEST_KEYS.has(k) || JSON.stringify(v) === JSON.stringify(note.metadata?.[k]))));
   }
   const meta = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
   const subjectNow = actorSubject(actor);
@@ -676,7 +809,8 @@ api.patch("/notes/:id", async (c) => {
     // never (re)assign the creator — a no-op restatement of either is fine.
     if (k === "prism_visibility") return !(meta[k] === "private" && noteRef.creator === subjectNow) && meta[k] !== note.metadata?.[k];
     if (k === "prism_creator") return meta[k] !== note.metadata?.[k];
-    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY;
+    // The page style has its own validated route (POST /notes/:id/meta).
+    return isOwnerOnlyMeta(k) || k === LOCK_KEY || k === ORDER_KEY || k === PAGE_STYLE_KEY;
   };
   if (Object.keys(meta).some(forbiddenKey)) {
     return c.json({ error: "forbidden", reason: "That property can only be changed through its own control." }, 403);
@@ -684,6 +818,10 @@ api.patch("/notes/:id", async (c) => {
   if (addTags.includes(TRASH_TAG) || removeTags.includes(TRASH_TAG)) {
     return c.json({ error: "forbidden", reason: "Use Move to Trash / Restore." }, 403);
   }
+  // A system-owned tag is never entered by a non-owner, whatever their organize scope
+  // (an `agent-skill` note is run with the vault token; governance tags carry authority).
+  // Nor removed: an ingest note keeps the tag its integration finds it by.
+  if (systemTags(addTags).length || systemTags(removeTags).length) return c.json({ error: "protected", reason: "System tags are set by Prism, not by hand." }, 403);
   const wantsContent = body.content !== undefined || body.metadata !== undefined;
   if (wantsContent && isLocked(note) && caps.has("view")) return c.json({ error: "locked", reason: "This page is locked. Unlock it to edit." }, 423);
   const wantsTags = addTags.length > 0 || removeTags.length > 0;
@@ -728,10 +866,7 @@ api.patch("/notes/:id", async (c) => {
   //     orphan the note out of their own reach (an irreversible foot-gun, and a
   //     way to make a note invisible to everyone whose access came via that tag).
   if (addTags.length) {
-    const forbidden = addTags.filter((t) => {
-      const slice = capsFor(actor, { id: "<retag>", tags: [t] });
-      return !(slice.has("create") || slice.has("organize"));
-    });
+    const forbidden = addTags.filter((t) => !canAddTag(actor, t));
     if (forbidden.length) {
       return c.json(
         { error: "forbidden", reason: `cannot add tags outside your scope: ${forbidden.join(", ")}`, tags: forbidden },
@@ -757,6 +892,11 @@ api.patch("/notes/:id", async (c) => {
     }
   }
 
+  // A non-owner path change never reaches here (move_required above): the move route
+  // applies main's `placementRefusal` + the subtree and page-share exposure rules.
+  // Every write below names the note by the ID that was authorized above — `id` may
+  // be a path/title alias the vault resolves, and it must not resolve twice.
+  const noteId = note.id;
   try {
     // Non-owners may change content/metadata (with `edit`) and path/tags (with
     // `organize`). A path change without organize is dropped, not rejected —
@@ -764,25 +904,24 @@ api.patch("/notes/:id", async (c) => {
     const wantsWrite = wantsContent || (canPath && wantsPath) || (!wantsTags && !wantsPath);
     let updated = note;
     if (wantsWrite) {
-      updated = await vc.updateNote(id, {
+      updated = await vc.updateNote(noteId, {
         content: body.content,
         // Only a content/metadata write is stamped (a path-only move is not an edit).
         metadata: wantsContent ? stampChange(stampMetadata(body.metadata, actor), requestVia(c) === "mcp" ? "agent" : "edit") : body.metadata,
-        path: canPath ? body.path : undefined,
         ifUpdatedAt: body.if_updated_at ?? note.updatedAt ?? undefined,
       });
     }
     if (wantsTags) {
       // Separate vault calls (the REST tag ops are add/remove deltas). Remove
       // first so an add wins on an overlapping name; re-read for the final shape.
-      if (removeTags.length) await vc.removeTags(id, removeTags);
-      if (addTags.length) await vc.addTags(id, addTags);
-      updated = await vc.getNote(id);
+      if (removeTags.length) await vc.removeTags(noteId, removeTags);
+      if (addTags.length) await vc.addTags(noteId, addTags);
+      updated = await vc.getNote(noteId);
     }
     treeUpsertNote(resolveVaultEntry(actor.vaultId), updated);
     // A write without content to a LIVE doc: keep the reconciler from folding the
     // content-stale vault copy over unsaved typing (review M3).
-    if (body.content === undefined) void reconcileMetaWrite(actor.vaultId, id, note.updatedAt, updated.updatedAt);
+    if (body.content === undefined) void reconcileMetaWrite(actor.vaultId, noteId, note.updatedAt, updated.updatedAt);
     return c.json(forViewer(actor, updated));
   } catch (e) {
     return vaultErr(c, e);
@@ -811,8 +950,14 @@ const stripProvenance = <T extends { actor?: unknown; via?: unknown }>(row: T): 
   return rest;
 };
 
-/** Metadata keys that decide WHO can see a note. A non-owner restore may not change them. */
-const ACCESS_KEYS = ["prism_creator", "prism_visibility"] as const;
+/**
+ * Metadata a non-owner restore may not change. A restore rewrites metadata
+ * WHOLESALE from the old version, so it is the one write that could bring back what
+ * every other non-owner route refuses to set: who can see the note (creator /
+ * visibility), its trash state and the page lock. (The sidebar order is left alone:
+ * reverting it is harmless, and guarding it would refuse every restore after a reorder.)
+ */
+const restoreGuarded = (k: string): boolean => isOwnerOnlyMeta(k) || k === LOCK_KEY;
 
 async function viewableNote(c: Context, need: Cap): Promise<{ note: Note } | Response> {
   const actor = resolveActor(c);
@@ -822,7 +967,9 @@ async function viewableNote(c: Context, need: Cap): Promise<{ note: Note } | Res
   } catch (e) {
     return vaultErr(c, e);
   }
-  if (!capsFor(actor, ref(note)).has(need)) return c.json({ error: "forbidden" }, 403);
+  const caps = capsFor(actor, ref(note));
+  if (!caps.has("view")) return notFound(c);
+  if (!caps.has(need)) return c.json({ error: "forbidden" }, 403);
   return { note };
 }
 
@@ -857,13 +1004,16 @@ api.get("/notes/:id/versions/:ix", async (c) => {
 api.post("/notes/:id/restore", async (c) => {
   const gate = await viewableNote(c, "edit");
   if (gate instanceof Response) return gate;
+  const system = systemNoteRefusal(c, gate.note);
+  if (system) return system;
   if (isLocked(gate.note)) return c.json({ error: "locked", reason: "This page is locked. Unlock it to restore a version." }, 423);
-  const body = await c.req.json<{ version_ix?: number; if_updated_at?: string }>().catch(() => ({}) as { version_ix?: number; if_updated_at?: string });
-  const ix = body.version_ix;
+  const body = await c.req.json<{ version_ix?: unknown; if_updated_at?: unknown }>().catch(() => ({}) as { version_ix?: unknown; if_updated_at?: unknown });
+  const ix = body?.version_ix;
   if (typeof ix !== "number" || !Number.isInteger(ix) || ix < 0) {
     return c.json({ error: "bad_request", reason: "version_ix is required" }, 400);
   }
-  if (!body.if_updated_at) {
+  const ifUpdatedAt = body.if_updated_at;
+  if (typeof ifUpdatedAt !== "string" || !ifUpdatedAt) {
     return c.json({ error: "conflict", status: 428, current: gate.note }, 428);
   }
   const vc = vaultClient(resolveActor(c).vaultId);
@@ -871,16 +1021,17 @@ api.post("/notes/:id/restore", async (c) => {
     // Anti-escalation: restore rewrites metadata wholesale, so an old version could
     // re-share a note that was since made private, or reassign its creator.
     const version = await vc.getVersion(gate.note.id, ix);
-    const changed = ACCESS_KEYS.filter(
-      (k) => (version.metadata?.[k] ?? null) !== (gate.note.metadata?.[k] ?? null),
+    const keys = [...new Set([...Object.keys(version.metadata ?? {}), ...Object.keys(gate.note.metadata ?? {})])].filter(restoreGuarded);
+    const changed = keys.filter(
+      (k) => JSON.stringify(version.metadata?.[k] ?? null) !== JSON.stringify(gate.note.metadata?.[k] ?? null),
     );
     if (changed.length) {
       return c.json(
-        { error: "forbidden", reason: `restoring this version would change who can see the note (${changed.join(", ")}) — ask an admin` },
+        { error: "forbidden", reason: `restoring this version would change who can see the note or its lock/trash state (${changed.join(", ")}) — ask an admin` },
         403,
       );
     }
-    const restored = await vc.restoreVersion(gate.note.id, ix, body.if_updated_at);
+    const restored = await vc.restoreVersion(gate.note.id, ix, ifUpdatedAt);
     treeUpsertNote(resolveVaultEntry(resolveActor(c).vaultId), restored);
     return c.json(forViewer(resolveActor(c), restored));
   } catch (e) {
@@ -905,6 +1056,9 @@ api.delete("/notes/:id", async (c) => {
   const subject = actorSubject(actor);
   const noteRef = ref(note);
   const caps = capsFor(actor, noteRef);
+  if (!caps.has("view")) return notFound(c);
+  const system = systemNoteRefusal(c, note);
+  if (system) return system;
   const isCreator = !!subject && noteRef.creator === subject;
   // Either path suffices: the pre-caps rule (your OWN note, with edit on it), or
   // the explicit `delete` cap — the composable way to say "may clean up this
@@ -916,27 +1070,16 @@ api.delete("/notes/:id", async (c) => {
     );
   }
   try {
-    await vc.deleteNote(id);
+    // By the id that was authorized — never the request's alias, resolved a second time.
+    await vc.deleteNote(note.id);
   } catch (e) {
     return vaultErr(c, e);
   }
-  treeRemoveNote(resolveVaultEntry(actor.vaultId), id);
+  treeRemoveNote(resolveVaultEntry(actor.vaultId), note.id);
   return c.json({ ok: true });
 });
 
-api.get("/search", async (c) => {
-  const actor = resolveActor(c);
-  const q = c.req.query("q") ?? c.req.query("search") ?? "";
-  const limit = Number(c.req.query("limit") ?? 50);
-  let results: Note[];
-  try {
-    results = await vaultClient(actor.vaultId).search(q, [], limit);
-  } catch (e) {
-    return vaultErr(c, e);
-  }
-  if (roleAtLeast(actor.role, "admin")) return c.json(results);
-  return c.json(annotate(actor, results));
-});
+// GET /search lives in ./search.ts (mounted above, before the owner short-circuit).
 
 api.get("/tags", async (c) => {
   const actor = resolveActor(c);

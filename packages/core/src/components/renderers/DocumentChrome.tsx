@@ -1,7 +1,8 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import "./DocumentChrome.css";
-import { ChevronRight, Smile } from "lucide-react";
+import { ChevronRight, Smile, ImagePlus } from "lucide-react";
 import { PageBreadcrumbs } from "../pages/Breadcrumbs";
+export { PageCover } from "./PageCover";
 import type { EmojiClickData, EmojiStyle, Theme } from "emoji-picker-react";
 
 // Full emoji picker, lazy-loaded so it never weighs down the editor chunk —
@@ -49,7 +50,9 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
       setEditing(false);
     } catch {
       setError("Could not rename this page. Your title is still here; press Enter to retry.");
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // The input stays mounted and enabled (readOnly while saving), so focus is
+      // normally still here; this only restores it if the user clicked away.
+      inputRef.current?.focus();
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -62,7 +65,10 @@ function EditableTitle({ name, onRename }: { name: string; onRename: (newName: s
         ref={inputRef}
         aria-label="Document title"
         value={draft}
-        disabled={saving}
+        // readOnly, not disabled: disabling a focused input drops its focus, and
+        // re-focusing after the failure raced React's re-enable under load.
+        readOnly={saving}
+        aria-busy={saving || undefined}
         aria-invalid={!!error}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => { void commit(); }}
@@ -267,6 +273,8 @@ export function PageHeader({
   typeIcon,
   onIconChange,
   details,
+  onAddCover,
+  presence,
 }: {
   path?: string | null;
   /** Used when the path has no usable filename (e.g. a content-derived title). */
@@ -284,6 +292,14 @@ export function PageHeader({
   /** When provided, the icon is clickable and opens the emoji picker; pass the
    *  chosen emoji (or null to clear) here for the host to persist. */
   onIconChange?: (emoji: string | null) => void;
+  /** When provided (and the page has no cover yet), an "Add cover" control is shown; the host adds a default cover. */
+  onAddCover?: () => void;
+  /**
+   * Named slot for live presence (who else is on this page). Rendered at the top
+   * right of the header, beside the breadcrumb. Group 2D fills it; hosts pass
+   * nothing today. Keep it small (avatars) — it wraps under the title on phones.
+   */
+  presence?: React.ReactNode;
 }) {
   const stripped = (path || "").replace(/^vault\//, "");
   const parts = stripped.split("/").filter(Boolean);
@@ -292,10 +308,23 @@ export function PageHeader({
   const crumbs = parts.slice(0, -1);
   return (
     <header className="document-page-header">
-      {crumbs.length > 0 && <PageBreadcrumbs path={path} />}
+      {(crumbs.length > 0 || presence) && (
+        <div className="document-page-topline">
+          {crumbs.length > 0 ? <PageBreadcrumbs path={path} /> : <span />}
+          {presence && <div className="document-page-presence" data-slot="presence">{presence}</div>}
+        </div>
+      )}
       <div className="document-page-heading">
-        {(icon || onIconChange) && (
-          <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />
+        {(icon || onIconChange || onAddCover) && (
+          <div className="document-page-adders">
+            {(icon || onIconChange) && <IconTile icon={icon} typeIcon={typeIcon} onIconChange={onIconChange} />}
+            {onAddCover && (
+              <button type="button" className="interactive focus-ring document-add-cover" onClick={onAddCover}>
+                <ImagePlus size={15} aria-hidden="true" />
+                <span>Add cover</span>
+              </button>
+            )}
+          </div>
         )}
         {onRename ? (
           <EditableTitle name={name} onRename={onRename} />
