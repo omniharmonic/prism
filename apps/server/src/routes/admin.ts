@@ -18,7 +18,7 @@ import { vaultClient } from "../parachute";
 import { csrfRefusal } from "./actions";
 import { cancelWikilinkJob, startWikilinkJob, wikilinkJobStatus, WikilinkJobBusyError, type WikilinkJob } from "../wikilinks-job";
 import { recordAction } from "../actions/store";
-import { listCollabUnsaved } from "../db";
+import { deleteCollabSetAside, getCollabSetAside, listCollabSetAside, listCollabUnsaved } from "../db";
 import { mountPeopleCandidates, mountPeopleLinkJob, mountPeopleMerge, mountPeopleOwner } from "./people-admin";
 
 export const adminApi = new Hono();
@@ -50,7 +50,26 @@ adminApi.get("/collab/unsaved", (c) => {
   c.header("Cache-Control", "no-store");
   return c.json({
     rows: listCollabUnsaved(200, vaultId).map((r) => ({ vaultId: r.vault_id, noteId: r.name, reason: r.reason, permanent: r.permanent === 1, since: r.since, attempts: r.attempts })),
+    // What a page held when the vault's copy REPLACED its unsaved live changes because no
+    // merge could be trusted (`uncertain_base`) or no base was known (`no_base`). Nothing
+    // typed is destroyed silently: the text is here (ids + sizes; the body by id, below).
+    setAside: listCollabSetAside(vaultId).map((r) => ({ id: r.id, vaultId: r.vault_id, noteId: r.name, at: r.at, reason: r.reason, kind: r.kind, bytes: r.bytes })),
   });
+});
+//   GET    /api/admin/collab/set-aside/:id   → {id, noteId, at, reason, kind, body}  (the page as plain text)
+//   DELETE /api/admin/collab/set-aside/:id
+const setAsideId = (raw: string): number | null => (/^[1-9][0-9]{0,15}$/.test(raw) ? Number(raw) : null);
+adminApi.get("/collab/set-aside/:id", (c) => {
+  const id = setAsideId(c.req.param("id"));
+  const row = id === null ? null : getCollabSetAside(id, ownerVault(c)!);
+  if (!row) return c.json({ error: "not_found" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json({ id: row.id, vaultId: row.vault_id, noteId: row.name, at: row.at, reason: row.reason, kind: row.kind, body: row.body });
+});
+adminApi.delete("/collab/set-aside/:id", (c) => {
+  const id = setAsideId(c.req.param("id"));
+  if (id === null || !deleteCollabSetAside(id, ownerVault(c)!)) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true });
 });
 adminApi.post("/collab/unsaved/:id/discard", async (c) => {
   const vaultId = ownerVault(c)!;

@@ -678,7 +678,7 @@ for (const [table, fields] of Object.entries({
   agent_sessions: { permission_mode: "TEXT", policy_version: "INTEGER NOT NULL DEFAULT 1", pending_mode: "TEXT", request_id: "TEXT", request_hash: "TEXT" },
   agent_turns: { permission_mode: "TEXT", policy_version: "INTEGER", profile: "TEXT", request_id: "TEXT", request_hash: "TEXT", request_ready: "INTEGER NOT NULL DEFAULT 0", context_json: "TEXT NOT NULL DEFAULT '[]'" },
   // What vault content a collab snapshot is built on (see "collab doc state" below).
-  collab_docs: { base_hash: "TEXT", ahead: "INTEGER NOT NULL DEFAULT 0", base_state: "BLOB", attempts: "TEXT", attempt_state: "BLOB" },
+  collab_docs: { base_hash: "TEXT", ahead: "INTEGER NOT NULL DEFAULT 0", base_state: "BLOB", attempts: "TEXT", attempt_state: "BLOB", attempt_lens: "TEXT" },
   collab_unsaved: { reason: "TEXT", permanent: "INTEGER NOT NULL DEFAULT 0", attempts: "INTEGER NOT NULL DEFAULT 0", last_attempt: "INTEGER", next_attempt: "INTEGER NOT NULL DEFAULT 0" },
 })) {
   const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
@@ -686,6 +686,23 @@ for (const [table, fields] of Object.entries({
     if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
   }
 }
+// What a live document held when the vault's copy REPLACED it because no merge
+// could be trusted (collab.ts `foldVaultContent`): kept for the workspace owner,
+// so nothing typed is silently destroyed. `body` = the document as plain text
+// (code / CSV / scene JSON for the other kinds), `state` = its exact Yjs state.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS collab_set_aside (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_id TEXT NOT NULL DEFAULT 'primary',
+    name     TEXT NOT NULL,      -- note id
+    at       INTEGER NOT NULL,
+    reason   TEXT NOT NULL,      -- uncertain_base | no_base
+    kind     TEXT NOT NULL,      -- document | code | spreadsheet | canvas
+    body     TEXT NOT NULL,
+    state    BLOB
+  );
+  CREATE INDEX IF NOT EXISTS collab_set_aside_note ON collab_set_aside(vault_id, name, at);
+`);
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS agent_session_request ON agent_sessions(vault_id, owner_email, request_id) WHERE request_id IS NOT NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS agent_turn_request ON agent_turns(session_id, request_id) WHERE request_id IS NOT NULL;
@@ -1837,6 +1854,10 @@ export function deleteCapability(id: string): void {
 //                      every attempted write (it is saved BEFORE the write).
 //   attempt_state      the Yjs state of the newest attempt, once `state` moved on
 //                      (NULL = `state` still is it).
+//   attempt_lens       {hash: [characters, UTF-8 bytes]} of the attempted contents:
+//                      lets a history lookup rule out versions of another size
+//                      without fetching their bodies. Looked up by hash only (a
+//                      stale entry is harmless); NULL / missing = unknown.
 export interface DocState {
   state: Uint8Array;
   sourceUpdatedAt: number | null;
@@ -1847,13 +1868,31 @@ export interface DocState {
   attempts: string[];
   /** The Yjs state of the NEWEST attempted write (what the vault holds if that write landed); null when there is no attempt. */
   attemptState: Uint8Array | null;
+  attemptLens?: Record<string, [number, number]>;
 }
 export interface DocMeta {
   sourceUpdatedAt: number | null;
   baseHash: string | null;
   ahead: boolean;
   attempts: string[];
+  /** Size of each attempted content, by hash: [characters, UTF-8 bytes]. Absent for attempts recorded before sizes were. */
+  attemptLens?: Record<string, [number, number]>;
 }
+const parseAttemptLens = (raw: string | null): Record<string, [number, number]> => {
+  const out: Record<string, [number, number]> = {};
+  if (!raw) return out;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [hash, pair] of Object.entries(v as Record<string, unknown>)) {
+        if (Array.isArray(pair) && typeof pair[0] === "number" && typeof pair[1] === "number") out[hash] = [pair[0], pair[1]];
+      }
+    }
+  } catch {
+    /* unknown sizes */
+  }
+  return out;
+};
 const DOC_ATTEMPTS_KEPT = 4;
 const parseAttempts = (raw: string | null): string[] => {
   if (!raw) return [];
@@ -1864,8 +1903,8 @@ const parseAttempts = (raw: string | null): string[] => {
     return [];
   }
 };
-const selectDocState = db.prepare("SELECT state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state FROM collab_docs WHERE vault_id = ? AND name = ?");
-const selectDocMeta = db.prepare("SELECT source_updated_at, base_hash, ahead, attempts FROM collab_docs WHERE vault_id = ? AND name = ?");
+const selectDocState = db.prepare("SELECT state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state, attempt_lens FROM collab_docs WHERE vault_id = ? AND name = ?");
+const selectDocMeta = db.prepare("SELECT source_updated_at, base_hash, ahead, attempts, attempt_lens FROM collab_docs WHERE vault_id = ? AND name = ?");
 const upsertDocState = db.prepare(
   `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state, updated_at)
    VALUES (@vault_id, @name, @state, @source_updated_at, @base_hash, 0, NULL, NULL, NULL, @updated_at)
@@ -1875,7 +1914,7 @@ const upsertDocState = db.prepare(
 /** CRDT doc state, scoped to a vault (a note id is only unique within a vault).
  *  vaultId defaults to 'primary' so pre-multitenant callers are unaffected. */
 export function getDocState(name: string, vaultId = "primary"): DocState | null {
-  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null; base_hash: string | null; ahead: number; base_state: Buffer | null; attempts: string | null; attempt_state: Buffer | null } | undefined;
+  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null; base_hash: string | null; ahead: number; base_state: Buffer | null; attempts: string | null; attempt_state: Buffer | null; attempt_lens: string | null } | undefined;
   if (!row) return null;
   const state = new Uint8Array(row.state);
   const ahead = row.ahead === 1;
@@ -1888,12 +1927,13 @@ export function getDocState(name: string, vaultId = "primary"): DocState | null 
     base: ahead ? (row.base_state ? new Uint8Array(row.base_state) : null) : state,
     attempts,
     attemptState: attempts.length === 0 ? null : row.attempt_state ? new Uint8Array(row.attempt_state) : state,
+    attemptLens: parseAttemptLens(row.attempt_lens),
   };
 }
 /** The same without the Yjs blobs (the reconciler asks every tick). */
 export function getDocMeta(name: string, vaultId = "primary"): DocMeta | null {
-  const row = selectDocMeta.get(vaultId, name) as { source_updated_at: number | null; base_hash: string | null; ahead: number; attempts: string | null } | undefined;
-  return row ? { sourceUpdatedAt: row.source_updated_at, baseHash: row.base_hash, ahead: row.ahead === 1, attempts: parseAttempts(row.attempts) } : null;
+  const row = selectDocMeta.get(vaultId, name) as { source_updated_at: number | null; base_hash: string | null; ahead: number; attempts: string | null; attempt_lens: string | null } | undefined;
+  return row ? { sourceUpdatedAt: row.source_updated_at, baseHash: row.base_hash, ahead: row.ahead === 1, attempts: parseAttempts(row.attempts), attemptLens: parseAttemptLens(row.attempt_lens) } : null;
 }
 /**
  * The snapshot IS the vault content at `sourceUpdatedAt` (a load, a confirmed
@@ -1946,12 +1986,21 @@ export function saveDocAhead(name: string, state: Uint8Array, vaultId = "primary
  * base it does not contain. Then nothing is saved and `false` is returned: the
  * caller re-reads and snapshots again.
  */
-export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, hash: string, vaultId: string, expectSource?: number | null): boolean => {
+const setAttemptLens = db.prepare("UPDATE collab_docs SET attempt_lens = ? WHERE vault_id = ? AND name = ?");
+/** `size` = [characters, UTF-8 bytes] of the content being written (see `attempt_lens`). */
+export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, hash: string, vaultId: string, expectSource?: number | null, size?: [number, number]): boolean => {
   const meta = getDocMeta(name, vaultId);
   if (expectSource !== undefined && (meta?.sourceUpdatedAt ?? null) !== expectSource) return false;
-  const attempts = JSON.stringify([...(meta?.attempts ?? []).filter((h) => h !== hash), hash].slice(-DOC_ATTEMPTS_KEPT));
-  const params = { vault_id: vaultId, name, state: Buffer.from(state), attempts, updated_at: now() };
+  const kept = [...(meta?.attempts ?? []).filter((h) => h !== hash), hash].slice(-DOC_ATTEMPTS_KEPT);
+  const params = { vault_id: vaultId, name, state: Buffer.from(state), attempts: JSON.stringify(kept), updated_at: now() };
   if (updateDocAttempt.run(params).changes === 0) insertDocAhead.run(params);
+  // Sizes of the attempts still recorded (an attempt without one stays "unknown": nothing is ruled out by size).
+  const lens: Record<string, [number, number]> = {};
+  for (const h of kept) {
+    const known = h === hash ? size : meta?.attemptLens?.[h];
+    if (known) lens[h] = known;
+  }
+  setAttemptLens.run(JSON.stringify(lens), vaultId, name);
   return true;
 });
 const confirmDocAttemptStmt = db.prepare(
@@ -2052,6 +2101,46 @@ export function noteCollabUnsavedAttempt(name: string, vaultId: string, at = now
 export function collabUnsavedStats(): { total: number; permanent: number; oldestSince: number | null } {
   const r = statsUnsavedStmt.get() as { total: number; permanent: number; oldest: number | null };
   return { total: r.total, permanent: r.permanent, oldestSince: r.oldest };
+}
+
+// ---- what a live document held when the vault's copy replaced it (collab.ts) ----
+export interface CollabSetAsideRow {
+  id: number;
+  vault_id: string;
+  name: string;
+  at: number;
+  reason: string;
+  kind: string;
+  /** Characters of `body`. */
+  bytes: number;
+}
+const SET_ASIDE_BODY_MAX = 2_000_000;
+const SET_ASIDE_PER_NOTE = 5;
+const SET_ASIDE_MAX_AGE_MS = 90 * 24 * 3600_000;
+const insertSetAside = db.prepare("INSERT INTO collab_set_aside (vault_id, name, at, reason, kind, body, state) VALUES (?, ?, ?, ?, ?, ?, ?)");
+const pruneSetAsideAge = db.prepare("DELETE FROM collab_set_aside WHERE at < ?");
+const pruneSetAsideNote = db.prepare(
+  "DELETE FROM collab_set_aside WHERE vault_id = ? AND name = ? AND id NOT IN (SELECT id FROM collab_set_aside WHERE vault_id = ? AND name = ? ORDER BY id DESC LIMIT ?)",
+);
+const listSetAsideStmt = db.prepare("SELECT id, vault_id, name, at, reason, kind, length(body) AS bytes FROM collab_set_aside WHERE vault_id = ? ORDER BY id DESC LIMIT ?");
+const getSetAsideStmt = db.prepare("SELECT id, vault_id, name, at, reason, kind, body, length(body) AS bytes FROM collab_set_aside WHERE vault_id = ? AND id = ?");
+const deleteSetAsideStmt = db.prepare("DELETE FROM collab_set_aside WHERE vault_id = ? AND id = ?");
+/** Keep what a document held before the vault's copy replaced it. The newest few per note, for 90 days. */
+export const addCollabSetAside = db.transaction((name: string, vaultId: string, reason: string, kind: string, body: string, state: Uint8Array | null): number => {
+  const at = now();
+  const id = Number(insertSetAside.run(vaultId, name, at, reason, kind, body.length > SET_ASIDE_BODY_MAX ? body.slice(0, SET_ASIDE_BODY_MAX) : body, state ? Buffer.from(state) : null).lastInsertRowid);
+  pruneSetAsideNote.run(vaultId, name, vaultId, name, SET_ASIDE_PER_NOTE);
+  pruneSetAsideAge.run(at - SET_ASIDE_MAX_AGE_MS);
+  return id;
+});
+export function listCollabSetAside(vaultId: string, limit = 200): CollabSetAsideRow[] {
+  return listSetAsideStmt.all(vaultId, limit) as CollabSetAsideRow[];
+}
+export function getCollabSetAside(id: number, vaultId: string): (CollabSetAsideRow & { body: string }) | null {
+  return (getSetAsideStmt.get(vaultId, id) as (CollabSetAsideRow & { body: string }) | undefined) ?? null;
+}
+export function deleteCollabSetAside(id: number, vaultId: string): boolean {
+  return deleteSetAsideStmt.run(vaultId, id).changes > 0;
 }
 
 // ---- human collaboration command receipts (see the table comment above) ----

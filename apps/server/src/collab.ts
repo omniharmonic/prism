@@ -81,6 +81,7 @@ import {
   confirmDocAttempt,
   rebaseDoc,
   deleteDocState,
+  addCollabSetAside,
   markCollabUnsaved,
   clearCollabUnsaved,
   isCollabUnsaved,
@@ -621,6 +622,30 @@ function isAncestorOf(base: Uint8Array, doc: Y.Doc): boolean {
 }
 
 /**
+ * The base(s) an external change may be merged against (`mergeBases`).
+ *  - `candidates`: Yjs states that may equal what the vault's copy was edited FROM
+ *    (older first);
+ *  - `uncertain`: nobody could establish which — the note's history could not
+ *    answer (no history, an error, too many versions, an older attempt landed).
+ *    True even with ONE candidate left;
+ *  - `floor`: the row's own base — the last state KNOWN to have been the vault's
+ *    content. What the document holds beyond it is local typing.
+ */
+interface MergeBase {
+  candidates: Uint8Array[];
+  uncertain: boolean;
+  floor: Uint8Array | null;
+}
+interface FoldResult {
+  /** The Yjs state that equals the vault content after the fold: the new base. */
+  base: Uint8Array;
+  /** The vault's content REPLACED the document's (no merge). */
+  wholesale: boolean;
+  /** With `wholesale`: what the document held just before, for the set-aside. */
+  replaced?: { state: Uint8Array; body: string; why: "no_base" | "uncertain_base" };
+}
+
+/**
  * Fold the vault's (externally changed) content into `doc`.
  *
  * With the TRUE BASE — the Yjs state that equals what the vault held before —
@@ -629,62 +654,77 @@ function isAncestorOf(base: Uint8Array, doc: Y.Doc): boolean {
  * since the base survives when the two sides touched different blocks (same-block
  * overlaps merge as two concurrent editors would).
  *
- * Without a base (a row from before bases were kept, a document whose base is
- * unknown, sheets and canvases) the vault's content REPLACES the document's —
- * "external wins", `wholesale: true`; the caller tells connected clients when
- * that may have discarded something.
+ * With an UNCERTAIN base (round 5, M-3/M-4) nothing is guessed. Each candidate's
+ * merge is tried on a copy and accepted only if it passes `mergeIsSane` — every
+ * run of text either side added is there exactly as often as that side has it,
+ * nothing both sides hold is gone, nothing typed here and never sent is gone. A
+ * base that is too OLD doubles what was typed in between (also INSIDE a
+ * paragraph: `START edit one EXTERNAL edit one`); one that is too NEW deletes
+ * typing that never reached the vault. If no candidate passes, the vault's copy
+ * wins and the caller sets the document's own content aside and tells everyone.
  *
- * Returns the Yjs state that equals the vault content after the fold: the new base.
+ * Without any base (a row from before bases were kept, sheets and canvases) the
+ * vault's content REPLACES the document's as well — `wholesale: true`.
  */
-function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepared: DocJson | null, base: Uint8Array | null | Uint8Array[]): { base: Uint8Array; wholesale: boolean } {
-  const candidates = (Array.isArray(base) ? base : base ? [base] : []).filter((b) => (kind === "document" || kind === "code") && isAncestorOf(b, doc));
-  const uncertain = candidates.length > 1;
+function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepared: DocJson | null, merge: MergeBase): FoldResult {
+  const mergeable = kind === "document" || kind === "code";
+  const candidates = mergeable ? merge.candidates.filter((b) => isAncestorOf(b, doc)) : [];
+  const replace = (why: "no_base" | "uncertain_base"): FoldResult => {
+    const replaced = { state: Y.encodeStateAsUpdate(doc), body: plainBody(doc, kind), why };
+    applyExternalContent(doc, kind, content, prepared);
+    return { base: Y.encodeStateAsUpdate(doc), wholesale: true, replaced };
+  };
   const shape = (d: Y.Doc): string => (kind === "code" ? yDocToCode(d) : JSON.stringify(yDocToDocJson(d)));
-  // The external change, as a delta against each candidate base.
-  const forks = candidates.map((b) => {
+  /** The external change as a delta against one candidate base. */
+  const forkOf = (b: Uint8Array) => {
     const fork = new Y.Doc();
     Y.applyUpdate(fork, b);
     const before = Y.encodeStateVector(fork);
-    const was = uncertain ? shape(fork) : "";
+    const was = merge.uncertain ? shape(fork) : "";
     applyExternalContent(fork, kind, content, prepared);
     const delta = Y.encodeStateAsUpdate(fork, before);
     const nextBase = Y.encodeStateAsUpdate(fork);
     // "Contained": the vault's content is this candidate plus insertions only.
-    const now = uncertain ? shape(fork) : "";
-    const contained = uncertain && now.length >= was.length && changedSpan(was, now) === now.length - was.length;
+    const now = merge.uncertain ? shape(fork) : "";
+    const contained = merge.uncertain && now.length >= was.length && changedSpan(was, now) === now.length - was.length;
     fork.destroy();
     return { delta, nextBase, contained };
-  });
-  // Which state the vault's copy was edited FROM is not always known (a write of
-  // ours may or may not have landed before the external edit — `mergeBases`, which
-  // lists the candidates OLDER FIRST). The two mistakes are not alike: a base that
-  // is too OLD re-creates, under new ids, what the document already holds beyond
-  // it (a duplicate — visible, and the guard below catches whole blocks); one
-  // that is too NEW deletes typing that never reached the vault (silent loss).
-  // So: the newest candidate the vault's content merely ADDS to is taken first
-  // (our write is in there verbatim: it landed); otherwise the older one, and a
-  // newer one only when the older would duplicate.
+  };
+  if (!merge.uncertain) {
+    if (candidates.length === 0) return replace("no_base");
+    const fork = forkOf(candidates[0]!);
+    Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
+    return { base: fork.nextBase, wholesale: false };
+  }
+  // Which state the vault's copy was edited FROM is not known. The newest candidate
+  // the vault's content merely ADDS to is tried first (our write is in there
+  // verbatim: it most likely landed), then older before newer. Whichever is tried,
+  // it is taken only if the result is sane.
+  const forks = candidates.map(forkOf);
   const landedAt = forks.map((f) => f.contained).lastIndexOf(true);
   if (landedAt > 0) forks.unshift(...forks.splice(landedAt, 1));
+  const local = tokenCounts(kind, doc);
+  const vault = tokenCounts(kind, kind === "code" ? content : prepared);
+  let floor = new Map<string, number>();
+  if (merge.floor && isAncestorOf(merge.floor, doc)) {
+    const at = new Y.Doc();
+    Y.applyUpdate(at, merge.floor);
+    floor = tokenCounts(kind, at);
+    at.destroy();
+  }
   for (const fork of forks) {
-    if (!uncertain) {
-      Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
-      return { base: fork.nextBase, wholesale: false };
-    }
-    // Uncertain base: try the merge on a copy first and never let a duplicate through.
     const trial = new Y.Doc();
     Y.applyUpdate(trial, Y.encodeStateAsUpdate(doc));
     const before = blockCounts(trial, kind);
     Y.applyUpdate(trial, fork.delta);
-    const duplicated = hasDuplicatedBlocks(blockCounts(trial, kind), before, prepared);
+    const sane = mergeIsSane(floor, local, vault, tokenCounts(kind, trial)) && !hasDuplicatedBlocks(blockCounts(trial, kind), before, prepared);
     trial.destroy();
-    if (duplicated) continue;
+    if (!sane) continue;
     Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
     return { base: fork.nextBase, wholesale: false };
   }
-  if (uncertain) console.warn("[collab] an external edit could not be merged against any known base without duplicating content — the note's content replaces the document's");
-  applyExternalContent(doc, kind, content, prepared);
-  return { base: Y.encodeStateAsUpdate(doc), wholesale: true };
+  console.warn("[collab] an external edit could not be merged against any known base without doubling or dropping text — the note's content replaces the document's (the document's own content is set aside)");
+  return replace("uncertain_base");
 }
 
 /** Size of the region in which two strings differ (common prefix and suffix removed, both sides counted). Linear. */
@@ -721,8 +761,121 @@ function hasDuplicatedBlocks(after: Map<string, number>, before: Map<string, num
   return false;
 }
 
-/** How many of a note's newest history versions are searched for a write of ours. */
-const LANDED_VERSIONS_SEARCHED = 6;
+/**
+ * The words of a document (or of code) and how often each occurs — the unit the
+ * merge check counts in. Linear, iterative. For a document also every leaf that
+ * carries something of its own without text (an image, a mention, an attachment:
+ * a node with attributes and no content), as one token each. Marks, empty
+ * paragraphs and rules are not counted.
+ */
+function tokenCounts(kind: CollabKind, source: Y.Doc | DocJson | string | null): Map<string, number> {
+  const out = new Map<string, number>();
+  const bump = (token: string): void => void out.set(token, (out.get(token) ?? 0) + 1);
+  const words = (text: string): void => {
+    let start = -1;
+    for (let i = 0; i <= text.length; i++) {
+      const c = i < text.length ? text.charCodeAt(i) : 32;
+      const blank = c === 32 || c === 9 || c === 10 || c === 13 || c === 160;
+      if (blank) {
+        if (start !== -1) bump(text.slice(start, i));
+        start = -1;
+      } else if (start === -1) start = i;
+    }
+  };
+  if (source === null) return out;
+  if (kind === "code") {
+    words(typeof source === "string" ? source : source instanceof Y.Doc ? yDocToCode(source) : "");
+    return out;
+  }
+  if (kind !== "document" || typeof source === "string") return out;
+  const stack: unknown[] = [source instanceof Y.Doc ? yDocToDocJson(source) : source];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || typeof n !== "object") continue;
+    const node = n as { type?: unknown; text?: unknown; content?: unknown; attrs?: unknown };
+    if (typeof node.text === "string") words(node.text);
+    else if (Array.isArray(node.content)) for (const child of node.content) stack.push(child);
+    else if (node.attrs && typeof node.attrs === "object" && Object.values(node.attrs as Record<string, unknown>).some((v) => v !== null && v !== "" && v !== false)) {
+      bump(`\u0001${String(node.type)}:${JSON.stringify(node.attrs)}`);
+    }
+  }
+  return out;
+}
+/**
+ * Is `merged` a result nobody has to be asked about? Judged per word (token)
+ * from four counts — `floor` (the last state known to have been the vault's
+ * content), `local` (the document before the merge), `vault` (the vault's copy)
+ * and `merged`:
+ *  - never MORE of a word than the fuller side has (a doubled run: a base that
+ *    was too old re-created what the document already held);
+ *  - a word BOTH sides have is not gone;
+ *  - a word only the document has, beyond the floor — typing that never reached
+ *    the vault — is all there (a base that was too new deletes it);
+ *  - a word only the vault has, beyond the floor — what was written elsewhere —
+ *    is all there.
+ * Deliberately strict: two people independently adding the same sentence, or a
+ * merge that glues two words together, fails it — and then nobody guesses.
+ */
+function mergeIsSane(floor: Map<string, number>, local: Map<string, number>, vault: Map<string, number>, merged: Map<string, number>): boolean {
+  const ok = (token: string): boolean => {
+    const l = local.get(token) ?? 0;
+    const v = vault.get(token) ?? 0;
+    const m = merged.get(token) ?? 0;
+    const f = floor.get(token) ?? 0;
+    const lower = l > 0 && v > 0 ? Math.min(l, v) : Math.max(0, Math.max(l, v) - f);
+    return m >= lower && m <= Math.max(l, v);
+  };
+  for (const token of merged.keys()) if (!ok(token)) return false;
+  for (const token of local.keys()) if (!merged.has(token) && !ok(token)) return false;
+  for (const token of vault.keys()) if (!merged.has(token) && !ok(token)) return false;
+  return true;
+}
+/** A document's content as plain text (code, CSV and scene JSON as they are): what a set-aside keeps for the owner to read. */
+function plainBody(doc: Y.Doc, kind: CollabKind): string {
+  if (kind === "code") return yDocToCode(doc);
+  if (kind === "spreadsheet") return yDocToCsv(doc);
+  if (kind === "canvas") return yDocToScene(doc);
+  const blocks: string[] = [];
+  for (const block of (yDocToDocJson(doc) as { content?: unknown[] }).content ?? []) {
+    const parts: string[] = [];
+    let line = "";
+    // Depth-first, in document order: text nodes of one textblock on one line.
+    const walk: unknown[] = [block];
+    while (walk.length) {
+      const n = walk.pop();
+      if (n === "\n") {
+        if (line) parts.push(line);
+        line = "";
+        continue;
+      }
+      if (!n || typeof n !== "object") continue;
+      const node = n as { text?: unknown; content?: unknown };
+      if (typeof node.text === "string") line += node.text;
+      else if (Array.isArray(node.content)) {
+        const holdsText = node.content.some((c) => typeof (c as { text?: unknown } | null)?.text === "string");
+        if (!holdsText) walk.push("\n");
+        for (let i = node.content.length - 1; i >= 0; i--) walk.push(node.content[i]);
+        if (holdsText) walk.push("\n");
+      }
+    }
+    if (line) parts.push(line);
+    if (parts.length) blocks.push(parts.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+/** Keep what a document held before the vault's copy replaced it (never fails the fold). */
+function setAsideLocal(documentName: string, vaultId: string, noteId: string, kind: CollabKind, replaced: NonNullable<FoldResult["replaced"]>): void {
+  try {
+    addCollabSetAside(noteId, vaultId, replaced.why, kind, replaced.body, replaced.state);
+    console.warn(`[collab] ${documentName}: the note's content replaced live changes that had not been saved (${replaced.why}) — what the page held is kept for the workspace owner (GET /api/admin/collab/unsaved → setAside)`);
+  } catch (e) {
+    console.error(`[collab] ${documentName}: could not set the replaced content aside:`, e instanceof Error ? e.message : "unknown");
+  }
+}
+
+/** A history lookup: versions listed (one call) and version BODIES fetched, at most. */
+const HISTORY_LISTED = 50;
+const HISTORY_BODIES = 8;
 /**
  * Did one of this snapshot's UNCONFIRMED writes reach the vault before the copy
  * that is there now? The vault keeps what every write replaced (note history,
@@ -731,7 +884,16 @@ const LANDED_VERSIONS_SEARCHED = 6;
  *  - a hash        → that attempted write landed (and was then edited over);
  *  - `null`        → history is complete back to the snapshot's own version and
  *                    holds none of them: no attempt landed;
- *  - `undefined`   → cannot tell (no history, unreachable, more versions than searched).
+ *  - `undefined`   → cannot tell (no history, unreachable, too slow, more versions
+ *                    than the lookup may read).
+ *
+ * Bounded (M-3a, M-6): ONE listing of the newest `HISTORY_LISTED` versions (no
+ * bodies), at most `HISTORY_BODIES` bodies, each call and the whole lookup on a
+ * clock. The listing carries each version's size; the sizes of our attempts are
+ * recorded with them (`attempt_lens`), so a version of another size cannot be one
+ * of ours and is not fetched — once a fetched body has shown that the listing's
+ * `content_len` means what we think it does (characters or UTF-8 bytes). Versions
+ * that could be ours are read first.
  */
 async function landedAttempt(vaultId: string, noteId: string, meta: DocMeta | null): Promise<string | null | undefined> {
   if (!meta || meta.attempts.length === 0) return null;
@@ -759,17 +921,33 @@ async function searchHistoryForAttempt(vaultId: string, noteId: string, meta: Do
     return vaultClient(vaultId, { timeoutMs: Math.max(1, Math.min(left, collabTuning.historyCallMs)) });
   };
   try {
-    const { versions, total } = await vault().listVersions(noteId, LANDED_VERSIONS_SEARCHED, 0);
+    const { versions, total } = await vault().listVersions(noteId, HISTORY_LISTED, 0);
     const since = meta.sourceUpdatedAt ?? 0;
-    for (const v of versions) {
-      // A version superseded no later than the snapshot's own source is the base or older.
-      if (toMs(v.superseded_at) <= since) return null;
+    // Newest first. A version superseded no later than the snapshot's own source is the base or older.
+    const listed = versions.slice(0, HISTORY_LISTED);
+    const cut = listed.findIndex((v) => toMs(v.superseded_at) <= since);
+    const inRange = cut === -1 ? listed : listed.slice(0, cut);
+    const complete = cut !== -1 || (total <= listed.length && versions.length <= HISTORY_LISTED);
+    const sizes = meta.attempts.map((h) => meta.attemptLens?.[h]);
+    const sizesKnown = sizes.every((x) => x !== undefined);
+    const couldBeOurs = (v: (typeof listed)[number]): boolean => !sizesKnown || typeof v.content_len !== "number" || sizes.some((x) => x![0] === v.content_len || x![1] === v.content_len);
+    /** Does the listing's `content_len` mean the content's length? null = no body seen yet; false = it does not. */
+    let lenMeansLength: boolean | null = null;
+    const read = new Set<number>();
+    for (const v of [...inRange.filter(couldBeOurs), ...inRange.filter((x) => !couldBeOurs(x))]) {
+      if (lenMeansLength === true && !couldBeOurs(v)) continue; // another size: not one of ours
+      if (read.size >= HISTORY_BODIES) break;
       const full = await vault().getVersion(noteId, v.version_ix);
       if (typeof full.content !== "string") return undefined;
+      read.add(v.version_ix);
+      const agrees = typeof v.content_len === "number" && (v.content_len === full.content.length || v.content_len === Buffer.byteLength(full.content));
+      lenMeansLength = lenMeansLength === false ? false : agrees;
       const hash = contentHash(full.content);
       if (meta.attempts.includes(hash)) return hash;
     }
-    return total <= versions.length ? null : undefined;
+    // "None landed" only if every version since the snapshot's own was read, or provably is not one of ours.
+    const examined = inRange.every((v) => read.has(v.version_ix) || (lenMeansLength === true && !couldBeOurs(v)));
+    return complete && examined ? null : undefined;
   } catch {
     return undefined;
   }
@@ -783,14 +961,16 @@ async function searchHistoryForAttempt(vaultId: string, noteId: string, meta: Do
  * older one the row still names. Merging against the older one re-creates what
  * was typed in between (`start / edit one / EXTERNAL / edit one`).
  */
-function mergeBases(row: DocState | null, landed: string | null | undefined): Uint8Array | null | Uint8Array[] {
-  if (!row) return null;
-  if (row.attempts.length === 0 || landed === null) return row.base;
+function mergeBases(row: DocState | null, landed: string | null | undefined): MergeBase {
+  if (!row) return { candidates: [], uncertain: false, floor: null };
+  const only = (b: Uint8Array | null): MergeBase => ({ candidates: b ? [b] : [], uncertain: false, floor: row.base });
+  if (row.attempts.length === 0 || landed === null) return only(row.base);
   const newest = row.attempts[row.attempts.length - 1];
-  if (landed !== undefined && landed === newest && row.attemptState) return row.attemptState;
-  // Unknown which (or an older attempt, whose state was not kept): the fold picks, and guards.
-  // Older first: `foldVaultContent` prefers it on a tie.
-  return [row.base, row.attemptState].filter((b): b is Uint8Array => b !== null);
+  // History SHOWS the newest attempt in the vault before the copy that is there now: its state is the base.
+  if (landed !== undefined && landed === newest && row.attemptState) return only(row.attemptState);
+  // Unknown which (or an older attempt, whose state was not kept): the fold tries each and
+  // takes none it cannot vouch for — also when only one candidate is left. Older first.
+  return { candidates: [row.base, row.attemptState].filter((b): b is Uint8Array => b !== null), uncertain: true, floor: row.base };
 }
 
 // ── what connected clients are told (Hocuspocus stateless messages) ─────────
@@ -922,8 +1102,12 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
         rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash ?? contentHash(content), base: folded.base });
       }
       lastReconciled.set(name, noteMs);
-      // The document was ahead of a base nobody kept: what it held beyond the vault's copy is gone.
-      if (folded.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
+      // The document was ahead and no merge could be trusted: what it held beyond the
+      // vault's copy is no longer in it — everyone on the page is told, and it is kept.
+      if (folded.wholesale && row?.ahead) {
+        if (folded.replaced) setAsideLocal(name, target.vaultId, target.noteId, kind, folded.replaced);
+        tellClients(name, { type: "prism:notice", code: "external-replaced" });
+      }
     };
     // Writes of ours that were never confirmed: did one land before this edit was made?
     // Only the note's history can say — asked off this loop.
@@ -1327,7 +1511,8 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
         // The document IS the vault's content now (it was not ahead, or its base
         // was unknown and the external edit replaced it).
         if (stored.ahead) {
-          console.warn(`[collab] ${documentName}: the note changed elsewhere and this snapshot's base is unknown — the note's content replaced unsaved changes`);
+          console.warn(`[collab] ${documentName}: the note changed elsewhere and this snapshot could not be merged with it — the note's content replaced unsaved changes`);
+          if (fold.replaced) setAsideLocal(documentName, target.vaultId, target.noteId, kind, fold.replaced);
           pendingNotices.set(documentName, { message: { type: "prism:notice", code: "external-replaced" }, until: Date.now() + collabTuning.noticeTtlMs }); // told to whoever opens it now
         }
         ahead = false;
@@ -1906,7 +2091,10 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
             rebaseDoc(noteId, vaultId, { source: noteMs, hash: hash ?? contentHash(note.content), base: fold.base });
           }
           lastReconciled.set(documentName, noteMs);
-          if (fold.wholesale && row?.ahead) tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
+          if (fold.wholesale && row?.ahead) {
+            if (fold.replaced) setAsideLocal(documentName, vaultId, noteId, kind, fold.replaced);
+            tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
+          }
         }
       }
 
@@ -1975,7 +2163,7 @@ export async function storeDocumentState(documentName: string, doc: Y.Doc): Prom
       } else {
         // Saved BEFORE the write is sent: the snapshot holds what is being written,
         // and its hash says "this vault copy is ours" whatever happens to the answer.
-        if (!saveDocAttempt(noteId, snapshotState, hash, vaultId, sourceAtSnapshot)) {
+        if (!saveDocAttempt(noteId, snapshotState, hash, vaultId, sourceAtSnapshot, [content.length, Buffer.byteLength(content)])) {
           await movedOn();
           continue;
         }

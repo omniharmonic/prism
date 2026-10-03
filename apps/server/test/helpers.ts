@@ -481,7 +481,7 @@ export function installFakeVault(): FakeVault {
 
 export function resetDb(): void {
   db.exec(
-    "DELETE FROM canvas_relation_vaults; DELETE FROM canvas_assertions; DELETE FROM canvas_relations; DELETE FROM canvas_relation_sources; DELETE FROM canvas_relation_jobs; DELETE FROM canvas_relation_receipts; DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM collab_unsaved; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
+    "DELETE FROM canvas_relation_vaults; DELETE FROM canvas_assertions; DELETE FROM canvas_relations; DELETE FROM canvas_relation_sources; DELETE FROM canvas_relation_jobs; DELETE FROM canvas_relation_receipts; DELETE FROM grants; DELETE FROM sessions; DELETE FROM users; DELETE FROM magic_links; DELETE FROM capabilities; DELETE FROM collab_docs; DELETE FROM collab_unsaved; DELETE FROM collab_set_aside; DELETE FROM invites; DELETE FROM memberships; DELETE FROM tenant_secrets;" +
       // Horizon B/C tables — kept in sync so every test file starts from a clean db.
       "DELETE FROM publication_presentations; DELETE FROM publication_presentation_history; DELETE FROM publications; DELETE FROM peers; DELETE FROM peer_pairings; DELETE FROM spaces; DELETE FROM federated_notes; DELETE FROM federation_outbox; DELETE FROM pending_suggestions; DELETE FROM federation_mirror_requests; DELETE FROM settings; DELETE FROM prism_vaults; DELETE FROM workspaces; DELETE FROM vault_workspaces; DELETE FROM vault_mirrors; DELETE FROM mcp_tokens; DELETE FROM mcp_token_revocations; DELETE FROM governance_sig_ledger;" +
       "DELETE FROM device_tokens; DELETE FROM device_auth_codes; DELETE FROM device_auth_requests;" +

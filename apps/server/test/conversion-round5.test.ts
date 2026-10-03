@@ -729,3 +729,133 @@ test("M-6: the reconciler does not make other documents wait for one document's 
   });
   assert.deepEqual(eachOnce(yDocToHtml(slow), ["start", "edit one", "EXTERNAL A"]), [1, 1, 1], yDocToHtml(slow));
 });
+
+// ── M-3 / M-4 ───────────────────────────────────────────────────────────────
+
+type SetAsideRow = { id: number; noteId: string; reason: string; kind: string; bytes: number };
+async function setAsideList(): Promise<SetAsideRow[]> {
+  const body = (await (await app.request("/api/admin/collab/unsaved", { headers: ownerHeaders() })).json()) as { setAside?: SetAsideRow[] };
+  return body.setAside ?? [];
+}
+const versionBodyReads = (id: string) => fv.calls.filter((c) => c.method === "GET" && new RegExp(`/notes/${id}/versions/\\d+$`).test(c.path)).length;
+/** The page's typing is INSIDE the paragraph; the write lands with its acknowledgement lost; then someone edits the note elsewhere. */
+async function inParagraphLostAck(id: string, external: string): Promise<Y.Doc> {
+  fv.put({ id, tags: ["garden"], content: "<p>start</p>", updatedAt: T0 });
+  const doc = await loadDocumentState(id, new Y.Doc());
+  typeInto(doc, " edit one");
+  await intercept(isPatch(id), lostAck, () => storeDocumentState(id, doc));
+  assert.equal(vaultContent(id), "<p>start edit one</p>", "the write DID land");
+  await externalEdit(id, () => external);
+  return doc;
+}
+
+for (const where of ["reconciler", "load", "store"] as const) {
+  for (const why of ["no history (404)", "the vault errors"] as const) {
+    test(`M-3: history cannot say which base (${why}) and both sides changed the SAME paragraph — the ${where} merges it exactly once, never doubled`, { timeout: 60_000 }, async () => {
+      fv.historySupported = why !== "no history (404)";
+      const id = `m3${where[0]}${why.length}`;
+      const doc = await inParagraphLostAck(id, "<p>START edit one EXTERNAL</p>");
+      const broken = (method: string, path: string) => why === "the vault errors" && method === "GET" && path.includes(`/notes/${id}/versions`);
+      const merged = await intercept(broken, fail(500), async () => {
+        if (where === "reconciler") {
+          type(doc, "two"); // …and typing that was never sent
+          await reconcileLoadedDocs({ documents: new Map([[id, doc]]) });
+          return doc;
+        }
+        if (where === "load") {
+          resetReconcileState(); // a restart: nothing in memory
+          return loadDocumentState(id, new Y.Doc());
+        }
+        await storeDocumentState(id, doc); // the store's own guard meets the external edit
+        return doc;
+      });
+      const want = where === "reconciler" ? "<p>START edit one EXTERNAL</p><p>two</p>" : "<p>START edit one EXTERNAL</p>";
+      assert.equal(yDocToHtml(merged), want);
+      await storeDocumentState(id, merged);
+      assert.equal(vaultContent(id), want);
+      assert.deepEqual(await setAsideList(), [], "merged cleanly: nothing had to be set aside");
+    });
+  }
+}
+
+test("M-3: the history lookup reaches back past many later versions — sizes rule them out before any body is fetched", { timeout: 60_000 }, async () => {
+  const doc = await inParagraphLostAck("m3w", "<p>START edit one EXTERNAL 0</p>");
+  // …and eleven more edits on top: the version that holds our write is far outside the old six-version window.
+  for (let i = 1; i <= 11; i++) await externalEdit("m3w", () => `<p>START edit one EXTERNAL ${"x".repeat(i)}</p>`);
+  const reads = versionBodyReads("m3w");
+  await reconcileLoadedDocs({ documents: new Map([["m3w", doc]]) });
+  assert.equal(yDocToHtml(doc), `<p>START edit one EXTERNAL ${"x".repeat(11)}</p>`, "merged against the write that landed");
+  assert.ok(versionBodyReads("m3w") - reads <= 3, `${versionBodyReads("m3w") - reads} version bodies were fetched`);
+});
+
+test("M-3: the lookup is capped — forty same-sized versions are not all fetched, and the uncertain merge is still exact", { timeout: 60_000 }, async () => {
+  const doc = await inParagraphLostAck("m3c", "<p>s100t edit one</p>");
+  for (let i = 1; i < 40; i++) await externalEdit("m3c", () => `<p>s${100 + i}t edit one</p>`);
+  const reads = versionBodyReads("m3c");
+  const lists = fv.calls.length;
+  await reconcileLoadedDocs({ documents: new Map([["m3c", doc]]) });
+  assert.ok(versionBodyReads("m3c") - reads <= 8, `${versionBodyReads("m3c") - reads} version bodies were fetched`);
+  assert.ok(fv.calls.length - lists <= 12, `${fv.calls.length - lists} vault calls for one reconcile`);
+  assert.equal(yDocToHtml(doc), "<p>s139t edit one</p>");
+});
+
+test("M-3/M-4: neither known base merges sanely (one would double a block, the other delete unsent typing) — nobody guesses: the vault's copy wins, everyone is told, the local text is set aside for the owner", { timeout: 60_000 }, async () => {
+  fv.historySupported = false;
+  fv.put({ id: "m3x", tags: ["garden"], content: "<p>alpha</p>", updatedAt: T0 });
+  const tab = open("m3x");
+  await until("synced", () => tab.synced());
+  await intercept(isPatch("m3x"), fail(500), async () => {
+    // One update: a block the other side will add too, and typing only this side has. Its write never lands.
+    tab.doc.transact(() => {
+      type(tab.doc, "shared block");
+      type(tab.doc, "only local");
+    });
+    await until("the write was attempted and failed", () => unsavedRow("m3x")?.permanent === 0 && getDocState("m3x")!.attempts.length === 1);
+    // Someone adds the SAME block to the note directly.
+    vaultWrite("m3x", LATER(1), { content: "<p>alpha</p><p>shared block</p>" });
+    await until("the tab is told", () => tab.messages.some((m) => m.type === "prism:notice" && m.code === "external-replaced"), 20_000);
+  });
+  await until("the page shows the vault's copy", () => yDocToHtml(tab.doc) === "<p>alpha</p><p>shared block</p>");
+  assert.equal(yDocToHtml(live("m3x")!), "<p>alpha</p><p>shared block</p>", "no doubled block, no guess");
+  // Nothing was silently destroyed: the owner can read what the page held.
+  const aside = await setAsideList();
+  assert.deepEqual(aside.map((r) => [r.noteId, r.reason, r.kind]), [["m3x", "uncertain_base", "document"]]);
+  const one = await app.request(`/api/admin/collab/set-aside/${aside[0]!.id}`, { headers: ownerHeaders() });
+  assert.equal(one.status, 200);
+  const kept = (await one.json()) as { body: string; noteId: string };
+  assert.match(kept.body, /alpha[\s\S]*shared block[\s\S]*only local/, kept.body);
+  assert.equal((await app.request(`/api/admin/collab/set-aside/${aside[0]!.id}`, { headers: header(EDITOR) })).status, 403, "owner only");
+  const gone = await app.request(`/api/admin/collab/set-aside/${aside[0]!.id}`, { method: "DELETE", headers: ownerHeaders() });
+  assert.equal(gone.status, 200);
+  assert.deepEqual(await setAsideList(), []);
+  close(tab);
+});
+
+test("M-3: an external edit that DELETES a trailing paragraph while unsent typing sits beside it — the deletion is taken, the typing survives (no set-aside)", { timeout: 60_000 }, async () => {
+  fv.historySupported = false;
+  fv.put({ id: "m3d", tags: ["garden"], content: "<p>alpha</p><p>beta</p>", updatedAt: T0 });
+  const doc = await loadDocumentState("m3d", new Y.Doc());
+  type(doc, "gamma");
+  await intercept(isPatch("m3d"), fail(500), () => storeDocumentState("m3d", doc));
+  await externalEdit("m3d", () => "<p>alpha</p>");
+  await reconcileLoadedDocs({ documents: new Map([["m3d", doc]]) });
+  assert.equal(yDocToHtml(doc), "<p>alpha</p><p>gamma</p>");
+  await storeDocumentState("m3d", doc);
+  assert.equal(vaultContent("m3d"), "<p>alpha</p><p>gamma</p>");
+  assert.deepEqual(await setAsideList(), []);
+});
+
+test("M-4: `code` has the same guard — a lost acknowledgement plus an external edit never doubles what was typed", { timeout: 60_000 }, async () => {
+  fv.historySupported = false;
+  fv.put({ id: "m4", tags: ["garden"], metadata: { prism_type: "code" }, content: "start", updatedAt: T0 });
+  const doc = await loadDocumentState("m4", new Y.Doc());
+  const code = doc.getText("codemirror");
+  code.insert(code.length, " edit one");
+  await intercept(isPatch("m4"), lostAck, () => storeDocumentState("m4", doc));
+  assert.equal(vaultContent("m4"), "start edit one");
+  await externalEdit("m4", () => "START edit one EXTERNAL");
+  await reconcileLoadedDocs({ documents: new Map([["m4", doc]]) });
+  assert.equal(code.toString(), "START edit one EXTERNAL");
+  await storeDocumentState("m4", doc);
+  assert.equal(vaultContent("m4"), "START edit one EXTERNAL");
+});
