@@ -677,6 +677,9 @@ db.exec(`
 for (const [table, fields] of Object.entries({
   agent_sessions: { permission_mode: "TEXT", policy_version: "INTEGER NOT NULL DEFAULT 1", pending_mode: "TEXT", request_id: "TEXT", request_hash: "TEXT" },
   agent_turns: { permission_mode: "TEXT", policy_version: "INTEGER", profile: "TEXT", request_id: "TEXT", request_hash: "TEXT", request_ready: "INTEGER NOT NULL DEFAULT 0", context_json: "TEXT NOT NULL DEFAULT '[]'" },
+  // What vault content a collab snapshot is built on (see "collab doc state" below).
+  collab_docs: { base_hash: "TEXT", ahead: "INTEGER NOT NULL DEFAULT 0", base_state: "BLOB", attempts: "TEXT", attempt_state: "BLOB" },
+  collab_unsaved: { reason: "TEXT", permanent: "INTEGER NOT NULL DEFAULT 0", attempts: "INTEGER NOT NULL DEFAULT 0", last_attempt: "INTEGER", next_attempt: "INTEGER NOT NULL DEFAULT 0" },
 })) {
   const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
   for (const [name, definition] of Object.entries(fields)) {
@@ -1814,49 +1817,212 @@ export function deleteCapability(id: string): void {
 }
 
 // ---- collab doc state (Yjs CRDT continuity across unloads) ----
+// ONE persisted notion of "what vault content this snapshot is built on",
+// honoured identically at load, in the reconciler and in the store:
+//
+//   state              the latest durable Yjs state of the document
+//   source_updated_at  the vault version (updatedAt, ms) the snapshot is based on
+//   base_hash          hash of that version's CONTENT — a vault copy with this
+//                      hash is not news, whatever its timestamp (metadata-only
+//                      write). NULL on rows written before this column existed
+//                      (those fall back to the timestamp rule).
+//   ahead              0: `state` IS the vault content (rendering it gives the
+//                      note). 1: `state` holds changes the vault does not have.
+//   base_state         while ahead: the Yjs state that IS the vault content (the
+//                      true base of any three-way merge); NULL = unknown.
+//   attempts           hashes of the content of vault writes that were SENT but
+//                      not confirmed (newest last). A vault copy with one of
+//                      these hashes is OUR OWN write whose acknowledgement was
+//                      lost — never an external edit. `state` always contains
+//                      every attempted write (it is saved BEFORE the write).
+//   attempt_state      the Yjs state of the newest attempt, once `state` moved on
+//                      (NULL = `state` still is it).
 export interface DocState {
   state: Uint8Array;
   sourceUpdatedAt: number | null;
+  baseHash: string | null;
+  ahead: boolean;
+  /** The Yjs state that equals the vault content: `state` itself when not ahead, the kept base when ahead (null = unknown). */
+  base: Uint8Array | null;
+  attempts: string[];
 }
-const selectDocState = db.prepare("SELECT state, source_updated_at FROM collab_docs WHERE vault_id = ? AND name = ?");
+export interface DocMeta {
+  sourceUpdatedAt: number | null;
+  baseHash: string | null;
+  ahead: boolean;
+  attempts: string[];
+}
+const DOC_ATTEMPTS_KEPT = 4;
+const parseAttempts = (raw: string | null): string[] => {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+const selectDocState = db.prepare("SELECT state, source_updated_at, base_hash, ahead, base_state, attempts FROM collab_docs WHERE vault_id = ? AND name = ?");
+const selectDocMeta = db.prepare("SELECT source_updated_at, base_hash, ahead, attempts FROM collab_docs WHERE vault_id = ? AND name = ?");
 const upsertDocState = db.prepare(
-  `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, updated_at)
-   VALUES (@vault_id, @name, @state, @source_updated_at, @updated_at)
-   ON CONFLICT(vault_id, name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, updated_at=@updated_at`,
+  `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state, updated_at)
+   VALUES (@vault_id, @name, @state, @source_updated_at, @base_hash, 0, NULL, NULL, NULL, @updated_at)
+   ON CONFLICT(vault_id, name) DO UPDATE SET state=@state, source_updated_at=@source_updated_at, base_hash=@base_hash, ahead=0, base_state=NULL, attempts=NULL, attempt_state=NULL, updated_at=@updated_at`,
 );
 
 /** CRDT doc state, scoped to a vault (a note id is only unique within a vault).
  *  vaultId defaults to 'primary' so pre-multitenant callers are unaffected. */
 export function getDocState(name: string, vaultId = "primary"): DocState | null {
-  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null } | undefined;
+  const row = selectDocState.get(vaultId, name) as { state: Buffer; source_updated_at: number | null; base_hash: string | null; ahead: number; base_state: Buffer | null; attempts: string | null } | undefined;
   if (!row) return null;
-  return { state: new Uint8Array(row.state), sourceUpdatedAt: row.source_updated_at };
+  const state = new Uint8Array(row.state);
+  const ahead = row.ahead === 1;
+  return { state, sourceUpdatedAt: row.source_updated_at, baseHash: row.base_hash, ahead, base: ahead ? (row.base_state ? new Uint8Array(row.base_state) : null) : state, attempts: parseAttempts(row.attempts) };
 }
-const markUnsavedStmt = db.prepare("INSERT INTO collab_unsaved (vault_id, name, doc_name, since) VALUES (?, ?, ?, ?) ON CONFLICT(vault_id, name) DO NOTHING");
+/** The same without the Yjs blobs (the reconciler asks every tick). */
+export function getDocMeta(name: string, vaultId = "primary"): DocMeta | null {
+  const row = selectDocMeta.get(vaultId, name) as { source_updated_at: number | null; base_hash: string | null; ahead: number; attempts: string | null } | undefined;
+  return row ? { sourceUpdatedAt: row.source_updated_at, baseHash: row.base_hash, ahead: row.ahead === 1, attempts: parseAttempts(row.attempts) } : null;
+}
+/**
+ * The snapshot IS the vault content at `sourceUpdatedAt` (a load, a confirmed
+ * write, a write that turned out to be unnecessary). `baseHash` = the hash of
+ * that content (omit only where the content is not known: legacy callers).
+ */
+export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId = "primary", baseHash: string | null = null): void {
+  upsertDocState.run({ vault_id: vaultId, name, state: Buffer.from(state), source_updated_at: sourceUpdatedAt, base_hash: baseHash, updated_at: now() });
+}
+const insertDocAhead = db.prepare(
+  `INSERT INTO collab_docs (vault_id, name, state, source_updated_at, base_hash, ahead, base_state, attempts, attempt_state, updated_at)
+   VALUES (@vault_id, @name, @state, NULL, NULL, 1, NULL, @attempts, NULL, @updated_at)`,
+);
+// RHS column names are the row's OLD values: the base is kept (or taken from the
+// last in-sync state), and the newest attempt's state is kept once `state` moves on.
+const updateDocAhead = db.prepare(
+  `UPDATE collab_docs SET
+     base_state = CASE WHEN ahead = 1 THEN base_state ELSE state END,
+     attempt_state = CASE WHEN attempts IS NOT NULL AND attempt_state IS NULL THEN state ELSE attempt_state END,
+     state = @state, ahead = 1, updated_at = @updated_at
+   WHERE vault_id = @vault_id AND name = @name`,
+);
+const updateDocAttempt = db.prepare(
+  `UPDATE collab_docs SET
+     base_state = CASE WHEN ahead = 1 THEN base_state ELSE state END,
+     state = @state, ahead = 1, attempts = @attempts, attempt_state = NULL, updated_at = @updated_at
+   WHERE vault_id = @vault_id AND name = @name`,
+);
+/** The document holds changes the vault does not have: save them, keep the base. */
+export function saveDocAhead(name: string, state: Uint8Array, vaultId = "primary"): void {
+  const params = { vault_id: vaultId, name, state: Buffer.from(state), updated_at: now() };
+  if (updateDocAhead.run(params).changes === 0) insertDocAhead.run({ ...params, attempts: null });
+}
+/**
+ * A vault write of `state` (content hash `hash`) is about to be SENT. Saved first,
+ * so that whatever happens to the acknowledgement the snapshot contains what was
+ * written and the hash says "this vault copy is ours".
+ */
+export const saveDocAttempt = db.transaction((name: string, state: Uint8Array, hash: string, vaultId: string): void => {
+  const meta = getDocMeta(name, vaultId);
+  const attempts = JSON.stringify([...(meta?.attempts ?? []).filter((h) => h !== hash), hash].slice(-DOC_ATTEMPTS_KEPT));
+  const params = { vault_id: vaultId, name, state: Buffer.from(state), attempts, updated_at: now() };
+  if (updateDocAttempt.run(params).changes === 0) insertDocAhead.run(params);
+});
+const confirmDocAttemptStmt = db.prepare(
+  `UPDATE collab_docs SET state = COALESCE(attempt_state, state), source_updated_at = @source, base_hash = @hash, ahead = 0, base_state = NULL, attempts = NULL, attempt_state = NULL, updated_at = @updated_at
+   WHERE vault_id = @vault_id AND name = @name`,
+);
+/** Set what the snapshot is built on, without touching `state` (see `rebaseDoc`). */
+const rebaseDocStmt = db.prepare(
+  `UPDATE collab_docs SET source_updated_at = @source, base_hash = COALESCE(@hash, base_hash),
+     base_state = CASE WHEN @base_mode = 'keep' THEN base_state WHEN @base_mode = 'attempt' THEN COALESCE(attempt_state, state) ELSE @base END,
+     ahead = CASE WHEN @base_mode = 'keep' THEN ahead ELSE 1 END,
+     attempts = CASE WHEN @clear_attempts = 1 THEN NULL ELSE attempts END,
+     attempt_state = CASE WHEN @clear_attempts = 1 THEN NULL ELSE attempt_state END,
+     updated_at = @updated_at
+   WHERE vault_id = @vault_id AND name = @name`,
+);
+/**
+ * The vault moved and the snapshot's BASE moves with it; `state` stays.
+ *  - `{ source }`                          metadata-only write: same content, newer version.
+ *  - `{ source, hash, base: "attempt" }`   the vault holds OUR attempted write `hash`: the
+ *                                          newest attempt's state is the base when it is that
+ *                                          attempt, else the base is unknown.
+ *  - `{ source, hash, base: <state> }`     an external edit was merged in: `base` is the Yjs
+ *                                          state that equals the new vault content (null = unknown).
+ */
+export function rebaseDoc(name: string, vaultId: string, to: { source: number | null; hash?: string; base?: Uint8Array | null | "attempt" }): void {
+  const meta = getDocMeta(name, vaultId);
+  if (!meta) return;
+  let mode: "keep" | "attempt" | "set" = to.base === undefined ? "keep" : to.base === "attempt" ? "attempt" : "set";
+  // Only the NEWEST attempt has a kept state; an older one that landed leaves the base unknown.
+  if (mode === "attempt" && meta.attempts[meta.attempts.length - 1] !== to.hash) mode = "set";
+  rebaseDocStmt.run({
+    vault_id: vaultId,
+    name,
+    source: to.source,
+    hash: to.hash ?? null,
+    base_mode: mode,
+    base: mode === "set" && to.base instanceof Uint8Array ? Buffer.from(to.base) : null,
+    clear_attempts: to.hash !== undefined ? 1 : 0,
+    updated_at: now(),
+  });
+}
+
+// ---- notes whose live state has not reached the vault (collab.ts retries; /acl/workers reports) ----
+export interface CollabUnsavedRow {
+  vault_id: string;
+  name: string;
+  doc_name: string;
+  since: number;
+  /** Why the last write did not happen (a ConversionFailure, `vault <status>`, `conflict`, `unreadable`, `gave_up`). */
+  reason: string | null;
+  /** 1 = retrying cannot help (the page is too large / the vault refuses it): kept, surfaced, not retried. */
+  permanent: number;
+  attempts: number;
+  last_attempt: number | null;
+  next_attempt: number;
+}
+const markUnsavedStmt = db.prepare(
+  `INSERT INTO collab_unsaved (vault_id, name, doc_name, since, reason, permanent) VALUES (@vault_id, @name, @doc_name, @since, @reason, @permanent)
+   ON CONFLICT(vault_id, name) DO UPDATE SET reason = @reason, permanent = @permanent, doc_name = @doc_name`,
+);
 const clearUnsavedStmt = db.prepare("DELETE FROM collab_unsaved WHERE vault_id = ? AND name = ?");
-const listUnsavedStmt = db.prepare("SELECT vault_id, name, doc_name, since FROM collab_unsaved ORDER BY since LIMIT ?");
-/** Remember that this note's live state (in collab_docs) has not reached the vault yet. */
-export function markCollabUnsaved(name: string, vaultId: string, docName: string): void {
-  markUnsavedStmt.run(vaultId, name, docName, now());
+const getUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved WHERE vault_id = ? AND name = ?");
+// Least recently attempted first (never-attempted rows lead), so no row can starve the others.
+const dueUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved WHERE permanent = 0 AND next_attempt <= ? ORDER BY COALESCE(last_attempt, 0), since LIMIT ?");
+const allUnsavedStmt = db.prepare("SELECT * FROM collab_unsaved ORDER BY since LIMIT ?");
+const attemptUnsavedStmt = db.prepare("UPDATE collab_unsaved SET attempts = attempts + 1, last_attempt = @at, next_attempt = @next WHERE vault_id = @vault_id AND name = @name");
+const statsUnsavedStmt = db.prepare("SELECT COUNT(*) AS total, COALESCE(SUM(permanent), 0) AS permanent, MIN(since) AS oldest FROM collab_unsaved");
+/** Remember that this note's live state (in collab_docs) has not reached the vault yet (`since` is kept across repeats). */
+export function markCollabUnsaved(name: string, vaultId: string, docName: string, reason: string | null = null, permanent = false): void {
+  markUnsavedStmt.run({ vault_id: vaultId, name, doc_name: docName, since: now(), reason, permanent: permanent ? 1 : 0 });
 }
 export function clearCollabUnsaved(name: string, vaultId: string): void {
   clearUnsavedStmt.run(vaultId, name);
 }
-const isUnsavedStmt = db.prepare("SELECT 1 FROM collab_unsaved WHERE vault_id = ? AND name = ?");
+export function getCollabUnsaved(name: string, vaultId: string): CollabUnsavedRow | null {
+  return (getUnsavedStmt.get(vaultId, name) as CollabUnsavedRow | undefined) ?? null;
+}
 export function isCollabUnsaved(name: string, vaultId: string): boolean {
-  return isUnsavedStmt.get(vaultId, name) !== undefined;
+  return getCollabUnsaved(name, vaultId) !== null;
 }
-export function listCollabUnsaved(limit = 50): Array<{ vault_id: string; name: string; doc_name: string; since: number }> {
-  return listUnsavedStmt.all(limit) as Array<{ vault_id: string; name: string; doc_name: string; since: number }>;
+/** Rows whose retry is due, least recently attempted first. */
+export function dueCollabUnsaved(limit = 5, at = now()): CollabUnsavedRow[] {
+  return dueUnsavedStmt.all(at, limit) as CollabUnsavedRow[];
 }
-export function saveDocState(name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId = "primary"): void {
-  upsertDocState.run({
-    vault_id: vaultId,
-    name,
-    state: Buffer.from(state),
-    source_updated_at: sourceUpdatedAt,
-    updated_at: now(),
-  });
+export function listCollabUnsaved(limit = 50): CollabUnsavedRow[] {
+  return allUnsavedStmt.all(limit) as CollabUnsavedRow[];
+}
+/** One retry was made: count it and push the next one out (exponential, 1 min → 6 h). */
+export function noteCollabUnsavedAttempt(name: string, vaultId: string, at = now()): void {
+  const row = getCollabUnsaved(name, vaultId);
+  if (!row) return;
+  const wait = Math.min(6 * 3600_000, 60_000 * 2 ** Math.min(row.attempts, 9));
+  attemptUnsavedStmt.run({ vault_id: vaultId, name, at, next: at + wait });
+}
+export function collabUnsavedStats(): { total: number; permanent: number; oldestSince: number | null } {
+  const r = statsUnsavedStmt.get() as { total: number; permanent: number; oldest: number | null };
+  return { total: r.total, permanent: r.permanent, oldestSince: r.oldest };
 }
 
 // ---- human collaboration command receipts (see the table comment above) ----
@@ -1957,14 +2123,22 @@ export function pruneCollabReceipts(cutoff: number, vaultId?: string, noteId?: s
  * vault write failed.
  */
 export const saveDocStateConfirming = db.transaction(
-  (name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId: string, confirm: number[]): number => {
-    saveDocState(name, state, sourceUpdatedAt, vaultId);
+  (name: string, state: Uint8Array, sourceUpdatedAt: number | null, vaultId: string, confirm: number[], baseHash: string | null = null): number => {
+    saveDocState(name, state, sourceUpdatedAt, vaultId, baseHash);
     let n = 0;
     const at = now();
     for (const rowid of confirm) n += confirmCollabReceiptStmt.run(at, rowid).changes;
     return n;
   },
 );
+/** The attempted vault write was acknowledged: the snapshot saved with the attempt IS the vault content now. Confirms the commands it carried, in the same transaction. */
+export const confirmDocAttempt = db.transaction((name: string, vaultId: string, sourceUpdatedAt: number | null, hash: string, confirm: number[]): number => {
+  confirmDocAttemptStmt.run({ vault_id: vaultId, name, source: sourceUpdatedAt, hash, updated_at: now() });
+  let n = 0;
+  const at = now();
+  for (const rowid of confirm) n += confirmCollabReceiptStmt.run(at, rowid).changes;
+  return n;
+});
 
 // ---- grants (peer subject) ----
 // Expired peer grants (TTL, 4.3) simply don't load → federation access lapses on

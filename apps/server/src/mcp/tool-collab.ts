@@ -248,8 +248,14 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
       });
     }
     // ── synchronous from here: no store can interleave with the merge ──
+    // The merge BASE must be the Yjs state that IS the vault content you read. The
+    // snapshot row says which state that is (`base`): the snapshot itself when it
+    // is in step with the vault, the kept base when it is AHEAD (it holds live
+    // changes the vault lacks — forking THAT would make your edit delete them),
+    // and nothing when the base is unknown.
     const snap = getDocState(t.note.id, vaultId);
-    if (!snap || snap.sourceUpdatedAt !== toMs(cur.updatedAt) || !isAncestorState(snap.state, live)) {
+    const base = snap?.base ?? null;
+    if (!snap || !base || snap.sourceUpdatedAt !== toMs(cur.updatedAt) || !isAncestorState(base, live)) {
       throw new ToolError(
         "conflict",
         "the live document is still absorbing a very recent change, so there is no safe merge base for your edit yet — wait a few seconds, re-read, and retry",
@@ -257,7 +263,7 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
       );
     }
     try {
-      changed = mergeContentIntoLive(live, snap.state, t.kind, content, originOf(ctx), prepared);
+      changed = mergeContentIntoLive(live, base, t.kind, content, originOf(ctx), prepared);
     } catch (e) {
       opError(e);
     }
