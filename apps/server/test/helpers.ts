@@ -73,6 +73,8 @@ export interface FakeVault {
   attachments: Array<{ id: string; noteId: string; path: string; mimeType: string; body: unknown }>;
   /** Make the next `POST /notes/:id/attachments` fail (upload succeeded, attach did not). */
   failNextAttach?: boolean;
+  /** Make the next `DELETE /notes/:id` fail with a 500 (a vault that could not delete the note). */
+  failNextNoteDelete?: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
   /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
    *  store (multi-vault tests). The primary store (`notes`) keeps serving
@@ -377,7 +379,10 @@ export function installFakeVault(): FakeVault {
       }
       if (method === "DELETE") {
         if (!existing) return new Response("not found", { status: 404 });
+        if (fv.failNextNoteDelete) { fv.failNextNoteDelete = false; return json({ error: "boom" }, 500); }
         store.delete(id);
+        // Like the real vault: attachment ROWS cascade with the note; stored files stay on disk.
+        fv.attachments = fv.attachments.filter((a) => a.noteId !== id);
         return json({ ok: true });
       }
     }

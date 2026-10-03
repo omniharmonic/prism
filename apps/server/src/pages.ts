@@ -630,18 +630,21 @@ export function createPagesApi(opts: PagesApiOptions = {}) {
       // Deepest first, so a failure never leaves a child without its page.
       const order = [...group].sort((a, b) => (b.path ?? "").split("/").length - (a.path ?? "").split("/").length).map((g) => g.id);
       for (const id of [...order, root.id]) {
-        // Attachments die with their page (vault rows + files); best-effort, never blocks the delete.
-        await purgeAttachmentsForNote(entry.id, id).catch(() => {});
         try {
           await vaultClient(entry.id).deleteNote(id);
           treeRemoveNote(entry, id);
           ledgerDelete(entry.id, id);
           done.push(id);
+          // Attachments go ONLY after their page is really gone (a failed delete must leave the
+          // page restorable WITH its media). Per note; a purge that cannot finish records
+          // orphans for the owner sweep and is never a user-visible failure.
+          await purgeAttachmentsForNote(entry.id, id, { noteGone: true }).catch(() => {});
         } catch (e) {
           if (e instanceof VaultError && e.status === 404) {
             treeRemoveNote(entry, id);
             ledgerDelete(entry.id, id);
             done.push(id);
+            await purgeAttachmentsForNote(entry.id, id, { noteGone: true }).catch(() => {});
             continue;
           }
           return { done, failed: { id, reason: failReason(e) } };
@@ -896,12 +899,13 @@ export async function runTrashPurgeOnce(now = Date.now()): Promise<{ purged: num
       continue;
     }
     budget--;
-    await purgeAttachmentsForNote(entry.id, note.id).catch(() => {});
     try {
       await vaultClient(entry.id).deleteNote(note.id);
       treeRemoveNote(entry, note.id);
       ledgerDelete(row.vault_id, row.note_id);
       out.purged++;
+      // After the delete succeeded, never before (see DELETE /trash/:id).
+      await purgeAttachmentsForNote(entry.id, note.id, { noteGone: true }).catch(() => {});
     } catch {
       out.failed++;
     }

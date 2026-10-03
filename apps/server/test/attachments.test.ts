@@ -343,25 +343,51 @@ test("M4: a failed attach after a successful vault upload is recorded as an orph
   assert.equal(usedBytes("primary"), PNG.length, "orphans still count against the quota");
 });
 
-test("M4: permanently deleting a page from the Trash purges its attachments (vault rows + files)", async () => {
-  const { id } = await ownerUpload();
+test("delete order: a FAILED vault delete leaves the page's attachments intact and downloadable after restore", async () => {
+  const { id, url } = await ownerUpload();
+  fv.notes.get("n1")!.tags = ["doc", TRASH_TAG];
+  fv.failNextNoteDelete = true;
+  const del = await api.request("/trash/n1", { method: "DELETE", headers: { cookie: login(OWNER), "content-type": "application/json" } });
+  assert.equal(del.status, 502, await del.clone().text());
+  // Nothing was purged: the vault row, the stored file and our row are all still there.
+  assert.equal(fv.attachments.length, 1);
   assert.equal(fv.storage.size, 1);
+  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(id) as { status: string }).status, "live");
+  // Restore the page: its media still loads.
+  fv.notes.get("n1")!.tags = ["doc"];
+  const got = await api.request(url.replace(/^\/api/, ""), { headers: { cookie: login(OWNER) } });
+  assert.equal(got.status, 200);
+  assert.equal(Buffer.from(await got.arrayBuffer()).equals(PNG), true);
+});
+
+test("delete order: after a SUCCESSFUL delete the attachments are purged; what cannot be purged is recorded for the sweep", async () => {
+  const { id } = await ownerUpload();
   fv.notes.get("n1")!.tags = ["doc", TRASH_TAG];
   const del = await api.request("/trash/n1", { method: "DELETE", headers: { cookie: login(OWNER), "content-type": "application/json" } });
   assert.ok(del.status === 200 || del.status === 204, `delete → ${del.status} ${await del.clone().text()}`);
-  assert.equal(fv.attachments.length, 0);
-  assert.equal(fv.storage.size, 0, "the vault unlinked the stored file");
-  const row = db.prepare("SELECT status, deleted_at FROM prism_attachments WHERE id = ?").get(id) as { status: string; deleted_at: string | null };
-  assert.equal(row.status, "deleted");
-  assert.ok(row.deleted_at);
-  assert.equal(usedBytes("primary"), 0);
-  // A row with no vault attachment id (or a vault failure) is kept for the sweep, never thrown.
+  assert.equal(fv.notes.has("n1"), false);
+  // The vault cascades the attachment row with the note but leaves the file: the purge after
+  // the delete cannot unlink it, so the row is an ORPHAN (never served again, never thrown).
+  const row = db.prepare("SELECT status, flagged_at, storage_path FROM prism_attachments WHERE id = ?").get(id) as { status: string; flagged_at: string | null; storage_path: string };
+  assert.equal(row.status, "orphan_note_deleted");
+  assert.ok(row.flagged_at);
+  assert.ok(row.storage_path, "the storage path is kept so the bytes can be reclaimed");
+  assert.equal((await api.request(`/attachments/${id}`, { headers: { cookie: login(OWNER) } })).status, 404);
+  // The owner sweep reports recorded orphans (ids + sizes only), including a failed attach.
   fv.put({ id: "n3", content: "", tags: [] });
-  const again = await upload("n3", PNG, { cookie: login(OWNER) });
-  const id3 = ((await again.json()) as { id: string }).id;
-  fv.attachments.length = 0; // the vault row is already gone → DELETE 404
-  assert.deepEqual(await purgeAttachmentsForNote("primary", "n3"), { deleted: 0, orphaned: 1 });
-  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(id3) as { status: string }).status, "orphan_note_deleted");
+  fv.failNextAttach = true;
+  assert.equal((await upload("n3", PNG, { cookie: login(OWNER) })).status, 502);
+  const sweep = await api.request("/attachments/sweep", { method: "POST", headers: { cookie: login(OWNER), "content-type": "application/json" }, body: "{}" });
+  const body = (await sweep.json()) as { recorded: Array<{ id: string; noteId: string; size: number; reason: string }>; recordedBytes: number };
+  assert.deepEqual(body.recorded.map((r) => [r.noteId, r.reason]).sort(), [["n1", "note_deleted"], ["n3", "attach_failed"]]);
+  assert.equal(body.recorded.find((r) => r.noteId === "n1")!.id, id);
+  assert.equal(body.recordedBytes, PNG.length * 2);
+  // purgeAttachmentsForNote itself (a note that still exists): vault rows deleted → files unlinked → "deleted".
+  fv.put({ id: "n4", content: "", tags: [] });
+  const again = await upload("n4", PNG, { cookie: login(OWNER) });
+  const id4 = ((await again.json()) as { id: string }).id;
+  assert.deepEqual(await purgeAttachmentsForNote("primary", "n4"), { deleted: 1, orphaned: 0 });
+  assert.equal((db.prepare("SELECT status FROM prism_attachments WHERE id = ?").get(id4) as { status: string }).status, "deleted");
 });
 
 test("M4: owner sweep — dry run reports unreferenced attachments (ids only); a real run flags them, bytes stay", async () => {

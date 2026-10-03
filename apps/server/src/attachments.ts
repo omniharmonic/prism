@@ -109,7 +109,7 @@ export function liveRowsPage(cursor: string, limit: number): { rows: AttachmentR
  * our rows. Best-effort — never throws; a row whose vault delete failed (or
  * that has no vault attachment id) is kept as `orphan_note_deleted` for the sweep.
  */
-export async function purgeAttachmentsForNote(vaultId: string, noteId: string): Promise<{ deleted: number; orphaned: number }> {
+export async function purgeAttachmentsForNote(vaultId: string, noteId: string, opts: { noteGone?: boolean } = {}): Promise<{ deleted: number; orphaned: number }> {
   let deleted = 0;
   let orphaned = 0;
   let rows: AttachmentRow[] = [];
@@ -119,6 +119,17 @@ export async function purgeAttachmentsForNote(vaultId: string, noteId: string): 
     return { deleted, orphaned };
   }
   for (const row of rows) {
+    if (opts.noteGone) {
+      // ORDER (review follow-up): this runs AFTER the vault deleted the note, so a failed
+      // delete never costs a page its media. The vault cascades the attachment ROWS with the
+      // note but leaves the stored files, and its REST API can only unlink a file through
+      // `DELETE /notes/:id/attachments/:att` — which needs the note. So every row becomes a
+      // recorded orphan (`orphan_note_deleted`, storage path kept, no longer served); the
+      // owner sweep reports them. Reclaiming the bytes needs vault-side support.
+      try { setAttachmentStatus(row.id, "orphan_note_deleted"); } catch { /* best-effort */ }
+      orphaned++;
+      continue;
+    }
     let ok = false;
     if (row.vault_attachment_id) {
       try {
@@ -234,4 +245,17 @@ export async function vaultStorageFetch(vaultId: string, storagePath: string, ra
   const headers: Record<string, string> = { Authorization: auth };
   if (range) headers.Range = range;
   return fetch(`${api}/storage/${encoded}`, { headers });
+}
+
+/** Orphans already recorded (note deleted, or attach failed after upload): for the owner sweep. Bounded. */
+export function recordedOrphans(limit = 500): { rows: Array<{ id: string; noteId: string; vaultId: string; size: number; reason: "note_deleted" | "attach_failed" }>; bytes: number; total: number } {
+  const rows = db
+    .prepare("SELECT id, note_id, vault_id, size, status FROM prism_attachments WHERE status IN ('orphan_note_deleted', 'orphan_attach_failed') ORDER BY flagged_at DESC, id LIMIT ?")
+    .all(limit) as Array<{ id: string; note_id: string; vault_id: string; size: number; status: string }>;
+  const agg = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM prism_attachments WHERE status IN ('orphan_note_deleted', 'orphan_attach_failed')").get() as { n: number; bytes: number };
+  return {
+    rows: rows.map((r) => ({ id: r.id, noteId: r.note_id, vaultId: r.vault_id, size: r.size, reason: r.status === "orphan_attach_failed" ? "attach_failed" as const : "note_deleted" as const })),
+    bytes: agg.bytes,
+    total: agg.n,
+  };
 }

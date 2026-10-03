@@ -51,8 +51,11 @@
  * with the link can edit" share) get a smaller cap (5 MB) and rate (6/min per
  * link) — a link is not an accountable person.
  *
- * PURGE. `purgeAttachmentsForNote` (permanent delete from the Trash) removes the
- * vault attachment rows + files. A failed attach after a successful upload is
+ * PURGE. A page's attachments are released only AFTER the vault deleted the page
+ * (`purgeAttachmentsForNote(…, {noteGone:true})` from pages.ts): a failed delete
+ * leaves the page restorable with its media. The vault keeps the stored files of
+ * a deleted note, so those rows become recorded orphans (`orphan_note_deleted`,
+ * never served) which the sweep reports as `recorded`. A failed attach after a successful upload is
  * recorded (`orphan_attach_failed`). The owner sweep flags attachments no longer
  * referenced by their note (`orphan_unreferenced`) — it never deletes bytes (a
  * block can come back from version history) and flagged rows stay servable.
@@ -86,6 +89,7 @@ import {
   liveRowsPage,
   newAttachmentId,
   recordOrphan,
+  recordedOrphans,
   sanitizeName,
   setAttachmentStatus,
   usedBytes,
@@ -633,5 +637,8 @@ attachmentsApi.post("/attachments/sweep", async (c) => {
       if (!dryRun) setAttachmentStatus(r.id, gone ? "orphan_note_deleted" : "orphan_unreferenced");
     }
   }
-  return c.json({ dryRun, checked, orphans, next });
+  // Orphans recorded earlier: pages permanently deleted (the vault keeps their files — see
+  // purgeAttachmentsForNote) and attaches that failed after the upload. Ids + sizes only.
+  const rec = recordedOrphans();
+  return c.json({ dryRun, checked, orphans, next, recorded: rec.rows, recordedTotal: rec.total, recordedBytes: rec.bytes });
 });
