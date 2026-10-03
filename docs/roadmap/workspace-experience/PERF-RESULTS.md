@@ -329,6 +329,8 @@ Built as `reconcileNeedsRead` (`collab.ts`) over `treeRevision(vaultId, noteId)`
 - the document has state the vault's copy may settle: unconfirmed writes, a snapshot ahead of the vault, an unsaved row, a store retry or a failed set-aside pending;
 - `COLLAB_RECONCILE_REREAD_MS` (60 s; `0` = no gate) passed since its last read, so a lost socket frame cannot hide an external edit for longer.
 
+Review follow-up: a read that fails or leaves news unfolded does not restart that interval; the projection closes a subscribe socket that answered pings and then went silent for two ping intervals (`TREE_PING_MS`), replays frames that arrive during a reconnect snapshot, and compares stamps as instants.
+
 Read counts, fake vault that records every call (`apps/server/test/reconciler-gate.test.ts`), projection live:
 
 | Case | Before | After |

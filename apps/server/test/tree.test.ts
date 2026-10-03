@@ -9,7 +9,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { api } from "../src/routes/api";
 import { addVaultEntry } from "../src/db";
-import { resetTreeForTests, setTreeSocketFactory, type TreeSocket } from "../src/tree";
+import { resetTreeForTests, setTreeSocketFactory, treeStatus, type TreeSocket } from "../src/tree";
 import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type FakeVault } from "./helpers";
 
 let fv: FakeVault;
@@ -365,4 +365,73 @@ test("vault unreachable on first build gives 502, and the next request retries",
   assert.equal(r.status, 502);
   fv.put({ id: "a", path: "a.md", content: "", tags: [] });
   assert.equal((await tree(await ownerReq("/tree"))).length, 1);
+});
+
+// ---------------------------------------------------------------- review of the reconciler gate (NP-PF-09)
+
+test("subscribe: a NEWER stamp in another form (milliseconds, an offset) is not taken for an older one", async () => {
+  const socks = useSockets();
+  const p = ownerReq("/tree");
+  await waitFor(() => socks.length === 1);
+  const s = socks[0]!;
+  s.onopen?.();
+  s.frame({ type: "snapshot", notes: [{ id: "a", path: "a.md", tags: [], updatedAt: "2026-06-02T00:00:00Z" }], done: true });
+  await p;
+  const at = async () => (await tree(await ownerReq("/tree")))[0]!;
+  // ".500Z" sorts BEFORE "Z" as a string, and is half a second later.
+  s.frame({ type: "upsert", note: { id: "a", path: "b.md", tags: [], updatedAt: "2026-06-02T00:00:00.500Z" } });
+  assert.equal((await at()).path, "b.md");
+  // The same instant plus one second, written with an offset: "…T02:00:01.500+02:00" sorts after as a string here, so also check the reverse.
+  s.frame({ type: "upsert", note: { id: "a", path: "c.md", tags: [], updatedAt: "2026-06-01T23:00:01.500-01:00" } });
+  assert.equal((await at()).path, "c.md");
+  // …and an OLDER instant whose string sorts later is still ignored.
+  s.frame({ type: "upsert", note: { id: "a", path: "OLD.md", tags: [], updatedAt: "2026-06-02T01:00:00.000+02:00" } });
+  assert.equal((await at()).path, "c.md");
+});
+
+test("subscribe: upsert / remove frames that arrive WHILE a reconnect snapshot is still coming in survive it", async () => {
+  const socks = useSockets();
+  const p = ownerReq("/tree");
+  await waitFor(() => socks.length === 1);
+  const s = socks[0]!;
+  s.onopen?.();
+  // The snapshot's first chunk was taken before the changes below; the changes arrive before its last chunk.
+  s.frame({ type: "snapshot", notes: [{ id: "a", path: "a.md", tags: [], updatedAt: "2026-06-01T00:00:00Z" }, { id: "gone", path: "g.md", tags: [], updatedAt: "2026-06-01T00:00:00Z" }], done: false });
+  s.frame({ type: "upsert", note: { id: "a", path: "a-moved.md", tags: [], updatedAt: "2026-06-03T00:00:00Z" } });
+  s.frame({ type: "upsert", note: { id: "new", path: "n.md", tags: [], updatedAt: "2026-06-03T00:00:00Z" } });
+  s.frame({ type: "remove", id: "gone" });
+  s.frame({ type: "snapshot", notes: [{ id: "z", path: "z.md", tags: [], updatedAt: "2026-06-01T00:00:00Z" }], done: true });
+  const body = await tree(await p);
+  assert.deepEqual(body.map((e) => e.id).sort(), ["a", "new", "z"]);
+  assert.equal(body.find((e) => e.id === "a")?.path, "a-moved.md");
+  assert.equal(body.find((e) => e.id === "a")?.updatedAt, "2026-06-03T00:00:00Z");
+});
+
+test("subscribe: a socket that answered pings and then goes SILENT is closed after two ping intervals (not live; reconnect); one that never answered a ping is left alone", async () => {
+  process.env.TREE_PING_MS = "25";
+  try {
+    const socks = useSockets();
+    const p = ownerReq("/tree");
+    await waitFor(() => socks.length === 1);
+    const s = socks[0]!;
+    s.onopen?.();
+    s.frame({ type: "snapshot", notes: [{ id: "a", path: "a.md", tags: [], updatedAt: "2026-06-01T00:00:00Z" }], done: true });
+    await p;
+    assert.equal(treeStatus("primary")?.wsLive, true);
+    // A vault that does not answer pings at all (an older one): quiet is not evidence of anything.
+    await tick(120);
+    assert.equal(treeStatus("primary")?.wsLive, true, "never ponged: no watchdog");
+    assert.ok(s.sent.filter((x) => x === "ping").length >= 2);
+    // It answers one ping…
+    s.onmessage?.({ data: "pong" });
+    await tick(30);
+    assert.equal(treeStatus("primary")?.wsLive, true);
+    // …and then nothing more arrives: half-dead.
+    await waitFor(() => treeStatus("primary")?.wsLive === false);
+    assert.equal(s.closed, true);
+    // The projection keeps serving its rows meanwhile.
+    assert.deepEqual((await tree(await ownerReq("/tree"))).map((e) => e.id), ["a"]);
+  } finally {
+    delete process.env.TREE_PING_MS;
+  }
 });

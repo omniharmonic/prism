@@ -104,7 +104,7 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
-import { warmPageAnchors, treeRevision } from "./tree";
+import { warmPageAnchors, treeRevisions } from "./tree";
 import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
@@ -1120,7 +1120,7 @@ export type CollabClientMessage =
  */
 const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
 /** Tunables tests shorten. */
-export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000, /** The reconciler's gate: with a live tree projection a loaded document's note is re-read at least this often even when the projection reports no change (a missed socket frame must not hide an external edit for good). 0 = no gate: read every tick. Env `COLLAB_RECONCILE_REREAD_MS`. */ reconcileRereadMs: rereadMsFromEnv() };
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000, /** The reconciler's gate: with a live tree projection a loaded document's note is re-read at least this often even when the projection reports no change (a missed socket frame must not hide an external edit for good). 0 = no gate: read every tick. Env `COLLAB_RECONCILE_REREAD_MS`. */ reconcileRereadMs: rereadMsFromEnv(), /** The clock of the reconciler's re-read interval (tests move it). */ now: (): number => Date.now() };
 function rereadMsFromEnv(): number {
   const raw = process.env.COLLAB_RECONCILE_REREAD_MS;
   const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
@@ -1179,10 +1179,10 @@ function reconcileBaseline(documentName: string, vaultId: string, noteId: string
  * A skip changes nothing: no baseline moves, so `markReconciled` and the fold's
  * own re-checks behave exactly as they did.
  */
-function reconcileNeedsRead(name: string, vaultId: string, noteId: string, now: number): boolean {
+function reconcileNeedsRead(name: string, vaultId: string, noteId: string, now: number, revision: ReturnType<typeof treeRevisions>): boolean {
   const every = collabTuning.reconcileRereadMs;
   if (!(every > 0)) return true;
-  const seen = treeRevision(vaultId, noteId);
+  const seen = revision(vaultId, noteId);
   if (!seen.live) return true;
   const rowMs = toMs(seen.updatedAt);
   if (rowMs === 0) return true;
@@ -1204,6 +1204,11 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
   // writes met an external edit) are finished after every other document had its
   // turn, side by side: one slow vault must not delay everyone else's page (M-6).
   const afterHistory: Array<Promise<void>> = [];
+  const revision = treeRevisions(); // the vault registry is resolved once per tick, not per document
+  /** This tick's read left news unfolded (busy converter, a set-aside that failed, …): no re-read clock — the next tick reads again. */
+  const unsettled = (name: string, vaultId: string, noteId: string, noteMs: number): void => {
+    if (noteMs > reconcileBaseline(name, vaultId, noteId)) lastVaultRead.delete(name);
+  };
   for (const [name, doc] of server.documents) {
     const d = doc as Y.Doc & { isLoading?: boolean; getConnectionsCount?: () => number };
     if (d.isLoading) continue; // mid-load — onLoadDocument owns seeding
@@ -1215,20 +1220,22 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       continue;
     }
     const target = federationTarget(name);
-    if (!reconcileNeedsRead(name, target.vaultId, target.noteId, Date.now())) {
+    if (!reconcileNeedsRead(name, target.vaultId, target.noteId, collabTuning.now(), revision)) {
       reconcileStats.skipped++;
       continue; // the projection is live and reports nothing newer than what this document absorbed
     }
-    lastVaultRead.set(name, Date.now());
     reconcileStats.reads++;
     let note;
     try {
       note = await vaultClient(target.vaultId).getNote(target.noteId);
     } catch {
-      continue; // unreadable/deleted — the load/store lifecycle handles it
+      continue; // unreadable/deleted — the load/store lifecycle handles it (and the re-read clock is not restarted)
     }
     const noteMs = toMs(note.updatedAt);
     if (noteMs === 0) continue;
+    // The re-read clock restarts only for a read that ANSWERED; every exit below
+    // that leaves this revision unabsorbed clears it again (`unsettled`).
+    lastVaultRead.set(name, collabTuning.now());
     const meta = getDocMeta(target.noteId, target.vaultId);
     const { relation, hash } = vaultRelation(meta, note, reconcileBaseline(name, target.vaultId, target.noteId));
     if (relation === "same") continue;
@@ -1253,7 +1260,10 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       if (!(e instanceof ConversionError)) throw e;
       // Load-dependent (busy / timeout / a crashed worker): try again next tick.
       // The store's own guard keeps this note from being overwritten meanwhile.
-      if (!isDeterministicFailure(e.reason) && !unconvertible(e.reason, name, note.content)) continue;
+      if (!isDeterministicFailure(e.reason) && !unconvertible(e.reason, name, note.content)) {
+        unsettled(name, target.vaultId, target.noteId, noteMs);
+        continue;
+      }
       // The note's new body cannot be converted, so this live document can no
       // longer absorb it — and must not be stored over it.
       blockDocument(name, e.reason);
@@ -1263,6 +1273,13 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
     const content = note.content;
     /** Synchronous: apply the external edit (the awaits before it may have changed everything — checked first). */
     const fold = (landed: string | null | undefined): void => {
+      try {
+        foldNow(landed);
+      } finally {
+        unsettled(name, target.vaultId, target.noteId, noteMs);
+      }
+    };
+    const foldNow = (landed: string | null | undefined): void => {
       // The document may have unloaded, or been flagged, meanwhile.
       if (server.documents.get(name) !== doc || d.isLoading || isDocBlocked(name)) return;
       // …and so may the note (a store of ours, another fold): only apply what is still news.
@@ -1292,7 +1309,7 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       afterHistory.push(
         landedAttempt(target.vaultId, target.noteId, meta)
           .then(fold)
-          .catch((e) => console.error(`[collab] ${name}: reconcile failed:`, e instanceof Error ? e.message : "unknown")),
+          .catch((e) => (unsettled(name, target.vaultId, target.noteId, noteMs), console.error(`[collab] ${name}: reconcile failed:`, e instanceof Error ? e.message : "unknown"))),
       );
       continue;
     }
@@ -1753,7 +1770,7 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
     }
     if (!unfolded) {
       lastReconciled.set(documentName, noteMs);
-      lastVaultRead.set(documentName, Date.now()); // the load just read the note: the reconciler's re-read clock starts here
+      lastVaultRead.set(documentName, collabTuning.now()); // the load just read the note: the reconciler's re-read clock starts here
     }
   } else if (stored?.ahead || isCollabUnsaved(target.noteId, target.vaultId)) {
     // The note could not be READ just now, and the snapshot holds changes it

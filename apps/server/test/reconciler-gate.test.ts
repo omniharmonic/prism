@@ -15,10 +15,10 @@
 import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import * as Y from "yjs";
-import { getDocState, getVaultRegistry } from "../src/db";
-import { collabTuning, hocuspocus, loadDocumentState, markReconciled, reconcileLoadedDocs, resetConversionState, resetReconcileState, startReconciler, storeDocumentState, yDocToHtml } from "../src/collab";
+import { addVaultEntry, getDocState, getVaultRegistry } from "../src/db";
+import { collabTuning, docNameFor, hocuspocus, loadDocumentState, markReconciled, reconcileLoadedDocs, resetConversionState, resetReconcileState, startReconciler, storeDocumentState, yDocToHtml } from "../src/collab";
 import { forgetConversionFailures, stopConversionWorkers } from "../src/convert/service";
-import { ensureTree, resetTreeForTests, setTreeSocketFactory, type TreeSocket } from "../src/tree";
+import { ensureTree, resetTreeForTests, setTreeSocketFactory, treeStatus, type TreeSocket } from "../src/tree";
 import { vaultClient } from "../src/parachute";
 import { installFakeVault, resetDb, type FakeVault } from "./helpers";
 
@@ -26,7 +26,10 @@ const T0 = "2026-02-01T00:00:00.000Z";
 /** Later than anything the fake vault stamps on a write (June 2026). */
 const LATER = (n: number) => `2026-12-0${n}T00:00:00.000Z`;
 const J = { "content-type": "application/json" };
-const tuning = collabTuning as unknown as { reconcileRereadMs: number };
+const tuning = collabTuning as unknown as { reconcileRereadMs: number; now: () => number };
+/** The reconciler's re-read clock, moved by hand (no sleeps: nothing here depends on how long a tick takes). */
+let clock = 0;
+const advance = (ms: number) => void (clock += ms);
 
 let fv: FakeVault;
 let socks: FakeSocket[] = [];
@@ -60,6 +63,8 @@ beforeEach(() => {
   socks = [];
   process.env.TREE_SUBSCRIBE = "0";
   tuning.reconcileRereadMs = 60_000;
+  clock = 1_000_000;
+  tuning.now = () => clock;
 });
 afterEach(async () => {
   hocuspocus.flushPendingStores();
@@ -68,6 +73,7 @@ afterEach(async () => {
   resetTreeForTests();
   process.env.TREE_SUBSCRIBE = "0";
   tuning.reconcileRereadMs = REREAD;
+  tuning.now = () => Date.now();
   fv.restore();
 });
 after(async () => {
@@ -262,28 +268,63 @@ test("safety interval: a change whose frame never arrived is still read and fold
   fv.put({ id: "s", tags: [], content: "<p>start</p>", updatedAt: T0 });
   await liveProjection();
   const doc = await loadDocumentState("s", new Y.Doc());
-  tuning.reconcileRereadMs = 120;
   await externalEdit("s", "<p>start</p><p>MISSED FRAME</p>"); // nobody announces it
   let r0 = reads("s");
   await ticks(5, ["s", doc]);
   assert.equal(reads("s") - r0, 0, "inside the interval the projection is believed");
   assert.doesNotMatch(yDocToHtml(doc), /MISSED FRAME/);
-  await sleep(140);
+  advance(59_999);
+  await tickOnce(["s", doc]);
+  assert.equal(reads("s") - r0, 0, "one millisecond short");
+  advance(1);
   await tickOnce(["s", doc]);
   assert.equal(reads("s") - r0, 1, "the safety re-read");
   assert.match(yDocToHtml(doc), /MISSED FRAME/);
   await settle("s", doc);
   r0 = reads("s");
-  await sleep(140);
+  advance(60_000);
   await ticks(5, ["s", doc]);
   assert.equal(reads("s") - r0, 1, "one per interval, not one per tick");
-  await sleep(140);
+  advance(60_000);
   await ticks(3, ["s", doc]);
   assert.equal(reads("s") - r0, 2);
 
   tuning.reconcileRereadMs = 0;
   await ticks(4, ["s", doc]);
   assert.equal(reads("s") - r0, 6, "COLLAB_RECONCILE_REREAD_MS=0: every tick reads (the behaviour before the gate)");
+});
+
+test("a safety re-read that FAILS (the vault did not answer) does not restart the interval: the next tick reads again", async () => {
+  fv.put({ id: "f", tags: [], content: "<p>start</p>", updatedAt: T0 });
+  await liveProjection();
+  const doc = await loadDocumentState("f", new Y.Doc());
+  await externalEdit("f", "<p>start</p><p>MISSED FRAME</p>"); // never announced
+  advance(60_000);
+  let tried = 0;
+  await intercept((m, path) => m === "GET" && path.endsWith("/notes/f"), async () => (tried++, new Response(JSON.stringify({ error: "boom" }), { status: 503, headers: J })), () => tickOnce(["f", doc]));
+  assert.equal(tried, 1, "the safety re-read was attempted");
+  assert.doesNotMatch(yDocToHtml(doc), /MISSED FRAME/);
+  const r0 = reads("f");
+  await tickOnce(["f", doc]);
+  assert.equal(reads("f") - r0, 1, "the failed read is retried on the next tick, not 60 s later");
+  assert.match(yDocToHtml(doc), /MISSED FRAME/);
+});
+
+test("a document of ANOTHER vault whose projection was never built is read every tick (the primary's live projection says nothing about it, and none is built for it)", async () => {
+  addVaultEntry({ id: "team-b", label: "B", url: "http://vault.test", vault: "team-b", token: "tb" });
+  fv.addVault("team-b");
+  fv.put({ id: "x", tags: [], content: "<p>primary</p>", updatedAt: T0 });
+  fv.putIn("team-b", { id: "x", tags: [], content: "<p>team b</p>", updatedAt: T0 });
+  await liveProjection();
+  const name = docNameFor("team-b", "x");
+  const doc = await loadDocumentState(name, new Y.Doc());
+  assert.match(yDocToHtml(doc), /team b/);
+  const bReads = () => fv.calls.filter((c) => c.method === "GET" && c.path === "/vault/team-b/api/notes/x").length;
+  const r0 = bReads();
+  await ticks(6, [name, doc]);
+  assert.equal(bReads() - r0, 6);
+  assert.equal(socks.length, 1, "no projection (no subscribe socket) was started for it");
+  assert.equal(treeStatus("team-b"), null);
 });
 
 test("a deleted note (its row leaves the projection) is read every tick, as before — the gate never hides it; a trashed one is read once", async () => {
