@@ -160,8 +160,24 @@ export function useAutoSave(
     const operation = (async () => {
       try {
         if (sourceScope !== undefined && client.scope?.() !== sourceScope) throw new VaultRequestError(403, "Workspace changed before saving.");
-        const base = baseRef.current.base;
-        const saved = await mutateAsync({ id: noteId, content, expectedScope: sourceScope, ...(base ? { ifUpdatedAt: base } : {}) });
+        const send = () => {
+          const base = baseRef.current.base;
+          return mutateAsync({ id: noteId, content, expectedScope: sourceScope, ...(base ? { ifUpdatedAt: base } : {}) });
+        };
+        let saved: Awaited<ReturnType<typeof send>>;
+        try {
+          saved = await send();
+        } catch (error) {
+          // A 409 is a real conflict only if the CONTENT changed underneath. A metadata,
+          // path or tag write (this tab's own icon change, a property set elsewhere) also
+          // moves the revision: ask the server what it holds now, and if it is still
+          // exactly the content this editor is built on, move the base and send once more.
+          if (!(error instanceof VaultRequestError && error.status === 409) || !baseRef.current.base) throw error;
+          const current = await client.getNote(noteId, { fresh: true }).catch(() => null);
+          if (!current || typeof current.updatedAt !== "string" || current.content !== baseRef.current.content || current.updatedAt === baseRef.current.base) throw error;
+          baseRef.current = { ...baseRef.current, base: current.updatedAt };
+          saved = await send();
+        }
         // A confirmed write moves the base to the revision it produced. A write that
         // was only QUEUED (offline / behind other queued rows) has no revision yet:
         // the base stays, and the host maps it once its own delivery is confirmed.

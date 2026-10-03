@@ -98,6 +98,17 @@ test("H1: consecutive saves and a metadata write in between never self-conflict"
   await expect.poll(() => shell(page, (s) => String(s.note("workspace").content).includes("Two."))).toBe(true);
   await expect(page.locator('[data-sync-state="review"]')).toHaveCount(0);
   await expect(page.getByTestId("remote-update-review")).toHaveCount(0);
+  // The revision moves again with the SAME content and this client has NOT heard of it yet
+  // (no event, no re-read): the save's 409 is not a content conflict — re-based and sent once more.
+  await page.evaluate(() => { const s = (window as any).prismShell; s.serverEdit("workspace", s.note("workspace").content); });
+  const stale = await shell(page, (s) => s.note("workspace").updatedAt as string);
+  await page.keyboard.type(" Three.");
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect.poll(() => shell(page, (s) => String(s.note("workspace").content).includes("Three."))).toBe(true);
+  const sent = await shell(page, (s) => s.writes.filter((w: any) => w.method === "PATCH" && w.path === "/api/notes/workspace" && "content" in (w.body ?? {})).slice(-2).map((w: any) => w.body.if_updated_at));
+  expect(sent[1]).toBe(stale); // the retry named the revision the server actually holds
+  expect(sent[0]).not.toBe(stale); // …after the first attempt named the editor's own, older base
+  await expect(page.locator('[data-sync-state="review"]')).toHaveCount(0);
 });
 
 /** H2 + M2 — never swapped under someone who is in the page; the review preview is how they see it. */
