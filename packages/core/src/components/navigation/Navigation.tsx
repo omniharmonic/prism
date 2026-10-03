@@ -3,6 +3,7 @@ import { useNoteShortcuts } from "./NoteShortcuts";
 import { useCallback, useRef, useState } from "react";
 import { Search, Calendar, MessageSquare, PenSquare, Bot, RefreshCw, ChevronRight, FileText, Star, X, MapPin, FolderPlus, ChevronsDownUp, Sparkles, Users, Plus, Settings2, Trash2, LayoutTemplate, ChevronDown } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import { PrismMark } from "../brand/PrismMark";
 import { Input } from "../ui/Input";
 import { ProjectTree } from "./ProjectTree";
@@ -42,6 +43,10 @@ export function Navigation() {
   const folderPending = useRef(false);
   const [folderError, setFolderError] = useState("");
   const collapseNav = useUIStore((s) => s.collapseNav);
+  // Phone: pull the sidebar / Browse drawer down to refetch the tree and the open vault
+  // queries — what the "Refresh vault" button beside Pages does.
+  const pullClient = useQueryClient();
+  const pull = usePullToRefresh<HTMLDivElement>({ label: "Pages", onRefresh: () => pullClient.refetchQueries({ queryKey: ["vault"], type: "active" }) });
   const sidebarLabel = useSettingsStore((s) => s.sidebarLabel);
   const shortcuts = useNoteShortcuts();
   const { favorites, recents, toggleFavorite } = shortcuts;
@@ -171,7 +176,8 @@ export function Navigation() {
       {debouncedQuery.length > 0 ? (
         <SearchPanel query={debouncedQuery} onClose={() => setSearchQuery("")} />
       ) : (
-        <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }}>
+        <div className="flex-1 overflow-auto" style={{ padding: "0 8px" }} ref={pull.ref}>
+          {pull.indicator}
           {/* Quick-access items */}
           <nav aria-label="Workspace destinations" style={{ display: "flex", flexDirection: "column", gap: 1, paddingBottom: 4 }}>
             <NavItem icon={<HomeIcon size={15} />} label="Home" active={activeNoteId === "home"} onClick={() => openTab("home", "Home", "home" as ContentType)} />
@@ -522,6 +528,8 @@ function RefreshNavButton() {
     <button
       onClick={refresh}
       title="Refresh vault"
+      aria-label="Refresh"
+      aria-busy={spinning || undefined}
       className="interactive flex items-center justify-center"
       style={{ width: 28, height: 32, color: "var(--text-muted)" }}
     >

@@ -58,7 +58,8 @@ let prefs: PagePreferences = kept?.prefs ?? (params.has("prefs") ? sanitizePrefe
 let revision = kept?.revision ?? (params.has("prefs") ? 1 : 0);
 const failOnce = new Set(params.getAll("fail-move"));
 const moves = new Map<string, { from: string; to: string }>();
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixturePrefs: () => ({ prefs, revision }) });
+const reads = { trash: 0, tree: 0 };
+Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureNotes: notes, prismFixtureWrites: writes, prismFixtureReads: reads, prismFixturePrefs: () => ({ prefs, revision }) });
 // Wave 3A: `notion-transfer.html` loads this fixture with an extension (extra seed
 // notes, the import/export routes, a viewer role). Absent → nothing changes.
 const extension = (window as unknown as { prismFixtureExtension?: { seed?: (notes: Note[], make: typeof doc, stamp: () => string) => void; fetch?: (url: URL, method: string, init?: RequestInit) => Promise<Response | null>; sharing?: Record<string, unknown> } }).prismFixtureExtension;
@@ -97,6 +98,7 @@ window.fetch = async (input, init) => {
   const extended = await extension?.fetch?.(url, method, init);
   if (extended) return extended;
   if (path === "/auth/me") return json({ authenticated: true, email: "owner@example.test", name: "You", isOwner: true, vaultId: "primary", workspace: { id: "default", name: "Personal workspace" } });
+  if (path === "/api/tree") reads.tree++;
   if (path === "/api/tree") return json(notes.filter((n) => !isTrashed(n)).map((n) => ({ id: n.id, path: n.path, tags: n.tags, updatedAt: n.updatedAt, type: n.metadata?.type, ...(typeof n.metadata?.prism_order === "number" ? { order: n.metadata.prism_order } : {}) })));
   if (path === "/api/me/preferences") {
     if (params.has("legacy")) return json({ error: "unsupported_fixture_route" }, 501);
@@ -110,6 +112,7 @@ window.fetch = async (input, init) => {
     return json(prefsResponse());
   }
   if (path === "/api/trash" && method === "GET") {
+    reads.trash++;
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     const trashed = notes.filter(isTrashed);
     const items = trashed

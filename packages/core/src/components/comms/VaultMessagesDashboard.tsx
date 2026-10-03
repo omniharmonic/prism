@@ -10,7 +10,7 @@ import {
   useContext,
   type CSSProperties,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -28,6 +28,7 @@ import {
   Clock,
   Inbox,
   Check,
+  RefreshCw,
 } from "lucide-react";
 import { useVaultClient } from "../../data/VaultClientContext";
 import { useIsWeb } from "../../data/Platform";
@@ -44,6 +45,10 @@ import { Spinner } from "../ui/Spinner";
 import type { Note } from "../../lib/types";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useLivePollMs } from "../../lib/events/channelStatus";
+import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
+import { usePagesUI } from "../../lib/pages/store";
+import { liveActionErrorText } from "../../lib/actions/client";
 
 interface LinkData {
   sourceId: string;
@@ -349,6 +354,13 @@ function ScopedMessagesDashboard() {
   }, [peopleWithThreads, searchQuery]);
 
   const handleOpenThread = (note: Note) => setSelectedId(note.id);
+  // Phone: pull the conversation list down to refetch it (the Refresh button does the same).
+  const pull = usePullToRefresh<HTMLDivElement>({
+    label: "Messages",
+    onRefresh: () => Promise.all([reloadThreads(), reloadEmails(), reloadPeople(), reloadGraph()]).then((all) => {
+      if (all.some((r) => r.isError)) throw new Error("refresh failed");
+    }),
+  });
 
   const platforms = useMemo(
     () => Array.from(platformCounts.keys()).sort(),
@@ -390,6 +402,19 @@ function ScopedMessagesDashboard() {
                 {viewMode === "people" && ` · ${filteredPeople.length} people`}
               </p>
             </div>
+
+            <button
+              type="button"
+              className="focus-ring flex h-11 w-11 flex-none items-center justify-center rounded-lg"
+              aria-label="Refresh"
+              title="Refresh"
+              aria-busy={pull.refreshing || undefined}
+              disabled={pull.refreshing}
+              onClick={pull.refresh}
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <RefreshCw size={15} />
+            </button>
 
             {/* View toggle */}
             <div
@@ -557,7 +582,8 @@ function ScopedMessagesDashboard() {
               </button>
             </div>
           )}
-          <div className="flex-1 min-h-0 overflow-auto">
+          <div className="flex-1 min-h-0 overflow-auto" style={{ overflowX: "hidden" }} ref={pull.ref} data-testid="messages-scroller">
+            {pull.indicator}
             {viewMode === "triage" ? (
               <TriageView
                 messages={allMessages}
@@ -920,7 +946,6 @@ function TriageTier({
     () => !(forceExpanded || defaultExpanded || !tier.defaultCollapsed),
   );
   const Icon = tier.icon;
-  const selectedId = useContext(SelectedConversation);
 
   return (
     <div>
@@ -945,7 +970,16 @@ function TriageTier({
       </button>
 
       {!collapsed &&
-        notes.map((note) => {
+        notes.map((note) => (
+          <TriageRow key={note.id} note={note} onOpen={() => onOpenThread(note)} />
+        ))}
+    </div>
+  );
+}
+
+function TriageRow({ note, onOpen }: { note: Note; onOpen: () => void }) {
+  const selectedId = useContext(SelectedConversation);
+  const swipe = useEmailRowSwipe(note);
           const meta = (note.metadata || {}) as Record<string, unknown>;
           const platform = getPlatform(note);
           const config = getPlatformConfig(platform);
@@ -962,11 +996,13 @@ function TriageTier({
 
           return (
             <button
-              key={note.id}
-              onClick={() => onOpenThread(note)}
-              className="prism-message-row flex items-start gap-3 text-left"
+              ref={swipe.ref}
+              onClick={onOpen}
+              className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
+              style={{ position: "relative" }}
               aria-current={selectedId === note.id ? "true" : undefined}
             >
+              {swipe.hint}
               <div
                 aria-hidden="true"
                 className="prism-message-avatar"
@@ -1016,9 +1052,32 @@ function TriageTier({
               </div>
             </button>
           );
-        })}
-    </div>
-  );
+}
+
+/**
+ * Phone (touch) swipes on an EMAIL row — left: archive, right: mark read — only where
+ * the live email actions are on for this viewer (else the row has no swipe at all).
+ * The same two actions are buttons in the opened conversation (EmailRenderer).
+ */
+function useEmailRowSwipe(note: Note) {
+  const live = useLiveActions("email");
+  const queryClient = useQueryClient();
+  const isEmail = !!live && (note.tags ?? []).includes("email");
+  const unread = (note.metadata as Record<string, unknown> | null | undefined)?.isUnread === true;
+  const run = (action: () => Promise<unknown>, done: string) => {
+    void action().then(
+      () => {
+        usePagesUI.getState().showToast({ message: done });
+        void queryClient.invalidateQueries({ queryKey: ["vault", "inbox"] });
+      },
+      (e) => usePagesUI.getState().showToast({ message: liveActionErrorText(e), tone: "error" }),
+    );
+  };
+  return useSwipeActions<HTMLButtonElement>({
+    disabled: !isEmail,
+    left: isEmail ? { label: "Archive", run: () => run(() => live!.emailArchive({ noteId: note.id }), "Archived") } : null,
+    right: isEmail && unread ? { label: "Mark as read", tone: "accent", run: () => run(() => live!.emailMarkRead({ noteId: note.id }, true), "Marked read") } : null,
+  });
 }
 
 // ─── People View ─────────────────────────────────────────────
@@ -1432,13 +1491,17 @@ function ConversationRow({
     .split("\n")
     .filter((l) => l.trim() && !l.startsWith("#"));
   const lastLine = lines[lines.length - 1] || "";
+  const swipe = useEmailRowSwipe(note);
 
   return (
     <button
+      ref={swipe.ref}
       onClick={onClick}
-      className="prism-message-row flex items-start gap-3 text-left"
+      className="prism-message-row prism-swipe-row flex items-start gap-3 text-left"
+      style={{ position: "relative" }}
       aria-current={selectedId === note.id ? "true" : undefined}
     >
+      {swipe.hint}
       <div
         aria-hidden="true"
         className="prism-message-avatar"

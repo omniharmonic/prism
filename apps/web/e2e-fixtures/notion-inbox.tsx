@@ -74,7 +74,8 @@ let state = load();
 const save = () => localStorage.setItem("fixture-inbox", JSON.stringify(state));
 save();
 const writes: Array<Record<string, unknown>> = [];
-Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureWrites: writes, prismFixtureState: () => state });
+const listReads = { count: 0 };
+Object.assign(window, { prismFixtureUI: useUIStore, prismFixtureWrites: writes, prismFixtureState: () => state, prismFixtureListReads: listReads });
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const byId = (id: string) => notes.find((n) => n.id === id);
@@ -105,6 +106,7 @@ window.fetch = async (input, init) => {
   // ── notifications ──
   if (path === "/api/notifications/unread") return json({ unread: unread() });
   if (path === "/api/notifications" && method === "GET") {
+    listReads.count++;
     const box = url.searchParams.get("box") ?? "inbox";
     const type = url.searchParams.get("type");
     const items = mine().filter((i) => (box === "archived" ? !!i.archivedAt : !i.archivedAt) && (!type || i.type === type) && (!i.noteId || canView(byId(i.noteId)!)))

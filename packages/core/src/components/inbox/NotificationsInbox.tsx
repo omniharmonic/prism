@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, ArchiveRestore, Bell, Check, CheckCheck, Settings2, WifiOff, Inbox as InboxIcon } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, Check, CheckCheck, RefreshCw, Settings2, WifiOff, Inbox as InboxIcon } from "lucide-react";
 import type { RendererProps } from "../renderers/RendererProps";
 import { useArchive, useMarkRead, useNotifications, useOnline, useUnreadCount, isNotificationsUnavailable, announceNotificationsChanged } from "../../lib/notifications/hooks";
 import { openNotification, takePendingNotification, clearPendingNotification } from "../../lib/notifications/anchor";
 import { notificationsApi, type AccessLevel, type NotificationItem, type NotificationType } from "../../lib/notifications/client";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { useSwipeActions } from "../../lib/gestures/useSwipeActions";
+import { usePullToRefresh } from "../../lib/gestures/usePullToRefresh";
 import "./inbox.css";
 
 type Filter = "all" | "mentions" | "replies" | "reminders" | "requests";
@@ -86,6 +87,8 @@ export default function NotificationsInbox(_props: RendererProps) {
     openNotification(n);
   };
   const unavailable = list.isError && isNotificationsUnavailable(list.error);
+  // Phone: pull the list down to refetch it (the Refresh button does the same for everyone else).
+  const pull = usePullToRefresh<HTMLDivElement>({ onRefresh: () => list.refetch(), label: "Inbox", disabled: unavailable });
 
   // Push deep link (/inbox/<id>): open that notification once it is loaded.
   useEffect(() => {
@@ -98,7 +101,8 @@ export default function NotificationsInbox(_props: RendererProps) {
   }, [list.data]);
 
   return (
-    <div className="prism-inbox" data-testid="notifications-inbox">
+    <div className="prism-inbox" data-testid="notifications-inbox" ref={pull.ref}>
+      {pull.indicator}
       <div className="prism-inbox-inner">
         <header className="prism-inbox-header">
           <h1>Inbox</h1>
@@ -108,6 +112,9 @@ export default function NotificationsInbox(_props: RendererProps) {
                 <CheckCheck size={15} /> <span>Mark all read</span>
               </button>
             )}
+            <button type="button" className="prism-inbox-btn" aria-label="Refresh" title="Refresh" aria-busy={pull.refreshing || undefined} disabled={pull.refreshing || unavailable} onClick={pull.refresh}>
+              <RefreshCw size={15} />
+            </button>
             <button type="button" className="prism-inbox-btn" aria-label="Notification settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((v) => !v)}>
               <Settings2 size={15} />
             </button>
