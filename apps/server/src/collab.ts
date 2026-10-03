@@ -104,7 +104,7 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
-import { warmPageAnchors } from "./tree";
+import { warmPageAnchors, treeRevision } from "./tree";
 import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
@@ -457,9 +457,17 @@ export function markReconciled(documentName: string, prevMs: number, nextMs: num
   return true;
 }
 
+/** Per doc: when the reconciler last READ its note from the vault (the gate's safety re-read clock). */
+const lastVaultRead = new Map<string, number>();
+/** Counters tests read: reconciler ticks that read a document's note / that the gate let pass without a read. */
+export const reconcileStats = { reads: 0, skipped: 0 };
+
 /** Test-only: drop the reconcile high-water marks (module state survives resetDb). */
 export function resetReconcileState(): void {
   lastReconciled.clear();
+  lastVaultRead.clear();
+  reconcileStats.reads = 0;
+  reconcileStats.skipped = 0;
 }
 
 /** Minimal in-place replace of a Y.Text: keep the common prefix/suffix so a
@@ -1112,7 +1120,12 @@ export type CollabClientMessage =
  */
 const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
 /** Tunables tests shorten. */
-export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000 };
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000, /** The reconciler's gate: with a live tree projection a loaded document's note is re-read at least this often even when the projection reports no change (a missed socket frame must not hide an external edit for good). 0 = no gate: read every tick. Env `COLLAB_RECONCILE_REREAD_MS`. */ reconcileRereadMs: rereadMsFromEnv() };
+function rereadMsFromEnv(): number {
+  const raw = process.env.COLLAB_RECONCILE_REREAD_MS;
+  const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
+}
 function tellClients(documentName: string, message: CollabClientMessage): void {
   try {
     hocuspocus.documents.get(documentName)?.broadcastStateless(JSON.stringify(message));
@@ -1144,6 +1157,44 @@ function reconcileBaseline(documentName: string, vaultId: string, noteId: string
 }
 
 /**
+ * Must this tick READ the document's note from the vault (NP-PF-09)? The read —
+ * body included — used to happen for every loaded document every tick, only to
+ * find nothing new. The tree projection already holds each note's `updatedAt`,
+ * fed by the vault's subscribe socket (writes made ANYWHERE) and by gateway
+ * write-through, so while it is live the read is needed only when:
+ *
+ *  (a) the projection's revision is NEWER than what this document absorbed — the
+ *      exact condition under which the read would not come back "same" (an OLDER
+ *      projection row is our own write's frame still on its way: nothing to learn);
+ *  (b) the projection is not live for this vault (no projection, socket down or
+ *      reconnecting, `TREE_SUBSCRIBE=0`) — then every tick reads, as before; it is
+ *      never built for this;
+ *  (c) the projection lists no such note (deleted, or not seen) — as before;
+ *  (d) the document is in a state the vault's copy may settle: unconfirmed writes,
+ *      a snapshot ahead of the vault / an unsaved row, a store retry or a failed
+ *      set-aside pending;
+ *  (e) `collabTuning.reconcileRereadMs` passed since its last read — a lost frame
+ *      cannot hide an external edit for longer than that.
+ *
+ * A skip changes nothing: no baseline moves, so `markReconciled` and the fold's
+ * own re-checks behave exactly as they did.
+ */
+function reconcileNeedsRead(name: string, vaultId: string, noteId: string, now: number): boolean {
+  const every = collabTuning.reconcileRereadMs;
+  if (!(every > 0)) return true;
+  const seen = treeRevision(vaultId, noteId);
+  if (!seen.live) return true;
+  const rowMs = toMs(seen.updatedAt);
+  if (rowMs === 0) return true;
+  const meta = getDocMeta(noteId, vaultId);
+  if (rowMs > Math.max(meta?.sourceUpdatedAt ?? 0, lastReconciled.get(name) ?? 0)) return true;
+  if (!meta || meta.ahead || meta.attempts.length > 0) return true;
+  if (isCollabUnsaved(noteId, vaultId) || storeRetries.has(name) || setAsideFailures.has(name)) return true;
+  const last = lastVaultRead.get(name);
+  return last === undefined || now - last >= every;
+}
+
+/**
  * One reconciliation tick: for every loaded, connected doc whose Parachute copy
  * is newer than what we've persisted/applied, fold the external content in. This
  * is what makes an MCP-agent edit appear in open editors within one interval.
@@ -1164,6 +1215,12 @@ export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
       continue;
     }
     const target = federationTarget(name);
+    if (!reconcileNeedsRead(name, target.vaultId, target.noteId, Date.now())) {
+      reconcileStats.skipped++;
+      continue; // the projection is live and reports nothing newer than what this document absorbed
+    }
+    lastVaultRead.set(name, Date.now());
+    reconcileStats.reads++;
     let note;
     try {
       note = await vaultClient(target.vaultId).getNote(target.noteId);
@@ -1694,7 +1751,10 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?:
       saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), noteMs, target.vaultId, contentHash(note.content));
       clearCollabUnsaved(target.noteId, target.vaultId);
     }
-    if (!unfolded) lastReconciled.set(documentName, noteMs);
+    if (!unfolded) {
+      lastReconciled.set(documentName, noteMs);
+      lastVaultRead.set(documentName, Date.now()); // the load just read the note: the reconciler's re-read clock starts here
+    }
   } else if (stored?.ahead || isCollabUnsaved(target.noteId, target.vaultId)) {
     // The note could not be READ just now, and the snapshot holds changes it
     // lacks. Nothing above scheduled their write (it all hangs off the note), and
@@ -2517,6 +2577,7 @@ export const hocuspocus = new Hocuspocus({
     collabWriters.delete(data.documentName);
     lastSuggestions.delete(data.documentName);
     blockedDocs.delete(data.documentName);
+    lastVaultRead.delete(data.documentName);
     pendingNotices.delete(data.documentName);
     convertFailures.delete(data.documentName);
     const retry = storeRetries.get(data.documentName);

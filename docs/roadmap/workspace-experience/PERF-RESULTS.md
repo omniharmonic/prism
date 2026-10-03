@@ -28,7 +28,7 @@ Group 3C, branch `feat/w5-a11y`, measured 2026-10-03. Budgets are the ones in
 What still misses, and why:
 
 1. ~~NP-PF-08~~ fixed on `feat/w6-perf` (fix 3 below): 417.5 KB gzip.
-2. **NP-PF-09, vault side.** The collab reconciler reads every open live document from the vault every 2 s. Design below; the fix is in `collab.ts`, which this group does not own.
+2. **NP-PF-09, vault side.** The collab reconciler read every open live document from the vault every 2 s. Fixed on `fix/reconciler-gate` (design B below, built): gated on the tree projection's `updatedAt`; not yet re-measured against a vault with a live subscribe socket.
 3. **NP-PF-01 iPhone and NP-PF-07** need a device (Safari Web Inspector, Xcode Instruments).
 
 ## How it was measured
@@ -211,7 +211,7 @@ Three tabs (a document, the database, a blank page), left alone after 15 s of se
 
 The browser side is quiet: no list is polled, and nothing reaches the vault from these requests. `/auth/me` is asked three times a minute per tab.
 
-The vault side is not at baseline. Every call is the collab reconciler reading an open live document, body included, every 2 s. It scales with the number of open documents across all clients, and it never stops while a tab is open. See the design below.
+The vault side is not at baseline. Every call is the collab reconciler reading an open live document, body included, every 2 s. It scales with the number of open documents across all clients, and it never stops while a tab is open. See the design below. (Since gated — design B, built. These two columns were measured before the gate, on a fixture with no subscribe socket.)
 
 `measure-idle-clients.ts` against the same server, 3 clients for 60 s: `events` mode 18 requests, `poll` mode 30.
 
@@ -317,13 +317,31 @@ Cheaper partial step if the full split waits: register highlight.js grammars aft
 
 Risk: the barrel has many consumers and the accessibility group was editing the same files, so this was not started.
 
-### B. Reconciler without a vault read per document every 2 s (NP-PF-09)
+### B. Reconciler without a vault read per document every 2 s (NP-PF-09) — BUILT (`fix/reconciler-gate`)
 
-`startReconciler` in `apps/server/src/collab.ts` runs every 2 s and calls `getNote` for each loaded, connected document to compare the vault's `updatedAt` with its baseline. With 2–3 documents open that is 92 full-body reads a minute, all day.
+`startReconciler` in `apps/server/src/collab.ts` runs every 2 s and used to call `getNote` for each loaded, connected document to compare the vault's `updatedAt` with its baseline. With 2–3 documents open that was 92 full-body reads a minute, all day.
 
-The tree projection already holds each note's current `updatedAt`, kept live by the vault's subscribe socket and by gateway write-through. Proposed change: on each tick, look the note up in the projection and call `getNote` only when the projection's `updatedAt` is newer than the reconcile baseline. Fall back to today's read when the projection has no live socket (the state the tests and this fixture run in), at a slower interval such as 15 s. Expected idle cost: zero vault calls while the socket is live.
+Built as `reconcileNeedsRead` (`collab.ts`) over `treeRevision(vaultId, noteId)` (`tree.ts`). The tree projection holds each note's current `updatedAt`, kept live by the vault's subscribe socket and by gateway write-through. A tick reads a document's note only when:
 
-Not built: `collab.ts` is outside this group's files.
+- the projection's revision is newer than what the document absorbed (the only case in which the read would not come back "same"); a row that is older is our own write's frame still on its way and causes no read;
+- the projection is not live for that vault: never built, socket down or reconnecting, snapshot incomplete, `TREE_SUBSCRIBE=0`. Then every tick reads, exactly as before (the design above proposed 15 s here; kept at every tick so the fallback is the old behaviour). The projection is never built for this;
+- the projection lists no such note (deleted): read every tick, as before;
+- the document has state the vault's copy may settle: unconfirmed writes, a snapshot ahead of the vault, an unsaved row, a store retry or a failed set-aside pending;
+- `COLLAB_RECONCILE_REREAD_MS` (60 s; `0` = no gate) passed since its last read, so a lost socket frame cannot hide an external edit for longer.
+
+Read counts, fake vault that records every call (`apps/server/test/reconciler-gate.test.ts`), projection live:
+
+| Case | Before | After |
+|---|---|---|
+| 3 idle documents, 25 ticks | 75 `GET /notes/:id` | 0 |
+| 1 idle document under the reconciler's own timer, 20 ticks (real Hocuspocus) | 20 | 0 |
+| External edit announced by the socket | folded on the next tick, then 1 read per tick | folded on the next tick (1 read), then 0 once the fold is stored |
+| Metadata-only write elsewhere | 1 read per tick | 1 read |
+| Projection not live | 1 read per tick | 1 read per tick (unchanged) |
+
+Expected in production with the socket live: 1 read per open document per 60 s (the safety re-read), so about 3 calls/min for the three tabs above instead of 92.
+
+Not re-measured with the Playwright NP-PF-09 row: `perf-server.ts` runs the fake vault with no subscribe socket, so there the gate falls back to reading and the 92 calls/min figure does not move. Measuring the gate end to end needs a sandbox vault with `/api/subscribe` and `PRISM_VAULT_TRACE=1`.
 
 ### C. Paged tree (`/api/tree?prefix=`)
 

@@ -700,6 +700,27 @@ export function treeStatus(vaultId: string): { loaded: boolean; wsLive: boolean;
   return st ? { loaded: st.loaded, wsLive: st.wsLive, rows: st.rows.size, version: st.version } : null;
 }
 
+/**
+ * What the projection knows about ONE note's revision — for a caller that would
+ * otherwise read the note from the vault only to learn whether it changed (the
+ * collab reconciler, NP-PF-09). Never builds or starts a projection.
+ *
+ * `live` = the rows are being kept current by the vault's subscribe socket right
+ * now (snapshot complete, socket open) for the vault the registry names TODAY.
+ * Anything else — no projection, still loading, socket down or reconnecting,
+ * `TREE_SUBSCRIBE=0`, a registry entry that now points elsewhere — is `live: false`
+ * and the caller must not conclude anything from it. With `live`, an absent
+ * `updatedAt` means the projection lists no such note (deleted, or never seen).
+ */
+export function treeRevision(vaultId: string, noteId: string): { live: boolean; updatedAt?: string | null } {
+  const st = states.get(vaultId);
+  if (!st || st.stopped || !st.loaded || !st.wsLive || !st.ws) return { live: false };
+  const entry = getVaultRegistry().find((v) => v.id === vaultId);
+  if (!entry || entry.url !== st.entry.url || entry.vault !== st.entry.vault) return { live: false };
+  const row = st.rows.get(noteId);
+  return row ? { live: true, updatedAt: row.updatedAt } : { live: true };
+}
+
 /** Is this note locked, per the projection (best effort; false when unknown). */
 export function treeRowLocked(entry: VaultEntry, id: string): boolean {
   return states.get(entry.id)?.rows.get(id)?.locked === true;
