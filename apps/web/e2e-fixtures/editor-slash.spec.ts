@@ -52,7 +52,7 @@ test("the slash menu is grouped, shows shortcut hints and is a keyboard-driven l
 
 test("fuzzy search ranks the intended block first", async ({ page }) => {
   await newLine(page);
-  const cases: Array<[string, string]> = [["h2", "Heading 2"], ["tbl", "Table"], ["callo", "Callout"], ["todo", "To-do list"], ["cols", "2 columns"], ["3col", "3 columns"], ["div", "Divider"], ["pic", "Image"], ["togg", "Toggle"], ["page", "Link to page"]];
+  const cases: Array<[string, string]> = [["h2", "Heading 2"], ["tbl", "Table"], ["callo", "Callout"], ["todo", "To-do list"], ["cols", "2 columns"], ["3col", "3 columns"], ["div", "Divider"], ["pic", "Image"], ["togg", "Toggle"], ["page", "Page"], ["link", "Link to page"], ["4col", "4 columns"], ["5col", "5 columns"], ["subpage", "Page"]];
   for (const [query, expected] of cases) {
     const menu = await slash(page, query);
     await expect(menu.getByRole("option").first(), query).toHaveAccessibleName(new RegExp(`^${expected}`));
@@ -147,4 +147,90 @@ test("phones: the slash menu fits the screen and uses large targets; columns sta
   const [a, b] = [await columns.nth(0).boundingBox(), await columns.nth(1).boundingBox()];
   expect(b!.y).toBeGreaterThan(a!.y); // stacked, not side by side
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+// NP-ED-08: toggle headings (H1–H3 summaries) from the slash menu; the level is stored, open/closed stays view state.
+test("toggle headings", async ({ page }) => {
+  await newLine(page);
+  await slash(page, "toggleh");
+  await page.getByRole("option", { name: /^Toggle heading 2/ }).click();
+  await page.keyboard.type("Chapter one");
+  await expect.poll(() => editorHtml(page)).toContain('<details data-heading-level="2" data-type="toggle"><summary>Chapter one</summary><p></p></details>');
+  const toggle = page.locator('.tiptap .prism-toggle[data-heading-level="2"]');
+  await expect(toggle).toBeVisible();
+  // The summary reads as a heading (larger than body text), and the body takes nested blocks.
+  const sizes = await page.evaluate(() => ({
+    summary: parseFloat(getComputedStyle(document.querySelector(".tiptap .prism-toggle[data-heading-level] summary")!).fontSize),
+    body: parseFloat(getComputedStyle(document.querySelector(".tiptap p")!).fontSize),
+  }));
+  expect(sizes.summary).toBeGreaterThan(sizes.body * 1.3);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("- nested item");
+  await expect.poll(() => editorHtml(page)).toMatch(/<details data-heading-level="2" data-type="toggle"><summary>Chapter one<\/summary><ul><li><p>nested item<\/p><\/li><\/ul>/);
+  // Collapsing hides the body and is NOT an edit; ⌘↵ flips it from the keyboard.
+  const before = await editorHtml(page);
+  await toggle.getByRole("button", { name: "Collapse toggle" }).click();
+  await expect(toggle.locator("ul")).toBeHidden();
+  expect(await editorHtml(page)).toBe(before);
+  await toggle.locator("summary").click();
+  await expect.poll(() => page.evaluate(() => (document.querySelector(".tiptap") as any).editor.state.selection.$from.parent.type.name)).toBe("toggleSummary"); // selectionchange is async
+  await page.keyboard.press("ControlOrMeta+Enter");
+  await expect(toggle.locator("ul")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+Enter");
+  await expect(toggle.locator("ul")).toBeHidden();
+  expect(await editorHtml(page)).toBe(before);
+  // Levels 1 and 3 exist too; each is saved.
+  for (const level of [1, 3]) {
+    await newLine(page);
+    await slash(page, "toggleh");
+    await page.getByRole("option", { name: new RegExp(`^Toggle heading ${level}`) }).click();
+    await expect.poll(() => editorHtml(page)).toContain(`data-heading-level="${level}"`);
+  }
+  await expect.poll(() => lastWrite(page), { timeout: 6000 }).toContain('<details data-heading-level="2" data-type="toggle"><summary>Chapter one</summary>');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/toggle-headings-1440.png` });
+  // A stored page that contains toggles opens (the node view used to need a mounted view), old toggles included.
+  await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent('<details data-type="toggle" data-heading-level="1"><summary>Stored</summary><p>Body</p></details><details><summary>Old toggle</summary><p>Kept</p></details>'));
+  await expect(page.locator('.tiptap .prism-toggle[data-heading-level="1"] summary')).toHaveText("Stored");
+  await expect(page.locator(".tiptap .prism-toggle:not([data-heading-level]) summary")).toHaveText("Old toggle");
+});
+
+// NP-ED-09: up to five columns from the slash menu; the gutter resizes two neighbours in one undo step.
+test("4 and 5 columns insert; dragging the gutter resizes and saves", async ({ page }) => {
+  for (const n of [4, 5]) {
+    await newLine(page);
+    await slash(page, `${n}col`);
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`.tiptap div[data-type="columns"][data-count="${n}"] > div[data-type="column"]`)).toHaveCount(n);
+  }
+  await page.goto("/e2e-fixtures/editor-blocks.html?content=" + encodeURIComponent('<div data-type="columns" data-count="2"><div data-type="column"><p>Left column</p></div><div data-type="column"><p>Right column</p></div></div><p>after</p>'));
+  const cols = page.locator('.tiptap div[data-type="column"]');
+  await expect(cols).toHaveCount(2);
+  const handle = page.getByRole("separator", { name: "Resize columns 1 and 2" });
+  await expect(handle).toBeAttached();
+  const before = (await cols.nth(0).boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 120, box.y + 10, { steps: 6 });
+  expect(await editorHtml(page)).not.toContain("data-col-width"); // nothing is written while dragging
+  await page.mouse.up();
+  await expect.poll(() => editorHtml(page)).toMatch(/data-col-width="1\.\d+"[^>]*style="flex-grow: 1\.\d+;?"[^>]*><p>Left column/);
+  await expect.poll(async () => (await cols.nth(0).boundingBox())!.width).toBeGreaterThan(before + 80);
+  const html = await editorHtml(page);
+  const [l, r] = [...html.matchAll(/data-col-width="([\d.]+)"/g)].map((m) => Number(m[1]));
+  expect(l + r).toBeCloseTo(2, 2); // the pair's total share is unchanged
+  // One undo step; the keyboard resizes too.
+  await page.locator(".tiptap").getByText("Left column").click();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect.poll(() => editorHtml(page)).not.toContain("data-col-width");
+  await handle.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(() => editorHtml(page)).toMatch(/data-col-width="0\.9\d*"/);
+  await expect.poll(() => lastWrite(page), { timeout: 6000 }).toContain("data-col-width");
+  // Read-only: no handles.
+  await page.goto("/e2e-fixtures/editor-blocks.html?readonly&content=" + encodeURIComponent('<div data-type="columns" data-count="2"><div data-type="column" data-col-width="1.5"><p>L</p></div><div data-type="column" data-col-width="0.5"><p>R</p></div></div>'));
+  await expect(page.locator('.tiptap div[data-type="column"]')).toHaveCount(2);
+  await expect(page.getByRole("separator")).toHaveCount(0);
+  const [a, b] = [await page.locator('.tiptap div[data-type="column"]').nth(0).boundingBox(), await page.locator('.tiptap div[data-type="column"]').nth(1).boundingBox()];
+  expect(a!.width).toBeGreaterThan(b!.width * 2); // stored widths are honoured without the editor chrome
 });

@@ -91,6 +91,13 @@ export const UrlPaste = Extension.create<UrlPasteOptions>({
             if ($from.parent.type.spec.code || !$from.parent.isTextblock) return false;
             const link = state.schema.marks.link;
             if (!link) return false;
+            // Over selected text the URL LINKS that text (NP-ED-18); nothing is replaced, no menu.
+            if (!state.selection.empty) {
+              const { from: a, to: b, $from: $a, $to: $b } = state.selection;
+              if (!$a.sameParent($b)) return false;
+              view.dispatch(state.tr.addMark(a, b, link.create({ href: url })).scrollIntoView());
+              return true;
+            }
             const from = state.selection.from;
             const tr = state.tr.replaceSelectionWith(state.schema.text(url, [link.create({ href: url })]), false);
             const to = from + url.length;

@@ -76,14 +76,6 @@ function findMatches(state: EditorState, query: string): SearchMatch[] {
 
 export const SearchHighlight = Extension.create({
   name: "searchHighlight",
-  // Above Highlight (whose Mod-Shift-H toggles a highlight mark): in Prism
-  // ⌘⇧H opens find-and-replace. The host's keydown listener opens the bar; this
-  // only claims the key so no stray stored mark lands on the next replacement.
-  priority: 1000,
-  addKeyboardShortcuts() {
-    return { "Mod-Shift-h": () => true };
-  },
-
   addProseMirrorPlugins() {
     return [
       new Plugin<SearchHighlightState>({

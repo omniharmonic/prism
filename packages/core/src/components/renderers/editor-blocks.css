@@ -357,3 +357,117 @@ a.prism-bookmark:hover { background: var(--glass-hover); border-color: var(--gla
 .prism-db-insert-primary:disabled { opacity: .5; }
 .prism-db-insert-error { margin: 0; font-size: 12px; color: var(--color-danger); }
 @media (max-width: 767px) { .prism-db-insert input { font-size: 16px; height: 40px; } .prism-db-insert li button { min-height: 44px; } }
+
+/* ── Wave 4A: placeholders (NP-ED-25) ──────────────────────────────────────
+   The Placeholder extension marks the empty block that holds the caret; show its
+   hint only while the editor is focused (an empty DOCUMENT shows it always). */
+.tiptap .is-empty::before {
+  content: attr(data-placeholder);
+  float: left; height: 0; pointer-events: none;
+  color: var(--text-muted); opacity: 0;
+}
+.tiptap.ProseMirror-focused .is-empty::before,
+.tiptap .is-editor-empty::before { opacity: 0.75; }
+.tiptap[contenteditable="false"] .is-empty::before { content: none; }
+.prose-editor .prism-toggle-body > summary.is-empty::before { content: attr(data-placeholder); float: none; height: auto; }
+
+/* ── Block selection (NP-ED-06 / NP-ED-01) ── */
+.prose-editor > .ProseMirror-selectednode:not(img):not(figure),
+.prose-editor > .prism-block-selected {
+  background: var(--surface-selected);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 3px var(--surface-selected);
+  outline: none;
+}
+.prose-editor > .prism-block-selected ::selection { background: transparent; }
+
+/* ── Toggle headings (NP-ED-08) ── */
+.prose-editor .prism-toggle[data-heading-level] > .prism-toggle-body > summary,
+.prose-editor details[data-heading-level] > summary { font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; }
+.prose-editor .prism-toggle[data-heading-level="1"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="1"] > summary { font-size: 1.875em; }
+.prose-editor .prism-toggle[data-heading-level="2"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="2"] > summary { font-size: 1.5em; }
+.prose-editor .prism-toggle[data-heading-level="3"] > .prism-toggle-body > summary, .prose-editor details[data-heading-level="3"] > summary { font-size: 1.25em; }
+.prose-editor .prism-toggle[data-heading-level="1"] > .prism-toggle-arrow { top: 0.75em; }
+.prose-editor .prism-toggle[data-heading-level="2"] > .prism-toggle-arrow { top: 0.5em; }
+.prose-editor .prism-toggle[data-heading-level="3"] > .prism-toggle-arrow { top: 0.32em; }
+.prose-editor .prism-toggle[data-heading-level] { margin-top: 1em; }
+
+/* ── Columns: 2–5, resizable (NP-ED-09). Flex so a stored width is a grow ratio. ── */
+.prose-editor div[data-type="columns"] { display: flex; grid-template-columns: none; gap: 24px; }
+.prose-editor div[data-type="column"] { flex: 1 1 0; }
+.prose-editor .prism-columns { position: relative; margin: 0.75em 0; }
+.prose-editor .prism-columns > div[data-type="columns"] { margin: 0; }
+.prose-editor .prism-column-resize {
+  position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -8px; padding: 0; border: 0; background: none;
+  cursor: col-resize; touch-action: none; z-index: 2;
+}
+.prose-editor .prism-column-resize::after { content: ""; position: absolute; top: 2px; bottom: 2px; left: 7px; width: 2px; border-radius: 2px; background: transparent; transition: background var(--transition-fast); }
+.prose-editor .prism-column-resize:hover::after, .prose-editor .prism-column-resize:focus-visible::after, .prose-editor .prism-column-resize[data-dragging]::after { background: var(--color-accent); }
+.prose-editor .prism-column-resize:focus-visible { outline: none; }
+.block-drop-indicator.is-side { width: 3px !important; }
+@media (max-width: 767px) {
+  .prose-editor div[data-type="columns"] { flex-direction: column; gap: 8px; }
+  .prose-editor div[data-type="column"] { flex: 0 0 auto !important; }
+  .prose-editor .prism-column-resize { display: none; }
+}
+
+/* ── Table cell background (NP-ED-10) ── */
+.prose-editor [data-cell-color="gray"] { background: var(--prism-color-gray-bg); }
+.prose-editor [data-cell-color="blue"] { background: var(--prism-color-blue-bg); }
+.prose-editor [data-cell-color="green"] { background: var(--prism-color-green-bg); }
+.prose-editor [data-cell-color="yellow"] { background: var(--prism-color-yellow-bg); }
+.prose-editor [data-cell-color="red"] { background: var(--prism-color-red-bg); }
+
+/* ── Sub-page row (NP-PG-15) ── */
+.prose-editor .prism-child-page { margin: 2px 0; }
+.prism-child-page-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 3px 6px;
+  border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-primary);
+  font: inherit; font-weight: 500; text-align: left; cursor: pointer;
+}
+.prism-child-page-row:hover { background: var(--glass-hover); }
+.prism-child-page-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.prism-child-page-row[aria-disabled="true"] { color: var(--text-muted); cursor: default; font-weight: 400; }
+.prism-child-page-row[aria-disabled="true"]:hover { background: none; }
+.prism-child-page-icon { flex: 0 0 auto; display: inline-flex; width: 20px; justify-content: center; color: var(--text-secondary); }
+.prism-child-page-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--glass-border-strong); text-underline-offset: 3px; }
+.prism-child-page-row[aria-disabled="true"] .prism-child-page-title { text-decoration: none; }
+.prose-editor .prism-child-page.ProseMirror-selectednode .prism-child-page-row { background: var(--surface-selected); }
+.prism-child-page-prompt {
+  position: fixed; left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
+  display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px); padding: 8px 10px 8px 14px;
+  border-radius: var(--radius-md); border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary);
+  box-shadow: var(--glass-shadow-elevated); font-size: 13px;
+}
+.prism-child-page-prompt button { min-height: 30px; padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: none; color: var(--text-primary); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.prism-child-page-prompt button:hover { background: var(--glass-hover); }
+.prism-child-page-prompt button.is-danger { color: var(--color-danger); }
+@media (max-width: 767px) { .prism-child-page-row { min-height: 44px; } .prism-child-page-prompt button { min-height: 44px; } }
+
+/* ── Editor menu search + shortcut sheet (NP-ED-02 / NP-ED-07) ── */
+.editor-menu-search { display: block; width: calc(100% - 8px); margin: 2px 4px 4px; height: 28px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.editor-menu-search:focus { border-color: var(--color-accent); }
+.editor-menu-empty { padding: 8px 10px; font-size: 12.5px; color: var(--text-muted); }
+.prism-shortcuts-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.4); }
+.prism-shortcuts { width: min(720px, 100%); max-height: min(80dvh, 720px); display: flex; flex-direction: column; border-radius: var(--radius-lg, 14px); border: 1px solid var(--glass-border); background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); }
+.prism-shortcuts-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--glass-border); }
+.prism-shortcuts-head h2 { flex: 1; margin: 0; font-size: 15px; font-weight: 600; }
+.prism-shortcuts-head input { width: 200px; max-width: 45%; height: 30px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); font-size: 13px; outline: none; }
+.prism-shortcuts-head input:focus { border-color: var(--color-accent); }
+.prism-shortcuts-head button { display: inline-flex; width: 30px; height: 30px; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-secondary); cursor: pointer; }
+.prism-shortcuts-head button:hover { background: var(--glass-hover); }
+.prism-shortcuts-body { overflow: auto; padding: 6px 14px 14px; columns: 2; column-gap: 28px; }
+.prism-shortcuts-body section { break-inside: avoid; margin-top: 10px; }
+.prism-shortcuts-body h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.prism-shortcuts-body dl { margin: 0; }
+.prism-shortcuts-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+.prism-shortcuts-row dt { color: var(--text-secondary); }
+.prism-shortcuts-row dd { margin: 0; white-space: nowrap; }
+.prism-shortcuts-row kbd { font: 12px/1 var(--font-mono, ui-monospace, monospace); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--glass-border); background: var(--glass); color: var(--text-primary); }
+@media (max-width: 640px) { .prism-shortcuts-body { columns: 1; } .prism-shortcuts-head input { font-size: 16px; } }
+.block-notice {
+  position: fixed; left: 50%; bottom: calc(24px + var(--workspace-bottom-inset, 0px)); transform: translateX(-50%); z-index: 80;
+  max-width: calc(100vw - 32px); padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--glass-border);
+  background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--glass-shadow-elevated); font-size: 13px;
+}
+.block-drop-indicator.is-side { height: auto; }

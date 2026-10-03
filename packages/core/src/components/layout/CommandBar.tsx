@@ -33,6 +33,7 @@ import { printCurrentPage, useTransferUI } from "../../lib/import-export/store";
 import { useCanManageTransfers } from "../import-export/ImportExportHost";
 import { useNoteShortcuts } from "../navigation/NoteShortcuts";
 import { usePagesUI } from "../../lib/pages/store";
+import { openShortcutSheet } from "../renderers/ShortcutSheet";
 
 interface Command {
   id: string;
@@ -148,6 +149,12 @@ export function CommandBar() {
       id: "create-from-template", label: "New Page from Template", category: "create" as const,
       icon: <FileText size={15} />,
       action: () => { closeCommandBar(); usePagesUI.getState().openCreate({ template: true }); },
+    },
+    {
+      // Help → Keyboard shortcuts (NP-ED-07; also ⌘/ outside a block).
+      id: "keyboard-shortcuts", label: "Keyboard Shortcuts", category: "navigate" as const,
+      icon: <Settings size={15} />,
+      action: () => { closeCommandBar(); openShortcutSheet(); },
     },
     {
       id: "open-home", label: "Home", category: "navigate" as const,

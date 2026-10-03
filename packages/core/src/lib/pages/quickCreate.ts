@@ -21,6 +21,8 @@ export async function createUntitledPage(client: VaultClient, queryClient: Query
   const { title, params } = newContentParams("document", "", folder, tree);
   const note = await client.createNote(params);
   void queryClient.invalidateQueries({ queryKey: ["vault"] });
+  // NP-PG-15: an open parent page adds a sub-page row for it (lib/tiptap/childPage.tsx listens).
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("prism:page-created", { detail: { id: note.id, parentPath: folder } }));
   useUIStore.getState().openTab(note.id, title, "document");
   focusPageTitle(title);
   return note;

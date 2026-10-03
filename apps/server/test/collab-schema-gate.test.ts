@@ -33,9 +33,9 @@ import { installFakeVault, resetDb, makeSession, sessionCookie, grantUser, type 
 // ── 1. The schema is pinned to its version ───────────────────────────────────
 
 /** Bump COLLAB_SCHEMA_VERSION and update this snapshot TOGETHER. */
-const SCHEMA_V4 = {
+const SCHEMA_V5 = {
   nodes: {
-    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], codeBlock: ["language"], column: [], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor"], toggleSummary: [],
+    attachment: ["kind", "mimeType", "name", "size", "src"], blockquote: ["blockColor"], bookmark: ["description", "favicon", "image", "siteName", "title", "url"], bulletList: ["blockColor"], callout: ["blockColor", "emoji"], childPage: ["pageId"], codeBlock: ["language"], column: ["width"], columns: [], databaseView: ["noteId", "viewId"], doc: [], embed: ["height", "url"], hardBreak: [], heading: ["blockColor", "level"], horizontalRule: [], image: ["align", "alt", "caption", "height", "src", "title", "width"], listItem: [], mention: ["date", "id", "kind", "label", "reminder", "uid"], orderedList: ["blockColor", "start", "type"], paragraph: ["blockColor"], table: [], tableCell: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableHeader: ["align", "cellColor", "colspan", "colwidth", "rowspan"], tableOfContents: [], tableRow: [], taskItem: ["checked"], taskList: ["blockColor"], text: [], toggle: ["blockColor", "level"], toggleSummary: [],
   },
   marks: {
     bold: [], code: [], comment: ["id", "resolved"], deletion: ["actorId", "color", "suggestionId", "turnId", "user"], highlight: ["color"], insertion: ["actorId", "color", "suggestionId", "turnId", "user"], italic: [], link: ["class", "href", "rel", "target", "title"], strike: [], textColor: ["color"], underline: [],
@@ -50,8 +50,8 @@ test("the document schema's node, mark and attribute names match COLLAB_SCHEMA_V
     nodes: names(Object.fromEntries(Object.entries(schema.nodes).map(([k, v]) => [k, v.spec]))),
     marks: names(Object.fromEntries(Object.entries(schema.marks).map(([k, v]) => [k, v.spec]))),
   };
-  assert.equal(COLLAB_SCHEMA_VERSION, 4, "bump the snapshot above together with the version");
-  assert.deepEqual(actual, SCHEMA_V4, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V4");
+  assert.equal(COLLAB_SCHEMA_VERSION, 5, "bump the snapshot above together with the version");
+  assert.deepEqual(actual, SCHEMA_V5, "a node/mark/attribute changed: bump COLLAB_SCHEMA_VERSION (packages/core/src/editor/collabSchema.ts) and update SCHEMA_V5");
 });
 
 test("schema params parse strictly", () => {
@@ -196,6 +196,43 @@ test("v3: a stored mention chip refuses a v2 editor's content write", async () =
   // v4: a v3 (mention-era) editor is stale over media/database blocks.
   fv.put({ id: "m4", content: '<div data-type="attachment" data-src="/api/attachments/a_1" data-kind="file"><a href="/api/attachments/a_1">f</a></div>', tags: [] });
   assert.equal((await patch("m4", { content: "<p>x</p>" }, { "X-Prism-Editor-Schema": "3" })).status, 409);
+});
+
+test("v5: child-page rows, toggle headings, column widths and cell colours refuse a v4 editor's content write", async () => {
+  const markers = [
+    '<div data-type="child-page" data-page-id="p1"></div>',
+    '<details data-type="toggle" data-heading-level="2"><summary>s</summary><p>b</p></details>',
+    '<div data-type="columns" data-count="2"><div data-type="column" data-col-width="1.5" style="flex-grow: 1.5"><p>a</p></div><div data-type="column"><p>b</p></div></div>',
+    '<table><tbody><tr><td data-cell-color="blue"><p>x</p></td></tr></tbody></table>',
+  ];
+  for (const [i, html] of markers.entries()) {
+    fv.put({ id: `v5-${i}`, content: html, tags: [] });
+    assert.equal((await patch(`v5-${i}`, { content: "<p>x</p>" }, { "X-Prism-Editor-Schema": "4" })).status, 409, html);
+    assert.equal((await patch(`v5-${i}`, { content: `${html}<p>y</p>` }, { "X-Prism-Editor-Schema": String(COLLAB_SCHEMA_VERSION) })).status, 200, html);
+  }
+});
+
+test("L1: markers are read the way an HTML parser reads them — quotes, case and spacing do not hide one; plain look-alikes pass", async () => {
+  const { needsEditorUpdate } = await import("../src/routes/api");
+  for (const html of [
+    "<div data-type='callout'><p>x</p></div>",
+    '<DIV DATA-TYPE="Callout"><p>x</p></DIV>',
+    '<div data-type = "toggle"><p>x</p></div>',
+    "<div data-type=child-page data-page-id=p1></div>",
+    "<p data-block-color = 'red'>x</p>",
+    "<td DATA-CELL-COLOR=blue><p>x</p></td>",
+    "<details\n><summary>s</summary></details>",
+    "<DETAILS><summary>s</summary></DETAILS>",
+    "<div data-prism-database\t=\t'db1'></div>",
+    '<details data-type="toggle" data-heading-level = "2"><summary>s</summary></details>',
+  ]) assert.equal(needsEditorUpdate(html), true, html);
+  for (const html of ["<p>hello</p>", '<div data-type="other"><p>x</p></div>', "<p>the word data-type and data-block-color in prose</p>", "<p>&lt;detailsx&gt;</p>", "# Markdown with data-type=\"callout\" in text", "<detailsx>", '<p data-typeface="callout">x</p>']) {
+    assert.equal(needsEditorUpdate(html), false, html);
+  }
+  // Linear on a pathological body.
+  const t = performance.now();
+  needsEditorUpdate("<p>" + "data-type ".repeat(200_000) + "</p>" + "<details".repeat(100_000));
+  assert.ok(performance.now() - t < 500);
 });
 
 test("in-process MCP dispatches (agents) are exempt", async () => {
