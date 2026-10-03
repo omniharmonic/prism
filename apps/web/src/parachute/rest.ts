@@ -491,6 +491,44 @@ export async function updateProperties(id: string, set: Record<string, unknown>,
   }
 }
 
+// ---- attachments + link previews (routes/attachments.ts) --------------------
+
+/** Server refusals → a short reason the editor can show ("too large", "not supported"). */
+function uploadReason(status: number, body: string): string | undefined {
+  if (status === 413) return "the file is too large";
+  if (status === 415) return /svg|active|blocked/i.test(body) ? "web pages, scripts and SVG files aren't allowed" : "that file type isn't supported here";
+  if (status === 403) return "you can't add files to this page";
+  if (status === 409) return /locked/.test(body) ? "this page is locked" : undefined;
+  if (status === 429) return "too many uploads — try again in a minute";
+  return undefined;
+}
+
+/**
+ * Store a file as an attachment of `noteId` (multipart, POST /api/notes/:id/attachments).
+ * Never queued offline: the editor inserts the block only after the server answers.
+ * `X-Prism-Upload` forces a CORS preflight (the server's CSRF guard for multipart).
+ */
+export async function uploadAttachment(noteId: string, file: File, opts?: { kind?: "image" | "file" }): Promise<import("@prism/core").UploadedAttachment> {
+  if (isOffline()) throw Object.assign(new Error("offline"), { userMessage: "you're offline" });
+  const context = await captureWriteContext().catch(() => null);
+  const url = `${context?.scope.api ?? apiBase()}/notes/${encodeURIComponent(noteId)}/attachments${qs({ kind: opts?.kind })}`;
+  const headers: Record<string, string> = { ...(context?.headers ?? jsonHeaders()), "X-Prism-Upload": "1" };
+  for (const k of Object.keys(headers)) if (k.toLowerCase() === "content-type") delete headers[k]; // the browser sets the multipart boundary
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const resp = await serverFetch(url, { method: "POST", body: form, headers, cache: "no-store" });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw Object.assign(new VaultRequestError(resp.status, `upload failed: ${resp.status} ${body.slice(0, 200)}`), { userMessage: uploadReason(resp.status, body) });
+  }
+  return (await resp.json()) as import("@prism/core").UploadedAttachment;
+}
+
+/** Link preview for a bookmark (GET /api/unfurl, signed-in only, SSRF-guarded server-side). */
+export async function unfurl(url: string): Promise<{ url: string; title?: string | null; description?: string | null; siteName?: string | null; image?: string | null; favicon?: string | null }> {
+  return (await req(`/unfurl${qs({ u: url })}`, { cache: "no-store" })).json();
+}
+
 /** Bulk property writes: one CAS result per row (200 all written, 207 partial). Never queued offline. */
 export async function updatePropertiesBatch(items: PropertyBatchItem[]): Promise<PropertyBatchResult[]> {
   const body = (await (await req(`/properties/batch`, { method: "POST", body: JSON.stringify({ items }), cache: "no-store" })).json()) as { results?: PropertyBatchResult[] };

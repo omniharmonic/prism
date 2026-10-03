@@ -38,7 +38,7 @@ import { createTemplateNote, isTemplateFor, NewButton, TemplateEditor, templateP
 import { allRows, CsvImportDialog, downloadText, rowsToCsv } from "./Csv";
 
 const VIEW_ICONS: Record<ViewType, typeof Table2> = { table: Table2, board: KanbanSquare, gallery: GalleryVerticalEnd, list: ListIcon, calendar: Calendar };
-const ROW_META = ["type", "prism_type", "icon", "cover"];
+const ROW_META = ["type", "prism_type", "icon", "cover", "coverY"];
 /** System property keys that live in metadata (the others are note columns). */
 const SYSTEM_META = SYSTEM_PROPERTIES.map((p) => p.key).filter((k) => !k.startsWith("$"));
 

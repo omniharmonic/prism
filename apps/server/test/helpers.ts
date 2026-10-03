@@ -67,6 +67,14 @@ export interface FakeVault {
    *  last. Set `historySupported = false` to emulate a 0.6.x vault (404s). */
   versions: Map<string, FakeVersion[]>;
   historySupported: boolean;
+  /** Vault attachment storage (`/storage/upload` → `/storage/<date>/<file>`), keyed by path. */
+  storage: Map<string, Buffer>;
+  /** Attachment rows linked via `POST /notes/:id/attachments`. */
+  attachments: Array<{ id: string; noteId: string; path: string; mimeType: string; body: unknown }>;
+  /** Make the next `POST /notes/:id/attachments` fail (upload succeeded, attach did not). */
+  failNextAttach?: boolean;
+  /** Make the next `DELETE /notes/:id` fail with a 500 (a vault that could not delete the note). */
+  failNextNoteDelete?: boolean;
   put(note: Partial<FakeNote> & { id: string }): FakeNote;
   /** Serve an ADDITIONAL vault name at /vault/<name>/api with its own note
    *  store (multi-vault tests). The primary store (`notes`) keeps serving
@@ -141,6 +149,8 @@ export function installFakeVault(): FakeVault {
     conflictOnNextWrite: false,
     versions: new Map(),
     historySupported: true,
+    storage: new Map(),
+    attachments: [],
     put(note) {
       const n = fakeNote(note);
       fv.notes.set(n.id, n);
@@ -212,6 +222,53 @@ export function installFakeVault(): FakeVault {
     const store = stores.get(decodeURIComponent(apiMatch[1]!));
     if (!store) return new Response("not found", { status: 404 }); // unregistered vault → unreachable
     const sub = apiMatch[2]!; // "/notes", "/notes/:id", "/tags", ...
+
+    // Attachment storage (vault 0.7.9 REST): upload, link to a note, ranged read.
+    if (sub === "/storage/upload" && method === "POST") {
+      const form = init?.body as FormData | undefined;
+      const file = form && typeof (form as FormData).get === "function" ? (form as FormData).get("file") : null;
+      if (!file || typeof file === "string") return json({ error: "file is required" }, 400);
+      const name = (file as File).name ?? "upload.bin";
+      const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+      const path = `2026-10-02/${Date.now()}-${++seq}${ext}`;
+      const bytes = Buffer.from(await (file as Blob).arrayBuffer());
+      fv.storage.set(path, bytes);
+      return json({ path, size: bytes.length, mimeType: "application/octet-stream" }, 201);
+    }
+    const st = sub.match(/^\/storage\/(.+)$/);
+    if (st && method === "GET") {
+      const path = decodeURIComponent(st[1]!);
+      const bytes = fv.storage.get(path);
+      if (!bytes) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const range = headers["Range"] ?? headers["range"];
+      const rm = range?.match(/^bytes=(\d*)-(\d*)$/);
+      if (rm) {
+        const start = rm[1] ? Number(rm[1]) : Math.max(0, bytes.length - Number(rm[2]));
+        const end = rm[1] && rm[2] ? Math.min(Number(rm[2]), bytes.length - 1) : bytes.length - 1;
+        if (start >= bytes.length || start > end) return new Response(null, { status: 416, headers: { "content-range": `bytes */${bytes.length}` } });
+        const part = bytes.subarray(start, end + 1);
+        return new Response(new Uint8Array(part), { status: 206, headers: { "content-type": "application/octet-stream", "content-length": String(part.length), "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+      }
+      return new Response(new Uint8Array(bytes), { status: 200, headers: { "content-type": "application/octet-stream", "content-length": String(bytes.length) } });
+    }
+    const attDel = sub.match(/^\/notes\/([^/]+)\/attachments\/([^/]+)$/);
+    if (attDel && method === "DELETE") {
+      const i = fv.attachments.findIndex((x) => x.noteId === decodeURIComponent(attDel[1]!) && x.id === decodeURIComponent(attDel[2]!));
+      if (i < 0) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const [gone] = fv.attachments.splice(i, 1);
+      if (!fv.attachments.some((x) => x.path === gone!.path)) fv.storage.delete(gone!.path);
+      return new Response(null, { status: 204 });
+    }
+    const att = sub.match(/^\/notes\/([^/]+)\/attachments$/);
+    if (att && method === "POST") {
+      if (fv.failNextAttach) { fv.failNextAttach = false; return json({ error: "boom" }, 500); }
+      const noteId = decodeURIComponent(att[1]!);
+      if (!store.get(noteId)) return json({ error: "Not found", error_type: "not_found" }, 404);
+      const b = (body ?? {}) as { path?: string; mimeType?: string };
+      const row = { id: `att-${++seq}`, noteId, path: b.path ?? "", mimeType: b.mimeType ?? "", body };
+      fv.attachments.push(row);
+      return json({ id: row.id, noteId, path: row.path, mimeType: row.mimeType, createdAt: new Date().toISOString() }, 201);
+    }
 
     // GET /tags
     if (sub === "/tags" && method === "GET") {
@@ -322,7 +379,10 @@ export function installFakeVault(): FakeVault {
       }
       if (method === "DELETE") {
         if (!existing) return new Response("not found", { status: 404 });
+        if (fv.failNextNoteDelete) { fv.failNextNoteDelete = false; return json({ error: "boom" }, 500); }
         store.delete(id);
+        // Like the real vault: attachment ROWS cascade with the note; stored files stay on disk.
+        fv.attachments = fv.attachments.filter((a) => a.noteId !== id);
         return json({ ok: true });
       }
     }

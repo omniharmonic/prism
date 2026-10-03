@@ -335,3 +335,18 @@
   .db-actions .db-split-main { flex: 1; }
   .db-map select { font-size: 16px; min-height: 44px; }
 }
+
+/* Files & media property (NP-DB-09) */
+.db-file { display: inline-flex; align-items: center; gap: 5px; max-width: 180px; height: 22px; padding: 0 6px; border-radius: 5px; background: var(--glass-hover); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.db-file:hover, .db-file:focus-visible { color: var(--text-primary); background: var(--glass-active); outline: none; }
+.db-file-thumb { width: 16px; height: 16px; border-radius: 3px; object-fit: cover; flex: none; }
+.db-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: left; }
+.db-files-picker { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.db-files-picker ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+.db-files-picker li { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 4px; border-radius: 5px; }
+.db-files-picker li:hover { background: var(--glass-hover); }
+.db-files-picker li .db-file-name { flex: 1; font-size: 13px; color: var(--text-primary); }
+.db-files-picker li .db-file-thumb { width: 24px; height: 24px; }
+.db-files-upload { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; border-radius: 6px; border: 1px dashed var(--glass-border-strong); color: var(--text-secondary); font-size: 13px; }
+.db-files-upload:hover:not(:disabled) { background: var(--glass-hover); color: var(--text-primary); }
+@media (max-width: 767px) { .db-files-upload { height: 44px; } .db-files-picker li { min-height: 44px; } }

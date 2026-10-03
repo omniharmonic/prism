@@ -50,6 +50,7 @@ const schemas: SchemaMap = {
       project: { type: "string", kind: "relation", relationTag: "initiative", reverseLabel: "Tasks" },
       email: { type: "string" },
       phone: { type: "string" },
+      files: { type: "array", kind: "files", label: "Files" },
       link: { type: "string" },
       flagged: { type: "boolean" },
       labels: { type: "array", colors: { design: "purple", launch: "orange" } },
@@ -77,8 +78,8 @@ let notes: Note[] = [
     },
     createdAt: at, updatedAt: at,
   },
-  task("t1", "Review workspace navigation", { status: "todo", priority: "high", due: day(2), estimate: 3, assignee: "[[People/Mira Chen]]", labels: ["design"], flagged: true, link: "https://example.test/nav", project: "[[Projects/Atlas]]", prism_creator: "mira@example.test", prism_last_writer: "sam@example.test" }, { createdAt: "2026-09-20T09:00:00.000Z", updatedAt: "2026-09-30T16:00:00.000Z" }),
-  task("t2", "Write release notes", { status: "in-progress", priority: "high", due: day(4), estimate: 2, assignee: "[[People/Sam Rivera]]", labels: ["launch"], project: "[[Projects/Atlas]]", notes: "Mention the printer driver fix", prism_creator: "sam@example.test", prism_last_writer: "mira@example.test" }, { createdAt: "2026-09-25T09:00:00.000Z" }),
+  task("t1", "Review workspace navigation", { status: "todo", priority: "high", due: day(2), estimate: 3, assignee: "[[People/Mira Chen]]", labels: ["design"], flagged: true, link: "https://example.test/nav", project: "[[Projects/Atlas]]", cover: "/api/attachments/a_cover1", coverY: 20, prism_creator: "mira@example.test", prism_last_writer: "sam@example.test" }, { createdAt: "2026-09-20T09:00:00.000Z", updatedAt: "2026-09-30T16:00:00.000Z" }),
+  task("t2", "Write release notes", { cover: "gradient:lagoon", status: "in-progress", priority: "high", due: day(4), estimate: 2, assignee: "[[People/Sam Rivera]]", labels: ["launch"], project: "[[Projects/Atlas]]", notes: "Mention the printer driver fix", prism_creator: "sam@example.test", prism_last_writer: "mira@example.test" }, { createdAt: "2026-09-25T09:00:00.000Z" }),
   task("t3", "Refine onboarding copy", { status: "in-progress", priority: "medium", due: day(8), estimate: 5 }),
   task("t4", "Design new icon set", { status: "done", priority: "medium", due: day(-3), labels: ["design"], icon: "🎨" }),
   task("t5", "Update pricing page", { status: "done", priority: "low", due: day(-1) }),
@@ -127,8 +128,15 @@ const visible = () => notes.filter((n) => !(viewer && n.metadata?.prism_visibili
 let rev0 = Number(sessionStorage.getItem("db-fixture-rev") ?? 0);
 const bump = (n: Note) => { rev0 += 1; n.updatedAt = `2026-10-02T00:${String(Math.floor(rev0 / 60)).padStart(2, "0")}:${String(rev0 % 60).padStart(2, "0")}.000Z`; sessionStorage.setItem("db-fixture-rev", String(rev0)); save(); };
 
+const uploads: Array<{ noteId: string; name: string; kind?: string }> = [];
+Object.assign(window, { dbUploads: uploads });
 const client: Partial<VaultClient> = {
   scope: () => "db-fixture",
+  // Attachments (wave 2B): the specs fulfil /api/attachments/* themselves.
+  uploadAttachment: async (noteId, file, opts) => {
+    uploads.push({ noteId, name: file.name, kind: opts?.kind });
+    return { id: `a_up${uploads.length}`, url: `/api/attachments/a_up${uploads.length}`, name: file.name, mimeType: file.type || "application/octet-stream", size: file.size };
+  },
   listNotes: async (f) => (controls.listCalls++, clone(visible().filter((n) => !f?.tag || n.tags?.includes(f.tag)).slice(0, f?.limit ?? 50000))),
   listTree: async () => clone(visible()),
   getNote: async (id) => {

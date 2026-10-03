@@ -13,7 +13,7 @@ import { httpHostServices } from "./host/HttpHostServices";
 import { httpInvalidationSource } from "./events/httpInvalidationSource";
 import { webCollabSharing } from "./collab/grant";
 import { CollabDocument, useLiveCollab } from "./collab/CollabDocument";
-import { fetchMe, initCapability, isOwner, postLoginTarget } from "./config";
+import { fetchMe, initCapability, isOwner, postLoginTarget, capabilityHeader } from "./config";
 import { ReconnectScreen } from "./auth/ReconnectScreen";
 import { LoginScreen as WebLoginScreen } from "./auth/LoginScreen";
 import { NativeSignInScreen, NativeStartupScreen } from "./auth/NativeSignInScreen";
@@ -268,6 +268,9 @@ export async function start() {
   // Client parity C: external note images via the server's SSRF-guarded proxy
   // (blob: URLs; the client CSP only allows its own server). PWA loads directly.
   if (!capability && isNative) installExternalImageProxy({ fetch: serverFetch, apiOrigin: gatewayOrigin });
+  // Note attachments for a capability-link viewer: the link authenticates with a
+  // header an <img>/<video> can't send, so fetch them and show blob: URLs.
+  if (capability) installExternalImageProxy({ fetch: (u, i) => serverFetch(u, { ...i, headers: { ...capabilityHeader(), ...(i?.headers as Record<string, string> | undefined) } }), apiOrigin: gatewayOrigin, attachmentsOnly: true });
   if (!capability) {
     initAgentDeepLink(); // push notification → /agent/:id (WP3.3); cold start is handled by agentLink above
     listenForInboxOpenRequests(); // notification push click while open → Inbox tab (wave 2A)

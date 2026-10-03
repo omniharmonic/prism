@@ -4,7 +4,7 @@ import WebSocket from "ws";
 
 const SHOTS = process.env.PRISM_EDITOR_SHOTS;
 /** The editor's current document-schema version (bumped with every schema change). */
-const V = 3;
+const V = 4;
 const REASON = "update_required: Prism was updated. Reload or update the app to keep editing.";
 
 /** A real Hocuspocus server that enforces the schema param like the Prism Server. */

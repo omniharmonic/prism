@@ -23,8 +23,11 @@ import { mentionExtensions } from "../lib/tiptap/MentionNode";
  *   1 — StarterKit/Link/Highlight/Tasks + suggestion/comment marks (implicit)
  *   2 — + image, table, callout, toggle, columns, block/text colour
  *   3 — + mention (person / page / date chips; lib/tiptap/MentionNode.ts)
+ *   4 — + attachment (file/pdf/audio/video), embed, bookmark, tableOfContents,
+ *       databaseView (inline database), image align + caption; codeBlock is now the
+ *       lowlight variant (same name + `language` attr, highlighting is decoration-only)
  */
-export const COLLAB_SCHEMA_VERSION = 3;
+export const COLLAB_SCHEMA_VERSION = 4;
 
 /**
  * The document schema shared by the collaborative editor (browser) and the
@@ -42,13 +45,14 @@ export const COLLAB_SCHEMA_VERSION = 3;
  */
 export function collabExtensions(): Extensions {
   return [
-    StarterKit.configure({ undoRedo: false, link: false }),
+    StarterKit.configure({ undoRedo: false, link: false, codeBlock: false }),
     Link.configure({ openOnClick: false, autolink: true }),
     Typography,
     Highlight.configure({ multicolor: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    // Images, tables, callouts, toggles, columns and block/text colours —
+    // Images, files, embeds, bookmarks, TOC, highlighted code, tables,
+    // callouts, toggles, columns and block/text colours —
     // shared with the plain renderer so a note round-trips through either.
     ...blockSchemaExtensions(),
     // @-mentions: person / page / date chips (wave 2A).
