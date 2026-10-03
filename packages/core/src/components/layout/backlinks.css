@@ -11,6 +11,7 @@
   box-shadow: var(--glass-shadow-elevated);
 }
 .backlinks-list ul { list-style: none; margin: 0; padding: 0; }
+.backlinks-item > svg { flex-shrink: 0; margin-top: 2px; }
 .backlinks-item { display: flex; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 7px; text-align: left; color: var(--text-secondary); }
 .backlinks-item:hover { background: var(--glass-hover); }
 .backlinks-item-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

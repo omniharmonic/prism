@@ -18,7 +18,7 @@ function vaultDocName(noteId: string): string {
 }
 import { updateNote as restUpdateNote, hasPendingWrites } from "../parachute/rest";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource, BacklinksPill } from "@prism/core";
+import { reportSyncSource, BacklinksPill, EmptyPageStarters } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -572,6 +572,10 @@ function ScopedCollabDoc({
                 onWikilinkNavigate={onWikilinkNavigate}
                 wikilinkNotes={wikilinkNotes}
               />
+            )}
+            {/* Only once synced: a starter must never race the server's own content. */}
+            {embedded && isDocument && editor && editable && synced && !effectiveSuggesting && (
+              <div style={{ maxWidth: "var(--content-measure)", margin: "0 auto" }}><EmptyPageStarters editor={editor} noteId={noteId} title={title} /></div>
             )}
           </div>
           {showComments && !narrow && commentsOpen && <div style={{ width: 320, flexShrink: 0 }}>{sidebar}</div>}

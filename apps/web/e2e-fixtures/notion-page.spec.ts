@@ -95,3 +95,39 @@ test("backlinks pill lists linking pages", async ({ page }, info) => {
   // A page nobody links to has no pill.
   await expect(page.getByRole("button", { name: /backlinks?$/ })).toHaveCount(0);
 });
+
+/** Wave 2E · NP-PG-14 */
+test("empty page starters vanish on typing", async ({ page }, info) => {
+  await page.goto("/e2e-fixtures/notion-shell.html");
+  await expect(page.locator(".tiptap[contenteditable=true]")).toBeVisible();
+  const starters = page.getByRole("group", { name: "Start this page" });
+  await expect(starters).toHaveCount(0); // a page with content never shows them
+  await page.evaluate(() => (window as any).prismShellUI.getState().openTab("blank", "Untitled", "document"));
+  await expect(starters).toBeVisible();
+  for (const name of ["Empty page", "Template", "Import"]) await expect(starters.getByRole("button", { name })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("empty-starters.png") });
+  // Template fills this page (the editor then autosaves as usual).
+  await starters.getByRole("button", { name: "Template" }).click();
+  await page.getByRole("list", { name: "Templates" }).getByRole("button", { name: "Meeting notes" }).click();
+  const editor = page.locator(".tiptap[contenteditable=true]");
+  await expect(editor.locator("h2")).toHaveText("Agenda");
+  await expect(starters).toHaveCount(0);
+  await expect.poll(async () => (await page.evaluate(() => (window as any).prismShell.writes)).some((w: any) => w.path.endsWith("/blank") && String(w.body.content).includes("Agenda")), { timeout: 8000 }).toBe(true);
+  // Undo back to empty brings them back; typing removes them again.
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(starters).toBeVisible();
+  await starters.getByRole("button", { name: "Empty page" }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.type("Hello");
+  await expect(starters).toHaveCount(0);
+  // Import a Markdown file into an empty page.
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.press("Backspace");
+  await expect(starters).toBeVisible();
+  const chooser = page.waitForEvent("filechooser");
+  await starters.getByRole("button", { name: "Import" }).click();
+  await (await chooser).setFiles({ name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# Imported\n\n- one\n- two\n<script>window.bad = 1</script>") });
+  await expect(editor.locator("h1")).toHaveText("Imported");
+  await expect(editor.locator("li")).toHaveCount(2);
+  expect(await page.evaluate(() => (window as any).bad)).toBeUndefined();
+});

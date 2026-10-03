@@ -22,6 +22,8 @@ const notes: Note[] = [
   { id: "agenda", path: "Library/Workshop agenda", content: "<p>Saturday: opening discussion, field notes, next steps for the workshop.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "mira@example.test" }, createdAt: "2026-05-01T09:00:00.000Z", updatedAt: "2026-05-02T09:00:00.000Z" },
   { id: "tracker", path: "Projects/Prism/Workshop tracker", content: "", tags: ["task"], metadata: { prism_type: "database", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
   { id: "field-notes", path: "Journal/Field notes", content: "<p>Notes from the last conversation about the workshop budget. See A living workspace for the plan.</p>", tags: ["note"], metadata: { type: "document", prism_creator: "owner@example.test" }, createdAt: recent, updatedAt: recent },
+  { id: "blank", path: "Projects/Prism/Untitled", content: "", tags: [], metadata: { type: "document" }, createdAt: recent, updatedAt: recent },
+  { id: "tpl", path: "Templates/Meeting notes", content: "<h2>Agenda</h2><p>Topics to cover.</p>", tags: ["template"], metadata: { type: "document" }, createdAt: recent, updatedAt: recent },
 ];
 // Metadata written by the app survives reloads ("another device" = a fresh page).
 const savedMeta = JSON.parse(sessionStorage.getItem("notion-shell-meta") ?? "{}") as Record<string, Record<string, unknown>>;

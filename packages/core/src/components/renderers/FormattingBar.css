@@ -41,3 +41,18 @@
   flex: 1; min-width: 0; min-height: 40px; padding: 0 10px; font-size: 16px; border-radius: 8px;
   background: var(--bg-base); color: var(--text-primary); border: 1px solid var(--glass-border);
 }
+
+/* Empty-page starters (NP-PG-14). */
+.empty-page-starters { margin: 8px 0 24px; color: var(--text-muted); }
+.empty-page-starters-hint { font-size: 13px; margin: 0 0 6px; color: var(--text-muted); }
+.empty-page-starters-row, .empty-page-templates { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.empty-page-templates { margin-top: 6px; }
+.empty-page-starter {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px;
+  border-radius: 7px; font-size: 13px; color: var(--text-secondary);
+}
+.empty-page-starter:hover, .empty-page-starter[aria-expanded=true] { background: var(--glass-hover); color: var(--text-primary); }
+@media (pointer: coarse) { .empty-page-starter { min-height: 44px; } }
+/* While starters show, the empty editor is one line tall so they sit right under the caret. */
+.document-writing-measure:has(.empty-page-starters) .prose-editor,
+div:has(> div > .empty-page-starters) .prose-editor { min-height: 2.5em !important; }

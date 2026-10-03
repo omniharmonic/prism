@@ -254,3 +254,4 @@ export { useReduceMotion, setReduceMotion, applyReduceMotion, prefersReducedMoti
 export { setOfflineAvailability, useOfflineAvailability, type OfflineAvailability } from "./lib/offline/availability";
 export { isVaultNoteId } from "./lib/noteIdentity";
 export { BacklinksPill } from "./components/layout/BacklinksPill";
+export { EmptyPageStarters } from "./components/renderers/EmptyPageStarters";
