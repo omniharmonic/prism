@@ -28,9 +28,9 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { createHash } from "node:crypto";
 import * as Y from "yjs";
-import TurndownService from "turndown";
 import { Fragment } from "@tiptap/pm/model";
 import { yDocToProsemirrorJSON, updateYFragment } from "@tiptap/y-tiptap";
+import { ConversionError, blocksHtmlToMarkdown, contentToSeed, docJsonToHtml, type ConvertOptions } from "../convert/service";
 import { isLocked, isTrashed, systemNoteReason } from "@prism/core/pages";
 import { db, resolveVaultEntry } from "../db";
 import type { VaultEntry } from "../config";
@@ -41,7 +41,8 @@ import { treeUpsertNote, warmPageAnchors } from "../tree";
 import { roleAtLeast, roleFloor } from "../roles";
 import { csrfRefusal } from "./actions";
 import { consumeRateLimit } from "../middleware/ratelimit";
-import { FIELD, collabSchema, contentToYUpdate, docNameFor, hocuspocus, isDocLive, isNoteId, noteCollabWriter, noteKind, yDocToHtml } from "../collab";
+import { CollabBusyError, DocumentTooComplexError, FIELD, collabSchema, docNameFor, ensureRenderedSize, flushLiveDoc, hasLiveState, hocuspocus, isDocBlocked, isNoteId, noteCollabWriter, noteKind, renderedSizeOf } from "../collab";
+import { getCollabUnsaved, getDocState } from "../db";
 import { writerStamp } from "../sharing";
 import "../block-append-store";
 
@@ -65,27 +66,38 @@ const ref = (n: Pick<Note, "id" | "tags" | "metadata"> & { path?: string | null 
 const entryFor = (c: Context, a: Actor): VaultEntry => (isAdmin(a) ? resolveVaultEntry(c.req.header("x-prism-vault")) : resolveVaultEntry(a.vaultId));
 
 const looksLikeHtml = (s: string) => /^\s*<[a-z][a-z0-9-]*[\s>/]/i.test(s);
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
-// Prism blocks Markdown cannot say (callouts, files, embeds, sub-page rows, databases, toggles, columns)
-// stay as HTML blocks — valid in Markdown, and exactly what the editor parses back.
-turndown.keep(((node: { nodeName: string; getAttribute(name: string): string | null }) =>
-  (node.nodeName === "DIV" && (!!node.getAttribute("data-type") || !!node.getAttribute("data-prism-database"))) || node.nodeName === "DETAILS") as never);
+// Every conversion here goes through the conversion service (worker thread + wall
+// clock; inline only for small input) — never a parser on this thread. It throws
+// ConversionError when the blocks cannot be converted in budget.
 
 /** Parse through the shared schema: canonical HTML + the document's blocks. Null when nothing valid is left. */
-export function canonicalBlocks(html: string): { html: string; json: unknown[] } | null {
+export async function canonicalBlocks(html: string, opts?: ConvertOptions): Promise<{ html: string; json: unknown[] } | null> {
   const tmp = new Y.Doc();
-  Y.applyUpdate(tmp, contentToYUpdate(html));
+  Y.applyUpdate(tmp, await contentToSeed(html, opts));
   const json = yDocToProsemirrorJSON(tmp, FIELD) as { content?: unknown[] };
-  const out = yDocToHtml(tmp);
+  tmp.destroy();
+  const out = await docJsonToHtml(json, opts);
   if (!json.content?.length || out === "<p></p>") return null;
   return { html: out, json: json.content };
 }
 
-/** The target body with the blocks appended, in the body's own format. */
-export function appendToBody(body: string, blocksHtml: string): string {
+/**
+ * The target body with the blocks appended, in the body's own format. A
+ * Markdown body gets the blocks as Markdown (Prism-only blocks — callouts, files,
+ * embeds, sub-page rows, databases, toggles, columns — stay as HTML blocks: valid
+ * in Markdown, and exactly what the editor parses back).
+ */
+export async function appendToBody(body: string, blocksHtml: string, opts?: ConvertOptions): Promise<string> {
   if (!body.trim()) return blocksHtml;
   if (looksLikeHtml(body)) return body.replace(/\s+$/, "") + blocksHtml;
-  return `${body.replace(/\s+$/, "")}\n\n${turndown.turndown(blocksHtml).trim()}\n`;
+  return `${body.replace(/\s+$/, "")}\n\n${(await blocksHtmlToMarkdown(blocksHtml, opts)).trim()}\n`;
+}
+
+/** A conversion that did not happen, as this route's answer. */
+function conversionRefusal(e: ConversionError): { status: number; body: Record<string, unknown> } {
+  return e.reason === "busy"
+    ? { status: 503, body: { error: "busy", retry: true } }
+    : { status: 413, body: { error: "too_complex", detail: "those blocks are too large or complex to move" } };
 }
 
 /** Append blocks at the end of a live document: one Yjs transaction that only CREATES elements. */
@@ -97,6 +109,15 @@ export function appendToLiveDoc(doc: Y.Doc, blocks: unknown[], origin: string): 
   doc.transact(() => {
     updateYFragment(doc, doc.getXmlFragment(FIELD), next, { mapping: new Map(), isOMark: new Map() });
   }, origin);
+}
+
+/** `block_append_receipts.live`: the blocks entered the live document; durability not yet confirmed. */
+const APPLIED_UNCONFIRMED = 2;
+/** Does a Yjs state vector contain the append recorded as "<client>:<clock>"? */
+function stateCovers(stateVector: Uint8Array, marker: string): boolean {
+  const [client, clock] = marker.split(":").map(Number);
+  if (!Number.isFinite(client) || !Number.isFinite(clock)) return false;
+  return (Y.decodeStateVector(stateVector).get(client!) ?? 0) >= clock!;
 }
 
 const inFlight = new Map<string, Promise<{ status: number; body: Record<string, unknown> }>>();
@@ -144,11 +165,15 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
 
   const actorKey = actor.email.toLowerCase();
   const hash = createHash("sha256").update(html).digest("hex");
-  const receipt = db.prepare("SELECT body_hash, live FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").get(entry.id, note.id, actorKey, requestId) as { body_hash: string; live: number } | undefined;
+  const receipt = db.prepare("SELECT body_hash, live, applied FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").get(entry.id, note.id, actorKey, requestId) as { body_hash: string; live: number; applied: string | null } | undefined;
   if (receipt) {
     if (receipt.body_hash !== hash) return c.json({ error: "idempotency_mismatch" }, 422);
-    c.header("Idempotent-Replayed", "true");
-    return c.json({ ok: true, live: !!receipt.live, replayed: true });
+    if (receipt.live !== APPLIED_UNCONFIRMED) {
+      c.header("Idempotent-Replayed", "true");
+      return c.json({ ok: true, live: !!receipt.live, replayed: true });
+    }
+    // live = 2: an earlier try of this request put the blocks INTO the live document and
+    // was answered 503 `not_confirmed`. The run below must not append them again.
   }
   const key = `${entry.id}\u0000${note.id}\u0000${actorKey}\u0000${requestId}`;
   const running = inFlight.get(key);
@@ -159,36 +184,114 @@ blocksApi.post("/notes/:id/blocks/append", bodyLimit({ maxSize: MAX_HTML + 4096,
   }
 
   const run = (async (): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const blocks = canonicalBlocks(html);
+    const who: ConvertOptions = { actor: `user:${actorKey}` };
+    let blocks: Awaited<ReturnType<typeof canonicalBlocks>>;
+    try {
+      blocks = await canonicalBlocks(html, who);
+    } catch (e) {
+      if (e instanceof ConversionError) return conversionRefusal(e);
+      throw e;
+    }
     if (!blocks) return { status: 400, body: { error: "invalid_request", detail: "nothing to append" } };
-    const record = (live: boolean) => {
-      db.prepare("INSERT OR IGNORE INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(entry.id, note.id, actorKey, requestId, hash, live ? 1 : 0, new Date().toISOString());
+    const record = (live: boolean | typeof APPLIED_UNCONFIRMED, applied: string | null = null) => {
+      db.prepare(
+        `INSERT INTO block_append_receipts (vault_id, note_id, actor, request_id, body_hash, live, applied, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(vault_id, note_id, actor, request_id) DO UPDATE SET live = excluded.live, applied = COALESCE(excluded.applied, applied)`,
+      ).run(entry.id, note.id, actorKey, requestId, hash, live === APPLIED_UNCONFIRMED ? APPLIED_UNCONFIRMED : live ? 1 : 0, applied, new Date().toISOString());
       db.prepare("DELETE FROM block_append_receipts WHERE created_at < ?").run(new Date(Date.now() - RECEIPT_DAYS * 86_400_000).toISOString());
     };
+    const forget = () => db.prepare("DELETE FROM block_append_receipts WHERE vault_id = ? AND note_id = ? AND actor = ? AND request_id = ?").run(entry.id, note.id, actorKey, requestId);
     const docName = docNameFor(entry.id, note.id);
-    if (isDocLive(entry.id, note.id)) {
-      const conn = await hocuspocus.openDirectConnection(docName, { human: actor.email });
+    /** Durable = in the vault, or in the server's document store with the note recorded as still to be written. */
+    const durableWith = (marker: string | null): boolean => {
+      const snapshot = getDocState(note.id, entry.id);
+      if (!snapshot || (marker && !stateCovers(Y.encodeStateVectorFromUpdate(snapshot.state), marker))) return false;
+      return !snapshot.ahead || getCollabUnsaved(note.id, entry.id) !== null;
+    };
+    // A retry of a request whose blocks already ENTERED the live document (answered 503
+    // `not_confirmed`): never a second copy. If they are still there (in the loaded document,
+    // else in its snapshot), all that is left is to make them durable; if they are gone with a
+    // document that was lost before it was saved, the receipt is void and the append runs again.
+    if (receipt?.live === APPLIED_UNCONFIRMED && receipt.applied) {
+      const marker = receipt.applied;
+      const loaded = isDocBlocked(docName) ? undefined : (hocuspocus.documents.get(docName) as Y.Doc | undefined);
+      const snapshot = getDocState(note.id, entry.id);
+      const present = loaded ? stateCovers(Y.encodeStateVector(loaded), marker) : !!snapshot && stateCovers(Y.encodeStateVectorFromUpdate(snapshot.state), marker);
+      if (!present) forget();
+      else {
+        if (!durableWith(marker)) {
+          // One more store, now: through the loaded document, or by loading its snapshot.
+          try {
+            if (loaded) await flushLiveDoc(entry.id, note.id);
+            else await (await hocuspocus.openDirectConnection(docName, { human: `user:${actor.email}` })).disconnect();
+          } catch {
+            /* still not confirmed: answered below */
+          }
+        }
+        if (!durableWith(marker)) return { status: 503, body: { error: "not_confirmed", retry: true } };
+        record(true);
+        return { status: 200, body: { ok: true, live: true, replayed: true } };
+      }
+    }
+    // Through the live document when it is open — and when it holds changes that have not
+    // reached the vault yet (the stored body is stale: appending to it would write over them).
+    if (hasLiveState(entry.id, note.id)) {
+      let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
+      let appended = false;
+      let marker: string | null = null;
+      try {
+        // `user:<email>`: the identity form the collab hooks attribute and rate by.
+        conn = await hocuspocus.openDirectConnection(docName, { human: `user:${actor.email}` });
+      } catch (e) {
+        if (e instanceof DocumentTooComplexError) return { status: 413, body: { error: "too_complex", detail: "that page is too large or complex for the live editor" } };
+        if (e instanceof CollabBusyError) return { status: 503, body: { error: "busy", retry: true } };
+        throw e;
+      }
       try {
         if (!conn.document) return { status: 502, body: { error: "upstream_error" } };
-        if (Buffer.byteLength(yDocToHtml(conn.document)) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
-        // Synchronous from here: the receipt and the Yjs change land in the same tick.
+        if (isDocBlocked(docName)) return { status: 409, body: { error: "conflict", retry: true } };
+        // The page's rendered size: the last store's figure, else measured once
+        // OFF this thread (a live page of thousands of paragraphs is not rendered here).
+        try {
+          await ensureRenderedSize(conn.document, who);
+        } catch (e) {
+          if (e instanceof ConversionError) return e.reason === "busy" ? { status: 503, body: { error: "busy", retry: true } } : { status: 413, body: { error: "too_large", detail: "that page is full" } };
+          throw e;
+        }
+        if ((renderedSizeOf(conn.document) ?? 0) + Buffer.byteLength(blocks.html) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
         appendToLiveDoc(conn.document, blocks.json, `human:${actor.email}`);
+        // Same tick as the append: from here on a retry of this request finds the blocks by
+        // this marker instead of appending them again (L6).
+        marker = `${conn.document.clientID}:${Y.getState(conn.document.store, conn.document.clientID)}`;
+        record(APPLIED_UNCONFIRMED, marker);
         noteCollabWriter(docName, actor.email, "edit");
-        record(true);
+        appended = true;
       } finally {
         await conn.disconnect(); // stores through the normal path
       }
+      // The receipt (and the 200) only once the change is DURABLE: written to the vault, or
+      // saved in the server's document store with the note recorded as still to be written
+      // (`collab_unsaved` — retried, restored at every open, never folded away).
+      // Until then the receipt says "entered the live document" — the retry the client is told
+      // to make finds the blocks there and does not append a second copy.
+      if (!appended || !durableWith(marker)) return { status: 503, body: { error: "not_confirmed", retry: true } };
+      record(true);
       return { status: 200, body: { ok: true, live: true } };
     }
     let current = note;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!current.updatedAt) return { status: 409, body: { error: "conflict" } };
-      const next = appendToBody(current.content ?? "", blocks.html);
+      let next: string;
+      try {
+        next = await appendToBody(current.content ?? "", blocks.html, who);
+      } catch (e) {
+        if (e instanceof ConversionError) return conversionRefusal(e);
+        throw e;
+      }
       if (Buffer.byteLength(next) > MAX_NOTE) return { status: 413, body: { error: "too_large", detail: "that page is full" } };
       // The page may have been opened since the check above: a body write under a
       // live document would be folded over what is being typed.
-      if (isDocLive(entry.id, note.id)) return { status: 409, body: { error: "conflict", retry: true } };
+      if (hasLiveState(entry.id, note.id)) return { status: 409, body: { error: "conflict", retry: true } };
       try {
         const saved = await client.updateNote(note.id, { content: next, metadata: writerStamp(actor.email, "edit"), ifUpdatedAt: current.updatedAt });
         record(false);

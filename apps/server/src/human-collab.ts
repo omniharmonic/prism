@@ -60,6 +60,7 @@ import {
 } from "@prism/core/collab-commands";
 import { config } from "./config";
 import { FIELD, collabSchema, proseToHtml, renderedSizeOf, setCommandEffectsCheck, setLostCommandCleanup, setRenderedSize } from "./collab";
+import { ConversionError } from "./convert/service";
 import { editFragment, getThread, setThreadResolved } from "./collab-ops";
 import { db, collabActorUsage, countCollabReceipts, deleteUnconfirmedCollabReceipts, getCollabReceipt, insertCollabReceipt, pruneCollabReceipts, type UnconfirmedCollabReceipt } from "./db";
 import { atLeast, type Level } from "./permissions";
@@ -117,6 +118,20 @@ export class HumanCommandError extends Error {
 }
 
 const invalid = (message: string) => new HumanCommandError(400, "invalid_command", message);
+/**
+ * Rendered size of a ProseMirror node, on this thread. `proseToHtml` is BOUNDED:
+ * it renders only what is cheap (a command's one-block window always is, unless
+ * that block is itself enormous) and refuses the rest — which is then a clean
+ * refusal of the command, never a stalled server.
+ */
+function htmlBytes(node: PMNode): number {
+  try {
+    return Buffer.byteLength(proseToHtml(node));
+  } catch (e) {
+    if (e instanceof ConversionError) throw new HumanCommandError(413, "document_too_large", "That passage is too large or complex to change here.");
+    throw e;
+  }
+}
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const bytes = (s: string) => Buffer.byteLength(s);
 
@@ -362,7 +377,9 @@ function pendingSuggestionsOf(doc: Y.Doc, actorId: string): number {
 function renderedSize(doc: Y.Doc, prose: PMNode): number {
   let size = renderedSizeOf(doc);
   if (size === undefined) {
-    size = bytes(proseToHtml(prose));
+    // Normally known already (the route measures it off-thread before the engine
+    // runs; every store records it). Only a small document is measured here.
+    size = htmlBytes(prose);
     setRenderedSize(doc, size);
   }
   return size;
@@ -468,7 +485,7 @@ function planSuggest(doc: Y.Doc, prose: PMNode, command: Extract<HumanCollabComm
   if (stored.eq(w.mini) || !resolveOne(stored, suggestionId, "reject").eq(w.mini) || !resolveOne(stored, suggestionId, "accept").eq(miniAccepted)) {
     throw invalid(UNMARKABLE);
   }
-  const growth = bytes(proseToHtml(stored)) - bytes(proseToHtml(w.mini));
+  const growth = htmlBytes(stored) - htmlBytes(w.mini);
   bodyBudget(doc, prose, growth, usage.body);
   return {
     result: { requestId: command.requestId, kind: "suggest", suggestionId },
@@ -530,7 +547,7 @@ function planComment(prose: PMNode, command: Exclude<HumanCollabCommand, { kind:
     const entry = item(text, commentId);
     const added = bytes(JSON.stringify({ id: threadId, quote, resolved: false, comments: [entry] })) + 16;
     commentBudget(doc, added, usage.comments);
-    const growth = bytes(proseToHtml(miniNext)) - bytes(proseToHtml(w.mini));
+    const growth = htmlBytes(miniNext) - htmlBytes(w.mini);
     bodyBudget(doc, prose, growth, usage.body);
     return {
       result: { requestId: command.requestId, kind: "comment", threadId, commentId },

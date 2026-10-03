@@ -14,7 +14,7 @@
 import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import type { Context } from "hono";
-import { resolveVaultEntry, grantsForResource } from "../db";
+import { resolveVaultEntry, grantsForResource, isCollabUnsaved, deleteCollabSetAsideForNote, hasCollabSetAside } from "../db";
 import { vault, vaultClient, VaultError, VaultConflictError, type Note } from "../parachute";
 import { resolveActor, requestVia, type Actor } from "../auth/actor";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
@@ -30,7 +30,8 @@ import { humanCollabApi } from "./human-collab";
 import { transcriptsApi } from "./transcripts";
 import { databasesApi } from "./databases";
 import { sharingApi } from "./sharing";
-import { consumeRateLimit } from "../middleware/ratelimit";
+import { consumeRateLimit, rateLimitClientKey } from "../middleware/ratelimit";
+import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
 import { redactVersionForViewer, stripWriterMeta, changeValue, creatorNameFor, CHANGE_KEY, WRITER_META_KEYS, createCapsAt, forViewer } from "../sharing";
 import { writerNames, WRITER_AT_KEY } from "../writer-stamp";
 import { attachmentsApi } from "./attachments";
@@ -142,6 +143,22 @@ async function proxyToVault(c: Context) {
       console.warn(`[pages] lock bypass: ${resolveActor(c).kind === "user" ? (resolveActor(c) as { email: string }).email : "?"} edited locked note ${decodeURIComponent(lockedId)} (vault ${entry.id})`);
     }
   }
+  // DELETE /notes/<id or PATH alias>: set-aside rows are keyed by note ID, so an alias is
+  // resolved BEFORE the note is gone (only when this vault holds any such row at all).
+  const deleting: string[] = [];
+  const deleteOf = method === "DELETE" ? path.match(/^\/notes\/([^/?]+)$/)?.[1] : undefined;
+  if (deleteOf) {
+    try {
+      const asked = decodeURIComponent(deleteOf);
+      deleting.push(asked);
+      if (hasCollabSetAside(entry.id)) {
+        const id = (await vaultClient(entry.id, { timeoutMs: 5000 }).getNote(asked)).id;
+        if (id !== asked) deleting.push(id);
+      }
+    } catch {
+      /* a malformed escape, or a note that cannot be read: the delete itself answers */
+    }
+  }
   const t0 = Date.now();
   let res: ProxiedResponse;
   try {
@@ -157,6 +174,8 @@ async function proxyToVault(c: Context) {
   // subscribe socket covers everyone else's; this makes the writer's next read exact).
   if (method !== "GET" && method !== "HEAD" && res.status >= 200 && res.status < 300) {
     void treeAfterOwnerWrite(entry, method, path, res.body).catch(() => {});
+    // A note deleted for good takes the page text set aside from its live document with it.
+    for (const id of deleting) deleteCollabSetAsideForNote(entry.id, id);
   }
   if (process.env.PRISM_VAULT_TRACE === "1") {
     console.log(`[trace] proxy ${method} ${path}${url.search} → ${res.status} ${res.body.length}B ${Date.now() - t0}ms ua=${(c.req.header("user-agent") ?? "").slice(0, 40)}`);
@@ -455,6 +474,64 @@ api.use("/notes/:id", async (c, next) => {
   if (!needsEditorUpdate(storedNote.content ?? "")) return next();
   return c.json({ error: "editor_update_required", message: "Prism was updated. Reload or update the app to keep editing." }, 409);
 });
+
+// A note whose LIVE document state has not reached the vault yet (a store that
+// could not render or write — `collab_unsaved`): the vault's body is stale, so a
+// REST write of the body (PATCH/PUT with `content`, or a version restore) would
+// pass its version check against content nobody is looking at. Such a note is
+// first given the chance to be written (load + store); if its state is still
+// ahead, the write is refused — `409 conflict {live, retry}` — for EVERY caller
+// (owner passthrough and in-process MCP included). A note that cannot be opened
+// live at all (unconvertible) is exempt: REST is the only way to fix it.
+//
+// Settling LOADS the document and STORES it (a conversion, a vault write). Only
+// someone who could make the body write may set that off: `edit` on the note,
+// not locked, not a system note (admins as the gateway treats them) — a viewer's
+// PATCH gets the route's own 403 with nothing loaded (review M1) — and at most
+// `UNSAVED_SETTLES_PER_MINUTE` per actor; past that the answer is the 409
+// without another attempt.
+//
+// A page whose changes can NEVER be written as they are (a permanent row) is not
+// "still being saved": it answers `409 unsaved_permanent {retry:false}` (M2).
+const UNSAVED_CONFLICT = { error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Open the page, or try again in a moment." } as const;
+async function unsavedRefusal(c: Context, id: string): Promise<Response | null> {
+  const actor = resolveActor(c);
+  if (actor.kind === "anon" || !id) return null; // the route answers 401/403/404
+  const vaultId = roleAtLeast(actor.role, "admin") ? resolveVaultEntry(c.req.header("x-prism-vault")).id : actor.vaultId;
+  if (!isCollabUnsaved(id, vaultId)) return null; // one indexed lookup; rows are keyed by note id
+  // Never an oracle, and never work on behalf of someone who could not make this
+  // write anyway: without `edit` on an unlocked, non-system note the route's own
+  // answer (404 / 403 / 423) stands and NOTHING is loaded or stored.
+  if (!roleAtLeast(actor.role, "admin")) {
+    try {
+      const note = await vaultClient(vaultId).getNote(id);
+      if (!capsFor(actor, ref(note)).has("edit") || isLocked(note) || isTrashed(note) || systemNoteReason(note)) return null;
+    } catch {
+      return null;
+    }
+  }
+  const collab = await import("../collab"); // lazily: collab ⇄ routes import cycle
+  // One bucket per account, shared with the Prism MCP tools (unsaved-settle.ts).
+  const wait = takeUnsavedSettle(actor.kind === "user" ? settleKeyForUser(actor.email) : `c:${rateLimitClientKey(c)}`);
+  if (wait !== null) {
+    // No further load + store for this actor right now: the snapshot is still ahead as far as anyone knows.
+    c.header("Retry-After", String(wait));
+    const permanent = collab.unsavedPermanentReason(vaultId, id);
+    return permanent ? c.json(collab.unsavedPermanentBody(permanent), 409) : c.json(UNSAVED_CONFLICT, 409);
+  }
+  const settled = await collab.settleUnsaved(vaultId, id);
+  if (settled === "permanent") return c.json(collab.unsavedPermanentBody(collab.unsavedPermanentReason(vaultId, id)), 409);
+  return settled === "pending" ? c.json(UNSAVED_CONFLICT, 409) : null;
+}
+api.use("/notes/:id", async (c, next) => {
+  const method = c.req.method;
+  if (method !== "PATCH" && method !== "PUT") return next();
+  let body: unknown;
+  try { body = JSON.parse(await c.req.text()); } catch { return next(); }
+  if (!body || typeof body !== "object" || typeof (body as { content?: unknown }).content !== "string") return next();
+  return (await unsavedRefusal(c, c.req.param("id"))) ?? next();
+});
+api.use("/notes/:id/restore", async (c, next) => (c.req.method === "POST" ? ((await unsavedRefusal(c, c.req.param("id"))) ?? next()) : next()));
 
 // Wave 2A: a successful content write carrying @-mention chips → notifications +
 // mention backlinks (both the owner passthrough and the member route; never
@@ -1158,6 +1235,7 @@ api.delete("/notes/:id", async (c) => {
     return vaultErr(c, e);
   }
   treeRemoveNote(resolveVaultEntry(actor.vaultId), note.id);
+  deleteCollabSetAsideForNote(actor.vaultId, note.id);
   return c.json({ ok: true });
 });
 

@@ -33,6 +33,7 @@ import {
   SHEET_FIELD,
   CANVAS_FIELD,
   applyExternalContent,
+  yDocToDocJson,
   collabSchema,
   parseScene,
   yDocToHtml,
@@ -42,6 +43,7 @@ import {
   type CanvasEl,
   type CollabKind,
 } from "./collab";
+import type { DocJson } from "./convert/service";
 
 /** Render a doc to the note body its kind persists as (what the store writes). */
 export function renderDoc(doc: Y.Doc, kind: CollabKind): string {
@@ -66,7 +68,7 @@ export class CollabConflictError extends CollabOpError {}
  * Apply `content` (the note's full new body) to `doc` minimally for its kind.
  * Runs inside the caller's transaction (or opens one).
  */
-export function applyContentMinimal(doc: Y.Doc, kind: CollabKind, content: string): void {
+export function applyContentMinimal(doc: Y.Doc, kind: CollabKind, content: string, prepared?: DocJson | null): void {
   if (kind === "spreadsheet") {
     doc.transact(() => applySheetContent(doc.getArray<Y.Array<string>>(SHEET_FIELD), parseCsvStrict(content)));
   } else if (kind === "canvas") {
@@ -83,8 +85,10 @@ export function applyContentMinimal(doc: Y.Doc, kind: CollabKind, content: strin
     }
     doc.transact(() => applyCanvasUpsert(doc.getMap<CanvasEl>(CANVAS_FIELD), content));
   } else {
-    // document + code: the reconciler's own minimal-diff path.
-    applyExternalContent(doc, kind, content);
+    // document + code: the reconciler's own minimal-diff path. A document's body
+    // arrives already parsed (`prepared`, from prepareExternalContent — off the
+    // main thread); without it only a small body is converted here.
+    applyExternalContent(doc, kind, content, prepared);
   }
 }
 
@@ -92,13 +96,16 @@ export function applyContentMinimal(doc: Y.Doc, kind: CollabKind, content: strin
  * Three-way content merge: fork `baseState`, apply `content` there, and apply
  * only the fork's delta to `live` under `origin`. Returns true if anything changed.
  */
-export function mergeContentIntoLive(live: Y.Doc, baseState: Uint8Array, kind: CollabKind, content: string, origin: string): boolean {
+export function mergeContentIntoLive(live: Y.Doc, baseState: Uint8Array, kind: CollabKind, content: string, origin: string, prepared?: DocJson | null): boolean {
   const fork = new Y.Doc();
   Y.applyUpdate(fork, baseState);
   const baseSv = Y.encodeStateVector(fork);
-  const before = renderDoc(fork, kind);
-  applyContentMinimal(fork, kind, content);
-  if (renderDoc(fork, kind) === before) {
+  // "Did anything change?" — a document is compared as ProseMirror JSON (linear,
+  // no DOM render on this thread); the other kinds by their (linear) serialisation.
+  const stateOf = (d: Y.Doc): string => (kind === "document" ? JSON.stringify(yDocToDocJson(d)) : renderDoc(d, kind));
+  const before = stateOf(fork);
+  applyContentMinimal(fork, kind, content, prepared);
+  if (stateOf(fork) === before) {
     fork.destroy();
     return false;
   }

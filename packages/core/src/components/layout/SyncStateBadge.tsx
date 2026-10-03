@@ -1,5 +1,5 @@
 import { AlertCircle, Check, CloudOff, Loader2, Smartphone } from "lucide-react";
-import { useSyncStatus, type SyncKind } from "../../lib/sync/syncState";
+import { syncBadgeAction, useSyncStatus, type SyncKind } from "../../lib/sync/syncState";
 import "./sync-state.css";
 
 /** The recovery dialog for saved-on-device changes lives in the host shell (web OfflineIndicator). */
@@ -32,9 +32,11 @@ function Icon({ kind, size }: { kind: SyncKind; size: number }) {
 export function SyncStateBadge({ variant = "header" }: { variant?: "header" | "phone" | "footer" }) {
   const status = useSyncStatus();
   const text = variant === "footer" ? status.footer : variant === "phone" ? PHONE_LABEL[status.kind] : status.label;
-  const actionable = status.kind === "failed" || status.kind === "review" || status.kind === "local" || status.kind === "waiting";
+  // A failure with nothing to retry (a live page the server cannot store, local saving
+  // unavailable) is a statement, not a button: it used to be announced as "…: retry saving".
+  const action = syncBadgeAction(status);
   const act = () => {
-    if (status.kind === "failed" && status.failure?.retry) status.failure.retry();
+    if (action === "retry") status.failure?.retry?.();
     else window.dispatchEvent(new CustomEvent(OPEN_SAVED_CHANGES_EVENT));
   };
   const showText = variant !== "phone" || status.kind !== "saved";
@@ -54,8 +56,8 @@ export function SyncStateBadge({ variant = "header" }: { variant?: "header" | "p
   // The live region announces changes without stealing focus (NP-AX-03).
   return (
     <span role="status" aria-live="polite" className="sync-state-region">
-      {actionable
-        ? <button type="button" {...common} onClick={act} aria-label={status.kind === "failed" ? `${text}: retry saving` : `${text}: review saved changes`}>{body}</button>
+      {action
+        ? <button type="button" {...common} onClick={act} aria-label={action === "retry" ? `${text}: retry saving` : `${text}: review saved changes`}>{body}</button>
         : <span {...common}>{body}</span>}
     </span>
   );

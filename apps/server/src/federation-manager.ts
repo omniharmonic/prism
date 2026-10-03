@@ -46,7 +46,7 @@ import * as Y from "yjs";
 import { HocuspocusProvider, WebSocketStatus } from "@hocuspocus/provider";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import WebSocket from "ws";
-import { hocuspocus, noteKind, PEER_ORIGIN, type CollabKind } from "./collab";
+import { CollabBusyError, DocumentTooComplexError, hocuspocus, noteKind, PEER_ORIGIN, type CollabKind } from "./collab";
 import { signPeerConnToken } from "./auth/peer-conn";
 import { vault } from "./parachute";
 import { grantCaps, type Level } from "./permissions";
@@ -122,7 +122,17 @@ class PeerBinding {
     // The SAME doc our Hocuspocus serves under space_note_key (federationTarget
     // maps it to local_id for vault I/O). Holding a direct connection also keeps
     // the doc loaded so onStoreDocument fires when peer edits arrive.
-    this.direct = await hocuspocus.openDirectConnection(this.fed.space_note_key);
+    try {
+      this.direct = await hocuspocus.openDirectConnection(this.fed.space_note_key);
+    } catch (e) {
+      // The note cannot be opened live right now (its content cannot be converted, or
+      // the converter is busy): there is no document to bridge. syncSpaces() binds again.
+      if (e instanceof DocumentTooComplexError || e instanceof CollabBusyError) {
+        console.warn(`[federation] ${this.fed.space_note_key}: no live document (${e.reason.split(":")[0]}) — skipping bind`);
+        return;
+      }
+      throw e;
+    }
     this.doc = this.direct.document;
     if (!this.doc || this.stopped) {
       await this.stop();

@@ -9,7 +9,7 @@
  *      auth, CSRF, caps (unviewable == missing), system / locked / trashed, size.
  */
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -20,7 +20,13 @@ import { api } from "../src/routes/api";
 import { addGrant, ensureUser } from "../src/db";
 import { attachCollab, hocuspocus, isDocLive, resetReconcileState, reconcileLoadedDocs, yDocToHtml } from "../src/collab";
 import { appendToBody } from "../src/routes/blocks";
+import { stopConversionWorkers } from "../src/convert/service";
 import { installFakeVault, makeCapability, makeSession, resetDb, sessionCookie, type FakeVault } from "./helpers";
+
+// A live conversion thread keeps a test process from exiting: stop it when the file is done.
+after(async () => {
+  await stopConversionWorkers();
+});
 
 const EDITOR = "editor@test.local";
 const VIEWER = "viewer@test.local";
@@ -137,7 +143,7 @@ test("M5: a Markdown-bodied target stays Markdown — a code block with blank li
   assert.match(out, /```js\nconst a = 1;\n\n\nconst b = 2;\n```/);
   assert.doesNotMatch(out, /<pre|<h2|<ul/);
   // Blocks Markdown cannot say stay as HTML blocks (still valid Markdown).
-  assert.match(appendToBody("# T\n", '<div data-type="callout" data-emoji="💡"><p>note</p></div>'), /^# T\n\n<div data-type="callout"/);
+  assert.match(await appendToBody("# T\n", '<div data-type="callout" data-emoji="💡"><p>note</p></div>'), /^# T\n\n<div data-type="callout"/);
 });
 
 test("L8: a repeated request id appends once; the same id with another body is refused", async () => {
@@ -187,4 +193,53 @@ test("auth, CSRF, caps and page state: unviewable == missing; view-only, locked,
   // A path alias the vault would resolve is never acted on.
   fv.put({ id: "aliased", path: "garden/alias", tags: ["garden"], content: "<p>x</p>", updatedAt: T0 });
   assert.equal((await append(encodeURIComponent("garden/alias"), ok)).status, 404);
+});
+
+// ── review H4: the conversion service (no parser, no full render on this thread) ──
+
+test("H4: a LIVE page of 3,000 paragraphs takes an append (its size is measured off-thread, never rendered here)", { timeout: 120_000 }, async () => {
+  const big = Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} of a long page.</p>`).join("");
+  fv.put({ id: "big", tags: ["garden"], content: big, updatedAt: T0 });
+  const doc = new Y.Doc();
+  const provider = new HocuspocusProvider({
+    url: wsUrl, name: "big", token: makeCapability("tag", "garden", "edit"), document: doc, awareness: null,
+    // @ts-expect-error WebSocketPolyfill is accepted at runtime
+    WebSocketPolyfill: WebSocket,
+  });
+  providers.push(provider);
+  await new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("sync timeout")), 90_000);
+    provider.on("synced", () => { clearTimeout(t); resolve(); });
+  });
+  assert.ok(isDocLive("primary", "big"));
+  typeInParagraph(doc, 0, " UNSAVED-HUMAN");
+  await settle();
+  const res = await append("big", { html: BLOCK, requestId: rid(40) });
+  assert.equal(res.status, 200, JSON.stringify(await res.clone().json()));
+  assert.deepEqual(await res.json(), { ok: true, live: true });
+  const live = hocuspocus.documents.get("big")!;
+  const frag = live.getXmlFragment("default");
+  assert.equal(frag.length, 3001, "one block was added to the live document");
+  assert.equal((frag.get(3000) as Y.XmlElement).nodeName, "blockquote");
+  assert.match((frag.get(0) as Y.XmlElement).toString(), /UNSAVED-HUMAN/, "unsaved typing is intact");
+  // Leave cleanly: the last socket closing stores (rendered in the worker) and then unloads.
+  provider.destroy();
+  providers.splice(providers.indexOf(provider), 1);
+  for (let i = 0; i < 600 && hocuspocus.documents.has("big"); i++) await settle(100);
+  assert.equal(hocuspocus.documents.has("big"), false);
+  assert.match(fv.notes.get("big")!.content, /UNSAVED-HUMAN[\s\S]*Echo quote/, "typing and the moved block were stored");
+});
+
+test("H4: moving MANY blocks (3,000 paragraphs, nesting 60 deep) is converted off-thread — a 200 or a clean refusal, never a 502", { timeout: 120_000 }, async () => {
+  const many = Array.from({ length: 3000 }, (_, i) => `<p>b${i}</p>`).join("");
+  const res = await append("t1", { html: many, requestId: rid(41) });
+  assert.equal(res.status, 200, JSON.stringify(await res.clone().json()));
+  assert.equal((fv.notes.get("t1")!.content.match(/<p>b\d+<\/p>/g) ?? []).length, 3000);
+  // A Markdown-bodied target gets them as Markdown — the HTML→Markdown step runs in the worker too.
+  const md = await append("md1", { html: many, requestId: rid(42) });
+  assert.equal(md.status, 200, JSON.stringify(await md.clone().json()));
+  assert.match(fv.notes.get("md1")!.content, /^# Title\n\nSome \*markdown\* text\.\n\nb0\n\nb1\n/);
+  const nested = `${"<blockquote>".repeat(60)}<p>deep</p>${"</blockquote>".repeat(60)}`;
+  const deep = await append("t1", { html: nested, requestId: rid(43) });
+  assert.ok([200, 413].includes(deep.status), `status ${deep.status}`);
 });

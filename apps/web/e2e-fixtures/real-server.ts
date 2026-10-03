@@ -21,6 +21,10 @@ export interface RealServer {
   sessions: Record<"owner" | "sam" | "eve" | "gina", string>;
   /** Read a fake-vault note as the server holds it. */
   note(id: string): Promise<{ id: string; content: string; metadata: Record<string, unknown> | null } | null>;
+  /** Replace a note's body in the fake vault, as an external writer would (a newer version). */
+  put(id: string, content: string): Promise<void>;
+  /** Override the server's conversion limits (null restores them) — e.g. `{ inlineMaxNodes: 0, maxNodes: 1 }` makes every page "too large to save". */
+  limits(patch: Record<string, number> | null): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -46,7 +50,10 @@ export async function startRealServer(appOrigin: string): Promise<RealServer> {
     }
   });
   let stderr = "";
-  child.stderr.on("data", (d) => (stderr += String(d)));
+  child.stderr.on("data", (d) => {
+    stderr += String(d);
+    if (process.env.E2E_SERVER_LOG) process.stderr.write(`[fixture server] ${String(d)}`); // debugging aid
+  });
   const nextLine = () =>
     new Promise<string>((resolve, reject) => {
       const l = lines.shift();
@@ -63,6 +70,14 @@ export async function startRealServer(appOrigin: string): Promise<RealServer> {
     async note(id) {
       child.stdin.write(JSON.stringify({ op: "note", id }) + "\n");
       return (JSON.parse(await nextLine()) as { note: never }).note;
+    },
+    async put(id, content) {
+      child.stdin.write(JSON.stringify({ op: "put", id, content }) + "\n");
+      await nextLine();
+    },
+    async limits(patch) {
+      child.stdin.write(JSON.stringify({ op: "limits", limits: patch }) + "\n");
+      await nextLine();
     },
     async stop() {
       child.stdin.end();

@@ -18,7 +18,13 @@ export class WorkerTimeoutError extends Error {
   }
 }
 export class WorkerFailedError extends Error {
-  constructor(message: string, public readonly code?: string, public readonly status?: number) {
+  /**
+   * `duringTask` (with code `worker_failed`): the thread died while it was RUNNING
+   * this task — out of memory, a crash inside a parser: very likely this input's
+   * doing. False for a thread that never came up (nothing was handed over yet):
+   * that says something about the server, nothing about the input.
+   */
+  constructor(message: string, public readonly code?: string, public readonly status?: number, public readonly duringTask = false) {
     super(message);
   }
 }
@@ -49,23 +55,27 @@ export class TaskWorker {
   private current: Task | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly maxOldGenerationSizeMb: number, private readonly maxQueue = 64) {}
+  /** `workerData` reaches the thread as-is (`{ preload: "doc" }` loads the document converters before `ready`, outside any task's clock). */
+  constructor(private readonly maxOldGenerationSizeMb: number, private readonly maxQueue = 64, private readonly workerData: unknown = undefined) {}
 
   get pending(): number {
     return this.queue.length + (this.current ? 1 : 0);
   }
 
   /** Run one task. Rejects with WorkerTimeoutError when it runs longer than `timeoutMs` (queueing and worker start-up are not counted). */
-  run<T>(message: unknown, timeoutMs: number, transfer: ArrayBuffer[] = []): Promise<T> {
+  run<T>(message: unknown, timeoutMs: number, transfer: ArrayBuffer[] = [], front = false): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (this.queue.length >= this.maxQueue) return reject(new WorkerFailedError("busy", "busy", 503));
-      this.queue.push({ message, transfer, timeoutMs, sent: false, resolve: resolve as (v: unknown) => void, reject });
+      const task: Task = { message, transfer, timeoutMs, sent: false, resolve: resolve as (v: unknown) => void, reject };
+      // `front`: ahead of everything still waiting (never ahead of the running task).
+      if (front) this.queue.unshift(task);
+      else this.queue.push(task);
       this.pump();
     });
   }
 
   private spawn(): Thread {
-    const worker = new Worker(ENTRY, { execArgv: [], resourceLimits: { maxOldGenerationSizeMb: this.maxOldGenerationSizeMb } });
+    const worker = new Worker(ENTRY, { execArgv: [], workerData: this.workerData, resourceLimits: { maxOldGenerationSizeMb: this.maxOldGenerationSizeMb } });
     worker.unref();
     const thread: Thread = { worker, ready: false };
     // Every handler first checks that this is still THE thread: a killed worker's late
@@ -87,7 +97,7 @@ export class TaskWorker {
       if (this.thread !== thread) return;
       this.thread = null;
       const task = this.settle();
-      if (task) task.reject(new WorkerFailedError("worker_failed", "worker_failed"));
+      if (task) task.reject(new WorkerFailedError("worker_failed", "worker_failed", undefined, task.sent));
       this.pump();
     };
     worker.on("error", died);
@@ -143,6 +153,25 @@ export class TaskWorker {
     } catch {
       this.kill(new WorkerFailedError("worker_failed", "worker_failed"));
     }
+  }
+
+  /**
+   * Fail everything still WAITING (never the running task) with `busy`: nothing
+   * about those inputs is known, and running them would spawn a thread each.
+   */
+  flush(): void {
+    const waiting = this.queue;
+    this.queue = [];
+    // The task a death just promoted (a thread is booting for it, nothing was sent yet) counts as waiting.
+    const next = this.current;
+    if (next && !next.sent) {
+      const thread = this.thread;
+      this.thread = null;
+      this.settle();
+      if (thread) void thread.worker.terminate();
+      waiting.unshift(next);
+    }
+    for (const task of waiting) task.reject(new WorkerFailedError("busy", "busy", 503));
   }
 
   /** Shutdown / test helper. */

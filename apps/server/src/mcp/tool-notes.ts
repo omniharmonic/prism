@@ -20,15 +20,17 @@
  *    for the passthrough (the vault has no /search route).
  */
 import * as z from "zod/v4";
-import TurndownService from "turndown";
-import { CAPS, effectiveCaps, type Cap } from "../permissions";
+import { ConversionError, htmlToMarkdown } from "../convert/service";
+import { CAPS, atLeast, effectiveCaps, type Cap } from "../permissions";
 import { roleFloor } from "../roles";
-import { isDocLive, noteKind, type CollabKind } from "../collab";
+import { hasLiveState, isDocLive, noteKind, settleUnsaved, unsavedPermanentReason, unsavedReasonText, type CollabKind } from "../collab";
 import type { Note } from "../parachute";
 import { canView, hasCapAnywhere, isAdmin } from "./access";
 import { jsonOrToolError } from "./dispatch";
 import { ToolError, isStaleConflict } from "./errors";
-import { afterLiveMetaWrite, liveContentWrite } from "./tool-collab";
+import { afterLiveMetaWrite, collabAccess, liveContentWrite } from "./tool-collab";
+import { settleKeyForUser, takeUnsavedSettle } from "../unsaved-settle";
+import { isTrashed } from "@prism/core/pages";
 import { defineTool, type PrismResource, type PrismTool, type ToolContext } from "./tools";
 
 // ── bounds ──────────────────────────────────────────────────────────────────
@@ -97,13 +99,30 @@ function listRow(n: NoteOut, includeContent: boolean): Record<string, unknown> {
 const hasTag = (n: Note, tag: string) => (n.tags ?? []).some((t) => t === tag || t.startsWith(`${tag}/`));
 const byUpdatedDesc = (a: Note, b: Note) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? "");
 
+/**
+ * A page whose live-editor changes can NEVER be written as they are (a permanent
+ * `collab_unsaved` row). Not "wait a few seconds": no amount of retrying changes
+ * it, and the agent must be told so (detail.retry === false).
+ */
+function unsavedForGood(reason: string): ToolError {
+  return new ToolError(
+    "conflict",
+    `this page has changes from the live editor that cannot be saved to the stored note (${unsavedReasonText(reason)}), so its content cannot be changed from here. ` +
+      "Do NOT retry: waiting will not help. Someone has to open the page and make it smaller, or the workspace owner has to discard the unsaved live changes; tell the user.",
+    { live: true, retry: false, permanent: true, reason },
+  );
+}
+
 /** Fetch the note (view gate) and refuse a CONTENT write while its Yjs doc is live. */
 async function assertNotLive(ctx: ToolContext, id: string, verb: string): Promise<void> {
   const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`); // 403/404 here first: liveness is never an oracle for non-viewers
-  if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
+  const forGood = unsavedPermanentReason(ctx.principal.actor.vaultId, note.id);
+  if (forGood) throw unsavedForGood(forGood);
+  // Live = loaded, or holding live-editor changes that have not reached the vault yet.
+  if (hasLiveState(ctx.principal.actor.vaultId, note.id)) {
     throw new ToolError(
       "conflict",
-      `this note is open in live collaborative editing, so ${verb} is refused to avoid racing the live document. ` +
+      `this note is open in live collaborative editing (or still saving changes from it), so ${verb} is refused to avoid racing the live document. ` +
         "Wait until no one has it open and retry — or read the version (prism_get_version) and write its content with " +
         "prism_update_note, which merges into the live document.",
       { live: true },
@@ -306,8 +325,34 @@ export const updateNoteTool = defineTool({
       noteId = note.id;
       // A locked page refuses content for EVERY principal (owners unlock it first).
       if (note.metadata?.prism_locked === true) throw new ToolError("conflict", "this page is locked — unlock it before editing its content", { locked: true });
-      if (isDocLive(ctx.principal.actor.vaultId, note.id)) {
+      // A note that is not loaded but holds unsaved live state is first given the chance to be
+      // written; one that cannot be opened live at all is fixed over REST (the only way).
+      const { vaultId } = ctx.principal.actor;
+      // …and one whose live changes can never be written is not merged into either: the merge
+      // would land in a document the stored note will never reflect (the agent would be told
+      // "merged" and read back an unchanged note, forever).
+      // Settling LOADS the document and STORES it (a conversion, a vault write). Only someone
+      // who could make this write may set that off — `edit` on THIS note (the tool's own gate
+      // is "edit somewhere"; a viewer of this page gets the gateway's refusal below with
+      // nothing loaded and nothing said about its unsaved state) — and only within the same
+      // per-account bucket as the gateway's body writes (review M-1).
+      const mayEdit = atLeast(collabAccess(ctx.principal.actor, note).level, "edit") && !isTrashed(note);
+      let settled: Awaited<ReturnType<typeof settleUnsaved>> | null = null;
+      if (mayEdit && !isDocLive(vaultId, note.id) && hasLiveState(vaultId, note.id)) {
+        const forGoodAlready = unsavedPermanentReason(vaultId, note.id);
+        if (forGoodAlready) throw unsavedForGood(forGoodAlready);
+        if (takeUnsavedSettle(settleKeyForUser(ctx.principal.actor.email)) !== null) {
+          throw new ToolError("conflict", "this page has changes that are still being saved from the live editor — wait a minute, re-read the note and try again", { live: true, retry: true });
+        }
+        settled = await settleUnsaved(vaultId, note.id);
+      }
+      const forGood = mayEdit ? unsavedPermanentReason(vaultId, note.id) : null;
+      if (forGood) throw unsavedForGood(forGood);
+      const viaLive = mayEdit && (isDocLive(vaultId, note.id) || settled === "pending");
+      if (viaLive) {
         // WP6.3: a live doc takes the change through Yjs (three-way merge), never a vault overwrite.
+        // The same goes for a note whose live changes have not reached the vault yet: its stored
+        // body is stale, so the write goes through the document (which is loaded for it).
         const r = await liveContentWrite(ctx, note.id, a.content, a.if_updated_at);
         merged = { live: true, changed: r.changed };
         const rest = a.metadata !== undefined || a.path !== undefined || hasTags;
@@ -450,7 +495,6 @@ export const NOTE_TOOLS = [
 
 // ── resource: prism://note/{id} ─────────────────────────────────────────────
 
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
 /** Collab persists document notes as HTML; vault-native ones are already Markdown. */
 const looksLikeHtml = (s: string) => /^\s*<[a-z][a-z0-9-]*[\s>/]/i.test(s);
 
@@ -471,12 +515,26 @@ export const noteResource: PrismResource = {
     const note = await getJson<NoteOut>(ctx, `/api/notes/${enc(id)}`);
     const shaped = shapeNote(ctx, note);
     const kind = (shaped.collab as { kind: CollabKind }).kind;
+    // `shaped.content` is ALREADY capped (NOTE_CONTENT_CHARS): only that much is
+    // ever converted, and the conversion runs in the worker under a time limit.
     const body = String(shaped.content);
     const isDoc = kind === "document";
-    const text = isDoc && looksLikeHtml(body) ? turndown.turndown(body) : body;
-    const { content: _c, ...meta } = shaped;
+    let text = body;
+    let unconverted: string | null = null;
+    if (isDoc && looksLikeHtml(body)) {
+      try {
+        text = await htmlToMarkdown(body, { actor: `user:${ctx.principal.actor.email.toLowerCase()}` });
+      } catch (e) {
+        if (!(e instanceof ConversionError)) throw e;
+        // Deterministic fallback: the stored body as it is, and a note saying so.
+        unconverted = e.reason;
+        text = `<!-- prism: this note's HTML could not be converted to Markdown (${e.reason}); the stored HTML follows unchanged -->\n${body}`;
+      }
+    }
+    const { content: _c, ...rest } = shaped;
+    const meta = unconverted ? { ...rest, contentFormat: "html", contentUnconverted: unconverted } : rest;
     return [
-      { uri: uri.href, mimeType: isDoc ? "text/markdown" : "text/plain", text },
+      { uri: uri.href, mimeType: unconverted ? "text/html" : isDoc ? "text/markdown" : "text/plain", text },
       { uri: `${uri.href}#metadata`, mimeType: "application/json", text: JSON.stringify(meta, null, 2) },
     ];
   },

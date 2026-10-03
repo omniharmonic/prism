@@ -103,6 +103,11 @@ const opts = {
   rebuildMs: () => Number(process.env.TREE_REBUILD_MS ?? 300_000),
   snapshotTimeoutMs: () => Number(process.env.TREE_SNAPSHOT_TIMEOUT_MS ?? 60_000),
   debounceMs: () => Number(process.env.TREE_DEBOUNCE_MS ?? 1500),
+  /** How often the subscribe socket is pinged (`TREE_PING_MS`); two intervals of silence from a socket that answered pings = dead. */
+  pingMs: () => {
+    const n = Number(process.env.TREE_PING_MS ?? 30_000);
+    return Number.isFinite(n) && n > 0 ? n : 30_000;
+  },
   log: () => process.env.PRISM_TREE_LOG === "1",
   factory: ((url: string) => new (globalThis as unknown as { WebSocket: new (u: string) => TreeSocket }).WebSocket(url)) as TreeSocketFactory,
 };
@@ -122,6 +127,11 @@ interface State {
   ws: TreeSocket | null;
   wsLive: boolean;
   pending: TreeRow[] | null; // snapshot frames accumulating
+  /** Changes that arrived on the current socket before its snapshot was complete: replayed onto the snapshot's rows. */
+  early: Array<{ row: TreeRow } | { remove: string }>;
+  /** When the current socket last delivered anything (a frame or a pong), and whether it ever answered a ping. */
+  lastHeard: number;
+  ponged: boolean;
   backoff: number;
   rebuilding: Promise<void> | null;
   rebuildAgain: boolean;
@@ -359,6 +369,7 @@ function onClosed(st: State, ws: TreeSocket): void {
   st.ws = null;
   st.wsLive = false;
   st.pending = null;
+  st.early = [];
   // No socket → fall back to a lean REST build so the tree is never unavailable, then retry the socket.
   if (!st.loaded && !st.stopped && !st.rebuilding) void rebuild(st, "ws-unavailable");
   scheduleReconnect(st);
@@ -377,6 +388,9 @@ function connect(st: State): void {
   }
   st.ws = ws;
   st.pending = null;
+  st.early = [];
+  st.ponged = false;
+  st.lastHeard = Date.now();
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: "auth", token: st.entry.token }));
     // If the snapshot never lands (vault busy / old vault), don't leave the tree hanging.
@@ -391,17 +405,37 @@ function connect(st: State): void {
         }
       }
     }, opts.snapshotTimeoutMs());
+    const pingMs = opts.pingMs();
     st.timers.ping = setInterval(() => {
+      // A half-dead socket (the peer is gone, no close ever arrives) would leave the
+      // projection "live" for good while it hears nothing — and the collab reconciler
+      // trusts a live projection instead of reading notes (NP-PF-09). A vault that
+      // answers pings is heard at least once per interval; two intervals of silence
+      // from one that DID answer → give the socket up (not live; reconnect + snapshot).
+      // A vault that never answered a ping proves nothing by being quiet: left alone.
+      if (st.ws === ws && st.ponged && Date.now() - st.lastHeard > 2 * pingMs) {
+        log(`vault=${st.entry.id} subscribe socket silent for ${Date.now() - st.lastHeard}ms — closing`);
+        try {
+          ws.close();
+        } catch {
+          /* already gone */
+        }
+        onClosed(st, ws); // a dead socket may never deliver its close event
+        return;
+      }
       try {
         ws.send("ping");
       } catch {
         /* onclose follows */
       }
-    }, 30_000);
+    }, pingMs);
     st.timers.ping.unref?.();
   };
   ws.onmessage = (ev) => {
-    if (st.ws !== ws || typeof ev.data !== "string" || ev.data === "pong") return;
+    if (st.ws !== ws) return;
+    st.lastHeard = Date.now();
+    if (ev.data === "pong") st.ponged = true;
+    if (typeof ev.data !== "string" || ev.data === "pong") return;
     let f: { type?: string; notes?: unknown[]; note?: unknown; id?: unknown; done?: boolean };
     try {
       f = JSON.parse(ev.data);
@@ -421,11 +455,22 @@ function connect(st: State): void {
         st.backoff = 2000;
         clearTimeout(st.timers.snapshot);
         replaceRows(st, acc, "subscribe-snapshot", Date.now() - t0);
+        // Changes that arrived while the snapshot was coming in may be newer than the
+        // chunk that carried their note: apply them to the new rows too (an older
+        // upsert is ignored there, as always).
+        for (const e of st.early.splice(0)) {
+          if ("row" in e) upsertRow(st, e.row);
+          else removeRow(st, e.remove);
+        }
       }
     } else if (f.type === "upsert") {
       const r = rowFromNote(f.note);
-      if (r) upsertRow(st, r);
+      if (r) {
+        if (!st.wsLive) st.early.push({ row: r });
+        upsertRow(st, r);
+      }
     } else if (f.type === "remove" && typeof f.id === "string") {
+      if (!st.wsLive) st.early.push({ remove: f.id });
       removeRow(st, f.id);
     }
   };
@@ -483,6 +528,9 @@ function getState(entry: VaultEntry): State {
       ws: null,
       wsLive: false,
       pending: null,
+      early: [],
+      lastHeard: 0,
+      ponged: false,
       backoff: 2000,
       rebuilding: null,
       rebuildAgain: false,
@@ -593,10 +641,17 @@ export function etagMatches(header: string | undefined, etag: string): boolean {
 
 // ── write-through ───────────────────────────────────────────────────────────
 
+/** Is stamp `a` an earlier instant than `b`? By time; as strings only when one of them is not a date. */
+function stampOlder(a: string, b: string): boolean {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return Number.isNaN(x) || Number.isNaN(y) ? a < b : x < y;
+}
+
 function upsertRow(st: State, r: TreeRow): void {
   const old = st.rows.get(r.id);
   // Don't let a slower, older observation (a write-through racing the socket) clobber a newer row.
-  if (old?.updatedAt && r.updatedAt && r.updatedAt < old.updatedAt) return;
+  if (old?.updatedAt && r.updatedAt && stampOlder(r.updatedAt, old.updatedAt)) return;
   st.rows.set(r.id, r);
   st.version++;
   st.cache = undefined;
@@ -698,6 +753,48 @@ export function resetTreeForTests(): void {
 export function treeStatus(vaultId: string): { loaded: boolean; wsLive: boolean; rows: number; version: number } | null {
   const st = states.get(vaultId);
   return st ? { loaded: st.loaded, wsLive: st.wsLive, rows: st.rows.size, version: st.version } : null;
+}
+
+/**
+ * What the projection knows about ONE note's revision — for a caller that would
+ * otherwise read the note from the vault only to learn whether it changed (the
+ * collab reconciler, NP-PF-09). Never builds or starts a projection.
+ *
+ * `live` = the rows are being kept current by the vault's subscribe socket right
+ * now (snapshot complete, socket open) for the vault the registry names TODAY.
+ * Anything else — no projection, still loading, socket down or reconnecting,
+ * `TREE_SUBSCRIBE=0`, a registry entry that now points elsewhere — is `live: false`
+ * and the caller must not conclude anything from it. With `live`, an absent
+ * `updatedAt` means the projection lists no such note (deleted, or never seen).
+ */
+export function treeRevision(vaultId: string, noteId: string): { live: boolean; updatedAt?: string | null } {
+  return treeRevisions()(vaultId, noteId);
+}
+
+/**
+ * {@link treeRevision} for MANY notes in one pass (a reconcile tick): the vault
+ * registry is resolved once, on the first question, and each vault's liveness is
+ * decided once. Make a new reader per pass — it does not see later changes.
+ */
+export function treeRevisions(): (vaultId: string, noteId: string) => { live: boolean; updatedAt?: string | null } {
+  let registry: VaultEntry[] | null = null;
+  const liveStates = new Map<string, State | null>();
+  return (vaultId, noteId) => {
+    let st = liveStates.get(vaultId);
+    if (st === undefined) {
+      const cur = states.get(vaultId);
+      st = null;
+      if (cur && !cur.stopped && cur.loaded && cur.wsLive && cur.ws) {
+        const entry = (registry ??= getVaultRegistry()).find((v) => v.id === vaultId);
+        if (entry && entry.url === cur.entry.url && entry.vault === cur.entry.vault) st = cur;
+      }
+      liveStates.set(vaultId, st);
+    }
+    // Re-checked per question: the socket may have closed during the pass (its awaits).
+    if (!st || st.stopped || !st.wsLive || !st.ws) return { live: false };
+    const row = st.rows.get(noteId);
+    return row ? { live: true, updatedAt: row.updatedAt } : { live: true };
+  };
 }
 
 /** Is this note locked, per the projection (best effort; false when unknown). */

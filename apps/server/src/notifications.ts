@@ -44,7 +44,7 @@ import { documentActorId } from "./human-collab";
 import { writerIdFor } from "./writer-stamp";
 import { personNotesForEmail } from "./my-tasks";
 import { onAccessChanged } from "./access-events";
-import { docNameFor, federationTarget, identifiedSuggestionsInHtml, plainTextOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
+import { docNameFor, federationTarget, suggestionViewOfHtml, isDocLive, markReconciled, setDocumentStoreListener, type DocumentStoredEvent } from "./collab";
 
 // ── schema ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -975,14 +975,18 @@ export function suggestionOutcome(s: { ins: string; del: string }, prevPlain: st
  */
 export async function suggestionsResolved(o: { vaultId: string; noteId: string; prev: string | null; next: string; editors: string[] }): Promise<number> {
   if (!o.prev || !o.prev.includes("data-suggestion-id")) return 0;
-  let before: ReturnType<typeof identifiedSuggestionsInHtml>;
-  let after: ReturnType<typeof identifiedSuggestionsInHtml>;
+  // Both documents are parsed OFF the main thread (one parse each gives the
+  // suggestions and the reader text); one that cannot be parsed in budget → no notice.
+  let prevView: Awaited<ReturnType<typeof suggestionViewOfHtml>>;
+  let nextView: Awaited<ReturnType<typeof suggestionViewOfHtml>>;
   try {
-    before = identifiedSuggestionsInHtml(o.prev);
-    after = identifiedSuggestionsInHtml(o.next);
+    prevView = await suggestionViewOfHtml(o.prev);
+    nextView = await suggestionViewOfHtml(o.next);
   } catch {
     return 0;
   }
+  const before = prevView.suggestions;
+  const after = nextView.suggestions;
   const gone = [...before].filter(([id]) => !after.has(id));
   if (!gone.length) return 0;
   const editors = new Set(o.editors.map((e) => e.toLowerCase()));
@@ -993,8 +997,8 @@ export async function suggestionsResolved(o: { vaultId: string; noteId: string; 
   let prevPlain: string;
   let nextPlain: string;
   try {
-    prevPlain = plainTextOfHtml(o.prev);
-    nextPlain = plainTextOfHtml(o.next);
+    prevPlain = prevView.plain ?? "";
+    nextPlain = nextView.plain ?? (await suggestionViewOfHtml(o.next, true)).plain ?? "";
   } catch {
     return 0;
   }

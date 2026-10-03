@@ -23,7 +23,8 @@ function vaultDocName(noteId: string): string {
 import { updateNote as restUpdateNote, getNote as restGetNote, hasPendingWrites, uploadAttachment, unfurl as restUnfurl } from "../parachute/rest";
 import { markUnsynced, clearUnsynced, setOpenHere, unsyncedDocs } from "./unsynced";
 import { reloadForUpdate } from "../offline/reloadForUpdate";
-import { reportSyncSource, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
+import { PlainTextPage } from "./PlainTextPage";
+import { reportSyncSource, NOT_SAVED_TO_PAGE, unsavedExplanation, BacklinksPill, EmptyPageStarters, notePageIconChanged, pageIconWriteConfirmed, pageIconWriteFailed, PageDiscussion } from "@prism/core";
 
 /** Track a CSS breakpoint without per-render layout thrash. */
 function useIsNarrow(): boolean {
@@ -141,6 +142,16 @@ function ScopedCollabDoc({
   const [connectionError, setConnectionError] = useState(false);
   const [denied, setDenied] = useState(false);
   const [updateRequired, setUpdateRequired] = useState(false);
+  // The server has no live document for this page (its content cannot be converted
+  // for the live editor): the stored page is shown as plain text instead.
+  const [tooComplex, setTooComplex] = useState<null | "edit" | "view">(null);
+  // What the SERVER says about this page (stateless messages, repeated on every connect):
+  // its latest changes cannot be written to the stored page / a one-off notice.
+  // `permanent`: it cannot be written as the page is; else the server is still trying.
+  const [serverUnsaved, setServerUnsaved] = useState<null | { permanent: boolean; reason: string | null }>(null);
+  const [serverNotice, setServerNotice] = useState<string | null>(null);
+  // Bumped to open the document afresh (new local document, new socket) without a page reload.
+  const [attempt, setAttempt] = useState(0);
   const [checkingAccess, setCheckingAccess] = useState(false);
   const [connected, setConnected] = useState(false);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
@@ -168,13 +179,14 @@ function ScopedCollabDoc({
     const key = `collab:${noteId}`;
     const waiting = unsynced > 0 || registered;
     reportSyncSource(key, connected
-      ? (unsynced > 0 ? "saving" : "idle")
+      // The server holds the changes but cannot write them to the page: never "Saved".
+      ? (serverUnsaved ? (serverUnsaved.permanent ? "unsaved" : unsynced > 0 ? "saving" : "retrying") : unsynced > 0 ? "saving" : "idle")
       // Socket down with edits the server hasn't taken: never "Saved". They are on
       // this device (local), still being written locally (saving), or at risk (failed).
       : waiting ? (localSave === "unavailable" ? "failed" : localSave === "saved" ? "local" : "saving")
         : localSave === "unavailable" ? "failed" : "idle");
     return () => reportSyncSource(key, null);
-  }, [noteId, connected, unsynced, localSave, registered]);
+  }, [noteId, connected, unsynced, localSave, registered, serverUnsaved]);
   const [level, setLevel] = useState<string | null>(null);
   // The local collaborator identity (cursor + comment/suggestion authorship),
   // seeded from the cached session and confirmed via fetchMe() before the editor mounts.
@@ -379,6 +391,9 @@ function ScopedCollabDoc({
           offlineOpen = true;
         }
         if (!(await stillCurrent())) return;
+        // The level the gateway reported for this page (kept for the plain-text fallback,
+        // which outlives the socket's own level state).
+        let noteLevel: string = note._level ?? "own";
         setLevel(note._level ?? "own");
         setPath(note.path ?? null);
         if (typeof note.metadata?.contentFont === "string") setContentFont(note.metadata.contentFont as ContentFont);
@@ -430,6 +445,7 @@ function ScopedCollabDoc({
             }
             const fresh = await r.json();
             if (!(await stillCurrent()) || request !== accessCheck) return false;
+            noteLevel = fresh._level ?? "own";
             setLevel(fresh._level ?? "own");
             setDenied(false);
             setConnectionError(false);
@@ -443,10 +459,27 @@ function ScopedCollabDoc({
           url: collabUrl(), name, token: collabToken(capToken), document: doc,
           onStatus: ({ status }) => { socketUp = status === "connected"; if (current()) setConnected(status === "connected"); },
           onSynced: () => { socketUp = true; if (current()) { setSynced(true); setConnected(true); } },
+          onStateless: ({ payload }) => {
+            if (!current()) return;
+            let message: { type?: unknown; state?: unknown; code?: unknown; reason?: unknown };
+            try { message = JSON.parse(payload); } catch { return; }
+            // "unsaved" = cannot be written as the page is; "pending" = not written yet, the server keeps trying; "saved" clears both.
+            if (message.type === "prism:unsaved") {
+              const reason = typeof message.reason === "string" ? message.reason : null;
+              setServerUnsaved(message.state === "unsaved" ? { permanent: true, reason } : message.state === "pending" ? { permanent: false, reason } : null);
+            }
+            else if (message.type === "prism:notice" && message.code === "external-replaced") setServerNotice("Changes made elsewhere replaced part of this page.");
+            else if (message.type === "prism:notice" && message.code === "unsaved-discarded") setServerNotice("Changes on this page that could not be saved were discarded by the workspace owner. You are looking at the stored page.");
+          },
           onAuthenticationFailed: ({ reason }) => {
             if (!current()) return;
             setLevel(null);
             if (reason?.startsWith("update_required")) { setUpdateRequired(true); p?.disconnect(); }
+            // No live document exists for this page (nothing was synced, so nothing of it is
+            // in this device's local copy): show the stored page as plain text.
+            else if (reason?.startsWith("too_complex")) { setTooComplex(noteLevel === "edit" || noteLevel === "own" ? "edit" : "view"); p?.disconnect(); }
+            // The server could not take the open right now — nothing is wrong with the page or the access.
+            else if (reason?.startsWith("busy")) { setConnectionError(true); p?.disconnect(); }
             else setDenied(true);
           },
           onAuthenticated: ({ scope }) => {
@@ -520,7 +553,7 @@ function ScopedCollabDoc({
       persistence?.close();
       doc.destroy();
     };
-  }, [noteId]);
+  }, [noteId, attempt]);
 
 
   // The local collaborator identity (cursor + comment/suggestion authorship).
@@ -543,6 +576,17 @@ function ScopedCollabDoc({
         </div>
       </div>
     );
+  }
+
+  if (tooComplex) {
+    const openLive = () => {
+      setTooComplex(null);
+      setConnection(null);
+      setSynced(false);
+      setConnected(false);
+      setAttempt((n) => n + 1);
+    };
+    return <PlainTextPage noteId={noteId} canEdit={tooComplex === "edit"} embedded={embedded} onOpenLive={openLive} />;
   }
 
   if (denied) {
@@ -619,6 +663,17 @@ function ScopedCollabDoc({
   return (
     <div style={outer}>
       {localSave === "unavailable" && <p role="alert" className="rounded-lg border p-3 text-sm">Local saving is unavailable. Keep this document open and copy any unsynced changes before leaving.</p>}
+      {serverUnsaved?.permanent && (
+        <p role="alert" data-testid="collab-not-saved" data-reason={serverUnsaved.reason ?? ""} className="rounded-lg border p-3 text-sm">
+          {NOT_SAVED_TO_PAGE}. {unsavedExplanation(serverUnsaved.reason)}
+        </p>
+      )}
+      {serverNotice && (
+        <p role="status" data-testid="collab-notice" className="rounded-lg border p-3 text-sm">
+          {serverNotice}{" "}
+          <button type="button" className="underline" onClick={() => setServerNotice(null)}>Dismiss</button>
+        </p>
+      )}
       {/* Extra bottom padding on narrow viewports clears the floating command pill. */}
       <div style={{ maxWidth: "var(--page-max-width, 1080px)", margin: "0 auto", padding: narrow ? "12px 14px 124px" : "16px 20px 96px" }}>
         {/* Cover band — same component and metadata as the non-collab view */}

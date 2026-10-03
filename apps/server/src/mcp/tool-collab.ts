@@ -28,12 +28,18 @@
 import { systemNoteReason } from "@prism/core/pages";
 import * as z from "zod/v4";
 import * as Y from "yjs";
+import { ConversionError } from "../convert/service";
 import { effectiveCaps, effectiveLevel, atLeast, maxLevel, type Cap, type Level } from "../permissions";
 import { roleFloor, roleAtLeast } from "../roles";
 import {
   docNameFor,
   hocuspocus,
   isDocLive,
+  isDocBlocked,
+  DocumentTooComplexError,
+  CollabBusyError,
+  liveDocument,
+  prepareExternalContent,
   noteKind,
   parseCsv,
   serializeCsv,
@@ -167,9 +173,20 @@ function authorOf(ctx: ToolContext): CollabAuthor {
 const sameVector = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 async function withDoc<T>(ctx: ToolContext, docName: string, fn: (doc: Y.Doc) => T | Promise<T>): Promise<T> {
-  const conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
+  const tooComplex = () => new ToolError("invalid_request", "this page is too large or complex for the live editor, so comments, suggestions and live edits are unavailable on it");
+  let conn: Awaited<ReturnType<typeof hocuspocus.openDirectConnection>>;
+  try {
+    conn = await hocuspocus.openDirectConnection(docName, { mcp: ctx.principal.actor.email });
+  } catch (e) {
+    // The note's body cannot be converted in budget: it has no live document at all.
+    if (e instanceof DocumentTooComplexError) throw tooComplex();
+    if (e instanceof CollabBusyError) throw new ToolError("upstream_error", "the server is busy converting documents — retry in a moment");
+    throw e;
+  }
   try {
     if (!conn.document) throw new ToolError("upstream_error", "the document could not be opened");
+    // A blocked document (its note changed to content it cannot absorb) is never stored again.
+    if (isDocBlocked(docName)) throw tooComplex();
     const before = Y.encodeStateVector(conn.document);
     const out = await fn(conn.document);
     // Attribute the store this write triggers to the agent (history: "Agent revision").
@@ -211,6 +228,16 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
   const t = await target(ctx, id, "edit");
   const { vaultId } = ctx.principal.actor;
   let changed = false;
+  // The new body is parsed off the main thread BEFORE the merge's synchronous section.
+  let prepared: Awaited<ReturnType<typeof prepareExternalContent>>;
+  try {
+    prepared = await prepareExternalContent(t.kind, content, { actor: `user:${ctx.principal.actor.email.toLowerCase()}` });
+  } catch (e) {
+    if (!(e instanceof ConversionError)) throw e;
+    throw e.reason === "busy"
+      ? new ToolError("upstream_error", "the server is busy converting documents — retry in a moment")
+      : new ToolError("invalid_request", "this content is too large or complex to merge into the open document");
+  }
   await withDoc(ctx, t.docName, async (live) => {
     // Fresh vault read AFTER the doc is pinned open (not the gateway's cached copy).
     const cur = await vaultClient(vaultId).getNote(t.note.id);
@@ -221,8 +248,14 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
       });
     }
     // ── synchronous from here: no store can interleave with the merge ──
+    // The merge BASE must be the Yjs state that IS the vault content you read. The
+    // snapshot row says which state that is (`base`): the snapshot itself when it
+    // is in step with the vault, the kept base when it is AHEAD (it holds live
+    // changes the vault lacks — forking THAT would make your edit delete them),
+    // and nothing when the base is unknown.
     const snap = getDocState(t.note.id, vaultId);
-    if (!snap || snap.sourceUpdatedAt !== toMs(cur.updatedAt) || !isAncestorState(snap.state, live)) {
+    const base = snap?.base ?? null;
+    if (!snap || !base || snap.sourceUpdatedAt !== toMs(cur.updatedAt) || !isAncestorState(base, live)) {
       throw new ToolError(
         "conflict",
         "the live document is still absorbing a very recent change, so there is no safe merge base for your edit yet — wait a few seconds, re-read, and retry",
@@ -230,7 +263,7 @@ export async function liveContentWrite(ctx: ToolContext, id: string, content: st
       );
     }
     try {
-      changed = mergeContentIntoLive(live, snap.state, t.kind, content, originOf(ctx));
+      changed = mergeContentIntoLive(live, base, t.kind, content, originOf(ctx), prepared);
     } catch (e) {
       opError(e);
     }
@@ -272,7 +305,7 @@ export const listCommentsTool = defineTool({
     requireDocument(t);
     const includeResolved = include_resolved === true;
     // Read-only: use the live doc if loaded, else the persisted CRDT snapshot — never load/seed a doc to read it.
-    const live = hocuspocus.documents.get(t.docName) as Y.Doc | undefined;
+    const live = liveDocument(t.docName);
     let threads: ThreadOut[];
     if (live) {
       threads = listThreads(live, includeResolved);
@@ -413,7 +446,7 @@ export const sheetReadTool = defineTool({
   async handler({ id, range }, ctx) {
     const t = await target(ctx, id, "view");
     requireSheet(t);
-    const live = hocuspocus.documents.get(t.docName) as Y.Doc | undefined;
+    const live = liveDocument(t.docName);
     const grid = live ? gridOfRows(live.getArray<Y.Array<string>>(SHEET_FIELD)) : parseCsv(t.note.content ?? "");
     const rows = grid.length;
     const cols = Math.max(0, ...grid.map((r) => r.length));

@@ -32,18 +32,37 @@
  * documentName == note id. The TipTap schema is the SHARED collabExtensions()
  * from @prism/core, so HTML↔Yjs conversion matches the client exactly.
  */
-import { Window } from "happy-dom";
 import { accessRevision, onAccessChanged } from "./access-events";
 import { systemNoteReason } from "@prism/core/pages";
 import { Hocuspocus, type Connection } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import * as Y from "yjs";
-import { generateJSON, generateHTML, getSchema } from "@tiptap/core";
-import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON, updateYFragment, initProseMirrorDoc } from "@tiptap/y-tiptap";
-import { collabExtensions, COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
+import { yDocToProsemirrorJSON, updateYFragment, initProseMirrorDoc } from "@tiptap/y-tiptap";
+import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { inferContentType } from "@prism/core/content-types";
-import { marked } from "marked";
+import { createHash } from "node:crypto";
+// Content conversion (Markdown / HTML / ProseMirror) NEVER runs unbounded on this
+// thread: everything goes through the conversion service (worker thread + hard
+// timeout); the `…Bounded` forms convert inline only for small, pre-checked input.
+import { FIELD as DOC_FIELD, schema } from "./convert/core";
+import {
+  ConversionError,
+  contentToDocJson,
+  contentToDocJsonBounded,
+  contentToSeed,
+  contentToSeedBounded,
+  conversionRefusal,
+  docJsonToHtml,
+  docJsonToHtmlBounded,
+  htmlToDocJson,
+  htmlToDocJsonBounded,
+  isDeterministicFailure,
+  type ConversionFailure,
+  type ConvertOptions,
+  type DocJson,
+} from "./convert/service";
+import { VaultConflictError, VaultError } from "./parachute";
 import { config } from "./config";
 import { vaultClient } from "./parachute";
 import { verifyCapability } from "./auth/capability";
@@ -56,6 +75,24 @@ import {
   grantsForCapability,
   getDocState,
   saveDocState,
+  getDocMeta,
+  saveDocAhead,
+  saveDocAttempt,
+  confirmDocAttempt,
+  rebaseDoc,
+  deleteDocState,
+  dropDocAttempt,
+  addCollabSetAside,
+  pruneCollabSetAside,
+  deleteCollabSetAsideForNote,
+  markCollabUnsaved,
+  clearCollabUnsaved,
+  isCollabUnsaved,
+  getCollabUnsaved,
+  dueCollabUnsaved,
+  noteCollabUnsavedAttempt,
+  type DocMeta,
+  type DocState,
   saveDocStateConfirming,
   takeUnconfirmedCollabReceipts,
   unconfirmedCollabReceipts,
@@ -67,42 +104,55 @@ import {
   type Grant,
 } from "./db";
 import { effectiveLevel, effectiveCaps, atLeast, maxLevel, type Level } from "./permissions";
-import { warmPageAnchors } from "./tree";
+import { warmPageAnchors, treeRevisions } from "./tree";
 import { writerStamp } from "./sharing";
 import { randomUUID } from "node:crypto";
 import { createSuggestion, suggestionsForNote } from "./db";
 import { suggestionAuthors, hasSuggestions, resolveSuggestions, summarizeSuggestions, identifiedSuggestions, plainTextOf, type IdentifiedSuggestion, type PmNode } from "./suggestions";
 import { roleFloor, roleAtLeast, workspaceRole, type Role } from "./roles";
 
-// TipTap's generate{JSON,HTML} need a DOM at call time; provide a lightweight
-// one. (These globals are read when the hooks run, never at import.)
-const _win = new Window();
-const g = globalThis as unknown as Record<string, unknown>;
-g.window ??= _win;
-g.document ??= _win.document;
-g.DOMParser ??= _win.DOMParser;
-
-export const FIELD = "default"; // TipTap's default XML fragment name
-const exts = collabExtensions();
-const schema = getSchema(exts);
+export const FIELD = DOC_FIELD; // TipTap's default XML fragment name
 /** The shared TipTap/ProseMirror schema (WP6.3 collab-safe MCP ops mark the doc with it). */
 export const collabSchema = () => schema;
 
-/** Markdown/HTML → an empty Y.Doc's encoded state for the shared fragment. */
+// ── document conversions ────────────────────────────────────────────────────
+// Two forms of each. The ASYNC form is what every code path that handles note
+// content uses: it runs in the conversion worker under a wall-clock limit and
+// throws ConversionError when the content cannot be converted in budget. The
+// SYNCHRONOUS form (the original names) is BOUNDED: it converts on this thread
+// only when the input passes the service's inline pre-check and throws
+// ConversionError("too_large") otherwise — safe to call with anything, meant for
+// small inputs (a command's one-paragraph window, tests).
+
+/** Markdown/HTML → an empty Y.Doc's encoded state for the shared fragment (bounded, synchronous). */
 export function contentToYUpdate(content: string): Uint8Array {
-  const src = content ?? "";
-  const html = src.trim().startsWith("<") ? src : (marked.parse(src) as string);
-  const json = generateJSON(html || "<p></p>", exts);
-  return Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, FIELD));
+  return contentToSeedBounded(content ?? "");
+}
+/** The same, for any note body: converted off the main thread. Throws ConversionError. */
+export function contentToYUpdateAsync(content: string, opts?: ConvertOptions): Promise<Uint8Array> {
+  return contentToSeed(content ?? "", opts);
 }
 
+/** A live document as ProseMirror JSON (linear, cheap — no DOM). */
+export function yDocToDocJson(doc: Y.Doc): DocJson {
+  return yDocToProsemirrorJSON(doc, FIELD) as DocJson;
+}
+
+/** The HTML a store writes for `doc` (bounded, synchronous). */
 export function yDocToHtml(doc: Y.Doc): string {
-  return generateHTML(yDocToProsemirrorJSON(doc, FIELD), exts);
+  return docJsonToHtmlBounded(yDocToDocJson(doc));
+}
+/** The same for a document of any size: rendered off the main thread. Throws ConversionError. */
+export function yDocToHtmlAsync(doc: Y.Doc, opts?: ConvertOptions): Promise<string> {
+  return docJsonToHtml(yDocToDocJson(doc), opts);
 }
 
-/** Render a ProseMirror document of the shared schema to the HTML a store would write. */
+/** Render a ProseMirror document of the shared schema to the HTML a store would write (bounded, synchronous). */
 export function proseToHtml(node: { toJSON(): unknown }): string {
-  return generateHTML(node.toJSON() as never, exts);
+  return docJsonToHtmlBounded(node.toJSON());
+}
+export function proseToHtmlAsync(node: { toJSON(): unknown }): Promise<string> {
+  return docJsonToHtml(node.toJSON());
 }
 
 // ---- server-side suggested edits (G2b) ----
@@ -112,30 +162,47 @@ export function proseToHtml(node: { toJSON(): unknown }): string {
 /** Distinct suggestion-mark authors present in a note's HTML ("" if none). */
 export function suggestionAuthorsInHtml(html: string): string[] {
   if (!html.includes("data-suggestion")) return []; // cheap pre-check
-  return suggestionAuthors(generateJSON(html, exts) as PmNode);
+  return suggestionAuthors(htmlToDocJsonBounded(html) as PmNode);
 }
 
-/** Apply accept/reject of an author's suggestion marks to a note's HTML. */
+/** Apply accept/reject of an author's suggestion marks to a note's HTML (bounded, synchronous). */
 export function resolveSuggestionsInHtml(html: string, author: string | null, action: "accept" | "reject"): string {
-  const json = generateJSON(html, exts) as PmNode;
+  const json = htmlToDocJsonBounded(html) as PmNode;
   if (!hasSuggestions(json, author)) return html;
-  return generateHTML(resolveSuggestions(json, author, action) as never, exts);
+  return docJsonToHtmlBounded(resolveSuggestions(json, author, action));
+}
+/** The same for a note of any size (parse + render off the main thread). Throws ConversionError. */
+export async function resolveSuggestionsInHtmlAsync(html: string, author: string | null, action: "accept" | "reject", opts?: ConvertOptions): Promise<string> {
+  const json = (await htmlToDocJson(html, opts)) as PmNode;
+  if (!hasSuggestions(json, author)) return html;
+  return docJsonToHtml(resolveSuggestions(json, author, action), opts);
 }
 
-/** Identified suggestions (id → actor + text) in a note's HTML; empty when it has none. */
+/** Identified suggestions (id → actor + text) in a note's HTML; empty when it has none (bounded, synchronous). */
 export function identifiedSuggestionsInHtml(html: string): Map<string, IdentifiedSuggestion> {
   if (!html.includes("data-suggestion-id")) return new Map(); // cheap pre-check
-  return identifiedSuggestions(generateJSON(html, exts) as PmNode);
+  return identifiedSuggestions(htmlToDocJsonBounded(html) as PmNode);
 }
 
-/** A note's HTML as decoded reader text (entities resolved, tags gone). */
+/** A note's HTML as decoded reader text (entities resolved, tags gone) (bounded, synchronous). */
 export function plainTextOfHtml(html: string): string {
-  return plainTextOf(generateJSON(html, exts) as PmNode);
+  return plainTextOf(htmlToDocJsonBounded(html) as PmNode);
 }
 
-/** Summary line for the review inbox. */
+/**
+ * Both of the above from ONE off-thread parse, for a note of any size. Throws
+ * ConversionError. `suggestions` is empty (and nothing is parsed) when the HTML
+ * carries no suggestion id and `always` is not set.
+ */
+export async function suggestionViewOfHtml(html: string, always = false): Promise<{ suggestions: Map<string, IdentifiedSuggestion>; plain: string | null }> {
+  if (!always && !html.includes("data-suggestion-id")) return { suggestions: new Map(), plain: null };
+  const json = (await htmlToDocJson(html)) as PmNode;
+  return { suggestions: html.includes("data-suggestion-id") ? identifiedSuggestions(json) : new Map(), plain: plainTextOf(json) };
+}
+
+/** Summary line for the review inbox (bounded, synchronous). */
 export function summarizeSuggestionsInHtml(html: string, author: string): string {
-  return summarizeSuggestions(generateJSON(html, exts) as PmNode, author);
+  return summarizeSuggestions(htmlToDocJsonBounded(html) as PmNode, author);
 }
 
 /**
@@ -144,12 +211,13 @@ export function summarizeSuggestionsInHtml(html: string, author: string): string
  * owner has a review QUEUE (not just marks floating in the doc). Idempotent per
  * (note, author) while a pending row exists; errors never block the persist.
  */
-function captureSuggestions(noteId: string, html: string): void {
+function captureSuggestions(noteId: string, html: string, json: PmNode): void {
   try {
-    const authors = suggestionAuthorsInHtml(html).filter((a) => a !== "");
+    // `json` is the document the store just rendered `html` from — no re-parse.
+    if (!html.includes("data-suggestion")) return; // cheap pre-check
+    const authors = suggestionAuthors(json).filter((a) => a !== "");
     if (authors.length === 0) return;
     const existing = suggestionsForNote(noteId).filter((s) => s.status === "pending");
-    const json = generateJSON(html, exts) as PmNode;
     for (const author of authors) {
       if (existing.some((s) => s.author === author)) continue;
       createSuggestion({
@@ -345,6 +413,14 @@ const renderedSize = new WeakMap<Y.Doc, number>();
 export const renderedSizeOf = (doc: Y.Doc): number | undefined => renderedSize.get(doc);
 export const setRenderedSize = (doc: Y.Doc, bytes: number): void => void renderedSize.set(doc, bytes);
 
+/** Make sure a live document's rendered size is known — measured OFF the main
+ *  thread — before the synchronous command engine needs it. Throws ConversionError. */
+export async function ensureRenderedSize(doc: Y.Doc, opts?: ConvertOptions): Promise<void> {
+  if (renderedSize.get(doc) !== undefined) return;
+  const size = Buffer.byteLength(await yDocToHtmlAsync(doc, opts));
+  if (renderedSize.get(doc) === undefined) renderedSize.set(doc, size);
+}
+
 // Kind is stable per note; cache it at load so store doesn't need to re-fetch.
 const kindCache = new Map<string, CollabKind>();
 
@@ -381,9 +457,17 @@ export function markReconciled(documentName: string, prevMs: number, nextMs: num
   return true;
 }
 
+/** Per doc: when the reconciler last READ its note from the vault (the gate's safety re-read clock). */
+const lastVaultRead = new Map<string, number>();
+/** Counters tests read: reconciler ticks that read a document's note / that the gate let pass without a read. */
+export const reconcileStats = { reads: 0, skipped: 0 };
+
 /** Test-only: drop the reconcile high-water marks (module state survives resetDb). */
 export function resetReconcileState(): void {
   lastReconciled.clear();
+  lastVaultRead.clear();
+  reconcileStats.reads = 0;
+  reconcileStats.skipped = 0;
 }
 
 /** Minimal in-place replace of a Y.Text: keep the common prefix/suffix so a
@@ -437,7 +521,11 @@ function applyCanvasMap(map: Y.Map<CanvasEl>, content: string): void {
  * On conflict with a concurrent in-flight client edit, Parachute's content wins
  * for the overlapping region (mirrors loadDocumentState's "external edit wins").
  */
-export function applyExternalContent(doc: Y.Doc, kind: CollabKind, content: string): void {
+export function applyExternalContent(doc: Y.Doc, kind: CollabKind, content: string, prepared?: DocJson | null): void {
+  // A document's body is parsed BEFORE the transaction. Callers that handle note
+  // content pass `prepared` (prepareExternalContent: off the main thread); without
+  // it only a small, pre-checked body is converted here (else ConversionError).
+  const json = kind === "document" ? (prepared ?? contentToDocJsonBounded(content ?? "")) : null;
   doc.transact(() => {
     if (kind === "code") {
       replaceYText(doc.getText(CODE_TEXT_FIELD), content ?? "");
@@ -450,13 +538,610 @@ export function applyExternalContent(doc: Y.Doc, kind: CollabKind, content: stri
       // the external content is actually a scene.
       if (looksLikeExcalidrawScene(content)) applyCanvasMap(doc.getMap<CanvasEl>(CANVAS_FIELD), content ?? "");
     } else {
-      const src = content ?? "";
-      const html = src.trim().startsWith("<") ? src : (marked.parse(src) as string);
-      const json = generateJSON(html || "<p></p>", exts);
       const pmNode = schema.nodeFromJSON(json);
       updateYFragment(doc, doc.getXmlFragment(FIELD), pmNode, { mapping: new Map(), isOMark: new Map() });
     }
   }, EXTERNAL_ORIGIN);
+}
+
+/**
+ * The off-thread half of a fold: a DOCUMENT body → ProseMirror JSON in the
+ * conversion worker (null for the other kinds, whose folds are linear). Throws
+ * ConversionError when the body cannot be converted in budget — the caller must
+ * then NOT store the live document over the note (see "degraded documents").
+ */
+export async function prepareExternalContent(kind: CollabKind, content: string, opts?: ConvertOptions): Promise<DocJson | null> {
+  return kind === "document" ? contentToDocJson(content ?? "", opts) : null;
+}
+
+// ── content that cannot be converted in budget ─────────────────────────────
+// A note body the conversion service refuses or cannot finish (a Markdown parser
+// blow-up, absurd nesting, a body beyond the caps) is NEVER given a live
+// document: nothing derived from it enters a Y.Doc, the SQLite snapshot or any
+// client's local store. The load fails with `DocumentTooComplexError`; the
+// socket is answered `too_complex: …` (the client then shows the stored note as
+// read-only plain text over REST, with a plain-text editor for people who may
+// edit — the stored content is intact and the REST path works on it), and direct
+// connections (commands, MCP tools, block moves) get the error.
+//
+// A LIVE document whose note then changes to something unconvertible can no
+// longer absorb it. It is BLOCKED: never written to the vault again (that would
+// overwrite the newer note), every socket is dropped and new ones refused
+// `too_complex`, so it unloads; the next open goes through the load above. Its
+// Yjs state stays in SQLite untouched in meaning (source version kept), for the
+// day the note converts again.
+
+export const TOO_COMPLEX_REASON = "too_complex: This page is too large or complex for the live editor.";
+export const BUSY_REASON = "busy: The server is busy. Try again in a moment.";
+/** Thrown by `loadDocumentState` (and so by `openDirectConnection`) for a note that cannot be opened live. */
+export class DocumentTooComplexError extends Error {
+  readonly reason = TOO_COMPLEX_REASON;
+  constructor(readonly failure: ConversionFailure) {
+    super(TOO_COMPLEX_REASON);
+  }
+}
+/** Thrown when a load could not get a converter slot: nothing is wrong with the note. */
+export class CollabBusyError extends Error {
+  readonly reason = BUSY_REASON;
+  constructor() {
+    super(BUSY_REASON);
+  }
+}
+
+/** Loaded documents that may no longer be written to the vault (name → why). Cleared when the document unloads. */
+const blockedDocs = new Map<string, ConversionFailure>();
+export const isDocBlocked = (documentName: string): boolean => blockedDocs.has(documentName);
+function blockDocument(documentName: string, reason: ConversionFailure): void {
+  if (!blockedDocs.has(documentName)) console.warn(`[collab] ${documentName}: the note changed to content that cannot be converted (${reason}) — the live document is closed and will not be stored; the note is untouched`);
+  blockedDocs.set(documentName, reason);
+}
+
+// ── what a snapshot is built on ─────────────────────────────────────────────
+// The persisted row (`collab_docs`, see db.ts) says which vault CONTENT the
+// snapshot is built on (`base_hash`), whether it is ahead of it, the true base
+// state, and which writes were sent but never confirmed (`attempts`). The ONE
+// rule below is applied at load, in the reconciler and in the store.
+
+const contentHash = (content: string): string => createHash("sha256").update(content ?? "").digest("base64");
+
+export type VaultRelation =
+  /** Nothing newer than what the snapshot already absorbed. */
+  | "same"
+  /** A newer version with the SAME content: a metadata-only write (property, icon, backlink). Nothing to fold. */
+  | "metadata"
+  /** The content of a write WE sent and never saw confirmed: it landed. Ours — nothing to fold. */
+  | "ours"
+  /** Somebody else changed the content. */
+  | "external";
+
+/** How the vault's current copy relates to what the snapshot is built on. `absorbedMs` = the newest vault version already absorbed. */
+export function vaultRelation(meta: DocMeta | null, note: { content: string; updatedAt: string | null }, absorbedMs: number): { relation: VaultRelation; hash: string | null } {
+  if (toMs(note.updatedAt) <= absorbedMs) return { relation: "same", hash: null };
+  // A row from before the hash existed (or no row): the version stamp is all there is.
+  if (!meta || (meta.baseHash === null && meta.attempts.length === 0)) return { relation: "external", hash: null };
+  const hash = contentHash(note.content);
+  if (hash === meta.baseHash) return { relation: "metadata", hash };
+  if (meta.attempts.includes(hash)) return { relation: "ours", hash };
+  return { relation: "external", hash };
+}
+
+/** Is every client clock of `base` covered by `doc`? (base is an ancestor state of doc) */
+function isAncestorOf(base: Uint8Array, doc: Y.Doc): boolean {
+  const have = Y.decodeStateVector(Y.encodeStateVector(doc));
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVectorFromUpdate(base))) if ((have.get(client) ?? 0) < clock) return false;
+  return true;
+}
+
+/**
+ * The base(s) an external change may be merged against (`mergeBases`).
+ *  - `candidates`: Yjs states that may equal what the vault's copy was edited FROM
+ *    (older first);
+ *  - `uncertain`: nobody could establish which — the note's history could not
+ *    answer (no history, an error, too many versions, an older attempt landed).
+ *    True even with ONE candidate left;
+ *  - `floor`: the row's own base — the last state KNOWN to have been the vault's
+ *    content. What the document holds beyond it is local typing.
+ */
+interface MergeBase {
+  candidates: Uint8Array[];
+  uncertain: boolean;
+  floor: Uint8Array | null;
+  /** With `uncertain`: the candidate that is the state of an UNCONFIRMED write (it may or may not be in the vault). */
+  attempt?: Uint8Array | null;
+}
+type Replaced = { state: Uint8Array; body: string; why: "no_base" | "uncertain_base" };
+/**
+ * What a document held could not be set aside, so the vault's copy did NOT replace
+ * it (round 6, S3): the document is untouched and the caller tries again later.
+ */
+export class SetAsideFailedError extends Error {
+  constructor() {
+    super("set_aside_failed");
+  }
+}
+interface FoldResult {
+  /** The Yjs state that equals the vault content after the fold: the new base. */
+  base: Uint8Array;
+  /** The vault's content REPLACED the document's (no merge). */
+  wholesale: boolean;
+  /** With `wholesale`: what the document held just before (already set aside when the caller asked for that). */
+  replaced?: Replaced;
+}
+
+/**
+ * Fold the vault's (externally changed) content into `doc`.
+ *
+ * With the TRUE BASE — the Yjs state that equals what the vault held before —
+ * this is a three-way merge: the external change is applied to a fork of the
+ * base and only the fork's delta reaches the document, so what people changed
+ * since the base survives when the two sides touched different blocks (same-block
+ * overlaps merge as two concurrent editors would).
+ *
+ * With an UNCERTAIN base (round 5, M-3/M-4; round 6, B3) nothing is guessed. The
+ * row's base (the floor) is always a safe base to TRY: too old a base can only
+ * duplicate. The state of an unconfirmed write is a base only if that write can
+ * be SEEN in the vault's copy (`attemptInVault`: everything it added over the
+ * floor is there) — a base that is too NEW deletes typing that never reached the
+ * vault, and no count of words can tell that from a deliberate deletion. Then:
+ *  - the write's additions are in the vault's copy → it landed and was edited
+ *    over: its state is the base (the floor would double what it added);
+ *  - they are not → the floor is the base;
+ *  - the write added nothing (it only removed) → the floor, then its state.
+ * Whichever is tried, its merge is made on a copy and taken only if it passes
+ * `mergeIsSane` and doubles no block. If none passes, the vault's copy wins and
+ * the document's own content is set aside — BEFORE it is replaced (`keep`).
+ *
+ * Without any base (a row from before bases were kept, sheets and canvases) the
+ * vault's content REPLACES the document's as well — `wholesale: true`.
+ *
+ * `keep` (given when the document is AHEAD of the vault): called with what the
+ * document holds, before a wholesale replacement. If it throws, nothing is
+ * replaced and `SetAsideFailedError` is thrown — the document is untouched.
+ */
+function foldVaultContent(doc: Y.Doc, kind: CollabKind, content: string, prepared: DocJson | null, merge: MergeBase, keep: ((replaced: Replaced) => void) | null): FoldResult {
+  const mergeable = kind === "document" || kind === "code";
+  const candidates = mergeable ? merge.candidates.filter((b) => isAncestorOf(b, doc)) : [];
+  const replace = (why: "no_base" | "uncertain_base"): FoldResult => {
+    const replaced: Replaced = { state: Y.encodeStateAsUpdate(doc), body: plainBody(doc, kind), why };
+    if (keep) {
+      try {
+        keep(replaced);
+      } catch {
+        throw new SetAsideFailedError();
+      }
+    }
+    applyExternalContent(doc, kind, content, prepared);
+    return { base: Y.encodeStateAsUpdate(doc), wholesale: true, replaced };
+  };
+  /** The external change as a delta against one candidate base. */
+  const forkOf = (b: Uint8Array) => {
+    const fork = new Y.Doc();
+    Y.applyUpdate(fork, b);
+    const before = Y.encodeStateVector(fork);
+    applyExternalContent(fork, kind, content, prepared);
+    const delta = Y.encodeStateAsUpdate(fork, before);
+    const nextBase = Y.encodeStateAsUpdate(fork);
+    fork.destroy();
+    return { delta, nextBase };
+  };
+  if (!merge.uncertain) {
+    if (candidates.length === 0) return replace("no_base");
+    const fork = forkOf(candidates[0]!);
+    Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
+    return { base: fork.nextBase, wholesale: false };
+  }
+  // Which state the vault's copy was edited FROM is not known.
+  type Side = { counts: Map<string, number>; plain: string };
+  const sideOf = (state: Uint8Array): Side => {
+    const at = new Y.Doc();
+    Y.applyUpdate(at, state);
+    const side = { counts: tokenCounts(kind, at), plain: plainBody(at, kind) };
+    at.destroy();
+    return side;
+  };
+  const local = tokenCounts(kind, doc);
+  const vault: Side = { counts: tokenCounts(kind, kind === "code" ? content : prepared), plain: kind === "code" ? content : plainOfJson(prepared) };
+  // The floor: the last state KNOWN to have been the vault's content (unknown = nothing is known to have been there).
+  const floor: Side = merge.floor && isAncestorOf(merge.floor, doc) ? sideOf(merge.floor) : { counts: new Map(), plain: "" };
+  const attempt = merge.attempt && candidates.includes(merge.attempt) ? merge.attempt : null;
+  const others = candidates.filter((b) => b !== attempt).map((state) => ({ state, counts: state === merge.floor ? floor.counts : sideOf(state).counts }));
+  let order = others;
+  if (attempt) {
+    const side = sideOf(attempt);
+    const seen = attemptInVault(floor, side, vault);
+    if (seen === "present") order = [{ state: attempt, counts: side.counts }];
+    else if (seen === "nothing_added") order = [...others, { state: attempt, counts: side.counts }];
+  }
+  for (const candidate of order) {
+    const fork = forkOf(candidate.state);
+    const trial = new Y.Doc();
+    Y.applyUpdate(trial, Y.encodeStateAsUpdate(doc));
+    const before = blockCounts(trial, kind);
+    Y.applyUpdate(trial, fork.delta);
+    const sane = mergeIsSane(candidate.counts, floor.counts, local, vault.counts, tokenCounts(kind, trial)) && !hasDuplicatedBlocks(blockCounts(trial, kind), before, prepared);
+    trial.destroy();
+    if (!sane) continue;
+    Y.applyUpdate(doc, fork.delta, EXTERNAL_ORIGIN);
+    return { base: fork.nextBase, wholesale: false };
+  }
+  console.warn("[collab] an external edit could not be merged against any known base without doubling or dropping text — the note's content replaces the document's (the document's own content is set aside)");
+  return replace("uncertain_base");
+}
+
+/**
+ * How often `needle` (non-empty) occurs in `haystack`, not overlapping. LINEAR in
+ * both (Knuth–Morris–Pratt): `indexOf` re-compares up to the whole needle at every
+ * position on periodic text — 50 KB of one letter against a 25 KB run of it was
+ * seconds on the event loop, and both strings are note content.
+ */
+export function occurrences(haystack: string, needle: string): number {
+  const m = needle.length;
+  if (m === 0 || m > haystack.length) return 0;
+  const fail = new Int32Array(m); // length of the longest proper border of needle[0..i]
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && needle.charCodeAt(i) !== needle.charCodeAt(k)) k = fail[k - 1]!;
+    if (needle.charCodeAt(i) === needle.charCodeAt(k)) k++;
+    fail[i] = k;
+  }
+  let n = 0;
+  for (let i = 0, k = 0; i < haystack.length; i++) {
+    const c = haystack.charCodeAt(i);
+    while (k > 0 && c !== needle.charCodeAt(k)) k = fail[k - 1]!;
+    if (c === needle.charCodeAt(k)) k++;
+    if (k === m) {
+      n++;
+      k = 0; // not overlapping
+    }
+  }
+  return n;
+}
+/**
+ * Can an UNCONFIRMED write be seen in the vault's copy — may that copy have been
+ * edited FROM the write's state (B3)?
+ *  - `present`: everything the write added over the floor is in the vault's copy:
+ *    word for word at least as often as the write has it, and as one run of text
+ *    (what lies between the floor's and the write's common beginning and end)
+ *    more often than the floor held that run. It landed and was edited over — or
+ *    someone typed the very same text, which merges to the same page.
+ *  - `absent`: something it added is missing. Either it never landed or it was
+ *    edited away again; merging against its state would DELETE whatever of it the
+ *    page still holds and the vault never saw. Not a base.
+ *  - `nothing_added`: it only removed text; nothing to look for.
+ */
+function attemptInVault(floor: { counts: Map<string, number>; plain: string }, attempt: { counts: Map<string, number>; plain: string }, vault: { counts: Map<string, number>; plain: string }): "present" | "absent" | "nothing_added" {
+  let added = false;
+  for (const [token, a] of attempt.counts) {
+    if (a <= (floor.counts.get(token) ?? 0)) continue;
+    added = true;
+    if ((vault.counts.get(token) ?? 0) < a) return "absent";
+  }
+  const min = Math.min(floor.plain.length, attempt.plain.length);
+  let start = 0;
+  while (start < min && floor.plain.charCodeAt(start) === attempt.plain.charCodeAt(start)) start++;
+  let end = 0;
+  while (end < min - start && floor.plain.charCodeAt(floor.plain.length - 1 - end) === attempt.plain.charCodeAt(attempt.plain.length - 1 - end)) end++;
+  const run = attempt.plain.slice(start, attempt.plain.length - end);
+  if (run.length === 0) return added ? "absent" : "nothing_added";
+  return occurrences(vault.plain, run) > occurrences(floor.plain, run) ? "present" : "absent";
+}
+
+/** Top-level blocks of a document (as JSON text) → how often each occurs. Blocks without text (empty paragraphs, rules) are not counted. */
+function blockCounts(source: Y.Doc | DocJson | null, kind: CollabKind): Map<string, number> {
+  const out = new Map<string, number>();
+  if (kind !== "document" || !source) return out;
+  const json = (source instanceof Y.Doc ? yDocToDocJson(source) : source) as { content?: unknown[] };
+  for (const block of json.content ?? []) {
+    const key = JSON.stringify(block);
+    if (!key.includes('"text"')) continue;
+    out.set(key, (out.get(key) ?? 0) + 1);
+  }
+  return out;
+}
+/**
+ * The post-merge guard: a three-way merge never yields MORE copies of a block
+ * than both sides together asked for — more than the document held before and
+ * more than the vault's copy holds is the signature of a merge against a stale
+ * base (the block was re-created instead of recognised).
+ */
+function hasDuplicatedBlocks(after: Map<string, number>, before: Map<string, number>, vault: DocJson | null): boolean {
+  const theirs = blockCounts(vault, "document");
+  for (const [block, n] of after) if (n > 1 && n > Math.max(before.get(block) ?? 0, theirs.get(block) ?? 0)) return true;
+  return false;
+}
+
+/**
+ * The words of a document (or of code) and how often each occurs — the unit the
+ * merge check counts in. Linear, iterative. For a document also every leaf that
+ * carries something of its own without text (an image, a mention, an attachment:
+ * a node with attributes and no content), as one token each. Marks, empty
+ * paragraphs and rules are not counted.
+ */
+function tokenCounts(kind: CollabKind, source: Y.Doc | DocJson | string | null): Map<string, number> {
+  const out = new Map<string, number>();
+  const bump = (token: string): void => void out.set(token, (out.get(token) ?? 0) + 1);
+  const words = (text: string): void => {
+    let start = -1;
+    for (let i = 0; i <= text.length; i++) {
+      const c = i < text.length ? text.charCodeAt(i) : 32;
+      const blank = c === 32 || c === 9 || c === 10 || c === 13 || c === 160;
+      if (blank) {
+        if (start !== -1) bump(text.slice(start, i));
+        start = -1;
+      } else if (start === -1) start = i;
+    }
+  };
+  if (source === null) return out;
+  if (kind === "code") {
+    words(typeof source === "string" ? source : source instanceof Y.Doc ? yDocToCode(source) : "");
+    return out;
+  }
+  if (kind !== "document" || typeof source === "string") return out;
+  const stack: unknown[] = [source instanceof Y.Doc ? yDocToDocJson(source) : source];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n || typeof n !== "object") continue;
+    const node = n as { type?: unknown; text?: unknown; content?: unknown; attrs?: unknown };
+    if (typeof node.text === "string") words(node.text);
+    else if (Array.isArray(node.content)) for (const child of node.content) stack.push(child);
+    else if (node.attrs && typeof node.attrs === "object" && Object.values(node.attrs as Record<string, unknown>).some((v) => v !== null && v !== "" && v !== false)) {
+      bump(`\u0001${String(node.type)}:${JSON.stringify(node.attrs)}`);
+    }
+  }
+  return out;
+}
+/**
+ * Is `merged` a result nobody has to be asked about? Judged per word (token)
+ * from five counts — `base` (the candidate state the vault's copy is taken to
+ * have been edited from), `floor` (the last state KNOWN to have been the vault's
+ * content), `local` (the document before the merge), `vault` (the vault's copy)
+ * and `merged`:
+ *  - never MORE of a word than the base had plus what each side added to it. (It
+ *    used to be "never more than the fuller side": that refused every merge in
+ *    which both sides had legitimately added the same common word — "the".)
+ *  - never FEWER than: what both sides have, plus what only the document has
+ *    beyond the floor and the vault (typing that never reached the vault — a
+ *    base that is too new deletes it), plus what only the vault has beyond the
+ *    floor and the document (what was written elsewhere). Round 6, B3: the
+ *    floor used to be ignored whenever BOTH sides held the word, so deleting a
+ *    typed "the end" passed as long as "the" and "end" stood anywhere in the
+ *    vault's copy.
+ * Deliberately strict below: two people deleting different copies of one word,
+ * or a merge that glues two words together, fails it — and then nobody guesses.
+ */
+export function mergeIsSane(base: Map<string, number>, floor: Map<string, number>, local: Map<string, number>, vault: Map<string, number>, merged: Map<string, number>): boolean {
+  const ok = (token: string): boolean => {
+    const l = local.get(token) ?? 0;
+    const v = vault.get(token) ?? 0;
+    const m = merged.get(token) ?? 0;
+    const f = floor.get(token) ?? 0;
+    const b = base.get(token) ?? 0;
+    const lower = l > 0 && v > 0 ? Math.min(l, v) + Math.max(0, l - Math.max(f, v)) + Math.max(0, v - Math.max(f, l)) : Math.max(0, Math.max(l, v) - f);
+    const upper = b + Math.max(0, l - b) + Math.max(0, v - b);
+    return m >= lower && m <= upper;
+  };
+  for (const token of merged.keys()) if (!ok(token)) return false;
+  for (const token of local.keys()) if (!merged.has(token) && !ok(token)) return false;
+  for (const token of vault.keys()) if (!merged.has(token) && !ok(token)) return false;
+  return true;
+}
+/** A document's content as plain text (code, CSV and scene JSON as they are): what a set-aside keeps for the owner to read. */
+function plainBody(doc: Y.Doc, kind: CollabKind): string {
+  if (kind === "code") return yDocToCode(doc);
+  if (kind === "spreadsheet") return yDocToCsv(doc);
+  if (kind === "canvas") return yDocToScene(doc);
+  return plainOfJson(yDocToDocJson(doc));
+}
+/** A ProseMirror document as plain text: one line per textblock, a blank line between top-level blocks. Linear, iterative. */
+function plainOfJson(json: DocJson | null): string {
+  const blocks: string[] = [];
+  for (const block of (json as { content?: unknown[] } | null)?.content ?? []) {
+    const parts: string[] = [];
+    let line = "";
+    // Depth-first, in document order: text nodes of one textblock on one line.
+    const walk: unknown[] = [block];
+    while (walk.length) {
+      const n = walk.pop();
+      if (n === "\n") {
+        if (line) parts.push(line);
+        line = "";
+        continue;
+      }
+      if (!n || typeof n !== "object") continue;
+      const node = n as { text?: unknown; content?: unknown };
+      if (typeof node.text === "string") line += node.text;
+      else if (Array.isArray(node.content)) {
+        const holdsText = node.content.some((c) => typeof (c as { text?: unknown } | null)?.text === "string");
+        if (!holdsText) walk.push("\n");
+        for (let i = node.content.length - 1; i >= 0; i--) walk.push(node.content[i]);
+        if (holdsText) walk.push("\n");
+      }
+    }
+    if (line) parts.push(line);
+    if (parts.length) blocks.push(parts.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+/** Per document: how often its set-aside failed in a row, when it may be tried again, when that was last logged. */
+const setAsideFailures = new Map<string, { fails: number; nextAt: number; loggedAt: number }>();
+/** Counters tests read. */
+export const collabStats = { setAsideInserts: 0 };
+/**
+ * Keep what a document holds, BEFORE the vault's copy replaces it (S3: it used to
+ * be written afterwards, with a failure swallowed — the text was then gone from
+ * the page and from everywhere else). Throws when it could not be kept: the fold
+ * then replaces nothing.
+ */
+function setAsideLocal(documentName: string, vaultId: string, noteId: string, kind: CollabKind, replaced: Replaced): void {
+  // The reconciler comes back every two seconds, and each try renders the whole page to
+  // text and writes megabytes: a table that keeps refusing is tried again with a backoff
+  // (per document: `setAsideRetryMs`, doubling to five minutes).
+  const failing = setAsideFailures.get(documentName);
+  if (failing && Date.now() < failing.nextAt) throw new Error("set-aside is backing off");
+  try {
+    collabStats.setAsideInserts++;
+    addCollabSetAside(noteId, vaultId, replaced.why, kind, replaced.body, replaced.state);
+    setAsideFailures.delete(documentName);
+    console.warn(`[collab] ${documentName}: the note's content replaces live changes that had not been saved (${replaced.why}) — what the page held is kept for the workspace owner (GET /api/admin/collab/unsaved → setAside)`);
+  } catch (e) {
+    const at = Date.now();
+    const fails = (failing?.fails ?? 0) + 1;
+    const loggedAt = failing && at - failing.loggedAt <= 60_000 ? failing.loggedAt : at;
+    setAsideFailures.set(documentName, { fails, nextAt: at + Math.min(5 * 60_000, collabTuning.setAsideRetryMs * 2 ** (fails - 1)), loggedAt });
+    if (loggedAt === at) console.error(`[collab] ${documentName}: could not set the page's unsaved content aside — the note's newer content is NOT folded in until it can be (the page keeps what it holds):`, e instanceof Error ? e.message : "unknown");
+    // Once per episode, everyone on the page: what they see is not in the stored page (and the server keeps trying).
+    if (fails === 1) tellClients(documentName, { type: "prism:unsaved", state: "pending", reason: "error" });
+    throw e;
+  }
+}
+/** The `keep` a fold is given: set aside what an AHEAD document holds; nothing to keep for one that is in step. */
+const keeperFor = (ahead: boolean | undefined, documentName: string, vaultId: string, noteId: string, kind: CollabKind): ((replaced: Replaced) => void) | null =>
+  ahead ? (replaced) => setAsideLocal(documentName, vaultId, noteId, kind, replaced) : null;
+
+/** A history lookup: versions listed (one call) and version BODIES fetched, at most. */
+const HISTORY_LISTED = 50;
+const HISTORY_BODIES = 8;
+/**
+ * Did one of this snapshot's UNCONFIRMED writes reach the vault before the copy
+ * that is there now? The vault keeps what every write replaced (note history,
+ * vault ≥ 0.7.9): a version whose content hashes to an attempt IS that write.
+ *
+ *  - a hash        → that attempted write landed (and was then edited over);
+ *  - `null`        → history is complete back to the snapshot's own version and
+ *                    holds none of them: no attempt landed;
+ *  - `undefined`   → cannot tell (no history, unreachable, too slow, more versions
+ *                    than the lookup may read).
+ *
+ * Bounded (M-3a, M-6): ONE listing of the newest `HISTORY_LISTED` versions (no
+ * bodies), at most `HISTORY_BODIES` bodies, each call and the whole lookup on a
+ * clock. The listing carries each version's size; the sizes of our attempts are
+ * recorded with them (`attempt_lens`), so a version of another size cannot be one
+ * of ours and is not fetched — once a fetched body has shown that the listing's
+ * `content_len` means what we think it does (characters or UTF-8 bytes). Versions
+ * that could be ours are read first.
+ */
+async function landedAttempt(vaultId: string, noteId: string, meta: DocMeta | null): Promise<string | null | undefined> {
+  if (!meta || meta.attempts.length === 0) return null;
+  // The lookup sits on the load path, inside the store and in the reconciler: it
+  // may never hold them (M-6). Each vault call is aborted after `historyCallMs`,
+  // and the whole lookup is abandoned — answer "cannot tell" — at `historyDeadlineMs`,
+  // whether or not a call honoured its abort.
+  const deadline = Date.now() + collabTuning.historyDeadlineMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const gaveUp = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), collabTuning.historyDeadlineMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    return await Promise.race([searchHistoryForAttempt(vaultId, noteId, meta, deadline), gaveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function searchHistoryForAttempt(vaultId: string, noteId: string, meta: DocMeta, deadline: number): Promise<string | null | undefined> {
+  /** A client whose every call is cut off at the per-call limit or the lookup's deadline, whichever is sooner. */
+  const vault = () => {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("history lookup deadline");
+    return vaultClient(vaultId, { timeoutMs: Math.max(1, Math.min(left, collabTuning.historyCallMs)) });
+  };
+  try {
+    const { versions, total } = await vault().listVersions(noteId, HISTORY_LISTED, 0);
+    const since = meta.sourceUpdatedAt ?? 0;
+    // Newest first. A version superseded no later than the snapshot's own source is the base or older.
+    const listed = versions.slice(0, HISTORY_LISTED);
+    const cut = listed.findIndex((v) => toMs(v.superseded_at) <= since);
+    const inRange = cut === -1 ? listed : listed.slice(0, cut);
+    const complete = cut !== -1 || (total <= listed.length && versions.length <= HISTORY_LISTED);
+    const sizes = meta.attempts.map((h) => meta.attemptLens?.[h]);
+    const sizesKnown = sizes.every((x) => x !== undefined);
+    const couldBeOurs = (v: (typeof listed)[number]): boolean => !sizesKnown || typeof v.content_len !== "number" || sizes.some((x) => x![0] === v.content_len || x![1] === v.content_len);
+    /** Does the listing's `content_len` mean the content's length? null = no body seen yet; false = it does not. */
+    let lenMeansLength: boolean | null = null;
+    const read = new Set<number>();
+    for (const v of [...inRange.filter(couldBeOurs), ...inRange.filter((x) => !couldBeOurs(x))]) {
+      if (lenMeansLength === true && !couldBeOurs(v)) continue; // another size: not one of ours
+      if (read.size >= HISTORY_BODIES) break;
+      const full = await vault().getVersion(noteId, v.version_ix);
+      if (typeof full.content !== "string") return undefined;
+      read.add(v.version_ix);
+      const agrees = typeof v.content_len === "number" && (v.content_len === full.content.length || v.content_len === Buffer.byteLength(full.content));
+      lenMeansLength = lenMeansLength === false ? false : agrees;
+      const hash = contentHash(full.content);
+      if (meta.attempts.includes(hash)) return hash;
+    }
+    // "None landed" only if every version since the snapshot's own was read, or provably is not one of ours.
+    const examined = inRange.every((v) => read.has(v.version_ix) || (lenMeansLength === true && !couldBeOurs(v)));
+    return complete && examined ? null : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/**
+ * The base(s) an EXTERNAL change is merged against (see `foldVaultContent`).
+ * Normally the row's base. With unconfirmed writes it depends on whether one of
+ * them landed before the external edit was made (the store's write reached the
+ * vault, its acknowledgement did not — or is still in flight — and someone
+ * edited the note on top of it): then the base is THAT write's state, not the
+ * older one the row still names. Merging against the older one re-creates what
+ * was typed in between (`start / edit one / EXTERNAL / edit one`).
+ */
+function mergeBases(row: DocState | null, landed: string | null | undefined): MergeBase {
+  if (!row) return { candidates: [], uncertain: false, floor: null };
+  const only = (b: Uint8Array | null): MergeBase => ({ candidates: b ? [b] : [], uncertain: false, floor: row.base });
+  if (row.attempts.length === 0 || landed === null) return only(row.base);
+  const newest = row.attempts[row.attempts.length - 1];
+  // History SHOWS the newest attempt in the vault before the copy that is there now: its state is the base.
+  if (landed !== undefined && landed === newest && row.attemptState) return only(row.attemptState);
+  // Unknown which (or an older attempt, whose state was not kept): the fold tries each and
+  // takes none it cannot vouch for — also when only one candidate is left. Older first.
+  return { candidates: [row.base, row.attemptState].filter((b): b is Uint8Array => b !== null), uncertain: true, floor: row.base, attempt: row.attemptState };
+}
+
+// ── what connected clients are told (Hocuspocus stateless messages) ─────────
+/**
+ * `prism:unsaved` — this page's latest changes are NOT in the stored page (and why):
+ * `unsaved` = they cannot be written as the page is (permanent); `pending` = not
+ * written yet, the server keeps trying (a client from before this state ignores
+ * it — it only knows `unsaved`); `saved` clears both. `prism:notice` — a one-off.
+ */
+export type CollabClientMessage =
+  | { type: "prism:unsaved"; state: "unsaved"; reason: string }
+  | { type: "prism:unsaved"; state: "pending"; reason: string }
+  | { type: "prism:unsaved"; state: "saved" }
+  | { type: "prism:notice"; code: "external-replaced" }
+  /** The workspace owner discarded this page's unsaved live changes: what is shown is the stored page again. */
+  | { type: "prism:notice"; code: "unsaved-discarded" };
+/**
+ * A one-off notice for a document that is still loading: delivered to the sockets
+ * that connect to it NOW — the ones whose open triggered the load, within
+ * `noticeTtlMs` — and then dropped. (It used to live until the document
+ * unloaded, so everyone who joined a long-lived page hours later was told
+ * "changes made elsewhere replaced part of this page" again.)
+ */
+const pendingNotices = new Map<string, { message: CollabClientMessage; until: number }>();
+/** Tunables tests shorten. */
+export const collabTuning = { noticeTtlMs: 15_000, /** How long a load / store waits between tries for a converter slot. */ busyWaitMs: 1500, /** One vault call of a history lookup / the whole lookup (`landedAttempt`). */ historyCallMs: 2500, historyDeadlineMs: 6000, /** First wait before a failed set-aside is tried again for that document (doubles, to 5 min). */ setAsideRetryMs: 5000, /** The reconciler's gate: with a live tree projection a loaded document's note is re-read at least this often even when the projection reports no change (a missed socket frame must not hide an external edit for good). 0 = no gate: read every tick. Env `COLLAB_RECONCILE_REREAD_MS`. */ reconcileRereadMs: rereadMsFromEnv(), /** The clock of the reconciler's re-read interval (tests move it). */ now: (): number => Date.now() };
+function rereadMsFromEnv(): number {
+  const raw = process.env.COLLAB_RECONCILE_REREAD_MS;
+  const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
+}
+function tellClients(documentName: string, message: CollabClientMessage): void {
+  try {
+    hocuspocus.documents.get(documentName)?.broadcastStateless(JSON.stringify(message));
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Test-only: forget blocked documents and pending store retries. */
+export function resetConversionState(): void {
+  blockedDocs.clear();
+  setAsideFailures.clear();
+  convertFailures.clear();
+  pendingNotices.clear();
+  for (const r of storeRetries.values()) clearTimeout(r.timer);
+  storeRetries.clear();
 }
 
 /** A loaded-document registry — structurally what Hocuspocus exposes as
@@ -468,7 +1153,45 @@ export interface LiveDocs {
 /** The Parachute updatedAt we've absorbed for a doc, beyond which a newer note
  *  is an unseen external edit. Max of our persisted snapshot and last apply. */
 function reconcileBaseline(documentName: string, vaultId: string, noteId: string): number {
-  return Math.max(getDocState(noteId, vaultId)?.sourceUpdatedAt ?? 0, lastReconciled.get(documentName) ?? 0);
+  return Math.max(getDocMeta(noteId, vaultId)?.sourceUpdatedAt ?? 0, lastReconciled.get(documentName) ?? 0);
+}
+
+/**
+ * Must this tick READ the document's note from the vault (NP-PF-09)? The read —
+ * body included — used to happen for every loaded document every tick, only to
+ * find nothing new. The tree projection already holds each note's `updatedAt`,
+ * fed by the vault's subscribe socket (writes made ANYWHERE) and by gateway
+ * write-through, so while it is live the read is needed only when:
+ *
+ *  (a) the projection's revision is NEWER than what this document absorbed — the
+ *      exact condition under which the read would not come back "same" (an OLDER
+ *      projection row is our own write's frame still on its way: nothing to learn);
+ *  (b) the projection is not live for this vault (no projection, socket down or
+ *      reconnecting, `TREE_SUBSCRIBE=0`) — then every tick reads, as before; it is
+ *      never built for this;
+ *  (c) the projection lists no such note (deleted, or not seen) — as before;
+ *  (d) the document is in a state the vault's copy may settle: unconfirmed writes,
+ *      a snapshot ahead of the vault / an unsaved row, a store retry or a failed
+ *      set-aside pending;
+ *  (e) `collabTuning.reconcileRereadMs` passed since its last read — a lost frame
+ *      cannot hide an external edit for longer than that.
+ *
+ * A skip changes nothing: no baseline moves, so `markReconciled` and the fold's
+ * own re-checks behave exactly as they did.
+ */
+function reconcileNeedsRead(name: string, vaultId: string, noteId: string, now: number, revision: ReturnType<typeof treeRevisions>): boolean {
+  const every = collabTuning.reconcileRereadMs;
+  if (!(every > 0)) return true;
+  const seen = revision(vaultId, noteId);
+  if (!seen.live) return true;
+  const rowMs = toMs(seen.updatedAt);
+  if (rowMs === 0) return true;
+  const meta = getDocMeta(noteId, vaultId);
+  if (rowMs > Math.max(meta?.sourceUpdatedAt ?? 0, lastReconciled.get(name) ?? 0)) return true;
+  if (!meta || meta.ahead || meta.attempts.length > 0) return true;
+  if (isCollabUnsaved(noteId, vaultId) || storeRetries.has(name) || setAsideFailures.has(name)) return true;
+  const last = lastVaultRead.get(name);
+  return last === undefined || now - last >= every;
 }
 
 /**
@@ -477,23 +1200,137 @@ function reconcileBaseline(documentName: string, vaultId: string, noteId: string
  * is what makes an MCP-agent edit appear in open editors within one interval.
  */
 export async function reconcileLoadedDocs(server: LiveDocs): Promise<void> {
+  // Folds that first need a look at the note's HISTORY (a snapshot with unconfirmed
+  // writes met an external edit) are finished after every other document had its
+  // turn, side by side: one slow vault must not delay everyone else's page (M-6).
+  const afterHistory: Array<Promise<void>> = [];
+  const revision = treeRevisions(); // the vault registry is resolved once per tick, not per document
+  /** This tick's read left news unfolded (busy converter, a set-aside that failed, …): no re-read clock — the next tick reads again. */
+  const unsettled = (name: string, vaultId: string, noteId: string, noteMs: number): void => {
+    if (noteMs > reconcileBaseline(name, vaultId, noteId)) lastVaultRead.delete(name);
+  };
   for (const [name, doc] of server.documents) {
     const d = doc as Y.Doc & { isLoading?: boolean; getConnectionsCount?: () => number };
     if (d.isLoading) continue; // mid-load — onLoadDocument owns seeding
     if (typeof d.getConnectionsCount === "function" && d.getConnectionsCount() === 0) continue; // about to unload
+    // A live document that can no longer absorb its note must go away: drop its
+    // sockets so it unloads; the next open loads from the note.
+    if (isDocBlocked(name)) {
+      dropConnections(name);
+      continue;
+    }
     const target = federationTarget(name);
+    if (!reconcileNeedsRead(name, target.vaultId, target.noteId, collabTuning.now(), revision)) {
+      reconcileStats.skipped++;
+      continue; // the projection is live and reports nothing newer than what this document absorbed
+    }
+    reconcileStats.reads++;
     let note;
     try {
       note = await vaultClient(target.vaultId).getNote(target.noteId);
     } catch {
-      continue; // unreadable/deleted — the load/store lifecycle handles it
+      continue; // unreadable/deleted — the load/store lifecycle handles it (and the re-read clock is not restarted)
     }
     const noteMs = toMs(note.updatedAt);
-    if (noteMs === 0 || noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) continue;
+    if (noteMs === 0) continue;
+    // The re-read clock restarts only for a read that ANSWERED; every exit below
+    // that leaves this revision unabsorbed clears it again (`unsettled`).
+    lastVaultRead.set(name, collabTuning.now());
+    const meta = getDocMeta(target.noteId, target.vaultId);
+    const { relation, hash } = vaultRelation(meta, note, reconcileBaseline(name, target.vaultId, target.noteId));
+    if (relation === "same") continue;
     const kind = noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
     kindCache.set(name, kind);
-    applyExternalContent(doc, kind, note.content);
-    lastReconciled.set(name, noteMs);
+    if (relation === "metadata") {
+      // A newer version, the same content (a property, an icon, a backlink write): nothing to fold.
+      rebaseDoc(target.noteId, target.vaultId, { source: noteMs });
+      lastReconciled.set(name, noteMs);
+      continue;
+    }
+    if (relation === "ours") {
+      // A write we sent and never saw confirmed DID land: it is ours, not an external edit.
+      rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash!, base: "attempt" });
+      lastReconciled.set(name, noteMs);
+      continue;
+    }
+    let prepared: DocJson | null;
+    try {
+      prepared = await prepareExternalContent(kind, note.content, { actor: `doc:${name}` });
+    } catch (e) {
+      if (!(e instanceof ConversionError)) throw e;
+      // Load-dependent (busy / timeout / a crashed worker): try again next tick.
+      // The store's own guard keeps this note from being overwritten meanwhile.
+      if (!isDeterministicFailure(e.reason) && !unconvertible(e.reason, name, note.content)) {
+        unsettled(name, target.vaultId, target.noteId, noteMs);
+        continue;
+      }
+      // The note's new body cannot be converted, so this live document can no
+      // longer absorb it — and must not be stored over it.
+      blockDocument(name, e.reason);
+      dropConnections(name);
+      continue;
+    }
+    const content = note.content;
+    /** Synchronous: apply the external edit (the awaits before it may have changed everything — checked first). */
+    const fold = (landed: string | null | undefined): void => {
+      try {
+        foldNow(landed);
+      } finally {
+        unsettled(name, target.vaultId, target.noteId, noteMs);
+      }
+    };
+    const foldNow = (landed: string | null | undefined): void => {
+      // The document may have unloaded, or been flagged, meanwhile.
+      if (server.documents.get(name) !== doc || d.isLoading || isDocBlocked(name)) return;
+      // …and so may the note (a store of ours, another fold): only apply what is still news.
+      if (noteMs <= reconcileBaseline(name, target.vaultId, target.noteId)) return;
+      const row = getDocState(target.noteId, target.vaultId);
+      let folded: FoldResult;
+      try {
+        folded = foldVaultContent(doc, kind, content, prepared, mergeBases(row, landed), keeperFor(row?.ahead, name, target.vaultId, target.noteId, kind));
+      } catch (e) {
+        if (e instanceof SetAsideFailedError) return; // nothing was replaced; the next tick tries again
+        throw e;
+      }
+      // Persist the merged document WITH its new base, together: a snapshot must never
+      // claim a base (the new vault content) that its state does not contain.
+      if (row) {
+        saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
+        rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: hash ?? contentHash(content), base: folded.base });
+      }
+      lastReconciled.set(name, noteMs);
+      // The document was ahead and no merge could be trusted: what it held beyond the
+      // vault's copy is no longer in it — everyone on the page is told, and it is kept.
+      if (folded.wholesale && row?.ahead) tellClients(name, { type: "prism:notice", code: "external-replaced" });
+    };
+    // Writes of ours that were never confirmed: did one land before this edit was made?
+    // Only the note's history can say — asked off this loop.
+    if (meta && meta.attempts.length > 0) {
+      afterHistory.push(
+        landedAttempt(target.vaultId, target.noteId, meta)
+          .then(fold)
+          .catch((e) => (unsettled(name, target.vaultId, target.noteId, noteMs), console.error(`[collab] ${name}: reconcile failed:`, e instanceof Error ? e.message : "unknown"))),
+      );
+      continue;
+    }
+    fold(null);
+  }
+  await Promise.all(afterHistory);
+}
+
+/**
+ * The close reason the shipped client reconnects on (CollabDoc: a reason starting
+ * "Access changed." → re-check access, then reconnect). Reused for every server-
+ * initiated "come back and get your current mode" close.
+ */
+const RECONNECT_REASON = "Access changed. Reconnect to check your permissions.";
+
+/** Close every socket of a loaded document (they reconnect; a document with no sockets unloads). */
+function dropConnections(documentName: string, reason = RECONNECT_REASON): void {
+  const doc = hocuspocus.documents.get(documentName);
+  for (const connection of doc?.getConnections() ?? []) {
+    connection.readOnly = true;
+    connection.close({ code: 4403, reason });
   }
 }
 
@@ -737,16 +1574,39 @@ export function setLostCommandCleanup(fn: typeof lostCommandCleanup): void {
  * than our recorded source), the external edit wins and we re-seed from it.
  * Leaves the doc empty if nothing is loadable. Mutates and returns `doc`.
  */
-export async function loadDocumentState(documentName: string, doc: Y.Doc): Promise<Y.Doc> {
+/**
+ * Run a conversion, waiting out a saturated converter: `busy` says nothing about
+ * the content, and giving up on it costs something real (a failed open, an
+ * unsaved store) — so a load and a store wait for a slot a few times first.
+ */
+const BUSY_RETRIES = 5;
+async function patiently<T>(convert: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await convert();
+    } catch (e) {
+      if (!(e instanceof ConversionError) || e.reason !== "busy" || attempt >= BUSY_RETRIES) throw e;
+      await new Promise((r) => setTimeout(r, collabTuning.busyWaitMs));
+    }
+  }
+}
+/**
+ * Has this content now failed (timeout / worker crash) twice for this document?
+ * One such failure may be the server's load; the same content failing again is
+ * treated as unconvertible. `busy` never counts.
+ */
+const convertFailures = new Map<string, { hash: string; count: number }>();
+function unconvertible(reason: ConversionFailure, documentName: string, content: string): boolean {
+  if (reason === "busy") return false;
+  const hash = contentHash(content);
+  const prev = convertFailures.get(documentName);
+  const count = prev && prev.hash === hash ? prev.count + 1 : 1;
+  convertFailures.set(documentName, { hash, count });
+  return count >= 2;
+}
+
+export async function loadDocumentState(documentName: string, doc: Y.Doc, opts?: ConvertOptions): Promise<Y.Doc> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
-  // A (re)load starts a NEW in-memory document. Any human command still marked
-  // 'applied' for THIS document name (never confirmed by a store) belonged to a
-  // previous instance that is gone — a crash, or an unload before its store
-  // succeeded. Forget those receipts NOW (before any await) so a retry
-  // re-applies the command rather than replaying a result for a change that was
-  // lost; what they may have left in a half-saved snapshot is removed below.
-  // Confirmed ('durable') receipts are kept: they survive every reload/reseed.
-  const lost = takeUnconfirmedCollabReceipts(documentName);
   let note: { content: string; updatedAt: string | null } | null = null;
   let kind: CollabKind = target.kind ?? kindCache.get(documentName) ?? "document";
   try {
@@ -768,20 +1628,102 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
         : kind === "canvas"
           ? doc.getMap(CANVAS_FIELD).size > 0
           : doc.getXmlFragment(FIELD).length > 0;
-  if (populated) return doc;
+  if (populated) {
+    takeUnconfirmedCollabReceipts(documentName); // as before: a (re)load forgets them, whatever it finds
+    return doc;
+  }
 
   const stored = getDocState(target.noteId, target.vaultId);
-  const externallyEdited = stored && note && toMs(note.updatedAt) > (stored.sourceUpdatedAt ?? 0);
+  // THE rule (see `vaultRelation`): is the vault's copy news for this snapshot?
+  // Decided by CONTENT, not by the version stamp alone — a metadata-only write
+  // (or our own write whose acknowledgement was lost) moves the stamp and must
+  // never fold the vault's body back over a snapshot that is ahead of it.
+  const rel = stored && note ? vaultRelation(stored, note, stored.sourceUpdatedAt ?? 0) : { relation: "same" as VaultRelation, hash: null };
+  const externallyEdited = rel.relation === "external";
 
+  // A DOCUMENT's body is converted in the worker BEFORE anything is applied or
+  // consumed (the doc is still loading: nothing else can touch it across this
+  // await). A body that cannot be converted gets NO live document — the load
+  // fails and nothing derived from that body is put into Yjs or SQLite.
+  let folded: DocJson | null = null; // the note's body, for the fold into stored state
+  let seeded: Uint8Array | null = null; // the note's body, as a first-ever seed
+  // An external edit over a snapshot with unconfirmed writes: which state was it made on?
+  const landed = stored && externallyEdited ? await landedAttempt(target.vaultId, target.noteId, stored) : null;
+  if (kind === "document" && note && (stored ? externallyEdited : true)) {
+    try {
+      const body = note.content;
+      if (stored) folded = await patiently(() => prepareExternalContent(kind, body, opts));
+      else seeded = await patiently(() => contentToYUpdateAsync(body, opts));
+    } catch (e) {
+      if (!(e instanceof ConversionError)) throw e;
+      // A saturated converter says nothing about this note: the client retries.
+      if (e.reason === "busy") throw new CollabBusyError();
+      throw new DocumentTooComplexError(e.reason);
+    }
+  }
+  // The load will succeed from here on (everything below is synchronous).
+  // A (re)load starts a NEW in-memory document. Any human command still marked
+  // 'applied' for THIS document name (never confirmed by a store) belonged to a
+  // previous instance that is gone — a crash, or an unload before its store
+  // succeeded. Forget those receipts now, so a retry re-applies the command
+  // rather than replaying a result for a change that was lost; what they may
+  // have left in a half-saved snapshot is removed below. Taken only once the load
+  // cannot fail any more: a load that fails (busy converter, unconvertible note)
+  // must not consume them. Confirmed ('durable') receipts survive every reload.
+  const lost = takeUnconfirmedCollabReceipts(documentName);
+  blockedDocs.delete(documentName);
+  convertFailures.delete(documentName);
+  const noteMs = note ? toMs(note.updatedAt) : 0;
+
+  /** Does the restored snapshot hold changes the vault lacks? (then it is kept `ahead` and written later) */
+  let ahead = false;
+  /** The note's newer content was NOT folded in (its replacement could not be set aside): it is still news. */
+  let unfolded = false;
   if (stored) {
     // Always restore the persisted CRDT state first: it carries the doc's stable
     // Yjs client IDs. A reconnecting client (in-session, or via IndexedDB across
     // reloads) then merges IDENTICAL items → idempotent, no duplication.
     Y.applyUpdate(doc, stored.state);
-    // If Parachute changed underneath us, fold that edit in via a minimal CRDT
-    // DIFF (updateYFragment et al.) — NOT an additive re-seed, which would stack
-    // a second fresh-client-ID copy of the whole note on top of the first.
-    if (externallyEdited && note) applyExternalContent(doc, kind, note.content);
+    ahead = stored.ahead;
+    if (note && rel.relation === "metadata") {
+      // Same content, newer version: the snapshot stands; only its stamp moves.
+      rebaseDoc(target.noteId, target.vaultId, { source: noteMs });
+    } else if (note && rel.relation === "ours") {
+      // The vault holds a write we sent and never saw confirmed. The snapshot
+      // contains it (it was saved before the write was sent): nothing to fold.
+      rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: rel.hash!, base: "attempt" });
+      ahead = true; // unknown whether it holds MORE than that write: the retry below settles it
+    } else if (note && externallyEdited) {
+      // Parachute's content changed underneath the snapshot: fold that edit in via
+      // a CRDT diff (never an additive re-seed, which would stack a second copy of
+      // the whole note on the first) — three-way against the true base when the
+      // snapshot is ahead, so what was typed and what was changed elsewhere both
+      // survive.
+      let fold: FoldResult | null = null;
+      try {
+        fold = foldVaultContent(doc, kind, note.content, folded, mergeBases(stored, landed), keeperFor(stored.ahead, documentName, target.vaultId, target.noteId, kind));
+      } catch (e) {
+        if (!(e instanceof SetAsideFailedError)) throw e;
+        // What the snapshot holds could not be set aside, so nothing replaced it: the
+        // page opens with its own (ahead) state, and the note's newer content stays
+        // news — the reconciler and the store's guard fold it once it can be kept.
+        unfolded = true;
+      }
+      if (!fold) {
+        /* opened as it was (above) */
+      } else if (stored.ahead && !fold.wholesale) {
+        saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
+        rebaseDoc(target.noteId, target.vaultId, { source: noteMs, hash: rel.hash ?? contentHash(note.content), base: fold.base });
+      } else {
+        // The document IS the vault's content now (it was not ahead, or its base
+        // was unknown and the external edit replaced it).
+        if (stored.ahead) {
+          console.warn(`[collab] ${documentName}: the note changed elsewhere and this snapshot could not be merged with it — the note's content replaced unsaved changes`);
+          pendingNotices.set(documentName, { message: { type: "prism:notice", code: "external-replaced" }, until: Date.now() + collabTuning.noticeTtlMs }); // told to whoever opens it now
+        }
+        ahead = false;
+      }
+    }
   } else if (note) {
     const seed =
       kind === "code"
@@ -790,14 +1732,13 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
           ? csvToYUpdate(note.content)
           : kind === "canvas"
             ? sceneToYUpdate(note.content)
-            : contentToYUpdate(note.content);
+            : seeded!;
     Y.applyUpdate(doc, seed); // first-ever seed into a fresh, empty doc
   }
   // A snapshot written by a FAILED store (or one taken while a command's own
   // vault write was still pending) can hold pieces of a command that was never
-  // confirmed: the fold above restores the body from the vault, but not the
-  // `comments` map. Remove exactly what those forgotten commands left behind, so
-  // the document is consistent and the retry starts from the pre-command state.
+  // confirmed. Remove exactly what those forgotten commands left behind, so the
+  // document is consistent and the retry starts from the pre-command state.
   if (lost.length > 0 && kind === "document") {
     try {
       lostCommandCleanup?.(doc, lost);
@@ -815,8 +1756,29 @@ export async function loadDocumentState(documentName: string, doc: Y.Doc): Promi
   // left unknown — the command engine measures those once when it needs to.
   if (note && kind === "document" && note.content.trimStart().startsWith("<")) setRenderedSize(doc, Buffer.byteLength(note.content));
   if (note) {
-    saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), toMs(note.updatedAt), target.vaultId);
-    lastReconciled.set(documentName, toMs(note.updatedAt));
+    if (ahead) {
+      // The snapshot is ahead of the vault: it stays marked so (its base and
+      // source version already say what it is built on) and the note is written
+      // once the document is up.
+      saveDocAhead(target.noteId, Y.encodeStateAsUpdate(doc), target.vaultId);
+      const unsaved = getCollabUnsaved(target.noteId, target.vaultId);
+      if (!unsaved?.permanent) scheduleStoreRetry(documentName, target.noteId, target.vaultId, unsaved?.reason ?? "pending");
+    } else {
+      // The document IS the vault content at this version.
+      saveDocState(target.noteId, Y.encodeStateAsUpdate(doc), noteMs, target.vaultId, contentHash(note.content));
+      clearCollabUnsaved(target.noteId, target.vaultId);
+    }
+    if (!unfolded) {
+      lastReconciled.set(documentName, noteMs);
+      lastVaultRead.set(documentName, collabTuning.now()); // the load just read the note: the reconciler's re-read clock starts here
+    }
+  } else if (stored?.ahead || isCollabUnsaved(target.noteId, target.vaultId)) {
+    // The note could not be READ just now, and the snapshot holds changes it
+    // lacks. Nothing above scheduled their write (it all hangs off the note), and
+    // the sweep leaves loaded documents to their own timer — without one, a page
+    // opened during a vault outage kept its changes unsaved for as long as it
+    // stayed open with nobody typing.
+    if (!getCollabUnsaved(target.noteId, target.vaultId)?.permanent) scheduleStoreRetry(documentName, target.noteId, target.vaultId, "unreadable");
   }
   if (kind === "document") lastSuggestions.set(documentName, suggestionTexts(doc));
   collabWriters.delete(documentName);
@@ -961,97 +1923,554 @@ function takeDocEditors(docName: string): string[] {
  * continuity. A vault write failure still persists local state so edits aren't
  * lost. Extracted from the Hocuspocus hook so it is directly testable.
  */
+// ── stores that could not reach the vault ──────────────────────────────────
+// A store ALWAYS saves the Yjs state to SQLite (that needs no HTML). When the
+// note itself could not be written, the snapshot is marked AHEAD of the vault
+// (its base and source version are kept — nothing is ever folded back over it)
+// and the note is recorded in `collab_unsaved`:
+//
+//  - load-dependent failures (the converter was busy / timed out / crashed, the
+//    vault was unreachable or answered 5xx, the note kept changing): retried —
+//    while the document is loaded by a timer with backoff, after an unload by
+//    the sweep in `attachCollab`, and at the next load;
+//  - failures retrying cannot fix (the document is beyond what can be rendered
+//    or re-opened; the vault refuses the body: 413 over 2 MB, 400/422): the row
+//    is PERMANENT — not retried, and everyone on the page is told (a stateless
+//    `prism:unsaved` message, repeated to each socket that connects) so the
+//    client never shows "Saved". The next store that does reach the vault clears
+//    it; the Yjs state stays in SQLite and is restored whenever the page opens.
+const storeRetries = new Map<string, { timer: ReturnType<typeof setTimeout>; attempts: number }>();
+const STORE_RETRY_MS = [3_000, 10_000, 30_000, 60_000];
+/**
+ * How long until store attempt number `attempts` (1-based) of a loaded document.
+ * 3 s, 10 s, 30 s, 60 s, then DOUBLING — it used to stay at 60 s forever, and a
+ * render that times out costs a worker thread each time (killed and respawned):
+ * under a swap storm every loaded document did that once a minute. Capped at
+ * 30 min when the converter is the cause (`timeout` / `failed`), 5 min otherwise
+ * (the vault being down costs nothing to ask again).
+ */
+export function storeRetryDelayMs(attempts: number, reason: string): number {
+  if (attempts <= STORE_RETRY_MS.length) return STORE_RETRY_MS[Math.max(1, attempts) - 1]!;
+  const cap = reason === "timeout" || reason === "failed" ? 30 * 60_000 : 5 * 60_000;
+  return Math.min(cap, 60_000 * 2 ** Math.min(attempts - STORE_RETRY_MS.length, 10));
+}
+
+/** Store a LOADED document again later (no-op once it has unloaded: the sweep and the next load take over). */
+function scheduleStoreRetry(documentName: string, noteId: string, vaultId: string, reason: string): void {
+  markCollabUnsaved(noteId, vaultId, documentName, reason, false);
+  // The badge of everyone on the page must not say "Saved" meanwhile (L7).
+  tellClients(documentName, { type: "prism:unsaved", state: "pending", reason });
+  const prev = storeRetries.get(documentName);
+  if (prev) clearTimeout(prev.timer);
+  const attempts = (prev?.attempts ?? 0) + 1;
+  const timer = setTimeout(() => {
+    const live = hocuspocus.documents.get(documentName);
+    if (!live || live.isLoading) return void storeRetries.delete(documentName);
+    void storeLoadedDocument(live).catch(() => {});
+  }, storeRetryDelayMs(attempts, reason));
+  (timer as { unref?: () => void }).unref?.();
+  storeRetries.set(documentName, { timer, attempts });
+}
+function cancelStoreRetry(documentName: string): void {
+  const retry = storeRetries.get(documentName);
+  if (retry) clearTimeout(retry.timer);
+  storeRetries.delete(documentName);
+}
+/** The note cannot be written until the page itself changes: record it, stop retrying, tell everyone on the page. */
+function storeRefused(documentName: string, noteId: string, vaultId: string, reason: string): void {
+  cancelStoreRetry(documentName);
+  const known = getCollabUnsaved(noteId, vaultId);
+  markCollabUnsaved(noteId, vaultId, documentName, reason, true);
+  if (!known?.permanent) console.error(`[collab] ${documentName}: the page cannot be saved to the vault (${reason}) — its changes are kept in the server's document store; people on the page are told`);
+  tellClients(documentName, { type: "prism:unsaved", state: "unsaved", reason });
+}
+function storeSucceeded(documentName: string, noteId: string, vaultId: string): void {
+  cancelStoreRetry(documentName);
+  const known = getCollabUnsaved(noteId, vaultId);
+  if (!known) return;
+  clearCollabUnsaved(noteId, vaultId);
+  tellClients(documentName, { type: "prism:unsaved", state: "saved" });
+}
+
+const UNSAVED_SWEEP_MS = 60_000;
+const UNSAVED_GIVE_UP_MS = 14 * 24 * 3600_000;
+
+/**
+ * Write the notes of documents that are NOT loaded but whose last store never
+ * reached the vault (the tab closed while the converter was busy, a restart).
+ * Opening a direct connection loads the snapshot; disconnecting stores it.
+ * Rows are taken least-recently-attempted first with a per-row exponential
+ * backoff, so a note that keeps failing cannot starve the others. A deleted
+ * note drops its row; a row nobody could write for two weeks stops being retried
+ * (kept, logged, alerted through `/acl/workers` — never silently, and its Yjs
+ * state is never deleted).
+ */
+export async function sweepUnsavedDocuments(limit = 5, at = Date.now()): Promise<void> {
+  // Set-aside page text is kept 90 days. Pruned here as well as on insert (S4): a
+  // workspace where nothing is ever set aside again would keep its last rows forever.
+  try {
+    pruneCollabSetAside(at);
+  } catch {
+    /* best-effort */
+  }
+  for (const row of dueCollabUnsaved(limit, at)) {
+    const loaded = hocuspocus.documents.get(row.doc_name);
+    if (loaded) {
+      // Its own retry timer handles it — if it has one. A loaded document with an
+      // unsaved row and NO timer (however it got there) is stored from here.
+      if (!storeRetries.has(row.doc_name) && !loaded.isLoading) {
+        noteCollabUnsavedAttempt(row.name, row.vault_id, at);
+        await storeLoadedDocument(loaded).catch(() => {});
+      }
+      continue;
+    }
+    if (at - row.since > UNSAVED_GIVE_UP_MS) {
+      markCollabUnsaved(row.name, row.vault_id, row.doc_name, "gave_up", true);
+      console.error(`[collab] ${row.doc_name}: not saved to the vault for 14 days (${row.reason ?? "unknown"}) — retries stop; its changes stay in the server's document store and open with the page`);
+      continue;
+    }
+    noteCollabUnsavedAttempt(row.name, row.vault_id, at);
+    try {
+      await vaultClient(row.vault_id).getNote(row.name);
+    } catch (e) {
+      if (e instanceof VaultError && e.status === 404) {
+        clearCollabUnsaved(row.name, row.vault_id);
+        deleteCollabSetAsideForNote(row.vault_id, row.name);
+        console.warn(`[collab] ${row.doc_name}: the note was deleted while changes to it were unsaved — nothing left to write`);
+      }
+      continue; // unreachable: tried again after its backoff
+    }
+    try {
+      const conn = await hocuspocus.openDirectConnection(row.doc_name, {});
+      await conn.disconnect();
+    } catch {
+      /* unconvertible or busy now: stays recorded, tried again after its backoff */
+    }
+  }
+}
+
+export type UnsavedSettlement = "clear" | "pending" | "permanent" | "unloadable";
+/**
+ * For REST writers of a note's BODY: is there live state the vault does not have?
+ * A note with an unsaved snapshot is given one chance to be written right now
+ * (load + store). `clear` = the vault is current, write away (your version check
+ * decides). `pending` = the snapshot is still ahead: a body write now would be
+ * based on stale content — answer 409 `conflict {live, retry}`. `permanent` = the
+ * snapshot is ahead and CANNOT be written as it is (too large to render, refused
+ * by the vault, given up on): waiting changes nothing — answer a NON-retry error
+ * (`unsavedPermanentBody`). `unloadable` = the
+ * note itself cannot be opened live (unconvertible): REST is the only way to fix
+ * it, so the write goes through; the snapshot is merged three-way at the next
+ * load that succeeds.
+ */
+export async function settleUnsaved(vaultId: string, noteId: string): Promise<UnsavedSettlement> {
+  const row = getCollabUnsaved(noteId, vaultId);
+  if (!row) return "clear";
+  // A row that can never be written as it is: loading and storing it again changes
+  // nothing — and used to cost a load, a render and a refused vault write on EVERY
+  // body write to the page (M-2). (A loaded one is its own document's business.)
+  if (row.permanent && !hocuspocus.documents.has(row.doc_name)) return "permanent";
+  if (!hocuspocus.documents.has(row.doc_name)) {
+    try {
+      const conn = await hocuspocus.openDirectConnection(row.doc_name, {});
+      await conn.disconnect();
+    } catch (e) {
+      if (e instanceof DocumentTooComplexError) return "unloadable";
+      return "pending";
+    }
+  }
+  const after = getCollabUnsaved(noteId, vaultId);
+  return !after ? "clear" : after.permanent ? "permanent" : "pending";
+}
+/** Why this note's live changes can NEVER be written as they are (null: they can, or there are none). */
+export function unsavedPermanentReason(vaultId: string, noteId: string): string | null {
+  const row = getCollabUnsaved(noteId, vaultId);
+  return row?.permanent ? (row.reason ?? "unknown") : null;
+}
+/** In words, for an error message (see also the client's `unsavedExplanation`). */
+export function unsavedReasonText(reason: string | null): string {
+  if (reason === "gave_up") return "saving them was tried for two weeks without success";
+  if (reason && reason.startsWith("vault ")) return reason === "vault 413" ? "the stored page would be larger than the vault accepts" : "the vault refuses the page's content";
+  return "the page is too large or complex to be stored";
+}
+/** The 409 body for a body write to a page whose live changes can never be saved as they are: NOT a retry. */
+export function unsavedPermanentBody(reason: string | null): { error: "unsaved_permanent"; live: true; retry: false; reason: string; detail: string } {
+  return {
+    error: "unsaved_permanent",
+    live: true,
+    retry: false,
+    reason: reason ?? "unknown",
+    detail: `This page has changes from the live editor that cannot be saved to the stored page (${unsavedReasonText(reason)}). Retrying will not help: open the page and make it smaller, or ask the workspace owner to discard the unsaved changes.`,
+  };
+}
+
+/**
+ * The way out of a page that can never be saved (M2): DISCARD the live changes
+ * the vault lacks. The snapshot is not deleted — it is brought back to the
+ * vault's content IN PLACE (the note's body replaces the document's, as an
+ * external edit without a base does), so the Yjs history and client ids stay:
+ * a browser that still holds the old state locally converges on the stored
+ * page instead of merging a second copy into a fresh document. Works on the
+ * loaded document when the page is open (everyone on it sees the stored page —
+ * and is TOLD: `prism:notice unsaved-discarded`).
+ *
+ * Round 5 (M-5):
+ *  - Only for a page that can NEVER be saved (a permanent row). One the server is
+ *    still retrying needs `force` — it is not stuck, it is late (`not_permanent`).
+ *  - Serialised with the document's STORE (Hocuspocus' per-document save mutex):
+ *    a store that snapshotted the document before the discard used to finish
+ *    afterwards and write the discarded text to the vault. The discard now waits
+ *    for it and decides on what is true THEN (often: nothing left to discard).
+ *  - A document that is being LOADED right now is answered `busy`: its load has
+ *    already read the snapshot this would rewrite.
+ * Returns what happened; throws nothing for a note without unsaved changes.
+ */
+export type DiscardOutcome = { discarded: boolean; live: boolean; permanent: boolean; reason: "none" | "unreadable" | "busy" | "not_permanent" | null };
+export async function discardUnsavedChanges(vaultId: string, noteId: string, opts: { force?: boolean } = {}): Promise<DiscardOutcome> {
+  const documentName = getCollabUnsaved(noteId, vaultId)?.doc_name ?? docNameFor(vaultId, noteId);
+  const loaded = hocuspocus.documents.get(documentName);
+  if (hocuspocus.loadingDocuments.has(documentName) || loaded?.isLoading) return { discarded: false, live: false, permanent: !!getCollabUnsaved(noteId, vaultId)?.permanent, reason: "busy" };
+  if (!loaded) return discardNow(vaultId, noteId, documentName, null, opts.force === true);
+  return loaded.saveMutex.runExclusive(() => discardNow(vaultId, noteId, documentName, loaded, opts.force === true));
+}
+type LoadedDocument = typeof hocuspocus.documents extends Map<string, infer D> ? D : never;
+/** The discard itself. `held` = the loaded document whose save mutex the caller holds (null: none was loaded when it asked). */
+async function discardNow(vaultId: string, noteId: string, documentName: string, held: LoadedDocument | null, force: boolean): Promise<DiscardOutcome> {
+  // Read only now: a store that was in flight has finished, and may have saved everything.
+  const row = getCollabUnsaved(noteId, vaultId);
+  const snapshot = getDocState(noteId, vaultId);
+  if (!row && !snapshot?.ahead) return { discarded: false, live: false, permanent: false, reason: "none" };
+  const permanent = !!row?.permanent;
+  if (!permanent && !force) return { discarded: false, live: false, permanent, reason: "not_permanent" };
+  let note;
+  try {
+    note = await vaultClient(vaultId, { timeoutMs: 15_000 }).getNote(noteId);
+  } catch {
+    return { discarded: false, live: false, permanent, reason: "unreadable" };
+  }
+  const kind = federationTarget(documentName).kind ?? noteKind({ path: note.path, tags: note.tags, metadata: note.metadata, content: note.content });
+  let prepared: DocJson | null = null;
+  let convertible = true;
+  try {
+    prepared = await prepareExternalContent(kind, note.content);
+  } catch (e) {
+    if (!(e instanceof ConversionError)) throw e;
+    if (e.reason === "busy") return { discarded: false, live: false, permanent, reason: "busy" };
+    convertible = false; // the note has no live document at all: the snapshot is simply dropped below
+  }
+  // ── synchronous from here ──
+  // The document this works on must still be the one whose mutex is held; one that
+  // appeared (or is appearing) meanwhile has read the snapshot already.
+  const liveDoc = hocuspocus.documents.get(documentName) ?? null;
+  if (liveDoc !== held || hocuspocus.loadingDocuments.has(documentName) || liveDoc?.isLoading) return { discarded: false, live: false, permanent, reason: "busy" };
+  const live = !!liveDoc;
+  const noteMs = toMs(note.updatedAt);
+  cancelStoreRetry(documentName);
+  if (!convertible) {
+    if (live) dropConnections(documentName);
+    deleteDocState(noteId, vaultId);
+  } else {
+    const doc = live ? (liveDoc as unknown as Y.Doc) : new Y.Doc();
+    const current = getDocState(noteId, vaultId); // (the awaits above: re-read)
+    if (!live && current) Y.applyUpdate(doc, current.state);
+    // Replace, then record the document as in step with the vault.
+    applyExternalContent(doc, kind, note.content, prepared);
+    saveDocState(noteId, Y.encodeStateAsUpdate(doc), noteMs, vaultId, contentHash(note.content));
+    if (live) {
+      lastReconciled.set(documentName, noteMs);
+      collabWriters.delete(documentName);
+      if (kind === "document") setRenderedSize(doc, Buffer.byteLength(note.content));
+    } else doc.destroy();
+  }
+  clearCollabUnsaved(noteId, vaultId);
+  if (live) {
+    tellClients(documentName, { type: "prism:notice", code: "unsaved-discarded" });
+    tellClients(documentName, { type: "prism:unsaved", state: "saved" });
+  }
+  console.warn(`[collab] ${documentName}: unsaved live changes were discarded on request — the document is the stored page again`);
+  return { discarded: true, live, permanent, reason: null };
+}
+/** Must a body write to this note go through (or wait for) the live document? Loaded, or holding unsaved live state. */
+export function hasLiveState(vaultId: string, noteId: string): boolean {
+  return isDocLive(vaultId, noteId) || isCollabUnsaved(noteId, vaultId);
+}
+
+/** How often a store re-reads, merges, re-renders and retries its write when the note changed underneath it. */
+const STORE_ATTEMPTS = 3;
+/** Vault answers that no retry can change: the body is refused (too large for a note with history, malformed). */
+const PERMANENT_VAULT_STATUS = new Set([400, 413, 422]);
+
+/**
+ * Persist a Y.Doc: render to HTML and write back to Parachute, and store the
+ * Yjs binary in SQLite for CRDT continuity. Extracted from the Hocuspocus hook
+ * so it is directly testable.
+ *
+ * Invariants:
+ *  - The snapshot row always says what it is built on (`collab_docs`, db.ts).
+ *    A CONFIRMED write stores exactly the state that was rendered and written
+ *    (`ahead = 0`: the row IS the vault content — the only state a three-way
+ *    merge may use as its base). Anything else stores the latest state marked
+ *    AHEAD, keeping the true base and the source version.
+ *  - The state and the hash of what is about to be written are saved BEFORE the
+ *    vault write is sent: if the acknowledgement is lost, the vault's copy is
+ *    recognised as ours (never folded back as an "external edit").
+ *  - The vault write is compare-and-set on the version this store read. A note
+ *    that changed in between is re-read: a metadata-only change needs nothing, a
+ *    changed BODY is merged three-way against the true base (both sides survive
+ *    when they touch different blocks), then the document is re-rendered and the
+ *    write tried again, a bounded number of times.
+ *  - A note whose version is known but which could not be READ now is not
+ *    written at all (an unconditioned write could overwrite an edit we did not see).
+ *  - Nothing written to the vault is something the live editor could not re-open.
+ */
 export async function storeDocumentState(documentName: string, doc: Y.Doc): Promise<void> {
   const target = federationTarget(documentName); // non-federated → decoded (vault, note)
-  let sourceUpdatedAt: number | null = null;
-  let vaultWritten = false; // the vault copy now reflects (or already matched) the rendered doc
+  const { noteId, vaultId } = target;
+  /** Save the latest Yjs state without claiming any vault write: marked ahead, base and source kept. */
+  const keepAhead = () => saveDocAhead(noteId, Y.encodeStateAsUpdate(doc), vaultId);
+  // A blocked document (its note changed to something it cannot absorb) is never
+  // written to the vault: that would overwrite the newer note.
+  if (isDocBlocked(documentName)) return void keepAhead();
+
   // Fetch the current note up front: it resolves the kind (a wrong default would
   // persist e.g. code as HTML and corrupt the note) AND lets us detect an
   // external edit we haven't folded in yet. Stores are debounced, so the read is
   // cheap; on failure we fall back to the cached kind.
   let kind = target.kind ?? kindCache.get(documentName);
   let current: { content: string; updatedAt: string | null } | null = null;
-  try {
-    const n = await vaultClient(target.vaultId).getNote(target.noteId);
-    current = { content: n.content, updatedAt: n.updatedAt };
-    if (!kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
-  } catch {
-    /* note unreadable — keep cached kind (or default below) */
-  }
+  const readNote = async (): Promise<boolean> => {
+    try {
+      const n = await vaultClient(vaultId).getNote(noteId);
+      current = { content: n.content, updatedAt: n.updatedAt };
+      if (!kind) kind = noteKind({ path: n.path, tags: n.tags, metadata: n.metadata, content: n.content });
+      return true;
+    } catch {
+      return false; // note unreadable — keep cached kind (or default below)
+    }
+  };
+  const readable = await readNote();
   if (!kind) kind = "document";
   kindCache.set(documentName, kind);
+  // Its own actor: a document whose renders keep timing out cools down by itself (H-1) — never the store lane.
+  const lane: ConvertOptions = { lane: "store", actor: `doc:${documentName}` };
 
-  // Clobber guard: if Parachute is newer than what we've absorbed, fold that
-  // external edit into the live doc BEFORE rendering, so the write below merges
-  // it in instead of overwriting it (and connected clients see it too).
-  // A zero baseline means we have no prior knowledge of this note (e.g. a store
-  // with no preceding load) — the live doc is authoritative, so don't fold. In
-  // the real Hocuspocus flow onLoadDocument always runs first and sets it.
-  if (current) {
-    const noteMs = toMs(current.updatedAt);
-    const baseline = reconcileBaseline(documentName, target.vaultId, target.noteId);
-    if (baseline > 0 && noteMs > baseline) {
-      applyExternalContent(doc, kind, current.content);
-      lastReconciled.set(documentName, noteMs);
-    }
-  }
+  type Failure = { reason: string; permanent: boolean; retry: boolean };
+  let failure: Failure | null = null;
+  let vaultWritten = false; // the vault copy now reflects (or already matched) the rendered doc
+  // The note's version is known but it cannot be read right now: an unconditioned
+  // write could overwrite an edit made since. Keep the state; write later.
+  if (!readable && (getDocMeta(noteId, vaultId)?.sourceUpdatedAt ?? null) !== null) failure = { reason: "unreadable", permanent: false, retry: true };
 
-  let rendered: number[] = [];
-  let sourceUpdatedRaw: string | null = null;
   try {
-    // Same tick as the render below: exactly the commands this content contains
-    // — and only those whose change is STILL in the document. A fold of a newer
-    // vault copy (here above, or by the reconciler since the command ran) can
-    // have removed a command's effect; confirming it would report a lost change
-    // as applied. Those are cleaned up and forgotten instead (the caller gets
-    // 503, the retry 409 stale_revision).
-    const pending = kind === "document" ? unconfirmedCollabReceipts(documentName) : [];
-    rendered = pending.length && commandEffects ? commandEffects(doc, pending) : pending.map((r) => r.rowid);
-    const content =
-      kind === "code"
-        ? yDocToCode(doc)
-        : kind === "spreadsheet"
-          ? yDocToCsv(doc)
-          : kind === "canvas"
-            ? yDocToScene(doc)
-            : yDocToHtml(doc);
-    if (kind === "document") setRenderedSize(doc, Buffer.byteLength(content));
-    if (current && content === current.content) {
-      // Nothing to persist (e.g. the store right after folding an external edit
-      // or a version restore). Skipping matters on vault ≥0.7.9: every write
-      // captures a history version, so an identical re-write would clutter the
-      // note's history with no-change entries and bump updatedAt for nothing.
-      sourceUpdatedAt = toMs(current.updatedAt);
-      sourceUpdatedRaw = current.updatedAt;
-    } else {
-      const stamp = takeWriterStamp(documentName, doc, kind);
-      const updated = await vaultClient(target.vaultId).updateNote(target.noteId, stamp ? { content, metadata: stamp } : { content });
-      sourceUpdatedAt = toMs(updated.updatedAt);
-      sourceUpdatedRaw = updated.updatedAt;
-    }
-    vaultWritten = true;
-    // G2b: persisted suggestion marks land in the owner's durable review queue.
-    if (kind === "document") captureSuggestions(target.noteId, content);
-    // Wave 2A: mention / comment notifications + mention backlinks (fire-and-forget).
-    if (kind === "document" && storeListener) {
-      try {
-        storeListener.stored({ docName: documentName, vaultId: target.vaultId, noteId: target.noteId, prevContent: current?.content ?? null, content, updatedAt: sourceUpdatedRaw, doc, editors: takeDocEditors(documentName) });
-      } catch {
-        /* notifications are best-effort — never fail the persist */
+    for (let attempt = 1; attempt <= STORE_ATTEMPTS && !vaultWritten && !failure; attempt++) {
+      const note = current as { content: string; updatedAt: string | null } | null;
+      // Clobber guard: if Parachute is newer than what we've absorbed, merge that
+      // external edit into the live doc BEFORE rendering, so the write below
+      // carries it instead of overwriting it (and connected clients see it too).
+      // A zero baseline means we have no prior knowledge of this note (e.g. a store
+      // with no preceding load) — the live doc is authoritative, so don't fold. In
+      // the real Hocuspocus flow onLoadDocument always runs first and sets it.
+      if (note) {
+        const noteMs = toMs(note.updatedAt);
+        const baseline = reconcileBaseline(documentName, vaultId, noteId);
+        const { relation, hash } = baseline > 0 ? vaultRelation(getDocMeta(noteId, vaultId), note, baseline) : { relation: "same" as VaultRelation, hash: null };
+        if (relation === "metadata") {
+          // Only metadata moved (a property, an icon, a backlink write): nothing to fold.
+          rebaseDoc(noteId, vaultId, { source: noteMs });
+          lastReconciled.set(documentName, noteMs);
+        } else if (relation === "ours") {
+          // A write of ours whose acknowledgement was lost: it landed. Not an external edit.
+          rebaseDoc(noteId, vaultId, { source: noteMs, hash: hash!, base: "attempt" });
+          lastReconciled.set(documentName, noteMs);
+        } else if (relation === "external") {
+          let prepared: DocJson | null = null;
+          try {
+            const body = note.content;
+            prepared = await patiently(() => prepareExternalContent(kind!, body, lane));
+          } catch (e) {
+            if (!(e instanceof ConversionError)) throw e;
+            // The vault holds a newer body this document cannot absorb. Writing
+            // the live state now would OVERWRITE that edit, so nothing is written
+            // (the vault's copy stands). Unconvertible content blocks the
+            // document; a load-dependent failure is retried later.
+            if (isDeterministicFailure(e.reason) || unconvertible(e.reason, documentName, note.content)) {
+              blockDocument(documentName, e.reason);
+              dropConnections(documentName);
+            } else failure = { reason: e.reason, permanent: false, retry: true };
+            break;
+          }
+          if (isDocBlocked(documentName)) break;
+          const landed = await landedAttempt(vaultId, noteId, getDocMeta(noteId, vaultId));
+          const row = getDocState(noteId, vaultId);
+          let fold: FoldResult;
+          try {
+            fold = foldVaultContent(doc, kind, note.content, prepared, mergeBases(row, landed), keeperFor(row?.ahead, documentName, vaultId, noteId, kind));
+          } catch (e) {
+            if (!(e instanceof SetAsideFailedError)) throw e;
+            // The page's own content could not be set aside, so the note's newer content did
+            // not replace it — and writing the page now would overwrite that content. Later.
+            failure = { reason: "error", permanent: false, retry: true };
+            break;
+          }
+          if (row) {
+            saveDocAhead(noteId, Y.encodeStateAsUpdate(doc), vaultId);
+            rebaseDoc(noteId, vaultId, { source: noteMs, hash: hash ?? contentHash(note.content), base: fold.base });
+          }
+          lastReconciled.set(documentName, noteMs);
+          if (fold.wholesale && row?.ahead) tellClients(documentName, { type: "prism:notice", code: "external-replaced" });
+        }
+      }
+
+      // Same tick as the snapshot below: exactly the commands this content
+      // contains — and only those whose change is STILL in the document. A merge
+      // of a newer vault copy (here above, or by the reconciler since the command
+      // ran) can have removed a command's effect; confirming it would report a
+      // lost change as applied. Those are cleaned up and forgotten instead (the
+      // caller gets 503, the retry 409 stale_revision).
+      const pending = kind === "document" ? unconfirmedCollabReceipts(documentName) : [];
+      const rendered = pending.length && commandEffects ? commandEffects(doc, pending) : pending.map((r) => r.rowid);
+      // The document is snapshotted HERE (same tick as `pending`): as ProseMirror
+      // JSON — rendered to HTML off the main thread — and as the exact Yjs state
+      // that JSON is. What is written to the vault and what is saved as "the
+      // vault's content" are that one snapshot; typing that arrives during the
+      // awaits below belongs to the next store.
+      const docJson = kind === "document" ? yDocToDocJson(doc) : null;
+      const snapshotState = Y.encodeStateAsUpdate(doc);
+      // What the row was built on when this snapshot was taken. The render below is
+      // awaited: if the reconciler merges an external edit meanwhile, the row moves
+      // to a NEWER version (state, source and base together) and this snapshot is
+      // older than the row — it must not be saved over it (see `saveDocAttempt`).
+      const sourceAtSnapshot = getDocMeta(noteId, vaultId)?.sourceUpdatedAt ?? null;
+      /** The row moved under this pass: read the note again and go round (bounded), like a 409. */
+      const movedOn = async (): Promise<void> => {
+        if (!(await readNote())) failure = { reason: "unreadable", permanent: false, retry: true };
+        else if (attempt === STORE_ATTEMPTS) failure = { reason: "conflict", permanent: false, retry: true };
+      };
+      let content: string;
+      if (docJson) {
+        try {
+          content = await patiently(() => docJsonToHtml(docJson, lane));
+        } catch (e) {
+          if (!(e instanceof ConversionError)) throw e;
+          // Not rendered. The document STAYS LIVE and its Yjs state is saved
+          // below; only the note waits (retried when the cause is the server's
+          // load — a document beyond what can be rendered at all is not).
+          failure = { reason: e.reason, permanent: isDeterministicFailure(e.reason), retry: !isDeterministicFailure(e.reason) };
+          break;
+        }
+        if (isDocBlocked(documentName)) break; // flagged while rendering
+        // Never write a body the live editor could not open again: the load's own
+        // pre-check must accept what the store renders (by construction — a page
+        // people can type into must be a page that re-opens).
+        const reopen = conversionRefusal(content, false);
+        if (reopen) {
+          failure = { reason: reopen, permanent: true, retry: false };
+          break;
+        }
+      } else content = kind === "code" ? yDocToCode(doc) : kind === "spreadsheet" ? yDocToCsv(doc) : yDocToScene(doc);
+      if (kind === "document") setRenderedSize(doc, Buffer.byteLength(content));
+
+      const hash = contentHash(content);
+      let updatedRaw: string | null;
+      if ((getDocMeta(noteId, vaultId)?.sourceUpdatedAt ?? null) !== sourceAtSnapshot) {
+        await movedOn();
+        continue;
+      }
+      if (note && content === note.content) {
+        // Nothing to persist (e.g. the store right after folding an external edit
+        // or a version restore). Skipping matters on vault ≥0.7.9: every write
+        // captures a history version, so an identical re-write would clutter the
+        // note's history with no-change entries and bump updatedAt for nothing.
+        updatedRaw = note.updatedAt;
+        saveDocStateConfirming(noteId, snapshotState, toMs(updatedRaw), vaultId, rendered, hash);
+      } else {
+        // Saved BEFORE the write is sent: the snapshot holds what is being written,
+        // and its hash says "this vault copy is ours" whatever happens to the answer.
+        // Was this very content already sent once, its outcome never learnt? (see the catch below)
+        const sentBefore = getDocMeta(noteId, vaultId)?.attempts.includes(hash) ?? false;
+        if (!saveDocAttempt(noteId, snapshotState, hash, vaultId, sourceAtSnapshot, [content.length, Buffer.byteLength(content)])) {
+          await movedOn();
+          continue;
+        }
+        // Who gets the stamp is consumed by taking it; a write that does not land gives it back.
+        const writersBefore = collabWriters.get(documentName);
+        const suggestionsBefore = lastSuggestions.get(documentName);
+        const giveBack = () => {
+          if (writersBefore) collabWriters.set(documentName, new Map([...writersBefore, ...(collabWriters.get(documentName) ?? [])]));
+          if (suggestionsBefore) lastSuggestions.set(documentName, suggestionsBefore);
+        };
+        const stamp = takeWriterStamp(documentName, doc, kind);
+        try {
+          // Compare-and-set on the version read above. Only a note with NO known
+          // version (never read, never stored) is written unconditioned.
+          const updated = await vaultClient(vaultId).updateNote(noteId, {
+            content,
+            ...(stamp ? { metadata: stamp } : {}),
+            ...(note?.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}),
+          });
+          updatedRaw = updated.updatedAt;
+        } catch (e) {
+          giveBack();
+          const status = e instanceof VaultError ? e.status : 0;
+          // S2: a DEFINITE refusal (a 409, any other 4xx but 408) — the vault did not
+          // apply this write, so its content in the vault can never be "ours". The
+          // attempt is forgotten; left recorded, it made every later external edit an
+          // uncertain merge in ordinary concurrent editing (one 409 was enough). Kept
+          // for outcome-unknown failures (no answer, a timeout, a 5xx) — and when the
+          // same content was sent before without an answer: THAT send may have landed.
+          if ((e instanceof VaultConflictError || (status >= 400 && status < 500 && status !== 408)) && !sentBefore) dropDocAttempt(noteId, vaultId, hash);
+          if (e instanceof VaultConflictError || status === 409) {
+            // The note changed between our read and our write. Re-read it and go
+            // round again: the guard above recognises our own lost write, sees
+            // that only metadata moved, or merges a changed body — and the
+            // document is snapshotted and rendered afresh.
+            if (!(await readNote())) failure = { reason: "unreadable", permanent: false, retry: true };
+            else if (attempt === STORE_ATTEMPTS) failure = { reason: "conflict", permanent: false, retry: true };
+            continue;
+          }
+          if (status === 404) {
+            // The note is gone: there is nothing to write this state to.
+            failure = { reason: "vault 404", permanent: false, retry: false };
+            console.warn(`[collab] ${documentName}: the note no longer exists — the live state is kept in the server's document store only`);
+          } else if (PERMANENT_VAULT_STATUS.has(status)) failure = { reason: `vault ${status}`, permanent: true, retry: false };
+          else failure = { reason: status ? `vault ${status}` : "vault unreachable", permanent: false, retry: true };
+          break;
+        }
+        // Acknowledged: the snapshot saved with the attempt IS the vault content now.
+        confirmDocAttempt(noteId, vaultId, toMs(updatedRaw), hash, rendered);
+      }
+      const sourceUpdatedAt = toMs(updatedRaw);
+      vaultWritten = true;
+      // Our own write (or the copy we matched) is absorbed: the reconciler must
+      // never mistake it for an external edit.
+      if (sourceUpdatedAt > (lastReconciled.get(documentName) ?? 0)) lastReconciled.set(documentName, sourceUpdatedAt);
+      // G2b: persisted suggestion marks land in the owner's durable review queue.
+      if (docJson) captureSuggestions(noteId, content, docJson as PmNode);
+      // Wave 2A: mention / comment notifications + mention backlinks (fire-and-forget).
+      if (kind === "document" && storeListener) {
+        try {
+          storeListener.stored({ docName: documentName, vaultId, noteId, prevContent: note?.content ?? null, content, updatedAt: updatedRaw, doc, editors: takeDocEditors(documentName) });
+        } catch {
+          /* notifications are best-effort — never fail the persist */
+        }
       }
     }
   } catch {
-    /* vault write failed — still persist CRDT state below */
+    /* an unexpected failure: the state is kept below and the write tried again later */
+    failure ??= { reason: "error", permanent: false, retry: true };
   }
-  // Snapshot + receipt confirmation are ONE transaction, and it confirms ONLY
-  // the commands that were already applied when `content` was rendered — the
-  // ones the vault write above really carried. A command applied during that
-  // await is in this snapshot but not in the vault; its own store (which its
-  // request is waiting on) confirms it, and if that store fails the receipt
-  // stays unconfirmed and the caller is told to retry — never a false success.
-  // After a failed vault write nothing is confirmed: that snapshot has no source
-  // version, the next load folds the (older) vault copy back over it.
-  saveDocStateConfirming(target.noteId, Y.encodeStateAsUpdate(doc), sourceUpdatedAt, target.vaultId, vaultWritten ? rendered : []);
+  // A command applied during the awaits above is not in the snapshot that was
+  // written; its own store (which its request is waiting on) confirms it, and if
+  // that store fails the receipt stays unconfirmed and the caller is told to
+  // retry — never a false success. A store that wrote nothing confirms nothing.
+  if (vaultWritten) return void storeSucceeded(documentName, noteId, vaultId);
+  // Nothing reached the vault: the latest state is saved AHEAD of it (base, source
+  // version and attempted hashes kept — never a null source).
+  keepAhead();
+  if (isDocBlocked(documentName) || !failure) return;
+  if (failure.permanent) storeRefused(documentName, noteId, vaultId, failure.reason);
+  else if (failure.retry) scheduleStoreRetry(documentName, noteId, vaultId, failure.reason);
+  else cancelStoreRetry(documentName);
 }
 
 /**
@@ -1094,6 +2513,16 @@ export async function assertEditorSchema(documentName: string, params: URLSearch
 
 interface LiveAccess { level: Level; token: string; cookie: string | null; isLocal: boolean; email?: string | null }
 
+/** The conversion service's fairness key for whoever a document is being loaded for. */
+function actorOfContext(context: unknown): string | null {
+  const c = (context ?? {}) as Partial<LiveAccess> & { human?: unknown; mcp?: unknown };
+  if (typeof c.email === "string" && c.email) return `user:${c.email.toLowerCase()}`;
+  if (typeof c.mcp === "string" && c.mcp) return `user:${c.mcp.toLowerCase()}`;
+  if (typeof c.human === "string" && c.human) return c.human;
+  if (typeof c.token === "string" && c.token && c.token !== "session") return `token:${createHash("sha256").update(c.token).digest("base64").slice(0, 16)}`;
+  return null;
+}
+
 /** Recheck incoming updates against current grants, credentials and note privacy. */
 async function revalidateConnection(connection: Connection<LiveAccess>): Promise<void> {
   const { context } = connection;
@@ -1104,6 +2533,8 @@ async function revalidateConnection(connection: Connection<LiveAccess>): Promise
     if (revision !== accessRevision() || !connection.document.hasConnection(connection) || !level || level !== context.level) {
       throw new Error("Access changed. Reconnect.");
     }
+    // A blocked document is being unloaded: its sockets reconnect and are answered `too_complex`.
+    if (isDocBlocked(connection.document.name)) throw new Error("Document closed. Reconnect.");
     connection.readOnly = !atLeast(level, rawWriteLevel()) || lockedDocs.get(connection.document.name) === true;
   } catch (error) {
     connection.readOnly = true;
@@ -1127,10 +2558,30 @@ export const hocuspocus = new Hocuspocus({
     const level = await authorizeConnection(data.documentName, data.token, cookie, data.connectionConfig, isLocal);
     // After authorization, so the refusal is no oracle about a note's kind.
     await assertEditorSchema(data.documentName, data.requestParameters);
+    // A loaded document that can no longer absorb its note takes no new sockets
+    // (it is being unloaded): the client shows the stored note as plain text.
+    if (isDocBlocked(data.documentName)) throw new DocumentTooComplexError(blockedDocs.get(data.documentName)!);
     // Credentials stay only in the connection's server-side context. `email`
     // attributes this socket's changes for notifications (never sent anywhere).
     const email = sessionEmailFromCookie(cookie) ?? deviceEmail(data.token);
     return { level, token: data.token, cookie, isLocal, email } satisfies LiveAccess;
+  },
+  // What a socket must know the moment it is on the page: that the page's latest
+  // changes are not in the stored page (so its badge never says "Saved"), and a
+  // notice raised while the document was loading.
+  async connected(data) {
+    try {
+      const target = federationTarget(data.documentName);
+      const unsaved = getCollabUnsaved(target.noteId, target.vaultId);
+      // Always the CURRENT state: a tab that reconnects after the page was saved must stop saying "not saved".
+      const state: CollabClientMessage = unsaved ? { type: "prism:unsaved", state: unsaved.permanent ? "unsaved" : "pending", reason: unsaved.reason ?? "unknown" } : { type: "prism:unsaved", state: "saved" };
+      data.connection.sendStateless(JSON.stringify(state));
+      const notice = pendingNotices.get(data.documentName);
+      if (notice && Date.now() <= notice.until) data.connection.sendStateless(JSON.stringify(notice.message));
+      else if (notice) pendingNotices.delete(data.documentName); // expired: a one-off, not a banner for every later visitor
+    } catch {
+      /* best-effort */
+    }
   },
   async onChange(data) {
     noteDocEditor(data.documentName, data.context);
@@ -1142,6 +2593,13 @@ export const hocuspocus = new Hocuspocus({
     docEditors.delete(data.documentName);
     collabWriters.delete(data.documentName);
     lastSuggestions.delete(data.documentName);
+    blockedDocs.delete(data.documentName);
+    lastVaultRead.delete(data.documentName);
+    pendingNotices.delete(data.documentName);
+    convertFailures.delete(data.documentName);
+    const retry = storeRetries.get(data.documentName);
+    if (retry) clearTimeout(retry.timer);
+    storeRetries.delete(data.documentName);
     try {
       storeListener?.unloaded?.(data.documentName);
     } catch {
@@ -1155,7 +2613,30 @@ export const hocuspocus = new Hocuspocus({
     // A permission write can close the connection during an awaited message hook.
     if (!connection.document.hasConnection(connection)) throw new Error("Access changed. Reconnect.");
   },
-  onLoadDocument: (data) => loadDocumentState(data.documentName, data.document),
+  // Throws DocumentTooComplexError / CollabBusyError (each carries the `reason`
+  // the client is answered with) when the note cannot be opened live. Nothing is
+  // returned: the document is filled in place (returning it would make Hocuspocus
+  // re-encode and re-apply its whole state to itself).
+  async onLoadDocument(data) {
+    try {
+      // `charge: false` (S6): what a load converts is the STORED note — whoever opens it
+      // did not write it. Three slow notes used to leave the person who merely opened
+      // them `busy`; slow content is remembered by its hash instead (and by
+      // `unconvertible`, per document). Writers stay charged for what they submit.
+      await loadDocumentState(data.documentName, data.document, { actor: actorOfContext(data.context), charge: false });
+    } catch (e) {
+      // Hocuspocus never registered this Document, so it never destroys it either:
+      // its Awareness keeps a live interval. Release it here, or every refused
+      // open leaks one (and a test process never exits).
+      try {
+        data.document.awareness.destroy();
+        data.document.destroy();
+      } catch {
+        /* already gone */
+      }
+      throw e;
+    }
+  },
   onStoreDocument: (data) => storeDocumentState(data.documentName, data.document),
 });
 
@@ -1199,7 +2680,36 @@ onAccessChanged((vaultId) => {
  * would race the live CRDT, so they refuse it while this is true.
  */
 export function isDocLive(vaultId: string, noteId: string): boolean {
-  return hocuspocus.documents.has(docNameFor(vaultId, noteId));
+  const name = docNameFor(vaultId, noteId);
+  // A blocked document is on its way out and is never stored again: for everyone
+  // deciding "must I go through Yjs?", it is not live.
+  return hocuspocus.documents.has(name) && !isDocBlocked(name);
+}
+
+/** The loaded Y.Doc to READ a note's live state from — undefined when not loaded or blocked. */
+export function liveDocument(documentName: string): Y.Doc | undefined {
+  if (isDocBlocked(documentName)) return undefined;
+  return hocuspocus.documents.get(documentName) as Y.Doc | undefined;
+}
+
+/** Store a loaded document NOW through the normal hook path (bypassing the debounce). */
+async function storeLoadedDocument(doc: (typeof hocuspocus.documents extends Map<string, infer D> ? D : never)): Promise<void> {
+  await hocuspocus.storeDocumentHooks(
+    doc,
+    {
+      clientsCount: doc.getConnectionsCount(),
+      context: {},
+      document: doc,
+      documentName: doc.name,
+      instance: hocuspocus,
+      requestHeaders: new Headers(),
+      requestParameters: new URLSearchParams(),
+      socketId: "server",
+      lastContext: {},
+      lastTransactionOrigin: { source: "local" },
+    } as never,
+    true,
+  );
 }
 
 /** Attach the collab WebSocket handler to the Node HTTP server at /collab. */
@@ -1227,6 +2737,16 @@ export function attachCollab(server: Server): void {
   // and fold them into the live Y.Doc so every open editor updates within a tick.
   const stopReconciler = startReconciler(hocuspocus as unknown as LiveDocs);
   server.on("close", stopReconciler);
+  // Notes whose last live store never reached the vault and whose document has
+  // since unloaded (tab closed while the converter was busy; a restart).
+  let sweeping = false;
+  const sweepTimer = setInterval(() => {
+    if (sweeping) return;
+    sweeping = true;
+    void sweepUnsavedDocuments().finally(() => { sweeping = false; });
+  }, UNSAVED_SWEEP_MS);
+  sweepTimer.unref();
+  server.on("close", () => clearInterval(sweepTimer));
   let checkingAccess = false;
   const accessTimer = setInterval(() => {
     if (checkingAccess) return;
@@ -1277,20 +2797,5 @@ export function setNoteLocked(vaultId: string, noteId: string, locked: boolean):
 export async function flushLiveDoc(vaultId: string, noteId: string): Promise<void> {
   const doc = hocuspocus.documents.get(docNameFor(vaultId, noteId));
   if (!doc) return;
-  await hocuspocus.storeDocumentHooks(
-    doc,
-    {
-      clientsCount: doc.getConnectionsCount(),
-      context: {},
-      document: doc,
-      documentName: doc.name,
-      instance: hocuspocus,
-      requestHeaders: new Headers(),
-      requestParameters: new URLSearchParams(),
-      socketId: "server",
-      lastContext: {},
-      lastTransactionOrigin: { source: "local" },
-    } as never,
-    true,
-  );
+  await storeLoadedDocument(doc);
 }

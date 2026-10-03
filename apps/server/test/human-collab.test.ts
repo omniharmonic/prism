@@ -19,6 +19,7 @@
  *    reseeded the document, after a crash before the store, and after a failed
  *    vault write — never a second mutation, never a result for a lost change.
  */
+import { contentToSeedSync } from "../src/convert/core";
 import { COLLAB_SCHEMA_VERSION } from "@prism/core/editor-schema";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -242,7 +243,8 @@ const clientRevision = (doc: Y.Doc) => humanCollabRevision(pm(doc).toJSON(), doc
 function offlineDoc(id: string): Y.Doc {
   const d = new Y.Doc();
   const snap = getDocState(id);
-  Y.applyUpdate(d, snap ? snap.state : contentToYUpdate(fv.notes.get(id)!.content));
+  // The unbounded core form: a TEST seeding a note of any size (the server's bounded form refuses stored HTML past the inline cap).
+  Y.applyUpdate(d, snap ? snap.state : contentToSeedSync(fv.notes.get(id)!.content));
   return d;
 }
 const select = (doc: Y.Doc, needle: string) => {
@@ -887,7 +889,7 @@ for (const actor of ACTORS) {
     // Case 1 — someone still has the document open, so it stays in memory.
     const me = await client("d1", auth.socket);
     const cmd = await command(me, () => ({ kind: "suggest", ...select(me, "alpha"), text: "omega" }));
-    fv.conflictOnNextWrite = true; // the store's vault write fails once
+    fv.failNextWrite = true; // the store's vault write fails once
     const first = await post("d1", cmd, auth);
     assert.equal(first.status, 503, JSON.stringify(first.body));
     assert.equal(first.body.error, "not_confirmed");
@@ -908,7 +910,7 @@ for (const actor of ACTORS) {
     fv.put({ id: "d3", tags: ["garden"], content: BODY, updatedAt: T0 });
     const off = offlineDoc("d3");
     const cmd3 = await command(off, () => ({ kind: "suggest", ...select(off, "beta"), text: "gamma" }));
-    fv.conflictOnNextWrite = true;
+    fv.failNextWrite = true;
     const lost = await post("d3", cmd3, auth);
     assert.equal(lost.status, 503);
     await unloaded("d3");
@@ -1121,7 +1123,7 @@ test("M1: a command applied WHILE another store's vault write is in flight is no
     if ((init?.method ?? "GET").toUpperCase() === "PATCH" && url.pathname.endsWith("/notes/d1")) {
       patches++;
       if (patches === 1) await gate;
-      if (patches === 2) fv.conflictOnNextWrite = true;
+      if (patches === 2) fv.failNextWrite = true;
     }
     return inner(input, init);
   }) as typeof fetch;
@@ -1285,7 +1287,7 @@ for (const kind of ["comment", "reply"] as const) {
     if (kind === "comment") {
       // The command's own store fails: the half-saved snapshot keeps the thread
       // in the comments map while the reload folds the body back from the vault.
-      fv.conflictOnNextWrite = true;
+      fv.failNextWrite = true;
       const lost = await post("d1", cmd, auth);
       assert.equal(lost.status, 503);
       await unloaded("d1");
@@ -1359,15 +1361,17 @@ test("R1: a store that folds a newer vault copy does NOT confirm a command whose
     fv.put({ id, tags: ["garden"], content: BODY, updatedAt: T0 });
     const editor = await editorClient(id); // keeps the document in memory
     const cmd = await command(editor, () => (kind === "suggest" ? { kind, ...select(editor, "beta"), text: "gamma" } : { kind, ...select(editor, "beta"), text: "note" }));
-    // An external writer replaces the note AFTER the command is applied in
-    // memory and BEFORE its store reads the vault: the store folds that copy
-    // over the live document, which removes the command's marks.
+    // An external writer changes the note AFTER the command is applied in memory
+    // and BEFORE its store reads the vault: it REMOVES the paragraph the command
+    // marked. The store merges that edit into the live document (three-way: an
+    // edit to another block would leave the command intact), and the command's
+    // marks go with their paragraph.
     const inner = globalThis.fetch;
     let done = false;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       if (!done && getCollabReceipt("primary", id, auth.identity, cmd.requestId)) {
         done = true;
-        fv.put({ id, tags: ["garden"], content: "<p>alpha</p><p>rewritten elsewhere</p>", updatedAt: "2026-12-01T00:00:00.000Z" });
+        fv.put({ id, tags: ["garden"], content: "<p>alpha</p>", updatedAt: "2026-12-01T00:00:00.000Z" });
       }
       return inner(input, init);
     }) as typeof fetch;
@@ -1378,7 +1382,7 @@ test("R1: a store that folds a newer vault copy does NOT confirm a command whose
     assert.equal(r.body.error, "not_confirmed");
     assert.equal(getCollabReceipt("primary", id, auth.identity, cmd.requestId), null, "the receipt of the removed change is forgotten, not confirmed");
     const html = yDocToHtml(live(id)!);
-    assert.equal(html, "<p>alpha</p><p>rewritten elsewhere</p>", "the external copy stands, with no leftover marks");
+    assert.equal(html, "<p>alpha</p>", "the external copy stands, with no leftover marks");
     assert.equal(live(id)!.getMap("comments").size, 0, "no thread left without its anchor");
     await caughtUp(editor);
     const retry = await post(id, cmd, auth);

@@ -47,6 +47,10 @@ import { calendarMode, calendarSourceName } from "./calendar";
 import { PROTON_CREDENTIAL, protonMode } from "./proton";
 import { openCandidateCounts } from "../identity-store";
 import { lastLinkJobOutcome } from "../people-link-job";
+import { collabUnsavedStats } from "../db";
+
+/** An unsaved live document older than this makes the `collab` source stale (alerted like any other). */
+const COLLAB_UNSAVED_STALE_MS = 60 * 60_000;
 
 export type SourceStatus = "ok" | "stale" | "failing" | "disabled";
 export type SourceKind = "server" | "desktop";
@@ -361,6 +365,29 @@ export async function getSourceHealth(opts: { now?: number; list?: Lister } = {}
         lastJobQueued: last?.queued ?? null,
       },
     });
+  }
+
+  // Live documents whose latest state has not reached the vault (collab.ts): the
+  // changes are safe in the server's document store, but the notes are behind.
+  // Reported once there is one; `stale` (→ the usual alert) when the OLDEST has been
+  // waiting for over an hour — or cannot be saved at all (`permanent`: the page is
+  // too large / the vault refuses it; its people are told on the page).
+  {
+    const unsaved = collabUnsavedStats();
+    if (unsaved.total > 0) {
+      out.push({
+        name: "collab",
+        kind: "server",
+        vaultId: "primary",
+        lastSuccessAt: iso(unsaved.oldestSince),
+        lastError: unsaved.permanent > 0 ? `${unsaved.permanent} page(s) cannot be saved to the vault (too large or refused)` : null,
+        // A page that can never be saved as it is counts as failing at once (it alerts).
+        failureStreak: unsaved.permanent > 0 ? config.workerFailStreak : 0,
+        staleAfterMs: COLLAB_UNSAVED_STALE_MS,
+        status: computeStatus({ configured: true, lastSuccessAt: unsaved.oldestSince, streak: unsaved.permanent > 0 ? config.workerFailStreak : 0, staleAfterMs: COLLAB_UNSAVED_STALE_MS, now, baselineAt: BOOT_AT }),
+        detail: { unsaved: unsaved.total, permanent: unsaved.permanent, oldestAgeMs: unsaved.oldestSince === null ? null : Math.max(0, now - unsaved.oldestSince) },
+      });
+    }
   }
 
   await ensureDesktop(opts.list, now);

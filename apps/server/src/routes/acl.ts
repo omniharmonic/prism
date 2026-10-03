@@ -18,7 +18,7 @@ import { getSourceHealth } from "../worker/health";
 import { calendarMode, readCalendarIntents, readCalendarLastPass, verifyCalendarIntents } from "../worker/calendar";
 import { protonMode, readProtonIntents, readProtonLastPass, verifyProtonIntents } from "../worker/proton";
 import { listActionAudit } from "../actions/store";
-import { vault, vaultClient, VaultError } from "../parachute";
+import { vault, vaultClient, VaultConflictError, VaultError } from "../parachute";
 import { resolveActor } from "../auth/actor";
 import { signCapability } from "../auth/capability";
 import { tokenExpiries } from "../auth/vault-token";
@@ -106,7 +106,8 @@ import { runVaultMirrorOnce } from "../worker/vault-mirror";
 import { startWorker } from "../worker/scheduler";
 import { vaultRegistry } from "../config";
 import { createVaultViaCli, seedVault } from "../vault-provision";
-import { noteKind, resolveSuggestionsInHtml } from "../collab";
+import { noteKind, resolveSuggestionsInHtmlAsync, settleUnsaved, unsavedPermanentBody, unsavedPermanentReason } from "../collab";
+import { isCollabUnsaved } from "../db";
 import { normalizePathPrefix, pathInPrefix } from "../paths";
 import { ancestorPages, descendantRefs, descendantRows, grantCapsList, inheritedPeople, personView, viewableAncestors } from "../sharing";
 import { rowRef } from "../tree";
@@ -1837,10 +1838,24 @@ async function resolveSuggestion(c: Context, action: "accept" | "reject") {
   // layer on doc load — their accept/reject stays a durable status transition.
   if (s.author && s.author_kind === "user") {
     try {
+      // The stored body is stale while live-editor changes are still being saved: give them the
+      // chance to be written first (and read the note only after that), else resolve later.
+      const settled = isCollabUnsaved(s.note_id, "primary") ? await settleUnsaved("primary", s.note_id) : "clear";
+      // Changes that can never be written as they are: not "try again in a moment".
+      if (settled === "permanent") return c.json(unsavedPermanentBody(unsavedPermanentReason("primary", s.note_id)), 409);
+      if (settled === "pending") {
+        return c.json({ error: "conflict", live: true, retry: true, detail: "This page has changes that are still being saved from the live editor. Try again in a moment." }, 409);
+      }
       const note = await vault.getNote(s.note_id);
-      const next = resolveSuggestionsInHtml(note.content, s.author, action);
+      const next = await resolveSuggestionsInHtmlAsync(note.content, s.author, action);
       if (next !== note.content) {
-        await vault.updateNote(s.note_id, { content: next });
+        // Compare-and-set on the version the suggestion was resolved against (never a blind overwrite).
+        try {
+          await vault.updateNote(s.note_id, { content: next, ...(note.updatedAt ? { ifUpdatedAt: note.updatedAt } : {}) });
+        } catch (e) {
+          if (e instanceof VaultConflictError || (e instanceof VaultError && e.status === 409)) return c.json({ error: "conflict", retry: true, detail: "The page changed while the suggestion was being applied. Try again." }, 409);
+          throw e;
+        }
         applied = true;
         // Tell the suggester (wave 3): only suggestions that carry an account's actor id.
         const decider = resolveActor(c);
