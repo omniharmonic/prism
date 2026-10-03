@@ -34,6 +34,27 @@ Object.assign(window, { prismCollabFixture: {
   syncUnsynced: () => syncUnsyncedDocs(),
   startUnsynced: () => startUnsyncedDocs(),
   syncLabel: () => deriveSyncStatus(useSyncStore.getState()).label,
+  /** Unload-rescue entries (localStorage) — wave 3 unload guard. A rescue is a DIFF on
+   *  top of the IndexedDB row, so it only reads as text once merged with that row. */
+  rescued: (): number => Object.keys(localStorage).filter((k) => k.startsWith("prism:collab-pending:")).length,
+  /** Everything this device holds per document: the IndexedDB row + its rescue entry. */
+  async deviceTexts(): Promise<string[]> {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("prism-collab-v3", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("documents");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    try {
+      const store = db.transaction("documents").objectStore("documents");
+      const [keys, rows] = await Promise.all([store.getAllKeys(), store.getAll()].map((request) => new Promise<unknown[]>((resolve, reject) => { request.onsuccess = () => resolve(request.result as unknown[]); request.onerror = () => reject(request.error); })));
+      return keys!.map((key, i) => {
+        const doc = new Y.Doc(); Y.applyUpdate(doc, rows![i] as Uint8Array);
+        const raw = localStorage.getItem("prism:collab-pending:" + String(key));
+        if (raw) Y.applyUpdate(doc, Uint8Array.from(atob(raw), (c) => c.charCodeAt(0)));
+        const text = doc.getXmlFragment("default").toString(); doc.destroy(); return text;
+      });
+    } finally { db.close(); }
+  },
   /** What the local store (IndexedDB) really holds for live documents — read-only, every stored document. */
   async localTexts(): Promise<string[]> {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
